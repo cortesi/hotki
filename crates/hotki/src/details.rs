@@ -75,6 +75,10 @@ impl Details {
         }
     }
 
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+
     pub fn update_theme(&mut self, theme: NotifyTheme) {
         self.theme = theme;
     }

@@ -223,9 +223,9 @@ shell(
 <tr></tr>
 <tr>
     <td>
-        <pre lang="ron">toggle_details</pre>
+        <pre lang="ron">show_details(toggle)</pre>
     </td>
-    <td>Toggle the details window visibility</td>
+    <td>Control the details window visibility. Use <code>show_details(on)</code> to show, <code>show_details(off)</code> to hide, or <code>show_details(toggle)</code> to toggle.</td>
 </tr>
 <tr></tr>
 <tr>

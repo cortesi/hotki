@@ -18,8 +18,8 @@
             ("r", "Relay Keystroke", relay("cmd+c")),
             // clear_notifications: Remove all on-screen notifications
             ("c", "Clear Notifications", clear_notifications),
-            // toggle_details: Show/hide the details window
-            ("d", "Toggle Details", toggle_details),
+            // show_details: Control details window: on/off/toggle
+            ("d", "Toggle Details", show_details(toggle)),
             // reload_config: Reload the configuration file
             ("R", "Reload Config", reload_config),
             // show_hud_root: Display the root-level HUD

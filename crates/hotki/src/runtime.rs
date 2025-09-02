@@ -308,8 +308,19 @@ pub fn spawn_key_runtime(
                                 let _ = tx_keys.send(AppEvent::ClearNotifications);
                                 egui_ctx.request_repaint();
                             }
-                            Ok(MsgToUI::ToggleDetails) => {
-                                let _ = tx_keys.send(AppEvent::ToggleDetails);
+                            Ok(MsgToUI::ShowDetails(arg)) => {
+                                use config::Toggle as Tg;
+                                match arg {
+                                    Tg::On => {
+                                        let _ = tx_keys.send(AppEvent::ShowDetails);
+                                    }
+                                    Tg::Off => {
+                                        let _ = tx_keys.send(AppEvent::HideDetails);
+                                    }
+                                    Tg::Toggle => {
+                                        let _ = tx_keys.send(AppEvent::ToggleDetails);
+                                    }
+                                }
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ThemeNext) => {

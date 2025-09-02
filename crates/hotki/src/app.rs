@@ -14,6 +14,7 @@ use hotki_protocol::NotifyKind;
 pub enum AppEvent {
     Quit,
     ShowDetails,
+    HideDetails,
     ShowPermissionsHelp,
     KeyUpdate {
         visible_keys: Vec<(String, String, bool)>,
@@ -62,6 +63,10 @@ impl App for HotkiApp {
                 }
                 AppEvent::ShowDetails => {
                     self.details.show();
+                    ctx.request_repaint();
+                }
+                AppEvent::HideDetails => {
+                    self.details.hide();
                     ctx.request_repaint();
                 }
                 AppEvent::ShowPermissionsHelp => {

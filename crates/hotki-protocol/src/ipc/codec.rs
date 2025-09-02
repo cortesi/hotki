@@ -51,7 +51,7 @@ mod tests {
             },
             MsgToUI::ReloadConfig,
             MsgToUI::ClearNotifications,
-            MsgToUI::ToggleDetails,
+            MsgToUI::ShowDetails(Toggle::Toggle),
             MsgToUI::ThemeNext,
             MsgToUI::ThemePrev,
             MsgToUI::ThemeSet("night".into()),

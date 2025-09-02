@@ -3,7 +3,7 @@
         ("shift+cmd+0", "activate", keys([
             ("h", "Hotki", keys([
                 ("c", "Clear Notifications", clear_notifications),
-                ("d", "Details", toggle_details),
+                ("d", "Details", show_details(toggle)),
                 ("r", "Reload Config", reload_config),
                 ("o", "Show Root Keys", show_hud_root),
             ])),

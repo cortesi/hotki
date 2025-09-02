@@ -41,8 +41,8 @@ pub enum MsgToUI {
     /// Clear notifications request for the UI
     ClearNotifications,
 
-    /// Toggle the details window visibility
-    ToggleDetails,
+    /// Control the details window visibility
+    ShowDetails(Toggle),
 
     /// Switch to the next theme
     ThemeNext,

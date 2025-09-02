@@ -133,8 +133,8 @@ impl State {
                 }
                 Ok(response)
             }
-            Action::ToggleDetails => {
-                let response = KeyResponse::Ui(MsgToUI::ToggleDetails);
+            Action::ShowDetails(arg) => {
+                let response = KeyResponse::Ui(MsgToUI::ShowDetails(*arg));
                 if !attrs.noexit() {
                     self.reset();
                 }

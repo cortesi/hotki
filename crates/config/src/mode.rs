@@ -138,8 +138,8 @@ pub enum Action {
     ReloadConfig,
     /// Ask host to clear all on-screen notifications
     ClearNotifications,
-    /// Toggle the details window visibility
-    ToggleDetails,
+    /// Control the details window: on/off/toggle
+    ShowDetails(Toggle),
     /// Switch to the next theme in the list
     ThemeNext,
     /// Switch to the previous theme in the list
