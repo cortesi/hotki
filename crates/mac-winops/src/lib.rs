@@ -6,15 +6,18 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::ffi::{CString, c_char, c_void};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{c_char, c_void, CString};
 use std::sync::Mutex;
 
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
 use core_foundation::string::{CFString, CFStringRef};
+use mac_keycode::{Chord, Key, Modifier};
+use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use relaykey::RelayKey;
 use tracing::debug;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -41,6 +44,11 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFBooleanGetValue(b: CFTypeRef) -> bool;
+    fn CFStringCreateWithCString(
+        alloc: *const c_void,
+        cStr: *const c_char,
+        encoding: u32,
+    ) -> CFStringRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -74,78 +82,59 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 fn cfstr(name: &'static str) -> CFStringRef {
-    unsafe extern "C" {
-        fn CFStringCreateWithCString(
-            alloc: *const c_void,
-            cStr: *const c_char,
-            encoding: u32,
-        ) -> CFStringRef;
-    }
     const UTF8: u32 = 0x0800_0100;
     let cs = CString::new(name).expect("static str");
     unsafe { CFStringCreateWithCString(std::ptr::null(), cs.as_ptr(), UTF8) }
 }
 
 fn ax_check() -> Result<()> {
-    unsafe {
-        if AXIsProcessTrusted() {
-            Ok(())
-        } else {
-            Err(Error::Permission)
-        }
+    if unsafe { AXIsProcessTrusted() } {
+        Ok(())
+    } else {
+        Err(Error::Permission)
     }
 }
 
 fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
-    unsafe {
-        let app = AXUIElementCreateApplication(pid);
-        if app.is_null() {
-            return Err(Error::AppElement);
-        }
-        let attr_focused_window = cfstr("AXFocusedWindow");
-        let mut win: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, attr_focused_window, &mut win);
-        CFRelease(app as CFTypeRef);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        if win.is_null() {
-            return Err(Error::FocusedWindow);
-        }
-        Ok(win as *mut c_void)
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return Err(Error::AppElement);
     }
+    let attr_focused_window = cfstr("AXFocusedWindow");
+    let mut win: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, attr_focused_window, &mut win) };
+    unsafe { CFRelease(app as CFTypeRef) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
+    }
+    if win.is_null() {
+        return Err(Error::FocusedWindow);
+    }
+    Ok(win as *mut c_void)
 }
 
 fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
-    unsafe {
-        let mut v: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(element, attr, &mut v);
-        if err != 0 {
-            // Not all windows expose AXFullScreen; treat as unsupported.
-            return Err(Error::AxCode(err));
-        }
-        if v.is_null() {
-            return Ok(None);
-        }
-        let b = CFBooleanGetValue(v);
-        CFRelease(v);
-        Ok(Some(b))
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 {
+        // Not all windows expose AXFullScreen; treat as unsupported.
+        return Err(Error::AxCode(err));
     }
+    if v.is_null() {
+        return Ok(None);
+    }
+    let b = unsafe { CFBooleanGetValue(v) };
+    unsafe { CFRelease(v) };
+    Ok(Some(b))
 }
 
 fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Result<()> {
-    unsafe {
-        let val = if value {
-            kCFBooleanTrue
-        } else {
-            kCFBooleanFalse
-        } as CFTypeRef;
-        let err = AXUIElementSetAttributeValue(element, attr, val);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        Ok(())
+    let val = unsafe { (if value { kCFBooleanTrue } else { kCFBooleanFalse }) as CFTypeRef };
+    let err = unsafe { AXUIElementSetAttributeValue(element, attr, val) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -160,90 +149,77 @@ struct CGSize {
 }
 
 fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
-    unsafe {
-        let mut v: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(element, attr, &mut v);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        if v.is_null() {
-            return Err(Error::Unsupported);
-        }
-        let mut p = CGPoint { x: 0.0, y: 0.0 };
-        let ok = AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void);
-        CFRelease(v);
-        if !ok {
-            return Err(Error::Unsupported);
-        }
-        Ok(p)
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
     }
+    if v.is_null() {
+        return Err(Error::Unsupported);
+    }
+    let mut p = CGPoint { x: 0.0, y: 0.0 };
+    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
+    unsafe { CFRelease(v) };
+    if !ok {
+        return Err(Error::Unsupported);
+    }
+    Ok(p)
 }
 
 fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
-    unsafe {
-        let mut v: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(element, attr, &mut v);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        if v.is_null() {
-            return Err(Error::Unsupported);
-        }
-        let mut s = CGSize {
-            width: 0.0,
-            height: 0.0,
-        };
-        let ok = AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut c_void);
-        CFRelease(v);
-        if !ok {
-            return Err(Error::Unsupported);
-        }
-        Ok(s)
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
     }
+    if v.is_null() {
+        return Err(Error::Unsupported);
+    }
+    let mut s = CGSize { width: 0.0, height: 0.0 };
+    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut c_void) };
+    unsafe { CFRelease(v) };
+    if !ok {
+        return Err(Error::Unsupported);
+    }
+    Ok(s)
 }
 
 fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
-    unsafe {
-        let v = AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void);
-        if v.is_null() {
-            return Err(Error::Unsupported);
-        }
-        let err = AXUIElementSetAttributeValue(element, attr, v);
-        CFRelease(v);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        Ok(())
+    let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
+    if v.is_null() {
+        return Err(Error::Unsupported);
     }
+    let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
+    unsafe { CFRelease(v) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
+    }
+    Ok(())
 }
 
 fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()> {
-    unsafe {
-        let v = AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void);
-        if v.is_null() {
-            return Err(Error::Unsupported);
-        }
-        let err = AXUIElementSetAttributeValue(element, attr, v);
-        CFRelease(v);
-        if err != 0 {
-            return Err(Error::AxCode(err));
-        }
-        Ok(())
+    let v = unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void) };
+    if v.is_null() {
+        return Err(Error::Unsupported);
     }
+    let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
+    unsafe { CFRelease(v) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
+    }
+    Ok(())
 }
 
 fn ax_window_title(element: *mut c_void) -> Option<String> {
-    unsafe {
-        let attr_title = cfstr("AXTitle");
-        let mut v: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(element, attr_title, &mut v);
-        if err != 0 || v.is_null() {
-            return None;
-        }
-        let s = CFString::wrap_under_get_rule(v as CFStringRef).to_string();
-        CFRelease(v);
-        Some(s)
+    let attr_title = cfstr("AXTitle");
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr_title, &mut v) };
+    if err != 0 || v.is_null() {
+        return None;
     }
+    let s = unsafe { CFString::wrap_under_get_rule(v as CFStringRef) }.to_string();
+    unsafe { CFRelease(v) };
+    Some(s)
 }
 
 /// In-memory storage of pre-maximize frames to allow toggling back.
@@ -289,15 +265,11 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
         _ => {
             unsafe { CFRelease(win as CFTypeRef) };
             // Fallback only makes sense for Toggle or “turn on/off” when app supports it via menu.
-            use mac_keycode::{Chord, Key, Modifier};
-            let mut mods = std::collections::HashSet::new();
+            let mut mods = HashSet::new();
             mods.insert(Modifier::Control);
             mods.insert(Modifier::Command);
-            let chord = Chord {
-                key: Key::F,
-                modifiers: mods,
-            };
-            let rk = relaykey::RelayKey::new();
+            let chord = Chord { key: Key::F, modifiers: mods };
+            let rk = RelayKey::new();
             rk.key_down(pid, chord.clone(), false);
             rk.key_up(pid, chord);
             Ok(())
@@ -379,7 +351,6 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 // Compute the visible frame (excluding menu bar and Dock) of the screen
 // containing `p`. Falls back to main screen when not found.
 fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
-    use objc2_app_kit::NSScreen;
     let screens = NSScreen::screens(mtm);
     let mut chosen = None;
     for s in screens.iter() {
