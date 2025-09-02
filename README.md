@@ -14,6 +14,15 @@ A modal hotkey app for macOS.
 - Customizable notifications to display hotkey action outcomes
 - Hotkeys for any app with key relaying and focus matching
 
+Hotki is now an early alpha - it's stable and my daily driver, but I'm not
+cutting binary releases yet. See the [Installation](#installation) section
+below for how to build it. Next steps:
+
+- Window management actions (move, resize, etc)
+- More sophisticated HUD patterns allowing text entry, selection, etc.
+- Tiled window layouts
+- Window groups
+
 
 ## Configuration
 
