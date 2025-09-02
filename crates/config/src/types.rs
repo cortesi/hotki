@@ -94,3 +94,22 @@ pub struct NotifyTheme {
     pub error: NotifyWindowStyle,
     pub success: NotifyWindowStyle,
 }
+
+/// Three-state toggle used for boolean-like actions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Toggle {
+    On,
+    Off,
+    Toggle,
+}
+
+impl Toggle {
+    pub fn apply_to(self, current: bool) -> bool {
+        match self {
+            Toggle::On => true,
+            Toggle::Off => false,
+            Toggle::Toggle => !current,
+        }
+    }
+}

@@ -1,4 +1,4 @@
-use config::Cursor;
+use config::{Cursor, Toggle};
 use serde::{Deserialize, Serialize};
 
 /// IPC-related helpers: channel aliases and message codec.
@@ -53,11 +53,8 @@ pub enum MsgToUI {
     /// Set a specific theme by name
     ThemeSet(String),
 
-    /// Toggle user style configuration (HUD and notifications) on/off
-    UserStyleToggle,
-
-    /// Set user style configuration explicitly: true enables, false disables
-    UserStyle(bool),
+    /// Control user style configuration (HUD and notifications): on/off/toggle
+    UserStyle(Toggle),
 
     /// Streaming log message from the server
     Log {

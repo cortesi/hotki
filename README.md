@@ -170,23 +170,10 @@ Below is a table of all supported key binding actions.
 <tr></tr>
 <tr>
     <td>
-        <pre lang="ron">mute</pre>
+        <pre lang="ron">mute(toggle)</pre>
     </td>
-    <td>Mute system audio</td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">unmute</pre>
-    </td>
-    <td>Unmute system audio</td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">toggle_mute</pre>
-    </td>
-    <td>Toggle mute on/off</td>
+    <td>Enable/disable volume mute explicitly (<code>on</code>
+    enables, <code>off</code> disables, <code>toggle</code> toggles).</td>
 </tr>
 <tr></tr>
 <tr>
@@ -271,18 +258,11 @@ shell(
 <tr></tr>
 <tr>
     <td>
-        <pre lang="ron">user_style_toggle</pre>
+        <pre lang="ron">user_style(toggle)</pre>
     </td>
-    <td>Toggle user style configuration (HUD and notifications) on/off. When
-    off, the underlying theme is revealed.</td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">user_style(true)</pre>
-    </td>
-    <td>Enable/disable user style configuration explicitly (<code>true</code>
-    enables, <code>false</code> disables).</td>
+    <td>Enable/disable user style configuration (<code>on</code> enables,
+    <code>off</code> disables, <code>toggle</code> toggles). When off, the base
+    theme is revealed unmodified.</td>
 </tr>
 </table>
 
@@ -452,4 +432,3 @@ to compile the app bundle using the following script from the repo root:
 
 The bundle will be at `./target/bundle/Hotki.app`, ready to copy to your
 `/Applications` folder.
-

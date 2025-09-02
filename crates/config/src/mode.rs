@@ -1,7 +1,7 @@
 use mac_keycode::Chord;
 use serde::{Deserialize, Serialize};
 
-use crate::raw;
+use crate::{Toggle, raw};
 
 /// Notification kinds for presenting command output in the host UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,16 +152,10 @@ pub enum Action {
     SetVolume(u8),
     /// Change the system volume by a relative amount (-100 to +100)
     ChangeVolume(i8),
-    /// Mute audio
-    Mute,
-    /// Unmute audio
-    Unmute,
-    /// Toggle mute
-    ToggleMute,
-    /// Toggle user style configuration (HUD and notifications) on/off
-    UserStyleToggle,
-    /// Set user style configuration explicitly: true enables, false disables
-    UserStyle(bool),
+    /// Control mute state: on/off/toggle
+    Mute(Toggle),
+    /// Control user style configuration: on/off/toggle
+    UserStyle(Toggle),
 }
 
 impl Action {

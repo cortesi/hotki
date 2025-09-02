@@ -32,7 +32,7 @@
                 ("m", "Max", set_volume(100), (noexit: true)),
                 ("up", "Up 10", change_volume(10), (noexit: true)),
                 ("down", "Down 10", change_volume(-10), (noexit: true)),
-                // ("shift-m", "Toggle Mute", toggle_mute, (noexit: true)),
+                // ("shift-m", "Toggle Mute", mute(toggle), (noexit: true)),
             ])),
             
             ("m", "Media", keys([
@@ -42,7 +42,7 @@
                 ("n", "Next", shell("osascript -e 'tell application \"Spotify\" to next track'")),
                 ("b", "Previous", shell("osascript -e 'tell application \"Spotify\" to previous track'")),
 
-                ("0", "Toggle Mute", toggle_mute, (noexit: true)),
+                ("0", "Toggle Mute", mute(toggle), (noexit: true)),
                 ("5", "50%", set_volume(50), (noexit: true)),
                 ("up", "Up 10", change_volume(10), (noexit: true)),
                 ("down", "Down 10", change_volume(-10), (noexit: true)),
@@ -56,6 +56,7 @@
                 ("i", "Info", shell("echo this is an info window", (ok_notify: info)), (noexit: true)),
                 ("w", "Warning", shell("echo this is a warning window && false"), (noexit: true)),
                 ("e", "Error", shell("echo this is an error window && false", (err_notify: error)), (noexit: true)),
+                ("u", "User Style", user_style(toggle), (noexit: true)),
                 (
                     "m", "Mini", 
                     keys([
@@ -131,7 +132,7 @@ ta                     srand()
                       exit
                     }'  && false
                 ", (err_notify: error)), (noexit: true)),
-                ])
+                ]), (noexit: true)
             ),
 
 

@@ -312,7 +312,8 @@ impl Engine {
                     };
 
                     // Record whether OS repeat events should be acted upon
-                    self.key_tracker.set_repeat_allowed(&identifier, repeat.is_some());
+                    self.key_tracker
+                        .set_repeat_allowed(&identifier, repeat.is_some());
 
                     self.repeater.start(
                         identifier.clone(),
@@ -421,7 +422,9 @@ impl Engine {
         match kind {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
-                    if self.key_tracker.is_down(&ident) && self.key_tracker.is_repeat_allowed(&ident) {
+                    if self.key_tracker.is_down(&ident)
+                        && self.key_tracker.is_repeat_allowed(&ident)
+                    {
                         self.handle_repeat(&ident);
                     }
                     return;

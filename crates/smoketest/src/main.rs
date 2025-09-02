@@ -400,10 +400,7 @@ fn ensure_hud_visible(sock: &str, timeout_ms: u64) -> bool {
                 hotki_protocol::MsgToUI::HudUpdate { cursor, .. } => {
                     let depth = cursor.depth();
                     let visible = cursor.viewing_root || depth > 0;
-                    println!(
-                        "hud: depth={}, viewing_root={}",
-                        depth, cursor.viewing_root
-                    );
+                    println!("hud: depth={}, viewing_root={}", depth, cursor.viewing_root);
                     if visible {
                         seen_hud = true;
                         break;

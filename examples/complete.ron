@@ -36,19 +36,16 @@
             ("v", "Set Volume 50%", set_volume(50)),
             // change_volume: Adjust volume by relative amount (-100 to +100)
             ("V", "Change Volume +10", change_volume(10)),
-            // mute: Mute system audio
-            ("m", "Mute", mute),
-            // unmute: Unmute system audio
-            ("u", "Unmute", unmute),
-            // toggle_mute: Toggle mute state
-            ("shift+M", "Toggle Mute", toggle_mute),
+            // mute: Control mute: on/off/toggle
+            ("m", "Mute", mute(on)),
+            ("u", "Unmute", mute(off)),
+            ("shift+M", "Toggle Mute", mute(toggle)),
             
             // === User UI Control ===
-            // user_style_toggle: Toggle user style configuration (HUD and notifications) on/off
-            ("t", "Toggle User UI", user_style_toggle),
-            // user_style: Set on/off explicitly (true enables, false disables)
-            ("T", "Disable User UI", user_style(false)),
-            ("shift+T", "Enable User UI", user_style(true)),
+            // user_style: Control user style configuration (HUD and notifications): on/off/toggle
+            ("t", "Toggle User UI", user_style(toggle)),
+            ("T", "Disable User UI", user_style(off)),
+            ("shift+T", "Enable User UI", user_style(on)),
             
             // === Mode Navigation ===
             // mode: Enter a nested mode with its own key bindings

@@ -339,13 +339,14 @@ pub fn spawn_key_runtime(
                                 }
                                 egui_ctx.request_repaint();
                             }
-                            Ok(MsgToUI::UserStyleToggle) => {
-                                current_cursor.set_user_style_enabled(!current_cursor.user_ui_disabled);
-                                let _ = tx_keys.send(AppEvent::UpdateCursor(current_cursor.clone()));
-                                egui_ctx.request_repaint();
-                            }
-                            Ok(MsgToUI::UserStyle(val)) => {
-                                current_cursor.set_user_style_enabled(val);
+                            Ok(MsgToUI::UserStyle(arg)) => {
+                                use config::Toggle as Tg;
+                                match arg {
+                                    Tg::On => current_cursor.set_user_style_enabled(true),
+                                    Tg::Off => current_cursor.set_user_style_enabled(false),
+                                    Tg::Toggle => current_cursor
+                                        .set_user_style_enabled(!current_cursor.user_ui_disabled),
+                                }
                                 let _ = tx_keys.send(AppEvent::UpdateCursor(current_cursor.clone()));
                                 egui_ctx.request_repaint();
                             }

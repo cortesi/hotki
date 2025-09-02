@@ -202,34 +202,14 @@ impl State {
                 }
                 Ok(response)
             }
-            Action::Mute => {
-                let script = "set volume output muted true".to_string();
-                let response = KeyResponse::ShellAsync {
-                    command: format!("osascript -e '{}'", script),
-                    ok_notify: NotificationType::Ignore,
-                    err_notify: NotificationType::Warn,
-                    repeat: None,
+            Action::Mute(arg) => {
+                let script = match arg {
+                    config::Toggle::On => "set volume output muted true".to_string(),
+                    config::Toggle::Off => "set volume output muted false".to_string(),
+                    config::Toggle::Toggle => {
+                        "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
+                    }
                 };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::Unmute => {
-                let script = "set volume output muted false".to_string();
-                let response = KeyResponse::ShellAsync {
-                    command: format!("osascript -e '{}'", script),
-                    ok_notify: NotificationType::Ignore,
-                    err_notify: NotificationType::Warn,
-                    repeat: None,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ToggleMute => {
-                let script = "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string();
                 let response = KeyResponse::ShellAsync {
                     command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
                     ok_notify: NotificationType::Ignore,
@@ -241,15 +221,8 @@ impl State {
                 }
                 Ok(response)
             }
-            Action::UserStyleToggle => {
-                let response = KeyResponse::Ui(MsgToUI::UserStyleToggle);
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::UserStyle(val) => {
-                let response = KeyResponse::Ui(MsgToUI::UserStyle(*val));
+            Action::UserStyle(arg) => {
+                let response = KeyResponse::Ui(MsgToUI::UserStyle(*arg));
                 if !attrs.noexit() {
                     self.reset();
                 }

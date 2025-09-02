@@ -31,7 +31,7 @@ pub fn value_to_msg(value: Value) -> Result<MsgToUI, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Focus, NotifyKind};
+    use crate::{Focus, NotifyKind, Toggle};
 
     #[test]
     fn roundtrip_all_msg_variants() {
@@ -55,8 +55,8 @@ mod tests {
             MsgToUI::ThemeNext,
             MsgToUI::ThemePrev,
             MsgToUI::ThemeSet("night".into()),
-            MsgToUI::UserStyleToggle,
-            MsgToUI::UserStyle(true),
+            MsgToUI::UserStyle(Toggle::Toggle),
+            MsgToUI::UserStyle(Toggle::On),
             MsgToUI::Log {
                 level: "info".into(),
                 target: "test".into(),

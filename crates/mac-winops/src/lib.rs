@@ -12,9 +12,9 @@ use std::sync::Mutex;
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
 use core_foundation::string::{CFString, CFStringRef};
-use std::collections::HashMap;
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use tracing::debug;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -403,5 +403,10 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
             .map(|s| s.visibleFrame())
             .unwrap_or_else(|| NSScreen::mainScreen(mtm).unwrap().visibleFrame())
     };
-    (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+    (
+        rect.origin.x,
+        rect.origin.y,
+        rect.size.width,
+        rect.size.height,
+    )
 }
