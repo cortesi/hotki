@@ -1,0 +1,14 @@
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+authors = ["Aldo Cortesi <aldo@corte.si>"]
+description = "Global hotkey manager"
+license = "MIT"
+repository = "https://github.com/cortesi/hotkey-manager"
+keywords = ["shortcuts", "shortcut", "hotkey"]
+
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["crates/hotki-keys"]

@@ -1,0 +1,20 @@
+[package]
+name = "mac-keycode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[build-dependencies]
+anyhow = "*"
+proc-macro2 = "*"
+quote = "*"
+syn = { version = "*", features = ["full"] }

@@ -1,0 +1,25 @@
+[package]
+name = "mac-hotkey"
+version = "0.1.0"
+edition = "2024"
+description = "macOS-only global hotkey manager with repeat support"
+license = "MIT"
+authors = ["Aldo Cortesi <aldo@corte.si>"]
+
+[lib]
+name = "mac_hotkey"
+path = "src/lib.rs"
+
+[dependencies]
+mac-keycode = { path = "../mac-keycode" }
+bitflags = "2"
+crossbeam-channel = "0.5"
+thiserror = "2"
+tracing = "0.1.41"
+eventtag = { path = "../eventtag" }
+core-foundation = "0.10.1"
+permissions = { path = "../permissions" }
+core-graphics = "0.25.0"
+
+[dev-dependencies]
+proptest = "1"

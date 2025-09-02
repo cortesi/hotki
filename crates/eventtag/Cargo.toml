@@ -1,0 +1,12 @@
+[package]
+name = "eventtag"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared event tagging utilities for hotki"
+
+[lib]
+name = "eventtag"
+path = "src/lib.rs"
+

@@ -1,0 +1,6 @@
+/target
+tmp
+.postgres
+.DS_Store
+AGENTS.md
+CLAUDE.md

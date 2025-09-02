@@ -1,0 +1,16 @@
+[package]
+name = "log-forward"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Tracing layer that forwards logs to UI via hotki protocol"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[dependencies]
+hotki-protocol = { path = "../hotki-protocol" }
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+

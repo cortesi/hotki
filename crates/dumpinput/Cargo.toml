@@ -1,0 +1,13 @@
+[package]
+name = "dumpinput"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dumpinput"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.32.1"
+egui = "0.32.1"

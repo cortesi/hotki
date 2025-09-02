@@ -1,0 +1,167 @@
+(
+    keys: [
+        ("shift+cmd+0", "activate", keys([
+            ("h", "Hotki", keys([
+                ("c", "Clear Notifications", clear_notifications),
+                ("d", "Details", toggle_details),
+                ("r", "Reload Config", reload_config),
+                ("o", "Show Root Keys", show_hud_root),
+            ])),
+
+            ("c", "Key Capture", keys([
+                ("a", "Hi", shell("echo hi", (ok_notify: success))),
+            ]), (capture: true)),
+
+            ("s", "Shell", keys([
+                ("e", "Simple echo", shell("echo hi", (ok_notify: success))),
+                ("s", "Sleep 5s", shell("sleep 5; echo slept 5s", (ok_notify: success))),
+                // Shell repeat examples (repeat settings live in binding attrs)
+                ("r", "Repeat Shell Default", shell("echo tick"), (noexit: true)),
+                ("R", "Repeat Shell Custom", shell("echo tick"), (noexit: true, repeat_delay: 250, repeat_interval: 350)),
+            ])),
+
+            ("r", "Relay", keys([
+                ("a", "Send X", relay("shift+x"), (noexit: true)),
+                // Relay repeat examples (attrs apply to relay too)
+                ("b", "Repeat Relay Custom", relay("shift+x"), (noexit: true, repeat: true, repeat_delay: 200, repeat_interval: 300)),
+            ])),
+            
+            ("v", "Volume", keys([
+                ("0", "Mute", set_volume(0), (noexit: true)),
+                ("5", "50%", set_volume(50), (noexit: true)),
+                ("m", "Max", set_volume(100), (noexit: true)),
+                ("up", "Up 10", change_volume(10), (noexit: true)),
+                ("down", "Down 10", change_volume(-10), (noexit: true)),
+                // ("shift-m", "Toggle Mute", toggle_mute, (noexit: true)),
+            ])),
+            
+            ("m", "Media", keys([
+                // For media playback, use shell commands specific to your apps
+                // Examples for Spotify:
+                ("space", "Play/Pause", shell("osascript -e 'tell application \"Spotify\" to playpause'")),
+                ("n", "Next", shell("osascript -e 'tell application \"Spotify\" to next track'")),
+                ("b", "Previous", shell("osascript -e 'tell application \"Spotify\" to previous track'")),
+
+                ("0", "Toggle Mute", toggle_mute, (noexit: true)),
+                ("5", "50%", set_volume(50), (noexit: true)),
+                ("up", "Up 10", change_volume(10), (noexit: true)),
+                ("down", "Down 10", change_volume(-10), (noexit: true)),
+            ])),
+
+
+            ("t", "Theme tester", keys([
+                ("h", "Theme Prev", theme_prev, (noexit: true)),
+                ("l", "Theme Next", theme_next, (noexit: true)),
+                ("s", "Success", shell("echo this is a success window", (ok_notify: success)), (noexit: true)),
+                ("i", "Info", shell("echo this is an info window", (ok_notify: info)), (noexit: true)),
+                ("w", "Warning", shell("echo this is a warning window && false"), (noexit: true)),
+                ("e", "Error", shell("echo this is an error window && false", (err_notify: error)), (noexit: true)),
+                (
+                    "m", "Mini", 
+                    keys([
+                        ("h", "Theme Prev", theme_prev, (noexit: true)),
+                        ("l", "Theme Next", theme_next, (noexit: true)),
+                    ]),
+                    (style: (hud: (mode: mini)))
+                ),
+                ("shift+l", "Long Submode", keys([
+                    ("a", "Inner Action A", shell("echo here")),
+                    ("b", "Inner Action B", shell("echo here")),
+                    ("c", "Inner Action C", shell("echo here")),
+                    ("d", "Inner Action D", shell("echo here")),
+                    ("e", "Inner Action E", shell("echo here")),
+                    ("f", "Inner Action F", shell("echo here")),
+                    ("g", "Inner Action G", shell("echo here")),
+                    ("h", "Inner Action H", shell("echo here")),
+                    ("ctrl+cmd+j", "Inner Mode with a very long title", keys([
+                        ("i", "Inner Mode", shell("echo Inner Mode")),
+                        ("r", "Return to Main Menu", pop)
+                    ])),
+                    ("ctrl+cmd+i", "Inner Action with a very long title", shell("echo here")),
+                ])),
+                ("shift+s", "Long Success", shell("
+                    awk -v F=%c '
+                    BEGIN{
+                      srand()
+                      for(i=10;i--;){
+                        for(j=int(rand()*10)+1;j--;){
+                          for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
+                          printf j?OFS:ORS
+                        }
+                      }
+                      exit
+                    }'  
+                ", (ok_notify: success)), (noexit: true)),
+                ("shift+i", "Long Info", shell("
+                    awk -v F=%c '
+                    BEGIN{
+ta                     srand()
+                      for(i=10;i--;){
+                        for(j=int(rand()*10)+1;j--;){
+                          for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
+                          printf j?OFS:ORS
+                        }
+                      }
+                      exit
+                    }'  
+                "), (noexit: true)),
+                ("shift+w", "Long Warning", shell("
+                    awk -v F=%c '
+                    BEGIN{
+                      srand()
+                      for(i=10;i--;){
+                        for(j=int(rand()*10)+1;j--;){
+                          for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
+                          printf j?OFS:ORS
+                        }
+                      }
+                      exit
+                    }'  && false
+                "), (noexit: true)),
+                ("shift+e", "Long Error", shell("
+                    awk -v F=%c '
+                    BEGIN{
+                      srand()
+                      for(i=10;i--;){
+                        for(j=int(rand()*10)+1;j--;){
+                          for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
+                          printf j?OFS:ORS
+                        }
+                      }
+                      exit
+                    }'  && false
+                ", (err_notify: error)), (noexit: true)),
+                ])
+            ),
+
+
+            ("u", "Subtheme", keys([
+                    (
+                        "u", "Sub Subtheme",
+                        keys([
+                            ("h", "Theme Prev", theme_prev, (noexit: true)),
+                            ("l", "Theme Next", theme_next, (noexit: true)),
+                        ]),
+                        (style: (hud: (bg: "#ff0000")))
+                    )
+                ]),
+                (style: (hud: (pos: nw))),
+            ),
+
+            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
+        ])),
+        ("shift+cmd+9", "activate", keys([
+            ("a", "Inner Action A", shell("echo here")),
+            ("b", "Inner Action B", shell("echo here")),
+            ("c", "Inner Action C", shell("echo here")),
+            ("d", "Inner Action D", shell("echo here")),
+            ("e", "Inner Action E", shell("echo here")),
+            ("f", "Inner Action F", shell("echo here")),
+            ("g", "Inner Action G", shell("echo here")),
+            ("h", "Inner Action H", shell("echo here")),
+            ("ctrl+cmd+i", "Inner Action I", shell("echo here")),
+            ("shift+cmd+9", "exit", exit, (global: true, hide: true)),
+        ])),
+        ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
+    ]
+)

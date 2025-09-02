@@ -1,0 +1,17 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Unified configuration types for hotki (modes, UI theme, parsing)"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+ron = "0.11.0"
+colornames = "0.0.6"
+mac-keycode = { path = "../mac-keycode" }
+thiserror = "2.0.16"
+regex = "1"

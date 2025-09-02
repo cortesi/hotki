@@ -1,0 +1,9 @@
+[package]
+name = "permissions"
+version = "0.1.0"
+edition = "2024"
+description = "macOS permission checks for Accessibility and Input Monitoring"
+license = "MIT"
+
+[dependencies]
+

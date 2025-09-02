@@ -1,0 +1,21 @@
+[package]
+name = "relaykey"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[features]
+test-utils = []
+
+[dependencies]
+mac-keycode = { path = "../mac-keycode" }
+eventtag = { path = "../eventtag" }
+
+thiserror = "2.0.16"
+tracing = "0.1.41"
+libc = "0.2.175"
+core-graphics = { version = "0.25.0", features = ["elcapitan"] }

@@ -1,0 +1,62 @@
+// Solarized Light theme for Hotki
+// Based on Ethan Schoonover's Solarized color scheme
+(
+    hud: (
+            radius: 8.0,
+            pos: center,
+            offset: (x: 0.0, y: 0.0),
+            font_size: 14.0,
+            title_font_weight: regular,
+            key_font_size: 19.0,
+            tag_font_size: 20.0,
+            tag_font_weight: regular,
+            
+            // Solarized Light colors
+            // Base colors: base3 (bg), base00 (main text), base1 (emphasized bg)
+            // Accent colors: yellow, orange, red, magenta, violet, blue, cyan, green
+            title_fg: "#586e75",  // base01 - emphasized content (darker for readability)
+            bg: "#fdf6e3",        // base3 - lightest background
+            key_radius: 4.0,
+            key_fg: "#fdf6e3",    // base3 - light text for contrast
+            key_bg: "#6c71c4",    // violet - prominent accent for active keys
+            key_font_weight: bold,
+            mod_fg: "#073642",    // base02 - high contrast for modifiers
+            mod_font_weight: regular,
+            mod_bg: "#b58900",    // yellow - distinct modifier highlight
+            tag_fg: "#2aa198",    // cyan - for tags
+            opacity: 0.95,
+    ),
+
+    notify: (
+            width: 420.0,
+            pos: r,
+            opacity: 0.9,
+            timeout: 4.0,
+            buffer: 200,
+            
+            info: (
+                bg: "#eee8d5",    // base2 - slightly darker than main bg
+                title_fg: "#586e75",    // base01 - emphasized content
+                title_font_weight: bold,
+                body_fg: "#657b83",    // base00 - primary content
+            ),
+            warn: (
+                bg: "#eee8d5",    // base2
+                title_fg: "#cb4b16",    // orange - more distinct than yellow
+                title_font_weight: bold,
+                body_fg: "#b58900",    // yellow - warning body
+            ),
+            error: (
+                bg: "#eee8d5",    // base2
+                title_fg: "#dc322f",    // red
+                title_font_weight: bold,
+                body_fg: "#dc322f",    // red
+            ),
+            success: (
+                bg: "#eee8d5",    // base2
+                title_fg: "#859900",    // green
+                title_font_weight: bold,
+                body_fg: "#859900",    // green
+            ),
+    ),
+)
