@@ -137,7 +137,7 @@ through the HUD.
 
 ### Actions
 
-Below is a table of all supported key binding actions.
+Below is a table of all supported key binding actions. 
 
 <table>
 <tr>
@@ -294,6 +294,9 @@ Per-binding attributes are specified as the optional 4th element of a key tuple:
 <pre lang="ron">(
     "k", "Description", action_here, (modifier1: value, modifier2: value)
 )</pre>
+
+Attributes apply to the mode they are defined on, and all nested keys and modes
+below them.
 
 <table>
 <tr>

@@ -1,7 +1,7 @@
 use hotki_protocol::MsgToUI;
 use mac_keycode::Chord;
 
-use crate::{Action, KeysAttrs, NotificationType, media};
+use crate::{Action, KeysAttrs, NotificationType};
 
 /// Result of handling a key press
 #[derive(Debug)]
@@ -167,7 +167,7 @@ impl State {
                 Ok(KeyResponse::Ok)
             }
             Action::SetVolume(level) => {
-                let script = media::set_volume(*level);
+                let script = format!("set volume output volume {}", (*level).min(100));
                 let response = KeyResponse::ShellAsync {
                     command: format!("osascript -e '{}'", script),
                     ok_notify: NotificationType::Ignore,
@@ -180,7 +180,10 @@ impl State {
                 Ok(response)
             }
             Action::ChangeVolume(delta) => {
-                let script = media::change_volume(*delta);
+                let script = format!(
+                    "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
+                    delta
+                );
                 let mut repeat = None;
                 if attrs.noexit() && attrs.repeat_effective() {
                     repeat = Some(ShellRepeatConfig {
@@ -200,7 +203,7 @@ impl State {
                 Ok(response)
             }
             Action::Mute => {
-                let script = media::mute();
+                let script = "set volume output muted true".to_string();
                 let response = KeyResponse::ShellAsync {
                     command: format!("osascript -e '{}'", script),
                     ok_notify: NotificationType::Ignore,
@@ -213,7 +216,7 @@ impl State {
                 Ok(response)
             }
             Action::Unmute => {
-                let script = media::unmute();
+                let script = "set volume output muted false".to_string();
                 let response = KeyResponse::ShellAsync {
                     command: format!("osascript -e '{}'", script),
                     ok_notify: NotificationType::Ignore,
@@ -226,7 +229,7 @@ impl State {
                 Ok(response)
             }
             Action::ToggleMute => {
-                let script = media::toggle_mute();
+                let script = "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string();
                 let response = KeyResponse::ShellAsync {
                     command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
                     ok_notify: NotificationType::Ignore,

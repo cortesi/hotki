@@ -659,8 +659,8 @@ fn count_volume(ms: u64) -> usize {
     // Reset to zero for testing
     let _ = set_volume_abs(0);
 
-    // Build change_volume(1) command
-    let script = keymode::media::change_volume(1);
+    // Build change_volume(1) command inline
+    let script = "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + 1)";
     let cmd = format!("osascript -e '{}'", script.replace('\n', "' -e '"));
 
     // Orchestrator for repeating shell
