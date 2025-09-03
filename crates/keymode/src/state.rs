@@ -28,6 +28,11 @@ pub enum KeyResponse {
         /// Optional software repeat configuration (only populated when attrs.noexit() && repeat)
         repeat: Option<ShellRepeatConfig>,
     },
+    /// Fullscreen operation request handled in the engine/backend
+    Fullscreen {
+        desired: config::Toggle,
+        kind: config::FullscreenKind,
+    },
 }
 
 /// Optional repeat configuration for shell actions
@@ -64,6 +69,19 @@ impl State {
         entered_index: Option<usize>,
     ) -> Result<KeyResponse, String> {
         match action {
+            Action::Fullscreen(spec) => {
+                let (toggle, kind) = match spec {
+                    config::FullscreenSpec::One(t) => (t, config::FullscreenKind::Nonnative),
+                    config::FullscreenSpec::Two(t, k) => (t, *k),
+                };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(KeyResponse::Fullscreen {
+                    desired: *toggle,
+                    kind,
+                })
+            }
             Action::Keys(new_mode) => {
                 let _ = new_mode; // contents live in Config; we just advance cursor
                 if let Some(i) = entered_index {

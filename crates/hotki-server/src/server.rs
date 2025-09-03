@@ -272,6 +272,8 @@ impl Server {
                     if let Err(e) = mac_focus_watcher::install_ns_workspace_observer() {
                         error!("Failed to install NSWorkspace observer: {}", e);
                     }
+                    // Run any queued main-thread operations (e.g., non-native fullscreen)
+                    mac_winops::drain_main_ops();
                     // User events indicate client activity - reset disconnect timer if set
                     if client_disconnected.load(Ordering::SeqCst) {
                         client_disconnected.store(false, Ordering::SeqCst);

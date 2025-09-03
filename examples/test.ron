@@ -34,6 +34,13 @@
                 ("down", "Down 10", change_volume(-10), (noexit: true)),
                 // ("shift-m", "Toggle Mute", mute(toggle), (noexit: true)),
             ])),
+
+
+            ("w", "Window Operations", keys([
+                ("f", "Fullcreen", fullscreen(toggle), (noexit: true)),
+                ("n", "Fullcreen Native", fullscreen(toggle, native), (noexit: true)),
+            ])),
+
             
             ("m", "Media", keys([
                 // For media playback, use shell commands specific to your apps

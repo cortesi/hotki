@@ -202,6 +202,29 @@ shell(
 <tr></tr>
 <tr>
     <td>
+        <pre lang="ron">
+fullscreen(toggle)
+fullscreen(on, native)
+fullscreen(off, nonnative)
+        </pre>
+    </td>
+    <td>
+        Toggle or set fullscreen on the focused window.
+        <br/>
+         <code>native</code>: Uses the app's native macOS Full Screen state
+          (AXFullScreen); if unsupported, Hotki falls back to sending the
+          standard <code>Ctrl+Cmd+F</code> shortcut.<br/>
+        <br/>
+         <code>nonnative</code> (default): Maximizes the window to the current
+          screen's <em>visibleFrame</em> (does not create a new Space). Toggle
+          stores the prior frame per window and restores it on the next
+          toggle/off.
+        <br/>
+    </td>
+</tr>
+<tr></tr>
+<tr>
+    <td>
         <pre lang="ron">keys([ /* ... */ ])</pre>
     </td>
     <td>Enter a nested keys section (sub‑mode)</td>
@@ -225,7 +248,9 @@ shell(
     <td>
         <pre lang="ron">show_details(toggle)</pre>
     </td>
-    <td>Control the details window visibility. Use <code>show_details(on)</code> to show, <code>show_details(off)</code> to hide, or <code>show_details(toggle)</code> to toggle.</td>
+    <td>Control the details window visibility. Use
+    <code>show_details(on)</code> to show, <code>show_details(off)</code> to
+    hide, or <code>show_details(toggle)</code> to toggle.</td>
 </tr>
 <tr></tr>
 <tr>

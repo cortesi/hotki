@@ -32,6 +32,7 @@ pub enum AppEvent {
     ReloadUI(Box<Config>),
     /// Update the current UI Location (used for theme/user-style flags now stored on Location)
     UpdateCursor(config::Cursor),
+    // (no backend operations here)
 }
 
 pub struct HotkiApp {

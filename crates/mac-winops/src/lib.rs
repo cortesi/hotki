@@ -6,8 +6,8 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::collections::{HashMap, HashSet};
-use std::ffi::{c_char, c_void, CString};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::{CString, c_char, c_void};
 use std::sync::Mutex;
 
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
@@ -129,7 +129,13 @@ fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
 }
 
 fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Result<()> {
-    let val = unsafe { (if value { kCFBooleanTrue } else { kCFBooleanFalse }) as CFTypeRef };
+    let val = unsafe {
+        (if value {
+            kCFBooleanTrue
+        } else {
+            kCFBooleanFalse
+        }) as CFTypeRef
+    };
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, val) };
     if err != 0 {
         return Err(Error::AxCode(err));
@@ -158,7 +164,8 @@ fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
         return Err(Error::Unsupported);
     }
     let mut p = CGPoint { x: 0.0, y: 0.0 };
-    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
+    let ok =
+        unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
     unsafe { CFRelease(v) };
     if !ok {
         return Err(Error::Unsupported);
@@ -175,7 +182,10 @@ fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     if v.is_null() {
         return Err(Error::Unsupported);
     }
-    let mut s = CGSize { width: 0.0, height: 0.0 };
+    let mut s = CGSize {
+        width: 0.0,
+        height: 0.0,
+    };
     let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut c_void) };
     unsafe { CFRelease(v) };
     if !ok {
@@ -268,7 +278,10 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
             let mut mods = HashSet::new();
             mods.insert(Modifier::Control);
             mods.insert(Modifier::Command);
-            let chord = Chord { key: Key::F, modifiers: mods };
+            let chord = Chord {
+                key: Key::F,
+                modifiers: mods,
+            };
             let rk = RelayKey::new();
             rk.key_down(pid, chord.clone(), false);
             rk.key_up(pid, chord);
@@ -380,4 +393,40 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
         rect.size.width,
         rect.size.height,
     )
+}
+
+/// Queue of operations that must run on the AppKit main thread.
+enum MainOp {
+    FullscreenNonNative { pid: i32, desired: Desired },
+}
+
+static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+/// Schedule a non‑native fullscreen operation to be executed on the main thread and
+/// wake the Tao event loop via mac-focus-watcher.
+pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::FullscreenNonNative { pid, desired }))
+        .is_err()
+    {
+        return Err(Error::Unsupported);
+    }
+    // Wake the Tao main loop to handle user event and drain ops
+    let _ = mac_focus_watcher::wake_main_loop();
+    Ok(())
+}
+
+/// Drain and execute any pending main-thread operations. Must be called from the Tao main thread
+/// (e.g., inside the Event::UserEvent handler in hotki-server).
+pub fn drain_main_ops() {
+    loop {
+        let op_opt = MAIN_OPS.lock().ok().and_then(|mut q| q.pop_front());
+        let Some(op) = op_opt else { break };
+        match op {
+            MainOp::FullscreenNonNative { pid, desired } => {
+                let _ = fullscreen_nonnative(pid, desired);
+            }
+        }
+    }
 }

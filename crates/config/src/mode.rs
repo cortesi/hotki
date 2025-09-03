@@ -156,6 +156,12 @@ pub enum Action {
     Mute(Toggle),
     /// Control user style configuration: on/off/toggle
     UserStyle(Toggle),
+    /// Control fullscreen: on/off/toggle with optional kind (native|nonnative)
+    /// Syntax examples:
+    /// - fullscreen(toggle)            // defaults to nonnative
+    /// - fullscreen(on, native)
+    /// - fullscreen(off, nonnative)
+    Fullscreen(FullscreenSpec),
 }
 
 impl Action {
@@ -163,6 +169,20 @@ impl Action {
     pub fn shell(cmd: impl Into<String>) -> Self {
         Action::Shell(ShellSpec::Cmd(cmd.into()))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FullscreenKind {
+    Native,
+    Nonnative,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FullscreenSpec {
+    One(Toggle),
+    Two(Toggle, FullscreenKind),
 }
 
 /// Optional modifiers applied to Shell actions
@@ -352,5 +372,38 @@ mod mode_err_tests {
         let pretty = err.pretty();
         assert!(pretty.contains("parse error"));
         assert!(pretty.contains("^"));
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_parse_tests {
+    use super::*;
+
+    fn parse_keys(s: &str) -> Keys {
+        Keys::from_ron(s).expect("parse")
+    }
+
+    #[test]
+    fn parse_fullscreen_default_nonnative() {
+        let k = parse_keys("[(\"f\", \"FS\", fullscreen(toggle))]");
+        match &k.keys[0].2 {
+            Action::Fullscreen(FullscreenSpec::One(Toggle::Toggle)) => {}
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_fullscreen_with_kind() {
+        let k = parse_keys("[(\"f\", \"FS\", fullscreen(on, native))]");
+        match &k.keys[0].2 {
+            Action::Fullscreen(FullscreenSpec::Two(Toggle::On, FullscreenKind::Native)) => {}
+            other => panic!("unexpected: {:?}", other),
+        }
+
+        let k2 = parse_keys("[(\"f\", \"FS\", fullscreen(off, nonnative))]");
+        match &k2.keys[0].2 {
+            Action::Fullscreen(FullscreenSpec::Two(Toggle::Off, FullscreenKind::Nonnative)) => {}
+            other => panic!("unexpected: {:?}", other),
+        }
     }
 }

@@ -330,6 +330,25 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::Fullscreen { desired, kind }) => {
+                // Map Toggle -> mac_winops::Desired
+                let d = match desired {
+                    config::Toggle::On => mac_winops::Desired::On,
+                    config::Toggle::Off => mac_winops::Desired::Off,
+                    config::Toggle::Toggle => mac_winops::Desired::Toggle,
+                };
+                let pid = self.focus_handler.get_pid();
+                let res = match kind {
+                    config::FullscreenKind::Native => mac_winops::fullscreen_native(pid, d),
+                    config::FullscreenKind::Nonnative => {
+                        mac_winops::request_fullscreen_nonnative(pid, d)
+                    }
+                };
+                if let Err(e) = res {
+                    let _ = self.notifier.send_error("Fullscreen", format!("{}", e));
+                }
+                Ok(())
+            }
             Ok(resp) => {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured

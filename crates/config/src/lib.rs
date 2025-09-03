@@ -12,7 +12,10 @@ mod types;
 
 pub use error::Error;
 pub use loader::{load_from_path, load_from_str};
-pub use mode::{Action, Keys, KeysAttrs, NotificationType, ShellModifiers, ShellSpec};
+pub use mode::{
+    Action, FullscreenKind, FullscreenSpec, Keys, KeysAttrs, NotificationType, ShellModifiers,
+    ShellSpec,
+};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, Toggle};
 
 use raw::RawConfig;

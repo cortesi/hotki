@@ -64,6 +64,10 @@ impl NotificationDispatcher {
                 // Relay is handled elsewhere (event handler / repeater).
                 Ok(())
             }
+            KeyResponse::Fullscreen { .. } => {
+                // Engine handles fullscreen directly; no UI message.
+                Ok(())
+            }
         }
     }
 
