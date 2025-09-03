@@ -68,6 +68,10 @@ impl NotificationDispatcher {
                 // Engine handles fullscreen directly; no UI message.
                 Ok(())
             }
+            KeyResponse::Place { .. } => {
+                // Engine handles placement directly; no UI message.
+                Ok(())
+            }
         }
     }
 

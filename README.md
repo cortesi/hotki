@@ -225,6 +225,23 @@ fullscreen(off, nonnative)
 <tr></tr>
 <tr>
     <td>
+        <pre lang="ron">
+place(grid(3, 1), at(0, 0))
+place(grid(2, 2), at(1, 0))
+        </pre>
+    </td>
+    <td>
+        Place the focused window into a grid cell on the current screen.
+        <ul>
+          <li><code>grid(x, y)</code> divides the screen into <em>x</em> columns and <em>y</em> rows. Both must be <code>&gt; 0</code>.</li>
+          <li><code>at(ix, iy)</code> selects a zero‑based cell within that grid. The origin <code>(0, 0)</code> is <strong>top‑left</strong>.</li>
+        </ul>
+        Example: <code>place(grid(3, 1), at(0, 0))</code> places the window in the left‑most third of the screen.
+    </td>
+</tr>
+<tr></tr>
+<tr>
+    <td>
         <pre lang="ron">keys([ /* ... */ ])</pre>
     </td>
     <td>Enter a nested keys section (sub‑mode)</td>

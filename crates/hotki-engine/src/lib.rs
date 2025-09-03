@@ -349,6 +349,18 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::Place {
+                cols,
+                rows,
+                col,
+                row,
+            }) => {
+                let pid = self.focus_handler.get_pid();
+                if let Err(e) = mac_winops::request_place_grid(pid, cols, rows, col, row) {
+                    let _ = self.notifier.send_error("Place", format!("{}", e));
+                }
+                Ok(())
+            }
             Ok(resp) => {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured

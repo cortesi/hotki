@@ -465,7 +465,17 @@ pub fn screen_size(pid: i32) -> Result<(f64, f64)> {
 
 /// Queue of operations that must run on the AppKit main thread.
 enum MainOp {
-    FullscreenNonNative { pid: i32, desired: Desired },
+    FullscreenNonNative {
+        pid: i32,
+        desired: Desired,
+    },
+    PlaceGrid {
+        pid: i32,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+    },
 }
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -485,6 +495,32 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     Ok(())
 }
 
+/// Schedule a window placement operation to snap the focused window into a
+/// grid cell on the current screen's visible frame. Runs on the AppKit main
+/// thread and wakes the Tao event loop via mac-focus-watcher.
+pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(Error::Unsupported);
+    }
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| {
+            q.push_back(MainOp::PlaceGrid {
+                pid,
+                cols,
+                rows,
+                col,
+                row,
+            })
+        })
+        .is_err()
+    {
+        return Err(Error::Unsupported);
+    }
+    let _ = mac_focus_watcher::wake_main_loop();
+    Ok(())
+}
+
 /// Drain and execute any pending main-thread operations. Must be called from the Tao main thread
 /// (e.g., inside the Event::UserEvent handler in hotki-server).
 pub fn drain_main_ops() {
@@ -495,6 +531,80 @@ pub fn drain_main_ops() {
             MainOp::FullscreenNonNative { pid, desired } => {
                 let _ = fullscreen_nonnative(pid, desired);
             }
+            MainOp::PlaceGrid {
+                pid,
+                cols,
+                rows,
+                col,
+                row,
+            } => {
+                let _ = place_grid(pid, cols, rows, col, row);
+            }
         }
     }
+}
+
+/// Compute the visible frame for the screen containing the focused window and
+/// place the window into the specified grid cell (top-left is (0,0)).
+fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    ax_check()?;
+    // For visibleFrame we need AppKit; require main thread.
+    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    let win = focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+
+    // Read current frame to find screen containing the window's point
+    let cur_p = ax_get_point(win, attr_pos)?;
+    let vf = visible_frame_containing_point(mtm, cur_p);
+    let vf_x = vf.0;
+    let vf_y = vf.1;
+    let vf_w = vf.2.max(1.0);
+    let vf_h = vf.3.max(1.0);
+
+    // Compute base tile sizes and remainders so last column/row absorb leftover pixels
+    let c = cols.max(1) as f64;
+    let r = rows.max(1) as f64;
+    let tile_w = (vf_w / c).floor().max(1.0);
+    let tile_h = (vf_h / r).floor().max(1.0);
+    let rem_w = vf_w - tile_w * (cols as f64);
+    let rem_h = vf_h - tile_h * (rows as f64);
+
+    // Bounds clamp defensively; config/keymode should already validate
+    let col = col.min(cols.saturating_sub(1));
+    let row = row.min(rows.saturating_sub(1));
+
+    // X/width
+    let x = vf_x + tile_w * (col as f64);
+    let w = if col == cols.saturating_sub(1) {
+        tile_w + rem_w
+    } else {
+        tile_w
+    };
+
+    // Y/height: top-left is (0,0), macOS origin is bottom-left; bottom row gets remainder
+    let y = if row == rows.saturating_sub(1) {
+        vf_y
+    } else {
+        vf_y + rem_h + tile_h * ((rows - 1 - row) as f64)
+    };
+    let h = if row == rows.saturating_sub(1) {
+        tile_h + rem_h
+    } else {
+        tile_h
+    };
+
+    // Set position first, then size to avoid initial height clamping by AppKit
+    ax_set_point(win, attr_pos, CGPoint { x, y })?;
+    ax_set_size(
+        win,
+        attr_size,
+        CGSize {
+            width: w,
+            height: h,
+        },
+    )?;
+
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok(())
 }

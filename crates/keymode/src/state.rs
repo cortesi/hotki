@@ -28,6 +28,13 @@ pub enum KeyResponse {
         /// Optional software repeat configuration (only populated when attrs.noexit() && repeat)
         repeat: Option<ShellRepeatConfig>,
     },
+    /// Place window into a grid cell on the current screen
+    Place {
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+    },
     /// Fullscreen operation request handled in the engine/backend
     Fullscreen {
         desired: config::Toggle,
@@ -69,6 +76,35 @@ impl State {
         entered_index: Option<usize>,
     ) -> Result<KeyResponse, String> {
         match action {
+            Action::Place(grid, at) => {
+                let (gx, gy) = match grid {
+                    config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
+                };
+                let (ix, iy) = match at {
+                    config::AtSpec::At(config::At(x, y)) => (*x, *y),
+                };
+                if ix >= gx || iy >= gy {
+                    return Err(format!(
+                        "place(): at() out of range: got ({}, {}) for grid ({} x {})\n  Valid x: 0..{}  |  Valid y: 0..{}",
+                        ix,
+                        iy,
+                        gx,
+                        gy,
+                        gx.saturating_sub(1),
+                        gy.saturating_sub(1)
+                    ));
+                }
+                let resp = KeyResponse::Place {
+                    cols: gx,
+                    rows: gy,
+                    col: ix,
+                    row: iy,
+                };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(resp)
+            }
             Action::Fullscreen(spec) => {
                 let (toggle, kind) = match spec {
                     config::FullscreenSpec::One(t) => (t, config::FullscreenKind::Nonnative),

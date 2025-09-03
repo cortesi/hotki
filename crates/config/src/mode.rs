@@ -162,6 +162,15 @@ pub enum Action {
     /// - fullscreen(on, native)
     /// - fullscreen(off, nonnative)
     Fullscreen(FullscreenSpec),
+    /// Place the focused window into a grid cell on the current screen.
+    ///
+    /// Syntax:
+    /// - place(grid(x, y), at(ix, iy))
+    ///
+    /// Constraints:
+    /// - grid divisions x and y must be > 0
+    /// - coordinates ix and iy are zero-based and must be within the grid
+    Place(GridSpec, AtSpec),
 }
 
 impl Action {
@@ -183,6 +192,46 @@ pub enum FullscreenKind {
 pub enum FullscreenSpec {
     One(Toggle),
     Two(Toggle, FullscreenKind),
+}
+
+// === Place action types ===
+
+/// Grid divisions for the placement action. Zero is not allowed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Grid(pub u32, pub u32);
+
+/// Zero-based coordinates within a grid for the placement action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct At(pub u32, pub u32);
+
+/// Wrapper for `grid(x, y)`; named as an enum so RON supports `grid(…)` syntax.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridSpec {
+    Grid(Grid),
+}
+
+/// Wrapper for `at(ix, iy)`; named as an enum so RON supports `at(…)` syntax.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtSpec {
+    At(At),
+}
+
+impl<'de> Deserialize<'de> for Grid {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let (x, y) = <(u32, u32)>::deserialize(deserializer)?;
+        if x == 0 || y == 0 {
+            return Err(serde::de::Error::custom(format!(
+                "grid() divisions must be > 0; got (x={}, y={})",
+                x, y
+            )));
+        }
+        Ok(Grid(x, y))
+    }
 }
 
 /// Optional modifiers applied to Shell actions
@@ -406,4 +455,58 @@ mod fullscreen_parse_tests {
             other => panic!("unexpected: {:?}", other),
         }
     }
+}
+
+#[cfg(test)]
+mod place_parse_tests {
+    use super::*;
+
+    fn parse_keys(s: &str) -> Keys {
+        Keys::from_ron(s).expect("parse")
+    }
+
+    #[test]
+    fn parse_place_ok() {
+        let k = parse_keys("[(\"g\", \"Left third\", place(grid(3, 1), at(0, 0)))]");
+        match &k.keys[0].2 {
+            Action::Place(GridSpec::Grid(Grid(gx, gy)), AtSpec::At(At(x, y))) => {
+                assert_eq!((*gx, *gy, *x, *y), (3, 1, 0, 0));
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    // Parsing Actions standalone is not how user configs are fed; keep coverage via Keys.
+
+    // No additional test here; Action parsing is covered via Keys parsing above.
+
+    #[test]
+    fn parse_fullscreen_action_only() {
+        let a: Action = ron::from_str("fullscreen(toggle)").expect("action parse");
+        match a {
+            Action::Fullscreen(FullscreenSpec::One(Toggle::Toggle)) => {}
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_grid_spec_zero_should_error() {
+        let res: Result<GridSpec, _> = ron::from_str("grid(0, 1)");
+        assert!(res.is_err());
+    }
+
+    // note: we intentionally parse grid()/at() only via PlaceSpec
+
+    #[test]
+    fn parse_place_grid_must_be_positive() {
+        let err =
+            Keys::from_ron("[(\"g\", \"Bad grid\", place(grid(0, 1), at(0, 0)))]").unwrap_err();
+        // We at least fail to parse the entry
+        let pretty = err.pretty();
+        assert!(pretty.contains("Config parse error"), "{}", pretty);
+    }
+
+    // Note: coordinate range is validated at execution time where the focused
+    // window's screen is known. Parsing ensures grid divisions are valid and
+    // the DSL shape is correct.
 }
