@@ -2797,6 +2797,7 @@ version = "0.1.0"
 dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
+ "libloading 0.8.8",
  "mac-focus-watcher",
  "mac-keycode",
  "objc2 0.6.2",

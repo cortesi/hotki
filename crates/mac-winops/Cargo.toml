@@ -19,3 +19,4 @@ objc2-foundation = "0.3.1"
 relaykey = { path = "../relaykey" }
 mac-keycode = { path = "../mac-keycode" }
 mac-focus-watcher = { path = "../mac-focus-watcher" }
+libloading = "0.8.8"
