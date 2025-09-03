@@ -26,20 +26,16 @@
                 ("b", "Repeat Relay Custom", relay("shift+x"), (noexit: true, repeat: true, repeat_delay: 200, repeat_interval: 300)),
             ])),
             
-            ("v", "Volume", keys([
-                ("0", "Mute", set_volume(0), (noexit: true)),
-                ("5", "50%", set_volume(50), (noexit: true)),
-                ("m", "Max", set_volume(100), (noexit: true)),
-                ("up", "Up 10", change_volume(10), (noexit: true)),
-                ("down", "Down 10", change_volume(-10), (noexit: true)),
-                // ("shift-m", "Toggle Mute", mute(toggle), (noexit: true)),
-            ])),
-
 
             ("w", "Window Operations", keys([
-                ("f", "Fullcreen", fullscreen(toggle), (noexit: true)),
-                ("n", "Fullcreen Native", fullscreen(toggle, native), (noexit: true)),
-            ])),
+                ("f", "Fullcreen", fullscreen(toggle)),
+                ("n", "Fullcreen Native", fullscreen(toggle, native)),
+                ("3", "3 Columns", keys([
+                    ("1", "Column 1", place(grid(3, 1), at(0, 0))),
+                    ("2", "Column 2", place(grid(3, 1), at(1, 0))),
+                    ("3", "Column 3", place(grid(3, 1), at(2, 0))),
+                ])),
+            ]), (noexit: true)),
 
             
             ("m", "Media", keys([
@@ -49,8 +45,9 @@
                 ("n", "Next", shell("osascript -e 'tell application \"Spotify\" to next track'")),
                 ("b", "Previous", shell("osascript -e 'tell application \"Spotify\" to previous track'")),
 
-                ("0", "Toggle Mute", mute(toggle), (noexit: true)),
+                ("1", "10%", set_volume(10), (noexit: true)),
                 ("5", "50%", set_volume(50), (noexit: true)),
+                ("m", "mute", mute(toggle), (noexit: true)),
                 ("up", "Up 10", change_volume(10), (noexit: true)),
                 ("down", "Down 10", change_volume(-10), (noexit: true)),
             ])),
