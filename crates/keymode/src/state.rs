@@ -35,6 +35,12 @@ pub enum KeyResponse {
         col: u32,
         row: u32,
     },
+    /// Move within a grid by one cell in the given direction.
+    PlaceMove {
+        cols: u32,
+        rows: u32,
+        dir: config::MoveDir,
+    },
     /// Fullscreen operation request handled in the engine/backend
     Fullscreen {
         desired: config::Toggle,
@@ -99,6 +105,20 @@ impl State {
                     rows: gy,
                     col: ix,
                     row: iy,
+                };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(resp)
+            }
+            Action::PlaceMove(grid, dir) => {
+                let (gx, gy) = match grid {
+                    config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
+                };
+                let resp = KeyResponse::PlaceMove {
+                    cols: gx,
+                    rows: gy,
+                    dir: *dir,
                 };
                 if !attrs.noexit() {
                     self.reset();

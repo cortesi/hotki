@@ -72,6 +72,10 @@ impl NotificationDispatcher {
                 // Engine handles placement directly; no UI message.
                 Ok(())
             }
+            KeyResponse::PlaceMove { .. } => {
+                // Engine handles movement directly; no UI message.
+                Ok(())
+            }
         }
     }
 

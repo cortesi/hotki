@@ -35,6 +35,12 @@
                     ("2", "Column 2", place(grid(3, 1), at(1, 0))),
                     ("3", "Column 3", place(grid(3, 1), at(2, 0))),
                 ])),
+                ("4", "4x4 Columns", keys([
+                    ("l", "left", place_move(grid(4, 4), right)),
+                    ("h", "right", place_move(grid(4, 4), left)),
+                    ("k", "up", place_move(grid(4, 4), up)),
+                    ("j", "down", place_move(grid(4, 4), down)),
+                ])),
             ]), (noexit: true)),
 
             

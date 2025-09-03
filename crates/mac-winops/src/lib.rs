@@ -476,6 +476,12 @@ enum MainOp {
         col: u32,
         row: u32,
     },
+    PlaceMoveGrid {
+        pid: i32,
+        cols: u32,
+        rows: u32,
+        dir: MoveDir,
+    },
 }
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -521,6 +527,37 @@ pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum MoveDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Schedule a window movement within a grid.
+pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(Error::Unsupported);
+    }
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| {
+            q.push_back(MainOp::PlaceMoveGrid {
+                pid,
+                cols,
+                rows,
+                dir,
+            })
+        })
+        .is_err()
+    {
+        return Err(Error::Unsupported);
+    }
+    let _ = mac_focus_watcher::wake_main_loop();
+    Ok(())
+}
+
 /// Drain and execute any pending main-thread operations. Must be called from the Tao main thread
 /// (e.g., inside the Event::UserEvent handler in hotki-server).
 pub fn drain_main_ops() {
@@ -539,6 +576,14 @@ pub fn drain_main_ops() {
                 row,
             } => {
                 let _ = place_grid(pid, cols, rows, col, row);
+            }
+            MainOp::PlaceMoveGrid {
+                pid,
+                cols,
+                rows,
+                dir,
+            } => {
+                let _ = place_move_grid(pid, cols, rows, dir);
             }
         }
     }
@@ -605,6 +650,122 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
         },
     )?;
 
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok(())
+}
+
+fn approx_eq_eps(a: f64, b: f64, eps: f64) -> bool {
+    (a - b).abs() <= eps
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cell_rect(
+    vf_x: f64,
+    vf_y: f64,
+    vf_w: f64,
+    vf_h: f64,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+) -> (f64, f64, f64, f64) {
+    let c = cols.max(1) as f64;
+    let r = rows.max(1) as f64;
+    let tile_w = (vf_w / c).floor().max(1.0);
+    let tile_h = (vf_h / r).floor().max(1.0);
+    let rem_w = vf_w - tile_w * (cols as f64);
+    let rem_h = vf_h - tile_h * (rows as f64);
+
+    let x = vf_x + tile_w * (col as f64);
+    let w = if col == cols.saturating_sub(1) {
+        tile_w + rem_w
+    } else {
+        tile_w
+    };
+    let y = if row == rows.saturating_sub(1) {
+        vf_y
+    } else {
+        vf_y + rem_h + tile_h * ((rows - 1 - row) as f64)
+    };
+    let h = if row == rows.saturating_sub(1) {
+        tile_h + rem_h
+    } else {
+        tile_h
+    };
+    (x, y, w, h)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_cell_for_window(
+    vf_x: f64,
+    vf_y: f64,
+    vf_w: f64,
+    vf_h: f64,
+    cols: u32,
+    rows: u32,
+    pos: CGPoint,
+    size: CGSize,
+    eps: f64,
+) -> Option<(u32, u32)> {
+    for row in 0..rows {
+        for col in 0..cols {
+            let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
+            if approx_eq_eps(pos.x, x, eps)
+                && approx_eq_eps(pos.y, y, eps)
+                && approx_eq_eps(size.width, w, eps)
+                && approx_eq_eps(size.height, h, eps)
+            {
+                return Some((col, row));
+            }
+        }
+    }
+    None
+}
+
+fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
+    ax_check()?;
+    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    let win = focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+
+    let cur_p = ax_get_point(win, attr_pos)?;
+    let cur_s = ax_get_size(win, attr_size)?;
+    let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+
+    let eps = 2.0;
+    let cur_cell = find_cell_for_window(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
+
+    // First invocation from a non-aligned position places at visual top‑left.
+    // With our row indexing, some environments report coordinates such that
+    // choosing row 0 may map to the bottom visually; prefer the row that
+    // aligns to the topmost cell for first placement.
+    let (next_col, next_row) = match cur_cell {
+        None => (0, rows.saturating_sub(1)),
+        Some((c, r)) => {
+            let (mut nc, mut nr) = (c, r);
+            match dir {
+                MoveDir::Left => { nc = nc.saturating_sub(1); }
+                MoveDir::Right => { if nc + 1 < cols { nc += 1; } }
+                // Up decreases visual Y (moves down one row index in top-left origin)
+                MoveDir::Up => { if nr + 1 < rows { nr += 1; } }
+                // Down increases visual Y (moves up one row index)
+                MoveDir::Down => { nr = nr.saturating_sub(1); }
+            }
+            (nc, nr)
+        }
+    };
+
+    let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
+    ax_set_point(win, attr_pos, CGPoint { x, y })?;
+    ax_set_size(
+        win,
+        attr_size,
+        CGSize {
+            width: w,
+            height: h,
+        },
+    )?;
     unsafe { CFRelease(win as CFTypeRef) };
     Ok(())
 }

@@ -242,6 +242,25 @@ place(grid(2, 2), at(1, 0))
 <tr></tr>
 <tr>
     <td>
+        <pre lang="ron">
+place_move(grid(3, 2), left)
+place_move(grid(3, 2), right)
+place_move(grid(3, 2), up)
+place_move(grid(3, 2), down)
+        </pre>
+    </td>
+    <td>
+        Move the focused window by one cell within a grid on the current screen.
+        <ul>
+          <li><code>grid(x, y)</code> defines the grid (both <code>&gt; 0</code>).</li>
+          <li><code>up</code>/<code>down</code>/<code>left</code>/<code>right</code> move one cell and clamp at edges (no wrap).</li>
+          <li>First invocation from a non‑aligned position places at the visual top‑left cell (0, 0).</li>
+        </ul>
+    </td>
+</tr>
+<tr></tr>
+<tr>
+    <td>
         <pre lang="ron">keys([ /* ... */ ])</pre>
     </td>
     <td>Enter a nested keys section (sub‑mode)</td>

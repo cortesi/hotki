@@ -361,6 +361,19 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
+                let pid = self.focus_handler.get_pid();
+                let mdir = match dir {
+                    config::MoveDir::Left => mac_winops::MoveDir::Left,
+                    config::MoveDir::Right => mac_winops::MoveDir::Right,
+                    config::MoveDir::Up => mac_winops::MoveDir::Up,
+                    config::MoveDir::Down => mac_winops::MoveDir::Down,
+                };
+                if let Err(e) = mac_winops::request_place_move_grid(pid, cols, rows, mdir) {
+                    let _ = self.notifier.send_error("Move", format!("{}", e));
+                }
+                Ok(())
+            }
             Ok(resp) => {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured

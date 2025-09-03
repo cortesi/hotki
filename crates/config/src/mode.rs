@@ -171,6 +171,16 @@ pub enum Action {
     /// - grid divisions x and y must be > 0
     /// - coordinates ix and iy are zero-based and must be within the grid
     Place(GridSpec, AtSpec),
+    /// Move the focused window within a grid by one cell in the given direction.
+    ///
+    /// Syntax:
+    /// - place_move(grid(x, y), left|right|up|down)
+    ///
+    /// Behavior:
+    /// - If the window is not currently aligned to any cell in the grid,
+    ///   the first invocation places it at (0, 0).
+    /// - Movement clamps at the edges (no wrap-around).
+    PlaceMove(GridSpec, MoveDir),
 }
 
 impl Action {
@@ -232,6 +242,16 @@ impl<'de> Deserialize<'de> for Grid {
         }
         Ok(Grid(x, y))
     }
+}
+
+/// Direction for grid movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveDir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 /// Optional modifiers applied to Shell actions
@@ -509,4 +529,16 @@ mod place_parse_tests {
     // Note: coordinate range is validated at execution time where the focused
     // window's screen is known. Parsing ensures grid divisions are valid and
     // the DSL shape is correct.
+
+    #[test]
+    fn parse_place_move_ok() {
+        let k = Keys::from_ron("[(\"g\", \"Move left\", place_move(grid(3, 2), left))]")
+            .expect("parse");
+        match &k.keys[0].2 {
+            Action::PlaceMove(GridSpec::Grid(Grid(gx, gy)), MoveDir::Left) => {
+                assert_eq!((*gx, *gy), (3, 2));
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
 }
