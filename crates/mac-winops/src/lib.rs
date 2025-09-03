@@ -10,9 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CString, c_char, c_void};
 use std::sync::Mutex;
 
-use core_foundation::array::{
-    CFArrayGetCount, CFArrayGetValueAtIndex,
-};
+use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
 use core_foundation::dictionary::CFDictionaryRef;
@@ -55,7 +53,6 @@ unsafe extern "C" {
         cStr: *const c_char,
         encoding: u32,
     ) -> CFStringRef;
-    fn CFUUIDCreateString(alloc: *const c_void, uuid: *const c_void) -> CFStringRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -801,32 +798,9 @@ fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFTypeRef; // CFArrayRef
-    fn CGGetActiveDisplayList(max: u32, active: *mut u32, count: *mut u32) -> i32;
-    fn CGMainDisplayID() -> u32;
-    fn CGDisplayBounds(display: u32) -> CGRectCGS;
-    fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> *const c_void; // CFUUIDRef
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct CGRectCGS {
-    origin: CGPointCGS,
-    size: CGSizeCGS,
-}
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct CGPointCGS {
-    x: f64,
-    y: f64,
-}
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct CGSizeCGS {
-    width: f64,
-    height: f64,
-}
-
-const K_CG_WINDOW_LIST_OPTION_ALL: u32 = 0;
+// CoreGraphics window list options used by focused_window_id
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
 const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 
@@ -836,25 +810,8 @@ fn cg_key(s: &'static str) -> CFStringRef {
 const K_CG_WINDOW_NUMBER: &str = "kCGWindowNumber";
 const K_CG_WINDOW_OWNER_PID: &str = "kCGWindowOwnerPID";
 const K_CG_WINDOW_LAYER: &str = "kCGWindowLayer";
-const K_CG_WINDOW_BOUNDS: &str = "kCGWindowBounds";
 const K_CG_WINDOW_IS_ONSCREEN: &str = "kCGWindowIsOnscreen";
 const K_CG_WINDOW_ALPHA: &str = "kCGWindowAlpha";
-
-
-
-fn cfstring_to_string(s: CFStringRef) -> String {
-    unsafe { CFString::wrap_under_get_rule(s) }.to_string()
-}
-
-fn dict_get_cfstring(d: CFDictionaryRef, key: CFStringRef) -> Option<CFStringRef> {
-    unsafe {
-        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
-        if v.is_null() {
-            return None;
-        }
-        Some(v as CFStringRef)
-    }
-}
 
 fn dict_get_cfnumber(d: CFDictionaryRef, key: CFStringRef) -> Option<CFNumber> {
     unsafe {
@@ -875,30 +832,6 @@ fn dict_get_cfbool(d: CFDictionaryRef, key: CFStringRef) -> Option<bool> {
         Some(CFBooleanGetValue(v as _))
     }
 }
-
-fn dict_get_dictionary(d: CFDictionaryRef, key: CFStringRef) -> Option<CFDictionaryRef> {
-    unsafe {
-        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
-        if v.is_null() {
-            return None;
-        }
-        Some(v as _)
-    }
-}
-
-fn dict_get_array(d: CFDictionaryRef, key: CFStringRef) -> Option<core_foundation::array::CFArray> {
-    unsafe {
-        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
-        if v.is_null() {
-            return None;
-        }
-        Some(core_foundation::array::CFArray::wrap_under_get_rule(v as _))
-    }
-}
-
-
-
-
 
 // Space management APIs removed.
 
