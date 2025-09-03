@@ -11,4 +11,4 @@ keywords = ["shortcuts", "shortcut", "hotkey"]
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["crates/hotki-keys"]
+exclude = ["crates/hotki-keys", "crates/mac-focus-watcher"]

@@ -14,13 +14,13 @@
 //!
 //! Focus Watcher Contract
 //! - Tao main thread: Creates the event loop and calls
-//!   `mac_focus_watcher::set_main_proxy(...)` once so background code can post a
+//!   `mac_winops::focus::set_main_proxy(...)` once so background code can post a
 //!   user event to request NS observer installation.
 //! - Service layer: When the engine first activates (e.g., on `set_mode`), the
-//!   IPC service starts the focus watcher via `mac_focus_watcher::start_watcher(tx)`.
+//!   IPC service starts the focus watcher via `mac_winops::focus::start_watcher(tx)`.
 //!   This posts a Tao `UserEvent(())` and begins emitting `FocusEvent`s on `tx`.
 //! - Main loop: Handles `Event::UserEvent(())` and calls
-//!   `mac_focus_watcher::install_ns_workspace_observer()` on the main thread. This
+//!   `mac_winops::focus::install_ns_workspace_observer()` on the main thread. This
 //!   ties the NSWorkspace notifications into the same `FocusEvent` stream.
 //!
 //! Errors and User Guidance

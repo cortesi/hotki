@@ -14,7 +14,6 @@ hotki-protocol = { path = "../hotki-protocol" }
 log-forward = { path = "../log-forward" }
 relaykey = { path = "../relaykey" }
 mac-keycode = { path = "../mac-keycode" }
-mac-focus-watcher = { path = "../mac-focus-watcher" }
 mac-winops = { path = "../mac-winops" }
 permissions = { path = "../permissions" }
 hotki-engine = { path = "../hotki-engine" }

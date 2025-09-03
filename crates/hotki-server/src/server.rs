@@ -80,7 +80,7 @@ impl Server {
         let proxy = event_loop.create_proxy();
         // Keep a clone for posting wakeups from other threads
         let proxy_for_ipc = proxy.clone();
-        mac_focus_watcher::set_main_proxy(proxy);
+        mac_winops::focus::set_main_proxy(proxy);
 
         // Set activation policy to Accessory to prevent dock icon
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -179,7 +179,7 @@ impl Server {
                                 );
                                 // Parent exited; request shutdown.
                                 shutdown_for_parent.store(true, Ordering::SeqCst);
-                                let _ = mac_focus_watcher::wake_main_loop();
+                                let _ = mac_winops::focus::wake_main_loop();
                                 let _ = libc::close(kq);
                                 return;
                             } else {
@@ -196,7 +196,7 @@ impl Server {
                             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
                         if !alive {
                             shutdown_for_parent.store(true, Ordering::SeqCst);
-                            let _ = mac_focus_watcher::wake_main_loop();
+                            let _ = mac_winops::focus::wake_main_loop();
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(100));
@@ -269,7 +269,7 @@ impl Server {
                     // These events fire frequently, ignore them
                 }
                 Event::UserEvent(()) => {
-                    if let Err(e) = mac_focus_watcher::install_ns_workspace_observer() {
+                    if let Err(e) = mac_winops::focus::install_ns_workspace_observer() {
                         error!("Failed to install NSWorkspace observer: {}", e);
                     }
                     // Run any queued main-thread operations (e.g., non-native fullscreen)

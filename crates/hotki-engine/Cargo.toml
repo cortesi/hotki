@@ -11,7 +11,6 @@ config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
-mac-focus-watcher = { path = "../mac-focus-watcher" }
 mac-winops = { path = "../mac-winops" }
 
 tokio = { version = "1.47", features = ["rt", "sync", "time"] }

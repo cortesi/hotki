@@ -210,7 +210,7 @@ impl Engine {
     }
 
     /// Handle a focus event: update internal context and rebind if needed.
-    pub async fn on_focus_event(&mut self, event: mac_focus_watcher::FocusEvent) -> Result<()> {
+    pub async fn on_focus_event(&mut self, event: mac_winops::focus::FocusEvent) -> Result<()> {
         let start = Instant::now();
         debug!("Focus event received: {:?}", event);
 

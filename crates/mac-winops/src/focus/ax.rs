@@ -1,17 +1,15 @@
 use std::ffi::{CString, c_char, c_void};
 
-use core_foundation::{
-    base::{CFRelease, CFTypeRef, TCFType},
-    runloop::{CFRunLoop, CFRunLoopSource, CFRunLoopSourceRef, kCFRunLoopDefaultMode},
-    string::CFStringRef,
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::runloop::{
+    CFRunLoop, CFRunLoopSource, CFRunLoopSourceRef, kCFRunLoopDefaultMode,
 };
-use thiserror::Error;
+use core_foundation::string::CFStringRef;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::warn;
 
-use crate::event::FocusEvent;
+use super::event::FocusEvent;
 
-/// Returns true if the process is trusted for Accessibility (AX) APIs.
+#[inline]
 pub(crate) fn ax_is_trusted() -> bool {
     unsafe extern "C" {
         fn AXIsProcessTrusted() -> bool;
@@ -21,23 +19,23 @@ pub(crate) fn ax_is_trusted() -> bool {
 
 #[derive(Default)]
 pub(crate) struct AXState {
-    observer: *mut c_void,
-    app_elem: *mut c_void,
+    pub(crate) observer: *mut c_void,
+    pub(crate) app_elem: *mut c_void,
     pub(crate) have_source: bool,
-    ctx_ptr: *mut c_void,
+    pub(crate) ctx_ptr: *mut c_void,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("AXObserverCreate failed: {0}")]
+    #[error("AXObserverCreate failed: code {0}")]
     ObserverCreate(i32),
-    #[error("AXUIElementCreateApplication returned null")]
+    #[error("AX UI element for app is null")]
     AppElementNull,
-    #[error("AXObserverAddNotification failed: {0}")]
+    #[error("AXObserverAddNotification failed: code {0}")]
     AddNotification(i32),
     #[error("AXObserverGetRunLoopSource returned null")]
     GetRunLoopSourceNull,
-    #[error("Failed to create CString for constant '{0}'")]
+    #[error("CString creation failed for constant {0}")]
     CString(&'static str),
 }
 
@@ -46,18 +44,18 @@ impl AXState {
         unsafe {
             if !self.app_elem.is_null() {
                 CFRelease(self.app_elem as CFTypeRef);
+                self.app_elem = std::ptr::null_mut();
             }
             if !self.observer.is_null() {
                 CFRelease(self.observer as CFTypeRef);
+                self.observer = std::ptr::null_mut();
             }
             if !self.ctx_ptr.is_null() {
                 let _ = Box::<AXCtx>::from_raw(self.ctx_ptr as *mut AXCtx);
+                self.ctx_ptr = std::ptr::null_mut();
             }
+            self.have_source = false;
         }
-        self.observer = std::ptr::null_mut();
-        self.app_elem = std::ptr::null_mut();
-        self.have_source = false;
-        self.ctx_ptr = std::ptr::null_mut();
     }
 
     pub(crate) fn attach(
@@ -68,8 +66,13 @@ impl AXState {
         self.detach();
         unsafe extern "C" {
             fn AXObserverCreate(
-                pid: i32,
-                callback: extern "C" fn(*mut c_void, *mut c_void, CFStringRef, *mut c_void),
+                application: i32,
+                callback: extern "C" fn(
+                    observer: *mut c_void,
+                    element: *mut c_void,
+                    notification: CFStringRef,
+                    refcon: *mut c_void,
+                ),
                 out: *mut *mut c_void,
             ) -> i32;
             fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
@@ -88,15 +91,14 @@ impl AXState {
         }
 
         extern "C" fn ax_callback(
-            observer: *mut c_void,
-            element: *mut c_void,
+            _observer: *mut c_void,
+            _element: *mut c_void,
             notification: CFStringRef,
             refcon: *mut c_void,
         ) {
             unsafe {
-                // SAFETY: refcon is Box<AXCtx> allocated in attach
                 let ctx = &*(refcon as *mut AXCtx);
-                ctx.handle_notification(observer, element, notification);
+                ctx.handle_notification(notification);
             }
         }
 
@@ -127,7 +129,6 @@ impl AXState {
             let attr_focused_window = mk("AXFocusedWindow")?;
             let attr_title = mk("AXTitle")?;
 
-            // Create context used by callback (contains tx, app element, and CFStrings)
             let ctx = Box::new(AXCtx {
                 tx,
                 app_elem,
@@ -137,11 +138,9 @@ impl AXState {
                 attr_title,
                 pid,
             });
-            // Capture notification ref before moving ctx into raw
             let notif = ctx.notif_focused_window_changed;
             let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
-            // Observe focused window changes on the app
             let err = AXObserverAddNotification(observer, app_elem, notif, ctx_ptr);
             if err != 0 {
                 CFRelease(app_elem as CFTypeRef);
@@ -191,98 +190,43 @@ struct AXCtx {
 }
 
 impl AXCtx {
-    fn handle_notification(
-        &self,
-        observer: *mut c_void,
-        element: *mut c_void,
-        notification: CFStringRef,
-    ) {
+    fn handle_notification(&self, notification: CFStringRef) {
         unsafe extern "C" {
             fn AXUIElementCopyAttributeValue(
                 element: *mut c_void,
                 attr: CFStringRef,
                 value: *mut CFTypeRef,
             ) -> i32;
-            fn AXObserverAddNotification(
-                observer: *mut c_void,
-                element: *mut c_void,
-                notification: CFStringRef,
-                refcon: *mut c_void,
-            ) -> i32;
-            fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
-        }
-        fn cfstring_to_string(s: CFStringRef) -> String {
-            // SAFETY: CFStringRef obtained from system APIs per get rule
-            let cf = unsafe { core_foundation::string::CFString::wrap_under_get_rule(s) };
-            cf.to_string()
         }
         unsafe {
-            // Determine notification type by equality against our CFStrings
-            if CFEqual(
-                notification as CFTypeRef,
-                self.notif_focused_window_changed as CFTypeRef,
-            ) {
-                // Get the focused window and its title
-                let mut win_ref: CFTypeRef = std::ptr::null_mut();
+            let notif_title_changed = self.notif_title_changed;
+            if notification == notif_title_changed {
+                let mut val: CFTypeRef = std::ptr::null_mut();
                 let err = AXUIElementCopyAttributeValue(
                     self.app_elem,
                     self.attr_focused_window,
-                    &mut win_ref,
+                    &mut val,
                 );
-                if err != 0 {
-                    warn!(
-                        "AXUIElementCopyAttributeValue(focused_window) failed: {}",
-                        err
-                    );
-                }
-                if !win_ref.is_null() {
-                    // Fetch title
-                    let mut title_ref: CFTypeRef = std::ptr::null_mut();
-                    let err = AXUIElementCopyAttributeValue(
-                        win_ref as *mut c_void,
+                if err == 0 && !val.is_null() {
+                    // Focused window changed; try to fetch title
+                    let mut title_val: CFTypeRef = std::ptr::null_mut();
+                    let err2 = AXUIElementCopyAttributeValue(
+                        val as *mut c_void,
                         self.attr_title,
-                        &mut title_ref,
+                        &mut title_val,
                     );
-                    if err != 0 {
-                        warn!("AXUIElementCopyAttributeValue(title) failed: {}", err);
-                    }
-                    if !title_ref.is_null() {
-                        let s = cfstring_to_string(title_ref as CFStringRef);
+                    if err2 == 0 && !title_val.is_null() {
+                        let s = core_foundation::string::CFString::wrap_under_get_rule(
+                            title_val as CFStringRef,
+                        )
+                        .to_string();
                         let _ = self.tx.send(FocusEvent::TitleChanged {
                             title: s,
                             pid: self.pid,
                         });
-                        CFRelease(title_ref);
+                        CFRelease(title_val);
                     }
-                    // Begin observing title changes on this focused window as well
-                    let err = AXObserverAddNotification(
-                        observer,
-                        win_ref as *mut c_void,
-                        self.notif_title_changed,
-                        self as *const _ as *mut c_void,
-                    );
-                    if err != 0 {
-                        warn!("AXObserverAddNotification(title_changed) failed: {}", err);
-                    }
-                    CFRelease(win_ref);
-                }
-            } else if CFEqual(
-                notification as CFTypeRef,
-                self.notif_title_changed as CFTypeRef,
-            ) {
-                // Title changed for current window
-                let mut title_ref: CFTypeRef = std::ptr::null_mut();
-                let err = AXUIElementCopyAttributeValue(element, self.attr_title, &mut title_ref);
-                if err != 0 {
-                    warn!("AXUIElementCopyAttributeValue(title) failed: {}", err);
-                }
-                if !title_ref.is_null() {
-                    let s = cfstring_to_string(title_ref as CFStringRef);
-                    let _ = self.tx.send(FocusEvent::TitleChanged {
-                        title: s,
-                        pid: self.pid,
-                    });
-                    CFRelease(title_ref);
+                    CFRelease(val);
                 }
             }
         }

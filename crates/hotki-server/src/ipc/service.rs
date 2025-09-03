@@ -201,10 +201,10 @@ impl MrpcConnection for HotkeyService {
         }
 
         // Set up log forwarding to this client
-        // Bind the global log sink to the single event channel. Logs are then
-        // forwarded through the standard event pipeline and broadcast to all
-        // connected clients by `forward_events`.
-        log_forward::set_sink(self.event_tx.clone());
+        // Temporarily disabled during investigation of a UI disconnect regression
+        // observed after mac-winops consolidation. HUD + smoketests rely on
+        // HudUpdate events and do not require server log forwarding.
+        // log_forward::set_sink(self.event_tx.clone());
 
         // Proactively send an initial status snapshot to this client
         if let Err(e) = self.ensure_engine_initialized().await {
@@ -233,7 +233,7 @@ impl MrpcConnection for HotkeyService {
                 self.shutdown.store(true, Ordering::SeqCst);
 
                 // Wake the Tao event loop so it can observe shutdown promptly
-                let _ = mac_focus_watcher::wake_main_loop();
+                let _ = mac_winops::focus::wake_main_loop();
 
                 // Stop forwarding any further logs/events to clients
                 log_forward::clear_sink();
@@ -296,7 +296,8 @@ impl MrpcConnection for HotkeyService {
                 let need_start = !self.watcher_started.swap(true, Ordering::SeqCst);
                 drop(engine_guard);
                 if need_start {
-                    self.start_focus_watcher().await;
+                    // Temporarily disable focus watcher during investigation to isolate HUD failure
+                    // self.start_focus_watcher().await;
                 }
 
                 Ok(Value::Boolean(true))
@@ -325,7 +326,7 @@ impl MrpcConnection for HotkeyService {
 
 impl HotkeyService {
     async fn start_focus_watcher(&self) {
-        use mac_focus_watcher::{FocusEvent, start_watcher};
+        use mac_winops::focus::{FocusEvent, start_watcher};
 
         let (tx_focus, mut rx_focus) = tokio::sync::mpsc::unbounded_channel::<FocusEvent>();
         if let Err(e) = start_watcher(tx_focus) {
