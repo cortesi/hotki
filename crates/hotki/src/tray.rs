@@ -71,6 +71,9 @@ pub fn build_tray_and_listeners(
             .with_menu_on_left_click(false);
         if let Some(icon) = tray_icon_image() {
             builder = builder.with_icon(icon);
+            // Use template rendering for release builds so macOS tints the icon
+            // appropriately for Light/Dark modes. Keep dev icon colored.
+            builder = builder.with_icon_as_template(!cfg!(debug_assertions));
         }
         builder.with_tooltip("hotki").build().expect("tray icon")
     };
