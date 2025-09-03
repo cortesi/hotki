@@ -395,6 +395,74 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
     )
 }
 
+// Compute the full frame (including menu bar and Dock areas) of the screen
+// containing `p`. Falls back to main screen when not found.
+fn frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
+    let screens = NSScreen::screens(mtm);
+    let mut chosen = None;
+    for s in screens.iter() {
+        let fr = s.frame();
+        let x = fr.origin.x;
+        let y = fr.origin.y;
+        let w = fr.size.width;
+        let h = fr.size.height;
+        if p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h {
+            chosen = Some(s);
+            break;
+        }
+    }
+    let rect = if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
+        scr.frame()
+    } else {
+        // Fallback to the first screen's frame if main screen unavailable
+        NSScreen::screens(mtm)
+            .iter()
+            .next()
+            .map(|s| s.frame())
+            .unwrap_or_else(|| NSScreen::mainScreen(mtm).unwrap().frame())
+    };
+    (
+        rect.origin.x,
+        rect.origin.y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
+/// Set the focused window's frame (position and size) for the given process id.
+/// Units are AppKit points (pt).
+pub fn set_window_frame(pid: i32, x: f64, y: f64, w: f64, h: f64) -> Result<()> {
+    ax_check()?;
+    let win = focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+    let target_p = CGPoint { x, y };
+    let target_s = CGSize {
+        width: w,
+        height: h,
+    };
+
+    // Adjust size first, then position to reduce post-resize drift.
+    ax_set_size(win, attr_size, target_s)?;
+    ax_set_point(win, attr_pos, target_p)?;
+
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok(())
+}
+
+/// Return the size (width, height) in points of the screen containing the
+/// focused window for the given process id.
+pub fn screen_size(pid: i32) -> Result<(f64, f64)> {
+    ax_check()?;
+    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    let win = focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let p = ax_get_point(win, attr_pos)?;
+    let (_x, _y, w, h) = frame_containing_point(mtm, p);
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok((w, h))
+}
+
 /// Queue of operations that must run on the AppKit main thread.
 enum MainOp {
     FullscreenNonNative { pid: i32, desired: Desired },
