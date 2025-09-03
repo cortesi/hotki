@@ -61,9 +61,9 @@ The high-level structure of the config file is as follows:
 The keys section is the heart of Hotki. A key specification has the following format:
 
 ```ron
-    ("key combo", "Description", action)
-    // OR
-    ("key combo", "Description", action, (attributes))
+("key combo", "Description", action)
+// OR
+("key combo", "Description", action, (attributes))
 ```
 
 Key combos are specified using a `+`-separated list of keys, with zero or more
@@ -76,22 +76,22 @@ Let's look some real snippets from the author's own config. First, a simple
 mode for controlling music:
 
 ```ron
-    ("shift+cmd+m", "music", keys([
-        (
-            "k", "vol up",
-            change_volume(5),
-            (noexit: true, repeat: true)
-        ),
-        (
-            "j", "vol down",
-            change_volume(-5),
-            (noexit: true, repeat: true)
-        ),
-        ("l", "next >>", shell("spotify next")),
-        ("h", "<< prev", shell("spotify prev")),
-        ("p", "play/pause", shell("spotify pause")),
-        ("shift+cmd+m", "exit", exit, (global: true, hide: true)),
-    ]), (capture: true)),
+("shift+cmd+m", "music", keys([
+    (
+        "k", "vol up",
+        change_volume(5),
+        (noexit: true, repeat: true)
+    ),
+    (
+        "j", "vol down",
+        change_volume(-5),
+        (noexit: true, repeat: true)
+    ),
+    ("l", "next >>", shell("spotify next")),
+    ("h", "<< prev", shell("spotify prev")),
+    ("p", "play/pause", shell("spotify pause")),
+    ("shift+cmd+m", "exit", exit, (global: true, hide: true)),
+]), (capture: true)),
 ```
 
 Here, the global hotkey `shift+cmd+m` activates the "music" mode. The `capture:
@@ -108,18 +108,18 @@ with key relaying to produce global hotkeys that work when specific apps have
 focus.
 
 ```ron
-   ("shift+cmd+j", "obsidian", keys([
-       ("f", "file", keys([
-               ("f", "show in finder", relay("ctrl+shift+cmd+1")),
-               ("n", "rename", relay("ctrl+shift+cmd+2")),
-           ]),
-       ),
-       ("s", "split", keys([
-               ("l", "right", relay("ctrl+shift+cmd+3")),
-               ("j", "down", relay("ctrl+shift+cmd+4")),
-           ]),
-       ),
-   ]), (match_app : "Obsidian")),
+("shift+cmd+j", "obsidian", keys([
+   ("f", "file", keys([
+           ("f", "show in finder", relay("ctrl+shift+cmd+1")),
+           ("n", "rename", relay("ctrl+shift+cmd+2")),
+       ]),
+   ),
+   ("s", "split", keys([
+           ("l", "right", relay("ctrl+shift+cmd+3")),
+           ("j", "down", relay("ctrl+shift+cmd+4")),
+       ]),
+   ),
+]), (match_app : "Obsidian")),
 ```
 
 This example binds `shift+cmd+j` to enter a mode for controlling Obsidian. The

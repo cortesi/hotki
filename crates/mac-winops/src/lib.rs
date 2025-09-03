@@ -745,12 +745,24 @@ fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
         Some((c, r)) => {
             let (mut nc, mut nr) = (c, r);
             match dir {
-                MoveDir::Left => { nc = nc.saturating_sub(1); }
-                MoveDir::Right => { if nc + 1 < cols { nc += 1; } }
+                MoveDir::Left => {
+                    nc = nc.saturating_sub(1);
+                }
+                MoveDir::Right => {
+                    if nc + 1 < cols {
+                        nc += 1;
+                    }
+                }
                 // Up decreases visual Y (moves down one row index in top-left origin)
-                MoveDir::Up => { if nr + 1 < rows { nr += 1; } }
+                MoveDir::Up => {
+                    if nr + 1 < rows {
+                        nr += 1;
+                    }
+                }
                 // Down increases visual Y (moves up one row index)
-                MoveDir::Down => { nr = nr.saturating_sub(1); }
+                MoveDir::Down => {
+                    nr = nr.saturating_sub(1);
+                }
             }
             (nc, nr)
         }
