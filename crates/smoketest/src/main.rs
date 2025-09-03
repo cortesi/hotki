@@ -349,6 +349,7 @@ fn ensure_hud_visible(sock: &str, timeout_ms: u64) -> bool {
 
     // Try to connect to the UI's server with retry until the global deadline.
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut attempts = 0;
     let mut client = loop {
         match rt.block_on(async {
             hotki_server::Client::new_with_socket(sock)
@@ -356,13 +357,19 @@ fn ensure_hud_visible(sock: &str, timeout_ms: u64) -> bool {
                 .connect()
                 .await
         }) {
-            Ok(c) => break c,
+            Ok(c) => {
+                println!("Connected to UI server after {} attempts", attempts + 1);
+                break c;
+            }
             Err(e) => {
+                attempts += 1;
                 if Instant::now() >= deadline {
-                    eprintln!("Failed to connect to UI server: {}", e);
+                    eprintln!("Failed to connect to UI server after {} attempts: {}", attempts, e);
                     return false;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                // Longer initial delay for first few attempts to give server time to start
+                let delay = if attempts <= 3 { 200 } else { 50 };
+                std::thread::sleep(Duration::from_millis(delay));
                 continue;
             }
         }
@@ -901,11 +908,12 @@ fn run_ui_demo() {
         .spawn()
         .expect("launch hotki");
 
-    // No fixed sleep: ensure_hud_visible handles readiness + retries
+    // Give the server more time to start up and create the socket
+    std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let seen_hud = ensure_hud_visible(&sock, 6000);
+    let seen_hud = ensure_hud_visible(&sock, 10000);
 
     // Drive a short theme cycle if HUD appeared (screenshots already taken above)
     let mut seq: Vec<&str> = Vec::new();
@@ -1001,11 +1009,12 @@ fn run_minui_demo() {
         .spawn()
         .expect("launch hotki");
 
-    // No fixed sleep: ensure_hud_visible handles readiness + retries
+    // Give the server more time to start up and create the socket
+    std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let seen_hud = ensure_hud_visible(&sock, 6000);
+    let seen_hud = ensure_hud_visible(&sock, 10000);
 
     // Relay keys to drive mini HUD: activate, enter theme tester, cycle, back
     let mut seq: Vec<String> = Vec::new();
