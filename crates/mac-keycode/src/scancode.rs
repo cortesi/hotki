@@ -14,14 +14,7 @@ use crate::Key;
 /// macOS hardware virtual keycode (`kVK_*`, `NSEvent.keyCode`).
 pub type Scancode = u16;
 
-/// Returns true if the scancode maps to a known `Key` variant.
-///
-/// This function is part of the public API and may not be referenced within
-/// this crate itself; suppress the dead_code lint accordingly.
-#[allow(dead_code)]
-pub fn is_valid(sc: Scancode) -> bool {
-    Key::from_scancode(sc).is_some()
-}
+// No standalone validity helper; use `Key::from_scancode(sc).is_some()` instead.
 
 impl TryFrom<Scancode> for Key {
     type Error = ();
@@ -69,7 +62,7 @@ mod tests {
         ];
         for k in samples {
             let sc = k.scancode();
-            assert!(is_valid(sc));
+            assert!(Key::from_scancode(sc).is_some());
             assert_eq!(Key::from_scancode(sc), Some(k));
             assert_eq!(Key::try_from(sc).ok(), Some(k));
             let back: Scancode = Scancode::from(k);
@@ -78,6 +71,5 @@ mod tests {
 
         // Unknown example should be invalid; pick a value outside known range.
         assert_eq!(Key::from_scancode(0xFFFF), None);
-        assert!(!is_valid(0xFFFF));
     }
 }
