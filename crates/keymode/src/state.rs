@@ -46,10 +46,6 @@ pub enum KeyResponse {
         desired: config::Toggle,
         kind: config::FullscreenKind,
     },
-    /// Switch to Space N relative to the focused window's display.
-    SwitchSpace {
-        index: u32,
-    },
 }
 
 /// Optional repeat configuration for shell actions
@@ -141,13 +137,6 @@ impl State {
                     desired: *toggle,
                     kind,
                 })
-            }
-            Action::Space(n) => {
-                let resp = KeyResponse::SwitchSpace { index: *n };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(resp)
             }
             Action::Keys(new_mode) => {
                 let _ = new_mode; // contents live in Config; we just advance cursor

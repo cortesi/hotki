@@ -156,9 +156,6 @@ pub enum Action {
     Mute(Toggle),
     /// Control user style configuration: on/off/toggle
     UserStyle(Toggle),
-    /// Switch to Space N (0-based) relative to the focused window's display.
-    /// If N is out of bounds for that display, the action is ignored.
-    Space(u32),
     /// Control fullscreen: on/off/toggle with optional kind (native|nonnative)
     /// Syntax examples:
     /// - fullscreen(toggle)            // defaults to nonnative
@@ -541,20 +538,6 @@ mod place_parse_tests {
             Action::PlaceMove(GridSpec::Grid(Grid(gx, gy)), MoveDir::Left) => {
                 assert_eq!((*gx, *gy), (3, 2));
             }
-            other => panic!("unexpected: {:?}", other),
-        }
-    }
-}
-
-#[cfg(test)]
-mod space_parse_tests {
-    use super::*;
-
-    #[test]
-    fn parse_space_action() {
-        let k = Keys::from_ron("[(\"s\", \"Space 0\", space(0))]").expect("parse");
-        match &k.keys[0].2 {
-            Action::Space(n) => assert_eq!(*n, 0),
             other => panic!("unexpected: {:?}", other),
         }
     }
