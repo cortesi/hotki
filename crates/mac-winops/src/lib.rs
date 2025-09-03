@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use core_foundation::array::{
     CFArrayCreate, CFArrayGetCount, CFArrayGetValueAtIndex, kCFTypeArrayCallBacks,
 };
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFRelease, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
 use core_foundation::dictionary::CFDictionaryRef;
 use core_foundation::number::CFNumber;
@@ -1047,11 +1047,11 @@ fn dict_get_array(d: CFDictionaryRef, key: CFStringRef) -> Option<core_foundatio
 }
 
 fn parse_space_kind(ty: Option<i64>) -> SpaceKind {
-    match ty.unwrap_or(-1) {
-        0 => SpaceKind::User,
-        4 | 16 => SpaceKind::Fullscreen,
-        2 => SpaceKind::System,
-        _ => SpaceKind::Unknown,
+    match ty {
+        Some(4) | Some(16) => SpaceKind::Fullscreen,
+        Some(2) => SpaceKind::System,
+        // Treat unknown or missing types as user desktops by default.
+        _ => SpaceKind::User,
     }
 }
 
@@ -1080,7 +1080,18 @@ fn list_spaces_for_display_uuid(uuid: &CFString) -> Result<Vec<SpaceInfo>> {
             }
         }
     }
-    let d = found_display.ok_or(Error::Unsupported)?;
+    // Fallback for systems with global Spaces (no per-display UUID entry):
+    let d = match found_display {
+        Some(d) => d,
+        None => {
+            // Use the first managed display entry if present
+            if unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) } > 0 {
+                (unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), 0) }) as CFDictionaryRef
+            } else {
+                return Err(Error::Unsupported);
+            }
+        }
+    };
 
     let cur_id =
         unsafe { (sl.managed_display_get_current_space)(conn, uuid.as_concrete_TypeRef()) };
@@ -1210,35 +1221,24 @@ fn display_uuid_for_window(window_id: WindowId) -> Result<CFString> {
                     // Read spaces returned for the window and map to display UUID
                     for i in 0..unsafe { CFArrayGetCount(spaces.as_concrete_TypeRef()) } {
                         let v = unsafe { CFArrayGetValueAtIndex(spaces.as_concrete_TypeRef(), i) };
-                        if v.is_null() {
-                            continue;
+                        if v.is_null() { continue; }
+                        let any = unsafe { CFType::wrap_under_get_rule(v as _) };
+                        // Try number first, then dictionary
+                        let mut sid: u64 = 0;
+                        if let Some(n) = any.downcast::<CFNumber>() {
+                            sid = n.to_i64().unwrap_or(0) as u64;
+                        } else if let Some(dict) = any.downcast::<core_foundation::dictionary::CFDictionary>() {
+                            let sd = dict.as_concrete_TypeRef();
+                            sid = if let Some(n) = dict_get_cfnumber(sd, key_id64) {
+                                n.to_i64().unwrap_or(0) as u64
+                            } else if let Some(n) = dict_get_cfnumber(sd, key_managed_id) {
+                                n.to_i64().unwrap_or(0) as u64
+                            } else { 0 };
                         }
-                        // Prefer treating as CFNumber (space id), else dictionary with id64
-                        let sid = {
-                            // Try number
-                            let num_ref = v as core_foundation::number::CFNumberRef;
-                            let num = unsafe { CFNumber::wrap_under_get_rule(num_ref) };
-                            if let Some(i64v) = num.to_i64() {
-                                i64v as u64
-                            } else {
-                                let sd = v as CFDictionaryRef;
-                                if sd.is_null() {
-                                    0
-                                } else if let Some(n) = dict_get_cfnumber(sd, key_id64) {
-                                    n.to_i64().unwrap_or(0) as u64
-                                } else if let Some(n) = dict_get_cfnumber(sd, key_managed_id) {
-                                    n.to_i64().unwrap_or(0) as u64
-                                } else {
-                                    0
-                                }
-                            }
-                        };
                         if sid != 0
-                            && let Some((_, disp)) =
-                                space_to_display.iter().find(|(k, _)| *k == sid)
-                        {
-                            return Ok(CFString::new(disp));
-                        }
+                            && let Some((_, disp)) = space_to_display.iter().find(|(k, _)| *k == sid) {
+                                return Ok(CFString::new(disp));
+                            }
                     }
                 }
             }
@@ -1320,6 +1320,10 @@ pub fn move_to_space(window_id: WindowId, index: u32) -> Result<()> {
     let rc = unsafe { (sl.move_windows_to_managed_space)(conn, arr as CFTypeRef, target.id) };
     unsafe { CFRelease(arr as CFTypeRef) };
     if rc != 0 {
+        debug!(
+            "move_to_space_failed rc={} target_id={} index={}",
+            rc, target.id, index
+        );
         return Err(Error::Unsupported);
     }
     Ok(())
@@ -1344,7 +1348,10 @@ pub fn switch_to_space(window_id: WindowId, index: u32) -> Result<()> {
             let conn = unsafe { (sl.main_conn)() };
             let rc = unsafe { set_fn(conn, uuid.as_concrete_TypeRef(), target.id) };
             if rc != 0 {
-                debug!("failed_to_switch_space rc={}", rc);
+                debug!(
+                    "failed_to_switch_space rc={} target_id={} index={}",
+                    rc, target.id, index
+                );
             }
         } else {
             debug!("switch_space_unsupported_symbol_missing");

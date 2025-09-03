@@ -349,6 +349,34 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::SwitchSpace { index }) => {
+                // Resolve focused window-id, enumerate spaces and switch when in-range.
+                let pid = self.focus_handler.get_pid();
+                match mac_winops::focused_window_id(pid) {
+                    Ok(wid) => {
+                        match mac_winops::list_spaces(wid) {
+                            Ok(spaces) => {
+                                let count = spaces
+                                    .iter()
+                                    .filter(|s| matches!(s.kind, mac_winops::SpaceKind::User))
+                                    .count() as u32;
+                                if index < count {
+                                    let _ = mac_winops::switch_to_space(wid, index);
+                                } else {
+                                    // Out of bounds: ignore
+                                }
+                            }
+                            Err(e) => {
+                                let _ = self.notifier.send_error("Space", format!("{}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = self.notifier.send_error("Space", format!("{}", e));
+                    }
+                }
+                Ok(())
+            }
             Ok(KeyResponse::Place {
                 cols,
                 rows,

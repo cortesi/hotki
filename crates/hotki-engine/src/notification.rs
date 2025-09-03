@@ -76,6 +76,10 @@ impl NotificationDispatcher {
                 // Engine handles movement directly; no UI message.
                 Ok(())
             }
+            KeyResponse::SwitchSpace { .. } => {
+                // Engine handles space switch directly; no UI message.
+                Ok(())
+            }
         }
     }
 
