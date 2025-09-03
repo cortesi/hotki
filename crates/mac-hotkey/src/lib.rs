@@ -29,8 +29,6 @@ use thiserror::Error;
 use tracing::{debug, trace};
 
 use mac_keycode::{Chord, Key as Code, Modifier};
-
-mod keymap;
 mod policy;
 mod sys;
 

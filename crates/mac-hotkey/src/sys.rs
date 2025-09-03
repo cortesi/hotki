@@ -28,7 +28,7 @@ use core_graphics::event::{self as cge, CallbackResult};
 use crossbeam_channel::Sender;
 use tracing::{debug, trace, warn};
 
-use crate::{CallbackCtx, Event, EventKind, keymap, policy};
+use crate::{CallbackCtx, Event, EventKind, policy};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -112,7 +112,7 @@ pub fn run_event_loop(
                 cge::CGEventType::KeyDown | cge::CGEventType::KeyUp => {
                     let keycode =
                         event.get_integer_value_field(FIELD_KEYBOARD_EVENT_KEYCODE) as u16;
-                    if let Some(code) = keymap::code_from_scancode(keycode) {
+                    if let Some(code) = mac_keycode::Key::from_scancode(keycode) {
                         let flags = event.get_flags().bits();
                         let mods = mac_keycode::modifiers_from_cg_flags(flags);
                         let kind = if matches!(etype, cge::CGEventType::KeyDown) {

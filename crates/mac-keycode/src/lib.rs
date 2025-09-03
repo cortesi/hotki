@@ -20,3 +20,6 @@ pub use modifiers::{Modifier, modifiers_from_cg_flags};
 
 mod chord;
 pub use chord::Chord;
+
+mod scancode;
+pub use scancode::Scancode;
