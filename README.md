@@ -103,7 +103,7 @@ mode remaines active after the action - the default is to exit the mode on
 action). We also bind `shift+cmd+m` to exit the mode (but hide it from the HUD
 display) so we can toggle music mode on and off with the same key combo.
 
-Next, let's look at a very powerful technique to that combines focus matching
+Next, let's look at a very powerful technique that combines focus matching
 with key relaying to produce global hotkeys that work when specific apps have
 focus.
 

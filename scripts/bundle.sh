@@ -14,7 +14,7 @@ abort() { echo "error: $*" >&2; exit 1; }
 # Ensure we're on macOS
 [[ "$(uname)" == "Darwin" ]] || abort "This bundler only runs on macOS."
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." &> /dev/null && pwd)"
 cd "$ROOT_DIR"
 
 # Configurable via env; sensible defaults otherwise
