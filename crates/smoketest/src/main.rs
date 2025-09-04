@@ -152,6 +152,12 @@ fn main() {
             .with(tracing_subscriber::fmt::layer().without_time())
             .try_init();
     }
+
+    // Always build the hotki binary once at startup to avoid running against a stale build.
+    if !build_hotki_quiet() {
+        eprintln!("Failed to build 'hotki' binary. Try: cargo build -p hotki");
+        std::process::exit(1);
+    }
     match cli.command {
         Commands::Relay { .. } => repeat_relay(cli.duration),
         Commands::Shell { .. } => repeat_shell(cli.duration),
@@ -224,22 +230,17 @@ fn main() {
 
 //
 
-// Build the hotki binary quietly if it's missing. Returns true if the binary
-// exists afterwards. Build output is suppressed to avoid interleaved cargo logs.
-fn ensure_hotki_built_quiet() -> bool {
-    if util::resolve_hotki_bin().is_some() {
-        return true;
-    }
-    let status = Command::new("cargo")
-        .args(["build", "--bin", "hotki", "-q"]) // quiet: suppress progress
+// Build the hotki binary quietly (always). Returns true on success.
+// Output is suppressed to avoid interleaved cargo logs.
+fn build_hotki_quiet() -> bool {
+    Command::new("cargo")
+        .args(["build", "-q", "-p", "hotki"]) // build the package for the workspace
         .env("CARGO_TERM_COLOR", "never")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
-    if status.map(|s| s.success()).unwrap_or(false) {
-        return util::resolve_hotki_bin().is_some();
-    }
-    false
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 //
@@ -278,13 +279,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         std::process::exit(1);
     }
 
-    // Ensure the hotki app exists without interleaving cargo output.
-    if !ensure_hotki_built_quiet() {
-        eprintln!(
-            "Could not locate or build 'hotki' binary. Set HOTKI_BIN or run 'cargo build --bin hotki' first."
-        );
-        std::process::exit(1);
-    }
+    // hotki was built once at startup; no additional build needed here.
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
     match ui::run_ui_demo(timeout_ms) {
