@@ -997,7 +997,6 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             value: *mut CFTypeRef,
         ) -> i32;
         fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
-        fn AXUIElementCopyAttributeNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
         fn AXUIElementCopyActionNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
         fn AXUIElementIsAttributeSettable(
             element: *mut c_void,
@@ -1050,7 +1049,8 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         }
     }
 
-    let mut need_fallback = false;
+    // Track whether we need to fall back to app activation.
+    let need_fallback;
     if found.is_null() {
         info!(
             "raise_window: did not find AX window with id={} for pid={}",
