@@ -5,7 +5,7 @@ use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSNotification;
 use once_cell::sync::Lazy;
 use tao::event_loop::EventLoopProxy;
-use tracing::info;
+use tracing::debug;
 
 use super::event::FocusEvent;
 
@@ -110,7 +110,7 @@ pub fn install_ns_workspace_observer() -> Result<(), super::Error> {
                 center.addObserverForName_object_queue_usingBlock(None, None, None, &block);
             // Keep process-global observer alive implicitly; center retains the block.
             *installed = true;
-            info!("NSWorkspace observer installed");
+            debug!("NSWorkspace observer installed");
         }
         Ok(())
     } else {

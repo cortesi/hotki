@@ -178,22 +178,22 @@ fn main() {
             repeat_volume(std::cmp::max(cli.duration, 2000))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
-        Commands::Ui => match {
+        Commands::Ui => {
             heading("Test: ui");
-            ui::run_ui_demo(cli.timeout)
-        } {
-            Ok(sum) => {
-                println!(
-                    "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                    sum.hud_seen, sum.time_to_hud_ms
-                );
+            match ui::run_ui_demo(cli.timeout) {
+                Ok(sum) => {
+                    println!(
+                        "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                        sum.hud_seen, sum.time_to_hud_ms
+                    );
+                }
+                Err(e) => {
+                    eprintln!("ui: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("ui: ERROR: {}", e);
-                print_hints(&e);
-                std::process::exit(1);
-            }
-        },
+        }
         Commands::Screenshots { theme, dir } => {
             heading("Test: screenshots");
             match screenshot::run_screenshots(theme, dir, cli.timeout) {
@@ -210,22 +210,22 @@ fn main() {
                 }
             }
         }
-        Commands::Minui => match {
+        Commands::Minui => {
             heading("Test: minui");
-            ui::run_minui_demo(cli.timeout)
-        } {
-            Ok(sum) => {
-                println!(
-                    "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                    sum.hud_seen, sum.time_to_hud_ms
-                );
+            match ui::run_minui_demo(cli.timeout) {
+                Ok(sum) => {
+                    println!(
+                        "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                        sum.hud_seen, sum.time_to_hud_ms
+                    );
+                }
+                Err(e) => {
+                    eprintln!("minui: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("minui: ERROR: {}", e);
-                print_hints(&e);
-                std::process::exit(1);
-            }
-        },
+        }
         Commands::Preflight => {
             heading("Test: preflight");
             let ok = run_preflight();

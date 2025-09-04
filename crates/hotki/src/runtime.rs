@@ -2,7 +2,7 @@ use std::{collections::VecDeque, path::Path, process::Command, thread};
 
 use egui::Context;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{app::AppEvent, logs, permissions::check_permissions};
 use hotki_protocol::{MsgToUI, NotifyKind};
@@ -242,7 +242,7 @@ pub fn spawn_key_runtime(
                 error!("Failed to set config on server: {}", e);
                 return;
             }
-            info!("Config sent to server engine");
+            debug!("Config sent to server engine");
 
             // Load UI Config once; on Reload events the UI will refresh independently.
             let mut ui_config = match config::load_from_path(&config_path) {

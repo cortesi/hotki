@@ -90,7 +90,7 @@ impl Server {
         let manager = mac_hotkey::Manager::new().map_err(|e| {
             Error::HotkeyOperation(format!("Failed to create mac_hotkey::Manager: {e}"))
         })?;
-        info!("mac_hotkey::Manager created successfully");
+        debug!("mac_hotkey::Manager created successfully");
 
         // Create shutdown coordination
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -120,7 +120,7 @@ impl Server {
                 }
             };
 
-            info!("IPC server thread started, waiting for client connection...");
+            trace!("IPC server thread started, waiting for client connection...");
 
             // Run the IPC server
             runtime.block_on(async {
@@ -212,7 +212,7 @@ impl Server {
         // Run the event loop on the main thread without periodic polling; we
         // exclusively use user events (via EventLoopProxy) and explicit
         // WaitUntil deadlines for the idle timer.
-        info!("Starting tao event loop...");
+        trace!("Starting tao event loop...");
 
         // Track an idle shutdown deadline once the client disconnects.
         // None means no disconnect or timer canceled by activity.

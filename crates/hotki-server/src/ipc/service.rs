@@ -180,7 +180,7 @@ impl MrpcConnection for HotkeyService {
                 &[("message", Value::String("Server is shutting down".into()))],
             ));
         }
-        info!("Client connected via MRPC");
+        debug!("Client connected via MRPC");
 
         // Add client to list for event broadcasting
         self.clients.lock().await.push(client.clone());
@@ -264,7 +264,7 @@ impl MrpcConnection for HotkeyService {
                 }
 
                 let cfg = crate::ipc::rpc::dec_set_config_param(&params[0])?;
-                info!("Setting config via MRPC");
+                debug!("Setting config via MRPC");
 
                 // Ensure engine is initialized
                 if let Err(e) = self.ensure_engine_initialized().await {
@@ -375,7 +375,7 @@ impl HotkeyService {
             }
         });
 
-        info!("Focus watcher started");
+        debug!("Focus watcher started");
     }
 
     /// Start the hotkey event dispatcher

@@ -6,7 +6,7 @@ use hotki_server::Server;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
-use tracing::{error, info};
+use tracing::{debug, error};
 use tracing_subscriber::prelude::*;
 
 mod app;
@@ -120,9 +120,9 @@ fn main() -> eframe::Result<()> {
     };
 
     if cli.server {
-        info!("Starting server mode");
+        debug!("Starting server mode");
         let mut server = if let Some(path) = cli.socket {
-            info!("Using socket path: {}", path);
+            debug!("Using socket path: {}", path);
             Server::new().with_socket_path(path)
         } else {
             Server::new()

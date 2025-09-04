@@ -11,7 +11,7 @@ use std::{
 
 use mrpc::Server as MrpcServer;
 use tokio::{select, time::sleep};
-use tracing::info;
+use tracing::{debug, trace};
 
 use super::service::HotkeyService;
 use crate::{Error, Result};
@@ -45,7 +45,7 @@ impl IPCServer {
 
     /// Run the server
     pub async fn run(self) -> Result<()> {
-        info!("Starting MRPC server on socket: {}", self.socket_path);
+        trace!("Starting MRPC server on socket: {}", self.socket_path);
 
         // Remove existing socket file if it exists
         let _ = fs::remove_file(&self.socket_path);
@@ -64,7 +64,7 @@ impl IPCServer {
             .await
             .map_err(|e| Error::Ipc(format!("Failed to bind to socket: {}", e)))?;
 
-        info!("MRPC server listening, waiting for client connections...");
+        trace!("MRPC server listening, waiting for client connections...");
 
         // Run the server until shutdown is requested. Dropping the run future
         // will close the listener and active connections gracefully.
@@ -79,7 +79,7 @@ impl IPCServer {
                     sleep(Duration::from_millis(50)).await;
                 }
             } => {
-                info!("Shutdown flag set; stopping MRPC server");
+                debug!("Shutdown flag set; stopping MRPC server");
                 // server.run() future is dropped here, closing the socket and tasks
             }
         }

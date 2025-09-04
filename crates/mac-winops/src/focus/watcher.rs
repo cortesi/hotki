@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{
     ax::{AXState, ax_is_trusted},
@@ -20,7 +20,7 @@ pub fn start_watcher(tx: UnboundedSender<FocusEvent>) {
         let mut last_pid: i32 = -1;
         let mut ax = AXState::default();
         let mut warned_apps = HashSet::<String>::new();
-        info!("Watcher thread started");
+        debug!("Watcher thread started");
         loop {
             let (app, title, pid) = front_app_title_pid();
             if app != last_app {

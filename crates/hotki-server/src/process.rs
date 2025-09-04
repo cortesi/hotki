@@ -125,7 +125,7 @@ impl ServerProcess {
             ));
         }
 
-        info!("Starting server process: {:?}", self.config.executable);
+        debug!("Starting server process: {:?}", self.config.executable);
         debug!("Server args: {:?}", self.config.args);
 
         let mut command = Command::new(&self.config.executable);
@@ -148,7 +148,7 @@ impl ServerProcess {
         let child = command.spawn().map_err(Error::Io)?;
 
         let pid = child.id();
-        info!("Server process spawned with PID: {}", pid);
+        debug!("Server process spawned with PID: {}", pid);
 
         self.child = Some(child);
         self.is_running.store(true, Ordering::SeqCst);

@@ -63,10 +63,10 @@ impl KeyBindingManager {
         let removed_keys: Vec<String> = self.last_bound.difference(&desired).cloned().collect();
 
         if !added_keys.is_empty() {
-            info!("Adding keys: {:?}", added_keys);
+            debug!("Adding keys: {:?}", added_keys);
         }
         if !removed_keys.is_empty() {
-            info!("Removing keys: {:?}", removed_keys);
+            debug!("Removing keys: {:?}", removed_keys);
         }
 
         debug!(
@@ -75,9 +75,9 @@ impl KeyBindingManager {
             key_pairs.len()
         );
 
-        // Log all keys that will be active after this update (debug-level)
+        // Log all keys that will be active after this update (info-level)
         let all_keys: Vec<String> = key_pairs.iter().map(|(k, _)| k.clone()).collect();
-        debug!("Active keys after update: {:?}", all_keys);
+        info!("Keys rebound ({}): {:?}", all_keys.len(), all_keys);
 
         // Incremental update to avoid any interception gap:
         // 1) Unregister removed keys

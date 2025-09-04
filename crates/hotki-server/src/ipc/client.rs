@@ -23,7 +23,7 @@ pub struct Connection {
 impl Connection {
     /// Connect to the server and return a connection handle
     pub async fn connect_unix(socket_path: &str) -> Result<Connection> {
-        info!("Connecting to MRPC server at: {}", socket_path);
+        debug!("Connecting to MRPC server at: {}", socket_path);
 
         // Create event channel for receiving events from server
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -38,7 +38,7 @@ impl Connection {
             .await
             .map_err(|e| Error::Ipc(format!("Failed to connect: {}", e)))?;
 
-        info!("Connected to MRPC server");
+        info!("IPC client connected");
 
         Ok(Connection { client, event_rx })
     }

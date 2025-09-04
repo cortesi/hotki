@@ -110,10 +110,7 @@ impl Engine {
 
     async fn rebind_current_context(&self) -> Result<()> {
         let fs = self.focus_handler.get_focus_state();
-        info!(
-            "Rebinding with current context: app={}, title={}",
-            fs.app, fs.title
-        );
+        debug!("Rebinding with context: app={}, title={}", fs.app, fs.title);
         self.rebind_and_refresh(&fs.app, &fs.title).await
     }
 
@@ -211,7 +208,11 @@ impl Engine {
         {
             let update_start = Instant::now();
 
-            info!("Focus change: updating bindings synchronously");
+            let ctx = self.focus_handler.get_focus_state();
+            info!(
+                "Focus change: updating bindings (app={} title={})",
+                ctx.app, ctx.title
+            );
             // Single entrypoint: ensure context, update HUD, rebind
             self.rebind_current_context().await?;
 

@@ -173,7 +173,7 @@ impl Client {
         // Spawn a managed server if configured
         let mut spawned_server: Option<ServerProcess> = None;
         if let Some(server_config) = &self.server_config {
-            info!("Spawning new server at {}", self.socket_path);
+            debug!("Spawning new server at {}", self.socket_path);
             let mut server = ServerProcess::new(server_config.clone());
             server.start().await?;
             spawned_server = Some(server);
