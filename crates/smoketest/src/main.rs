@@ -17,6 +17,15 @@ struct Cli {
     /// Enable logging to stdout/stderr at info level (respect RUST_LOG)
     #[arg(long)]
     logs: bool,
+
+    /// Default duration for repeat tests in milliseconds
+    #[arg(long, default_value_t = 1000)]
+    duration: u64,
+
+    /// Default timeout for UI readiness and waits in milliseconds
+    #[arg(long, default_value_t = 10000)]
+    timeout: u64,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -25,25 +34,13 @@ struct Cli {
 enum Commands {
     /// Measure relay repeats posted to the focused window
     #[command(name = "repeat-relay")]
-    Relay {
-        /// Duration to hold in milliseconds
-        #[arg(long, default_value_t = 2000)]
-        time: u64,
-    },
+    Relay {},
     /// Measure number of shell invocations when repeating a shell command
     #[command(name = "repeat-shell")]
-    Shell {
-        /// Duration to hold in milliseconds
-        #[arg(long, default_value_t = 2000)]
-        time: u64,
-    },
+    Shell {},
     /// Measure repeats by incrementing system volume from zero
     #[command(name = "repeat-volume")]
-    Volume {
-        /// Duration to hold in milliseconds
-        #[arg(long, default_value_t = 2000)]
-        time: u64,
-    },
+    Volume {},
     /// Run all smoketests (repeats + UI demos)
     #[command(name = "all")]
     All,
@@ -77,13 +74,14 @@ fn main() {
             .try_init();
     }
     match cli.command {
-        Commands::Relay { time } => repeat_relay(time),
-        Commands::Shell { time } => repeat_shell(time),
-        Commands::Volume { time } => repeat_volume(time),
-        Commands::All => run_all_tests(),
-        Commands::Ui => run_ui_demo(),
-        Commands::Screenshots { theme, dir } => run_screenshots(theme, dir),
-        Commands::Minui => run_minui_demo(),
+        Commands::Relay { .. } => repeat_relay(cli.duration),
+        Commands::Shell { .. } => repeat_shell(cli.duration),
+        // Volume can be slightly slower; keep a floor to reduce flakiness
+        Commands::Volume { .. } => repeat_volume(std::cmp::max(cli.duration, 2000)),
+        Commands::All => run_all_tests(cli.duration, cli.timeout),
+        Commands::Ui => run_ui_demo(cli.timeout),
+        Commands::Screenshots { theme, dir } => run_screenshots(theme, dir, cli.timeout),
+        Commands::Minui => run_minui_demo(cli.timeout),
     }
 }
 
@@ -705,12 +703,11 @@ fn repeat_volume(ms: u64) {
     let _ = set_volume_abs(original_volume as u8);
 }
 
-fn run_all_tests() {
-    // Repeat tests: run for ~1s each (volume for 2s) and assert >= 3 repeats
-    const MS: u64 = 1000;
-    let relay = count_relay(MS);
-    let shell = count_shell(MS);
-    let volume = count_volume(2000);
+fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
+    // Repeat tests: use provided duration (with a floor for volume)
+    let relay = count_relay(duration_ms);
+    let shell = count_shell(duration_ms);
+    let volume = count_volume(std::cmp::max(duration_ms, 2000));
 
     let mut ok = true;
     if relay < 3 {
@@ -745,13 +742,13 @@ fn run_all_tests() {
     }
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
-    run_ui_demo();
-    run_minui_demo();
+    run_ui_demo(timeout_ms);
+    run_minui_demo(timeout_ms);
 
     println!("All smoketests passed");
 }
 
-fn run_screenshots(theme: Option<String>, dir: PathBuf) {
+fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) {
     // Resolve paths
     let cwd = std::env::current_dir().expect("cwd");
     let cfg_path = cwd.join("examples/test.ron");
@@ -823,7 +820,7 @@ fn run_screenshots(theme: Option<String>, dir: PathBuf) {
     let sock = hotki_server::socket_path_for_pid(hotki.id());
 
     // Wait for HUD visible
-    let seen_hud = ensure_hud_visible(&sock, 6000);
+    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
     if !seen_hud {
         eprintln!("HUD did not appear");
     }
@@ -885,7 +882,7 @@ fn run_screenshots(theme: Option<String>, dir: PathBuf) {
     let _ = hotki.wait();
 }
 
-fn run_ui_demo() {
+fn run_ui_demo(timeout_ms: u64) {
     // Resolve paths
     let cwd = std::env::current_dir().expect("cwd");
     let cfg_path = cwd.join("examples/test.ron");
@@ -916,7 +913,7 @@ fn run_ui_demo() {
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let seen_hud = ensure_hud_visible(&sock, 10000);
+    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
 
     // Drive a short theme cycle if HUD appeared (screenshots already taken above)
     let mut seq: Vec<&str> = Vec::new();
@@ -968,7 +965,7 @@ fn run_ui_demo() {
     }
 }
 
-fn run_minui_demo() {
+fn run_minui_demo(timeout_ms: u64) {
     // Prepare a minimal config with mini HUD and a theme submenu
     let ron = r#"(
         keys: [
@@ -1017,7 +1014,7 @@ fn run_minui_demo() {
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let seen_hud = ensure_hud_visible(&sock, 10000);
+    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
 
     // Relay keys to drive mini HUD: activate, enter theme tester, cycle, back
     let mut seq: Vec<String> = Vec::new();
