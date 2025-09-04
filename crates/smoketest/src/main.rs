@@ -10,6 +10,7 @@ mod repeat;
 mod screenshot;
 mod session;
 mod ui;
+mod util;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -226,7 +227,7 @@ fn main() {
 // Build the hotki binary quietly if it's missing. Returns true if the binary
 // exists afterwards. Build output is suppressed to avoid interleaved cargo logs.
 fn ensure_hotki_built_quiet() -> bool {
-    if ui::resolve_hotki_bin().is_some() {
+    if util::resolve_hotki_bin().is_some() {
         return true;
     }
     let status = Command::new("cargo")
@@ -236,7 +237,7 @@ fn ensure_hotki_built_quiet() -> bool {
         .stderr(Stdio::null())
         .status();
     if status.map(|s| s.success()).unwrap_or(false) {
-        return ui::resolve_hotki_bin().is_some();
+        return util::resolve_hotki_bin().is_some();
     }
     false
 }

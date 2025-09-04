@@ -1,24 +1,15 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    env, fs, process, thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
+use crate::util::resolve_hotki_bin;
 use crate::{SmkError, Summary, session::HotkiSession};
-
-pub(crate) fn resolve_hotki_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("HOTKI_BIN") {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hotki")))
-        .filter(|p| p.exists())
-}
 
 // ===== UI demos (no screenshot capture here) =====
 
 pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
-    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
+    let cwd = env::current_dir().map_err(SmkError::Io)?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
         return Err(SmkError::MissingConfig(cfg_path));
@@ -28,7 +19,7 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, true)?;
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    thread::sleep(Duration::from_millis(2000));
     let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
 
     let mut seq: Vec<&str> = Vec::new();
@@ -44,12 +35,12 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
         if let Some(ch) = mac_keycode::Chord::parse(s) {
             let relayer = relaykey::RelayKey::new_unlabeled();
             relayer.key_down(0, ch.clone(), false);
-            std::thread::sleep(down_ms);
+            thread::sleep(down_ms);
             relayer.key_up(0, ch);
-            std::thread::sleep(gap);
+            thread::sleep(gap);
         } else {
             eprintln!("failed to parse chord: {}", s);
-            std::thread::sleep(gap);
+            thread::sleep(gap);
         }
     }
 
@@ -79,26 +70,26 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
         ],
         style: (hud: (mode: mini)),
     )"#;
-    let cfg_path = std::env::temp_dir().join(format!(
+    let cfg_path = env::temp_dir().join(format!(
         "hotki-smoketest-minui-{}-{}.ron",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    std::fs::write(&cfg_path, ron).map_err(SmkError::Io)?;
+    fs::write(&cfg_path, ron).map_err(SmkError::Io)?;
 
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        let _ = std::fs::remove_file(&cfg_path);
+        let _ = fs::remove_file(&cfg_path);
         return Err(SmkError::HotkiBinNotFound);
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, false)?;
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    thread::sleep(Duration::from_millis(2000));
     let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
     if !seen_hud {
-        let _ = std::fs::remove_file(&cfg_path);
+        let _ = fs::remove_file(&cfg_path);
         sess.kill_and_wait();
         return Err(SmkError::HudNotVisible { timeout_ms });
     }
@@ -114,17 +105,17 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
         if let Some(ch) = mac_keycode::Chord::parse(&s) {
             let relayer = relaykey::RelayKey::new_unlabeled();
             relayer.key_down(0, ch.clone(), false);
-            std::thread::sleep(down_ms);
+            thread::sleep(down_ms);
             relayer.key_up(0, ch);
-            std::thread::sleep(gap);
+            thread::sleep(gap);
         } else {
             eprintln!("failed to parse chord: {}", s);
-            std::thread::sleep(gap);
+            thread::sleep(gap);
         }
     }
     sess.shutdown();
     sess.kill_and_wait();
-    let _ = std::fs::remove_file(&cfg_path);
+    let _ = fs::remove_file(&cfg_path);
 
     let mut sum = Summary::new();
     sum.hud_seen = seen_hud;
