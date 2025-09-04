@@ -285,12 +285,8 @@ pub fn spawn_key_runtime(
                             Ok(MsgToUI::HudUpdate { cursor }) => {
                                 current_cursor = cursor.clone();
                                 // Prefer app/title embedded on the cursor; fall back to message focus
-                                let (app_name, app_title) = cursor
-                                    .app_ref()
-                                    .map(|a| (a.app.as_str(), a.title.as_str()))
-                                    .unwrap_or(("", ""));
-                                // Compute UI-facing fields from our Config
-                                let vks = ui_config.hud_keys(&current_cursor, app_name, app_title);
+                                // Compute UI-facing fields from our Config using cursor context
+                                let vks = ui_config.hud_keys_ctx(&current_cursor);
                                 let visible_keys: Vec<(String, String, bool)> = vks
                                     .into_iter()
                                     .filter(|(_, _, attrs, _)| !attrs.hide())

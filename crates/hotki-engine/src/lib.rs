@@ -145,6 +145,11 @@ impl Engine {
             let st = self.state.lock().await;
             st.current_cursor()
         };
+        // Carry app/title on the cursor for downstream consumers
+        let cur_with_app = cur.clone().with_app(hotki_protocol::App {
+            app: app.to_string(),
+            title: title.to_string(),
+        });
         let hud_visible = cfg_guard.hud_visible(&cur);
         let capture = cfg_guard.mode_requests_capture(&cur);
         {
@@ -156,7 +161,7 @@ impl Engine {
         let start = Instant::now();
         let mut key_pairs: Vec<(String, Chord)> = Vec::new();
         let mut dedup = std::collections::HashSet::new();
-        let detailed = cfg_guard.hud_keys(&cur, app, title);
+        let detailed = cfg_guard.hud_keys_ctx(&cur_with_app);
         for (ch, _desc, _attrs, _is_mode) in detailed {
             let ident = ch.to_string();
             if dedup.insert(ident.clone()) {

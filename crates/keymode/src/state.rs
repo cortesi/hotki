@@ -318,7 +318,9 @@ impl State {
 
     /// Ensure context by popping while guards on the entering entries do not match.
     pub fn ensure_context(&mut self, cfg: &config::Config, app: &str, title: &str) -> bool {
-        cfg.ensure_context(&mut self.cursor, app, title)
+        let (next, changed) = config::CursorEnsureExt::ensure_in(&self.cursor, cfg, app, title);
+        self.cursor = next;
+        changed
     }
 
     /// Return the current cursor (version is set by the caller before sending to UI).

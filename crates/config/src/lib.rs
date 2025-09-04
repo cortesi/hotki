@@ -552,6 +552,19 @@ impl Config {
         }
     }
 
+    /// Resolve the action for a chord using app/title from the location's App context.
+    pub fn action_ctx(
+        &self,
+        loc: &Cursor,
+        chord: &mac_keycode::Chord,
+    ) -> Option<(Action, KeysAttrs, Option<usize>)> {
+        let (app, title) = loc
+            .app_ref()
+            .map(|a| (a.app.as_str(), a.title.as_str()))
+            .unwrap_or(("", ""));
+        self.action(loc, chord, app, title)
+    }
+
     // Compute merged mode attributes along the current path.
     fn merged_mode_attrs(&self, path: &[u32]) -> KeysAttrs {
         let mut cur = &self.keys;
@@ -715,6 +728,15 @@ impl Config {
         out
     }
 
+    /// Return visible keys for HUD using app/title from the location's App context.
+    pub fn hud_keys_ctx(&self, loc: &Cursor) -> Vec<(mac_keycode::Chord, String, KeysAttrs, bool)> {
+        let (app, title) = loc
+            .app_ref()
+            .map(|a| (a.app.as_str(), a.title.as_str()))
+            .unwrap_or(("", ""));
+        self.hud_keys(loc, app, title)
+    }
+
     /// Returns only the current frame's capture request (callers gate with HUD visibility).
     pub fn mode_requests_capture(&self, loc: &Cursor) -> bool {
         if loc.path().is_empty() {
@@ -722,14 +744,6 @@ impl Config {
         }
         let eff = self.merged_mode_attrs(loc.path());
         eff.capture()
-    }
-
-    /// Ensure the `Cursor` remains valid for the given focus context.
-    /// Returns true if the location changed.
-    pub fn ensure_context(&self, loc: &mut Cursor, app: &str, title: &str) -> bool {
-        let (next, changed) = CursorEnsureExt::ensure_in(loc, self, app, title);
-        *loc = next;
-        changed
     }
 }
 
@@ -1172,18 +1186,18 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut loc = Cursor::new(vec![0], false);
-        // Mismatch -> ensure_context should pop back to root
-        let changed = cfg.ensure_context(&mut loc, "Bar", "");
+        let loc = Cursor::new(vec![0], false);
+        // Mismatch -> ensure_in should pop back to root
+        let (loc_after, changed) = CursorEnsureExt::ensure_in(&loc, &cfg, "Bar", "");
         assert!(changed);
-        assert_eq!(loc.path(), &[]);
+        assert_eq!(loc_after.path(), &[]);
 
         // Match -> remains in mode and action available
-        let mut loc2 = Cursor::new(vec![0], false);
-        let changed2 = cfg.ensure_context(&mut loc2, "Foo", "");
+        let loc2 = Cursor::new(vec![0], false);
+        let (loc2_after, changed2) = CursorEnsureExt::ensure_in(&loc2, &cfg, "Foo", "");
         assert!(!changed2);
         let x = mac_keycode::Chord::parse("x").unwrap();
-        assert!(cfg.action(&loc2, &x, "Foo", "").is_some());
+        assert!(cfg.action(&loc2_after, &x, "Foo", "").is_some());
     }
 
     #[test]
