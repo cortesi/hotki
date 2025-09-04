@@ -364,7 +364,10 @@ fn ensure_hud_visible(sock: &str, timeout_ms: u64) -> bool {
             Err(e) => {
                 attempts += 1;
                 if Instant::now() >= deadline {
-                    eprintln!("Failed to connect to UI server after {} attempts: {}", attempts, e);
+                    eprintln!(
+                        "Failed to connect to UI server after {} attempts: {}",
+                        attempts, e
+                    );
                     return false;
                 }
                 // Longer initial delay for first few attempts to give server time to start

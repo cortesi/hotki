@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
-use crate::event::FocusEvent;
+use super::event::FocusEvent;
 
 /// Returns true if the process is trusted for Accessibility (AX) APIs.
 pub(crate) fn ax_is_trusted() -> bool {

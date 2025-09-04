@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use mac_focus_watcher::FocusEvent;
+use mac_winops::focus::FocusEvent;
 
 /// Represents the current focus state
 #[derive(Clone, Debug)]

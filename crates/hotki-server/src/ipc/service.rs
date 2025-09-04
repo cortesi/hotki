@@ -233,7 +233,7 @@ impl MrpcConnection for HotkeyService {
                 self.shutdown.store(true, Ordering::SeqCst);
 
                 // Wake the Tao event loop so it can observe shutdown promptly
-                let _ = mac_focus_watcher::wake_main_loop();
+                let _ = mac_winops::focus::wake_main_loop();
 
                 // Stop forwarding any further logs/events to clients
                 log_forward::clear_sink();
@@ -325,7 +325,7 @@ impl MrpcConnection for HotkeyService {
 
 impl HotkeyService {
     async fn start_focus_watcher(&self) {
-        use mac_focus_watcher::{FocusEvent, start_watcher};
+        use mac_winops::focus::{FocusEvent, start_watcher};
 
         let (tx_focus, mut rx_focus) = tokio::sync::mpsc::unbounded_channel::<FocusEvent>();
         if let Err(e) = start_watcher(tx_focus) {

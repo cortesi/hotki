@@ -24,6 +24,8 @@ use once_cell::sync::Lazy;
 use relaykey::RelayKey;
 use tracing::debug;
 
+pub mod focus;
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -508,7 +510,7 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         return Err(Error::Unsupported);
     }
     // Wake the Tao main loop to handle user event and drain ops
-    let _ = mac_focus_watcher::wake_main_loop();
+    let _ = crate::focus::wake_main_loop();
     Ok(())
 }
 
@@ -534,7 +536,7 @@ pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     {
         return Err(Error::Unsupported);
     }
-    let _ = mac_focus_watcher::wake_main_loop();
+    let _ = crate::focus::wake_main_loop();
     Ok(())
 }
 
@@ -565,7 +567,7 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     {
         return Err(Error::Unsupported);
     }
-    let _ = mac_focus_watcher::wake_main_loop();
+    let _ = crate::focus::wake_main_loop();
     Ok(())
 }
 

@@ -2215,7 +2215,6 @@ dependencies = [
  "hotki-protocol",
  "io-kit-sys",
  "keymode",
- "mac-focus-watcher",
  "mac-hotkey",
  "mac-keycode",
  "mac-winops",
@@ -2252,7 +2251,6 @@ dependencies = [
  "keymode",
  "libc",
  "log-forward",
- "mac-focus-watcher",
  "mac-hotkey",
  "mac-keycode",
  "mac-winops",
@@ -2749,23 +2747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mac-focus-watcher"
-version = "0.1.0"
-dependencies = [
- "block2 0.6.1",
- "core-foundation 0.10.1",
- "core-graphics 0.25.0",
- "objc2 0.6.2",
- "objc2-app-kit 0.3.1",
- "objc2-foundation 0.3.1",
- "once_cell",
- "tao",
- "thiserror 2.0.16",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "mac-hotkey"
 version = "0.1.0"
 dependencies = [
@@ -2795,16 +2776,18 @@ dependencies = [
 name = "mac-winops"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.1",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
- "mac-focus-watcher",
  "mac-keycode",
  "objc2 0.6.2",
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
  "once_cell",
  "relaykey",
+ "tao",
  "thiserror 2.0.16",
+ "tokio",
  "tracing",
 ]
 
