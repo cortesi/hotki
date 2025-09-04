@@ -1,19 +1,36 @@
 use std::{
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     path::{Path, PathBuf},
-    process::Command,
-    time::Duration,
+    process::{self, Command},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use core_foundation::dictionary::CFDictionaryRef;
+use core_foundation::{
+    array::CFArray,
+    base::{CFType, TCFType, TCFTypeRef},
+    dictionary::CFDictionary,
+    number::CFNumber,
+    string::CFString,
+};
+use core_graphics2::window::{
+    CGWindowListOption, copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowName,
+    kCGWindowNumber, kCGWindowOwnerPID,
 };
 
 use crate::{SmkError, Summary, session::HotkiSession};
 
 fn resolve_hotki_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("HOTKI_BIN") {
+    if let Ok(p) = env::var("HOTKI_BIN") {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return Some(pb);
         }
     }
-    std::env::current_exe()
+    env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("hotki")))
         .filter(|p| p.exists())
@@ -22,18 +39,6 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
 // ===== Window discovery and capture =====
 
 fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, (i32, i32, i32, i32))> {
-    use core_foundation::dictionary::CFDictionaryRef;
-    use core_foundation::{
-        array::CFArray,
-        base::{CFType, TCFType, TCFTypeRef},
-        dictionary::CFDictionary,
-        number::CFNumber,
-        string::CFString,
-    };
-    use core_graphics2::window::{
-        CGWindowListOption, copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowName,
-        kCGWindowNumber, kCGWindowOwnerPID,
-    };
     let arr: CFArray = copy_window_info(CGWindowListOption::OnScreenOnly, kCGNullWindowID)?;
     for item in arr.iter() {
         let dict_ref = unsafe { CFDictionaryRef::from_void_ptr(*item) };
@@ -77,7 +82,6 @@ fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, (i32, i32, i32, i
 }
 
 fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
-    use std::ffi::OsStr;
     if let Some((win_id, (x, y, w, h))) = find_window_by_title(pid, title) {
         let sanitized = name
             .chars()
@@ -95,7 +99,7 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
                 OsStr::new("-x"),
                 OsStr::new("-o"),
                 OsStr::new("-l"),
-                std::ffi::OsString::from(win_id.to_string()).as_os_str(),
+                OsString::from(win_id.to_string()).as_os_str(),
                 path.as_os_str(),
             ])
             .status();
@@ -121,7 +125,7 @@ pub(crate) fn run_screenshots(
     dir: PathBuf,
     timeout_ms: u64,
 ) -> Result<Summary, SmkError> {
-    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
+    let cwd = env::current_dir().map_err(SmkError::Io)?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
         return Err(SmkError::MissingConfig(cfg_path));
@@ -133,7 +137,7 @@ pub(crate) fn run_screenshots(
 
     // Optional theme override by writing a temp config
     let used_cfg_path = if let Some(name) = theme.clone() {
-        match std::fs::read_to_string(&cfg_path) {
+        match fs::read_to_string(&cfg_path) {
             Ok(s) => {
                 let mut out = String::new();
                 if s.contains("base_theme:") {
@@ -150,15 +154,15 @@ pub(crate) fn run_screenshots(
                 } else {
                     out = s;
                 }
-                let tmp = std::env::temp_dir().join(format!(
+                let tmp = env::temp_dir().join(format!(
                     "hotki-smoketest-shots-{}-{}.ron",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
+                    process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_nanos()
                 ));
-                if std::fs::write(&tmp, out).is_ok() {
+                if fs::write(&tmp, out).is_ok() {
                     tmp
                 } else {
                     cfg_path.clone()
@@ -173,28 +177,28 @@ pub(crate) fn run_screenshots(
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &used_cfg_path, true)?;
     let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
 
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = fs::create_dir_all(&dir);
     let pid = sess.pid();
-    let hud_ok = capture_window_by_id_or_rect(pid, "Hotki HUD", &dir, "001_hud");
+    let hud_ok = capture_window_by_id_or_rect(pid, "Hotki HUD", &dir, "hud");
 
     // Trigger notifications via chords
     let gap = Duration::from_millis(160);
     let down_ms = Duration::from_millis(80);
     for (k, name) in [
         ("t", None),
-        ("s", Some("002_notify_success")),
-        ("i", Some("003_notify_info")),
-        ("w", Some("004_notify_warning")),
-        ("e", Some("005_notify_error")),
+        ("s", Some("notify_success")),
+        ("i", Some("notify_info")),
+        ("w", Some("notify_warning")),
+        ("e", Some("notify_error")),
     ] {
         if let Some(ch) = mac_keycode::Chord::parse(k) {
             let relayer = relaykey::RelayKey::new_unlabeled();
             relayer.key_down(0, ch.clone(), false);
-            std::thread::sleep(down_ms);
+            thread::sleep(down_ms);
             relayer.key_up(0, ch);
-            std::thread::sleep(gap);
+            thread::sleep(gap);
             if let Some(n) = name {
-                std::thread::sleep(Duration::from_millis(120));
+                thread::sleep(Duration::from_millis(120));
                 let _ = capture_window_by_id_or_rect(pid, "Hotki Notification", &dir, n);
             }
         }
@@ -204,7 +208,7 @@ pub(crate) fn run_screenshots(
     if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
         let relayer = relaykey::RelayKey::new_unlabeled();
         relayer.key_down(0, ch.clone(), false);
-        std::thread::sleep(down_ms);
+        thread::sleep(down_ms);
         relayer.key_up(0, ch);
     }
     sess.shutdown();
