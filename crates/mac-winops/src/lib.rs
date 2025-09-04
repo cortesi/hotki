@@ -6,28 +6,31 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::c_void;
-use std::sync::Mutex;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    ffi::c_void,
+    sync::Mutex,
+};
 
-use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
-use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
-use core_foundation::dictionary::CFDictionaryRef;
-use core_foundation::string::{CFString, CFStringRef};
-// SkyLight functionality removed; no dynamic loading required here.
-use mac_keycode::{Chord, Key, Modifier};
-use objc2_app_kit::NSScreen;
-// For fallback app activation on main thread
-#[allow(unused_imports)]
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+use core_foundation::{
+    array::{CFArrayGetCount, CFArrayGetValueAtIndex},
+    base::{CFRelease, CFTypeRef, TCFType},
+    boolean::{kCFBooleanFalse, kCFBooleanTrue},
+    dictionary::CFDictionaryRef,
+    string::{CFString, CFStringRef},
+};
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
-use relaykey::RelayKey;
 use tracing::{debug, info, warn};
+
+use mac_keycode::{Chord, Key, Modifier};
+use relaykey::RelayKey;
 
 mod cfutil;
 pub mod focus;
+mod raise;
+pub use raise::raise_window;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -574,7 +577,7 @@ pub fn drain_main_ops() {
                 let _ = activate_pid(pid);
             }
             MainOp::RaiseWindow { pid, id } => {
-                let _ = raise_window_mainthread(pid, id);
+                let _ = crate::raise::raise_window(pid, id);
             }
         }
     }
@@ -982,162 +985,4 @@ fn activate_pid(pid: i32) -> Result<()> {
     } else {
         Err(Error::ActivationFailed)
     }
-}
-
-/// Raise a specific window by pid + CGWindowID via AX, with best-effort AppKit fallback.
-pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
-    ax_check()?;
-    let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    info!("raise_window: pid={} id={} (attempt AX)", pid, id);
-    unsafe extern "C" {
-        fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
-        fn AXUIElementCopyAttributeValue(
-            element: *mut c_void,
-            attr: CFStringRef,
-            value: *mut CFTypeRef,
-        ) -> i32;
-        fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
-        fn AXUIElementCopyActionNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
-        fn AXUIElementIsAttributeSettable(
-            element: *mut c_void,
-            attr: CFStringRef,
-            settable: *mut bool,
-        ) -> i32;
-        fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
-    }
-
-    info!("raise_window: creating AX app element for pid={}", pid);
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return Err(Error::AppElement);
-    }
-
-    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-    info!("raise_window: copying AXWindows for pid={}", pid);
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
-    if err != 0 || wins_ref.is_null() {
-        warn!("AXUIElementCopyAttributeValue(AXWindows) failed: {}", err);
-        unsafe { CFRelease(app as CFTypeRef) };
-        return Err(Error::AxCode(err));
-    }
-    info!("raise_window: AXWindows copied");
-
-    // Iterate windows array and locate matching AX window by AXWindowNumber
-    let mut found: *mut c_void = std::ptr::null_mut();
-    let arr: core_foundation::array::CFArray<*const c_void> =
-        unsafe { core_foundation::array::CFArray::wrap_under_create_rule(wins_ref as _) };
-    for i in 0..unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) } {
-        let wref = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
-        if wref.is_null() {
-            continue;
-        }
-        // Directly try AXWindowNumber; if unsupported, skip.
-        let mut num_ref: CFTypeRef = std::ptr::null_mut();
-        let err =
-            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
-        if err != 0 || num_ref.is_null() {
-            continue;
-        }
-        let cfnum =
-            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
-        let wid = cfnum.to_i64().unwrap_or(0) as u32;
-        info!("raise_window: candidate i={} wid={}", i, wid);
-        if wid == id {
-            found = wref;
-            info!("raise_window: matched AX window at i={} wid={}", i, wid);
-            break;
-        }
-    }
-
-    // Track whether we need to fall back to app activation.
-    let need_fallback;
-    if found.is_null() {
-        info!(
-            "raise_window: did not find AX window with id={} for pid={}",
-            id, pid
-        );
-        need_fallback = true;
-    } else {
-        // First set AXFocusedWindow to the target
-        info!("raise_window: setting AXFocusedWindow on app element");
-        let mut step_failed = false;
-        let mut settable = false;
-        let can_set = unsafe {
-            AXUIElementIsAttributeSettable(app, cfstr("AXFocusedWindow"), &mut settable);
-            settable
-        };
-        if can_set {
-            let set_err = unsafe {
-                AXUIElementSetAttributeValue(app, cfstr("AXFocusedWindow"), found as CFTypeRef)
-            };
-            if set_err != 0 {
-                warn!(
-                    "AXUIElementSetAttributeValue(AXFocusedWindow) failed: {}",
-                    set_err
-                );
-                step_failed = true;
-            }
-        } else {
-            info!("raise_window: AXFocusedWindow not settable; skipping set");
-            step_failed = true;
-        }
-        if !step_failed {
-            // Try hinting AXMain on the window (ignore error)
-            let _ = unsafe {
-                AXUIElementSetAttributeValue(found, cfstr("AXMain"), kCFBooleanTrue as CFTypeRef)
-            };
-            // Only call AXRaise if the app supports it to avoid potential exceptions
-            let mut acts_ref: CFTypeRef = std::ptr::null_mut();
-            let mut can_raise = false;
-            let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
-            if acts_err == 0 && !acts_ref.is_null() {
-                let arr = unsafe {
-                    core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
-                        acts_ref as _,
-                    )
-                };
-                unsafe {
-                    for j in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
-                        let name =
-                            CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), j) as CFStringRef;
-                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
-                            can_raise = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if can_raise {
-                let app_raise = unsafe { AXUIElementPerformAction(app, cfstr("AXRaise")) };
-                if app_raise != 0 {
-                    warn!("AXUIElementPerformAction(app, AXRaise) failed: {}", app_raise);
-                }
-            } else {
-                info!("raise_window: app does not support AXRaise; skipping action");
-            }
-        }
-        need_fallback = step_failed;
-    }
-
-    unsafe { CFRelease(app as CFTypeRef) };
-
-    if need_fallback {
-        if std::env::var("HOTKI_DISABLE_NSRAISE_FALLBACK").is_ok() {
-            info!(
-                "raise_window: NSRunningApplication fallback suppressed by HOTKI_DISABLE_NSRAISE_FALLBACK"
-            );
-        } else {
-            info!(
-                "raise_window: scheduling NSRunningApplication activation fallback for pid={}",
-                pid
-            );
-            let _ = request_activate_pid(pid);
-        }
-    }
-    Ok(())
-}
-
-// Helper used by MainOp::RaiseWindow (same as raise_window; kept separate for clarity if future divergence is needed)
-fn raise_window_mainthread(pid: i32, id: WindowId) -> Result<()> {
-    raise_window(pid, id)
 }

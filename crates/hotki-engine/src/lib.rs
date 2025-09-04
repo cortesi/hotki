@@ -473,7 +473,10 @@ impl Engine {
                             );
                             if let Err(e) = mac_winops::request_activate_pid(target.pid) {
                                 if let mac_winops::Error::MainThread = e {
-                                    tracing::warn!("Raise requires main thread; scheduling failed: {}", e);
+                                    tracing::warn!(
+                                        "Raise requires main thread; scheduling failed: {}",
+                                        e
+                                    );
                                 }
                                 let _ = self.notifier.send_error("Raise", format!("{}", e));
                             }

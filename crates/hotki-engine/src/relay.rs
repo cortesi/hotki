@@ -10,6 +10,7 @@ use mac_keycode::Chord;
 #[derive(Clone)]
 struct ActiveRelay {
     chord: Chord,
+    pid: i32,
 }
 
 /// Relay handler that forwards key events to the focused process.
@@ -49,16 +50,22 @@ impl RelayHandler {
         }
         self.active
             .lock()
-            .unwrap()
-            .insert(id, ActiveRelay { chord });
-        trace!(pid, "relay_start");
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), ActiveRelay { chord, pid });
+        trace!(pid, id = %id, "relay_start");
     }
 
     /// Repeat relay for an active id (posts a repeat KeyDown).
     pub fn repeat_relay(&self, id: &str, pid: i32) -> bool {
-        if let Some(a) = self.active.lock().unwrap().get(id) {
+        if let Some(a) = self
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+        {
             if let Some(ref relay) = self.relay_key {
-                relay.key_down(pid, a.chord.clone(), true);
+                relay.key_down(pid, a.chord, true);
             }
             true
         } else {
@@ -68,11 +75,18 @@ impl RelayHandler {
 
     /// Stop relaying for id (posts KeyUp and clears state).
     pub fn stop_relay(&self, id: &str, pid: i32) -> bool {
-        if let Some(a) = self.active.lock().unwrap().remove(id) {
+        if let Some(a) = self
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id)
+        {
             if let Some(ref relay) = self.relay_key {
-                relay.key_up(pid, a.chord.clone());
+                // Use the original pid to ensure the key-up matches the key-down target.
+                let target_pid = if a.pid != -1 { a.pid } else { pid };
+                relay.key_up(target_pid, a.chord);
             }
-            trace!(pid, "relay_stop");
+            trace!(pid = a.pid, id = %id, "relay_stop");
             true
         } else {
             false
@@ -80,11 +94,12 @@ impl RelayHandler {
     }
 
     /// Stop all relays (posts KeyUp for each active id, best-effort).
-    pub fn stop_all(&self, pid: i32) {
-        let mut map = self.active.lock().unwrap();
+    pub fn stop_all(&self, _pid: i32) {
+        let mut map = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref relay) = self.relay_key {
-            for (_id, a) in map.drain() {
-                relay.key_up(pid, a.chord.clone());
+            for (id, a) in map.drain() {
+                relay.key_up(a.pid, a.chord);
+                trace!(pid = a.pid, id = %id, "relay_stop_all_up");
             }
         } else {
             map.clear();

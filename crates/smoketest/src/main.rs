@@ -386,6 +386,18 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         }
     }
 
+    // Raise test: verify raise by title twice
+    heading("Test: raise");
+    match crate::raise::run_raise_test(timeout_ms, false) {
+        Ok(()) => println!("raise: OK (raised by title twice)"),
+        Err(e) => {
+            eprintln!("raise: ERROR: {}", e);
+            tracing::error!("raise test failed: {}", e);
+            print_hints(&e);
+            std::process::exit(1);
+        }
+    }
+
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
     heading("Test: ui");
     match ui::run_ui_demo(timeout_ms) {

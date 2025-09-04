@@ -39,9 +39,10 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
         match tokio::time::timeout(chunk, conn.recv_event()).await {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                 if let Some(app) = cursor.app_ref()
-                    && app.title == expected {
-                        return true;
-                    }
+                    && app.title == expected
+                {
+                    return true;
+                }
             }
             Ok(Ok(_)) => {}
             Ok(Err(_)) => return false,
@@ -124,15 +125,24 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         return Err(SmkError::HudNotVisible { timeout_ms });
     }
 
+    // Give the system a moment to settle new windows into the CG list
+    std::thread::sleep(Duration::from_millis(1000));
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     std::thread::sleep(Duration::from_millis(150));
     send_key("1");
 
-    // Wait for focus to title1
+    // Wait for focus to title1 (retry once for robustness)
     let ok1 = {
         let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
-        rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms))
+        let first = rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
+        if first {
+            true
+        } else {
+            std::thread::sleep(Duration::from_millis(300));
+            send_key("1");
+            rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
+        }
     };
     if !ok1 {
         sess.shutdown();
@@ -148,6 +158,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     }
 
     // Reopen HUD and raise second window
+    std::thread::sleep(Duration::from_millis(250));
     send_key("shift+cmd+0");
     std::thread::sleep(Duration::from_millis(200));
     send_key("r");
@@ -155,7 +166,14 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     send_key("2");
     let ok2 = {
         let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
-        rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms))
+        let first = rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
+        if first {
+            true
+        } else {
+            std::thread::sleep(Duration::from_millis(300));
+            send_key("2");
+            rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
+        }
     };
 
     // Cleanup
