@@ -6,11 +6,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+mod focus;
 mod repeat;
 mod screenshot;
 mod session;
 mod ui;
 mod util;
+mod winhelper;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -46,6 +48,18 @@ enum Commands {
     /// Run all smoketests (repeats + UI demos)
     #[command(name = "all")]
     All,
+    /// Verify focus tracking by activating a test window
+    Focus,
+    /// Internal helper: create a foreground window with a title for focus testing
+    #[command(hide = true, name = "focus-winhelper")]
+    FocusWinHelper {
+        /// Title to set on the helper window
+        #[arg(long)]
+        title: String,
+        /// How long to keep the window alive (ms)
+        #[arg(long, default_value_t = 30000)]
+        time: u64,
+    },
     /// Launch UI with test config and drive a short HUD + theme cycle
     Ui,
     /// Take HUD-only screenshots for a theme
@@ -85,6 +99,7 @@ enum SmkError {
     HotkiBinNotFound,
     SpawnFailed(String),
     HudNotVisible { timeout_ms: u64 },
+    FocusNotObserved { timeout_ms: u64, expected: String },
     CaptureFailed(&'static str),
     Io(std::io::Error),
 }
@@ -102,6 +117,14 @@ impl fmt::Display for SmkError {
                 f,
                 "HUD did not appear within {} ms (no HudUpdate depth>0)",
                 timeout_ms
+            ),
+            SmkError::FocusNotObserved {
+                timeout_ms,
+                expected,
+            } => write!(
+                f,
+                "did not observe matching focus title within {} ms (expected: '{}')",
+                timeout_ms, expected
             ),
             SmkError::CaptureFailed(which) => write!(f, "failed to capture {} window", which),
             SmkError::Io(e) => write!(f, "I/O error: {}", e),
@@ -126,6 +149,13 @@ fn print_hints(err: &SmkError) {
                 "      ensure the terminal/shell running smoketest is allowed under System Settings → Privacy & Security → Accessibility"
             );
             eprintln!("      also check hotki logs with --logs for server startup issues");
+        }
+        SmkError::FocusNotObserved { .. } => {
+            eprintln!(
+                "hint: ensure the smoketest window is frontmost (we call NSApplication.activate)"
+            );
+            eprintln!("      grant Accessibility permission for faster title updates (optional)");
+            eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
         }
         SmkError::CaptureFailed(_) => {
             eprintln!("hint: screencapture requires Screen Recording permission for the terminal");
@@ -178,6 +208,28 @@ fn main() {
             repeat_volume(std::cmp::max(cli.duration, 2000))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
+        Commands::Focus => {
+            heading("Test: focus");
+            match focus::run_focus_test(cli.timeout, cli.logs) {
+                Ok(out) => {
+                    println!(
+                        "focus: OK (title='{}', pid={}, time_to_match_ms={})",
+                        out.title, out.pid, out.elapsed_ms
+                    );
+                }
+                Err(e) => {
+                    eprintln!("focus: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::FocusWinHelper { title, time } => {
+            if let Err(e) = winhelper::run_focus_winhelper(&title, time) {
+                eprintln!("focus-winhelper: ERROR: {}", e);
+                std::process::exit(2);
+            }
+        }
         Commands::Ui => {
             heading("Test: ui");
             match ui::run_ui_demo(cli.timeout) {
@@ -305,6 +357,20 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     }
 
     // hotki was built once at startup; no additional build needed here.
+
+    // Focus test: verify engine observes a frontmost window title change
+    heading("Test: focus");
+    match crate::focus::run_focus_test(timeout_ms, false) {
+        Ok(out) => println!(
+            "focus: OK (title='{}', pid={}, time_to_match_ms={})",
+            out.title, out.pid, out.elapsed_ms
+        ),
+        Err(e) => {
+            eprintln!("focus: ERROR: {}", e);
+            print_hints(&e);
+            ok = false;
+        }
+    }
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
     heading("Test: ui");

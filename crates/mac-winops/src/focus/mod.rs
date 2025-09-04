@@ -17,8 +17,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use thiserror::Error;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// Snapshot of the current foreground application and focused window title.
 #[derive(Debug, Clone, PartialEq, Eq)]

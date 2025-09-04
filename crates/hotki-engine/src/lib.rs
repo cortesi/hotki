@@ -256,7 +256,10 @@ impl Engine {
             *g = snap.clone();
         }
         let start = Instant::now();
-        info!("Focus changed: app='{}' title='{}' pid={}", snap.app, snap.title, snap.pid);
+        info!(
+            "Focus changed: app='{}' title='{}' pid={}",
+            snap.app, snap.title, snap.pid
+        );
 
         // Update HUD and bindings with new context
         self.rebind_and_refresh(&snap.app, &snap.title).await?;
