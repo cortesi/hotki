@@ -99,7 +99,7 @@ true` modifier instructs Hotki to swallow all non-bound keys while the HUD is
 visible, preventing accidental input to the focused application. Once the music
 mode is active, we can adjust the volume with `j` and `k`, both of which have
 `repeat` enabled (letting us hold down the key to repeat) and `noexit` (so the
-mode remaines active after the action - the default is to exit the mode on
+mode remains active after the action - the default is to exit the mode on
 action). We also bind `shift+cmd+m` to exit the mode (but hide it from the HUD
 display) so we can toggle music mode on and off with the same key combo.
 
@@ -181,10 +181,10 @@ Below is a table of all supported key binding actions.
         <pre lang="ron">
 # Simple form
 shell("echo 'Hello'")
-# With attributes
+# With default attributes
 shell(
     "echo 'Hello'",
-    (ok_notify: success, err_notify: error)
+    (ok_notify: ignore, err_notify: warn)
 )
         </pre>
     </td>
