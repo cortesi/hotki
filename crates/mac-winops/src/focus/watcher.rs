@@ -44,7 +44,7 @@ pub fn start_watcher(tx: UnboundedSender<FocusEvent>) {
 
                 if ax_is_trusted() && pid > 0 && !should_skip {
                     match ax.attach(pid, tx.clone()) {
-                        Ok(()) => info!("AX attached to app '{}'", app),
+                        Ok(()) => debug!("AX attached to app '{}'", app),
                         Err(e) => {
                             // Only log once per app to reduce noise; downgrade -25204 to debug
                             if !warned_apps.contains(&app) {
@@ -68,7 +68,7 @@ pub fn start_watcher(tx: UnboundedSender<FocusEvent>) {
 
                 if !should_skip {
                     match ax.attach(last_pid, tx.clone()) {
-                        Ok(()) => info!("AX attached to app '{}' (permission granted)", last_app),
+                        Ok(()) => debug!("AX attached to app '{}' (permission granted)", last_app),
                         Err(e) => {
                             // Only log once per app; downgrade -25204 to debug
                             if !warned_apps.contains(&last_app) {

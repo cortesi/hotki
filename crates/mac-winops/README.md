@@ -1,5 +1,13 @@
 # mac-winops
 
-mac-winops provides macOS window operations for Hotki, centered on working with Mission Control Spaces (listing, querying the current one, moving windows between Spaces, and optionally switching the user’s view).
+Window operations for Hotki on macOS:
 
-Private frameworks: This crate calls Apple’s private SkyLight/CGS APIs, loaded dynamically at runtime. If an expected symbol is missing on a given macOS version, the operation returns an Unsupported error. We do not perform Dock injection, scripting additions, UI scripting, or SIP-related changes—just function calls exposed by the WindowServer.
+- Native fullscreen (AXFullScreen) and non‑native “maximize to visible frame”.
+- Grid snapping and movement of the focused window.
+- Focus watching (foreground app and title).
+
+Requirements
+
+- macOS only. Uses public AX/CG/AppKit APIs (no private frameworks).
+- Accessibility permission required for window operations.
+- Some operations must run on the AppKit main thread; the server posts a Tao user event and drains a main‑thread queue.

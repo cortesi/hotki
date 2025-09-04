@@ -35,6 +35,9 @@ pub enum Error {
 /// - Posts a Tao `UserEvent(())` via the proxy set by [`set_main_proxy`],
 ///   requesting installation of the NSWorkspace observer on the main thread.
 /// - Spawns the background watcher thread which emits [`FocusEvent`]s to `tx`.
+///
+/// Requires the caller to provide the Tao `EventLoopProxy<()>` to [`set_main_proxy`]
+/// on the main thread before starting. Accessibility permission is required for AX.
 pub fn start_watcher(tx: UnboundedSender<FocusEvent>) -> Result<(), Error> {
     ns::set_ns_sink(tx.clone());
     ns::request_ns_observer_install()?;

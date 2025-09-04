@@ -245,8 +245,8 @@ fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
 ///
-/// Strategy: prefer AXFullScreen. If unsupported or fails, synthesize the
-/// standard ⌃⌘F shortcut via `relaykey`.
+/// Requires Accessibility permission. If AXFullScreen is not available, the
+/// function synthesizes the standard ⌃⌘F shortcut as a fallback.
 pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
     ax_check()?;
     let win = focused_window_for_pid(pid)?;
@@ -287,7 +287,8 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
 /// Toggle or set non‑native full screen (maximize to visible frame in current Space)
 /// for the focused window of `pid`.
 ///
-/// Requires AppKit main thread (uses NSScreen visibleFrame).
+/// Requires Accessibility permission and must run on the AppKit main thread
+/// (uses `NSScreen::visibleFrame`).
 pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     ax_check()?;
     // For visibleFrame we need AppKit; require main thread.
@@ -444,8 +445,8 @@ enum MainOp {
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-/// Schedule a non‑native fullscreen operation to be executed on the main thread and
-/// wake the Tao event loop via mac-focus-watcher.
+/// Schedule a non‑native fullscreen operation to be executed on the AppKit main
+/// thread and wake the Tao event loop.
 pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     if MAIN_OPS
         .lock()
@@ -461,7 +462,7 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
 /// Schedule a window placement operation to snap the focused window into a
 /// grid cell on the current screen's visible frame. Runs on the AppKit main
-/// thread and wakes the Tao event loop via mac-focus-watcher.
+/// thread and wakes the Tao event loop.
 pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
@@ -493,7 +494,7 @@ pub enum MoveDir {
     Down,
 }
 
-/// Schedule a window movement within a grid.
+/// Schedule a window movement within a grid on the AppKit main thread.
 pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
@@ -516,8 +517,8 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     Ok(())
 }
 
-/// Drain and execute any pending main-thread operations. Must be called from the Tao main thread
-/// (e.g., inside the Event::UserEvent handler in hotki-server).
+/// Drain and execute any pending main-thread operations. Call from the Tao main thread
+/// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
 pub fn drain_main_ops() {
     loop {
         let op_opt = MAIN_OPS.lock().ok().and_then(|mut q| q.pop_front());
@@ -628,6 +629,35 @@ fn cell_rect(
         tile_h
     };
     (x, y, w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{approx_eq_eps, cell_rect};
+
+    #[test]
+    fn approx_eq_eps_basic() {
+        assert!(approx_eq_eps(1.0, 1.0, 0.0));
+        assert!(approx_eq_eps(1.0, 1.000_5, 0.001));
+        assert!(!approx_eq_eps(1.0, 1.01, 0.001));
+    }
+
+    #[test]
+    fn cell_rect_corners_and_remainders() {
+        // Visible frame 100x100, 3x2 grid -> tile 33x50 with remainders w:1, h:0
+        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
+        // top-left (col 0, row 1 in top-left origin mapping)
+        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
+        assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
+
+        // top-right should absorb remainder width
+        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 1);
+        assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
+
+        // bottom row (row 0) gets full tile height; top row (row 1) as above
+        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
+        assert_eq!(y2, 50.0);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
