@@ -83,6 +83,8 @@ pub enum Error {
     MainThread,
     #[error("Unsupported attribute")]
     Unsupported,
+    #[error("Main-thread queue poisoned or push failed")]
+    QueuePoisoned,
     #[error("Invalid index")]
     InvalidIndex,
 }
@@ -362,11 +364,24 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
 // Compute the visible frame (excluding menu bar and Dock) of the screen
 // containing `p`. Falls back to main screen when not found.
-fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
+#[allow(dead_code)]
+enum FrameKind {
+    Visible,
+    Full,
+}
+
+fn frame_containing_point_with(
+    mtm: MainThreadMarker,
+    p: CGPoint,
+    kind: FrameKind,
+) -> (f64, f64, f64, f64) {
     let screens = NSScreen::screens(mtm);
     let mut chosen = None;
     for s in screens.iter() {
-        let fr = s.frame();
+        let fr = match kind {
+            FrameKind::Visible => s.visibleFrame(),
+            FrameKind::Full => s.frame(),
+        };
         let x = fr.origin.x;
         let y = fr.origin.y;
         let w = fr.size.width;
@@ -377,14 +392,22 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
         }
     }
     let rect = if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
-        scr.visibleFrame()
+        match kind {
+            FrameKind::Visible => scr.visibleFrame(),
+            FrameKind::Full => scr.frame(),
+        }
     } else {
-        // Fallback to the first screen's frame if visible is unavailable
-        NSScreen::screens(mtm)
-            .iter()
-            .next()
-            .map(|s| s.visibleFrame())
-            .unwrap_or_else(|| NSScreen::mainScreen(mtm).unwrap().visibleFrame())
+        // Fallback to the first screen
+        match NSScreen::screens(mtm).iter().next() {
+            Some(s) => match kind {
+                FrameKind::Visible => s.visibleFrame(),
+                FrameKind::Full => s.frame(),
+            },
+            None => match kind {
+                FrameKind::Visible => NSScreen::mainScreen(mtm).unwrap().visibleFrame(),
+                FrameKind::Full => NSScreen::mainScreen(mtm).unwrap().frame(),
+            },
+        }
     };
     (
         rect.origin.x,
@@ -392,6 +415,10 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
         rect.size.width,
         rect.size.height,
     )
+}
+
+fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
+    frame_containing_point_with(mtm, p, FrameKind::Visible)
 }
 
 /// Queue of operations that must run on the AppKit main thread.
@@ -425,10 +452,10 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         .map(|mut q| q.push_back(MainOp::FullscreenNonNative { pid, desired }))
         .is_err()
     {
-        return Err(Error::Unsupported);
+        return Err(Error::QueuePoisoned);
     }
     // Wake the Tao main loop to handle user event and drain ops
-    let _ = crate::focus::wake_main_loop();
+    let _ = crate::focus::post_user_event();
     Ok(())
 }
 
@@ -452,9 +479,9 @@ pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         })
         .is_err()
     {
-        return Err(Error::Unsupported);
+        return Err(Error::QueuePoisoned);
     }
-    let _ = crate::focus::wake_main_loop();
+    let _ = crate::focus::post_user_event();
     Ok(())
 }
 
@@ -483,9 +510,9 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
         })
         .is_err()
     {
-        return Err(Error::Unsupported);
+        return Err(Error::QueuePoisoned);
     }
-    let _ = crate::focus::wake_main_loop();
+    let _ = crate::focus::post_user_event();
     Ok(())
 }
 
@@ -532,43 +559,20 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
 
     // Read current frame to find screen containing the window's point
     let cur_p = ax_get_point(win, attr_pos)?;
-    let vf = visible_frame_containing_point(mtm, cur_p);
-    let vf_x = vf.0;
-    let vf_y = vf.1;
-    let vf_w = vf.2.max(1.0);
-    let vf_h = vf.3.max(1.0);
-
-    // Compute base tile sizes and remainders so last column/row absorb leftover pixels
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
-    let rem_w = vf_w - tile_w * (cols as f64);
-    let rem_h = vf_h - tile_h * (rows as f64);
-
-    // Bounds clamp defensively; config/keymode should already validate
+    let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+    // Clamp to grid bounds defensively
     let col = col.min(cols.saturating_sub(1));
     let row = row.min(rows.saturating_sub(1));
-
-    // X/width
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
-        tile_w + rem_w
-    } else {
-        tile_w
-    };
-
-    // Y/height: top-left is (0,0), macOS origin is bottom-left; bottom row gets remainder
-    let y = if row == rows.saturating_sub(1) {
-        vf_y
-    } else {
-        vf_y + rem_h + tile_h * ((rows - 1 - row) as f64)
-    };
-    let h = if row == rows.saturating_sub(1) {
-        tile_h + rem_h
-    } else {
-        tile_h
-    };
+    let (x, y, w, h) = cell_rect(
+        vf_x,
+        vf_y,
+        vf_w.max(1.0),
+        vf_h.max(1.0),
+        cols,
+        rows,
+        col,
+        row,
+    );
 
     // Set position first, then size to avoid initial height clamping by AppKit
     ax_set_point(win, attr_pos, CGPoint { x, y })?;

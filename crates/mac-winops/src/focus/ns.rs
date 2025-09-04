@@ -50,7 +50,7 @@ pub(crate) fn request_ns_observer_install() -> Result<(), super::Error> {
 }
 
 /// Post a generic Tao `UserEvent(())` to wake the main event loop.
-pub fn wake_main_loop() -> Result<(), super::Error> {
+pub fn post_user_event() -> Result<(), super::Error> {
     request_ns_observer_install()
 }
 

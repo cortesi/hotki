@@ -179,7 +179,7 @@ impl Server {
                                 );
                                 // Parent exited; request shutdown.
                                 shutdown_for_parent.store(true, Ordering::SeqCst);
-                                let _ = mac_winops::focus::wake_main_loop();
+                                let _ = mac_winops::focus::post_user_event();
                                 let _ = libc::close(kq);
                                 return;
                             } else {
@@ -196,7 +196,7 @@ impl Server {
                             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
                         if !alive {
                             shutdown_for_parent.store(true, Ordering::SeqCst);
-                            let _ = mac_winops::focus::wake_main_loop();
+                            let _ = mac_winops::focus::post_user_event();
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(100));

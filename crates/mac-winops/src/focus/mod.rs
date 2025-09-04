@@ -11,7 +11,7 @@ mod ns;
 mod watcher;
 
 pub use event::FocusEvent;
-pub use ns::{install_ns_workspace_observer, set_main_proxy, wake_main_loop};
+pub use ns::{install_ns_workspace_observer, post_user_event, set_main_proxy};
 
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;

@@ -49,7 +49,7 @@ pub fn start_watcher(tx: UnboundedSender<FocusEvent>) {
                             // Only log once per app to reduce noise; downgrade -25204 to debug
                             if !warned_apps.contains(&app) {
                                 match e {
-                                    super::ax::Error::AddNotification(-25204) => {
+                                    super::ax::Error::AddNotificationAlreadyRegistered => {
                                         debug!("AX attach non-fatal for app '{}': {}", app, e)
                                     }
                                     _ => warn!("AX attach failed for app '{}': {}", app, e),

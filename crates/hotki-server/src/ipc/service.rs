@@ -233,7 +233,7 @@ impl MrpcConnection for HotkeyService {
                 self.shutdown.store(true, Ordering::SeqCst);
 
                 // Wake the Tao event loop so it can observe shutdown promptly
-                let _ = mac_winops::focus::wake_main_loop();
+                let _ = mac_winops::focus::post_user_event();
 
                 // Stop forwarding any further logs/events to clients
                 log_forward::clear_sink();

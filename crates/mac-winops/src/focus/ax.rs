@@ -27,12 +27,16 @@ pub(crate) struct AXState {
     ctx_ptr: *mut c_void,
 }
 
+const AX_ERR_NOTIFICATION_ALREADY_REGISTERED: i32 = -25204;
+
 #[derive(Debug, Error)]
 pub(crate) enum Error {
     #[error("AXObserverCreate failed: {0}")]
     ObserverCreate(i32),
     #[error("AXUIElementCreateApplication returned null")]
     AppElementNull,
+    #[error("AXObserverAddNotification: already registered")]
+    AddNotificationAlreadyRegistered,
     #[error("AXObserverAddNotification failed: {0}")]
     AddNotification(i32),
     #[error("AXObserverGetRunLoopSource returned null")]
@@ -132,7 +136,11 @@ impl AXState {
                 CFRelease(app_elem as CFTypeRef);
                 CFRelease(observer as CFTypeRef);
                 let _ = Box::<AXCtx>::from_raw(ctx_ptr as *mut AXCtx);
-                return Err(Error::AddNotification(err));
+                return Err(if err == AX_ERR_NOTIFICATION_ALREADY_REGISTERED {
+                    Error::AddNotificationAlreadyRegistered
+                } else {
+                    Error::AddNotification(err)
+                });
             }
 
             let source = AXObserverGetRunLoopSource(observer);
