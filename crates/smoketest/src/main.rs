@@ -178,7 +178,10 @@ fn main() {
             repeat_volume(std::cmp::max(cli.duration, 2000))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
-        Commands::Ui => match { heading("Test: ui"); ui::run_ui_demo(cli.timeout) } {
+        Commands::Ui => match {
+            heading("Test: ui");
+            ui::run_ui_demo(cli.timeout)
+        } {
             Ok(sum) => {
                 println!(
                     "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -207,7 +210,10 @@ fn main() {
                 }
             }
         }
-        Commands::Minui => match { heading("Test: minui"); ui::run_minui_demo(cli.timeout) } {
+        Commands::Minui => match {
+            heading("Test: minui");
+            ui::run_minui_demo(cli.timeout)
+        } {
             Ok(sum) => {
                 println!(
                     "minui: OK (hud_seen={}, time_to_hud_ms={:?})",

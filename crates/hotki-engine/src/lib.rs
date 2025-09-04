@@ -118,7 +118,7 @@ impl Engine {
     }
 
     async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
-        tracing::info!("update_context: start app={} title={}", app, title);
+        tracing::debug!("start app={} title={}", app, title);
         let cfg_guard = self.config.read().await;
 
         // Ensure valid context first
@@ -138,7 +138,6 @@ impl Engine {
             self.notifier
                 .send_hud_update_cursor(cursor, app.to_string(), title.to_string())?;
         }
-        tracing::debug!("update_context: hud updated");
 
         // Determine capture policy via Config + Location
         let cur = {
@@ -166,15 +165,9 @@ impl Engine {
         // Keep bind ordering stable for reduced churn and better diffs/logging
         key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let key_count = key_pairs.len();
-        tracing::debug!(
-            "update_context: capture gating hud_visible={} capture={}",
-            hud_visible,
-            capture
-        );
         let mut manager = self.binding_manager.lock().await;
         if manager.update_bindings(key_pairs)? {
-            tracing::debug!("update_context: bindings updated, clearing repeater + relay");
-            debug!("Bindings changed, clearing repeater and relay");
+            tracing::debug!("bindings updated, clearing repeater + relay");
             // Async clear to avoid blocking the runtime thread
             self.repeater.clear_async().await;
             let pid = self.focus_handler.get_pid();
@@ -193,7 +186,6 @@ impl Engine {
                 elapsed, key_count
             );
         }
-        tracing::info!("update_context: done for app={} title={}", app, title);
         Ok(())
     }
 

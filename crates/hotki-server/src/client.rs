@@ -260,7 +260,7 @@ impl Client {
             match self.try_connect().await {
                 Ok(connection) => return Ok(connection),
                 Err(e) => {
-                    warn!("Connection attempt {} failed: {}", attempt, e);
+                    debug!("Connection attempt {} failed: {}", attempt, e);
                     last_error = Some(e);
                     if attempt < CONNECT_MAX_ATTEMPTS {
                         sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS)).await;

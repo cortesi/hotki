@@ -93,29 +93,28 @@ impl HotkiSession {
             let chunk = std::cmp::min(left, Duration::from_millis(300));
             let res = rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
             match res {
-                Ok(Ok(msg)) => match msg {
-                    hotki_protocol::MsgToUI::HudUpdate { cursor, .. } => {
+                Ok(Ok(msg)) => {
+                    if let hotki_protocol::MsgToUI::HudUpdate { cursor, .. } = msg {
                         let depth = cursor.depth();
                         let visible = cursor.viewing_root || depth > 0;
                         if visible {
                             return (true, start.elapsed().as_millis() as u64);
                         }
                     }
-                    _ => {}
-                },
+                }
                 Ok(Err(_)) => break,
                 Err(_) => {}
             }
-            if let Some(last) = last_sent {
-                if last.elapsed() >= Duration::from_millis(1000) {
-                    if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-                        let pid = 0;
-                        relayer.key_down(pid, ch.clone(), false);
-                        std::thread::sleep(Duration::from_millis(80));
-                        relayer.key_up(pid, ch);
-                    }
-                    last_sent = Some(Instant::now());
+            if let Some(last) = last_sent
+                && last.elapsed() >= Duration::from_millis(1000)
+            {
+                if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
+                    let pid = 0;
+                    relayer.key_down(pid, ch.clone(), false);
+                    std::thread::sleep(Duration::from_millis(80));
+                    relayer.key_up(pid, ch);
                 }
+                last_sent = Some(Instant::now());
             }
         }
         (false, start.elapsed().as_millis() as u64)
