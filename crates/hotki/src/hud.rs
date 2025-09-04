@@ -136,31 +136,25 @@ impl Hud {
         }
     }
 
-    /// Update the displayed keys, compute visibility, and record parent title.
+    /// Update the displayed keys, externally-computed visibility, and parent title.
     pub fn set_keys(
         &mut self,
         keys: Vec<(String, String, bool)>,
-        depth: usize,
+        visible: bool,
         parent_title: Option<String>,
     ) {
         self.keys = keys;
         self.parent_title = parent_title.filter(|s| !s.trim().is_empty());
-        let new_visible = match self.cfg.mode {
-            Mode::Hide => false,
-            Mode::Hud => depth > 0,
-            Mode::Mini => depth > 0 && self.parent_title.is_some(),
-        };
-        if new_visible && !self.visible {
+        if visible && !self.visible {
             // Force a position recompute and apply on next show
             self.last_pos = None;
         }
-        self.visible = new_visible;
+        self.visible = visible;
     }
 
-    /// Get the current keys and visibility state (returns keys and depth)
-    pub fn get_state(&self) -> (Vec<(String, String, bool)>, usize, Option<String>) {
-        let depth = if self.visible { 1 } else { 0 };
-        (self.keys.clone(), depth, self.parent_title.clone())
+    /// Get the current keys and visibility state (returns keys and visible flag)
+    pub fn get_state(&self) -> (Vec<(String, String, bool)>, bool, Option<String>) {
+        (self.keys.clone(), self.visible, self.parent_title.clone())
     }
 
     /// Get the active screen frame as `(x, y, w, h, global_top)`.
