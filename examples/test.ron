@@ -16,8 +16,8 @@
                 ("e", "Simple echo", shell("echo hi", (ok_notify: success))),
                 ("s", "Sleep 5s", shell("sleep 5; echo slept 5s", (ok_notify: success))),
                 // Shell repeat examples (repeat settings live in binding attrs)
-                ("r", "Repeat Shell Default", shell("echo tick"), (noexit: true)),
-                ("R", "Repeat Shell Custom", shell("echo tick"), (noexit: true, repeat_delay: 250, repeat_interval: 350)),
+                ("r", "Repeat Shell Default", shell("echo tick", (ok_notify: success)), (noexit: true, repeat: true)),
+                ("t", "Repeat Shell Custom", shell("echo tock", (ok_notify: success)), (noexit: true, repeat: true, repeat_delay: 250, repeat_interval: 350)),
             ])),
 
             ("r", "Relay", keys([
@@ -25,7 +25,6 @@
                 // Relay repeat examples (attrs apply to relay too)
                 ("b", "Repeat Relay Custom", relay("shift+x"), (noexit: true, repeat: true, repeat_delay: 200, repeat_interval: 300)),
             ])),
-            
 
             ("w", "Window Operations", keys([
                 ("f", "Fullcreen", fullscreen(toggle)),
@@ -43,21 +42,18 @@
                 ])),
             ]), (noexit: true)),
 
-            
             ("m", "Media", keys([
                 // For media playback, use shell commands specific to your apps
                 // Examples for Spotify:
                 ("space", "Play/Pause", shell("osascript -e 'tell application \"Spotify\" to playpause'")),
                 ("n", "Next", shell("osascript -e 'tell application \"Spotify\" to next track'")),
                 ("b", "Previous", shell("osascript -e 'tell application \"Spotify\" to previous track'")),
-
                 ("1", "10%", set_volume(10), (noexit: true)),
                 ("5", "50%", set_volume(50), (noexit: true)),
                 ("m", "mute", mute(toggle), (noexit: true)),
                 ("up", "Up 10", change_volume(10), (noexit: true)),
                 ("down", "Down 10", change_volume(-10), (noexit: true)),
             ])),
-
 
             ("t", "Theme tester", keys([
                 ("h", "Theme Prev", theme_prev, (noexit: true)),
@@ -68,7 +64,7 @@
                 ("e", "Error", shell("echo this is an error window && false", (err_notify: error)), (noexit: true)),
                 ("u", "User Style", user_style(toggle), (noexit: true)),
                 (
-                    "m", "Mini", 
+                    "m", "Mini",
                     keys([
                         ("h", "Theme Prev", theme_prev, (noexit: true)),
                         ("l", "Theme Next", theme_next, (noexit: true)),
@@ -101,12 +97,12 @@
                         }
                       }
                       exit
-                    }'  
+                    }'
                 ", (ok_notify: success)), (noexit: true)),
                 ("shift+i", "Long Info", shell("
                     awk -v F=%c '
                     BEGIN{
-ta                     srand()
+                      srand()
                       for(i=10;i--;){
                         for(j=int(rand()*10)+1;j--;){
                           for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
@@ -114,8 +110,8 @@ ta                     srand()
                         }
                       }
                       exit
-                    }'  
-                "), (noexit: true)),
+                    }'
+                ", (ok_notify: info)), (noexit: true)),
                 ("shift+w", "Long Warning", shell("
                     awk -v F=%c '
                     BEGIN{
@@ -144,7 +140,6 @@ ta                     srand()
                 ", (err_notify: error)), (noexit: true)),
                 ]), (noexit: true)
             ),
-
 
             ("u", "Subtheme", keys([
                     (
