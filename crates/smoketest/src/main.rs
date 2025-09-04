@@ -7,6 +7,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 mod repeat;
+mod screenshot;
 mod session;
 mod ui;
 use tracing_subscriber::prelude::*;
@@ -170,7 +171,7 @@ fn main() {
             }
         },
         Commands::Screenshots { theme, dir } => {
-            match ui::run_screenshots(theme, dir, cli.timeout) {
+            match screenshot::run_screenshots(theme, dir, cli.timeout) {
                 Ok(sum) => {
                     println!(
                         "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
