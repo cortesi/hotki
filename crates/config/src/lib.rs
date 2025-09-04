@@ -21,6 +21,59 @@ pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Off
 
 use raw::RawConfig;
 
+/// Extension trait providing `Cursor::ensure_in` semantics without creating a
+/// dependency cycle with `hotki-protocol`.
+pub trait CursorEnsureExt {
+    /// Return a cursor clamped to a valid path for the given focus `(app, title)`
+    /// under this configuration. Also returns `true` when the path changed.
+    fn ensure_in(&self, cfg: &Config, app: &str, title: &str) -> (Cursor, bool);
+}
+
+impl CursorEnsureExt for Cursor {
+    fn ensure_in(&self, cfg: &Config, app: &str, title: &str) -> (Cursor, bool) {
+        let mut loc = self.clone();
+        let mut changed = false;
+        loop {
+            if loc.path().is_empty() {
+                break;
+            }
+            let plen = loc.path().len();
+            // Walk to the parent keys without holding a long-lived borrow on loc.path
+            let mut cur = &cfg.keys;
+            let mut invalid = false;
+            for j in 0..(plen - 1) {
+                let i = loc.path()[j] as usize;
+                match cur.keys.get(i) {
+                    Some((_, _, Action::Keys(next), _)) => cur = next,
+                    _ => {
+                        invalid = true;
+                        break;
+                    }
+                }
+            }
+            if invalid {
+                let _ = loc.pop();
+                changed = true;
+                continue;
+            }
+            let last = loc.path()[plen - 1] as usize;
+            let ok = match cur.keys.get(last) {
+                Some((_k, _d, Action::Keys(_), _attrs)) => {
+                    let eff = cfg.merged_mode_attrs(&loc.path()[..plen]);
+                    entry_matches(&eff, app, title)
+                }
+                _ => false,
+            };
+            if ok {
+                break;
+            }
+            let _ = loc.pop();
+            changed = true;
+        }
+        (loc, changed)
+    }
+}
+
 /// Public input form of user configuration that carries keys, optional base theme name,
 /// and an optional raw style overlay. This type is suitable for reading
 /// user configuration from RON without exposing raw internals.
@@ -671,48 +724,11 @@ impl Config {
         eff.capture()
     }
 
-    /// Ensure the `Cursor`'s path remains valid for the current focus context by
-    /// popping while the guard of the entering entry does not match. Returns true
-    /// if the location changed.
+    /// Ensure the `Cursor` remains valid for the given focus context.
+    /// Returns true if the location changed.
     pub fn ensure_context(&self, loc: &mut Cursor, app: &str, title: &str) -> bool {
-        let mut changed = false;
-        loop {
-            if loc.path().is_empty() {
-                break;
-            }
-            let plen = loc.path().len();
-            // Walk to the parent keys without holding a long-lived borrow on loc.path
-            let mut cur = &self.keys;
-            let mut invalid = false;
-            for j in 0..(plen - 1) {
-                let i = loc.path()[j] as usize;
-                match cur.keys.get(i) {
-                    Some((_, _, Action::Keys(next), _)) => cur = next,
-                    _ => {
-                        invalid = true;
-                        break;
-                    }
-                }
-            }
-            if invalid {
-                let _ = loc.pop();
-                changed = true;
-                continue;
-            }
-            let last = loc.path()[plen - 1] as usize;
-            let ok = match cur.keys.get(last) {
-                Some((_k, _d, Action::Keys(_), _attrs)) => {
-                    let eff = self.merged_mode_attrs(&loc.path()[..plen]);
-                    entry_matches(&eff, app, title)
-                }
-                _ => false,
-            };
-            if ok {
-                break;
-            }
-            let _ = loc.pop();
-            changed = true;
-        }
+        let (next, changed) = CursorEnsureExt::ensure_in(loc, self, app, title);
+        *loc = next;
         changed
     }
 }
