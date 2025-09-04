@@ -8,12 +8,12 @@
     keys: [
         // Main modal entry point
         ("shift+cmd+0", "Main", keys([
-            
+
             // === Action Types (each shown once) ===
             // shell: Execute a shell command
             ("s", "Shell Command", shell("echo 'Hello'")),
             // shell with notifications: Execute command and show success/error notifications
-            ("S", "Shell with Notifications", shell("echo 'Success'", (ok_notify: success, err_notify: error))),
+            ("shift+S", "Shell with Notifications", shell("echo 'Success'", (ok_notify: success, err_notify: error))),
             // relay: Send keystrokes to the active application
             ("r", "Relay Keystroke", relay("cmd+c")),
             // clear_notifications: Remove all on-screen notifications
@@ -21,7 +21,7 @@
             // show_details: Control details window: on/off/toggle
             ("d", "Toggle Details", show_details(toggle)),
             // reload_config: Reload the configuration file
-            ("R", "Reload Config", reload_config),
+            ("shift+R", "Reload Config", reload_config),
             // show_hud_root: Display the root-level HUD
             ("h", "Show HUD Root", show_hud_root),
             // theme_next: Switch to the next theme
@@ -35,47 +35,47 @@
             // set_volume: Set system volume to absolute value (0-100)
             ("v", "Set Volume 50%", set_volume(50)),
             // change_volume: Adjust volume by relative amount (-100 to +100)
-            ("V", "Change Volume +10", change_volume(10)),
+            ("shift+V", "Change Volume +10", change_volume(10)),
             // mute: Control mute: on/off/toggle
             ("m", "Mute", mute(on)),
             ("u", "Unmute", mute(off)),
             ("shift+M", "Toggle Mute", mute(toggle)),
-            
+
             // === User UI Control ===
             // user_style: Control user style configuration (HUD and notifications): on/off/toggle
             ("t", "Toggle User UI", user_style(toggle)),
-            ("T", "Disable User UI", user_style(off)),
-            ("shift+T", "Enable User UI", user_style(on)),
-            
+            ("shift+T", "Disable User UI", user_style(off)),
+            ("shift+U", "Enable User UI", user_style(on)),
+
             // === Mode Navigation ===
             // mode: Enter a nested mode with its own key bindings
-            ("M", "Nested Mode", keys([
+            ("shift+M", "Nested Mode", keys([
                 // pop: Return to the previous mode
                 ("b", "Back One Level", pop),
                 // exit: Exit all modes and return to root
                 ("e", "Exit All", exit),
             ]), (style: (hud: (mode: mini)))),
-            
+
             // === Mode Attributes ===
             ("a", "No Exit + Repeat (custom timings)", shell("echo 'Stay'"), (noexit: true, repeat: true, repeat_delay: 250, repeat_interval: 350)),
             ("g", "Global Key", shell("echo 'Global'"), (global: true)),
-            ("H", "Hidden Key", shell("echo 'Hidden'"), (hide: true)),
-            ("U", "HUD Only", shell("echo 'HUD Only'"), (hud_only: true)),
+            ("shift+H", "Hidden Key", shell("echo 'Hidden'"), (hide: true)),
+            ("u", "HUD Only", shell("echo 'HUD Only'"), (hud_only: true)),
             // capture: Swallow all non-bound keys while HUD is visible for this mode.
             // Only keys explicitly bound in the current mode (including globals) are handled.
-            ("C", "Capture Mode", keys([
+            ("shift+C", "Capture Mode", keys([
                 ("b", "Back One Level", pop),
             ]), (capture: true)),
-            
+
             // === App/Title Matching ===
-            ("B", "Browser Mode", keys([
+            ("b", "Browser Mode", keys([
                 ("r", "Reload", relay("cmd+r")),
             ]), (match_app: "Safari|Chrome")),
-            
-            ("T", "Title Match Mode", keys([
+
+            ("shift+ctrl+t", "Title Match Mode", keys([
                 ("s", "Save", relay("cmd+s")),
             ]), (match_title: ".*\\.md$")),
-            
+
             // Global navigation (combined attributes)
             ("esc", "Back", pop, (global: true, hide: true)),
         ])),
@@ -90,18 +90,18 @@
             pos: ne,
             // Pixel offset from anchor (x: right, y: up)
             offset: (x: -20.0, y: -40.0),
-            
+
             // Font sizes
             font_size: 16.0,        // Description text
             key_font_size: 14.0,    // Key tokens
             tag_font_size: 12.0,    // Mode tags
-            
+
             // Font weights: light, regular, medium, semibold, bold, extrabold
             title_font_weight: medium,
             key_font_weight: semibold,
             tag_font_weight: bold,
             mod_font_weight: extrabold,
-            
+
             // Colors (CSS names or hex)
             title_fg: "#ffffff",
             bg: "#1a1a1a",
@@ -110,11 +110,11 @@
             mod_fg: "#00ff00",
             mod_bg: "#3a3a3a",
             tag_fg: "yellow",
-            
+
             // Window properties
             opacity: 0.95,
             radius: 12.0,           // Window corner radius
-            
+
             // Key box styling
             key_radius: 4.0,        // Key box corner radius
             key_pad_x: 8.0,         // Horizontal padding
@@ -130,7 +130,7 @@
             timeout: 3.5,
             buffer: 4,
             radius: 8.0,            // Notification corner radius
-            
+
             // === Per-kind Notification Styles ===
             // Each supports all styling options
             info: (
@@ -143,7 +143,7 @@
                 body_font_weight: regular,
                 icon: "\u{ea74}",
             ),
-            
+
             warn: (
                 bg: "#332200",
                 title_fg: "#ffaa00",
@@ -154,7 +154,7 @@
                 body_font_weight: light,
                 icon: "\u{ea6c}",
             ),
-            
+
             error: (
                 bg: "#330000",
                 title_fg: "#ff4444",
@@ -165,7 +165,7 @@
                 body_font_weight: medium,
                 icon: "\u{ea87}",
             ),
-            
+
             success: (
                 bg: "#003300",
                 title_fg: "#00ff00",
