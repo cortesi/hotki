@@ -811,7 +811,7 @@ fn run_screenshots(theme: Option<String>, dir: PathBuf) {
     let mut hotki = std::process::Command::new(&hotki_bin)
         .env(
             "RUST_LOG",
-            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_winops=info,mrpc::connection=off",
+            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
         )
         .arg(&used_cfg_path)
         .spawn()
@@ -902,7 +902,7 @@ fn run_ui_demo() {
     let mut hotki = std::process::Command::new(&hotki_bin)
         .env(
             "RUST_LOG",
-            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_winops=info,mrpc::connection=off",
+            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
         )
         .arg(cfg_path)
         .spawn()

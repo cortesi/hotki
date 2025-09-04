@@ -18,6 +18,4 @@ objc2-foundation = "0.3.1"
 
 relaykey = { path = "../relaykey" }
 mac-keycode = { path = "../mac-keycode" }
-block2 = "0.6"
-tokio = { version = "1", features = ["sync"] }
-tao = "0.34"
+mac-focus-watcher = { path = "../mac-focus-watcher" }

@@ -260,7 +260,6 @@ pub fn spawn_key_runtime(
                     .await;
             }
 
-            // Main UI loop: handle control messages and server events.
             loop {
 
                 tokio::select! {

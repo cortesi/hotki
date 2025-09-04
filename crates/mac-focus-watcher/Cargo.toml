@@ -1,0 +1,20 @@
+[package]
+name = "mac-focus-watcher"
+version = "0.1.0"
+edition = "2024"
+description = "macOS focus watcher using CoreGraphics window list, Accessibility AX observer, and NSWorkspace notifications"
+license = "MIT"
+authors = ["Aldo Cortesi <aldo@corte.si>"]
+
+[dependencies]
+once_cell = "1"
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+core-foundation = "0.10"
+tokio = { version = "1", features = ["sync"] }
+tao = "0.34"
+tracing = "0.1"
+core-graphics = "0.25.0"
+thiserror = "2.0.16"

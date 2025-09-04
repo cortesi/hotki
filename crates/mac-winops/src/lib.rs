@@ -10,8 +10,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CString, c_char, c_void};
 use std::sync::Mutex;
 
+use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
+use core_foundation::dictionary::CFDictionaryRef;
+use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 // SkyLight functionality removed; no dynamic loading required here.
 use mac_keycode::{Chord, Key, Modifier};
@@ -20,10 +23,6 @@ use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
 use relaykey::RelayKey;
 use tracing::debug;
-
-mod coregraphics;
-pub use coregraphics::WindowId;
-pub mod focus;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -60,7 +59,8 @@ unsafe extern "C" {
 const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
 const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 
-// Moved WindowId alias to the coregraphics module.
+/// Alias for CoreGraphics CGWindowID (kCGWindowNumber).
+pub type WindowId = u32;
 
 // All Space management via SkyLight has been removed.
 
@@ -498,7 +498,7 @@ enum MainOp {
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
 /// Schedule a non‑native fullscreen operation to be executed on the main thread and
-/// wake the Tao event loop via the focus module.
+/// wake the Tao event loop via mac-focus-watcher.
 pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     if MAIN_OPS
         .lock()
@@ -508,13 +508,13 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         return Err(Error::Unsupported);
     }
     // Wake the Tao main loop to handle user event and drain ops
-    let _ = crate::focus::wake_main_loop();
+    let _ = mac_focus_watcher::wake_main_loop();
     Ok(())
 }
 
 /// Schedule a window placement operation to snap the focused window into a
 /// grid cell on the current screen's visible frame. Runs on the AppKit main
-/// thread and wakes the Tao event loop via the focus module.
+/// thread and wakes the Tao event loop via mac-focus-watcher.
 pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
@@ -534,7 +534,7 @@ pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     {
         return Err(Error::Unsupported);
     }
-    let _ = crate::focus::wake_main_loop();
+    let _ = mac_focus_watcher::wake_main_loop();
     Ok(())
 }
 
@@ -565,7 +565,7 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     {
         return Err(Error::Unsupported);
     }
-    let _ = crate::focus::wake_main_loop();
+    let _ = mac_focus_watcher::wake_main_loop();
     Ok(())
 }
 
@@ -793,9 +793,102 @@ fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     Ok(())
 }
 
+// ===== CoreGraphics Window List and Display FFI =====
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFTypeRef; // CFArrayRef
+}
+
+// CoreGraphics window list options used by focused_window_id
+const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
+const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+
+fn cg_key(s: &'static str) -> CFStringRef {
+    cfstr(s)
+}
+const K_CG_WINDOW_NUMBER: &str = "kCGWindowNumber";
+const K_CG_WINDOW_OWNER_PID: &str = "kCGWindowOwnerPID";
+const K_CG_WINDOW_LAYER: &str = "kCGWindowLayer";
+const K_CG_WINDOW_IS_ONSCREEN: &str = "kCGWindowIsOnscreen";
+const K_CG_WINDOW_ALPHA: &str = "kCGWindowAlpha";
+
+fn dict_get_cfnumber(d: CFDictionaryRef, key: CFStringRef) -> Option<CFNumber> {
+    unsafe {
+        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
+        if v.is_null() {
+            return None;
+        }
+        Some(CFNumber::wrap_under_get_rule(v as _))
+    }
+}
+
+fn dict_get_cfbool(d: CFDictionaryRef, key: CFStringRef) -> Option<bool> {
+    unsafe {
+        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
+        if v.is_null() {
+            return None;
+        }
+        Some(CFBooleanGetValue(v as _))
+    }
+}
+
+// Space management APIs removed.
+
 /// Convenience: resolve the focused top-level window’s CGWindowID for `pid`.
 /// Best-effort: picks the first frontmost layer-0 on-screen window owned by pid.
 pub fn focused_window_id(pid: i32) -> Result<WindowId> {
     ax_check()?;
-    coregraphics::focused_window_id(pid)
+    unsafe {
+        let arr_ref = CGWindowListCopyWindowInfo(
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
+                | K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS,
+            0,
+        );
+        if arr_ref.is_null() {
+            return Err(Error::FocusedWindow);
+        }
+        let arr: core_foundation::array::CFArray<*const c_void> =
+            core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
+        let key_pid = cg_key(K_CG_WINDOW_OWNER_PID);
+        let key_layer = cg_key(K_CG_WINDOW_LAYER);
+        let key_num = cg_key(K_CG_WINDOW_NUMBER);
+        let key_onscreen = cg_key(K_CG_WINDOW_IS_ONSCREEN);
+        let key_alpha = cg_key(K_CG_WINDOW_ALPHA);
+        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
+            let d = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFDictionaryRef;
+            if d.is_null() {
+                continue;
+            }
+            let dp = dict_get_cfnumber(d, key_pid)
+                .and_then(|n| n.to_i64())
+                .unwrap_or(-1) as i32;
+            if dp != pid {
+                continue;
+            }
+            let layer = dict_get_cfnumber(d, key_layer)
+                .and_then(|n| n.to_i64())
+                .unwrap_or(0);
+            if layer != 0 {
+                continue;
+            }
+            let onscreen = dict_get_cfbool(d, key_onscreen).unwrap_or(true);
+            if !onscreen {
+                continue;
+            }
+            let alpha = dict_get_cfnumber(d, key_alpha)
+                .and_then(|n| n.to_f64())
+                .unwrap_or(1.0);
+            if alpha <= 0.0 {
+                continue;
+            }
+            if let Some(n) = dict_get_cfnumber(d, key_num) {
+                let id = n.to_i64().unwrap_or(-1);
+                if id > 0 {
+                    return Ok(id as u32);
+                }
+            }
+        }
+    }
+    Err(Error::FocusedWindow)
 }

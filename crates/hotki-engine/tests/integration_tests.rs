@@ -59,14 +59,14 @@ async fn test_rebind_on_depth_change() {
 
     // Simulate focus events to trigger initial binding
     engine
-        .on_focus_event(mac_winops::focus::FocusEvent::AppChanged {
+        .on_focus_event(mac_focus_watcher::FocusEvent::AppChanged {
             title: "TestApp".to_string(),
             pid: 1234,
         })
         .await
         .expect("focus app");
     engine
-        .on_focus_event(mac_winops::focus::FocusEvent::TitleChanged {
+        .on_focus_event(mac_focus_watcher::FocusEvent::TitleChanged {
             title: "TestWindow".to_string(),
             pid: 1234,
         })
