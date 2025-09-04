@@ -74,13 +74,14 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
                 match res {
                     Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                         if let Some(app) = cursor.app_ref()
-                            && app.title == expected_title_clone {
-                                if let Ok(mut g) = matched_clone.lock() {
-                                    *g = Some((app.title.clone(), app.pid));
-                                }
-                                found_clone.store(true, Ordering::SeqCst);
-                                break;
+                            && app.title == expected_title_clone
+                        {
+                            if let Ok(mut g) = matched_clone.lock() {
+                                *g = Some((app.title.clone(), app.pid));
                             }
+                            found_clone.store(true, Ordering::SeqCst);
+                            break;
+                        }
                     }
                     Ok(Ok(_)) => {}
                     Ok(Err(_)) => break,

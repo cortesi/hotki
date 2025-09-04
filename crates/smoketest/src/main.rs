@@ -324,36 +324,35 @@ use repeat::{count_relay, count_shell, count_volume, repeat_relay, repeat_shell,
 //
 
 fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
-    // Repeat tests: use provided duration (with a floor for volume)
+    // Repeat tests: run sequentially; print result immediately after each
     heading("Test: repeat-relay");
     let relay = count_relay(duration_ms);
-    heading("Test: repeat-shell");
-    let shell = count_shell(duration_ms);
-    heading("Test: repeat-volume");
-    let volume = count_volume(std::cmp::max(duration_ms, 2000));
-
-    let mut ok = true;
     if relay < 3 {
         eprintln!("FAIL repeat-relay: {} repeats (< 3)", relay);
-        ok = false;
+        tracing::error!("repeat-relay failed: {} repeats (< 3)", relay);
+        std::process::exit(1);
     } else {
         println!("repeat-relay: {} repeats", relay);
     }
+
+    heading("Test: repeat-shell");
+    let shell = count_shell(duration_ms);
     if shell < 3 {
         eprintln!("FAIL repeat-shell: {} repeats (< 3)", shell);
-        ok = false;
+        tracing::error!("repeat-shell failed: {} repeats (< 3)", shell);
+        std::process::exit(1);
     } else {
         println!("repeat-shell: {} repeats", shell);
     }
+
+    heading("Test: repeat-volume");
+    let volume = count_volume(std::cmp::max(duration_ms, 2000));
     if volume < 3 {
         eprintln!("FAIL repeat-volume: {} repeats (< 3)", volume);
-        ok = false;
+        tracing::error!("repeat-volume failed: {} repeats (< 3)", volume);
+        std::process::exit(1);
     } else {
         println!("repeat-volume: {} repeats", volume);
-    }
-
-    if !ok {
-        std::process::exit(1);
     }
 
     // hotki was built once at startup; no additional build needed here.
@@ -367,8 +366,9 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("focus: ERROR: {}", e);
+            tracing::error!("focus test failed: {}", e);
             print_hints(&e);
-            ok = false;
+            std::process::exit(1);
         }
     }
 
@@ -381,8 +381,9 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("ui: ERROR: {}", e);
+            tracing::error!("ui demo failed: {}", e);
             print_hints(&e);
-            ok = false;
+            std::process::exit(1);
         }
     }
     heading("Test: minui");
@@ -393,13 +394,10 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("minui: ERROR: {}", e);
+            tracing::error!("minui demo failed: {}", e);
             print_hints(&e);
-            ok = false;
+            std::process::exit(1);
         }
-    }
-
-    if !ok {
-        std::process::exit(1);
     }
     println!("All smoketests passed");
 }
