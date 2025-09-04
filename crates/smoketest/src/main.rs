@@ -1,4 +1,6 @@
 use std::{
+    error::Error as StdError,
+    fmt,
     path::PathBuf,
     process::{Command, Stdio},
     sync::{
@@ -59,6 +61,81 @@ enum Commands {
     Minui,
 }
 
+// Lightweight result types for UI/screenshot flows
+#[derive(Debug, Clone)]
+struct Summary {
+    hud_seen: bool,
+    time_to_hud_ms: Option<u64>,
+}
+
+impl Summary {
+    fn new() -> Self {
+        Self {
+            hud_seen: false,
+            time_to_hud_ms: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SmkError {
+    MissingConfig(PathBuf),
+    HotkiBinNotFound,
+    SpawnFailed(String),
+    HudNotVisible { timeout_ms: u64 },
+    CaptureFailed(&'static str),
+    Io(std::io::Error),
+}
+
+impl fmt::Display for SmkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SmkError::MissingConfig(p) => write!(f, "missing config: {}", p.display()),
+            SmkError::HotkiBinNotFound => write!(
+                f,
+                "could not locate 'hotki' binary (set HOTKI_BIN or `cargo build --bin hotki`)"
+            ),
+            SmkError::SpawnFailed(s) => write!(f, "failed to launch hotki: {}", s),
+            SmkError::HudNotVisible { timeout_ms } => write!(
+                f,
+                "HUD did not appear within {} ms (no HudUpdate depth>0)",
+                timeout_ms
+            ),
+            SmkError::CaptureFailed(which) => write!(f, "failed to capture {} window", which),
+            SmkError::Io(e) => write!(f, "I/O error: {}", e),
+        }
+    }
+}
+
+impl StdError for SmkError {}
+
+fn print_hints(err: &SmkError) {
+    match err {
+        SmkError::HotkiBinNotFound => {
+            eprintln!("hint: set HOTKI_BIN to an existing binary or run: cargo build --bin hotki");
+        }
+        SmkError::HudNotVisible { .. } => {
+            eprintln!("hint: the activation chord is sent via Accessibility (HID)");
+            eprintln!(
+                "      ensure the terminal/shell running smoketest is allowed under System Settings → Privacy & Security → Accessibility"
+            );
+            eprintln!("      also check hotki logs with --logs for server startup issues");
+        }
+        SmkError::CaptureFailed(_) => {
+            eprintln!("hint: screencapture requires Screen Recording permission for the terminal");
+            eprintln!(
+                "      grant it under System Settings → Privacy & Security → Screen Recording"
+            );
+        }
+        SmkError::MissingConfig(_) => {
+            eprintln!(
+                "hint: expected examples/test.ron relative to repo root (or pass a valid config)"
+            );
+        }
+        SmkError::SpawnFailed(_) | SmkError::Io(_) => {}
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     if cli.logs {
@@ -79,9 +156,45 @@ fn main() {
         // Volume can be slightly slower; keep a floor to reduce flakiness
         Commands::Volume { .. } => repeat_volume(std::cmp::max(cli.duration, 2000)),
         Commands::All => run_all_tests(cli.duration, cli.timeout),
-        Commands::Ui => run_ui_demo(cli.timeout),
-        Commands::Screenshots { theme, dir } => run_screenshots(theme, dir, cli.timeout),
-        Commands::Minui => run_minui_demo(cli.timeout),
+        Commands::Ui => match run_ui_demo(cli.timeout) {
+            Ok(sum) => {
+                println!(
+                    "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                    sum.hud_seen, sum.time_to_hud_ms
+                );
+            }
+            Err(e) => {
+                eprintln!("ui: ERROR: {}", e);
+                print_hints(&e);
+                std::process::exit(1);
+            }
+        },
+        Commands::Screenshots { theme, dir } => match run_screenshots(theme, dir, cli.timeout) {
+            Ok(sum) => {
+                println!(
+                    "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
+                    sum.hud_seen, sum.time_to_hud_ms
+                );
+            }
+            Err(e) => {
+                eprintln!("screenshots: ERROR: {}", e);
+                print_hints(&e);
+                std::process::exit(1);
+            }
+        },
+        Commands::Minui => match run_minui_demo(cli.timeout) {
+            Ok(sum) => {
+                println!(
+                    "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                    sum.hud_seen, sum.time_to_hud_ms
+                );
+            }
+            Err(e) => {
+                eprintln!("minui: ERROR: {}", e);
+                print_hints(&e);
+                std::process::exit(1);
+            }
+        },
     }
 }
 
@@ -742,25 +855,50 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     }
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
-    run_ui_demo(timeout_ms);
-    run_minui_demo(timeout_ms);
+    match run_ui_demo(timeout_ms) {
+        Ok(s) => println!(
+            "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
+            s.hud_seen, s.time_to_hud_ms
+        ),
+        Err(e) => {
+            eprintln!("ui: ERROR: {}", e);
+            print_hints(&e);
+            ok = false;
+        }
+    }
+    match run_minui_demo(timeout_ms) {
+        Ok(s) => println!(
+            "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
+            s.hud_seen, s.time_to_hud_ms
+        ),
+        Err(e) => {
+            eprintln!("minui: ERROR: {}", e);
+            print_hints(&e);
+            ok = false;
+        }
+    }
 
+    if !ok {
+        std::process::exit(1);
+    }
     println!("All smoketests passed");
 }
 
-fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) {
+fn run_screenshots(
+    theme: Option<String>,
+    dir: PathBuf,
+    timeout_ms: u64,
+) -> Result<Summary, SmkError> {
     // Resolve paths
-    let cwd = std::env::current_dir().expect("cwd");
+    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
-        eprintln!("Missing config: {}", cfg_path.display());
-        return;
+        return Err(SmkError::MissingConfig(cfg_path));
     }
 
     // Resolve the hotki binary path
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        eprintln!("Could not locate hotki binary. Set HOTKI_BIN or build it first.");
-        return;
+        return Err(SmkError::HotkiBinNotFound);
     };
 
     // If a theme override was requested, write a temp config with base_theme injected
@@ -815,22 +953,21 @@ fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) {
         )
         .arg(&used_cfg_path)
         .spawn()
-        .expect("launch hotki");
+        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
 
     let sock = hotki_server::socket_path_for_pid(hotki.id());
 
-    // Wait for HUD visible
+    // Wait for HUD visible and time it
+    let start = Instant::now();
     let seen_hud = ensure_hud_visible(&sock, timeout_ms);
-    if !seen_hud {
-        eprintln!("HUD did not appear");
-    }
+    let time_to_hud_ms = start.elapsed().as_millis() as u64;
 
     // Ensure directory exists
     let _ = std::fs::create_dir_all(&dir);
     let pid = hotki.id();
 
     // Take HUD screenshot
-    let _ = capture_hud_window(pid, &dir, "001_hud");
+    let hud_ok = capture_hud_window(pid, &dir, "001_hud");
 
     // Enter Theme tester and trigger each notification type, capturing the window each time
     let gap = Duration::from_millis(160);
@@ -880,22 +1017,31 @@ fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) {
 
     let _ = hotki.kill();
     let _ = hotki.wait();
+
+    let mut sum = Summary::new();
+    sum.hud_seen = seen_hud;
+    sum.time_to_hud_ms = Some(time_to_hud_ms);
+    if !seen_hud {
+        return Err(SmkError::HudNotVisible { timeout_ms });
+    }
+    if !hud_ok {
+        return Err(SmkError::CaptureFailed("HUD"));
+    }
+    Ok(sum)
 }
 
-fn run_ui_demo(timeout_ms: u64) {
+fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     // Resolve paths
-    let cwd = std::env::current_dir().expect("cwd");
+    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
-        eprintln!("Missing config: {}", cfg_path.display());
-        return;
+        return Err(SmkError::MissingConfig(cfg_path));
     }
 
     // Resolve the hotki binary path
     let hotki_path = resolve_hotki_bin();
     let Some(hotki_bin) = hotki_path else {
-        eprintln!("Could not locate hotki binary. Set HOTKI_BIN or build it first.");
-        return;
+        return Err(SmkError::HotkiBinNotFound);
     };
 
     // Launch hotki with the test config
@@ -906,14 +1052,16 @@ fn run_ui_demo(timeout_ms: u64) {
         )
         .arg(cfg_path)
         .spawn()
-        .expect("launch hotki");
+        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
 
     // Give the server more time to start up and create the socket
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
+    let start = Instant::now();
     let seen_hud = ensure_hud_visible(&sock, timeout_ms);
+    let time_to_hud_ms = start.elapsed().as_millis() as u64;
 
     // Drive a short theme cycle if HUD appeared (screenshots already taken above)
     let mut seq: Vec<&str> = Vec::new();
@@ -959,13 +1107,16 @@ fn run_ui_demo(timeout_ms: u64) {
     // Best-effort shutdown and reap of hotki process
     let _ = hotki.kill();
     let _ = hotki.wait();
+    let mut sum = Summary::new();
+    sum.hud_seen = seen_hud;
+    sum.time_to_hud_ms = Some(time_to_hud_ms);
     if !seen_hud {
-        eprintln!("HUD did not appear (no HudUpdate or depth change within 3s)");
-        std::process::exit(1);
+        return Err(SmkError::HudNotVisible { timeout_ms });
     }
+    Ok(sum)
 }
 
-fn run_minui_demo(timeout_ms: u64) {
+fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     // Prepare a minimal config with mini HUD and a theme submenu
     let ron = r#"(
         keys: [
@@ -991,39 +1142,38 @@ fn run_minui_demo(timeout_ms: u64) {
             .as_nanos()
     ));
     if let Err(e) = std::fs::write(&cfg_path, ron) {
-        eprintln!("Failed to write temp config: {}", e);
-        return;
+        return Err(SmkError::Io(e));
     }
 
     // Locate hotki binary
     let hotki_path = resolve_hotki_bin();
     let Some(hotki_bin) = hotki_path else {
-        eprintln!("Could not locate hotki binary. Set HOTKI_BIN or build it first.");
         let _ = std::fs::remove_file(&cfg_path);
-        return;
+        return Err(SmkError::HotkiBinNotFound);
     };
 
     // Launch hotki with mini HUD config
     let mut hotki = std::process::Command::new(&hotki_bin)
         .arg(&cfg_path)
         .spawn()
-        .expect("launch hotki");
+        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
 
     // Give the server more time to start up and create the socket
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Compute socket path and wait for HUD to appear
     let sock = hotki_server::socket_path_for_pid(hotki.id());
+    let start = Instant::now();
     let seen_hud = ensure_hud_visible(&sock, timeout_ms);
+    let time_to_hud_ms = start.elapsed().as_millis() as u64;
 
     // Relay keys to drive mini HUD: activate, enter theme tester, cycle, back
     let mut seq: Vec<String> = Vec::new();
     if !seen_hud {
-        eprintln!("HUD did not appear (no HudUpdate depth>0 within 3s)");
         let _ = hotki.kill();
         let _ = hotki.wait();
         let _ = std::fs::remove_file(&cfg_path);
-        std::process::exit(1);
+        return Err(SmkError::HudNotVisible { timeout_ms });
     }
 
     seq.push("t".to_string()); // enter theme tester (parent_title = "Theme tester")
@@ -1065,4 +1215,8 @@ fn run_minui_demo(timeout_ms: u64) {
     let _ = hotki.kill();
     let _ = hotki.wait();
     let _ = std::fs::remove_file(&cfg_path);
+    let mut sum = Summary::new();
+    sum.hud_seen = seen_hud;
+    sum.time_to_hud_ms = Some(time_to_hud_ms);
+    Ok(sum)
 }
