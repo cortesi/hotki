@@ -7,7 +7,7 @@
 //! All operations require Accessibility permission.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::c_void;
 use std::sync::Mutex;
 
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
@@ -50,11 +50,6 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFBooleanGetValue(b: CFTypeRef) -> bool;
-    fn CFStringCreateWithCString(
-        alloc: *const c_void,
-        cStr: *const c_char,
-        encoding: u32,
-    ) -> CFStringRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -95,9 +90,8 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 fn cfstr(name: &'static str) -> CFStringRef {
-    const UTF8: u32 = 0x0800_0100;
-    let cs = CString::new(name).expect("static str");
-    unsafe { CFStringCreateWithCString(std::ptr::null(), cs.as_ptr(), UTF8) }
+    // Use a non-owning CFString backed by a static &'static str; no release needed.
+    CFString::from_static_string(name).as_concrete_TypeRef()
 }
 
 fn ax_check() -> Result<()> {
@@ -233,23 +227,12 @@ fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()>
     Ok(())
 }
 
-fn ax_window_title(element: *mut c_void) -> Option<String> {
-    let attr_title = cfstr("AXTitle");
-    let mut v: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr_title, &mut v) };
-    if err != 0 || v.is_null() {
-        return None;
-    }
-    let s = unsafe { CFString::wrap_under_get_rule(v as CFStringRef) }.to_string();
-    unsafe { CFRelease(v) };
-    Some(s)
-}
-
 /// In-memory storage of pre-maximize frames to allow toggling back.
-type FrameKey = (i32, String);
+type FrameKey = (i32, WindowId);
 type FrameVal = (CGPoint, CGSize);
 static PREV_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+const PREV_FRAMES_CAP: usize = 256;
 
 fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
     approx_eq_eps(p1.x, p2.x, 1.0)
@@ -301,6 +284,8 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
 
 /// Toggle or set non‑native full screen (maximize to visible frame in current Space)
 /// for the focused window of `pid`.
+///
+/// Requires AppKit main thread (uses NSScreen visibleFrame).
 pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     ax_check()?;
     // For visibleFrame we need AppKit; require main thread.
@@ -321,7 +306,7 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         height: vf.3,
     };
 
-    let mut prev_key: Option<(i32, String)> = None;
+    let mut prev_key: Option<(i32, WindowId)> = None;
     let is_full = rect_eq(cur_p, cur_s, target_p, target_s);
     let do_set_to_full = match desired {
         Desired::On => true,
@@ -329,23 +314,28 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         Desired::Toggle => !is_full,
     };
 
-    // Identify window key for restore
-    if let Some(title) = ax_window_title(win) {
-        prev_key = Some((pid, title));
+    // Identify window key for restore using stable CGWindowID
+    if let Ok(wid) = focused_window_id(pid) {
+        prev_key = Some((pid, wid));
     }
 
     if do_set_to_full {
         // Store previous frame if we have a key and not already stored
-        if let Some(k) = prev_key.clone()
+        if let Some(k) = prev_key
             && let Ok(mut map) = PREV_FRAMES.lock()
         {
+            if map.len() >= PREV_FRAMES_CAP
+                && let Some(old_k) = map.keys().next().cloned()
+            {
+                let _ = map.remove(&old_k);
+            }
             map.entry(k).or_insert((cur_p, cur_s));
         }
         ax_set_point(win, attr_pos, target_p)?;
         ax_set_size(win, attr_size, target_s)?;
     } else {
         // Restore if available
-        let restored = if let Some(k) = prev_key.clone() {
+        let restored = if let Some(k) = prev_key {
             if let Ok(mut map) = PREV_FRAMES.lock() {
                 if let Some((p, s)) = map.remove(&k) {
                     if !rect_eq(p, s, cur_p, cur_s) {
@@ -403,10 +393,6 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
         rect.size.height,
     )
 }
-
-// Removed unused helper `frame_containing_point`.
-
-// Removed unused public APIs: set_window_frame, screen_size
 
 /// Queue of operations that must run on the AppKit main thread.
 enum MainOp {
@@ -793,9 +779,10 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
                 continue;
             }
             if let Some(id) = dict_get_i32(d, key_num)
-                && id > 0 {
-                    return Ok(id as u32);
-                }
+                && id > 0
+            {
+                return Ok(id as u32);
+            }
         }
     }
     Err(Error::FocusedWindow)
