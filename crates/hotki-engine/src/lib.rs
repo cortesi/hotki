@@ -335,9 +335,13 @@ impl Engine {
                         None
                     };
 
-                    // Record whether OS repeat events should be acted upon
+                    // Prefer software repeats when custom timings are provided; otherwise allow OS repeat.
+                    // This ensures `repeat_delay`/`repeat_interval` are honored for relay actions.
+                    let has_custom_timing =
+                        attrs.repeat_delay.is_some() || attrs.repeat_interval.is_some();
+                    let allow_os_repeat = repeat.is_some() && !has_custom_timing;
                     self.key_tracker
-                        .set_repeat_allowed(&identifier, repeat.is_some());
+                        .set_repeat_allowed(&identifier, allow_os_repeat);
 
                     self.repeater.start(
                         identifier.clone(),
