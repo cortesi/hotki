@@ -14,7 +14,6 @@ use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
 use core_foundation::dictionary::CFDictionaryRef;
-use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 // SkyLight functionality removed; no dynamic loading required here.
 use mac_keycode::{Chord, Key, Modifier};
@@ -24,6 +23,7 @@ use once_cell::sync::Lazy;
 use relaykey::RelayKey;
 use tracing::debug;
 
+mod cfutil;
 pub mod focus;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -251,15 +251,11 @@ type FrameVal = (CGPoint, CGSize);
 static PREV_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn approx_eq(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1.0
-}
-
 fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
-    approx_eq(p1.x, p2.x)
-        && approx_eq(p1.y, p2.y)
-        && approx_eq(s1.width, s2.width)
-        && approx_eq(s1.height, s2.height)
+    approx_eq_eps(p1.x, p2.x, 1.0)
+        && approx_eq_eps(p1.y, p2.y, 1.0)
+        && approx_eq_eps(s1.width, s2.width, 1.0)
+        && approx_eq_eps(s1.height, s2.height, 1.0)
 }
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
@@ -408,73 +404,9 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
     )
 }
 
-// Compute the full frame (including menu bar and Dock areas) of the screen
-// containing `p`. Falls back to main screen when not found.
-fn frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
-    let screens = NSScreen::screens(mtm);
-    let mut chosen = None;
-    for s in screens.iter() {
-        let fr = s.frame();
-        let x = fr.origin.x;
-        let y = fr.origin.y;
-        let w = fr.size.width;
-        let h = fr.size.height;
-        if p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h {
-            chosen = Some(s);
-            break;
-        }
-    }
-    let rect = if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
-        scr.frame()
-    } else {
-        // Fallback to the first screen's frame if main screen unavailable
-        NSScreen::screens(mtm)
-            .iter()
-            .next()
-            .map(|s| s.frame())
-            .unwrap_or_else(|| NSScreen::mainScreen(mtm).unwrap().frame())
-    };
-    (
-        rect.origin.x,
-        rect.origin.y,
-        rect.size.width,
-        rect.size.height,
-    )
-}
+// Removed unused helper `frame_containing_point`.
 
-/// Set the focused window's frame (position and size) for the given process id.
-/// Units are AppKit points (pt).
-pub fn set_window_frame(pid: i32, x: f64, y: f64, w: f64, h: f64) -> Result<()> {
-    ax_check()?;
-    let win = focused_window_for_pid(pid)?;
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
-    let target_p = CGPoint { x, y };
-    let target_s = CGSize {
-        width: w,
-        height: h,
-    };
-
-    // Adjust size first, then position to reduce post-resize drift.
-    ax_set_size(win, attr_size, target_s)?;
-    ax_set_point(win, attr_pos, target_p)?;
-
-    unsafe { CFRelease(win as CFTypeRef) };
-    Ok(())
-}
-
-/// Return the size (width, height) in points of the screen containing the
-/// focused window for the given process id.
-pub fn screen_size(pid: i32) -> Result<(f64, f64)> {
-    ax_check()?;
-    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let win = focused_window_for_pid(pid)?;
-    let attr_pos = cfstr("AXPosition");
-    let p = ax_get_point(win, attr_pos)?;
-    let (_x, _y, w, h) = frame_containing_point(mtm, p);
-    unsafe { CFRelease(win as CFTypeRef) };
-    Ok((w, h))
-}
+// Removed unused public APIs: set_window_frame, screen_size
 
 /// Queue of operations that must run on the AppKit main thread.
 enum MainOp {
@@ -815,25 +747,7 @@ const K_CG_WINDOW_LAYER: &str = "kCGWindowLayer";
 const K_CG_WINDOW_IS_ONSCREEN: &str = "kCGWindowIsOnscreen";
 const K_CG_WINDOW_ALPHA: &str = "kCGWindowAlpha";
 
-fn dict_get_cfnumber(d: CFDictionaryRef, key: CFStringRef) -> Option<CFNumber> {
-    unsafe {
-        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
-        if v.is_null() {
-            return None;
-        }
-        Some(CFNumber::wrap_under_get_rule(v as _))
-    }
-}
-
-fn dict_get_cfbool(d: CFDictionaryRef, key: CFStringRef) -> Option<bool> {
-    unsafe {
-        let v = core_foundation::dictionary::CFDictionaryGetValue(d, key as *const _);
-        if v.is_null() {
-            return None;
-        }
-        Some(CFBooleanGetValue(v as _))
-    }
-}
+use crate::cfutil::{dict_get_bool, dict_get_f64, dict_get_i32};
 
 // Space management APIs removed.
 
@@ -862,34 +776,26 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
             if d.is_null() {
                 continue;
             }
-            let dp = dict_get_cfnumber(d, key_pid)
-                .and_then(|n| n.to_i64())
-                .unwrap_or(-1) as i32;
+            let dp = dict_get_i32(d, key_pid).unwrap_or(-1);
             if dp != pid {
                 continue;
             }
-            let layer = dict_get_cfnumber(d, key_layer)
-                .and_then(|n| n.to_i64())
-                .unwrap_or(0);
+            let layer = dict_get_i32(d, key_layer).unwrap_or(0) as i64;
             if layer != 0 {
                 continue;
             }
-            let onscreen = dict_get_cfbool(d, key_onscreen).unwrap_or(true);
+            let onscreen = dict_get_bool(d, key_onscreen).unwrap_or(true);
             if !onscreen {
                 continue;
             }
-            let alpha = dict_get_cfnumber(d, key_alpha)
-                .and_then(|n| n.to_f64())
-                .unwrap_or(1.0);
+            let alpha = dict_get_f64(d, key_alpha).unwrap_or(1.0);
             if alpha <= 0.0 {
                 continue;
             }
-            if let Some(n) = dict_get_cfnumber(d, key_num) {
-                let id = n.to_i64().unwrap_or(-1);
-                if id > 0 {
+            if let Some(id) = dict_get_i32(d, key_num)
+                && id > 0 {
                     return Ok(id as u32);
                 }
-            }
         }
     }
     Err(Error::FocusedWindow)
