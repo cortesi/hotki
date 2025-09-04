@@ -904,6 +904,7 @@ name = "config"
 version = "0.0.1"
 dependencies = [
  "colornames",
+ "hotki-protocol",
  "mac-keycode",
  "regex",
  "ron",
@@ -2230,7 +2231,6 @@ dependencies = [
 name = "hotki-protocol"
 version = "0.0.1"
 dependencies = [
- "config",
  "mrpc",
  "rmp-serde",
  "serde",

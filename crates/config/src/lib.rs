@@ -11,96 +11,15 @@ pub mod themes;
 mod types;
 
 pub use error::Error;
+pub use hotki_protocol::{Cursor, Toggle};
 pub use loader::{load_from_path, load_from_str};
 pub use mode::{
     Action, At, AtSpec, FullscreenKind, FullscreenSpec, Grid, GridSpec, Keys, KeysAttrs, MoveDir,
     NotificationType, ShellModifiers, ShellSpec,
 };
-pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, Toggle};
+pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 use raw::RawConfig;
-
-/// Pointer into the loaded config's key hierarchy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Cursor {
-    /// Indices into the parent `Keys.keys` vector for each descent step.
-    path: Vec<u32>,
-
-    /// True when showing the root HUD via a root view (no logical descent).
-    #[serde(default)]
-    pub viewing_root: bool,
-
-    /// Optional override of the base theme name for this view.
-    /// When `None`, uses the theme bundled in the loaded config.
-    #[serde(default)]
-    pub override_theme: Option<String>,
-
-    /// When true, ignore user overlay and render the theme without user UI tweaks.
-    #[serde(default)]
-    pub user_ui_disabled: bool,
-}
-
-impl Cursor {
-    /// Construct a new Location from parts.
-    pub fn new(path: Vec<u32>, viewing_root: bool) -> Self {
-        Self {
-            path,
-            viewing_root,
-            override_theme: None,
-            user_ui_disabled: false,
-        }
-    }
-
-    /// Logical depth equals the number of elements in the path (root = 0).
-    pub fn depth(&self) -> usize {
-        self.path.len()
-    }
-
-    /// Push an index step into the location path.
-    pub fn push(&mut self, idx: u32) {
-        self.path.push(idx);
-    }
-
-    /// Pop a step from the location path. Returns the popped index if any.
-    pub fn pop(&mut self) -> Option<u32> {
-        self.path.pop()
-    }
-
-    /// Clear the path, returning to root (does not change viewing_root flag).
-    pub fn clear(&mut self) {
-        self.path.clear();
-    }
-
-    /// Borrow the immutable path for inspection/logging.
-    pub fn path(&self) -> &[u32] {
-        &self.path
-    }
-
-    /// Set a theme override for this location. Use `None` to fall back to the
-    /// theme loaded from disk.
-    pub fn set_theme(&mut self, name: Option<&str>) {
-        self.override_theme = name.map(|s| s.to_string());
-    }
-
-    /// Clear any theme override at this location (revert to loaded theme).
-    pub fn clear_theme(&mut self) {
-        self.override_theme = None;
-    }
-
-    /// Enable or disable user style overlays at this location.
-    ///
-    /// - `true` enables user-provided overlays
-    /// - `false` disables them (rendering the base theme only)
-    pub fn set_user_style_enabled(&mut self, enabled: bool) {
-        self.user_ui_disabled = !enabled;
-    }
-
-    /// Returns `true` when user style overlays are enabled at this location.
-    pub fn user_style_enabled(&self) -> bool {
-        !self.user_ui_disabled
-    }
-}
 
 /// Public input form of user configuration that carries keys, optional base theme name,
 /// and an optional raw style overlay. This type is suitable for reading
@@ -476,7 +395,7 @@ impl Config {
     /// Resolve the `Keys` node at a location. Returns root when `path` is empty.
     pub fn resolve<'a>(&'a self, loc: &Cursor) -> Option<&'a Keys> {
         let mut cur = &self.keys;
-        for (depth, idx) in loc.path.iter().enumerate() {
+        for (depth, idx) in loc.path().iter().enumerate() {
             let i = *idx as usize;
             let (_, _, action, _) = cur.keys.get(i)?;
             match action {
@@ -493,13 +412,13 @@ impl Config {
 
     /// Description of the binding leading into the current mode (None at root or viewing_root).
     pub fn parent_title<'a>(&'a self, loc: &Cursor) -> Option<&'a str> {
-        if loc.path.is_empty() || loc.viewing_root {
+        if loc.path().is_empty() || loc.viewing_root {
             return None;
         }
         // Walk to parent keys, then take desc at last index
-        let parent_path_len = loc.path.len() - 1;
+        let parent_path_len = loc.path().len() - 1;
         let mut cur = &self.keys;
-        for idx in &loc.path[..parent_path_len] {
+        for idx in &loc.path()[..parent_path_len] {
             let i = *idx as usize;
             let (_, _, action, _) = cur.keys.get(i)?;
             match action {
@@ -507,7 +426,7 @@ impl Config {
                 _ => return None,
             }
         }
-        let last = *loc.path.last().unwrap() as usize;
+        let last = *loc.path().last().unwrap() as usize;
         cur.keys.get(last).map(|(_, desc, _, _)| desc.as_str())
     }
 
@@ -518,14 +437,14 @@ impl Config {
 
     /// HUD is visible when viewing_root is set or depth > 0.
     pub fn hud_visible(&self, loc: &Cursor) -> bool {
-        loc.viewing_root || !loc.path.is_empty()
+        loc.viewing_root || !loc.path().is_empty()
     }
 
     /// Effective style for a location: base style overlaid by the chain.
     pub(crate) fn style(&self, loc: &Cursor) -> Style {
         let mut chain = Vec::new();
         let mut cur = &self.keys;
-        for idx in &loc.path {
+        for idx in loc.path().iter() {
             let i = *idx as usize;
             if let Some((_, _, action, attrs)) = cur.keys.get(i) {
                 if let Some(ov) = &attrs.style {
@@ -619,7 +538,7 @@ impl Config {
     ) -> Option<(Action, KeysAttrs, Option<usize>)> {
         // 1) Current node (merged attrs)
         let cur = self.resolve(loc).unwrap_or(&self.keys);
-        let mode_chain = self.merged_mode_attrs(&loc.path);
+        let mode_chain = self.merged_mode_attrs(loc.path());
         for (i, (k, _d, a, attrs)) in cur.keys.iter().enumerate() {
             if k != chord {
                 continue;
@@ -633,10 +552,10 @@ impl Config {
         }
 
         // 2) Parents outward (including root when path non-empty)
-        if !loc.path.is_empty() {
+        if !loc.path().is_empty() {
             let mut parents: Vec<&Keys> = Vec::new();
             let mut k = &self.keys;
-            for idx in &loc.path {
+            for idx in loc.path().iter() {
                 parents.push(k);
                 let ii = *idx as usize;
                 match k.keys.get(ii) {
@@ -648,7 +567,7 @@ impl Config {
             let plen = parents.len();
             for (i_parent, parent) in parents.into_iter().rev().enumerate() {
                 let prefix_len = plen - 1 - i_parent;
-                let mode_chain = self.merged_mode_attrs(&loc.path[..prefix_len]);
+                let mode_chain = self.merged_mode_attrs(&loc.path()[..prefix_len]);
                 for (i, (k, _d, a, attrs)) in parent.keys.iter().enumerate() {
                     let eff = mode_chain.merged_with(attrs);
                     if k != chord || !eff.global() {
@@ -678,7 +597,7 @@ impl Config {
 
         let cur = self.resolve(loc).unwrap_or(&self.keys);
         let hud_visible = self.hud_visible(loc);
-        let mode_chain = self.merged_mode_attrs(&loc.path);
+        let mode_chain = self.merged_mode_attrs(loc.path());
 
         // Current mode entries first (with merged attrs)
         for (k, desc, attrs) in cur.keys_with_attrs() {
@@ -698,11 +617,11 @@ impl Config {
         }
 
         // Parents for inherited globals
-        if !loc.path.is_empty() {
+        if !loc.path().is_empty() {
             // Build vector of parents from nearest to root
             let mut parents: Vec<&Keys> = Vec::new();
             let mut k = &self.keys;
-            for idx in &loc.path {
+            for idx in loc.path().iter() {
                 parents.push(k);
                 let ii = *idx as usize;
                 match k.keys.get(ii) {
@@ -713,7 +632,7 @@ impl Config {
             let plen = parents.len();
             for (i_parent, parent) in parents.into_iter().rev().enumerate() {
                 let prefix_len = plen - 1 - i_parent;
-                let parent_chain = self.merged_mode_attrs(&loc.path[..prefix_len]);
+                let parent_chain = self.merged_mode_attrs(&loc.path()[..prefix_len]);
                 for (k, desc, attrs) in parent.keys_with_attrs() {
                     let eff = parent_chain.merged_with(&attrs);
                     if !eff.global() {
@@ -745,28 +664,28 @@ impl Config {
 
     /// Returns only the current frame's capture request (callers gate with HUD visibility).
     pub fn mode_requests_capture(&self, loc: &Cursor) -> bool {
-        if loc.path.is_empty() {
+        if loc.path().is_empty() {
             return false;
         }
-        let eff = self.merged_mode_attrs(&loc.path);
+        let eff = self.merged_mode_attrs(loc.path());
         eff.capture()
     }
 
-    /// Ensure the `Location`'s path remains valid for the current focus context by
+    /// Ensure the `Cursor`'s path remains valid for the current focus context by
     /// popping while the guard of the entering entry does not match. Returns true
     /// if the location changed.
     pub fn ensure_context(&self, loc: &mut Cursor, app: &str, title: &str) -> bool {
         let mut changed = false;
         loop {
-            if loc.path.is_empty() {
+            if loc.path().is_empty() {
                 break;
             }
-            let plen = loc.path.len();
+            let plen = loc.path().len();
             // Walk to the parent keys without holding a long-lived borrow on loc.path
             let mut cur = &self.keys;
             let mut invalid = false;
             for j in 0..(plen - 1) {
-                let i = loc.path[j] as usize;
+                let i = loc.path()[j] as usize;
                 match cur.keys.get(i) {
                     Some((_, _, Action::Keys(next), _)) => cur = next,
                     _ => {
@@ -776,14 +695,14 @@ impl Config {
                 }
             }
             if invalid {
-                loc.path.pop();
+                let _ = loc.pop();
                 changed = true;
                 continue;
             }
-            let last = loc.path[plen - 1] as usize;
+            let last = loc.path()[plen - 1] as usize;
             let ok = match cur.keys.get(last) {
                 Some((_k, _d, Action::Keys(_), _attrs)) => {
-                    let eff = self.merged_mode_attrs(&loc.path[..plen]);
+                    let eff = self.merged_mode_attrs(&loc.path()[..plen]);
                     entry_matches(&eff, app, title)
                 }
                 _ => false,
@@ -791,7 +710,7 @@ impl Config {
             if ok {
                 break;
             }
-            loc.path.pop();
+            let _ = loc.pop();
             changed = true;
         }
         changed
@@ -1141,14 +1060,12 @@ mod tests {
         // Starts with default theme values
         assert_eq!(cfg.hud(&root).title_fg, (0xd0, 0xd0, 0xd0));
 
-        let mut loc2 = Cursor {
-            override_theme: Some("dark-blue".into()),
-            ..Default::default()
-        };
+        let mut loc2 = Cursor::default();
+        loc2.set_theme(Some("dark-blue"));
         assert_eq!(cfg.hud(&loc2).title_fg, (0xa0, 0xc4, 0xff));
 
         // Reset override
-        loc2.override_theme = None;
+        loc2.clear_theme();
         assert_eq!(cfg.hud(&loc2).title_fg, (0xd0, 0xd0, 0xd0));
     }
 
@@ -1160,11 +1077,11 @@ mod tests {
         assert_eq!(cfg.hud(&root).font_size, 20.0);
 
         let mut loc2 = root.clone();
-        loc2.user_ui_disabled = true;
+        loc2.set_user_style_enabled(false);
         // Theme default font size in theme files is 14.0
         assert_eq!(cfg.hud(&loc2).font_size, 14.0);
 
-        loc2.user_ui_disabled = false;
+        loc2.set_user_style_enabled(true);
         assert_eq!(cfg.hud(&loc2).font_size, 20.0);
     }
 
@@ -1267,11 +1184,11 @@ mod tests {
         assert!(matches!(cfg.hud(&loc_root).mode, Mode::Hud));
         assert!(matches!(cfg.hud(&loc_sub).mode, Mode::Mini));
 
-        loc_root.user_ui_disabled = true;
+        loc_root.set_user_style_enabled(false);
         // Per-mode overlay still applies regardless of the user UI toggle
         assert!(matches!(cfg.hud(&loc_sub).mode, Mode::Mini));
 
-        loc_root.override_theme = Some("dark-blue".into());
+        loc_root.set_theme(Some("dark-blue"));
         assert!(matches!(cfg.hud(&loc_sub).mode, Mode::Mini));
     }
 

@@ -15,3 +15,4 @@ colornames = "0.0.6"
 mac-keycode = { path = "../mac-keycode" }
 thiserror = "2.0.16"
 regex = "1"
+hotki-protocol = { path = "../hotki-protocol" }

@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::UnboundedSender;
 
-use hotki_protocol::{Focus, MsgToUI, NotifyKind};
+use hotki_protocol::{App, MsgToUI, NotifyKind};
 use keymode::KeyResponse;
 
 use crate::{Error, Result};
@@ -27,7 +27,7 @@ impl NotificationDispatcher {
         self.tx
             .send(MsgToUI::HudUpdate {
                 cursor,
-                focus: Focus { app, title },
+                focus: App { app, title },
             })
             .map_err(|_| Error::ChannelClosed)
     }

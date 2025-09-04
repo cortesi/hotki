@@ -10,7 +10,6 @@ keywords.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-config = { path = "../config" }
 tokio = { version = "1", features = ["sync"] }
 mrpc = "0.0.6"
 rmp-serde = "1"
