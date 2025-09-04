@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::UnboundedSender;
 
-use hotki_protocol::{App, MsgToUI, NotifyKind};
+use hotki_protocol::{MsgToUI, NotifyKind};
 use keymode::KeyResponse;
 
 use crate::{Error, Result};
@@ -18,17 +18,9 @@ impl NotificationDispatcher {
     }
 
     /// Send a HUD update with the current cursor and focus snapshot.
-    pub fn send_hud_update_cursor(
-        &self,
-        cursor: config::Cursor,
-        app: String,
-        title: String,
-    ) -> Result<()> {
+    pub fn send_hud_update_cursor(&self, cursor: config::Cursor) -> Result<()> {
         self.tx
-            .send(MsgToUI::HudUpdate {
-                cursor,
-                focus: App { app, title },
-            })
+            .send(MsgToUI::HudUpdate { cursor })
             .map_err(|_| Error::ChannelClosed)
     }
 

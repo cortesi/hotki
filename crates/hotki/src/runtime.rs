@@ -282,13 +282,13 @@ pub fn spawn_key_runtime(
                     }
                     resp = conn.recv_event() => {
                         match resp {
-                            Ok(MsgToUI::HudUpdate { cursor, focus }) => {
+                            Ok(MsgToUI::HudUpdate { cursor }) => {
                                 current_cursor = cursor.clone();
                                 // Prefer app/title embedded on the cursor; fall back to message focus
                                 let (app_name, app_title) = cursor
                                     .app_ref()
                                     .map(|a| (a.app.as_str(), a.title.as_str()))
-                                    .unwrap_or_else(|| (focus.app.as_str(), focus.title.as_str()));
+                                    .unwrap_or(("", ""));
                                 // Compute UI-facing fields from our Config
                                 let vks = ui_config.hud_keys(&current_cursor, app_name, app_title);
                                 let visible_keys: Vec<(String, String, bool)> = vks

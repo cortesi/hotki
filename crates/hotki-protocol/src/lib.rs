@@ -7,7 +7,6 @@ pub struct App {
     pub title: String,
 }
 
-
 /// Pointer into the loaded config's key hierarchy and UI overrides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -140,8 +139,8 @@ pub enum MsgToUI {
     /// Asynchronous event sent when a hotkey is triggered.
     HotkeyTriggered(String),
 
-    /// HUD update containing the current cursor and focus snapshot
-    HudUpdate { cursor: Cursor, focus: App },
+    /// HUD update containing the current cursor (with optional App context)
+    HudUpdate { cursor: Cursor },
 
     /// Notification request for the UI
     Notify {
@@ -178,7 +177,6 @@ pub enum MsgToUI {
         message: String,
     },
 }
-
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NotifyKind {

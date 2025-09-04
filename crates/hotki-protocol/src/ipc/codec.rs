@@ -31,7 +31,7 @@ pub fn value_to_msg(value: Value) -> Result<MsgToUI, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{App, Cursor, NotifyKind, Toggle};
+    use crate::{Cursor, NotifyKind, Toggle};
 
     #[test]
     fn roundtrip_all_msg_variants() {
@@ -39,10 +39,6 @@ mod tests {
             MsgToUI::HotkeyTriggered("cmd-h".to_string()),
             MsgToUI::HudUpdate {
                 cursor: Cursor::new(vec![1, 2], false),
-                focus: App {
-                    app: "App".into(),
-                    title: "Win".into(),
-                },
             },
             MsgToUI::Notify {
                 kind: NotifyKind::Info,

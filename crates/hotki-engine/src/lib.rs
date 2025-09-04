@@ -137,8 +137,7 @@ impl Engine {
                 title: title.to_string(),
             });
             debug!("HUD update: cursor {:?}", cursor.path());
-            self.notifier
-                .send_hud_update_cursor(cursor, app.to_string(), title.to_string())?;
+            self.notifier.send_hud_update_cursor(cursor)?;
         }
 
         // Determine capture policy via Config + Location
