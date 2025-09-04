@@ -12,6 +12,7 @@ hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
 mac-winops = { path = "../mac-winops" }
+tao = "0.34"
 
 tokio = { version = "1.47", features = ["rt", "sync", "time"] }
 tracing = "0.1"

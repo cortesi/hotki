@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct App {
     pub app: String,
     pub title: String,
+    pub pid: i32,
 }
 
 /// Pointer into the loaded config's key hierarchy and UI overrides.

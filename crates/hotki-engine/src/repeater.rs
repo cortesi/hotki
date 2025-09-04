@@ -19,7 +19,8 @@ use tracing::trace;
 use keymode::{KeyResponse, NotificationType};
 use mac_keycode::Chord;
 
-use crate::{FocusHandler, RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
+use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
+use mac_winops::focus::FocusSnapshot;
 
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.
@@ -131,7 +132,7 @@ pub struct RepeatSpec {
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    focus: FocusHandler,
+    focus: Arc<Mutex<FocusSnapshot>>, // read-only provider for current pid
     relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
@@ -146,7 +147,11 @@ pub trait RepeatObserver: Send + Sync {
 
 impl Repeater {
     /// Create a new repeater bound to the given focus/relay/notifier components.
-    pub fn new(focus: FocusHandler, relay: RelayHandler, notifier: NotificationDispatcher) -> Self {
+    pub fn new(
+        focus: Arc<Mutex<FocusSnapshot>>,
+        relay: RelayHandler,
+        notifier: NotificationDispatcher,
+    ) -> Self {
         let sys_initial = Duration::from_millis(SYS_INITIAL_DELAY_MS);
         let sys_interval = Duration::from_millis(SYS_INTERVAL_MS);
         Self {
@@ -244,7 +249,7 @@ impl Repeater {
             }
             ExecSpec::Relay { chord } => {
                 // Start relay immediately (non-repeat)
-                let pid = self.focus.get_pid();
+                let pid = self.focus.lock().map(|f| f.pid).unwrap_or(-1);
                 self.relay
                     .start_relay(id.clone(), chord.clone(), pid, false);
 
@@ -312,7 +317,7 @@ impl Repeater {
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
         self.ticker.start(id, initial_delay, interval, move || {
-            let pid = focus.get_pid();
+            let pid = focus.lock().map(|f| f.pid).unwrap_or(-1);
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);

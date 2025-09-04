@@ -9,7 +9,9 @@ use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
-use super::event::FocusEvent;
+pub(crate) enum AxEvent {
+    TitleChanged { title: String, pid: i32 },
+}
 
 /// Returns true if the process is trusted for Accessibility (AX) APIs.
 pub(crate) fn ax_is_trusted() -> bool {
@@ -62,11 +64,7 @@ impl AXState {
         self.ctx_ptr = std::ptr::null_mut();
     }
 
-    pub(crate) fn attach(
-        &mut self,
-        pid: i32,
-        tx: UnboundedSender<FocusEvent>,
-    ) -> Result<(), Error> {
+    pub(crate) fn attach(&mut self, pid: i32, tx: UnboundedSender<AxEvent>) -> Result<(), Error> {
         self.detach();
         unsafe extern "C" {
             fn AXObserverCreate(
@@ -174,7 +172,7 @@ impl AXState {
 }
 
 struct AXCtx {
-    tx: UnboundedSender<FocusEvent>,
+    tx: UnboundedSender<AxEvent>,
     app_elem: *mut c_void,
     notif_focused_window_changed: CFString,
     notif_title_changed: CFString,
@@ -241,7 +239,7 @@ impl AXCtx {
                     }
                     if !title_ref.is_null() {
                         let s = cfstring_to_string(title_ref as CFStringRef);
-                        let _ = self.tx.send(FocusEvent::TitleChanged {
+                        let _ = self.tx.send(AxEvent::TitleChanged {
                             title: s,
                             pid: self.pid,
                         });
@@ -275,7 +273,7 @@ impl AXCtx {
                 }
                 if !title_ref.is_null() {
                     let s = cfstring_to_string(title_ref as CFStringRef);
-                    let _ = self.tx.send(FocusEvent::TitleChanged {
+                    let _ = self.tx.send(AxEvent::TitleChanged {
                         title: s,
                         pid: self.pid,
                     });

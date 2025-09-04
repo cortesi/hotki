@@ -95,7 +95,12 @@ impl Server {
         // Create shutdown coordination
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         // Create the IPC server; pass shutdown flag so RPC can trigger exit
-        let ipc_server = IPCServer::new(&self.socket_path, manager, shutdown_requested.clone());
+        let ipc_server = IPCServer::new(
+            &self.socket_path,
+            manager,
+            shutdown_requested.clone(),
+            proxy_for_ipc.clone(),
+        );
         let shutdown_requested_clone = shutdown_requested.clone();
         let ipc_wakeup = proxy_for_ipc.clone();
 

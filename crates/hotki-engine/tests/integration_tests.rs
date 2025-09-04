@@ -7,11 +7,12 @@ use std::{
 };
 
 use hotki_engine::{
-    Engine, FocusHandler, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec,
-    Repeater,
+    Engine, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec, Repeater,
 };
 use hotki_protocol::MsgToUI;
 use keymode::Keys;
+use mac_winops::focus::FocusSnapshot;
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 /// Ensure tests run without invoking real OS intercepts
@@ -59,15 +60,17 @@ async fn test_rebind_on_depth_change() {
 
     // Simulate focus events to trigger initial binding
     engine
-        .on_focus_event(mac_winops::focus::FocusEvent::AppChanged {
-            title: "TestApp".to_string(),
+        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
+            app: "TestApp".into(),
+            title: "".into(),
             pid: 1234,
         })
         .await
         .expect("focus app");
     engine
-        .on_focus_event(mac_winops::focus::FocusEvent::TitleChanged {
-            title: "TestWindow".to_string(),
+        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
+            app: "TestApp".into(),
+            title: "TestWindow".into(),
             pid: 1234,
         })
         .await
@@ -202,14 +205,14 @@ async fn test_ticker_cancel_semantics() {
     ensure_no_os_interaction();
     // Test repeater stop vs stop_sync semantics instead
     // since ticker module is private
-    let focus = FocusHandler::new();
+    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
     let relay = RelayHandler::new();
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);
 
     // Test non-blocking stop
-    focus.set_pid_for_tools(1234);
+    focus.lock().unwrap().pid = 1234;
     repeater.start_relay_repeat(
         "test_stop".to_string(),
         mac_keycode::Chord::parse("cmd+a").unwrap(),
@@ -310,7 +313,7 @@ async fn test_repeater_with_observer() {
         }
     }
 
-    let focus = FocusHandler::new();
+    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
     let relay = RelayHandler::new();
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
@@ -324,7 +327,7 @@ async fn test_repeater_with_observer() {
     repeater.set_repeat_observer(observer.clone());
 
     // Test relay repeat observation
-    focus.set_pid_for_tools(1234);
+    focus.lock().unwrap().pid = 1234;
 
     // The observer is only called during actual repeat ticks, not the initial execution
     // So we need to make sure repeats actually happen

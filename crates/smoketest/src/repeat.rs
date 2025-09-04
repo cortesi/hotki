@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use mac_winops::focus::FocusSnapshot;
+use std::sync::Mutex;
 use winit::event_loop::EventLoop;
 
 pub(crate) fn count_relay(ms: u64) -> usize {
@@ -17,12 +19,14 @@ pub(crate) fn count_relay(ms: u64) -> usize {
         .expect("tokio runtime");
     let _guard = rt.enter();
 
-    let focus = hotki_engine::FocusHandler::new();
+    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
     let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
-    focus.set_pid_for_tools(std::process::id() as i32);
+    if let Ok(mut f) = focus.lock() {
+        f.pid = std::process::id() as i32;
+    }
 
     struct Counter(AtomicUsize);
     impl hotki_engine::RepeatObserver for Counter {
@@ -133,7 +137,7 @@ pub(crate) fn count_shell(ms: u64) -> usize {
         .expect("tokio runtime");
     let _guard = rt.enter();
 
-    let focus = hotki_engine::FocusHandler::new();
+    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
@@ -200,7 +204,7 @@ pub(crate) fn count_volume(ms: u64) -> usize {
     let script = "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + 1)";
     let cmd = format!("osascript -e '{}'", script.replace('\n', "' -e '"));
 
-    let focus = hotki_engine::FocusHandler::new();
+    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);

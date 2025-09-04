@@ -8,6 +8,7 @@ clap = { version = "4.5.46", features = ["derive"] }
 hotki-server = { path = "../hotki-server" }
 hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }
+mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
 relaykey = { path = "../relaykey" }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }

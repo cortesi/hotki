@@ -28,8 +28,9 @@ impl IPCServer {
         socket_path: impl Into<String>,
         manager: mac_hotkey::Manager,
         shutdown: Arc<AtomicBool>,
+        proxy: tao::event_loop::EventLoopProxy<()>,
     ) -> Self {
-        let mut builder = HotkeyService::builder(Arc::new(manager), shutdown);
+        let mut builder = HotkeyService::builder(Arc::new(manager), shutdown, proxy);
         if let Ok(v) = env::var("HOTKI_MAX_INFLIGHT_PER_ID")
             && let Ok(n) = v.parse::<usize>()
         {

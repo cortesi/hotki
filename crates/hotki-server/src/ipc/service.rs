@@ -43,10 +43,10 @@ pub struct HotkeyService {
     clients: Arc<AsyncMutex<Vec<RpcSender>>>,
     /// When set to true, the outer server event loop should exit.
     shutdown: Arc<AtomicBool>,
-    /// Ensure focus watcher is only started once per server lifetime
-    watcher_started: Arc<AtomicBool>,
     /// Optional cap on per-id in-flight events (worker queue capacity)
     per_id_capacity: Option<usize>,
+    /// Tao proxy for main-thread operations; passed to engine for focus watcher ownership
+    proxy: tao::event_loop::EventLoopProxy<()>,
 }
 
 impl HotkeyService {
@@ -61,7 +61,11 @@ impl HotkeyService {
             value: Value::Map(map),
         })
     }
-    pub fn new(manager: Arc<mac_hotkey::Manager>, shutdown: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        manager: Arc<mac_hotkey::Manager>,
+        shutdown: Arc<AtomicBool>,
+        proxy: tao::event_loop::EventLoopProxy<()>,
+    ) -> Self {
         // Create event channel
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -72,8 +76,8 @@ impl HotkeyService {
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
             clients: Arc::new(AsyncMutex::new(Vec::new())),
             shutdown,
-            watcher_started: Arc::new(AtomicBool::new(false)),
             per_id_capacity: None,
+            proxy,
         }
     }
 
@@ -83,11 +87,13 @@ impl HotkeyService {
     pub fn builder(
         manager: Arc<mac_hotkey::Manager>,
         shutdown: Arc<AtomicBool>,
+        proxy: tao::event_loop::EventLoopProxy<()>,
     ) -> HotkeyServiceBuilder {
         HotkeyServiceBuilder {
             manager,
             shutdown,
             per_id_capacity: None,
+            proxy,
         }
     }
 
@@ -113,7 +119,11 @@ impl HotkeyService {
         let mut engine_guard = self.engine.lock().await;
         // Double-check in case of race condition
         if engine_guard.is_none() {
-            *engine_guard = Some(Engine::new(self.manager.clone(), event_tx));
+            *engine_guard = Some(Engine::new_with_proxy(
+                self.manager.clone(),
+                event_tx,
+                self.proxy.clone(),
+            ));
         }
         Ok(())
     }
@@ -292,12 +302,7 @@ impl MrpcConnection for HotkeyService {
                     ));
                 }
 
-                // Start focus watcher if needed
-                let need_start = !self.watcher_started.swap(true, Ordering::SeqCst);
                 drop(engine_guard);
-                if need_start {
-                    self.start_focus_watcher().await;
-                }
 
                 Ok(Value::Boolean(true))
             }
@@ -324,60 +329,6 @@ impl MrpcConnection for HotkeyService {
 }
 
 impl HotkeyService {
-    async fn start_focus_watcher(&self) {
-        use mac_winops::focus::{FocusEvent, start_watcher};
-
-        let (tx_focus, mut rx_focus) = tokio::sync::mpsc::unbounded_channel::<FocusEvent>();
-        if let Err(e) = start_watcher(tx_focus) {
-            tracing::warn!("Failed to start focus watcher: {}", e);
-
-            // Surface a user-facing notification with actionable guidance.
-            // Check current permissions to tailor the message.
-            let perms = permissions::check_permissions();
-            let mut hints: Vec<&str> = Vec::new();
-            if !perms.accessibility_ok {
-                hints.push("Accessibility");
-            }
-            if !perms.input_ok {
-                hints.push("Input Monitoring");
-            }
-            let hint_str = if hints.is_empty() {
-                "Ensure the app is not sandboxed improperly and restart Hotki."
-            } else if hints.len() == 1 && hints[0] == "Accessibility" {
-                "Grant Accessibility permission in System Settings → Privacy & Security → Accessibility, then restart Hotki."
-            } else if hints.len() == 1 && hints[0] == "Input Monitoring" {
-                "Grant Input Monitoring permission in System Settings → Privacy & Security → Input Monitoring, then restart Hotki."
-            } else {
-                "Grant Accessibility and Input Monitoring permissions in System Settings → Privacy & Security, then restart Hotki."
-            };
-
-            let msg = format!("Focus watcher failed to start ({}). {}", e, hint_str);
-            let _ = self.event_tx.send(hotki_protocol::MsgToUI::Notify {
-                kind: hotki_protocol::NotifyKind::Error,
-                title: "Focus Watcher".to_string(),
-                text: msg,
-            });
-        }
-
-        let engine = self.engine.clone();
-        let shutdown = self.shutdown.clone();
-        tokio::spawn(async move {
-            while let Some(ev) = rx_focus.recv().await {
-                if shutdown.load(Ordering::SeqCst) {
-                    break;
-                }
-                let mut eng_guard = engine.lock().await;
-                if let Some(eng) = eng_guard.as_mut()
-                    && let Err(e) = eng.on_focus_event(ev).await
-                {
-                    tracing::warn!("Engine focus update failed: {}", e);
-                }
-            }
-        });
-
-        debug!("Focus watcher started");
-    }
-
     /// Start the hotkey event dispatcher
     pub(crate) fn start_hotkey_dispatcher(&self) {
         let manager = self.manager.clone();
@@ -472,6 +423,7 @@ pub struct HotkeyServiceBuilder {
     manager: Arc<mac_hotkey::Manager>,
     shutdown: Arc<AtomicBool>,
     per_id_capacity: Option<usize>,
+    proxy: tao::event_loop::EventLoopProxy<()>,
 }
 
 impl HotkeyServiceBuilder {
@@ -484,7 +436,7 @@ impl HotkeyServiceBuilder {
 
     /// Build the service with the configured options.
     pub fn build(self) -> HotkeyService {
-        let mut svc = HotkeyService::new(self.manager, self.shutdown);
+        let mut svc = HotkeyService::new(self.manager, self.shutdown, self.proxy);
         svc.per_id_capacity = self.per_id_capacity;
         svc
     }

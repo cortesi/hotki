@@ -1,26 +1,13 @@
 use std::{ptr::NonNull, sync::Mutex};
 
 use block2::StackBlock;
-use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+use objc2_app_kit::NSWorkspace;
 use objc2_foundation::NSNotification;
 use once_cell::sync::Lazy;
 use tao::event_loop::EventLoopProxy;
 use tracing::debug;
 
-use super::event::FocusEvent;
-
-// Global sink for NSWorkspace events (emitted from server main thread)
-static NS_SINK: Lazy<Mutex<Option<tokio::sync::mpsc::UnboundedSender<FocusEvent>>>> =
-    Lazy::new(|| Mutex::new(None));
-
-/// Set the sink used by NSWorkspace notifications to forward focus events.
-///
-/// Must be called before requesting installation of the NSWorkspace observer.
-pub(crate) fn set_ns_sink(tx: tokio::sync::mpsc::UnboundedSender<FocusEvent>) {
-    if let Ok(mut guard) = NS_SINK.lock() {
-        *guard = Some(tx);
-    }
-}
+// Legacy NS sink removed; observer remains for potential main-thread tasks.
 
 // Main-thread proxy to schedule installs safely on TAO event loop
 static MAIN_PROXY: Lazy<Mutex<Option<EventLoopProxy<()>>>> = Lazy::new(|| Mutex::new(None));
@@ -54,14 +41,7 @@ pub fn post_user_event() -> Result<(), super::Error> {
     request_ns_observer_install()
 }
 
-/// Emit an AppChanged event into the NS sink; used by NSWorkspace callback.
-pub(crate) fn ns_emit_app_changed(title: String, pid: i32) {
-    if let Ok(guard) = NS_SINK.lock()
-        && let Some(tx) = &*guard
-    {
-        let _ = tx.send(FocusEvent::AppChanged { title, pid });
-    }
-}
+// No-op emitter retained for future use.
 
 // Global token to keep NSWorkspace observer alive
 static NS_OBS_TOKEN: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
@@ -75,37 +55,7 @@ pub fn install_ns_workspace_observer() -> Result<(), super::Error> {
         unsafe {
             let ws = NSWorkspace::sharedWorkspace();
             let center = ws.notificationCenter();
-            let block = StackBlock::new(move |notif: NonNull<NSNotification>| {
-                let notif = notif.as_ref();
-                let mut sent = false;
-                if let Some(obj) = notif.object()
-                    && let Some(app) = obj.downcast_ref::<NSRunningApplication>()
-                {
-                    let pid = app.processIdentifier();
-                    if let Some(name) = app.localizedName() {
-                        let c = name.UTF8String();
-                        if !c.is_null()
-                            && let Ok(s) = std::ffi::CStr::from_ptr(c).to_str()
-                        {
-                            ns_emit_app_changed(s.to_string(), pid);
-                            sent = true;
-                        }
-                    }
-                    if !sent && let Some(bid) = app.bundleIdentifier() {
-                        let c = bid.UTF8String();
-                        if !c.is_null()
-                            && let Ok(s) = std::ffi::CStr::from_ptr(c).to_str()
-                        {
-                            ns_emit_app_changed(s.to_string(), pid);
-                            sent = true;
-                        }
-                    }
-                }
-                if !sent {
-                    ns_emit_app_changed(String::new(), -1);
-                }
-            })
-            .copy();
+            let block = StackBlock::new(move |_notif: NonNull<NSNotification>| {}).copy();
             let _token =
                 center.addObserverForName_object_queue_usingBlock(None, None, None, &block);
             // Keep process-global observer alive implicitly; center retains the block.

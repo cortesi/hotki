@@ -12,12 +12,11 @@
 //!
 //! All other modules are crate-private implementation details.
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 mod error;
-mod focus;
 mod key_binding;
 mod key_state;
 mod notification;
@@ -28,7 +27,6 @@ mod ticker;
 // Timing constants for warning thresholds
 const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
-const FOCUS_BIND_WARN_MS: u64 = 10;
 
 use hotki_protocol::MsgToUI;
 use keymode::{KeyResponse, State};
@@ -36,7 +34,6 @@ use mac_keycode::Chord;
 use tracing::{debug, info, trace, warn};
 
 pub use error::{Error, Result};
-pub use focus::FocusHandler;
 pub use notification::NotificationDispatcher;
 pub use relay::RelayHandler;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
@@ -44,8 +41,6 @@ pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use repeater::ExecSpec;
-
-use crate::focus::FocusState;
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -59,8 +54,6 @@ pub struct Engine {
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
-    /// Focus handler
-    focus_handler: FocusHandler,
     /// Relay handler
     relay_handler: RelayHandler,
     /// Notification dispatcher
@@ -69,9 +62,21 @@ pub struct Engine {
     repeater: Repeater,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
+    /// Last known focus snapshot (app/title/pid) when using engine-owned watcher
+    focus_snapshot: Arc<Mutex<mac_winops::focus::FocusSnapshot>>,
 }
 
 impl Engine {
+    fn current_snapshot(&self) -> mac_winops::focus::FocusSnapshot {
+        self.focus_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn current_pid(&self) -> i32 {
+        self.focus_snapshot.lock().map(|g| g.pid).unwrap_or(-1)
+    }
     /// Create a new engine.
     ///
     /// - `manager`: platform hotkey manager used for key registration
@@ -83,11 +88,11 @@ impl Engine {
         let binding_manager_arc =
             Arc::new(tokio::sync::Mutex::new(KeyBindingManager::new(manager)));
         // Create shared focus/relay instances
-        let focus_handler = FocusHandler::new();
+        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new(
-            focus_handler.clone(),
+            focus_snapshot_arc.clone(),
             relay_handler.clone(),
             notifier.clone(),
         );
@@ -100,16 +105,49 @@ impl Engine {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
-            focus_handler,
             relay_handler,
             notifier,
             repeater,
             config: config_arc,
+            focus_snapshot: focus_snapshot_arc,
         }
     }
 
+    /// Create an Engine that will own and drive the focus watcher using a Tao EventLoopProxy.
+    /// Server migration will switch to this constructor; legacy `new` remains for compatibility.
+    pub fn new_with_proxy(
+        manager: Arc<mac_hotkey::Manager>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        proxy: tao::event_loop::EventLoopProxy<()>,
+    ) -> Self {
+        let eng = Self::new(manager, event_tx);
+
+        // Start engine-owned focus watcher and subscribe to snapshots
+        let watcher = mac_winops::focus::FocusWatcher::new(proxy);
+        let _ = watcher.start();
+        let mut rx = watcher.subscribe();
+
+        // Seed current snapshot immediately (best-effort); spawn async processing next
+        {
+            let eng_clone = eng.clone();
+            let snap = watcher.current();
+            tokio::spawn(async move {
+                let _ = eng_clone.on_focus_snapshot(snap).await;
+            });
+        }
+
+        let eng_clone = eng.clone();
+        tokio::spawn(async move {
+            while let Some(snap) = rx.recv().await {
+                let _ = eng_clone.on_focus_snapshot(snap).await;
+            }
+        });
+
+        eng
+    }
+
     async fn rebind_current_context(&self) -> Result<()> {
-        let fs = self.focus_handler.get_focus_state();
+        let fs = self.current_snapshot();
         debug!("Rebinding with context: app={}, title={}", fs.app, fs.title);
         self.rebind_and_refresh(&fs.app, &fs.title).await
     }
@@ -135,6 +173,7 @@ impl Engine {
             let cursor = cursor.with_app(hotki_protocol::App {
                 app: app.to_string(),
                 title: title.to_string(),
+                pid: self.current_pid(),
             });
             debug!("HUD update: cursor {:?}", cursor.path());
             self.notifier.send_hud_update_cursor(cursor)?;
@@ -149,6 +188,7 @@ impl Engine {
         let cur_with_app = cur.clone().with_app(hotki_protocol::App {
             app: app.to_string(),
             title: title.to_string(),
+            pid: self.current_pid(),
         });
         let hud_visible = cfg_guard.hud_visible(&cur);
         let capture = cfg_guard.mode_requests_capture(&cur);
@@ -176,7 +216,7 @@ impl Engine {
             tracing::debug!("bindings updated, clearing repeater + relay");
             // Async clear to avoid blocking the runtime thread
             self.repeater.clear_async().await;
-            let pid = self.focus_handler.get_pid();
+            let pid = self.current_pid();
             self.relay_handler.stop_all(pid);
         }
 
@@ -207,42 +247,21 @@ impl Engine {
         self.rebind_current_context().await
     }
 
-    /// Handle a focus event: update internal context and rebind if needed.
-    pub async fn on_focus_event(&mut self, event: mac_winops::focus::FocusEvent) -> Result<()> {
-        let start = Instant::now();
-        debug!("Focus event received: {:?}", event);
+    // Legacy on_focus_event removed; use on_focus_snapshot instead.
 
-        self.focus_handler.handle_event(event);
-
-        {
-            let update_start = Instant::now();
-
-            let ctx = self.focus_handler.get_focus_state();
-            info!(
-                "Focus change: updating bindings (app={} title={})",
-                ctx.app, ctx.title
-            );
-            // Single entrypoint: ensure context, update HUD, rebind
-            self.rebind_current_context().await?;
-
-            let elapsed = update_start.elapsed();
-            if elapsed > Duration::from_millis(FOCUS_BIND_WARN_MS) {
-                warn!(
-                    "Focus event binding update took {:?}, may cause key drops",
-                    elapsed
-                );
-            } else {
-                debug!("Focus event binding update completed in {:?}", elapsed);
-            }
+    /// Handle a coalesced focus snapshot produced by an engine-owned watcher.
+    pub async fn on_focus_snapshot(&self, snap: mac_winops::focus::FocusSnapshot) -> Result<()> {
+        // Update cached snapshot
+        if let Ok(mut g) = self.focus_snapshot.lock() {
+            *g = snap.clone();
         }
+        let start = Instant::now();
+        info!("Focus changed: app='{}' title='{}' pid={}", snap.app, snap.title, snap.pid);
 
-        debug!("Focus event fully processed in {:?}", start.elapsed());
+        // Update HUD and bindings with new context
+        self.rebind_and_refresh(&snap.app, &snap.title).await?;
+        debug!("Focus snapshot processed in {:?}", start.elapsed());
         Ok(())
-    }
-
-    /// Return the current focus context (app, title).
-    pub fn get_context(&self) -> FocusState {
-        self.focus_handler.get_focus_state()
     }
 
     /// Get the current depth (0 = root) if state is initialized.
@@ -258,8 +277,8 @@ impl Engine {
     /// Process a key event and return whether depth changed (requiring rebind)
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
-        let fs = self.focus_handler.get_focus_state();
-        let pid = self.focus_handler.get_pid();
+        let fs = self.current_snapshot();
+        let pid = self.current_pid();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
@@ -339,7 +358,7 @@ impl Engine {
                     config::Toggle::Off => mac_winops::Desired::Off,
                     config::Toggle::Toggle => mac_winops::Desired::Toggle,
                 };
-                let pid = self.focus_handler.get_pid();
+                let pid = self.current_pid();
                 let res = match kind {
                     config::FullscreenKind::Native => mac_winops::fullscreen_native(pid, d),
                     config::FullscreenKind::Nonnative => {
@@ -357,14 +376,14 @@ impl Engine {
                 col,
                 row,
             }) => {
-                let pid = self.focus_handler.get_pid();
+                let pid = self.current_pid();
                 if let Err(e) = mac_winops::request_place_grid(pid, cols, rows, col, row) {
                     let _ = self.notifier.send_error("Place", format!("{}", e));
                 }
                 Ok(())
             }
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
-                let pid = self.focus_handler.get_pid();
+                let pid = self.current_pid();
                 let mdir = match dir {
                     config::MoveDir::Left => mac_winops::MoveDir::Left,
                     config::MoveDir::Right => mac_winops::MoveDir::Right,
@@ -430,7 +449,7 @@ impl Engine {
 
     /// Handle a key up event
     fn handle_key_up(&self, identifier: &str) {
-        let pid = self.focus_handler.get_pid();
+        let pid = self.current_pid();
         self.repeater.stop_sync(identifier);
         if self.relay_handler.stop_relay(identifier, pid) {
             debug!("Stopped relay for {}", identifier);
@@ -439,7 +458,7 @@ impl Engine {
 
     /// Handle a repeat key event for active relays
     fn handle_repeat(&self, identifier: &str) {
-        let pid = self.focus_handler.get_pid();
+        let pid = self.current_pid();
         // Forward OS repeat to active relay target, if any
         if self.relay_handler.repeat_relay(identifier, pid) {
             // If a software ticker is active for this id, stop it to avoid double repeats.
