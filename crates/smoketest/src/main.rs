@@ -3,14 +3,12 @@ use std::{
     fmt,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
 };
 
 use clap::{Parser, Subcommand};
+mod repeat;
+mod session;
+mod ui;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -59,6 +57,8 @@ enum Commands {
     },
     /// Launch UI in mini HUD mode and cycle themes
     Minui,
+    /// Check required permissions and screen capture capability
+    Preflight,
 }
 
 // Lightweight result types for UI/screenshot flows
@@ -156,7 +156,7 @@ fn main() {
         // Volume can be slightly slower; keep a floor to reduce flakiness
         Commands::Volume { .. } => repeat_volume(std::cmp::max(cli.duration, 2000)),
         Commands::All => run_all_tests(cli.duration, cli.timeout),
-        Commands::Ui => match run_ui_demo(cli.timeout) {
+        Commands::Ui => match ui::run_ui_demo(cli.timeout) {
             Ok(sum) => {
                 println!(
                     "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -169,20 +169,22 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Commands::Screenshots { theme, dir } => match run_screenshots(theme, dir, cli.timeout) {
-            Ok(sum) => {
-                println!(
-                    "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
-                    sum.hud_seen, sum.time_to_hud_ms
-                );
+        Commands::Screenshots { theme, dir } => {
+            match ui::run_screenshots(theme, dir, cli.timeout) {
+                Ok(sum) => {
+                    println!(
+                        "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
+                        sum.hud_seen, sum.time_to_hud_ms
+                    );
+                }
+                Err(e) => {
+                    eprintln!("screenshots: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("screenshots: ERROR: {}", e);
-                print_hints(&e);
-                std::process::exit(1);
-            }
-        },
-        Commands::Minui => match run_minui_demo(cli.timeout) {
+        }
+        Commands::Minui => match ui::run_minui_demo(cli.timeout) {
             Ok(sum) => {
                 println!(
                     "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -195,245 +197,35 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Commands::Preflight => {
+            let ok = run_preflight();
+            if !ok {
+                std::process::exit(1);
+            }
+        }
     }
 }
 
-// Resolve the path to the hotki binary.
-// Priority: $HOTKI_BIN env override -> sibling of current exe (target/{profile}/hotki)
-fn resolve_hotki_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("HOTKI_BIN") {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hotki")))
-        .filter(|p| p.exists())
-}
+//
 
 // (intentionally left without a generic fullscreen capture; HUD-only capture below)
 
 // Try to locate the NSWindow representing the HUD by matching the owner PID
 // and the window title ("Hotki HUD"). Returns (window_id, bounds) on success.
-fn find_hud_window(pid: u32) -> Option<(u32, (i32, i32, i32, i32))> {
-    use core_foundation::dictionary::CFDictionaryRef;
-    use core_foundation::{
-        array::CFArray,
-        base::{CFType, TCFType, TCFTypeRef},
-        dictionary::CFDictionary,
-        number::CFNumber,
-        string::CFString,
-    };
-    use core_graphics2::window::{
-        CGWindowListOption, copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowName,
-        kCGWindowNumber, kCGWindowOwnerPID,
-    };
-
-    // Fetch on-screen windows
-    let arr: CFArray = copy_window_info(CGWindowListOption::OnScreenOnly, kCGNullWindowID)?;
-    // Iterate untyped array and wrap each entry as CFDictionary<CFStringRef, CFTypeRef>
-    for item in arr.iter() {
-        let dict_ref = unsafe { CFDictionaryRef::from_void_ptr(*item) };
-        let dict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(dict_ref) };
-
-        // Owner PID
-        let owner_pid = unsafe { dict.find(kCGWindowOwnerPID) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))
-            .unwrap_or_default();
-        if owner_pid != pid {
-            continue;
-        }
-
-        // Title
-        let name = unsafe { dict.find(kCGWindowName) }
-            .and_then(|v| v.downcast::<CFString>())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        if name != "Hotki HUD" {
-            continue;
-        }
-
-        // Window ID
-        let win_id: u32 = unsafe { dict.find(kCGWindowNumber) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))?;
-
-        // Bounds
-        let bdict_any = unsafe { dict.find(kCGWindowBounds) }?;
-        let bdict_ref: CFDictionaryRef = bdict_any.as_CFTypeRef() as CFDictionaryRef;
-        let bdict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(bdict_ref) };
-        let kx = CFString::from_static_string("X");
-        let ky = CFString::from_static_string("Y");
-        let kw = CFString::from_static_string("Width");
-        let kh = CFString::from_static_string("Height");
-        let get = |k: &CFString| {
-            bdict
-                .find(k.clone())
-                .and_then(|v| v.downcast::<CFNumber>())
-                .and_then(|n| n.to_i64().map(|v| v as i32))
-        };
-        let (x, y, w, h) = (get(&kx)?, get(&ky)?, get(&kw)?, get(&kh)?);
-
-        return Some((win_id, (x, y, w, h)));
-    }
-    None
-}
+//
 
 // Capture just the HUD window by CGWindowID; fall back to rect if needed.
-fn capture_hud_window(pid: u32, dir: &std::path::Path, name: &str) -> bool {
-    use std::ffi::OsStr;
-    if let Some((win_id, (x, y, w, h))) = find_hud_window(pid) {
-        let sanitized = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let path = dir.join(format!("{}.png", sanitized));
-        // Try window-id capture first (-l), without shadow (-o), no UI (-x)
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-o"),
-                OsStr::new("-l"),
-                std::ffi::OsString::from(win_id.to_string()).as_os_str(),
-                path.as_os_str(),
-            ])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            return true;
-        }
-        // Fallback to rectangular region capture if -l fails
-        let rect_arg = format!("{},{},{},{}", x, y, w, h);
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-R"),
-                OsStr::new(&rect_arg),
-                path.as_os_str(),
-            ])
-            .status();
-        return matches!(status, Ok(s) if s.success());
-    }
-    false
-}
+//
 
 // Find a visible notification window for a given PID (title="Hotki Notification").
-fn find_notification_window(pid: u32) -> Option<(u32, (i32, i32, i32, i32))> {
-    use core_foundation::dictionary::CFDictionaryRef;
-    use core_foundation::{
-        array::CFArray,
-        base::{CFType, TCFType, TCFTypeRef},
-        dictionary::CFDictionary,
-        number::CFNumber,
-        string::CFString,
-    };
-    use core_graphics2::window::{
-        CGWindowListOption, copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowName,
-        kCGWindowNumber, kCGWindowOwnerPID,
-    };
+//
 
-    let arr: CFArray = copy_window_info(CGWindowListOption::OnScreenOnly, kCGNullWindowID)?;
-    for item in arr.iter() {
-        let dict_ref = unsafe { CFDictionaryRef::from_void_ptr(*item) };
-        let dict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(dict_ref) };
-        // Owner PID
-        let owner_pid = unsafe { dict.find(kCGWindowOwnerPID) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))
-            .unwrap_or_default();
-        if owner_pid != pid {
-            continue;
-        }
-        // Title
-        let name = unsafe { dict.find(kCGWindowName) }
-            .and_then(|v| v.downcast::<CFString>())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        if name != "Hotki Notification" {
-            continue;
-        }
-        // Window ID
-        let win_id: u32 = unsafe { dict.find(kCGWindowNumber) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))?;
-        // Bounds
-        let bdict_any = unsafe { dict.find(kCGWindowBounds) }?;
-        let bdict_ref: CFDictionaryRef = bdict_any.as_CFTypeRef() as CFDictionaryRef;
-        let bdict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(bdict_ref) };
-        let kx = CFString::from_static_string("X");
-        let ky = CFString::from_static_string("Y");
-        let kw = CFString::from_static_string("Width");
-        let kh = CFString::from_static_string("Height");
-        let get = |k: &CFString| {
-            bdict
-                .find(k.clone())
-                .and_then(|v| v.downcast::<CFNumber>())
-                .and_then(|n| n.to_i64().map(|v| v as i32))
-        };
-        let (x, y, w, h) = (get(&kx)?, get(&ky)?, get(&kw)?, get(&kh)?);
-        return Some((win_id, (x, y, w, h)));
-    }
-    None
-}
-
-fn capture_notification_window(pid: u32, dir: &std::path::Path, name: &str) -> bool {
-    use std::ffi::OsStr;
-    if let Some((win_id, (x, y, w, h))) = find_notification_window(pid) {
-        let sanitized = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let path = dir.join(format!("{}.png", sanitized));
-        // Try window-id capture first
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-o"),
-                OsStr::new("-l"),
-                std::ffi::OsString::from(win_id.to_string()).as_os_str(),
-                path.as_os_str(),
-            ])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            return true;
-        }
-        // Fallback to rect
-        let rect_arg = format!("{},{},{},{}", x, y, w, h);
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-R"),
-                OsStr::new(&rect_arg),
-                path.as_os_str(),
-            ])
-            .status();
-        return matches!(status, Ok(s) if s.success());
-    }
-    false
-}
+//
 
 // Build the hotki binary quietly if it's missing. Returns true if the binary
 // exists afterwards. Build output is suppressed to avoid interleaved cargo logs.
 fn ensure_hotki_built_quiet() -> bool {
-    if resolve_hotki_bin().is_some() {
+    if ui::resolve_hotki_bin().is_some() {
         return true;
     }
     let status = Command::new("cargo")
@@ -443,378 +235,16 @@ fn ensure_hotki_built_quiet() -> bool {
         .stderr(Stdio::null())
         .status();
     if status.map(|s| s.success()).unwrap_or(false) {
-        return resolve_hotki_bin().is_some();
+        return ui::resolve_hotki_bin().is_some();
     }
     false
 }
 
-// Relay activation chord once and wait for HUD depth>0 via UI IPC
-fn ensure_hud_visible(sock: &str, timeout_ms: u64) -> bool {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("tokio runtime error: {}", e);
-            return false;
-        }
-    };
+//
 
-    // Try to connect to the UI's server with retry until the global deadline.
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut attempts = 0;
-    let mut client = loop {
-        match rt.block_on(async {
-            hotki_server::Client::new_with_socket(sock)
-                .with_connect_only()
-                .connect()
-                .await
-        }) {
-            Ok(c) => {
-                println!("Connected to UI server after {} attempts", attempts + 1);
-                break c;
-            }
-            Err(e) => {
-                attempts += 1;
-                if Instant::now() >= deadline {
-                    eprintln!(
-                        "Failed to connect to UI server after {} attempts: {}",
-                        attempts, e
-                    );
-                    return false;
-                }
-                // Longer initial delay for first few attempts to give server time to start
-                let delay = if attempts <= 3 { 200 } else { 50 };
-                std::thread::sleep(Duration::from_millis(delay));
-                continue;
-            }
-        }
-    };
-    // Borrow the inner connection once for the loop
-    let conn = match client.connection() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to get connection: {}", e);
-            return false;
-        }
-    };
+use repeat::{count_relay, count_shell, count_volume, repeat_relay, repeat_shell, repeat_volume};
 
-    // Fire the activation chord via HID so the tap sees it. If HUD doesn't
-    // appear quickly, resend once per second until the deadline.
-    let relayer = relaykey::RelayKey::new_unlabeled();
-    let mut last_sent = None;
-    if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-        let pid = 0;
-        relayer.key_down(pid, ch.clone(), false);
-        std::thread::sleep(Duration::from_millis(80));
-        relayer.key_up(pid, ch.clone());
-        last_sent = Some(Instant::now());
-    }
-
-    // Wait for HudUpdate with HUD visible (viewing_root || path.len()>0) within timeout
-    let mut seen_hud = false;
-    while Instant::now() < deadline {
-        let left = deadline.saturating_duration_since(Instant::now());
-        // Poll in short chunks so we can resend activation if needed.
-        let chunk = std::cmp::min(left, Duration::from_millis(300));
-        let res = rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
-        match res {
-            Ok(Ok(msg)) => match msg {
-                hotki_protocol::MsgToUI::HudUpdate { cursor, .. } => {
-                    let depth = cursor.depth();
-                    let visible = cursor.viewing_root || depth > 0;
-                    println!("hud: depth={}, viewing_root={}", depth, cursor.viewing_root);
-                    if visible {
-                        seen_hud = true;
-                        break;
-                    }
-                }
-                other => println!("ui: {:?}", other),
-            },
-            Ok(Err(e)) => {
-                eprintln!("recv_event error: {}", e);
-                break;
-            }
-            // Timeout for this chunk; continue polling until global deadline
-            Err(_) => {}
-        }
-
-        // If HUD hasn't appeared yet, occasionally resend the activation chord
-        // to avoid waiting for a fixed pre-sleep.
-        if let Some(last) = last_sent
-            && last.elapsed() >= Duration::from_millis(1000)
-        {
-            if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-                let pid = 0;
-                relayer.key_down(pid, ch.clone(), false);
-                std::thread::sleep(Duration::from_millis(80));
-                relayer.key_up(pid, ch);
-            }
-            last_sent = Some(Instant::now());
-        }
-    }
-    seen_hud
-}
-
-fn count_relay(ms: u64) -> usize {
-    // Create a winit event loop; create the window from inside the loop (winit 0.30)
-    let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    // window is managed within RelayApp
-
-    // Tokio runtime for repeater ticker
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
-        .build()
-        .expect("tokio runtime");
-    let _guard = rt.enter();
-
-    // Engine pieces
-    let focus = hotki_engine::FocusHandler::new();
-    let relay = hotki_engine::RelayHandler::new();
-    let (tx, _rx) = hotki_protocol::ipc::ui_channel();
-    let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
-    // Ensure repeat gating sees a valid pid
-    focus.set_pid_for_tools(std::process::id() as i32);
-
-    // Count repeats via observer hook
-    struct Counter(AtomicUsize);
-    impl hotki_engine::RepeatObserver for Counter {
-        fn on_relay_repeat(&self, _id: &str) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-    let counter = Arc::new(Counter(AtomicUsize::new(0)));
-    repeater.set_repeat_observer(counter.clone());
-
-    // Choose a chord that's safe to repeat
-    let chord = mac_keycode::Chord::parse("right")
-        .or_else(|| mac_keycode::Chord::parse("a"))
-        .expect("parse chord");
-
-    // Defer start until event loop begins so the window is visible
-    let id = "smoketest-relay".to_string();
-    // lifecycle state is managed within RelayApp
-
-    // Drive a minimal event loop until time elapses, then stop (keyup)
-    use winit::application::ApplicationHandler;
-    use winit::event::WindowEvent;
-    use winit::event_loop::{ActiveEventLoop, ControlFlow};
-    struct RelayApp {
-        repeater: hotki_engine::Repeater,
-        window: Option<winit::window::Window>,
-        id: String,
-        chord: mac_keycode::Chord,
-        started: bool,
-        start: Option<Instant>,
-        timeout: Duration,
-    }
-
-    impl ApplicationHandler for RelayApp {
-        fn resumed(&mut self, elwt: &ActiveEventLoop) {
-            if self.window.is_none() {
-                let attrs = winit::window::Window::default_attributes()
-                    .with_title("hotki smoketest: relayrepeat")
-                    .with_visible(true);
-                let win = elwt.create_window(attrs).expect("create window");
-                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    unsafe { app.activate() };
-                }
-                self.window = Some(win);
-            }
-        }
-
-        fn window_event(
-            &mut self,
-            elwt: &ActiveEventLoop,
-            _id: winit::window::WindowId,
-            event: WindowEvent,
-        ) {
-            if let WindowEvent::CloseRequested = event {
-                self.repeater.stop_sync(&self.id);
-                elwt.exit();
-            }
-        }
-
-        fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
-            if !self.started {
-                self.started = true;
-                self.repeater.start_relay_repeat(
-                    self.id.clone(),
-                    self.chord.clone(),
-                    Some(hotki_engine::RepeatSpec::default()),
-                );
-                self.start = Some(Instant::now());
-            }
-            if let Some(s) = self.start {
-                if s.elapsed() >= self.timeout {
-                    self.repeater.stop_sync(&self.id);
-                    elwt.exit();
-                }
-                elwt.set_control_flow(ControlFlow::WaitUntil(s + self.timeout));
-            } else {
-                elwt.set_control_flow(ControlFlow::Wait);
-            }
-        }
-    }
-
-    let timeout = Duration::from_millis(ms);
-    let mut app = RelayApp {
-        repeater,
-        window: None,
-        id,
-        chord,
-        started: false,
-        start: None,
-        timeout,
-    };
-    let _ = event_loop.run_app(&mut app);
-
-    counter.0.load(Ordering::SeqCst)
-}
-
-fn repeat_relay(ms: u64) {
-    let n = count_relay(ms);
-    println!("{} repeats", n);
-}
-
-fn sh_single_quote(s: &str) -> String {
-    // POSIX single-quote escaping: 'foo' => '\'' inside single quotes
-    let mut out = String::from("'");
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
-fn count_shell(ms: u64) -> usize {
-    // Tokio runtime for repeater ticker
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
-        .build()
-        .expect("tokio runtime");
-    let _guard = rt.enter();
-
-    // Engine pieces (no window required for shell execution)
-    let focus = hotki_engine::FocusHandler::new();
-    let relay = hotki_engine::RelayHandler::new();
-    let (tx, _rx) = hotki_protocol::ipc::ui_channel();
-    let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
-
-    // Create a unique temp file path and a tiny append command
-    let path = std::env::temp_dir().join(format!(
-        "hotki-smoketest-shell-{}-{}.log",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    // Ensure parent exists; create empty file
-    let _ = std::fs::File::create(&path);
-    let cmd = format!("printf . >> {}", sh_single_quote(&path.to_string_lossy()));
-
-    // Start shell repeat (first run + ticker)
-    let id = "smoketest-shell".to_string();
-    repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));
-
-    // Wait for the specified duration
-    std::thread::sleep(Duration::from_millis(ms));
-    repeater.stop_sync(&id);
-
-    // Read file and count bytes; subtract the initial run to get repeats
-    let repeats = match std::fs::read(&path) {
-        Ok(b) => b.len().saturating_sub(1),
-        Err(_) => 0,
-    };
-    // Best-effort cleanup
-    let _ = std::fs::remove_file(&path);
-    repeats
-}
-
-fn repeat_shell(ms: u64) {
-    let n = count_shell(ms);
-    println!("{} repeats", n);
-}
-
-fn osascript(cmd: &str) -> std::io::Result<std::process::Output> {
-    std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(cmd)
-        .output()
-}
-
-fn get_volume() -> Option<u64> {
-    let out = osascript("output volume of (get volume settings)").ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.trim().parse::<u64>().ok()
-}
-
-fn set_volume_abs(level: u8) -> bool {
-    let cmd = format!("set volume output volume {}", level.min(100));
-    osascript(&cmd).map(|o| o.status.success()).unwrap_or(false)
-}
-
-fn count_volume(ms: u64) -> usize {
-    // Save current volume to restore later
-    let original_volume = get_volume().unwrap_or(50);
-
-    // Tokio runtime for repeater ticker
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
-        .build()
-        .expect("tokio runtime");
-    let _guard = rt.enter();
-
-    // Reset to zero for testing
-    let _ = set_volume_abs(0);
-
-    // Build change_volume(1) command inline
-    let script = "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + 1)";
-    let cmd = format!("osascript -e '{}'", script.replace('\n', "' -e '"));
-
-    // Orchestrator for repeating shell
-    let focus = hotki_engine::FocusHandler::new();
-    let relay = hotki_engine::RelayHandler::new();
-    let (tx, _rx) = hotki_protocol::ipc::ui_channel();
-    let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
-
-    let id = "smoketest-volume".to_string();
-    repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));
-
-    // Wait and stop
-    std::thread::sleep(Duration::from_millis(ms));
-    repeater.stop_sync(&id);
-
-    // Measure resulting volume; subtract one for the initial run
-    let vol = get_volume().unwrap_or(0);
-    let repeats = vol.saturating_sub(1);
-
-    // Restore original volume
-    let _ = set_volume_abs(original_volume as u8);
-
-    repeats as usize
-}
-
-fn repeat_volume(ms: u64) {
-    // Save current volume to restore later
-    let original_volume = get_volume().unwrap_or(50);
-
-    let n = count_volume(ms);
-    println!("{} repeats", n);
-
-    // Ensure volume is restored even if count_volume doesn't complete normally
-    let _ = set_volume_abs(original_volume as u8);
-}
+//
 
 fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     // Repeat tests: use provided duration (with a floor for volume)
@@ -855,7 +285,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     }
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
-    match run_ui_demo(timeout_ms) {
+    match ui::run_ui_demo(timeout_ms) {
         Ok(s) => println!(
             "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
             s.hud_seen, s.time_to_hud_ms
@@ -866,7 +296,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
             ok = false;
         }
     }
-    match run_minui_demo(timeout_ms) {
+    match ui::run_minui_demo(timeout_ms) {
         Ok(s) => println!(
             "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
             s.hud_seen, s.time_to_hud_ms
@@ -884,339 +314,59 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     println!("All smoketests passed");
 }
 
-fn run_screenshots(
-    theme: Option<String>,
-    dir: PathBuf,
-    timeout_ms: u64,
-) -> Result<Summary, SmkError> {
-    // Resolve paths
-    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
-    let cfg_path = cwd.join("examples/test.ron");
-    if !cfg_path.exists() {
-        return Err(SmkError::MissingConfig(cfg_path));
-    }
+fn run_preflight() -> bool {
+    // Accessibility and Input Monitoring via permissions crate
+    let p = permissions::check_permissions();
+    println!(
+        "permissions: accessibility={}, input_monitoring={}",
+        p.accessibility_ok, p.input_ok
+    );
 
-    // Resolve the hotki binary path
-    let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
-    };
-
-    // If a theme override was requested, write a temp config with base_theme injected
-    let used_cfg_path = if let Some(name) = theme.clone() {
-        match std::fs::read_to_string(&cfg_path) {
-            Ok(s) => {
-                // If file already has base_theme, replace it; else, insert after opening '('
-                let mut out = String::new();
-                if s.contains("base_theme:") {
-                    // Replace value between quotes after base_theme:
-                    let re = regex::Regex::new("base_theme\\s*:\\s*\"[^\"]*\"").unwrap();
-                    out = re
-                        .replace(&s, format!("base_theme: \"{}\"", name))
-                        .to_string();
-                } else {
-                    // Insert after first '('
-                    if let Some(pos) = s.find('(') {
-                        let (head, tail) = s.split_at(pos + 1);
-                        out.push_str(head);
-                        out.push('\n');
-                        out.push_str(&format!("    base_theme: \"{}\",\n", name));
-                        out.push_str(tail);
-                    } else {
-                        out = s; // fallback: shouldn't happen
-                    }
-                }
-                let tmp = std::env::temp_dir().join(format!(
-                    "hotki-smoketest-shots-{}-{}.ron",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos()
-                ));
-                if std::fs::write(&tmp, out).is_ok() {
-                    tmp
-                } else {
-                    cfg_path.clone()
-                }
-            }
-            Err(_) => cfg_path.clone(),
-        }
-    } else {
-        cfg_path.clone()
-    };
-
-    // Launch server with the chosen config
-    let mut hotki = std::process::Command::new(&hotki_bin)
-        .env(
-            "RUST_LOG",
-            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
-        )
-        .arg(&used_cfg_path)
-        .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
-
-    let sock = hotki_server::socket_path_for_pid(hotki.id());
-
-    // Wait for HUD visible and time it
-    let start = Instant::now();
-    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
-    let time_to_hud_ms = start.elapsed().as_millis() as u64;
-
-    // Ensure directory exists
-    let _ = std::fs::create_dir_all(&dir);
-    let pid = hotki.id();
-
-    // Take HUD screenshot
-    let hud_ok = capture_hud_window(pid, &dir, "001_hud");
-
-    // Enter Theme tester and trigger each notification type, capturing the window each time
-    let gap = Duration::from_millis(160);
-    let down_ms = Duration::from_millis(80);
-    for (k, name) in [
-        ("t", None), // enter Theme tester menu
-        ("s", Some("002_notify_success")),
-        ("i", Some("003_notify_info")),
-        ("w", Some("004_notify_warning")),
-        ("e", Some("005_notify_error")),
-    ] {
-        if let Some(ch) = mac_keycode::Chord::parse(k) {
-            let relayer = relaykey::RelayKey::new_unlabeled();
-            let pid0 = 0;
-            relayer.key_down(pid0, ch.clone(), false);
-            std::thread::sleep(down_ms);
-            relayer.key_up(pid0, ch);
-            std::thread::sleep(gap);
-            if let Some(n) = name {
-                // small settle time for notification animation
-                std::thread::sleep(Duration::from_millis(120));
-                let _ = capture_notification_window(pid, &dir, n);
-            }
-        }
-    }
-
-    // Exit HUD
-    if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-        let relayer = relaykey::RelayKey::new_unlabeled();
-        relayer.key_down(0, ch.clone(), false);
-        std::thread::sleep(down_ms);
-        relayer.key_up(0, ch);
-    }
-
-    // Shutdown server via MRPC
-    if let Ok(rt) = tokio::runtime::Runtime::new() {
-        rt.block_on(async {
-            if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
-                .with_connect_only()
-                .connect()
-                .await
-            {
-                let _ = c.shutdown_server().await;
-            }
-        });
-    }
-
-    let _ = hotki.kill();
-    let _ = hotki.wait();
-
-    let mut sum = Summary::new();
-    sum.hud_seen = seen_hud;
-    sum.time_to_hud_ms = Some(time_to_hud_ms);
-    if !seen_hud {
-        return Err(SmkError::HudNotVisible { timeout_ms });
-    }
-    if !hud_ok {
-        return Err(SmkError::CaptureFailed("HUD"));
-    }
-    Ok(sum)
-}
-
-fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
-    // Resolve paths
-    let cwd = std::env::current_dir().map_err(SmkError::Io)?;
-    let cfg_path = cwd.join("examples/test.ron");
-    if !cfg_path.exists() {
-        return Err(SmkError::MissingConfig(cfg_path));
-    }
-
-    // Resolve the hotki binary path
-    let hotki_path = resolve_hotki_bin();
-    let Some(hotki_bin) = hotki_path else {
-        return Err(SmkError::HotkiBinNotFound);
-    };
-
-    // Launch hotki with the test config
-    let mut hotki = std::process::Command::new(&hotki_bin)
-        .env(
-            "RUST_LOG",
-            "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
-        )
-        .arg(cfg_path)
-        .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
-
-    // Give the server more time to start up and create the socket
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    // Compute socket path and wait for HUD to appear
-    let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let start = Instant::now();
-    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
-    let time_to_hud_ms = start.elapsed().as_millis() as u64;
-
-    // Drive a short theme cycle if HUD appeared (screenshots already taken above)
-    let mut seq: Vec<&str> = Vec::new();
-    if seen_hud {
-        // Enter Theme tester and cycle a bit
-        seq.push("t");
-        // Cycle to next theme 5 times
-        seq.extend(std::iter::repeat_n("l", 5));
-        seq.push("esc"); // back to main HUD
-    }
-    // Exit HUD
-    seq.push("shift+cmd+0");
-    let gap = Duration::from_millis(150);
-    let down_ms = Duration::from_millis(80);
-    for s in seq {
-        if let Some(ch) = mac_keycode::Chord::parse(s) {
-            // relay directly via untagged events so the tap sees them
-            let relayer = relaykey::RelayKey::new_unlabeled();
-            let pid = 0; // not used by RelayKey when posting to HID
-            relayer.key_down(pid, ch.clone(), false);
-            std::thread::sleep(down_ms);
-            relayer.key_up(pid, ch);
-            std::thread::sleep(gap);
-        } else {
-            eprintln!("failed to parse chord: {}", s);
-            std::thread::sleep(gap);
-        }
-    }
-
-    // Ask the server to shut down cleanly via MRPC (fresh connection)
-    if let Ok(rt) = tokio::runtime::Runtime::new() {
-        rt.block_on(async {
-            if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
-                .with_connect_only()
-                .connect()
-                .await
-            {
-                let _ = c.shutdown_server().await;
-            }
-        });
-    }
-
-    // Best-effort shutdown and reap of hotki process
-    let _ = hotki.kill();
-    let _ = hotki.wait();
-    let mut sum = Summary::new();
-    sum.hud_seen = seen_hud;
-    sum.time_to_hud_ms = Some(time_to_hud_ms);
-    if !seen_hud {
-        return Err(SmkError::HudNotVisible { timeout_ms });
-    }
-    Ok(sum)
-}
-
-fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
-    // Prepare a minimal config with mini HUD and a theme submenu
-    let ron = r#"(
-        keys: [
-            ("shift+cmd+0", "activate", keys([
-                ("t", "Theme tester", keys([
-                    ("h", "Theme Prev", theme_prev, (noexit: true)),
-                    ("l", "Theme Next", theme_next, (noexit: true)),
-                ])),
-            ])),
-            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-            ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-        ],
-        style: (hud: (mode: mini)),
-    )"#;
-
-    // Write to a temp file
-    let cfg_path = std::env::temp_dir().join(format!(
-        "hotki-smoketest-minui-{}-{}.ron",
+    // Screen Recording via screencapture
+    use std::ffi::OsStr;
+    let tmp = std::env::temp_dir().join(format!(
+        "hotki-smoketest-preflight-{}-{}.png",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    if let Err(e) = std::fs::write(&cfg_path, ron) {
-        return Err(SmkError::Io(e));
+    let status = Command::new("screencapture")
+        .args([
+            OsStr::new("-x"),
+            OsStr::new("-R"),
+            OsStr::new("0,0,1,1"),
+            tmp.as_os_str(),
+        ])
+        .status();
+    let mut screen_ok = false;
+    if let Ok(st) = status {
+        screen_ok = st.success();
     }
+    let _ = std::fs::remove_file(&tmp);
+    println!("screen_recording: {}", screen_ok);
 
-    // Locate hotki binary
-    let hotki_path = resolve_hotki_bin();
-    let Some(hotki_bin) = hotki_path else {
-        let _ = std::fs::remove_file(&cfg_path);
-        return Err(SmkError::HotkiBinNotFound);
-    };
-
-    // Launch hotki with mini HUD config
-    let mut hotki = std::process::Command::new(&hotki_bin)
-        .arg(&cfg_path)
-        .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
-
-    // Give the server more time to start up and create the socket
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    // Compute socket path and wait for HUD to appear
-    let sock = hotki_server::socket_path_for_pid(hotki.id());
-    let start = Instant::now();
-    let seen_hud = ensure_hud_visible(&sock, timeout_ms);
-    let time_to_hud_ms = start.elapsed().as_millis() as u64;
-
-    // Relay keys to drive mini HUD: activate, enter theme tester, cycle, back
-    let mut seq: Vec<String> = Vec::new();
-    if !seen_hud {
-        let _ = hotki.kill();
-        let _ = hotki.wait();
-        let _ = std::fs::remove_file(&cfg_path);
-        return Err(SmkError::HudNotVisible { timeout_ms });
+    if !p.accessibility_ok {
+        eprintln!(
+            "hint: grant Accessibility permission to your terminal under System Settings → Privacy & Security → Accessibility"
+        );
     }
-
-    seq.push("t".to_string()); // enter theme tester (parent_title = "Theme tester")
-    // Cycle to next theme 5 times
-    seq.extend(std::iter::repeat_n("l".to_string(), 5));
-    seq.push("esc".to_string()); // back
-    seq.push("shift+cmd+0".to_string()); // exit
-
-    let gap = std::time::Duration::from_millis(150);
-    let down_ms = std::time::Duration::from_millis(80);
-    for s in seq {
-        if let Some(ch) = mac_keycode::Chord::parse(&s) {
-            let relayer = relaykey::RelayKey::new_unlabeled();
-            let pid = 0;
-            relayer.key_down(pid, ch.clone(), false);
-            std::thread::sleep(down_ms);
-            relayer.key_up(pid, ch);
-            std::thread::sleep(gap);
-        } else {
-            eprintln!("failed to parse chord: {}", s);
-            std::thread::sleep(gap);
-        }
+    if !p.input_ok {
+        eprintln!(
+            "hint: grant Input Monitoring permission to your terminal under System Settings → Privacy & Security → Input Monitoring"
+        );
     }
-
-    // Ask the server to shut down via MRPC
-    if let Ok(rt) = tokio::runtime::Runtime::new() {
-        rt.block_on(async move {
-            if let Ok(mut client) = hotki_server::Client::new_with_socket(&sock)
-                .with_connect_only()
-                .connect()
-                .await
-            {
-                let _ = client.shutdown_server().await;
-            }
-        });
+    if !screen_ok {
+        eprintln!(
+            "hint: grant Screen Recording permission under System Settings → Privacy & Security → Screen Recording"
+        );
     }
-
-    // Cleanup
-    let _ = hotki.kill();
-    let _ = hotki.wait();
-    let _ = std::fs::remove_file(&cfg_path);
-    let mut sum = Summary::new();
-    sum.hud_seen = seen_hud;
-    sum.time_to_hud_ms = Some(time_to_hud_ms);
-    Ok(sum)
+    p.accessibility_ok && p.input_ok && screen_ok
 }
+
+//
+
+//
+
+//

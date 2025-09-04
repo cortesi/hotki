@@ -4514,6 +4514,7 @@ dependencies = [
  "mac-keycode",
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
+ "permissions",
  "regex",
  "relaykey",
  "tokio",
