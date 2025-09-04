@@ -219,6 +219,8 @@ impl Server {
         let mut idle_deadline: Option<Instant> = None;
         // Keep the IPC thread handle so we can join on exit.
         let mut server_thread = Some(server_thread);
+        // Ensure we only log the shutdown transition once.
+        let mut shutdown_logged = false;
 
         event_loop.run(move |event, _, control_flow| {
             // Default to waiting until the next concrete event.
@@ -226,7 +228,11 @@ impl Server {
 
             // Check for shutdown
             if shutdown_requested.load(Ordering::SeqCst) {
-                info!("Shutdown requested, exiting event loop");
+                if !shutdown_logged {
+                    // Log once when we first observe the transition to shutdown.
+                    tracing::debug!("Shutdown requested, exiting event loop");
+                    shutdown_logged = true;
+                }
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -282,13 +288,15 @@ impl Server {
                     }
                 }
                 Event::LoopDestroyed => {
-                    info!("Event loop destroyed; joining IPC server thread...");
+                    // Join the IPC server thread and emit a single success line.
                     if let Some(h) = server_thread.take() {
                         if let Err(e) = h.join() {
                             error!("IPC server thread join failed: {:?}", e);
                         } else {
-                            info!("IPC server thread joined cleanly");
+                            info!("Shutdown complete");
                         }
+                    } else {
+                        info!("Shutdown complete");
                     }
                 }
                 _ => {
