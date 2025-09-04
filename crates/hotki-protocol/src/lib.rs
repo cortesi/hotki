@@ -27,6 +27,11 @@ pub struct Cursor {
     /// When true, ignore user overlay and render the theme without user UI tweaks.
     #[serde(default)]
     pub user_ui_disabled: bool,
+
+    /// Optional focused application context carried with the cursor for UI/HUD
+    /// rendering. When absent, callers may fall back to empty strings.
+    #[serde(default)]
+    pub app: Option<App>,
 }
 
 impl Cursor {
@@ -37,6 +42,7 @@ impl Cursor {
             viewing_root,
             override_theme: None,
             user_ui_disabled: false,
+            app: None,
         }
     }
 
@@ -63,6 +69,17 @@ impl Cursor {
     /// Borrow the immutable path for inspection/logging.
     pub fn path(&self) -> &[u32] {
         &self.path
+    }
+
+    /// Attach an App context to this cursor and return it.
+    pub fn with_app(mut self, app: App) -> Self {
+        self.app = Some(app);
+        self
+    }
+
+    /// Borrow the App context if present.
+    pub fn app_ref(&self) -> Option<&App> {
+        self.app.as_ref()
     }
 
     /// Set a theme override for this location. Use `None` to fall back to the

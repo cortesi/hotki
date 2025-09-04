@@ -131,6 +131,11 @@ impl Engine {
                 let st = self.state.lock().await;
                 st.current_cursor()
             };
+            // Attach focus context to the cursor we send to the UI
+            let cursor = cursor.with_app(hotki_protocol::App {
+                app: app.to_string(),
+                title: title.to_string(),
+            });
             debug!("HUD update: cursor {:?}", cursor.path());
             self.notifier
                 .send_hud_update_cursor(cursor, app.to_string(), title.to_string())?;
