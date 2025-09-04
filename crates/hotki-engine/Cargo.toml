@@ -22,3 +22,4 @@ thiserror = "2.0"
 core-foundation = "0.10"
 io-kit-sys = "0.4.1"
 relaykey = { version = "0.0.1", path = "../relaykey" }
+regex = "1"

@@ -377,6 +377,111 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::Raise { app, title }) => {
+                use hotki_protocol::NotifyKind;
+                use regex::Regex;
+                // Compile regexes if present; on error, notify and abort this action.
+                tracing::info!("Raise action: app={:?} title={:?}", app, title);
+                let mut invalid = false;
+                let app_re = if let Some(s) = app.as_ref() {
+                    match Regex::new(s) {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            self.notifier
+                                .send_error("Raise", format!("Invalid app regex: {}", e))?;
+                            invalid = true;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let title_re = if let Some(s) = title.as_ref() {
+                    match Regex::new(s) {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            self.notifier
+                                .send_error("Raise", format!("Invalid title regex: {}", e))?;
+                            invalid = true;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                if !invalid {
+                    let all = mac_winops::list_windows();
+                    tracing::info!("Raise: list_windows count={}", all.len());
+                    if all.is_empty() {
+                        let _ = self.notifier.send_notification(
+                            NotifyKind::Info,
+                            "Raise".into(),
+                            "No windows on screen".into(),
+                        );
+                    } else {
+                        let cur = mac_winops::frontmost_window();
+                        tracing::info!(
+                            "Raise: current frontmost={:?}",
+                            cur.as_ref().map(|w| (&w.app, &w.title, w.pid, w.id))
+                        );
+
+                        let matches = |w: &mac_winops::WindowInfo| -> bool {
+                            let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
+                            let tok = title_re
+                                .as_ref()
+                                .map(|r| r.is_match(&w.title))
+                                .unwrap_or(true);
+                            aok && tok
+                        };
+                        let mut idx_match: Vec<usize> = Vec::new();
+                        for (i, w) in all.iter().enumerate() {
+                            if matches(w) {
+                                idx_match.push(i);
+                            }
+                        }
+                        tracing::info!("Raise: matched count={}", idx_match.len());
+                        if idx_match.is_empty() {
+                            let _ = self.notifier.send_notification(
+                                NotifyKind::Info,
+                                "Raise".into(),
+                                "No matching window".into(),
+                            );
+                        } else {
+                            let target_idx = if let Some(c) = &cur {
+                                if matches(c) {
+                                    // Find the next match behind the current one
+                                    let cur_index =
+                                        all.iter().position(|w| w.id == c.id && w.pid == c.pid);
+                                    if let Some(ci) = cur_index {
+                                        idx_match.into_iter().find(|&i| i > ci).unwrap_or(ci)
+                                    } else {
+                                        idx_match[0]
+                                    }
+                                } else {
+                                    idx_match[0]
+                                }
+                            } else {
+                                idx_match[0]
+                            };
+                            let target = &all[target_idx];
+                            tracing::info!(
+                                "Raise: target pid={} id={} app='{}' title='{}'",
+                                target.pid,
+                                target.id,
+                                target.app,
+                                target.title
+                            );
+                            if let Err(e) = mac_winops::request_activate_pid(target.pid) {
+                                if let mac_winops::Error::MainThread = e {
+                                    tracing::warn!("Raise requires main thread; scheduling failed: {}", e);
+                                }
+                                let _ = self.notifier.send_error("Raise", format!("{}", e));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
             Ok(KeyResponse::Place {
                 cols,
                 rows,

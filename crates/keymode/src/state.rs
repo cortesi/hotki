@@ -46,6 +46,11 @@ pub enum KeyResponse {
         desired: config::Toggle,
         kind: config::FullscreenKind,
     },
+    /// Raise a window matching the given spec.
+    Raise {
+        app: Option<String>,
+        title: Option<String>,
+    },
 }
 
 /// Optional repeat configuration for shell actions
@@ -119,6 +124,19 @@ impl State {
                     cols: gx,
                     rows: gy,
                     dir: *dir,
+                };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(resp)
+            }
+            Action::Raise(spec) => {
+                if spec.app.is_none() && spec.title.is_none() {
+                    return Err("raise(): at least one of app or title must be provided".into());
+                }
+                let resp = KeyResponse::Raise {
+                    app: spec.app.clone(),
+                    title: spec.title.clone(),
                 };
                 if !attrs.noexit() {
                     self.reset();

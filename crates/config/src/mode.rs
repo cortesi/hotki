@@ -181,6 +181,13 @@ pub enum Action {
     ///   the first invocation places it at (0, 0).
     /// - Movement clamps at the edges (no wrap-around).
     PlaceMove(GridSpec, MoveDir),
+    /// Raise a window matching the given spec (regexes for app/title).
+    ///
+    /// Syntax examples:
+    /// - raise(app: "^Safari$")
+    /// - raise(title: "Downloads")
+    /// - raise(app: "Safari", title: "Downloads")
+    Raise(RaiseSpec),
 }
 
 impl Action {
@@ -188,6 +195,16 @@ impl Action {
     pub fn shell(cmd: impl Into<String>) -> Self {
         Action::Shell(ShellSpec::Cmd(cmd.into()))
     }
+}
+
+/// Specification for `raise(…)` action. At least one field must be provided.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaiseSpec {
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

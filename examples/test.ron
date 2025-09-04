@@ -8,6 +8,11 @@
                 ("o", "Show Root Keys", show_hud_root),
             ])),
 
+            ("a", "Raise", keys([
+                ("w", "wezterm", raise(app: "WezTerm")),
+            ]), (capture: true)),
+
+
             ("c", "Key Capture", keys([
                 ("a", "Hi", shell("echo hi", (ok_notify: success))),
             ]), (capture: true)),

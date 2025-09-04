@@ -261,6 +261,25 @@ place_move(grid(3, 2), down)
 <tr></tr>
 <tr>
     <td>
+        <pre lang="ron">
+raise(app: "^Safari$")
+raise(title: "Downloads")
+raise(app: "Safari", title: "Downloads")
+        </pre>
+    </td>
+    <td>
+        Raise (activate) a window matching the given specification.
+        <ul>
+          <li><strong>Regex matching</strong>: <code>app</code> and <code>title</code> are regular expressions, identical in semantics to <code>match_app</code>/<code>match_title</code>.</li>
+          <li><strong>AND semantics</strong>: when both are provided, both must match.</li>
+          <li><strong>Scope</strong>: on‑screen layer‑0 windows in the current Space (v1). Does not un‑minimize or switch Spaces.</li>
+          <li><strong>Cycling</strong>: if the current frontmost window matches and there is another matching window behind it, focus moves to the next match; if there is no other match, it’s a no‑op.</li>
+        </ul>
+    </td>
+</tr>
+<tr></tr>
+<tr>
+    <td>
         <pre lang="ron">keys([ /* ... */ ])</pre>
     </td>
     <td>Enter a nested keys section (sub‑mode)</td>

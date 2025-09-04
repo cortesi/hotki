@@ -25,6 +25,7 @@ impl HotkiSession {
             );
         }
         let child = cmd
+            .env("HOTKI_DISABLE_NSRAISE_FALLBACK", "1")
             .arg(cfg_path)
             .spawn()
             .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;

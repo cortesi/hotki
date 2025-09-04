@@ -7,6 +7,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 mod focus;
+mod raise;
 mod repeat;
 mod screenshot;
 mod session;
@@ -48,6 +49,8 @@ enum Commands {
     /// Run all smoketests (repeats + UI demos)
     #[command(name = "all")]
     All,
+    /// Verify raise(action) by switching focus between two titled windows
+    Raise,
     /// Verify focus tracking by activating a test window
     Focus,
     /// Internal helper: create a foreground window with a title for focus testing
@@ -208,6 +211,17 @@ fn main() {
             repeat_volume(std::cmp::max(cli.duration, 2000))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
+        Commands::Raise => {
+            heading("Test: raise");
+            match raise::run_raise_test(cli.timeout, cli.logs) {
+                Ok(()) => println!("raise: OK (raised by title twice)"),
+                Err(e) => {
+                    eprintln!("raise: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Focus => {
             heading("Test: focus");
             match focus::run_focus_test(cli.timeout, cli.logs) {

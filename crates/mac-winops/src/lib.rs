@@ -18,10 +18,13 @@ use core_foundation::string::{CFString, CFStringRef};
 // SkyLight functionality removed; no dynamic loading required here.
 use mac_keycode::{Chord, Key, Modifier};
 use objc2_app_kit::NSScreen;
+// For fallback app activation on main thread
+#[allow(unused_imports)]
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
 use relaykey::RelayKey;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 mod cfutil;
 pub mod focus;
@@ -87,6 +90,8 @@ pub enum Error {
     QueuePoisoned,
     #[error("Invalid index")]
     InvalidIndex,
+    #[error("Activation failed")]
+    ActivationFailed,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -441,6 +446,14 @@ enum MainOp {
         rows: u32,
         dir: MoveDir,
     },
+    /// Best-effort app activation for a pid (fallback for raise).
+    ActivatePid {
+        pid: i32,
+    },
+    RaiseWindow {
+        pid: i32,
+        id: WindowId,
+    },
 }
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -517,6 +530,19 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     Ok(())
 }
 
+/// Schedule a window raise by pid+id on the AppKit main thread.
+pub fn request_raise_window(pid: i32, id: WindowId) -> Result<()> {
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::RaiseWindow { pid, id }))
+        .is_err()
+    {
+        return Err(Error::QueuePoisoned);
+    }
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
 /// Drain and execute any pending main-thread operations. Call from the Tao main thread
 /// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
 pub fn drain_main_ops() {
@@ -543,6 +569,12 @@ pub fn drain_main_ops() {
                 dir,
             } => {
                 let _ = place_move_grid(pid, cols, rows, dir);
+            }
+            MainOp::ActivatePid { pid } => {
+                let _ = activate_pid(pid);
+            }
+            MainOp::RaiseWindow { pid, id } => {
+                let _ = raise_window_mainthread(pid, id);
             }
         }
     }
@@ -758,16 +790,10 @@ unsafe extern "C" {
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
 const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 
-fn cg_key(s: &'static str) -> CFStringRef {
-    cfstr(s)
-}
-const K_CG_WINDOW_NUMBER: &str = "kCGWindowNumber";
-const K_CG_WINDOW_OWNER_PID: &str = "kCGWindowOwnerPID";
-const K_CG_WINDOW_LAYER: &str = "kCGWindowLayer";
-const K_CG_WINDOW_IS_ONSCREEN: &str = "kCGWindowIsOnscreen";
-const K_CG_WINDOW_ALPHA: &str = "kCGWindowAlpha";
+// (legacy string-based CG keys removed; using core_graphics::window constants)
 
-use crate::cfutil::{dict_get_bool, dict_get_f64, dict_get_i32};
+use crate::cfutil::{dict_get_bool, dict_get_f64, dict_get_i32, dict_get_string};
+use core_graphics::window as cgw;
 
 // Space management APIs removed.
 
@@ -786,11 +812,11 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         }
         let arr: core_foundation::array::CFArray<*const c_void> =
             core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
-        let key_pid = cg_key(K_CG_WINDOW_OWNER_PID);
-        let key_layer = cg_key(K_CG_WINDOW_LAYER);
-        let key_num = cg_key(K_CG_WINDOW_NUMBER);
-        let key_onscreen = cg_key(K_CG_WINDOW_IS_ONSCREEN);
-        let key_alpha = cg_key(K_CG_WINDOW_ALPHA);
+        let key_pid = cgw::kCGWindowOwnerPID;
+        let key_layer = cgw::kCGWindowLayer;
+        let key_num = cgw::kCGWindowNumber;
+        let key_onscreen = cgw::kCGWindowIsOnscreen;
+        let key_alpha = cgw::kCGWindowAlpha;
         for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
             let d = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFDictionaryRef;
             if d.is_null() {
@@ -820,4 +846,298 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         }
     }
     Err(Error::FocusedWindow)
+}
+
+/// Lightweight description of an on-screen window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub app: String,
+    pub title: String,
+    pub pid: i32,
+    pub id: WindowId,
+}
+
+/// Return on-screen, layer-0 windows front-to-back.
+pub fn list_windows() -> Vec<WindowInfo> {
+    info!("list_windows: begin");
+    let mut out = Vec::new();
+    unsafe {
+        let arr_ref = CGWindowListCopyWindowInfo(
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
+                | K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS,
+            0,
+        );
+        if arr_ref.is_null() {
+            warn!("list_windows: CGWindowListCopyWindowInfo returned null");
+            return out;
+        }
+        let arr: core_foundation::array::CFArray<*const c_void> =
+            core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
+        info!(
+            "list_windows: array count={}",
+            CFArrayGetCount(arr.as_concrete_TypeRef())
+        );
+        let key_pid = cgw::kCGWindowOwnerPID;
+        let key_layer = cgw::kCGWindowLayer;
+        let key_num = cgw::kCGWindowNumber;
+        let key_onscreen = cgw::kCGWindowIsOnscreen;
+        let key_alpha = cgw::kCGWindowAlpha;
+        let key_app = cgw::kCGWindowOwnerName;
+        let key_title = cgw::kCGWindowName;
+        #[allow(non_snake_case)]
+        unsafe extern "C" {
+            fn CFGetTypeID(cf: core_foundation::base::CFTypeRef) -> u64;
+            fn CFDictionaryGetTypeID() -> u64;
+        }
+        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
+            let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
+                as core_foundation::base::CFTypeRef;
+            if item.is_null() {
+                warn!("list_windows: idx={} item null", i);
+                continue;
+            }
+            let is_dict = CFGetTypeID(item) == CFDictionaryGetTypeID();
+            if !is_dict {
+                warn!("list_windows: idx={} not a CFDictionary, skipping", i);
+                continue;
+            }
+            let d = item as CFDictionaryRef;
+            let layer = dict_get_i32(d, key_layer).unwrap_or(0) as i64;
+            info!("list_windows: idx={} layer={}", i, layer);
+            if layer != 0 {
+                continue;
+            }
+            let onscreen = dict_get_bool(d, key_onscreen).unwrap_or(true);
+            if !onscreen {
+                continue;
+            }
+            let alpha = dict_get_f64(d, key_alpha).unwrap_or(1.0);
+            if alpha <= 0.0 {
+                continue;
+            }
+            let pid = match dict_get_i32(d, key_pid) {
+                Some(p) => p,
+                None => continue,
+            };
+            let id = match dict_get_i32(d, key_num) {
+                Some(n) if n > 0 => n as u32,
+                _ => continue,
+            };
+            let app = dict_get_string(d, key_app).unwrap_or_default();
+            let title = dict_get_string(d, key_title).unwrap_or_default();
+            info!(
+                "list_windows: push pid={} id={} app='{}' title='{}'",
+                pid, id, app, title
+            );
+            out.push(WindowInfo {
+                app,
+                title,
+                pid,
+                id,
+            });
+        }
+    }
+    out
+}
+
+/// Convenience: return the frontmost on-screen window, if any.
+pub fn frontmost_window() -> Option<WindowInfo> {
+    list_windows().into_iter().next()
+}
+
+/// Queue a best-effort activation of the application with `pid` on the AppKit main thread.
+pub fn request_activate_pid(pid: i32) -> Result<()> {
+    info!("queue ActivatePid for pid={} on main thread", pid);
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::ActivatePid { pid }))
+        .is_err()
+    {
+        return Err(Error::QueuePoisoned);
+    }
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Perform activation of an app by pid using NSRunningApplication. Main-thread only.
+fn activate_pid(pid: i32) -> Result<()> {
+    let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    // SAFETY: Objective-C calls are performed with typed wrappers.
+    let app = unsafe {
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+    };
+    if let Some(app) = app {
+        // Prefer bringing all windows forward.
+        let ok =
+            unsafe { app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows) };
+        if !ok {
+            warn!(
+                "NSRunningApplication.activateWithOptions returned false for pid={}",
+                pid
+            );
+        } else {
+            info!("Activated app via NSRunningApplication for pid={}", pid);
+        }
+        Ok(())
+    } else {
+        Err(Error::ActivationFailed)
+    }
+}
+
+/// Raise a specific window by pid + CGWindowID via AX, with best-effort AppKit fallback.
+pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
+    ax_check()?;
+    let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    info!("raise_window: pid={} id={} (attempt AX)", pid, id);
+    unsafe extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+        fn AXUIElementCopyAttributeValue(
+            element: *mut c_void,
+            attr: CFStringRef,
+            value: *mut CFTypeRef,
+        ) -> i32;
+        fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
+        fn AXUIElementCopyAttributeNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
+        fn AXUIElementCopyActionNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
+        fn AXUIElementIsAttributeSettable(
+            element: *mut c_void,
+            attr: CFStringRef,
+            settable: *mut bool,
+        ) -> i32;
+        fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
+    }
+
+    info!("raise_window: creating AX app element for pid={}", pid);
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return Err(Error::AppElement);
+    }
+
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    info!("raise_window: copying AXWindows for pid={}", pid);
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        warn!("AXUIElementCopyAttributeValue(AXWindows) failed: {}", err);
+        unsafe { CFRelease(app as CFTypeRef) };
+        return Err(Error::AxCode(err));
+    }
+    info!("raise_window: AXWindows copied");
+
+    // Iterate windows array and locate matching AX window by AXWindowNumber
+    let mut found: *mut c_void = std::ptr::null_mut();
+    let arr: core_foundation::array::CFArray<*const c_void> =
+        unsafe { core_foundation::array::CFArray::wrap_under_create_rule(wins_ref as _) };
+    for i in 0..unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        let wref = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+        if wref.is_null() {
+            continue;
+        }
+        // Directly try AXWindowNumber; if unsupported, skip.
+        let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        let err =
+            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
+        if err != 0 || num_ref.is_null() {
+            continue;
+        }
+        let cfnum =
+            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+        let wid = cfnum.to_i64().unwrap_or(0) as u32;
+        info!("raise_window: candidate i={} wid={}", i, wid);
+        if wid == id {
+            found = wref;
+            info!("raise_window: matched AX window at i={} wid={}", i, wid);
+            break;
+        }
+    }
+
+    let mut need_fallback = false;
+    if found.is_null() {
+        info!(
+            "raise_window: did not find AX window with id={} for pid={}",
+            id, pid
+        );
+        need_fallback = true;
+    } else {
+        // First set AXFocusedWindow to the target
+        info!("raise_window: setting AXFocusedWindow on app element");
+        let mut step_failed = false;
+        let mut settable = false;
+        let can_set = unsafe {
+            AXUIElementIsAttributeSettable(app, cfstr("AXFocusedWindow"), &mut settable);
+            settable
+        };
+        if can_set {
+            let set_err = unsafe {
+                AXUIElementSetAttributeValue(app, cfstr("AXFocusedWindow"), found as CFTypeRef)
+            };
+            if set_err != 0 {
+                warn!(
+                    "AXUIElementSetAttributeValue(AXFocusedWindow) failed: {}",
+                    set_err
+                );
+                step_failed = true;
+            }
+        } else {
+            info!("raise_window: AXFocusedWindow not settable; skipping set");
+            step_failed = true;
+        }
+        if !step_failed {
+            // Try hinting AXMain on the window (ignore error)
+            let _ = unsafe {
+                AXUIElementSetAttributeValue(found, cfstr("AXMain"), kCFBooleanTrue as CFTypeRef)
+            };
+            // Only call AXRaise if the app supports it to avoid potential exceptions
+            let mut acts_ref: CFTypeRef = std::ptr::null_mut();
+            let mut can_raise = false;
+            let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
+            if acts_err == 0 && !acts_ref.is_null() {
+                let arr = unsafe {
+                    core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
+                        acts_ref as _,
+                    )
+                };
+                unsafe {
+                    for j in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
+                        let name =
+                            CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), j) as CFStringRef;
+                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
+                            can_raise = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if can_raise {
+                let app_raise = unsafe { AXUIElementPerformAction(app, cfstr("AXRaise")) };
+                if app_raise != 0 {
+                    warn!("AXUIElementPerformAction(app, AXRaise) failed: {}", app_raise);
+                }
+            } else {
+                info!("raise_window: app does not support AXRaise; skipping action");
+            }
+        }
+        need_fallback = step_failed;
+    }
+
+    unsafe { CFRelease(app as CFTypeRef) };
+
+    if need_fallback {
+        if std::env::var("HOTKI_DISABLE_NSRAISE_FALLBACK").is_ok() {
+            info!(
+                "raise_window: NSRunningApplication fallback suppressed by HOTKI_DISABLE_NSRAISE_FALLBACK"
+            );
+        } else {
+            info!(
+                "raise_window: scheduling NSRunningApplication activation fallback for pid={}",
+                pid
+            );
+            let _ = request_activate_pid(pid);
+        }
+    }
+    Ok(())
+}
+
+// Helper used by MainOp::RaiseWindow (same as raise_window; kept separate for clarity if future divergence is needed)
+fn raise_window_mainthread(pid: i32, id: WindowId) -> Result<()> {
+    raise_window(pid, id)
 }
