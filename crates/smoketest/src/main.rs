@@ -111,6 +111,10 @@ impl fmt::Display for SmkError {
 
 impl StdError for SmkError {}
 
+fn heading(title: &str) {
+    println!("\n==> {}", title);
+}
+
 fn print_hints(err: &SmkError) {
     match err {
         SmkError::HotkiBinNotFound => {
@@ -154,17 +158,27 @@ fn main() {
     }
 
     // Always build the hotki binary once at startup to avoid running against a stale build.
+    heading("Building hotki");
     if !build_hotki_quiet() {
         eprintln!("Failed to build 'hotki' binary. Try: cargo build -p hotki");
         std::process::exit(1);
     }
     match cli.command {
-        Commands::Relay { .. } => repeat_relay(cli.duration),
-        Commands::Shell { .. } => repeat_shell(cli.duration),
+        Commands::Relay { .. } => {
+            heading("Test: repeat-relay");
+            repeat_relay(cli.duration)
+        }
+        Commands::Shell { .. } => {
+            heading("Test: repeat-shell");
+            repeat_shell(cli.duration)
+        }
         // Volume can be slightly slower; keep a floor to reduce flakiness
-        Commands::Volume { .. } => repeat_volume(std::cmp::max(cli.duration, 2000)),
+        Commands::Volume { .. } => {
+            heading("Test: repeat-volume");
+            repeat_volume(std::cmp::max(cli.duration, 2000))
+        }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
-        Commands::Ui => match ui::run_ui_demo(cli.timeout) {
+        Commands::Ui => match { heading("Test: ui"); ui::run_ui_demo(cli.timeout) } {
             Ok(sum) => {
                 println!(
                     "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -178,6 +192,7 @@ fn main() {
             }
         },
         Commands::Screenshots { theme, dir } => {
+            heading("Test: screenshots");
             match screenshot::run_screenshots(theme, dir, cli.timeout) {
                 Ok(sum) => {
                     println!(
@@ -192,7 +207,7 @@ fn main() {
                 }
             }
         }
-        Commands::Minui => match ui::run_minui_demo(cli.timeout) {
+        Commands::Minui => match { heading("Test: minui"); ui::run_minui_demo(cli.timeout) } {
             Ok(sum) => {
                 println!(
                     "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -206,6 +221,7 @@ fn main() {
             }
         },
         Commands::Preflight => {
+            heading("Test: preflight");
             let ok = run_preflight();
             if !ok {
                 std::process::exit(1);
@@ -251,8 +267,11 @@ use repeat::{count_relay, count_shell, count_volume, repeat_relay, repeat_shell,
 
 fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     // Repeat tests: use provided duration (with a floor for volume)
+    heading("Test: repeat-relay");
     let relay = count_relay(duration_ms);
+    heading("Test: repeat-shell");
     let shell = count_shell(duration_ms);
+    heading("Test: repeat-volume");
     let volume = count_volume(std::cmp::max(duration_ms, 2000));
 
     let mut ok = true;
@@ -282,6 +301,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     // hotki was built once at startup; no additional build needed here.
 
     // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
+    heading("Test: ui");
     match ui::run_ui_demo(timeout_ms) {
         Ok(s) => println!(
             "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -293,6 +313,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
             ok = false;
         }
     }
+    heading("Test: minui");
     match ui::run_minui_demo(timeout_ms) {
         Ok(s) => println!(
             "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
