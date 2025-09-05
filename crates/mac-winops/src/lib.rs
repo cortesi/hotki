@@ -74,6 +74,14 @@ pub enum Desired {
     Toggle,
 }
 
+/// Screen corner to place the window against so that a 1×1 px corner remains visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenCorner {
+    BottomRight,
+    BottomLeft,
+    TopLeft,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Accessibility permission missing")]
@@ -829,10 +837,7 @@ pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
         // deltas to both X and Y and rely on WindowServer clamping to bottom-right.
         let (target_x, target_y) = if let Some(mtm) = MainThreadMarker::new() {
             let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
-            (
-                (vf_x + vf_w) - 1.0, // right edge minus 1 px
-                (vf_y + vf_h) - 1.0, // bottom edge minus 1 px
-            )
+            ((vf_x + vf_w) - 1.0, (vf_y + vf_h) - 1.0)
         } else {
             (cur_p.x + 100_000.0, cur_p.y + 100_000.0)
         };
@@ -906,6 +911,197 @@ pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
 
 fn approx_eq_eps(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
+}
+
+/// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
+/// remains visible on screen for the given screen corner.
+pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<()> {
+    debug!(
+        "hide_corner: entry pid={} desired={:?} corner={:?}",
+        pid, desired, corner
+    );
+    ax_check()?;
+    let _ = request_activate_pid(pid);
+    // Resolve a top-level AXWindow
+    let win: *mut c_void = unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return Err(Error::AppElement);
+        }
+        let mut wins_ref: CFTypeRef = ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        if err != 0 || wins_ref.is_null() {
+            CFRelease(app as CFTypeRef);
+            return Err(Error::FocusedWindow);
+        }
+        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
+        let mut chosen: *mut c_void = ptr::null_mut();
+        for i in 0..n {
+            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+            if w.is_null() {
+                continue;
+            }
+            let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
+            if role == "AXWindow" {
+                chosen = w;
+                break;
+            }
+        }
+        if !chosen.is_null() {
+            let _ = CFRetain(chosen as CFTypeRef);
+        }
+        CFRelease(app as CFTypeRef);
+        if chosen.is_null() {
+            return Err(Error::FocusedWindow);
+        }
+        chosen
+    };
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+
+    let cur_p = ax_get_point(win, attr_pos)?;
+    let cur_s = ax_get_size(win, attr_size)?;
+
+    let key = focused_window_id(pid).ok().map(|id| (pid, id));
+    let is_hidden = key
+        .as_ref()
+        .and_then(|k| HIDDEN_FRAMES.lock().ok().map(|m| m.contains_key(k)))
+        .unwrap_or(false);
+    let do_hide = match desired {
+        Desired::On => true,
+        Desired::Off => false,
+        Desired::Toggle => !is_hidden,
+    };
+
+    if do_hide {
+        if let Some(k) = key
+            && let Ok(mut map) = HIDDEN_FRAMES.lock()
+        {
+            if map.len() >= HIDDEN_FRAMES_CAP
+                && let Some(old_k) = map.keys().next().cloned()
+            {
+                let _ = map.remove(&old_k);
+            }
+            map.insert(k, (cur_p, cur_s));
+        }
+
+        // Compute target for requested screen corner. We intentionally overshoot off-screen
+        // by a large delta and rely on WindowServer clamping to achieve the tightest allowed
+        // placement. This is more aggressive than an exact 1px calculation and tends to
+        // minimize visible area, especially on the left edge.
+        let (tx, ty) = match corner {
+            ScreenCorner::BottomRight => (cur_p.x + 100_000.0, cur_p.y + 100_000.0),
+            ScreenCorner::BottomLeft => (cur_p.x - 100_000.0, cur_p.y + 100_000.0),
+            ScreenCorner::TopLeft => (cur_p.x - 100_000.0, cur_p.y - 100_000.0),
+        };
+
+        // Attempt move with size no-op first
+        let _ = ax_set_size(win, attr_size, cur_s);
+        ax_set_point(win, attr_pos, CGPoint { x: tx, y: ty })?;
+
+        // If we didn't move horizontally, try a small nudge towards target and retry
+        if let Ok(p1) = ax_get_point(win, attr_pos)
+            && approx_eq_eps(p1.x, cur_p.x, 1.0)
+        {
+            let nudge_x = if tx >= cur_p.x {
+                cur_p.x + 40.0
+            } else {
+                cur_p.x - 40.0
+            };
+            let _ = ax_set_point(
+                win,
+                attr_pos,
+                CGPoint {
+                    x: nudge_x,
+                    y: cur_p.y,
+                },
+            );
+            let _ = ax_set_point(win, attr_pos, CGPoint { x: tx, y: ty });
+        }
+
+        // Tightening pass: iteratively nudge toward the requested corner with
+        // a diminishing step to squeeze a few extra pixels off-screen.
+        if let Ok(mut best) = ax_get_point(win, attr_pos) {
+            let mut step = 128.0;
+            for _ in 0..3 {
+                // X axis drive
+                let mut local = step;
+                while local >= 1.0 {
+                    let cand = match corner {
+                        ScreenCorner::BottomRight => CGPoint {
+                            x: best.x + local,
+                            y: best.y,
+                        },
+                        ScreenCorner::BottomLeft | ScreenCorner::TopLeft => CGPoint {
+                            x: best.x - local,
+                            y: best.y,
+                        },
+                    };
+                    let _ = ax_set_point(win, attr_pos, cand);
+                    if let Ok(np) = ax_get_point(win, attr_pos) {
+                        let improved = match corner {
+                            ScreenCorner::BottomRight => np.x > best.x + 0.5,
+                            ScreenCorner::BottomLeft | ScreenCorner::TopLeft => np.x < best.x - 0.5,
+                        };
+                        if improved {
+                            best = np;
+                            continue;
+                        }
+                    }
+                    local /= 2.0;
+                }
+
+                // Y axis drive
+                let mut local = step;
+                while local >= 1.0 {
+                    let cand = match corner {
+                        ScreenCorner::BottomRight | ScreenCorner::BottomLeft => CGPoint {
+                            x: best.x,
+                            y: best.y + local,
+                        },
+                        ScreenCorner::TopLeft => CGPoint {
+                            x: best.x,
+                            y: best.y - local,
+                        },
+                    };
+                    let _ = ax_set_point(win, attr_pos, cand);
+                    if let Ok(np) = ax_get_point(win, attr_pos) {
+                        let improved = match corner {
+                            ScreenCorner::BottomRight | ScreenCorner::BottomLeft => {
+                                np.y > best.y + 0.5
+                            }
+                            ScreenCorner::TopLeft => np.y < best.y - 0.5,
+                        };
+                        if improved {
+                            best = np;
+                            continue;
+                        }
+                    }
+                    local /= 2.0;
+                }
+                step /= 2.0;
+            }
+        }
+    } else if let Some(k) = key
+        && let Ok(mut map) = HIDDEN_FRAMES.lock()
+        && let Some((p, s)) = map.remove(&k)
+    {
+        let _ = ax_set_size(win, attr_size, s);
+        let _ = ax_set_point(win, attr_pos, p);
+    }
+
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok(())
+}
+
+/// Convenience wrappers for exploration
+pub fn hide_bottom_left(pid: i32, desired: Desired) -> Result<()> {
+    hide_corner(pid, desired, ScreenCorner::BottomLeft)
+}
+
+pub fn hide_top_left(pid: i32, desired: Desired) -> Result<()> {
+    hide_corner(pid, desired, ScreenCorner::TopLeft)
 }
 
 #[allow(clippy::too_many_arguments)]

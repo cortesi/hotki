@@ -584,7 +584,7 @@ impl Engine {
                 let pid = self.current_pid();
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-                if let Err(e) = mac_winops::hide_right(pid, d) {
+                if let Err(e) = mac_winops::hide_bottom_left(pid, d) {
                     let _ = self.notifier.send_error("Hide", format!("{}", e));
                 }
                 Ok(())
