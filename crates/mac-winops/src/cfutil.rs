@@ -87,3 +87,50 @@ pub(crate) fn dict_get_bool(dict: CFDictionaryRef, key: CFStringRef) -> Option<b
     }
     Some(unsafe { CFBooleanGetValue(value as _) })
 }
+
+/// Read a CGRect-like dictionary from `dict[key]` and return (x, y, width, height) as i32.
+/// The bounds dictionary uses CFString keys: "X", "Y", "Width", "Height" with CFNumber values.
+pub(crate) fn dict_get_rect_i32(
+    dict: CFDictionaryRef,
+    key_bounds: CFStringRef,
+) -> Option<(i32, i32, i32, i32)> {
+    unsafe extern "C" {
+        fn CFGetTypeID(cf: CFTypeRef) -> u64;
+        fn CFDictionaryGetTypeID() -> u64;
+        fn CFNumberGetTypeID() -> u64;
+    }
+    let b_any = unsafe {
+        core_foundation::dictionary::CFDictionaryGetValue(
+            dict,
+            key_bounds as *const core::ffi::c_void,
+        )
+    } as CFTypeRef;
+    if b_any.is_null() || unsafe { CFGetTypeID(b_any) != CFDictionaryGetTypeID() } {
+        return None;
+    }
+    let bdict = b_any as CFDictionaryRef;
+    let kx = CFString::from_static_string("X");
+    let ky = CFString::from_static_string("Y");
+    let kw = CFString::from_static_string("Width");
+    let kh = CFString::from_static_string("Height");
+    let get_i32 = |k: &CFString| -> Option<i32> {
+        let v = unsafe {
+            core_foundation::dictionary::CFDictionaryGetValue(
+                bdict,
+                k.as_concrete_TypeRef() as *const core::ffi::c_void,
+            )
+        } as CFTypeRef;
+        if v.is_null() || unsafe { CFGetTypeID(v) != CFNumberGetTypeID() } {
+            return None;
+        }
+        let n = unsafe { CFNumber::wrap_under_get_rule(v as _) };
+        n.to_i64().map(|v| v as i32)
+    };
+    if let (Some(x), Some(y), Some(w), Some(h)) =
+        (get_i32(&kx), get_i32(&ky), get_i32(&kw), get_i32(&kh))
+    {
+        Some((x, y, w, h))
+    } else {
+        None
+    }
+}
