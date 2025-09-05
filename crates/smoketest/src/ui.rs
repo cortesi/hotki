@@ -4,18 +4,22 @@ use std::{
 };
 
 use crate::util::resolve_hotki_bin;
-use crate::{SmkError, Summary, session::HotkiSession};
+use crate::{
+    Summary,
+    error::{Error, Result},
+    session::HotkiSession,
+};
 
 // ===== UI demos (no screenshot capture here) =====
 
-pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
-    let cwd = env::current_dir().map_err(SmkError::Io)?;
+pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
+    let cwd = env::current_dir()?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
-        return Err(SmkError::MissingConfig(cfg_path));
+        return Err(Error::MissingConfig(cfg_path));
     }
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, true)?;
@@ -50,12 +54,12 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     sum.hud_seen = seen_hud;
     sum.time_to_hud_ms = Some(t_hud);
     if !seen_hud {
-        return Err(SmkError::HudNotVisible { timeout_ms });
+        return Err(Error::HudNotVisible { timeout_ms });
     }
     Ok(sum)
 }
 
-pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
+pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
     let ron = r#"(
         keys: [
             ("shift+cmd+0", "activate", keys([
@@ -77,11 +81,11 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
             .unwrap()
             .as_nanos()
     ));
-    fs::write(&cfg_path, ron).map_err(SmkError::Io)?;
+    fs::write(&cfg_path, ron)?;
 
     let Some(hotki_bin) = resolve_hotki_bin() else {
         let _ = fs::remove_file(&cfg_path);
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, false)?;
@@ -89,7 +93,7 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     if !seen_hud {
         let _ = fs::remove_file(&cfg_path);
         sess.kill_and_wait();
-        return Err(SmkError::HudNotVisible { timeout_ms });
+        return Err(Error::HudNotVisible { timeout_ms });
     }
 
     let mut seq: Vec<String> = Vec::new();

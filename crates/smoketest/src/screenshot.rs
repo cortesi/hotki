@@ -22,7 +22,11 @@ use core_graphics2::window::{
 };
 
 use crate::util::resolve_hotki_bin;
-use crate::{SmkError, Summary, session::HotkiSession};
+use crate::{
+    Summary,
+    error::{Error, Result},
+    session::HotkiSession,
+};
 
 // ===== Window discovery and capture =====
 
@@ -112,15 +116,15 @@ pub(crate) fn run_screenshots(
     theme: Option<String>,
     dir: PathBuf,
     timeout_ms: u64,
-) -> Result<Summary, SmkError> {
-    let cwd = env::current_dir().map_err(SmkError::Io)?;
+) -> Result<Summary> {
+    let cwd = env::current_dir()?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
-        return Err(SmkError::MissingConfig(cfg_path));
+        return Err(Error::MissingConfig(cfg_path));
     }
 
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     // Optional theme override by writing a temp config
@@ -206,10 +210,10 @@ pub(crate) fn run_screenshots(
     sum.hud_seen = seen_hud;
     sum.time_to_hud_ms = Some(t_hud);
     if !seen_hud {
-        return Err(SmkError::HudNotVisible { timeout_ms });
+        return Err(Error::HudNotVisible { timeout_ms });
     }
     if !hud_ok {
-        return Err(SmkError::CaptureFailed("HUD"));
+        return Err(Error::CaptureFailed("HUD"));
     }
     Ok(sum)
 }

@@ -24,3 +24,4 @@ core-graphics2 = "0.4.1"
 config = { version = "0.0.1", path = "../config" }
 regex = "1.11.2"
 permissions = { version = "0.1.0", path = "../permissions" }
+thiserror = "2.0.16"

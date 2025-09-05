@@ -4525,6 +4525,7 @@ dependencies = [
  "permissions",
  "regex",
  "relaykey",
+ "thiserror 2.0.16",
  "tokio",
  "tracing",
  "tracing-subscriber",

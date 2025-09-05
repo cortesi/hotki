@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::SmkError;
+use crate::error::{Error, Result};
 
 pub(crate) struct HotkiSession {
     child: Child,
@@ -16,7 +16,7 @@ impl HotkiSession {
         hotki_bin: &Path,
         cfg_path: &Path,
         with_logs: bool,
-    ) -> Result<HotkiSession, SmkError> {
+    ) -> Result<HotkiSession> {
         let mut cmd = Command::new(hotki_bin);
         if with_logs {
             cmd.env(
@@ -27,7 +27,7 @@ impl HotkiSession {
         let child = cmd
             .arg(cfg_path)
             .spawn()
-            .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+            .map_err(|e| Error::SpawnFailed(e.to_string()))?;
         let sock = hotki_server::socket_path_for_pid(child.id());
         Ok(HotkiSession { child, sock })
     }

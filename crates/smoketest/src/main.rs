@@ -1,11 +1,11 @@
 use std::{
-    error::Error as StdError,
-    fmt,
     path::PathBuf,
     process::{Command, Stdio},
 };
 
 use clap::{Parser, Subcommand};
+
+mod error;
 mod focus;
 mod hide;
 mod raise;
@@ -15,6 +15,8 @@ mod session;
 mod ui;
 mod util;
 mod winhelper;
+
+use error::print_hints;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -85,13 +87,13 @@ enum Commands {
 
 // Lightweight result types for UI/screenshot flows
 #[derive(Debug, Clone)]
-struct Summary {
-    hud_seen: bool,
-    time_to_hud_ms: Option<u64>,
+pub struct Summary {
+    pub hud_seen: bool,
+    pub time_to_hud_ms: Option<u64>,
 }
 
 impl Summary {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             hud_seen: false,
             time_to_hud_ms: None,
@@ -99,83 +101,8 @@ impl Summary {
     }
 }
 
-#[derive(Debug)]
-enum SmkError {
-    MissingConfig(PathBuf),
-    HotkiBinNotFound,
-    SpawnFailed(String),
-    HudNotVisible { timeout_ms: u64 },
-    FocusNotObserved { timeout_ms: u64, expected: String },
-    CaptureFailed(&'static str),
-    Io(std::io::Error),
-}
-
-impl fmt::Display for SmkError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SmkError::MissingConfig(p) => write!(f, "missing config: {}", p.display()),
-            SmkError::HotkiBinNotFound => write!(
-                f,
-                "could not locate 'hotki' binary (set HOTKI_BIN or `cargo build --bin hotki`)"
-            ),
-            SmkError::SpawnFailed(s) => write!(f, "failed to launch hotki: {}", s),
-            SmkError::HudNotVisible { timeout_ms } => write!(
-                f,
-                "HUD did not appear within {} ms (no HudUpdate depth>0)",
-                timeout_ms
-            ),
-            SmkError::FocusNotObserved {
-                timeout_ms,
-                expected,
-            } => write!(
-                f,
-                "did not observe matching focus title within {} ms (expected: '{}')",
-                timeout_ms, expected
-            ),
-            SmkError::CaptureFailed(which) => write!(f, "failed to capture {} window", which),
-            SmkError::Io(e) => write!(f, "I/O error: {}", e),
-        }
-    }
-}
-
-impl StdError for SmkError {}
-
 fn heading(title: &str) {
     println!("\n==> {}", title);
-}
-
-fn print_hints(err: &SmkError) {
-    match err {
-        SmkError::HotkiBinNotFound => {
-            eprintln!("hint: set HOTKI_BIN to an existing binary or run: cargo build --bin hotki");
-        }
-        SmkError::HudNotVisible { .. } => {
-            eprintln!("hint: the activation chord is sent via Accessibility (HID)");
-            eprintln!(
-                "      ensure the terminal/shell running smoketest is allowed under System Settings → Privacy & Security → Accessibility"
-            );
-            eprintln!("      also check hotki logs with --logs for server startup issues");
-        }
-        SmkError::FocusNotObserved { .. } => {
-            eprintln!(
-                "hint: ensure the smoketest window is frontmost (we call NSApplication.activate)"
-            );
-            eprintln!("      grant Accessibility permission for faster title updates (optional)");
-            eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
-        }
-        SmkError::CaptureFailed(_) => {
-            eprintln!("hint: screencapture requires Screen Recording permission for the terminal");
-            eprintln!(
-                "      grant it under System Settings → Privacy & Security → Screen Recording"
-            );
-        }
-        SmkError::MissingConfig(_) => {
-            eprintln!(
-                "hint: expected examples/test.ron relative to repo root (or pass a valid config)"
-            );
-        }
-        SmkError::SpawnFailed(_) | SmkError::Io(_) => {}
-    }
 }
 
 fn main() {

@@ -9,7 +9,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{SmkError, session::HotkiSession, util::resolve_hotki_bin};
+use crate::{
+    error::{Error, Result},
+    session::HotkiSession,
+    util::resolve_hotki_bin,
+};
 
 pub(crate) struct FocusOutcome {
     pub title: String,
@@ -17,14 +21,14 @@ pub(crate) struct FocusOutcome {
     pub elapsed_ms: u64,
 }
 
-pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome, SmkError> {
-    let cwd = env::current_dir().map_err(SmkError::Io)?;
+pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
+    let cwd = env::current_dir()?;
     let cfg_path = cwd.join("examples/test.ron");
     if !cfg_path.exists() {
-        return Err(SmkError::MissingConfig(cfg_path));
+        return Err(Error::MissingConfig(cfg_path));
     }
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, with_logs)?;
@@ -93,7 +97,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
 
     // Spawn focus window helper as a separate process to avoid a second EventLoop
     let helper_time = timeout_ms.saturating_add(5000);
-    let current_exe = env::current_exe().map_err(SmkError::Io)?;
+    let current_exe = env::current_exe()?;
     let mut child = Command::new(current_exe)
         .arg("focus-winhelper")
         .arg("--title")
@@ -104,7 +108,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+        .map_err(|e| Error::SpawnFailed(e.to_string()))?;
     let expected_pid = child.id() as i32;
 
     // Wait for match or timeout
@@ -125,7 +129,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
     sess.kill_and_wait();
 
     if !found.load(Ordering::SeqCst) {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms,
             expected: expected_title,
         });

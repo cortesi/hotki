@@ -11,7 +11,11 @@ use core_foundation::string::{CFString, CFStringRef};
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
-use crate::{SmkError, session::HotkiSession, util::resolve_hotki_bin};
+use crate::{
+    error::{Error, Result},
+    session::HotkiSession,
+    util::resolve_hotki_bin,
+};
 
 // ---------- Minimal AX FFI (public macOS frameworks) ----------
 
@@ -154,7 +158,7 @@ fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
     None
 }
 
-fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child, SmkError> {
+fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child> {
     Command::new(exe)
         .arg("focus-winhelper")
         .arg("--title")
@@ -165,15 +169,15 @@ fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Chi
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))
+        .map_err(|e| Error::SpawnFailed(e.to_string()))
 }
 
 // Wait for the AX window to be discoverable and return its pos/size.
 // (unused helper removed)
 
-pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkError> {
+pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     // Spawn our own helper window (winit) and use it as the hide target.
@@ -183,7 +187,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
         .as_nanos();
     let title = format!("hotki smoketest: hide {}-{}", process::id(), now);
     let helper_time = timeout_ms.saturating_add(8000);
-    let exe = env::current_exe().map_err(SmkError::Io)?;
+    let exe = env::current_exe()?;
     let mut helper = spawn_helper(&exe, &title, helper_time)?;
     let pid = helper.id() as i32;
     // Wait until the helper window is visible via CG or AX
@@ -202,7 +206,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
     if !ready {
         let _ = helper.kill();
         let _ = helper.wait();
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms,
             expected: format!("helper window '{}' not visible", title),
         });
@@ -229,13 +233,13 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
         .unwrap()
         .as_nanos();
     let tmp_path = env::temp_dir().join(format!("hotki-smoketest-hide-{}.ron", now));
-    fs::write(&tmp_path, cfg).map_err(SmkError::Io)?;
+    fs::write(&tmp_path, cfg)?;
 
     // Launch hotki
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
     let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
     if !hud_ok {
-        return Err(SmkError::HudNotVisible { timeout_ms });
+        return Err(Error::HudNotVisible { timeout_ms });
     }
 
     // Snapshot initial AX frame of the helper window
@@ -248,13 +252,13 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
         ) {
             (p, s)
         } else {
-            return Err(SmkError::FocusNotObserved {
+            return Err(Error::FocusNotObserved {
                 timeout_ms,
                 expected: "AX frame for helper window".into(),
             });
         }
     } else {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms,
             expected: "AX window for helper".into(),
         });
@@ -301,7 +305,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
         sess.kill_and_wait();
         let _ = helper.kill();
         let _ = helper.wait();
-        return Err(SmkError::SpawnFailed(
+        return Err(Error::SpawnFailed(
             "window position did not change after hide(on)".into(),
         ));
     }
@@ -340,7 +344,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
     let _ = helper.wait();
 
     if !restored {
-        return Err(SmkError::SpawnFailed(
+        return Err(Error::SpawnFailed(
             "window did not restore to original frame after hide(off)".into(),
         ));
     }

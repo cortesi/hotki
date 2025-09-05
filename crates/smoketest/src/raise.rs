@@ -6,7 +6,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{SmkError, session::HotkiSession, util::resolve_hotki_bin};
+use crate::{
+    error::{Error, Result},
+    session::HotkiSession,
+    util::resolve_hotki_bin,
+};
 
 // Tunable timings for UI-driven interactions
 const POLL_MS: u64 = 50;
@@ -83,7 +87,7 @@ fn send_key(seq: &str) {
     }
 }
 
-fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child, SmkError> {
+fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child> {
     let child = Command::new(exe)
         .arg("focus-winhelper")
         .arg("--title")
@@ -94,7 +98,7 @@ fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Chi
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+        .map_err(|e| Error::SpawnFailed(e.to_string()))?;
     Ok(child)
 }
 
@@ -173,9 +177,9 @@ fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
     false
 }
 
-pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkError> {
+pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(SmkError::HotkiBinNotFound);
+        return Err(Error::HotkiBinNotFound);
     };
 
     // Two unique titles
@@ -188,7 +192,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
 
     // Spawn two helper windows
     let helper_time = timeout_ms.saturating_add(8000);
-    let exe = env::current_exe().map_err(SmkError::Io)?;
+    let exe = env::current_exe()?;
     let mut cleanup = Cleanup::new();
     let child1 = spawn_helper(&exe, &title1, helper_time)?;
     // Small stagger to avoid simultaneous window registration races in WindowServer
@@ -202,7 +206,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
 
     // Ensure both helper windows are actually present before proceeding
     if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], WAIT_WINDOWS_BOTH_MS) {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms: 8000,
             expected: "helpers not visible in CG/AX".into(),
         });
@@ -229,7 +233,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         t2 = title2
     );
     let tmp_path = env::temp_dir().join(format!("hotki-smoketest-raise-{}.ron", now));
-    fs::write(&tmp_path, cfg).map_err(SmkError::Io)?;
+    fs::write(&tmp_path, cfg)?;
     cleanup.tmp_path = Some(tmp_path.clone());
 
     // Launch session and wait for HUD
@@ -237,18 +241,18 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     let _sess_guard = SessionGuard::new(&mut sess);
     let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
     if !hud_ok {
-        return Err(SmkError::HudNotVisible { timeout_ms });
+        return Err(Error::HudNotVisible { timeout_ms });
     }
 
     // Reuse a single Tokio runtime for HUD event waits
-    let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Io(e.into()))?;
 
     // Best‑effort: allow WindowServer to register helpers before driving raise
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
     if !wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_FIRST_MS) {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
         });
@@ -281,7 +285,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
             || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
         if !ok1_retry {
-            return Err(SmkError::FocusNotObserved {
+            return Err(Error::FocusNotObserved {
                 timeout_ms,
                 expected: title1,
             });
@@ -293,7 +297,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
     if !wait_for_windows(&[(pid2, &title2)], 6000) {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("second window not visible before menu: '{}'", title2),
         });
@@ -327,7 +331,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     }
 
     if !ok2 {
-        return Err(SmkError::FocusNotObserved {
+        return Err(Error::FocusNotObserved {
             timeout_ms,
             expected: title2,
         });
