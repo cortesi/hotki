@@ -51,6 +51,8 @@ pub enum KeyResponse {
         app: Option<String>,
         title: Option<String>,
     },
+    /// Hide or reveal the focused window (tri-state)
+    Hide { desired: config::Toggle },
 }
 
 /// Optional repeat configuration for shell actions
@@ -315,6 +317,13 @@ impl State {
             }
             Action::UserStyle(arg) => {
                 let response = KeyResponse::Ui(MsgToUI::UserStyle(*arg));
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(response)
+            }
+            Action::Hide(desired) => {
+                let response = KeyResponse::Hide { desired: *desired };
                 if !attrs.noexit() {
                     self.reset();
                 }

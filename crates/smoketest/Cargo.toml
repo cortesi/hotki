@@ -13,7 +13,7 @@ mac-keycode = { path = "../mac-keycode" }
 relaykey = { path = "../relaykey" }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }
 winit = "0.30"
-objc2-app-kit = "0.3.1"
+objc2-app-kit = { version = "0.3.1", features = ["NSScreen", "libc"] }
 objc2-foundation = "0.3.1"
 keymode = { path = "../keymode" }
 tracing = "0.1"

@@ -1,0 +1,371 @@
+use std::{
+    cmp, env, fs,
+    path::PathBuf,
+    process::{self, Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::string::{CFString, CFStringRef};
+use objc2_app_kit::NSScreen;
+use objc2_foundation::MainThreadMarker;
+
+use crate::{SmkError, session::HotkiSession, util::resolve_hotki_bin};
+
+// ---------- Minimal AX FFI (public macOS frameworks) ----------
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXUIElementCreateApplication(pid: i32) -> *mut core::ffi::c_void;
+    fn AXUIElementCopyAttributeValue(
+        element: *mut core::ffi::c_void,
+        attr: CFStringRef,
+        value: *mut CFTypeRef,
+    ) -> i32;
+    fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut core::ffi::c_void) -> bool;
+}
+
+const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
+const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CGP {
+    x: f64,
+    y: f64,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CGS {
+    width: f64,
+    height: f64,
+}
+
+fn cfstr(s: &'static str) -> CFStringRef {
+    CFString::from_static_string(s).as_CFTypeRef() as CFStringRef
+}
+
+fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<CGP> {
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 || v.is_null() {
+        return None;
+    }
+    let mut p = CGP { x: 0.0, y: 0.0 };
+    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
+    unsafe { CFRelease(v) };
+    if !ok { None } else { Some(p) }
+}
+
+fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<CGS> {
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 || v.is_null() {
+        return None;
+    }
+    let mut s = CGS {
+        width: 0.0,
+        height: 0.0,
+    };
+    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
+    unsafe { CFRelease(v) };
+    if !ok { None } else { Some(s) }
+}
+
+/// Locate an AX window element for `pid` by exact title match.
+fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut core::ffi::c_void> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return None;
+    }
+    let attr_windows = cfstr("AXWindows");
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, attr_windows, &mut wins_ref) };
+    unsafe { CFRelease(app as CFTypeRef) };
+    if err != 0 || wins_ref.is_null() {
+        return None;
+    }
+    let arr = unsafe {
+        core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_get_rule(
+            wins_ref as _,
+        )
+    };
+    for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        let wref =
+            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
+        let w = wref as *mut core::ffi::c_void;
+        if w.is_null() {
+            continue;
+        }
+        let mut t_ref: CFTypeRef = std::ptr::null_mut();
+        let terr = unsafe { AXUIElementCopyAttributeValue(w, cfstr("AXTitle"), &mut t_ref) };
+        if terr != 0 || t_ref.is_null() {
+            continue;
+        }
+        let cfs = unsafe { CFString::wrap_under_get_rule(t_ref as CFStringRef) };
+        let t = cfs.to_string();
+        if t == title {
+            return Some(w);
+        }
+    }
+    None
+}
+
+fn approx(a: f64, b: f64, eps: f64) -> bool {
+    (a - b).abs() <= eps
+}
+
+// ---------- Local helpers ----------
+
+fn send_key(seq: &str) {
+    if let Some(ch) = mac_keycode::Chord::parse(seq) {
+        let rk = relaykey::RelayKey::new_unlabeled();
+        rk.key_down(0, ch.clone(), false);
+        thread::sleep(Duration::from_millis(60));
+        rk.key_up(0, ch);
+    }
+}
+
+/// First AXWindow element for a pid.
+fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return None;
+    }
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    unsafe { CFRelease(app as CFTypeRef) };
+    if err != 0 || wins_ref.is_null() {
+        return None;
+    }
+    let arr = unsafe {
+        core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_get_rule(
+            wins_ref as _,
+        )
+    };
+    let count = unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) };
+    for i in 0..count {
+        let wref =
+            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
+        let w = wref as *mut core::ffi::c_void;
+        if !w.is_null() {
+            return Some(w);
+        }
+    }
+    None
+}
+
+fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child, SmkError> {
+    Command::new(exe)
+        .arg("focus-winhelper")
+        .arg("--title")
+        .arg(title)
+        .arg("--time")
+        .arg(time_ms.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| SmkError::SpawnFailed(e.to_string()))
+}
+
+// Wait for the AX window to be discoverable and return its pos/size.
+fn wait_ax_frame(pid: i32, title: &str, timeout_ms: u64) -> Option<(CGP, CGS)> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if let Some(w) = ax_find_window_by_title(pid, title)
+            && let (Some(p), Some(s)) = (
+                ax_get_point(w, cfstr("AXPosition")),
+                ax_get_size(w, cfstr("AXSize")),
+            )
+        {
+            return Some((p, s));
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+    None
+}
+
+pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkError> {
+    let Some(hotki_bin) = resolve_hotki_bin() else {
+        return Err(SmkError::HotkiBinNotFound);
+    };
+
+    // Spawn our own helper window (winit) and use it as the hide target.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let title = format!("hotki smoketest: hide {}-{}", process::id(), now);
+    let helper_time = timeout_ms.saturating_add(8000);
+    let exe = env::current_exe().map_err(SmkError::Io)?;
+    let mut helper = spawn_helper(&exe, &title, helper_time)?;
+    let pid = helper.id() as i32;
+    // Wait until the helper window is visible via CG or AX
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        let wins = mac_winops::list_windows();
+        let cg_ok = wins.iter().any(|w| w.pid == pid && w.title == title);
+        let ax_ok = mac_winops::ax_has_window_title(pid, &title);
+        if cg_ok || ax_ok {
+            ready = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+    if !ready {
+        let _ = helper.kill();
+        let _ = helper.wait();
+        return Err(SmkError::FocusNotObserved {
+            timeout_ms,
+            expected: format!("helper window '{}' not visible", title),
+        });
+    }
+
+    // Temporary config: shift+cmd+0 -> h -> (t/on/off)
+    let cfg = r#"(
+    keys: [
+        ("shift+cmd+0", "activate", keys([
+            ("h", "hide", keys([
+                ("t", "toggle", hide(toggle)),
+                ("o", "on", hide(on)),
+                ("f", "off", hide(off)),
+            ])),
+            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
+        ])),
+        ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
+    ]
+)
+"#
+    .to_string();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tmp_path = env::temp_dir().join(format!("hotki-smoketest-hide-{}.ron", now));
+    fs::write(&tmp_path, cfg).map_err(SmkError::Io)?;
+
+    // Launch hotki
+    let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
+    let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
+    if !hud_ok {
+        return Err(SmkError::HudNotVisible { timeout_ms });
+    }
+
+    // Snapshot initial AX frame of the helper window
+    let (p0, s0) = if let Some(w) =
+        ax_find_window_by_title(pid, &title).or_else(|| ax_first_window_for_pid(pid))
+    {
+        if let (Some(p), Some(s)) = (
+            ax_get_point(w, cfstr("AXPosition")),
+            ax_get_size(w, cfstr("AXSize")),
+        ) {
+            (p, s)
+        } else {
+            return Err(SmkError::FocusNotObserved {
+                timeout_ms,
+                expected: "AX frame for helper window".into(),
+            });
+        }
+    } else {
+        return Err(SmkError::FocusNotObserved {
+            timeout_ms,
+            expected: "AX window for helper".into(),
+        });
+    };
+    eprintln!(
+        "debug: initial AX frame: x={:.1} y={:.1} w={:.1} h={:.1}",
+        p0.x, p0.y, s0.width, s0.height
+    );
+
+    // Compute expected target X on the main screen (1px sliver)
+    let target_x = if let Some(mtm) = MainThreadMarker::new() {
+        let scr = NSScreen::mainScreen(mtm).expect("main screen");
+        let vf = scr.visibleFrame();
+        (vf.origin.x + vf.size.width) - 1.0
+    } else {
+        // Fallback guess: large X likely on right
+        p0.x + 300.0
+    };
+
+    // Drive: h -> o (hide on)
+    send_key("h");
+    thread::sleep(Duration::from_millis(120));
+    send_key("o");
+
+    // Wait for position change
+    let mut moved = false;
+    let deadline = Instant::now() + Duration::from_millis(cmp::max(800, timeout_ms / 4));
+    let mut _p_on = p0;
+    while Instant::now() < deadline {
+        if let Some(w) = ax_first_window_for_pid(pid)
+            && let Some(p) = ax_get_point(w, cfstr("AXPosition"))
+        {
+            _p_on = p;
+            if !approx(p.x, p0.x, 2.0) || approx(p.x, target_x, 6.0) {
+                moved = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+    if !moved {
+        eprintln!(
+            "debug: no movement detected after hide(on). last vs start x: {:.1} -> {:.1}",
+            _p_on.x, p0.x
+        );
+        // Cleanup helper + session
+        sess.shutdown();
+        sess.kill_and_wait();
+        let _ = helper.kill();
+        let _ = helper.wait();
+        return Err(SmkError::SpawnFailed(
+            "window position did not change after hide(on)".into(),
+        ));
+    }
+
+    // Drive: reopen HUD if needed and turn hide off (reveal)
+    thread::sleep(Duration::from_millis(200));
+    send_key("shift+cmd+0");
+    thread::sleep(Duration::from_millis(120));
+    send_key("h");
+    thread::sleep(Duration::from_millis(120));
+    send_key("f");
+
+    // Wait until position roughly returns to original
+    let mut restored = false;
+    let deadline2 = Instant::now() + Duration::from_millis(cmp::max(1000, timeout_ms / 3));
+    while Instant::now() < deadline2 {
+        if let Some(w) = ax_first_window_for_pid(pid)
+            && let Some(p2) = ax_get_point(w, cfstr("AXPosition"))
+            && let Some(s2) = ax_get_size(w, cfstr("AXSize"))
+        {
+            let pos_ok = approx(p2.x, p0.x, 8.0) && approx(p2.y, p0.y, 8.0);
+            let size_ok = approx(s2.width, s0.width, 8.0) && approx(s2.height, s0.height, 8.0);
+            if !pos_ok || !size_ok {
+                eprintln!(
+                    "debug: waiting restore… cur x={:.1} y={:.1} w={:.1} h={:.1} | start x={:.1} y={:.1} w={:.1} h={:.1}",
+                    p2.x, p2.y, s2.width, s2.height, p0.x, p0.y, s0.width, s0.height
+                );
+            }
+            if pos_ok && size_ok {
+                restored = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
+
+    // Cleanup
+    sess.shutdown();
+    sess.kill_and_wait();
+    let _ = helper.kill();
+    let _ = helper.wait();
+
+    if !restored {
+        return Err(SmkError::SpawnFailed(
+            "window did not restore to original frame after hide(off)".into(),
+        ));
+    }
+    Ok(())
+}

@@ -7,6 +7,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 mod focus;
+mod hide;
 mod raise;
 mod repeat;
 mod screenshot;
@@ -53,6 +54,8 @@ enum Commands {
     Raise,
     /// Verify focus tracking by activating a test window
     Focus,
+    /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
+    Hide,
     /// Internal helper: create a foreground window with a title for focus testing
     #[command(hide = true, name = "focus-winhelper")]
     FocusWinHelper {
@@ -233,6 +236,17 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("focus: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Hide => {
+            heading("Test: hide");
+            match hide::run_hide_test(cli.timeout, cli.logs) {
+                Ok(()) => println!("hide: OK (toggle on/off roundtrip)"),
+                Err(e) => {
+                    eprintln!("hide: ERROR: {}", e);
                     print_hints(&e);
                     std::process::exit(1);
                 }

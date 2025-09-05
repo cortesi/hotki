@@ -156,6 +156,13 @@ pub enum Action {
     Mute(Toggle),
     /// Control user style configuration: on/off/toggle
     UserStyle(Toggle),
+    /// Hide/reveal the focused window: on/off/toggle
+    ///
+    /// Syntax examples:
+    /// - hide(toggle)
+    /// - hide(on)
+    /// - hide(off)
+    Hide(Toggle),
     /// Control fullscreen: on/off/toggle with optional kind (native|nonnative)
     /// Syntax examples:
     /// - fullscreen(toggle)            // defaults to nonnative

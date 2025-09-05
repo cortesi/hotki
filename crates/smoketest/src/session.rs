@@ -21,7 +21,7 @@ impl HotkiSession {
         if with_logs {
             cmd.env(
                 "RUST_LOG",
-                "info,hotki=info,hotki_server=info,hotki_engine=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
+                "info,hotki=info,hotki_server=info,hotki_engine=info,mac_winops=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
             );
         }
         let child = cmd

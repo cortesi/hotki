@@ -10,6 +10,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::c_void,
     sync::Mutex,
+    time::Duration,
 };
 
 use core_foundation::{
@@ -22,7 +23,7 @@ use core_foundation::{
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use mac_keycode::{Chord, Key, Modifier};
 use relaykey::RelayKey;
@@ -55,6 +56,7 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFBooleanGetValue(b: CFTypeRef) -> bool;
+    fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -159,20 +161,34 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
 }
 
 fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
+    debug!("focused_window_for_pid: pid={}", pid);
     let app = unsafe { AXUIElementCreateApplication(pid) };
     if app.is_null() {
+        warn!("focused_window_for_pid: AXUIElementCreateApplication returned null");
         return Err(Error::AppElement);
     }
     let attr_focused_window = cfstr("AXFocusedWindow");
     let mut win: CFTypeRef = std::ptr::null_mut();
+    debug!("focused_window_for_pid: calling AXUIElementCopyAttributeValue(AXFocusedWindow)");
     let err = unsafe { AXUIElementCopyAttributeValue(app, attr_focused_window, &mut win) };
+    debug!(
+        "focused_window_for_pid: AXUIElementCopyAttributeValue returned err={} ptr={:?}",
+        err, win
+    );
     unsafe { CFRelease(app as CFTypeRef) };
+    debug!("focused_window_for_pid: released app element");
     if err != 0 {
+        warn!(
+            "focused_window_for_pid: AX copy focused window failed: code {}",
+            err
+        );
         return Err(Error::AxCode(err));
     }
     if win.is_null() {
+        debug!("focused_window_for_pid: no focused window");
         return Err(Error::FocusedWindow);
     }
+    debug!("focused_window_for_pid: got focused window");
     Ok(win as *mut c_void)
 }
 
@@ -257,6 +273,16 @@ fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     Ok(s)
 }
 
+fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> {
+    let mut v: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 || v.is_null() {
+        return None;
+    }
+    let s = unsafe { core_foundation::string::CFString::wrap_under_create_rule(v as _) };
+    Some(s.to_string())
+}
+
 fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
     if v.is_null() {
@@ -289,6 +315,11 @@ type FrameVal = (CGPoint, CGSize);
 static PREV_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 const PREV_FRAMES_CAP: usize = 256;
+
+/// Frames stored before hiding so we can restore on reveal
+static HIDDEN_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+const HIDDEN_FRAMES_CAP: usize = 512;
 
 fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
     approx_eq_eps(p1.x, p2.x, 1.0)
@@ -503,6 +534,11 @@ enum MainOp {
         pid: i32,
         id: WindowId,
     },
+    /// Hide or reveal the focused window by sliding to/from the right edge
+    HideRight {
+        pid: i32,
+        desired: Desired,
+    },
 }
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -579,6 +615,33 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     Ok(())
 }
 
+/// Schedule a right-edge hide/reveal for the focused window of `pid`.
+pub fn request_hide_right(pid: i32, desired: Desired) -> Result<()> {
+    tracing::debug!("request_hide_right: pid={} desired={:?}", pid, desired);
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::HideRight { pid, desired }))
+        .is_err()
+    {
+        tracing::warn!("request_hide_right: failed to enqueue HideRight (queue poisoned)");
+        return Err(Error::QueuePoisoned);
+    }
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Perform right-edge hide/reveal immediately in the current thread.
+pub fn hide_right_now(pid: i32, desired: Desired) -> Result<()> {
+    tracing::debug!("hide_right_now: pid={} desired={:?}", pid, desired);
+    match hide_right_impl(pid, desired) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::warn!("hide_right_now: error: {}", e);
+            Err(e)
+        }
+    }
+}
+
 /// Schedule a window raise by pid+id on the AppKit main thread.
 pub fn request_raise_window(pid: i32, id: WindowId) -> Result<()> {
     if MAIN_OPS
@@ -625,6 +688,9 @@ pub fn drain_main_ops() {
             MainOp::RaiseWindow { pid, id } => {
                 let _ = crate::raise::raise_window(pid, id);
             }
+            MainOp::HideRight { pid, desired } => {
+                let _ = hide_right_impl(pid, desired);
+            }
         }
     }
 }
@@ -666,6 +732,160 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
             height: h,
         },
     )?;
+
+    unsafe { CFRelease(win as CFTypeRef) };
+    Ok(())
+}
+
+/// Hide or reveal the focused window by sliding it to/from the right edge,
+/// leaving a 1‑pixel visible sliver when hidden.
+fn hide_right_impl(pid: i32, desired: Desired) -> Result<()> {
+    debug!("hide_right_impl: entry pid={} desired={:?}", pid, desired);
+    ax_check()?;
+    debug!("hide_right_impl: AX permission OK");
+    // Best-effort: request activation to improve AXPosition success for some apps
+    let _ = request_activate_pid(pid);
+    std::thread::sleep(Duration::from_millis(60));
+    // Resolve a top-level AXWindow from AXWindows; focused window can be None while HUD is visible.
+    let win: *mut c_void = unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return Err(Error::AppElement);
+        }
+        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        if err != 0 || wins_ref.is_null() {
+            CFRelease(app as CFTypeRef);
+            return Err(Error::FocusedWindow);
+        }
+        let arr = core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        let n = core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef());
+        let mut chosen: *mut c_void = std::ptr::null_mut();
+        for i in 0..n {
+            let w = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+            if w.is_null() { continue; }
+            let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
+            if role == "AXWindow" {
+                chosen = w;
+                break;
+            }
+        }
+        // Retain chosen so it remains valid after arr drops
+        if !chosen.is_null() { let _ = CFRetain(chosen as CFTypeRef); }
+        CFRelease(app as CFTypeRef);
+        if chosen.is_null() { return Err(Error::FocusedWindow); }
+        chosen
+    };
+    debug!("hide_right_impl: obtained top-level AX window for pid={}", pid);
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+
+    // Current frame
+    let cur_p = ax_get_point(win, attr_pos)?;
+    let cur_s = ax_get_size(win, attr_size)?;
+    debug!(
+        "hide_right_impl: current frame p=({:.1},{:.1}) s=({:.1},{:.1})",
+        cur_p.x, cur_p.y, cur_s.width, cur_s.height
+    );
+
+    // Identify the window key for restore
+    let key = focused_window_id(pid).ok().map(|id| (pid, id));
+    let is_hidden = key
+        .as_ref()
+        .and_then(|k| HIDDEN_FRAMES.lock().ok().map(|m| m.contains_key(k)))
+        .unwrap_or(false);
+
+    // Determine operation
+    let do_hide = match desired {
+        Desired::On => true,
+        Desired::Off => false,
+        Desired::Toggle => !is_hidden,
+    };
+
+    debug!(
+        "hide_right: pid={} is_hidden={} desired={:?}",
+        pid, is_hidden, desired
+    );
+    if do_hide {
+        // Store frame for restore
+        if let Some(k) = key
+            && let Ok(mut map) = HIDDEN_FRAMES.lock()
+        {
+            if map.len() >= HIDDEN_FRAMES_CAP
+                && let Some(old_k) = map.keys().next().cloned()
+            {
+                let _ = map.remove(&old_k);
+            }
+            map.insert(k, (cur_p, cur_s));
+        }
+
+        // Compute a conservative target: very large X so WindowServer clamps to right edge.
+        // Avoid main-thread NSScreen dependencies for robustness during tests.
+        let target_x = cur_p.x + 100_000.0; // WindowServer clamps at right edge; leaves a 1px sliver
+        let clamped_y = cur_p.y; // keep Y the same (AX will clamp if needed)
+        debug!(
+            "hide_right: cur_p=({:.1},{:.1}) cur_s=({:.1},{:.1}) -> target=({:.1},{:.1})",
+            cur_p.x, cur_p.y, cur_s.width, cur_s.height, target_x, clamped_y
+        );
+        // Some apps accept AXPosition changes more reliably after any AXSize set.
+        // Set size to current as a no-op before moving.
+        let _ = ax_set_size(win, attr_size, cur_s);
+        // Log basic window role info to aid diagnosis
+        let role = ax_get_string(win, cfstr("AXRole")).unwrap_or_else(|| "<none>".into());
+        let subrole = ax_get_string(win, cfstr("AXSubrole")).unwrap_or_else(|| "<none>".into());
+        debug!("hide_right: target role='{}' subrole='{}'", role, subrole);
+
+        // First attempt: large jump to the right.
+        let first = ax_set_point(
+            win,
+            attr_pos,
+            CGPoint {
+                x: target_x,
+                y: clamped_y,
+            },
+        );
+        if let Err(e) = first {
+            warn!("hide_right: AX set position failed: {:?}", e);
+            unsafe { CFRelease(win as CFTypeRef) };
+            return Err(e);
+        }
+        // Verify movement; if unchanged, try two-phase nudge then jump.
+        match ax_get_point(win, attr_pos) {
+            Ok(p1) if approx_eq_eps(p1.x, cur_p.x, 1.0) => {
+                debug!("hide_right: no movement after first jump; applying nudge then retry");
+                let _ = ax_set_point(
+                    win,
+                    attr_pos,
+                    CGPoint {
+                        x: cur_p.x + 40.0,
+                        y: clamped_y,
+                    },
+                );
+                let _ = ax_set_size(win, attr_size, cur_s);
+                let _ = ax_set_point(
+                    win,
+                    attr_pos,
+                    CGPoint {
+                        x: target_x,
+                        y: clamped_y,
+                    },
+                );
+                // After retry, continue; caller will validate via HIDDEN_FRAMES on reveal
+            }
+            _ => {}
+        }
+    } else {
+        // Reveal: restore size then position if we have a stored frame
+        if let Some(k) = key
+            && let Ok(mut map) = HIDDEN_FRAMES.lock()
+            && let Some((p, s)) = map.remove(&k)
+        {
+            // Set size first to avoid AppKit clamping artifacts, then position
+            let _ = ax_set_size(win, attr_size, s);
+            let _ = ax_set_point(win, attr_pos, p);
+            // No extra fallback needed; we already operate on a top-level AXWindow
+        }
+    }
 
     unsafe { CFRelease(win as CFTypeRef) };
     Ok(())
@@ -987,7 +1207,7 @@ pub fn frontmost_window() -> Option<WindowInfo> {
 
 /// Queue a best-effort activation of the application with `pid` on the AppKit main thread.
 pub fn request_activate_pid(pid: i32) -> Result<()> {
-    info!("queue ActivatePid for pid={} on main thread", pid);
+    debug!("queue ActivatePid for pid={} on main thread", pid);
     if MAIN_OPS
         .lock()
         .map(|mut q| q.push_back(MainOp::ActivatePid { pid }))
@@ -1016,7 +1236,7 @@ fn activate_pid(pid: i32) -> Result<()> {
                 pid
             );
         } else {
-            info!("Activated app via NSRunningApplication for pid={}", pid);
+            debug!("Activated app via NSRunningApplication for pid={}", pid);
         }
         Ok(())
     } else {

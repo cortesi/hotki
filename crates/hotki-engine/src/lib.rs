@@ -550,6 +550,21 @@ impl Engine {
                 }
                 Ok(())
             }
+            Ok(KeyResponse::Hide { desired }) => {
+                tracing::debug!("Hide action received: desired={:?}", desired);
+                let d = match desired {
+                    config::Toggle::On => mac_winops::Desired::On,
+                    config::Toggle::Off => mac_winops::Desired::Off,
+                    config::Toggle::Toggle => mac_winops::Desired::Toggle,
+                };
+                let pid = self.current_pid();
+                // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
+                tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
+                if let Err(e) = mac_winops::hide_right_now(pid, d) {
+                    let _ = self.notifier.send_error("Hide", format!("{}", e));
+                }
+                Ok(())
+            }
             Ok(resp) => {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured

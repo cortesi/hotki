@@ -76,6 +76,10 @@ impl NotificationDispatcher {
                 // Engine handles raise directly; no UI message.
                 Ok(())
             }
+            KeyResponse::Hide { .. } => {
+                // Engine handles hide directly; no UI message.
+                Ok(())
+            }
         }
     }
 
