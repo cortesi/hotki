@@ -1,19 +1,48 @@
 use std::{
-    env, fs,
-    process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    cmp, env, fs,
+    process::{self, Command, Stdio},
+    thread,
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{SmkError, session::HotkiSession, util::resolve_hotki_bin};
+
+// Tunable timings for UI-driven interactions
+const POLL_MS: u64 = 50;
+const KEY_POST_DELAY_MS: u64 = 60;
+const RETRY_DELAY_MS: u64 = 300;
+const OPEN_MENU_STAGGER_MS: u64 = 150;
+const WINDOW_REG_STAGGER_MS: u64 = 200;
+const AFTER_MENU_STABILIZE_MS: u64 = 250;
+const BETWEEN_MENU_KEYS_MS: u64 = 120;
+const WAIT_WINDOWS_BOTH_MS: u64 = 8000;
+const WAIT_WINDOWS_FIRST_MS: u64 = 6000;
+const WAIT_WINDOWS_RECHECK_MS: u64 = 1500;
 
 fn send_key(seq: &str) {
     if let Some(ch) = mac_keycode::Chord::parse(seq) {
         let rk = relaykey::RelayKey::new_unlabeled();
         let pid = 0; // global post
         rk.key_down(pid, ch.clone(), false);
-        std::thread::sleep(Duration::from_millis(60));
+        thread::sleep(Duration::from_millis(KEY_POST_DELAY_MS));
         rk.key_up(pid, ch);
     }
+}
+
+fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child, SmkError> {
+    let child = Command::new(exe)
+        .arg("focus-winhelper")
+        .arg("--title")
+        .arg(title)
+        .arg("--time")
+        .arg(time_ms.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+    Ok(child)
 }
 
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
@@ -32,10 +61,10 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
         Err(_) => return false,
     };
 
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let chunk = std::cmp::min(left, Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let chunk = cmp::min(left, Duration::from_millis(RETRY_DELAY_MS));
         match tokio::time::timeout(chunk, conn.recv_event()).await {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                 if let Some(app) = cursor.app_ref()
@@ -55,32 +84,32 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
 // Prefer checking the actual frontmost CG window title; this validates raise
 // independent of our HUD event flow and avoids races.
 fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
         if let Some(win) = mac_winops::frontmost_window()
             && win.title == expected
         {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(POLL_MS));
     }
     false
 }
 
 // Wait until all given (pid,title) pairs are present in the on-screen CG list.
 fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
         let wins = mac_winops::list_windows();
         let all_found = expected.iter().all(|(pid, title)| {
-            let cg_present = wins.iter().any(|w| w.pid == *pid || w.title == *title);
+            let cg_present = wins.iter().any(|w| w.pid == *pid && w.title == *title);
             let ax_present = mac_winops::ax_has_window_title(*pid, title);
             cg_present || ax_present
         });
         if all_found {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(POLL_MS));
     }
     // Debug: print current windows for diagnosis
     let wins = mac_winops::list_windows();
@@ -101,42 +130,22 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let title1 = format!("hotki smoketest: raise-1 {}-{}", std::process::id(), now);
-    let title2 = format!("hotki smoketest: raise-2 {}-{}", std::process::id(), now);
+    let title1 = format!("hotki smoketest: raise-1 {}-{}", process::id(), now);
+    let title2 = format!("hotki smoketest: raise-2 {}-{}", process::id(), now);
 
     // Spawn two helper windows
     let helper_time = timeout_ms.saturating_add(8000);
     let exe = env::current_exe().map_err(SmkError::Io)?;
-    let mut child1 = Command::new(&exe)
-        .arg("focus-winhelper")
-        .arg("--title")
-        .arg(&title1)
-        .arg("--time")
-        .arg(helper_time.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+    let mut child1 = spawn_helper(&exe, &title1, helper_time)?;
     // Small stagger to avoid simultaneous window registration races in WindowServer
-    std::thread::sleep(Duration::from_millis(200));
-    let mut child2 = Command::new(&exe)
-        .arg("focus-winhelper")
-        .arg("--title")
-        .arg(&title2)
-        .arg("--time")
-        .arg(helper_time.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| SmkError::SpawnFailed(e.to_string()))?;
+    thread::sleep(Duration::from_millis(WINDOW_REG_STAGGER_MS));
+    let mut child2 = spawn_helper(&exe, &title2, helper_time)?;
 
     let pid1 = child1.id() as i32;
     let pid2 = child2.id() as i32;
 
     // Ensure both helper windows are actually present before proceeding
-    if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], 8000) {
+    if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], WAIT_WINDOWS_BOTH_MS) {
         let _ = child1.kill();
         let _ = child2.kill();
         let _ = child1.wait();
@@ -183,11 +192,14 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         return Err(SmkError::HudNotVisible { timeout_ms });
     }
 
+    // Reuse a single Tokio runtime for HUD event waits
+    let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
+
     // Best‑effort: allow WindowServer to register helpers before driving raise
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
-    if !wait_for_windows(&[(pid1, &title1)], 6000) {
+    if !wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_FIRST_MS) {
         sess.shutdown();
         sess.kill_and_wait();
         let _ = child1.kill();
@@ -206,12 +218,11 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     let ok1 = if ok1_front {
         true
     } else {
-        let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
         let ok_hud = rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
         if ok_hud {
             true
         } else {
-            std::thread::sleep(Duration::from_millis(300));
+            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
             send_key("1");
             // One more attempt using CG frontmost first, then HUD
             wait_for_frontmost_title(&title1, timeout_ms / 2)
@@ -221,14 +232,12 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     if !ok1 {
         // Final robust attempt: reopen HUD and try raise again
         send_key("shift+cmd+0");
-        std::thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(OPEN_MENU_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid1, &title1)], 1500);
+        let _ = wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_RECHECK_MS);
         send_key("1");
-        let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2) || {
-            let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
-            rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
-        };
+        let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
+            || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
         if !ok1_retry {
             sess.shutdown();
             sess.kill_and_wait();
@@ -244,7 +253,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     }
 
     // Reopen HUD and raise second window
-    std::thread::sleep(Duration::from_millis(250));
+    thread::sleep(Duration::from_millis(AFTER_MENU_STABILIZE_MS));
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
     if !wait_for_windows(&[(pid2, &title2)], 6000) {
@@ -260,18 +269,17 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         });
     }
     send_key("r");
-    std::thread::sleep(Duration::from_millis(120));
+    thread::sleep(Duration::from_millis(BETWEEN_MENU_KEYS_MS));
     send_key("2");
     let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
     let mut ok2 = if ok2_front {
         true
     } else {
-        let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
         let ok_hud = rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
         if ok_hud {
             true
         } else {
-            std::thread::sleep(Duration::from_millis(300));
+            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
             send_key("2");
             wait_for_frontmost_title(&title2, timeout_ms / 2)
                 || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
@@ -280,14 +288,12 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     if !ok2 {
         // Final robust attempt for the second window as well
         send_key("shift+cmd+0");
-        std::thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(OPEN_MENU_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid2, &title2)], 1500);
+        let _ = wait_for_windows(&[(pid2, &title2)], WAIT_WINDOWS_RECHECK_MS);
         send_key("2");
-        ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2) || {
-            let rt = tokio::runtime::Runtime::new().map_err(SmkError::Io)?;
-            rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
-        };
+        ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
+            || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
     }
 
     // Cleanup

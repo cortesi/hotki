@@ -3,6 +3,7 @@ use core_foundation::{
     string::CFStringRef,
 };
 use std::ffi::c_void;
+use std::ptr::null_mut;
 
 use objc2_foundation::MainThreadMarker;
 use tracing::{info, warn};
@@ -56,7 +57,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         return Err(Error::AppElement);
     }
 
-    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    let mut wins_ref: CFTypeRef = null_mut();
     info!("raise_window: copying AXWindows for pid={}", pid);
     let err =
         unsafe { AXUIElementCopyAttributeValue(app, super::cfstr("AXWindows"), &mut wins_ref) };
@@ -68,7 +69,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     info!("raise_window: AXWindows copied");
 
     // Locate matching AX window by AXWindowNumber
-    let mut found: *mut c_void = std::ptr::null_mut();
+    let mut found: *mut c_void = null_mut();
     let arr: core_foundation::array::CFArray<*const c_void> =
         unsafe { core_foundation::array::CFArray::wrap_under_create_rule(wins_ref as _) };
     for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
@@ -79,7 +80,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             continue;
         }
         // Try AXWindowNumber; if unsupported, skip.
-        let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        let mut num_ref: CFTypeRef = null_mut();
         let err = unsafe {
             AXUIElementCopyAttributeValue(wref, super::cfstr("AXWindowNumber"), &mut num_ref)
         };
@@ -110,8 +111,18 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         info!("raise_window: setting AXFocusedWindow on app element");
         let mut settable = false;
         let can_set = unsafe {
-            AXUIElementIsAttributeSettable(app, super::cfstr("AXFocusedWindow"), &mut settable);
-            settable
+            let rc = AXUIElementIsAttributeSettable(
+                app,
+                super::cfstr("AXFocusedWindow"),
+                &mut settable,
+            );
+            if rc != 0 {
+                warn!(
+                    "AXUIElementIsAttributeSettable(AXFocusedWindow) failed: {}",
+                    rc
+                );
+            }
+            rc == 0 && settable
         };
         let mut step_failed = false;
         if can_set {
@@ -133,17 +144,25 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             info!("raise_window: AXFocusedWindow not settable; skipping set");
             step_failed = true;
         }
-        if !step_failed {
-            // Hint AXMain on the window (ignore error)
-            let _ = unsafe {
-                AXUIElementSetAttributeValue(
-                    found,
-                    super::cfstr("AXMain"),
-                    core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
-                )
-            };
-            // Only call AXRaise if supported on the app element
-            let mut acts_ref: CFTypeRef = std::ptr::null_mut();
+            if !step_failed {
+                // Hint AXMain on the window (ignore error)
+                let _ = unsafe {
+                    AXUIElementSetAttributeValue(
+                        found,
+                        super::cfstr("AXMain"),
+                        core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+                    )
+                };
+                // Also try marking the window as AXFocused (ignore error)
+                let _ = unsafe {
+                    AXUIElementSetAttributeValue(
+                        found,
+                        super::cfstr("AXFocused"),
+                        core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+                    )
+                };
+                // Only call AXRaise if supported on the app element
+            let mut acts_ref: CFTypeRef = null_mut();
             let mut can_raise = false;
             let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
             if acts_err == 0 && !acts_ref.is_null() {
@@ -174,7 +193,41 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                     );
                 }
             } else {
-                info!("raise_window: app does not support AXRaise; skipping action");
+                info!("raise_window: app does not support AXRaise; checking window actions");
+                // Try AXRaise on the window element if available
+                let mut w_acts_ref: CFTypeRef = null_mut();
+                let mut w_can_raise = false;
+                let w_acts_err = unsafe { AXUIElementCopyActionNames(found, &mut w_acts_ref) };
+                if w_acts_err == 0 && !w_acts_ref.is_null() {
+                    let arr = unsafe {
+                        core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
+                            w_acts_ref as _,
+                        )
+                    };
+                    unsafe {
+                        for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
+                            let name = core_foundation::array::CFArrayGetValueAtIndex(
+                                arr.as_concrete_TypeRef(),
+                                j,
+                            ) as CFStringRef;
+                            if CFEqual(name as CFTypeRef, super::cfstr("AXRaise") as CFTypeRef) {
+                                w_can_raise = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if w_can_raise {
+                    let w_raise = unsafe { AXUIElementPerformAction(found, super::cfstr("AXRaise")) };
+                    if w_raise != 0 {
+                        warn!(
+                            "AXUIElementPerformAction(window, AXRaise) failed: {}",
+                            w_raise
+                        );
+                    }
+                } else {
+                    info!("raise_window: window does not support AXRaise; skipping action");
+                }
             }
         }
         need_fallback = step_failed;
