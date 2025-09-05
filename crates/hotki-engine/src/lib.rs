@@ -557,12 +557,22 @@ impl Engine {
                 if let Some(f) = front {
                     tracing::info!(
                         "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost pid={} id={} app='{}' title='{}'",
-                        desired, snap.app, snap.title, snap.pid, f.pid, f.id, f.app, f.title
+                        desired,
+                        snap.app,
+                        snap.title,
+                        snap.pid,
+                        f.pid,
+                        f.id,
+                        f.app,
+                        f.title
                     );
                 } else {
                     tracing::info!(
                         "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost=<none>",
-                        desired, snap.app, snap.title, snap.pid
+                        desired,
+                        snap.app,
+                        snap.title,
+                        snap.pid
                     );
                 }
                 tracing::debug!("Hide action received: desired={:?}", desired);

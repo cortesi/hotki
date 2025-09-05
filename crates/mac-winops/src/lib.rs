@@ -502,6 +502,10 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
     frame_containing_point_with(mtm, p, FrameKind::Visible)
 }
 
+// Compute the visible frame rect of the screen containing `p_ax` in AX coordinates
+// (top-left origin, y increases downward). Falls back to the main screen if none match.
+// (no-op placeholder; conversion helper removed)
+
 /// Queue of operations that must run on the AppKit main thread.
 enum MainOp {
     FullscreenNonNative {
@@ -697,17 +701,48 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
     Ok(())
 }
 
-/// Hide or reveal the focused window by sliding it to/from the right edge,
-/// leaving a 1‑pixel visible sliver when hidden.
-/// Hide or reveal the focused window by sliding it to/from the right edge,
-/// leaving a 1‑pixel visible sliver when hidden.
+/// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
+/// remains visible on screen (bottom‑right), and restore it on reveal.
+///
+/// Strategy (public‑API friendly)
+/// - Permissions: requires Accessibility trust; we no‑op if not trusted.
+/// - Window resolution: resolve a top‑level `AXWindow` from the app’s
+///   `AXWindows` list. We do not rely on having an AX focused window because
+///   the HUD or transient sheets can steal focus.
+/// - Identity for restore: we key stored frames by `(pid, CGWindowID)` obtained
+///   from CoreGraphics (`CGWindowListCopyWindowInfo`), avoiding private APIs
+///   while remaining stable across AX object re‑creations.
+/// - Placement: when hiding, compute a bottom‑right target for the window’s
+///   top‑left so that exactly 1 px is visible.
+///   - Preferred: use `NSScreen::visibleFrame` of the screen containing the
+///     current window and set position to `(right − 1, bottom − 1)`.
+///   - Fallback (not on main thread): add a very large positive delta to both
+///     X and Y (e.g., `+100_000`) and rely on WindowServer clamping to bottom‑right.
+/// - Write order: set `AXSize` (no‑op) before `AXPosition`—some apps only
+///   accept a move after any size set. If the large jump is ignored, apply a
+///   small nudge (+40 px X) and retry.
+/// - Reveal: restore the previously stored `(position,size)` for this window
+///   if available.
+///
+/// Coordinate space & 1‑px rule
+/// - AX window `kAXPositionAttribute`/`kAXSizeAttribute` use a top‑left origin
+///   with Y increasing downward. `NSScreen::visibleFrame` provides the display’s
+///   usable rect (excludes Dock/Menu Bar). Apple won’t allow a window to be
+///   fully off‑screen, so a 1‑pixel sliver remains visible at the chosen edge.
+///
+/// Edge cases
+/// - If a window is minimized (`kAXMinimizedAttribute`) or in native fullscreen
+///   (`kAXFullScreenAttribute`), we skip reposition.
+/// - On shutdown, callers should best‑effort restore any hidden frames.
+/// - We avoid queuing to the AppKit main thread; if we can’t get a main‑thread
+///   visibleFrame we rely on WindowServer clamping.
 pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
     debug!("hide_right: entry pid={} desired={:?}", pid, desired);
     ax_check()?;
     debug!("hide_right: AX permission OK");
     // Best-effort: request activation to improve AXPosition success for some apps
     let _ = request_activate_pid(pid);
-    // Resolve a top-level AXWindow from AXWindows; focused window can be None while HUD is visible.
+    // Resolve a top-level AXWindow from AXWindows (first entry with AXWindow role).
     let win: *mut c_void = unsafe {
         let app = AXUIElementCreateApplication(pid);
         if app.is_null() {
@@ -786,29 +821,40 @@ pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
             map.insert(k, (cur_p, cur_s));
         }
 
-        // Compute a conservative target: very large X so WindowServer clamps to right edge.
-        // Avoid main-thread NSScreen dependencies for robustness during tests.
-        let target_x = cur_p.x + 100_000.0; // WindowServer clamps at right edge; leaves a 1px sliver
-        let clamped_y = cur_p.y; // keep Y the same (AX will clamp if needed)
+        // Compute target position so only the top-left 1×1 px of the window is visible
+        // in the bottom-right corner of the screen that currently contains the window.
+        // Preferred path: use NSScreen::visibleFrame on the AppKit main thread to get
+        // the precise bottom-right coordinate, then place the window's top-left at
+        // (right-1, bottom-1). Fallback path (not on main thread): add very large
+        // deltas to both X and Y and rely on WindowServer clamping to bottom-right.
+        let (target_x, target_y) = if let Some(mtm) = MainThreadMarker::new() {
+            let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+            (
+                (vf_x + vf_w) - 1.0, // right edge minus 1 px
+                (vf_y + vf_h) - 1.0, // bottom edge minus 1 px
+            )
+        } else {
+            (cur_p.x + 100_000.0, cur_p.y + 100_000.0)
+        };
         debug!(
             "hide_right: cur_p=({:.1},{:.1}) cur_s=({:.1},{:.1}) -> target=({:.1},{:.1})",
-            cur_p.x, cur_p.y, cur_s.width, cur_s.height, target_x, clamped_y
+            cur_p.x, cur_p.y, cur_s.width, cur_s.height, target_x, target_y
         );
-        // Some apps accept AXPosition changes more reliably after any AXSize set.
-        // Set size to current as a no-op before moving.
-        let _ = ax_set_size(win, attr_size, cur_s);
         // Log basic window role info to aid diagnosis
         let role = ax_get_string(win, cfstr("AXRole")).unwrap_or_else(|| "<none>".into());
         let subrole = ax_get_string(win, cfstr("AXSubrole")).unwrap_or_else(|| "<none>".into());
         debug!("hide_right: target role='{}' subrole='{}'", role, subrole);
 
-        // First attempt: large jump to the right.
+        // First attempt: large jump to the right (clamp by WindowServer).
+        // Some apps accept AXPosition changes more reliably after any AXSize set.
+        // Set size to current as a no-op before moving.
+        let _ = ax_set_size(win, attr_size, cur_s);
         let first = ax_set_point(
             win,
             attr_pos,
             CGPoint {
                 x: target_x,
-                y: clamped_y,
+                y: target_y,
             },
         );
         if let Err(e) = first {
@@ -825,22 +871,22 @@ pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
                     attr_pos,
                     CGPoint {
                         x: cur_p.x + 40.0,
-                        y: clamped_y,
+                        y: cur_p.y,
                     },
                 );
-                let _ = ax_set_size(win, attr_size, cur_s);
                 let _ = ax_set_point(
                     win,
                     attr_pos,
                     CGPoint {
                         x: target_x,
-                        y: clamped_y,
+                        y: target_y,
                     },
                 );
                 // After retry, continue; caller will validate via HIDDEN_FRAMES on reveal
             }
             _ => {}
         }
+        // no-op
     } else {
         // Reveal: restore size then position if we have a stored frame
         if let Some(k) = key

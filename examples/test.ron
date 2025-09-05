@@ -17,6 +17,12 @@
                 ("a", "Hi", shell("echo hi", (ok_notify: success))),
             ]), (capture: true)),
 
+            ("i", "Hide", keys([
+                ("t", "toggle", hide(toggle)),
+                ("s", "show", hide(off)),
+                ("h", "hide", hide(on)),
+            ]), (capture: true, noexit: true)),
+
             ("s", "Shell", keys([
                 ("e", "Simple echo", shell("echo hi", (ok_notify: success))),
                 ("s", "Sleep 5s", shell("sleep 5; echo slept 5s", (ok_notify: success))),
