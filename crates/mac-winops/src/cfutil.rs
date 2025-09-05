@@ -69,25 +69,6 @@ pub(crate) fn dict_get_f64(dict: CFDictionaryRef, key: CFStringRef) -> Option<f6
     n.to_f64()
 }
 
-/// Get a bool from CFDictionary for the given key.
-pub(crate) fn dict_get_bool(dict: CFDictionaryRef, key: CFStringRef) -> Option<bool> {
-    unsafe extern "C" {
-        fn CFGetTypeID(cf: CFTypeRef) -> u64;
-        fn CFBooleanGetTypeID() -> u64;
-        fn CFBooleanGetValue(b: CFTypeRef) -> bool;
-    }
-    let value = unsafe {
-        core_foundation::dictionary::CFDictionaryGetValue(dict, key as *const core::ffi::c_void)
-    } as CFTypeRef;
-    if value.is_null() {
-        return None;
-    }
-    if unsafe { CFGetTypeID(value) != CFBooleanGetTypeID() } {
-        return None;
-    }
-    Some(unsafe { CFBooleanGetValue(value as _) })
-}
-
 /// Read a CGRect-like dictionary from `dict[key]` and return (x, y, width, height) as i32.
 /// The bounds dictionary uses CFString keys: "X", "Y", "Width", "Height" with CFNumber values.
 pub(crate) fn dict_get_rect_i32(

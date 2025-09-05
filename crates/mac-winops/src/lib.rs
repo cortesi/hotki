@@ -6,64 +6,48 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    ffi::c_void,
-    ptr,
-    sync::Mutex,
-};
+use std::{collections::HashSet, ffi::c_void, ptr};
 
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
     base::{CFRelease, CFTypeRef, TCFType},
-    boolean::{kCFBooleanFalse, kCFBooleanTrue},
     dictionary::CFDictionaryRef,
     string::{CFString, CFStringRef},
 };
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
 use objc2_foundation::MainThreadMarker;
-use once_cell::sync::Lazy;
 use tracing::{debug, warn};
 
 use mac_keycode::{Chord, Key, Modifier};
 use relaykey::RelayKey;
 
+mod ax;
 mod cfutil;
+mod error;
 pub mod focus;
+mod frame_storage;
+mod geometry;
+mod main_thread_ops;
 mod raise;
 mod window;
+
+pub use error::{Error, Result};
+pub use main_thread_ops::{
+    MoveDir, request_activate_pid, request_fullscreen_nonnative, request_place_grid,
+    request_place_move_grid, request_raise_window,
+};
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, list_windows};
 
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
-    fn AXUIElementCopyAttributeValue(
-        element: *mut c_void,
-        attr: CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
-    fn AXUIElementSetAttributeValue(
-        element: *mut c_void,
-        attr: CFStringRef,
-        value: CFTypeRef,
-    ) -> i32;
+use ax::*;
+use frame_storage::*;
+use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
+use main_thread_ops::{MAIN_OPS, MainOp};
 
-    // AXValue helpers for CGPoint/CGSize
-    fn AXValueCreate(theType: i32, valuePtr: *const c_void) -> CFTypeRef;
-    fn AXValueGetValue(theValue: CFTypeRef, theType: i32, valuePtr: *mut c_void) -> bool;
-}
-
-// CFBooleanGetValue is part of CoreFoundation
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    fn CFBooleanGetValue(b: CFTypeRef) -> bool;
     fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
 }
-
-// AXValue type constants (per Apple docs)
-const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
-const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 
 /// Alias for CoreGraphics CGWindowID (kCGWindowNumber).
 pub type WindowId = u32;
@@ -71,54 +55,23 @@ pub type WindowId = u32;
 /// Desired state for operations that can turn on/off or toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Desired {
+    /// Set the state to on/enabled.
     On,
+    /// Set the state to off/disabled.
     Off,
+    /// Toggle the current state.
     Toggle,
 }
 
 /// Screen corner to place the window against so that a 1×1 px corner remains visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenCorner {
+    /// Bottom-right corner of the screen.
     BottomRight,
+    /// Bottom-left corner of the screen.
     BottomLeft,
+    /// Top-left corner of the screen.
     TopLeft,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Accessibility permission missing")]
-    Permission,
-    #[error("Failed to create AX application element")]
-    AppElement,
-    #[error("Focused window not available")]
-    FocusedWindow,
-    #[error("AX operation failed: code {0}")]
-    AxCode(i32),
-    #[error("Operation requires main thread")]
-    MainThread,
-    #[error("Unsupported attribute")]
-    Unsupported,
-    #[error("Main-thread queue poisoned or push failed")]
-    QueuePoisoned,
-    #[error("Invalid index")]
-    InvalidIndex,
-    #[error("Activation failed")]
-    ActivationFailed,
-}
-
-type Result<T> = std::result::Result<T, Error>;
-
-fn cfstr(name: &'static str) -> CFStringRef {
-    // Use a non-owning CFString backed by a static &'static str; no release needed.
-    CFString::from_static_string(name).as_concrete_TypeRef()
-}
-
-fn ax_check() -> Result<()> {
-    if permissions::accessibility_ok() {
-        Ok(())
-    } else {
-        Err(Error::Permission)
-    }
 }
 
 /// Best-effort AX presence check: return true if `pid` has any AX window
@@ -195,142 +148,6 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
     }
     debug!("focused_window_for_pid: got focused window");
     Ok(win as *mut c_void)
-}
-
-fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
-    let mut v: CFTypeRef = ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 {
-        // Not all windows expose AXFullScreen; treat as unsupported.
-        return Err(Error::AxCode(err));
-    }
-    if v.is_null() {
-        return Ok(None);
-    }
-    let b = unsafe { CFBooleanGetValue(v) };
-    unsafe { CFRelease(v) };
-    Ok(Some(b))
-}
-
-fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Result<()> {
-    let val = unsafe {
-        (if value {
-            kCFBooleanTrue
-        } else {
-            kCFBooleanFalse
-        }) as CFTypeRef
-    };
-    let err = unsafe { AXUIElementSetAttributeValue(element, attr, val) };
-    if err != 0 {
-        return Err(Error::AxCode(err));
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CGSize {
-    width: f64,
-    height: f64,
-}
-
-fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
-    let mut v: CFTypeRef = ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 {
-        return Err(Error::AxCode(err));
-    }
-    if v.is_null() {
-        return Err(Error::Unsupported);
-    }
-    let mut p = CGPoint { x: 0.0, y: 0.0 };
-    let ok =
-        unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
-    unsafe { CFRelease(v) };
-    if !ok {
-        return Err(Error::Unsupported);
-    }
-    Ok(p)
-}
-
-fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
-    let mut v: CFTypeRef = ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 {
-        return Err(Error::AxCode(err));
-    }
-    if v.is_null() {
-        return Err(Error::Unsupported);
-    }
-    let mut s = CGSize {
-        width: 0.0,
-        height: 0.0,
-    };
-    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut c_void) };
-    unsafe { CFRelease(v) };
-    if !ok {
-        return Err(Error::Unsupported);
-    }
-    Ok(s)
-}
-
-fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> {
-    let mut v: CFTypeRef = ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 || v.is_null() {
-        return None;
-    }
-    let s = unsafe { CFString::wrap_under_create_rule(v as _) };
-    Some(s.to_string())
-}
-
-fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
-    let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
-    if v.is_null() {
-        return Err(Error::Unsupported);
-    }
-    let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
-    unsafe { CFRelease(v) };
-    if err != 0 {
-        return Err(Error::AxCode(err));
-    }
-    Ok(())
-}
-
-fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()> {
-    let v = unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void) };
-    if v.is_null() {
-        return Err(Error::Unsupported);
-    }
-    let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
-    unsafe { CFRelease(v) };
-    if err != 0 {
-        return Err(Error::AxCode(err));
-    }
-    Ok(())
-}
-
-/// In-memory storage of pre-maximize frames to allow toggling back.
-type FrameKey = (i32, WindowId);
-type FrameVal = (CGPoint, CGSize);
-static PREV_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-const PREV_FRAMES_CAP: usize = 256;
-
-/// Frames stored before hiding so we can restore on reveal
-static HIDDEN_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-const HIDDEN_FRAMES_CAP: usize = 512;
-
-fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
-    approx_eq_eps(p1.x, p2.x, 1.0)
-        && approx_eq_eps(p1.y, p2.y, 1.0)
-        && approx_eq_eps(s1.width, s2.width, 1.0)
-        && approx_eq_eps(s1.height, s2.height, 1.0)
 }
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
@@ -512,122 +329,6 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
     frame_containing_point_with(mtm, p, FrameKind::Visible)
 }
 
-/// Queue of operations that must run on the AppKit main thread.
-enum MainOp {
-    FullscreenNonNative {
-        pid: i32,
-        desired: Desired,
-    },
-    PlaceGrid {
-        pid: i32,
-        cols: u32,
-        rows: u32,
-        col: u32,
-        row: u32,
-    },
-    PlaceMoveGrid {
-        pid: i32,
-        cols: u32,
-        rows: u32,
-        dir: MoveDir,
-    },
-    /// Best-effort app activation for a pid (fallback for raise).
-    ActivatePid {
-        pid: i32,
-    },
-    RaiseWindow {
-        pid: i32,
-        id: WindowId,
-    },
-}
-
-static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
-
-/// Schedule a non‑native fullscreen operation to be executed on the AppKit main
-/// thread and wake the Tao event loop.
-pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| q.push_back(MainOp::FullscreenNonNative { pid, desired }))
-        .is_err()
-    {
-        return Err(Error::QueuePoisoned);
-    }
-    // Wake the Tao main loop to handle user event and drain ops
-    let _ = crate::focus::post_user_event();
-    Ok(())
-}
-
-/// Schedule a window placement operation to snap the focused window into a
-/// grid cell on the current screen's visible frame. Runs on the AppKit main
-/// thread and wakes the Tao event loop.
-pub fn request_place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    if cols == 0 || rows == 0 {
-        return Err(Error::Unsupported);
-    }
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| {
-            q.push_back(MainOp::PlaceGrid {
-                pid,
-                cols,
-                rows,
-                col,
-                row,
-            })
-        })
-        .is_err()
-    {
-        return Err(Error::QueuePoisoned);
-    }
-    let _ = crate::focus::post_user_event();
-    Ok(())
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum MoveDir {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-/// Schedule a window movement within a grid on the AppKit main thread.
-pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
-    if cols == 0 || rows == 0 {
-        return Err(Error::Unsupported);
-    }
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| {
-            q.push_back(MainOp::PlaceMoveGrid {
-                pid,
-                cols,
-                rows,
-                dir,
-            })
-        })
-        .is_err()
-    {
-        return Err(Error::QueuePoisoned);
-    }
-    let _ = crate::focus::post_user_event();
-    Ok(())
-}
-
-/// Schedule a window raise by pid+id on the AppKit main thread.
-pub fn request_raise_window(pid: i32, id: WindowId) -> Result<()> {
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| q.push_back(MainOp::RaiseWindow { pid, id }))
-        .is_err()
-    {
-        return Err(Error::QueuePoisoned);
-    }
-    let _ = crate::focus::post_user_event();
-    Ok(())
-}
-
 /// Drain and execute any pending main-thread operations. Call from the Tao main thread
 /// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
 pub fn drain_main_ops() {
@@ -705,10 +406,6 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
 
     unsafe { CFRelease(win as CFTypeRef) };
     Ok(())
-}
-
-fn approx_eq_eps(a: f64, b: f64, eps: f64) -> bool {
-    (a - b).abs() <= eps
 }
 
 /// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
@@ -908,13 +605,11 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
     Ok(())
 }
 
-/// Convenience wrappers for exploration
+/// Hide or reveal the focused window at the bottom-left corner of the screen.
+///
+/// This is a convenience wrapper around `hide_corner` with `ScreenCorner::BottomLeft`.
 pub fn hide_bottom_left(pid: i32, desired: Desired) -> Result<()> {
     hide_corner(pid, desired, ScreenCorner::BottomLeft)
-}
-
-pub fn hide_top_left(pid: i32, desired: Desired) -> Result<()> {
-    hide_corner(pid, desired, ScreenCorner::TopLeft)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -956,14 +651,7 @@ fn cell_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{approx_eq_eps, cell_rect};
-
-    #[test]
-    fn approx_eq_eps_basic() {
-        assert!(approx_eq_eps(1.0, 1.0, 0.0));
-        assert!(approx_eq_eps(1.0, 1.000_5, 0.001));
-        assert!(!approx_eq_eps(1.0, 1.01, 0.001));
-    }
+    use super::cell_rect;
 
     #[test]
     fn cell_rect_corners_and_remainders() {
@@ -1133,20 +821,6 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
 /// Convenience: return the frontmost on-screen window, if any.
 pub fn frontmost_window() -> Option<WindowInfo> {
     list_windows().into_iter().next()
-}
-
-/// Queue a best-effort activation of the application with `pid` on the AppKit main thread.
-pub fn request_activate_pid(pid: i32) -> Result<()> {
-    debug!("queue ActivatePid for pid={} on main thread", pid);
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| q.push_back(MainOp::ActivatePid { pid }))
-        .is_err()
-    {
-        return Err(Error::QueuePoisoned);
-    }
-    let _ = crate::focus::post_user_event();
-    Ok(())
 }
 
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.

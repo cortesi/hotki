@@ -8,12 +8,18 @@ use std::ptr::null_mut;
 use objc2_foundation::MainThreadMarker;
 use tracing::{info, warn};
 
-use crate::{Error, Result, WindowId, list_windows, request_activate_pid};
+use crate::{
+    WindowId,
+    ax::{ax_check, cfstr},
+    error::{Error, Result},
+    list_windows,
+    main_thread_ops::request_activate_pid,
+};
 
 #[allow(clippy::missing_safety_doc)]
 pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     // Ensure Accessibility and main thread
-    super::ax_check()?;
+    ax_check()?;
     let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
 
     info!("raise_window: pid={} id={} (attempt AX)", pid, id);
@@ -59,8 +65,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
 
     let mut wins_ref: CFTypeRef = null_mut();
     info!("raise_window: copying AXWindows for pid={}", pid);
-    let err =
-        unsafe { AXUIElementCopyAttributeValue(app, super::cfstr("AXWindows"), &mut wins_ref) };
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
         warn!("AXUIElementCopyAttributeValue(AXWindows) failed: {}", err);
         unsafe { core_foundation::base::CFRelease(app as CFTypeRef) };
@@ -81,9 +86,8 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         }
         // Try AXWindowNumber; if unsupported, skip.
         let mut num_ref: CFTypeRef = null_mut();
-        let err = unsafe {
-            AXUIElementCopyAttributeValue(wref, super::cfstr("AXWindowNumber"), &mut num_ref)
-        };
+        let err =
+            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
         if err != 0 || num_ref.is_null() {
             continue;
         }
@@ -111,8 +115,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         info!("raise_window: setting AXFocusedWindow on app element");
         let mut settable = false;
         let can_set = unsafe {
-            let rc =
-                AXUIElementIsAttributeSettable(app, super::cfstr("AXFocusedWindow"), &mut settable);
+            let rc = AXUIElementIsAttributeSettable(app, cfstr("AXFocusedWindow"), &mut settable);
             if rc != 0 {
                 warn!(
                     "AXUIElementIsAttributeSettable(AXFocusedWindow) failed: {}",
@@ -124,11 +127,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         let mut step_failed = false;
         if can_set {
             let set_err = unsafe {
-                AXUIElementSetAttributeValue(
-                    app,
-                    super::cfstr("AXFocusedWindow"),
-                    found as CFTypeRef,
-                )
+                AXUIElementSetAttributeValue(app, cfstr("AXFocusedWindow"), found as CFTypeRef)
             };
             if set_err != 0 {
                 warn!(
@@ -146,7 +145,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             let _ = unsafe {
                 AXUIElementSetAttributeValue(
                     found,
-                    super::cfstr("AXMain"),
+                    cfstr("AXMain"),
                     core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
                 )
             };
@@ -154,7 +153,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             let _ = unsafe {
                 AXUIElementSetAttributeValue(
                     found,
-                    super::cfstr("AXFocused"),
+                    cfstr("AXFocused"),
                     core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
                 )
             };
@@ -174,7 +173,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                             arr.as_concrete_TypeRef(),
                             j,
                         ) as CFStringRef;
-                        if CFEqual(name as CFTypeRef, super::cfstr("AXRaise") as CFTypeRef) {
+                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
                             can_raise = true;
                             break;
                         }
@@ -182,7 +181,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                 }
             }
             if can_raise {
-                let app_raise = unsafe { AXUIElementPerformAction(app, super::cfstr("AXRaise")) };
+                let app_raise = unsafe { AXUIElementPerformAction(app, cfstr("AXRaise")) };
                 if app_raise != 0 {
                     warn!(
                         "AXUIElementPerformAction(app, AXRaise) failed: {}",
@@ -209,7 +208,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                                 arr.as_concrete_TypeRef(),
                                 j,
                             ) as CFStringRef;
-                            if CFEqual(name as CFTypeRef, super::cfstr("AXRaise") as CFTypeRef) {
+                            if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
                                 w_can_raise = true;
                                 break;
                             }
@@ -217,8 +216,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                     }
                 }
                 if w_can_raise {
-                    let w_raise =
-                        unsafe { AXUIElementPerformAction(found, super::cfstr("AXRaise")) };
+                    let w_raise = unsafe { AXUIElementPerformAction(found, cfstr("AXRaise")) };
                     if w_raise != 0 {
                         warn!(
                             "AXUIElementPerformAction(window, AXRaise) failed: {}",
