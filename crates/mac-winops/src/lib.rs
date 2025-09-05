@@ -1099,7 +1099,7 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         let key_pid = cgw::kCGWindowOwnerPID;
         let key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
-        let key_onscreen = cgw::kCGWindowIsOnscreen;
+        let _key_onscreen = cgw::kCGWindowIsOnscreen;
         let key_alpha = cgw::kCGWindowAlpha;
         for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
             let d = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFDictionaryRef;
@@ -1114,14 +1114,10 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
             if layer != 0 {
                 continue;
             }
-            let onscreen = dict_get_bool(d, key_onscreen).unwrap_or(true);
-            if !onscreen {
-                continue;
-            }
-            let alpha = dict_get_f64(d, key_alpha).unwrap_or(1.0);
-            if alpha <= 0.0 {
-                continue;
-            }
+            // Include windows regardless of the on‑screen flag; some newly created
+            // windows momentarily report false before becoming visible.
+            // Some windows briefly report zero alpha during creation; include them nevertheless.
+            let _alpha = dict_get_f64(d, key_alpha).unwrap_or(1.0);
             if let Some(id) = dict_get_i32(d, key_num)
                 && id > 0
             {
@@ -1139,6 +1135,16 @@ pub struct WindowInfo {
     pub title: String,
     pub pid: i32,
     pub id: WindowId,
+    /// Global screen coordinate X of the window's bounds (pixels), if available.
+    pub x: Option<i32>,
+    /// Global screen coordinate Y of the window's bounds (pixels), if available.
+    pub y: Option<i32>,
+    /// Width of the window's bounds (pixels), if available.
+    pub width: Option<i32>,
+    /// Height of the window's bounds (pixels), if available.
+    pub height: Option<i32>,
+    /// Workspace/Space identifier if available from CoreGraphics; None otherwise.
+    pub space: Option<i32>,
 }
 
 /// Return on-screen, layer-0 windows front-to-back.
@@ -1163,10 +1169,16 @@ pub fn list_windows() -> Vec<WindowInfo> {
         let key_alpha = cgw::kCGWindowAlpha;
         let key_app = cgw::kCGWindowOwnerName;
         let key_title = cgw::kCGWindowName;
+        // Optional keys
+        let key_bounds = cgw::kCGWindowBounds;
+        // Some systems populate a workspace identifier. Treat as optional.
+        // Use a CFString object with static backing to keep it alive while in scope.
+        let key_workspace = CFString::from_static_string("kCGWindowWorkspace");
         #[allow(non_snake_case)]
         unsafe extern "C" {
             fn CFGetTypeID(cf: CFTypeRef) -> u64;
             fn CFDictionaryGetTypeID() -> u64;
+            fn CFNumberGetTypeID() -> u64;
         }
         for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
             let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFTypeRef;
@@ -1202,11 +1214,65 @@ pub fn list_windows() -> Vec<WindowInfo> {
             };
             let app = dict_get_string(d, key_app).unwrap_or_default();
             let title = dict_get_string(d, key_title).unwrap_or_default();
+
+            // Bounds: CFDictionary with integer keys X, Y, Width, Height
+            let (mut x, mut y, mut w, mut h) = (None, None, None, None);
+            use core_foundation::dictionary::CFDictionaryGetValue;
+            let b_any = CFDictionaryGetValue(d, key_bounds as *const _ as *const _) as CFTypeRef;
+            let mut have_bounds = false;
+            if !b_any.is_null() && CFGetTypeID(b_any) == CFDictionaryGetTypeID() {
+                let bdict = b_any as CFDictionaryRef;
+                let kx = CFString::from_static_string("X");
+                let ky = CFString::from_static_string("Y");
+                let kw = CFString::from_static_string("Width");
+                let kh = CFString::from_static_string("Height");
+                let get_i32 = |k: &CFString| -> Option<i32> {
+                    let v = CFDictionaryGetValue(
+                        bdict,
+                        k.as_concrete_TypeRef() as *const _ as *const _,
+                    ) as CFTypeRef;
+                    if v.is_null() || CFGetTypeID(v) != CFNumberGetTypeID() {
+                        return None;
+                    }
+                    let n = core_foundation::number::CFNumber::wrap_under_get_rule(v as _);
+                    n.to_i64().map(|v| v as i32)
+                };
+                if let (Some(ix), Some(iy), Some(iw), Some(ih)) =
+                    (get_i32(&kx), get_i32(&ky), get_i32(&kw), get_i32(&kh))
+                {
+                    x = Some(ix);
+                    y = Some(iy);
+                    w = Some(iw);
+                    h = Some(ih);
+                    have_bounds = true;
+                }
+            }
+            let _ = have_bounds; // informational; we still include the window
+
+            // Optional: workspace/space identifier
+            let space = {
+                use core_foundation::dictionary::CFDictionaryGetValue;
+                let v = CFDictionaryGetValue(
+                    d,
+                    key_workspace.as_concrete_TypeRef() as *const _ as *const _,
+                ) as CFTypeRef;
+                if !v.is_null() && CFGetTypeID(v) == CFNumberGetTypeID() {
+                    let n = core_foundation::number::CFNumber::wrap_under_get_rule(v as _);
+                    n.to_i64().map(|v| v as i32)
+                } else {
+                    None
+                }
+            };
             out.push(WindowInfo {
                 app,
                 title,
                 pid,
                 id,
+                x,
+                y,
+                width: w,
+                height: h,
+                space,
             });
         }
     }
