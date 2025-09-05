@@ -4,6 +4,7 @@ use hotki_protocol::{MsgToUI, NotifyKind};
 use keymode::KeyResponse;
 
 use crate::{Error, Result};
+use tracing::info;
 
 /// Sends HUD updates and notifications to the UI layer.
 #[derive(Clone)]
@@ -26,6 +27,9 @@ impl NotificationDispatcher {
 
     /// Send a notification with the given kind, title, and text.
     pub fn send_notification(&self, kind: NotifyKind, title: String, text: String) -> Result<()> {
+        // Always log notification displays at info level, regardless of urgency.
+        // Include kind, title and full text for traceability.
+        info!(kind = ?kind, title = %title, text = %text, "notification_display");
         self.tx
             .send(MsgToUI::Notify { kind, title, text })
             .map_err(|_| Error::ChannelClosed)

@@ -12,6 +12,7 @@
 //!
 //! All other modules are crate-private implementation details.
 use std::{
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -64,6 +65,8 @@ pub struct Engine {
     config: Arc<tokio::sync::RwLock<config::Config>>,
     /// Last known focus snapshot (app/title/pid) when using engine-owned watcher
     focus_snapshot: Arc<Mutex<mac_winops::focus::FocusSnapshot>>,
+    /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
+    raise_nonce: Arc<AtomicU64>,
 }
 
 impl Engine {
@@ -110,6 +113,7 @@ impl Engine {
             repeater,
             config: config_arc,
             focus_snapshot: focus_snapshot_arc,
+            raise_nonce: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -382,6 +386,8 @@ impl Engine {
                 use regex::Regex;
                 // Compile regexes if present; on error, notify and abort this action.
                 tracing::info!("Raise action: app={:?} title={:?}", app, title);
+                // Invalidate any pending debounce tasks from previous raise actions
+                let nonce = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
                 let mut invalid = false;
                 let app_re = if let Some(s) = app.as_ref() {
                     match Regex::new(s) {
@@ -441,11 +447,45 @@ impl Engine {
                         }
                         tracing::info!("Raise: matched count={}", idx_match.len());
                         if idx_match.is_empty() {
-                            let _ = self.notifier.send_notification(
-                                NotifyKind::Info,
-                                "Raise".into(),
-                                "No matching window".into(),
-                            );
+                            // Debounce: retry multiple times before notifying; if a match appears, activate it.
+                            let app_re2 = app_re.clone();
+                            let title_re2 = title_re.clone();
+                            let raise_nonce = self.raise_nonce.clone();
+                            tokio::spawn(async move {
+                                let mut activated = false;
+                                for _ in 0..24 {
+                                    // Cancel if a new Raise action started
+                                    if raise_nonce.load(Ordering::SeqCst) != nonce {
+                                        return;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                    let all2 = mac_winops::list_windows();
+                                    if let Some(target) = all2.iter().find(|w| {
+                                        let aok = app_re2
+                                            .as_ref()
+                                            .map(|r| r.is_match(&w.app))
+                                            .unwrap_or(true);
+                                        let tok = title_re2
+                                            .as_ref()
+                                            .map(|r| r.is_match(&w.title))
+                                            .unwrap_or(true);
+                                        aok && tok
+                                    }) {
+                                        let _ = mac_winops::request_activate_pid(target.pid);
+                                        activated = true;
+                                        break;
+                                    }
+                                }
+                                if !activated {
+                                    if raise_nonce.load(Ordering::SeqCst) != nonce {
+                                        return;
+                                    }
+                                    // Quiet fallback: avoid user-facing notification to reduce noise during fast app launches.
+                                    tracing::info!(
+                                        "Raise: no matching window after debounce; suppressing notification"
+                                    );
+                                }
+                            });
                         } else {
                             let target_idx = if let Some(c) = &cur {
                                 if matches(c) {

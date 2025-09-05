@@ -19,7 +19,6 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, true)?;
-    thread::sleep(Duration::from_millis(2000));
     let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
 
     let mut seq: Vec<&str> = Vec::new();
@@ -86,7 +85,6 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary, SmkError> {
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &cfg_path, false)?;
-    thread::sleep(Duration::from_millis(2000));
     let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
     if !seen_hud {
         let _ = fs::remove_file(&cfg_path);

@@ -22,7 +22,7 @@ use core_foundation::{
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use mac_keycode::{Chord, Key, Modifier};
 use relaykey::RelayKey;
@@ -110,6 +110,53 @@ fn ax_check() -> Result<()> {
     } else {
         Err(Error::Permission)
     }
+}
+
+/// Best-effort AX presence check: return true if `pid` has any AX window
+/// whose title exactly matches `expected_title`.
+///
+/// Returns `false` on any AX error or if Accessibility permission is missing.
+pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
+    // Quick permission gate
+    if !unsafe { AXIsProcessTrusted() } {
+        return false;
+    }
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return false;
+        }
+        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        if err != 0 || wins_ref.is_null() {
+            CFRelease(app as CFTypeRef);
+            return false;
+        }
+        let arr =
+            core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        for i in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
+            let wref = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
+                as *mut c_void;
+            if wref.is_null() {
+                continue;
+            }
+            let mut title_ref: CFTypeRef = std::ptr::null_mut();
+            let terr = AXUIElementCopyAttributeValue(wref, cfstr("AXTitle"), &mut title_ref);
+            if terr != 0 || title_ref.is_null() {
+                continue;
+            }
+            let cfs =
+                core_foundation::string::CFString::wrap_under_create_rule(title_ref as CFStringRef);
+            let title = cfs.to_string();
+            // CFString object from Copy is consumed by wrap_under_create_rule
+            if title == expected_title {
+                CFRelease(app as CFTypeRef);
+                return true;
+            }
+        }
+        CFRelease(app as CFTypeRef);
+    }
+    false
 }
 
 fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
@@ -862,7 +909,7 @@ pub struct WindowInfo {
 
 /// Return on-screen, layer-0 windows front-to-back.
 pub fn list_windows() -> Vec<WindowInfo> {
-    info!("list_windows: begin");
+    trace!("list_windows");
     let mut out = Vec::new();
     unsafe {
         let arr_ref = CGWindowListCopyWindowInfo(
@@ -876,10 +923,6 @@ pub fn list_windows() -> Vec<WindowInfo> {
         }
         let arr: core_foundation::array::CFArray<*const c_void> =
             core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
-        info!(
-            "list_windows: array count={}",
-            CFArrayGetCount(arr.as_concrete_TypeRef())
-        );
         let key_pid = cgw::kCGWindowOwnerPID;
         let key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
@@ -896,17 +939,16 @@ pub fn list_windows() -> Vec<WindowInfo> {
             let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
                 as core_foundation::base::CFTypeRef;
             if item.is_null() {
-                warn!("list_windows: idx={} item null", i);
+                // Individual entry missing is not a fatal error; skip quietly.
                 continue;
             }
             let is_dict = CFGetTypeID(item) == CFDictionaryGetTypeID();
             if !is_dict {
-                warn!("list_windows: idx={} not a CFDictionary, skipping", i);
+                // Unexpected type; skip without noisy logging.
                 continue;
             }
             let d = item as CFDictionaryRef;
             let layer = dict_get_i32(d, key_layer).unwrap_or(0) as i64;
-            info!("list_windows: idx={} layer={}", i, layer);
             if layer != 0 {
                 continue;
             }
@@ -928,10 +970,6 @@ pub fn list_windows() -> Vec<WindowInfo> {
             };
             let app = dict_get_string(d, key_app).unwrap_or_default();
             let title = dict_get_string(d, key_title).unwrap_or_default();
-            info!(
-                "list_windows: push pid={} id={} app='{}' title='{}'",
-                pid, id, app, title
-            );
             out.push(WindowInfo {
                 app,
                 title,

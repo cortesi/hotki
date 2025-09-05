@@ -105,6 +105,14 @@ impl HotkiSession {
                 Ok(Err(_)) => break,
                 Err(_) => {}
             }
+            // Smart side-check: look for the HUD window by title under the hotki server pid
+            // to avoid missing HudUpdate races.
+            if mac_winops::list_windows()
+                .into_iter()
+                .any(|w| w.pid == self.pid() as i32 && w.title == "Hotki HUD")
+            {
+                return (true, start.elapsed().as_millis() as u64);
+            }
             if let Some(last) = last_sent
                 && last.elapsed() >= Duration::from_millis(1000)
             {
