@@ -551,6 +551,20 @@ impl Engine {
                 Ok(())
             }
             Ok(KeyResponse::Hide { desired }) => {
+                // Event log including current window info
+                let snap = self.current_snapshot();
+                let front = mac_winops::frontmost_window();
+                if let Some(f) = front {
+                    tracing::info!(
+                        "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost pid={} id={} app='{}' title='{}'",
+                        desired, snap.app, snap.title, snap.pid, f.pid, f.id, f.app, f.title
+                    );
+                } else {
+                    tracing::info!(
+                        "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost=<none>",
+                        desired, snap.app, snap.title, snap.pid
+                    );
+                }
                 tracing::debug!("Hide action received: desired={:?}", desired);
                 let d = match desired {
                     config::Toggle::On => mac_winops::Desired::On,
@@ -560,7 +574,7 @@ impl Engine {
                 let pid = self.current_pid();
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-                if let Err(e) = mac_winops::hide_right_now(pid, d) {
+                if let Err(e) = mac_winops::hide_right(pid, d) {
                     let _ = self.notifier.send_error("Hide", format!("{}", e));
                 }
                 Ok(())

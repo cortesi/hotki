@@ -30,12 +30,12 @@ const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
 const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct CGP {
+struct Cgp {
     x: f64,
     y: f64,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct CGS {
+struct Cgs {
     width: f64,
     height: f64,
 }
@@ -44,25 +44,25 @@ fn cfstr(s: &'static str) -> CFStringRef {
     CFString::from_static_string(s).as_CFTypeRef() as CFStringRef
 }
 
-fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<CGP> {
+fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgp> {
     let mut v: CFTypeRef = std::ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 || v.is_null() {
         return None;
     }
-    let mut p = CGP { x: 0.0, y: 0.0 };
+    let mut p = Cgp { x: 0.0, y: 0.0 };
     let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
     unsafe { CFRelease(v) };
     if !ok { None } else { Some(p) }
 }
 
-fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<CGS> {
+fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgs> {
     let mut v: CFTypeRef = std::ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 || v.is_null() {
         return None;
     }
-    let mut s = CGS {
+    let mut s = Cgs {
         width: 0.0,
         height: 0.0,
     };
@@ -169,21 +169,7 @@ fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Chi
 }
 
 // Wait for the AX window to be discoverable and return its pos/size.
-fn wait_ax_frame(pid: i32, title: &str, timeout_ms: u64) -> Option<(CGP, CGS)> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if let Some(w) = ax_find_window_by_title(pid, title)
-            && let (Some(p), Some(s)) = (
-                ax_get_point(w, cfstr("AXPosition")),
-                ax_get_size(w, cfstr("AXSize")),
-            )
-        {
-            return Some((p, s));
-        }
-        thread::sleep(Duration::from_millis(60));
-    }
-    None
-}
+// (unused helper removed)
 
 pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkError> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
@@ -273,10 +259,6 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
             expected: "AX window for helper".into(),
         });
     };
-    eprintln!(
-        "debug: initial AX frame: x={:.1} y={:.1} w={:.1} h={:.1}",
-        p0.x, p0.y, s0.width, s0.height
-    );
 
     // Compute expected target X on the main screen (1px sliver)
     let target_x = if let Some(mtm) = MainThreadMarker::new() {
@@ -342,12 +324,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<(), SmkE
         {
             let pos_ok = approx(p2.x, p0.x, 8.0) && approx(p2.y, p0.y, 8.0);
             let size_ok = approx(s2.width, s0.width, 8.0) && approx(s2.height, s0.height, 8.0);
-            if !pos_ok || !size_ok {
-                eprintln!(
-                    "debug: waiting restore… cur x={:.1} y={:.1} w={:.1} h={:.1} | start x={:.1} y={:.1} w={:.1} h={:.1}",
-                    p2.x, p2.y, s2.width, s2.height, p0.x, p0.y, s0.width, s0.height
-                );
-            }
+            // quiet on success path
             if pos_ok && size_ok {
                 restored = true;
                 break;

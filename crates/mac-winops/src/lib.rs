@@ -9,12 +9,12 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::c_void,
+    ptr,
     sync::Mutex,
-    time::Duration,
 };
 
 use core_foundation::{
-    array::{CFArrayGetCount, CFArrayGetValueAtIndex},
+    array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
     base::{CFRelease, CFTypeRef, TCFType},
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
     dictionary::CFDictionaryRef,
@@ -65,8 +65,6 @@ const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 
 /// Alias for CoreGraphics CGWindowID (kCGWindowNumber).
 pub type WindowId = u32;
-
-// All Space management via SkyLight has been removed.
 
 /// Desired state for operations that can turn on/off or toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,27 +125,24 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
         if app.is_null() {
             return false;
         }
-        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+        let mut wins_ref: CFTypeRef = ptr::null_mut();
         let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
         if err != 0 || wins_ref.is_null() {
             CFRelease(app as CFTypeRef);
             return false;
         }
-        let arr =
-            core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        for i in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
-            let wref = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
-                as *mut c_void;
+        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
+            let wref = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
             if wref.is_null() {
                 continue;
             }
-            let mut title_ref: CFTypeRef = std::ptr::null_mut();
+            let mut title_ref: CFTypeRef = ptr::null_mut();
             let terr = AXUIElementCopyAttributeValue(wref, cfstr("AXTitle"), &mut title_ref);
             if terr != 0 || title_ref.is_null() {
                 continue;
             }
-            let cfs =
-                core_foundation::string::CFString::wrap_under_create_rule(title_ref as CFStringRef);
+            let cfs = CFString::wrap_under_create_rule(title_ref as CFStringRef);
             let title = cfs.to_string();
             // CFString object from Copy is consumed by wrap_under_create_rule
             if title == expected_title {
@@ -168,7 +163,7 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
         return Err(Error::AppElement);
     }
     let attr_focused_window = cfstr("AXFocusedWindow");
-    let mut win: CFTypeRef = std::ptr::null_mut();
+    let mut win: CFTypeRef = ptr::null_mut();
     debug!("focused_window_for_pid: calling AXUIElementCopyAttributeValue(AXFocusedWindow)");
     let err = unsafe { AXUIElementCopyAttributeValue(app, attr_focused_window, &mut win) };
     debug!(
@@ -193,7 +188,7 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
 }
 
 fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
+    let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         // Not all windows expose AXFullScreen; treat as unsupported.
@@ -234,7 +229,7 @@ struct CGSize {
 }
 
 fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
+    let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         return Err(Error::AxCode(err));
@@ -253,7 +248,7 @@ fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
 }
 
 fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
+    let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         return Err(Error::AxCode(err));
@@ -274,12 +269,12 @@ fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
 }
 
 fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
+    let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 || v.is_null() {
         return None;
     }
-    let s = unsafe { core_foundation::string::CFString::wrap_under_create_rule(v as _) };
+    let s = unsafe { CFString::wrap_under_create_rule(v as _) };
     Some(s.to_string())
 }
 
@@ -534,11 +529,6 @@ enum MainOp {
         pid: i32,
         id: WindowId,
     },
-    /// Hide or reveal the focused window by sliding to/from the right edge
-    HideRight {
-        pid: i32,
-        desired: Desired,
-    },
 }
 
 static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -615,33 +605,6 @@ pub fn request_place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> 
     Ok(())
 }
 
-/// Schedule a right-edge hide/reveal for the focused window of `pid`.
-pub fn request_hide_right(pid: i32, desired: Desired) -> Result<()> {
-    tracing::debug!("request_hide_right: pid={} desired={:?}", pid, desired);
-    if MAIN_OPS
-        .lock()
-        .map(|mut q| q.push_back(MainOp::HideRight { pid, desired }))
-        .is_err()
-    {
-        tracing::warn!("request_hide_right: failed to enqueue HideRight (queue poisoned)");
-        return Err(Error::QueuePoisoned);
-    }
-    let _ = crate::focus::post_user_event();
-    Ok(())
-}
-
-/// Perform right-edge hide/reveal immediately in the current thread.
-pub fn hide_right_now(pid: i32, desired: Desired) -> Result<()> {
-    tracing::debug!("hide_right_now: pid={} desired={:?}", pid, desired);
-    match hide_right_impl(pid, desired) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            tracing::warn!("hide_right_now: error: {}", e);
-            Err(e)
-        }
-    }
-}
-
 /// Schedule a window raise by pid+id on the AppKit main thread.
 pub fn request_raise_window(pid: i32, id: WindowId) -> Result<()> {
     if MAIN_OPS
@@ -687,9 +650,6 @@ pub fn drain_main_ops() {
             }
             MainOp::RaiseWindow { pid, id } => {
                 let _ = crate::raise::raise_window(pid, id);
-            }
-            MainOp::HideRight { pid, desired } => {
-                let _ = hide_right_impl(pid, desired);
             }
         }
     }
@@ -739,31 +699,34 @@ fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> 
 
 /// Hide or reveal the focused window by sliding it to/from the right edge,
 /// leaving a 1‑pixel visible sliver when hidden.
-fn hide_right_impl(pid: i32, desired: Desired) -> Result<()> {
-    debug!("hide_right_impl: entry pid={} desired={:?}", pid, desired);
+/// Hide or reveal the focused window by sliding it to/from the right edge,
+/// leaving a 1‑pixel visible sliver when hidden.
+pub fn hide_right(pid: i32, desired: Desired) -> Result<()> {
+    debug!("hide_right: entry pid={} desired={:?}", pid, desired);
     ax_check()?;
-    debug!("hide_right_impl: AX permission OK");
+    debug!("hide_right: AX permission OK");
     // Best-effort: request activation to improve AXPosition success for some apps
     let _ = request_activate_pid(pid);
-    std::thread::sleep(Duration::from_millis(60));
     // Resolve a top-level AXWindow from AXWindows; focused window can be None while HUD is visible.
     let win: *mut c_void = unsafe {
         let app = AXUIElementCreateApplication(pid);
         if app.is_null() {
             return Err(Error::AppElement);
         }
-        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+        let mut wins_ref: CFTypeRef = ptr::null_mut();
         let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
         if err != 0 || wins_ref.is_null() {
             CFRelease(app as CFTypeRef);
             return Err(Error::FocusedWindow);
         }
-        let arr = core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        let n = core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef());
-        let mut chosen: *mut c_void = std::ptr::null_mut();
+        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
+        let mut chosen: *mut c_void = ptr::null_mut();
         for i in 0..n {
-            let w = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
-            if w.is_null() { continue; }
+            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+            if w.is_null() {
+                continue;
+            }
             let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
             if role == "AXWindow" {
                 chosen = w;
@@ -771,12 +734,16 @@ fn hide_right_impl(pid: i32, desired: Desired) -> Result<()> {
             }
         }
         // Retain chosen so it remains valid after arr drops
-        if !chosen.is_null() { let _ = CFRetain(chosen as CFTypeRef); }
+        if !chosen.is_null() {
+            let _ = CFRetain(chosen as CFTypeRef);
+        }
         CFRelease(app as CFTypeRef);
-        if chosen.is_null() { return Err(Error::FocusedWindow); }
+        if chosen.is_null() {
+            return Err(Error::FocusedWindow);
+        }
         chosen
     };
-    debug!("hide_right_impl: obtained top-level AX window for pid={}", pid);
+    debug!("hide_right: obtained top-level AX window for pid={}", pid);
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
@@ -784,7 +751,7 @@ fn hide_right_impl(pid: i32, desired: Desired) -> Result<()> {
     let cur_p = ax_get_point(win, attr_pos)?;
     let cur_s = ax_get_size(win, attr_size)?;
     debug!(
-        "hide_right_impl: current frame p=({:.1},{:.1}) s=({:.1},{:.1})",
+        "hide_right: current frame p=({:.1},{:.1}) s=({:.1},{:.1})",
         cur_p.x, cur_p.y, cur_s.width, cur_s.height
     );
 
@@ -1059,12 +1026,8 @@ unsafe extern "C" {
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
 const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 
-// (legacy string-based CG keys removed; using core_graphics::window constants)
-
 use crate::cfutil::{dict_get_bool, dict_get_f64, dict_get_i32, dict_get_string};
 use core_graphics::window as cgw;
-
-// Space management APIs removed.
 
 /// Convenience: resolve the focused top-level window’s CGWindowID for `pid`.
 /// Best-effort: picks the first frontmost layer-0 on-screen window owned by pid.
@@ -1079,8 +1042,7 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         if arr_ref.is_null() {
             return Err(Error::FocusedWindow);
         }
-        let arr: core_foundation::array::CFArray<*const c_void> =
-            core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
+        let arr: CFArray<*const c_void> = CFArray::wrap_under_create_rule(arr_ref as _);
         let key_pid = cgw::kCGWindowOwnerPID;
         let key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
@@ -1140,8 +1102,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
             warn!("list_windows: CGWindowListCopyWindowInfo returned null");
             return out;
         }
-        let arr: core_foundation::array::CFArray<*const c_void> =
-            core_foundation::array::CFArray::wrap_under_create_rule(arr_ref as _);
+        let arr: CFArray<*const c_void> = CFArray::wrap_under_create_rule(arr_ref as _);
         let key_pid = cgw::kCGWindowOwnerPID;
         let key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
@@ -1151,12 +1112,11 @@ pub fn list_windows() -> Vec<WindowInfo> {
         let key_title = cgw::kCGWindowName;
         #[allow(non_snake_case)]
         unsafe extern "C" {
-            fn CFGetTypeID(cf: core_foundation::base::CFTypeRef) -> u64;
+            fn CFGetTypeID(cf: CFTypeRef) -> u64;
             fn CFDictionaryGetTypeID() -> u64;
         }
         for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
-            let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
-                as core_foundation::base::CFTypeRef;
+            let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFTypeRef;
             if item.is_null() {
                 // Individual entry missing is not a fatal error; skip quietly.
                 continue;
