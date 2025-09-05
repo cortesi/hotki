@@ -19,3 +19,4 @@ thiserror = "2.0.16"
 tracing = "0.1.41"
 libc = "0.2.175"
 core-graphics = { version = "0.25.0", features = ["elcapitan"] }
+permissions = { version = "0.1.0", path = "../permissions" }

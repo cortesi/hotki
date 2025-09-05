@@ -15,10 +15,7 @@ pub(crate) enum AxEvent {
 
 /// Returns true if the process is trusted for Accessibility (AX) APIs.
 pub(crate) fn ax_is_trusted() -> bool {
-    unsafe extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-    }
-    unsafe { AXIsProcessTrusted() }
+    permissions::accessibility_ok()
 }
 
 #[derive(Default)]

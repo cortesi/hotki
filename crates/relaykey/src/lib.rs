@@ -16,8 +16,6 @@ use libc::pid_t;
 use mac_keycode::{Chord, Modifier};
 use tracing::{info, trace, warn};
 
-mod sys;
-
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
@@ -49,7 +47,7 @@ impl MacPoster {
         let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
             Ok(s) => s,
             Err(_) => {
-                if !sys::ax_is_process_trusted() {
+                if !permissions::accessibility_ok() {
                     warn!("accessibility_permission_missing_for_event_source");
                     return Err(Error::PermissionDenied("Accessibility"));
                 }
@@ -60,7 +58,7 @@ impl MacPoster {
         {
             Ok(e) => e,
             Err(_) => {
-                if !sys::ax_is_process_trusted() {
+                if !permissions::accessibility_ok() {
                     warn!("accessibility_permission_missing_for_event_create");
                     return Err(Error::PermissionDenied("Accessibility"));
                 }
@@ -78,7 +76,7 @@ impl MacPoster {
         let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
             Ok(s) => s,
             Err(_) => {
-                if !sys::ax_is_process_trusted() {
+                if !permissions::accessibility_ok() {
                     warn!("accessibility_permission_missing_for_event_source");
                     return Err(Error::PermissionDenied("Accessibility"));
                 }
@@ -92,7 +90,7 @@ impl MacPoster {
         ) {
             Ok(e) => e,
             Err(_) => {
-                if !sys::ax_is_process_trusted() {
+                if !permissions::accessibility_ok() {
                     warn!("accessibility_permission_missing_for_event_create");
                     return Err(Error::PermissionDenied("Accessibility"));
                 }

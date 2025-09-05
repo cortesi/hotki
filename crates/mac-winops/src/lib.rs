@@ -34,7 +34,6 @@ pub use raise::raise_window;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
     fn AXUIElementCopyAttributeValue(
         element: *mut c_void,
@@ -105,7 +104,7 @@ fn cfstr(name: &'static str) -> CFStringRef {
 }
 
 fn ax_check() -> Result<()> {
-    if unsafe { AXIsProcessTrusted() } {
+    if permissions::accessibility_ok() {
         Ok(())
     } else {
         Err(Error::Permission)
@@ -118,7 +117,7 @@ fn ax_check() -> Result<()> {
 /// Returns `false` on any AX error or if Accessibility permission is missing.
 pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
     // Quick permission gate
-    if !unsafe { AXIsProcessTrusted() } {
+    if !permissions::accessibility_ok() {
         return false;
     }
     unsafe {

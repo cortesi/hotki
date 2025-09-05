@@ -2788,6 +2788,7 @@ dependencies = [
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
  "once_cell",
+ "permissions",
  "regex",
  "relaykey",
  "tao",
@@ -4189,6 +4190,7 @@ dependencies = [
  "eventtag",
  "libc",
  "mac-keycode",
+ "permissions",
  "thiserror 2.0.16",
  "tracing",
 ]
