@@ -1,8 +1,8 @@
 use std::{
     cmp, env, fs,
-    process::{self, Command, Stdio},
-    thread,
     path::PathBuf,
+    process::{self, Child, Command, Stdio},
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -19,6 +19,59 @@ const BETWEEN_MENU_KEYS_MS: u64 = 120;
 const WAIT_WINDOWS_BOTH_MS: u64 = 8000;
 const WAIT_WINDOWS_FIRST_MS: u64 = 6000;
 const WAIT_WINDOWS_RECHECK_MS: u64 = 1500;
+
+struct Cleanup {
+    child1: Option<Child>,
+    child2: Option<Child>,
+    tmp_path: Option<PathBuf>,
+}
+
+impl Cleanup {
+    fn new() -> Self {
+        Self {
+            child1: None,
+            child2: None,
+            tmp_path: None,
+        }
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.child1.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        if let Some(mut c) = self.child2.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        if let Some(p) = self.tmp_path.take() {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
+struct SessionGuard {
+    sess: *mut HotkiSession,
+}
+
+impl SessionGuard {
+    fn new(sess: &mut HotkiSession) -> Self {
+        Self { sess }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.sess.is_null() {
+                (*self.sess).shutdown();
+                (*self.sess).kill_and_wait();
+            }
+        }
+    }
+}
 
 fn send_key(seq: &str) {
     if let Some(ch) = mac_keycode::Chord::parse(seq) {
@@ -136,20 +189,19 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     // Spawn two helper windows
     let helper_time = timeout_ms.saturating_add(8000);
     let exe = env::current_exe().map_err(SmkError::Io)?;
-    let mut child1 = spawn_helper(&exe, &title1, helper_time)?;
+    let mut cleanup = Cleanup::new();
+    let child1 = spawn_helper(&exe, &title1, helper_time)?;
     // Small stagger to avoid simultaneous window registration races in WindowServer
     thread::sleep(Duration::from_millis(WINDOW_REG_STAGGER_MS));
-    let mut child2 = spawn_helper(&exe, &title2, helper_time)?;
+    let child2 = spawn_helper(&exe, &title2, helper_time)?;
 
     let pid1 = child1.id() as i32;
     let pid2 = child2.id() as i32;
+    cleanup.child1 = Some(child1);
+    cleanup.child2 = Some(child2);
 
     // Ensure both helper windows are actually present before proceeding
     if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], WAIT_WINDOWS_BOTH_MS) {
-        let _ = child1.kill();
-        let _ = child2.kill();
-        let _ = child1.wait();
-        let _ = child2.wait();
         return Err(SmkError::FocusNotObserved {
             timeout_ms: 8000,
             expected: "helpers not visible in CG/AX".into(),
@@ -178,17 +230,13 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     );
     let tmp_path = env::temp_dir().join(format!("hotki-smoketest-raise-{}.ron", now));
     fs::write(&tmp_path, cfg).map_err(SmkError::Io)?;
+    cleanup.tmp_path = Some(tmp_path.clone());
 
     // Launch session and wait for HUD
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
+    let _sess_guard = SessionGuard::new(&mut sess);
     let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
     if !hud_ok {
-        sess.shutdown();
-        sess.kill_and_wait();
-        let _ = child1.kill();
-        let _ = child2.kill();
-        let _ = child1.wait();
-        let _ = child2.wait();
         return Err(SmkError::HudNotVisible { timeout_ms });
     }
 
@@ -200,12 +248,6 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
     if !wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_FIRST_MS) {
-        sess.shutdown();
-        sess.kill_and_wait();
-        let _ = child1.kill();
-        let _ = child2.kill();
-        let _ = child1.wait();
-        let _ = child2.wait();
         return Err(SmkError::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
@@ -239,12 +281,6 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
             || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
         if !ok1_retry {
-            sess.shutdown();
-            sess.kill_and_wait();
-            let _ = child1.kill();
-            let _ = child2.kill();
-            let _ = child1.wait();
-            let _ = child2.wait();
             return Err(SmkError::FocusNotObserved {
                 timeout_ms,
                 expected: title1,
@@ -257,12 +293,6 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
     if !wait_for_windows(&[(pid2, &title2)], 6000) {
-        sess.shutdown();
-        sess.kill_and_wait();
-        let _ = child1.kill();
-        let _ = child2.kill();
-        let _ = child1.wait();
-        let _ = child2.wait();
         return Err(SmkError::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("second window not visible before menu: '{}'", title2),
@@ -295,15 +325,6 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<(), Smk
         ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
             || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
     }
-
-    // Cleanup
-    sess.shutdown();
-    sess.kill_and_wait();
-    let _ = child1.kill();
-    let _ = child2.kill();
-    let _ = child1.wait();
-    let _ = child2.wait();
-    let _ = fs::remove_file(&tmp_path);
 
     if !ok2 {
         return Err(SmkError::FocusNotObserved {

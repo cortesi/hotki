@@ -111,11 +111,8 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         info!("raise_window: setting AXFocusedWindow on app element");
         let mut settable = false;
         let can_set = unsafe {
-            let rc = AXUIElementIsAttributeSettable(
-                app,
-                super::cfstr("AXFocusedWindow"),
-                &mut settable,
-            );
+            let rc =
+                AXUIElementIsAttributeSettable(app, super::cfstr("AXFocusedWindow"), &mut settable);
             if rc != 0 {
                 warn!(
                     "AXUIElementIsAttributeSettable(AXFocusedWindow) failed: {}",
@@ -144,24 +141,24 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             info!("raise_window: AXFocusedWindow not settable; skipping set");
             step_failed = true;
         }
-            if !step_failed {
-                // Hint AXMain on the window (ignore error)
-                let _ = unsafe {
-                    AXUIElementSetAttributeValue(
-                        found,
-                        super::cfstr("AXMain"),
-                        core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
-                    )
-                };
-                // Also try marking the window as AXFocused (ignore error)
-                let _ = unsafe {
-                    AXUIElementSetAttributeValue(
-                        found,
-                        super::cfstr("AXFocused"),
-                        core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
-                    )
-                };
-                // Only call AXRaise if supported on the app element
+        if !step_failed {
+            // Hint AXMain on the window (ignore error)
+            let _ = unsafe {
+                AXUIElementSetAttributeValue(
+                    found,
+                    super::cfstr("AXMain"),
+                    core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+                )
+            };
+            // Also try marking the window as AXFocused (ignore error)
+            let _ = unsafe {
+                AXUIElementSetAttributeValue(
+                    found,
+                    super::cfstr("AXFocused"),
+                    core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+                )
+            };
+            // Only call AXRaise if supported on the app element
             let mut acts_ref: CFTypeRef = null_mut();
             let mut can_raise = false;
             let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
@@ -205,7 +202,9 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                         )
                     };
                     unsafe {
-                        for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
+                        for j in
+                            0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef())
+                        {
                             let name = core_foundation::array::CFArrayGetValueAtIndex(
                                 arr.as_concrete_TypeRef(),
                                 j,
@@ -218,7 +217,8 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                     }
                 }
                 if w_can_raise {
-                    let w_raise = unsafe { AXUIElementPerformAction(found, super::cfstr("AXRaise")) };
+                    let w_raise =
+                        unsafe { AXUIElementPerformAction(found, super::cfstr("AXRaise")) };
                     if w_raise != 0 {
                         warn!(
                             "AXUIElementPerformAction(window, AXRaise) failed: {}",
