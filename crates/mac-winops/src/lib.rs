@@ -23,7 +23,7 @@ use core_foundation::{
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
 use objc2_foundation::MainThreadMarker;
 use once_cell::sync::Lazy;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use mac_keycode::{Chord, Key, Modifier};
 use relaykey::RelayKey;
@@ -31,7 +31,9 @@ use relaykey::RelayKey;
 mod cfutil;
 pub mod focus;
 mod raise;
+mod window;
 pub use raise::raise_window;
+pub use window::{Pos, WindowInfo, list_windows};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -1079,7 +1081,7 @@ unsafe extern "C" {
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
 const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 
-use crate::cfutil::{dict_get_f64, dict_get_i32, dict_get_string};
+use crate::cfutil::{dict_get_f64, dict_get_i32};
 use core_graphics::window as cgw;
 
 /// Convenience: resolve the focused top-level window’s CGWindowID for `pid`.
@@ -1126,90 +1128,6 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         }
     }
     Err(Error::FocusedWindow)
-}
-
-/// Position and size of a window in global screen coordinates (pixels).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pos {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
-
-/// Lightweight description of an on-screen window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowInfo {
-    pub app: String,
-    pub title: String,
-    pub pid: i32,
-    pub id: WindowId,
-    /// Window position/size if available from CoreGraphics.
-    pub pos: Option<Pos>,
-    /// Workspace/Space identifier if available from CoreGraphics; None otherwise.
-    pub space: Option<i32>,
-}
-
-/// Return on-screen, layer-0 windows front-to-back.
-pub fn list_windows() -> Vec<WindowInfo> {
-    trace!("list_windows");
-    let mut out = Vec::new();
-    unsafe {
-        let arr_ref = CGWindowListCopyWindowInfo(
-            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
-                | K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS,
-            0,
-        );
-        if arr_ref.is_null() {
-            warn!("list_windows: CGWindowListCopyWindowInfo returned null");
-            return out;
-        }
-        let arr: CFArray<*const c_void> = CFArray::wrap_under_create_rule(arr_ref as _);
-        let key_pid = cgw::kCGWindowOwnerPID;
-        let key_layer = cgw::kCGWindowLayer;
-        let key_num = cgw::kCGWindowNumber;
-        let key_app = cgw::kCGWindowOwnerName;
-        let key_title = cgw::kCGWindowName;
-        let key_bounds = cgw::kCGWindowBounds; // optional
-        let key_workspace = CFString::from_static_string("kCGWindowWorkspace"); // optional
-        #[allow(non_snake_case)]
-        unsafe extern "C" {
-            fn CFGetTypeID(cf: CFTypeRef) -> u64;
-            fn CFDictionaryGetTypeID() -> u64;
-        }
-        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
-            let item = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFTypeRef;
-            if item.is_null() || CFGetTypeID(item) != CFDictionaryGetTypeID() {
-                continue; // skip non-dict rows quietly
-            }
-            let d = item as CFDictionaryRef;
-            if dict_get_i32(d, key_layer).unwrap_or(0) as i64 != 0 {
-                continue; // only layer 0 top-level windows
-            }
-            let pid = match dict_get_i32(d, key_pid) {
-                Some(p) => p,
-                None => continue,
-            };
-            let id = match dict_get_i32(d, key_num) {
-                Some(n) if n > 0 => n as u32,
-                _ => continue,
-            };
-            let app = dict_get_string(d, key_app).unwrap_or_default();
-            let title = dict_get_string(d, key_title).unwrap_or_default();
-            let pos = crate::cfutil::dict_get_rect_i32(d, key_bounds)
-                .map(|(x, y, w, h)| Pos { x, y, width: w, height: h });
-            let space = crate::cfutil::dict_get_i32(d, key_workspace.as_concrete_TypeRef());
-            out.push(WindowInfo {
-                app,
-                title,
-                pid,
-                id,
-                pos,
-                space,
-            });
-        }
-    }
-    out
 }
 
 /// Convenience: return the frontmost on-screen window, if any.
