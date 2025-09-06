@@ -5,7 +5,7 @@ use crate::{
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
     test_runner::{TestConfig, TestRunner},
-    ui_interaction::{send_activation_chord, send_key},
+    ui_interaction::send_key,
 };
 
 /// Run a focused non-native fullscreen toggle against a helper window.
@@ -19,11 +19,8 @@ pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Minimal config: bind activation and fullscreen(toggle, nonnative)
     let ron_config = r#"(
         keys: [
-            ("shift+cmd+0", "activate", keys([
-                ("f", "Fullscreen (non-native)", fullscreen(toggle, nonnative)),
-            ])),
-            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-            ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
+            // Bind a global chord to avoid relying on HUD/capture
+            ("shift+cmd+9", "Fullscreen (non-native)", fullscreen(toggle, nonnative), (global: true)),
         ],
     )"#;
 
@@ -59,10 +56,8 @@ pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let before = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("Failed to read initial window frame".into()))?;
 
-            // Show HUD and trigger fullscreen toggle
-            send_activation_chord();
-            std::thread::sleep(config::ms(200));
-            send_key("f");
+            // Trigger fullscreen toggle via global chord
+            send_key("shift+cmd+9");
             std::thread::sleep(config::ms(300));
 
             // Read new frame; tolerate AX timing
