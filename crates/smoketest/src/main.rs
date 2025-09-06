@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 mod config;
 mod error;
+mod logging;
 mod process;
 mod results;
 mod runtime;
@@ -16,7 +17,6 @@ mod winhelper;
 
 use error::print_hints;
 use tests::*;
-use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "smoketest", about = "Hotki smoketest tool", version)]
@@ -93,18 +93,9 @@ fn heading(title: &str) {
 
 fn main() {
     let cli = Cli::parse();
-    if cli.logs {
-        // logs on: install a basic tracing subscriber and suppress mrpc disconnect noise
-        let mut env_filter =
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-        if let Ok(d) = "mrpc::connection=off".parse() {
-            env_filter = env_filter.add_directive(d);
-        }
-        let _ = tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer().without_time())
-            .try_init();
-    }
+
+    // Initialize logging if requested
+    logging::init_logging(cli.logs);
 
     // For the helper command, skip the build and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
@@ -127,7 +118,7 @@ fn main() {
         eprintln!("Try: cargo build -p hotki");
         std::process::exit(1);
     }
-    
+
     match cli.command {
         Commands::Relay { .. } => {
             heading("Test: repeat-relay");
@@ -272,7 +263,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     let relay = count_relay(duration_ms);
     if relay < 3 {
         eprintln!("FAIL repeat-relay: {} repeats (< 3)", relay);
-        tracing::error!("repeat-relay failed: {} repeats (< 3)", relay);
+        logging::events::test_failure("repeat-relay", format!("Only {} repeats (< 3)", relay));
         std::process::exit(1);
     } else {
         println!("repeat-relay: {} repeats", relay);
@@ -282,7 +273,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     let shell = count_shell(duration_ms);
     if shell < 3 {
         eprintln!("FAIL repeat-shell: {} repeats (< 3)", shell);
-        tracing::error!("repeat-shell failed: {} repeats (< 3)", shell);
+        logging::events::test_failure("repeat-shell", format!("Only {} repeats (< 3)", shell));
         std::process::exit(1);
     } else {
         println!("repeat-shell: {} repeats", shell);
@@ -295,7 +286,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     ));
     if volume < 3 {
         eprintln!("FAIL repeat-volume: {} repeats (< 3)", volume);
-        tracing::error!("repeat-volume failed: {} repeats (< 3)", volume);
+        logging::events::test_failure("repeat-volume", format!("Only {} repeats (< 3)", volume));
         std::process::exit(1);
     } else {
         println!("repeat-volume: {} repeats", volume);
@@ -312,7 +303,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("focus: ERROR: {}", e);
-            tracing::error!("focus test failed: {}", e);
+            logging::events::test_failure("focus", &e);
             print_hints(&e);
             std::process::exit(1);
         }
@@ -324,7 +315,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         Ok(()) => println!("raise: OK (raised by title twice)"),
         Err(e) => {
             eprintln!("raise: ERROR: {}", e);
-            tracing::error!("raise test failed: {}", e);
+            logging::events::test_failure("raise", &e);
             print_hints(&e);
             std::process::exit(1);
         }
@@ -339,7 +330,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("ui: ERROR: {}", e);
-            tracing::error!("ui demo failed: {}", e);
+            logging::events::test_failure("ui_demo", &e);
             print_hints(&e);
             std::process::exit(1);
         }
@@ -352,7 +343,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
         ),
         Err(e) => {
             eprintln!("minui: ERROR: {}", e);
-            tracing::error!("minui demo failed: {}", e);
+            logging::events::test_failure("minui_demo", &e);
             print_hints(&e);
             std::process::exit(1);
         }

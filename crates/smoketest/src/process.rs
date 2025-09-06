@@ -92,7 +92,7 @@ pub fn build_hotki_quiet() -> Result<()> {
         // If binary was built in the last 60 seconds, skip rebuild
         return Ok(());
     }
-    
+
     let mut child = Command::new("cargo")
         .args(["build", "-q", "-p", "hotki"])
         .env("CARGO_TERM_COLOR", "never")
@@ -104,7 +104,7 @@ pub fn build_hotki_quiet() -> Result<()> {
     // Wait for up to 60 seconds
     let timeout = std::time::Duration::from_secs(60);
     let start = std::time::Instant::now();
-    
+
     loop {
         match child.try_wait().map_err(Error::Io)? {
             Some(status) => {

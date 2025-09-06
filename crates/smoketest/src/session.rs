@@ -7,7 +7,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    runtime,
+    logging, runtime,
     ui_interaction::send_activation_chord,
 };
 
@@ -49,7 +49,7 @@ impl HotkiSessionBuilder {
         let mut cmd = Command::new(&self.binary_path);
 
         if self.with_logs {
-            cmd.env("RUST_LOG", config::TEST_LOG_CONFIG);
+            cmd.env("RUST_LOG", logging::log_config_for_child());
         }
 
         if let Some(cfg) = &self.config_path {
@@ -147,7 +147,8 @@ impl HotkiSession {
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
             let chunk = std::cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
-            let res = runtime::block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
+            let res =
+                runtime::block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
             match res {
                 Ok(Ok(Ok(msg))) => {
                     if let hotki_protocol::MsgToUI::HudUpdate { cursor, .. } = msg {

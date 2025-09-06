@@ -109,11 +109,6 @@ pub fn hide_test_title(test_id: u128) -> String {
 /// Base title for relay repeat test window.
 pub const RELAY_TEST_TITLE: &str = "hotki smoketest: relayrepeat";
 
-// ===== Logging Configuration =====
-
-/// Standard RUST_LOG configuration for tests with logging enabled.
-pub const TEST_LOG_CONFIG: &str = "info,hotki=info,hotki_server=info,hotki_engine=info,mac_winops=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off";
-
 // ===== Helper Functions =====
 
 /// Convert milliseconds to Duration.
