@@ -1,11 +1,12 @@
 use std::{
     env, fs, process, thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::util::resolve_hotki_bin;
 use crate::{
     Summary,
+    config,
     error::{Error, Result},
     session::HotkiSession,
 };
@@ -14,7 +15,7 @@ use crate::{
 
 pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.ron");
+    let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
     if !cfg_path.exists() {
         return Err(Error::MissingConfig(cfg_path));
     }
@@ -32,8 +33,8 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
         seq.push("esc");
     }
     seq.push("shift+cmd+0");
-    let gap = Duration::from_millis(150);
-    let down_ms = Duration::from_millis(80);
+    let gap = config::ms(config::MENU_OPEN_STAGGER_MS);
+    let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
     for s in seq {
         if let Some(ch) = mac_keycode::Chord::parse(s) {
             let relayer = relaykey::RelayKey::new_unlabeled();
@@ -101,8 +102,8 @@ pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
     seq.extend(std::iter::repeat_n("l".to_string(), 5));
     seq.push("esc".to_string());
     seq.push("shift+cmd+0".to_string());
-    let gap = Duration::from_millis(150);
-    let down_ms = Duration::from_millis(80);
+    let gap = config::ms(config::MENU_OPEN_STAGGER_MS);
+    let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
     for s in seq {
         if let Some(ch) = mac_keycode::Chord::parse(&s) {
             let relayer = relaykey::RelayKey::new_unlabeled();

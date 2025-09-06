@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::error::{Error, Result};
+use crate::{config, error::{Error, Result}};
 
 pub(crate) struct HotkiSession {
     child: Child,
@@ -19,10 +19,7 @@ impl HotkiSession {
     ) -> Result<HotkiSession> {
         let mut cmd = Command::new(hotki_bin);
         if with_logs {
-            cmd.env(
-                "RUST_LOG",
-                "info,hotki=info,hotki_server=info,hotki_engine=info,mac_winops=info,mac_hotkey=info,mac_focus_watcher=info,mrpc::connection=off",
-            );
+            cmd.env("RUST_LOG", config::TEST_LOG_CONFIG);
         }
         let child = cmd
             .arg(cfg_path)
@@ -64,7 +61,11 @@ impl HotkiSession {
                     if Instant::now() >= deadline {
                         return (false, start.elapsed().as_millis() as u64);
                     }
-                    let delay = if attempts <= 3 { 200 } else { 50 };
+                    let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS { 
+                        config::INITIAL_RETRY_DELAY_MS 
+                    } else { 
+                        config::FAST_RETRY_DELAY_MS 
+                    };
                     std::thread::sleep(Duration::from_millis(delay));
                     continue;
                 }
@@ -83,14 +84,14 @@ impl HotkiSession {
         if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
             let pid = 0;
             relayer.key_down(pid, ch.clone(), false);
-            std::thread::sleep(Duration::from_millis(80));
+            std::thread::sleep(config::ms(config::ACTIVATION_CHORD_DELAY_MS));
             relayer.key_up(pid, ch);
             last_sent = Some(Instant::now());
         }
 
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
-            let chunk = std::cmp::min(left, Duration::from_millis(300));
+            let chunk = std::cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
             let res = rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
             match res {
                 Ok(Ok(msg)) => {
@@ -119,7 +120,7 @@ impl HotkiSession {
                 if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
                     let pid = 0;
                     relayer.key_down(pid, ch.clone(), false);
-                    std::thread::sleep(Duration::from_millis(80));
+                    std::thread::sleep(config::ms(config::ACTIVATION_CHORD_DELAY_MS));
                     relayer.key_up(pid, ch);
                 }
                 last_sent = Some(Instant::now());

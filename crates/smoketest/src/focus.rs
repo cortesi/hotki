@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    config,
     error::{Error, Result},
     session::HotkiSession,
     util::resolve_hotki_bin,
@@ -23,7 +24,7 @@ pub(crate) struct FocusOutcome {
 
 pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.ron");
+    let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
     if !cfg_path.exists() {
         return Err(Error::MissingConfig(cfg_path));
     }
@@ -38,7 +39,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let expected_title = format!("hotki smoketest: focus {}-{}", std::process::id(), unique);
+    let expected_title = config::focus_test_title(unique);
 
     let found = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
@@ -69,7 +70,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
                 Err(_) => return,
             };
 
-            let per_wait = Duration::from_millis(300);
+            let per_wait = config::ms(config::EVENT_CHECK_INTERVAL_MS);
             loop {
                 if done_clone.load(Ordering::SeqCst) {
                     break;
@@ -96,7 +97,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
     });
 
     // Spawn focus window helper as a separate process to avoid a second EventLoop
-    let helper_time = timeout_ms.saturating_add(5000);
+    let helper_time = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
     let current_exe = env::current_exe()?;
     let mut child = Command::new(current_exe)
         .arg("focus-winhelper")
@@ -117,7 +118,7 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
         if found.load(Ordering::SeqCst) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     done.store(true, Ordering::SeqCst);
     let _ = listener.join();

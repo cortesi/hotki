@@ -5,6 +5,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 
+mod config;
 mod error;
 mod focus;
 mod hide;
@@ -27,11 +28,11 @@ struct Cli {
     logs: bool,
 
     /// Default duration for repeat tests in milliseconds
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
     duration: u64,
 
     /// Default timeout for UI readiness and waits in milliseconds
-    #[arg(long, default_value_t = 10000)]
+    #[arg(long, default_value_t = config::DEFAULT_TIMEOUT_MS)]
     timeout: u64,
 
     #[command(subcommand)]
@@ -65,7 +66,7 @@ enum Commands {
         #[arg(long)]
         title: String,
         /// How long to keep the window alive (ms)
-        #[arg(long, default_value_t = 30000)]
+        #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
         time: u64,
     },
     /// Launch UI with test config and drive a short HUD + theme cycle
@@ -90,6 +91,12 @@ enum Commands {
 pub struct Summary {
     pub hud_seen: bool,
     pub time_to_hud_ms: Option<u64>,
+}
+
+impl Default for Summary {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Summary {
@@ -138,7 +145,7 @@ fn main() {
         // Volume can be slightly slower; keep a floor to reduce flakiness
         Commands::Volume { .. } => {
             heading("Test: repeat-volume");
-            repeat_volume(std::cmp::max(cli.duration, 2000))
+            repeat_volume(std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
         Commands::Raise => {
@@ -301,7 +308,7 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     }
 
     heading("Test: repeat-volume");
-    let volume = count_volume(std::cmp::max(duration_ms, 2000));
+    let volume = count_volume(std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS));
     if volume < 3 {
         eprintln!("FAIL repeat-volume: {} repeats (< 3)", volume);
         tracing::error!("repeat-volume failed: {} repeats (< 3)", volume);

@@ -7,22 +7,11 @@ use std::{
 };
 
 use crate::{
+    config,
     error::{Error, Result},
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
-
-// Tunable timings for UI-driven interactions
-const POLL_MS: u64 = 50;
-const KEY_POST_DELAY_MS: u64 = 60;
-const RETRY_DELAY_MS: u64 = 300;
-const OPEN_MENU_STAGGER_MS: u64 = 150;
-const WINDOW_REG_STAGGER_MS: u64 = 200;
-const AFTER_MENU_STABILIZE_MS: u64 = 250;
-const BETWEEN_MENU_KEYS_MS: u64 = 120;
-const WAIT_WINDOWS_BOTH_MS: u64 = 15000;
-const WAIT_WINDOWS_FIRST_MS: u64 = 6000;
-const WAIT_WINDOWS_RECHECK_MS: u64 = 1500;
 
 struct Cleanup {
     child1: Option<Child>,
@@ -82,7 +71,7 @@ fn send_key(seq: &str) {
         let rk = relaykey::RelayKey::new_unlabeled();
         let pid = 0; // global post
         rk.key_down(pid, ch.clone(), false);
-        thread::sleep(Duration::from_millis(KEY_POST_DELAY_MS));
+        thread::sleep(config::ms(config::KEY_POST_DELAY_MS));
         rk.key_up(pid, ch);
     }
 }
@@ -121,7 +110,7 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
-        let chunk = cmp::min(left, Duration::from_millis(RETRY_DELAY_MS));
+        let chunk = cmp::min(left, config::ms(config::RETRY_DELAY_MS));
         match tokio::time::timeout(chunk, conn.recv_event()).await {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                 if let Some(app) = cursor.app_ref()
@@ -148,7 +137,7 @@ fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
         {
             return true;
         }
-        thread::sleep(Duration::from_millis(POLL_MS));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     false
 }
@@ -166,7 +155,7 @@ fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
         if all_found {
             return true;
         }
-        thread::sleep(Duration::from_millis(POLL_MS));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     // Debug: print current windows for diagnosis
     let wins = mac_winops::list_windows();
@@ -196,7 +185,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let mut cleanup = Cleanup::new();
     let child1 = spawn_helper(&exe, &title1, helper_time)?;
     // Small stagger to avoid simultaneous window registration races in WindowServer
-    thread::sleep(Duration::from_millis(WINDOW_REG_STAGGER_MS));
+    thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
     let child2 = spawn_helper(&exe, &title2, helper_time)?;
 
     let pid1 = child1.id() as i32;
@@ -205,7 +194,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     cleanup.child2 = Some(child2);
 
     // Ensure both helper windows are actually present before proceeding
-    if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], WAIT_WINDOWS_BOTH_MS) {
+    if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], config::WAIT_BOTH_WINDOWS_MS) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 8000,
             expected: "helpers not visible in CG/AX".into(),
@@ -245,13 +234,13 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
 
     // Reuse a single Tokio runtime for HUD event waits
-    let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Io(e.into()))?;
+    let rt = tokio::runtime::Runtime::new().map_err(Error::Io)?;
 
     // Best‑effort: allow WindowServer to register helpers before driving raise
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
-    if !wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_FIRST_MS) {
+    if !wait_for_windows(&[(pid1, &title1)], config::WAIT_FIRST_WINDOW_MS) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
@@ -268,7 +257,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         if ok_hud {
             true
         } else {
-            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+            thread::sleep(config::ms(config::RETRY_DELAY_MS));
             send_key("1");
             // One more attempt using CG frontmost first, then HUD
             wait_for_frontmost_title(&title1, timeout_ms / 2)
@@ -278,9 +267,9 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !ok1 {
         // Final robust attempt: reopen HUD and try raise again
         send_key("shift+cmd+0");
-        thread::sleep(Duration::from_millis(OPEN_MENU_STAGGER_MS));
+        thread::sleep(config::ms(config::MENU_OPEN_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid1, &title1)], WAIT_WINDOWS_RECHECK_MS);
+        let _ = wait_for_windows(&[(pid1, &title1)], config::WAIT_WINDOW_RECHECK_MS);
         send_key("1");
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
             || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
@@ -293,7 +282,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
 
     // Reopen HUD and raise second window
-    thread::sleep(Duration::from_millis(AFTER_MENU_STABILIZE_MS));
+    thread::sleep(config::ms(config::MENU_STABILIZE_DELAY_MS));
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
     if !wait_for_windows(&[(pid2, &title2)], 6000) {
@@ -303,7 +292,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         });
     }
     send_key("r");
-    thread::sleep(Duration::from_millis(BETWEEN_MENU_KEYS_MS));
+    thread::sleep(config::ms(config::MENU_KEY_DELAY_MS));
     send_key("2");
     let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
     let mut ok2 = if ok2_front {
@@ -313,7 +302,7 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         if ok_hud {
             true
         } else {
-            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+            thread::sleep(config::ms(config::RETRY_DELAY_MS));
             send_key("2");
             wait_for_frontmost_title(&title2, timeout_ms / 2)
                 || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
@@ -322,9 +311,9 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !ok2 {
         // Final robust attempt for the second window as well
         send_key("shift+cmd+0");
-        thread::sleep(Duration::from_millis(OPEN_MENU_STAGGER_MS));
+        thread::sleep(config::ms(config::MENU_OPEN_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid2, &title2)], WAIT_WINDOWS_RECHECK_MS);
+        let _ = wait_for_windows(&[(pid2, &title2)], config::WAIT_WINDOW_RECHECK_MS);
         send_key("2");
         ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
             || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));

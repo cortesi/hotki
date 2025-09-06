@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use core_foundation::dictionary::CFDictionaryRef;
@@ -24,6 +24,7 @@ use core_graphics2::window::{
 use crate::util::resolve_hotki_bin;
 use crate::{
     Summary,
+    config,
     error::{Error, Result},
     session::HotkiSession,
 };
@@ -118,7 +119,7 @@ pub(crate) fn run_screenshots(
     timeout_ms: u64,
 ) -> Result<Summary> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.ron");
+    let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
     if !cfg_path.exists() {
         return Err(Error::MissingConfig(cfg_path));
     }
@@ -174,8 +175,8 @@ pub(crate) fn run_screenshots(
     let hud_ok = capture_window_by_id_or_rect(pid, "Hotki HUD", &dir, "hud");
 
     // Trigger notifications via chords
-    let gap = Duration::from_millis(160);
-    let down_ms = Duration::from_millis(80);
+    let gap = config::ms(160);
+    let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
     for (k, name) in [
         ("t", None),
         ("s", Some("notify_success")),
@@ -190,7 +191,7 @@ pub(crate) fn run_screenshots(
             relayer.key_up(0, ch);
             thread::sleep(gap);
             if let Some(n) = name {
-                thread::sleep(Duration::from_millis(120));
+                thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
                 let _ = capture_window_by_id_or_rect(pid, "Hotki Notification", &dir, n);
             }
         }

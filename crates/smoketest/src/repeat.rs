@@ -10,6 +10,8 @@ use mac_winops::focus::FocusSnapshot;
 use std::sync::Mutex;
 use winit::event_loop::EventLoop;
 
+use crate::config;
+
 pub(crate) fn count_relay(ms: u64) -> usize {
     let event_loop = EventLoop::new().unwrap();
 
@@ -57,7 +59,7 @@ pub(crate) fn count_relay(ms: u64) -> usize {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
             if self.window.is_none() {
                 let attrs = winit::window::Window::default_attributes()
-                    .with_title("hotki smoketest: relayrepeat")
+                    .with_title(config::RELAY_TEST_TITLE)
                     .with_visible(true);
                 let win = elwt.create_window(attrs).expect("create window");
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -99,7 +101,7 @@ pub(crate) fn count_relay(ms: u64) -> usize {
             }
         }
     }
-    let timeout = Duration::from_millis(ms);
+    let timeout = config::ms(ms);
     let mut app = RelayApp {
         repeater,
         window: None,
@@ -156,7 +158,7 @@ pub(crate) fn count_shell(ms: u64) -> usize {
 
     let id = "smoketest-shell".to_string();
     repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));
-    std::thread::sleep(Duration::from_millis(ms));
+    std::thread::sleep(config::ms(ms));
     repeater.stop_sync(&id);
 
     let repeats = match std::fs::read(&path) {
@@ -212,7 +214,7 @@ pub(crate) fn count_volume(ms: u64) -> usize {
 
     let id = "smoketest-volume".to_string();
     repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));
-    std::thread::sleep(Duration::from_millis(ms));
+    std::thread::sleep(config::ms(ms));
     repeater.stop_sync(&id);
 
     let vol = get_volume().unwrap_or(0);

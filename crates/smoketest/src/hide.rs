@@ -12,6 +12,7 @@ use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
 use crate::{
+    config,
     error::{Error, Result},
     session::HotkiSession,
     util::resolve_hotki_bin,
@@ -30,8 +31,6 @@ unsafe extern "C" {
     fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut core::ffi::c_void) -> bool;
 }
 
-const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
-const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Cgp {
@@ -55,7 +54,7 @@ fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cg
         return None;
     }
     let mut p = Cgp { x: 0.0, y: 0.0 };
-    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
+    let ok = unsafe { AXValueGetValue(v, config::AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
     unsafe { CFRelease(v) };
     if !ok { None } else { Some(p) }
 }
@@ -70,7 +69,7 @@ fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgs
         width: 0.0,
         height: 0.0,
     };
-    let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
+    let ok = unsafe { AXValueGetValue(v, config::AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
     unsafe { CFRelease(v) };
     if !ok { None } else { Some(s) }
 }
@@ -124,7 +123,7 @@ fn send_key(seq: &str) {
     if let Some(ch) = mac_keycode::Chord::parse(seq) {
         let rk = relaykey::RelayKey::new_unlabeled();
         rk.key_down(0, ch.clone(), false);
-        thread::sleep(Duration::from_millis(60));
+        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
         rk.key_up(0, ch);
     }
 }
@@ -185,8 +184,8 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let title = format!("hotki smoketest: hide {}-{}", process::id(), now);
-    let helper_time = timeout_ms.saturating_add(8000);
+    let title = config::hide_test_title(now);
+    let helper_time = timeout_ms.saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
     let exe = env::current_exe()?;
     let mut helper = spawn_helper(&exe, &title, helper_time)?;
     let pid = helper.id() as i32;
@@ -201,7 +200,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ready = true;
             break;
         }
-        thread::sleep(Duration::from_millis(60));
+        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
     }
     if !ready {
         let _ = helper.kill();
@@ -271,17 +270,17 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         (vf.origin.x + vf.size.width) - 1.0
     } else {
         // Fallback guess: large X likely on right
-        p0.x + 300.0
+        p0.x + config::WINDOW_POSITION_OFFSET
     };
 
     // Drive: h -> o (hide on)
     send_key("h");
-    thread::sleep(Duration::from_millis(120));
+    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
     send_key("o");
 
     // Wait for position change
     let mut moved = false;
-    let deadline = Instant::now() + Duration::from_millis(cmp::max(800, timeout_ms / 4));
+    let deadline = Instant::now() + Duration::from_millis(cmp::max(config::HIDE_MIN_TIMEOUT_MS, timeout_ms / 4));
     let mut _p_on = p0;
     while Instant::now() < deadline {
         if let Some(w) = ax_first_window_for_pid(pid)
@@ -293,7 +292,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 break;
             }
         }
-        thread::sleep(Duration::from_millis(60));
+        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
     }
     if !moved {
         eprintln!(
@@ -311,16 +310,16 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
 
     // Drive: reopen HUD if needed and turn hide off (reveal)
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(config::ms(config::UI_STABILIZE_DELAY_MS));
     send_key("shift+cmd+0");
-    thread::sleep(Duration::from_millis(120));
+    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
     send_key("h");
-    thread::sleep(Duration::from_millis(120));
+    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
     send_key("f");
 
     // Wait until position roughly returns to original
     let mut restored = false;
-    let deadline2 = Instant::now() + Duration::from_millis(cmp::max(1000, timeout_ms / 3));
+    let deadline2 = Instant::now() + Duration::from_millis(cmp::max(config::HIDE_SECONDARY_MIN_TIMEOUT_MS, timeout_ms / 3));
     while Instant::now() < deadline2 {
         if let Some(w) = ax_first_window_for_pid(pid)
             && let Some(p2) = ax_get_point(w, cfstr("AXPosition"))
@@ -334,7 +333,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 break;
             }
         }
-        thread::sleep(Duration::from_millis(80));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS + 30));
     }
 
     // Cleanup

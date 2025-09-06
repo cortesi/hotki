@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use crate::config;
 
 pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
@@ -52,7 +54,7 @@ pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), Strin
     let mut app = HelperApp {
         window: None,
         title: title.to_string(),
-        deadline: Instant::now() + Duration::from_millis(time_ms.max(1000)),
+        deadline: Instant::now() + config::ms(time_ms.max(1000)),
     };
     let _ = event_loop.run_app(&mut app);
     Ok(())
