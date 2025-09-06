@@ -105,13 +105,28 @@ fn main() {
             .try_init();
     }
 
-    // Always build the hotki binary once at startup to avoid running against a stale build.
+    // For the helper command, skip the build and heading
+    if matches!(cli.command, Commands::FocusWinHelper { .. }) {
+        match cli.command {
+            Commands::FocusWinHelper { title, time } => {
+                if let Err(e) = winhelper::run_focus_winhelper(&title, time) {
+                    eprintln!("focus-winhelper: ERROR: {}", e);
+                    std::process::exit(2);
+                }
+            }
+            _ => unreachable!(),
+        }
+        return;
+    }
+
+    // Build the hotki binary once at startup to avoid running against a stale build.
     heading("Building hotki");
     if let Err(e) = process::build_hotki_quiet() {
         eprintln!("Failed to build 'hotki' binary: {}", e);
         eprintln!("Try: cargo build -p hotki");
         std::process::exit(1);
     }
+    
     match cli.command {
         Commands::Relay { .. } => {
             heading("Test: repeat-relay");
@@ -168,11 +183,9 @@ fn main() {
                 }
             }
         }
-        Commands::FocusWinHelper { title, time } => {
-            if let Err(e) = winhelper::run_focus_winhelper(&title, time) {
-                eprintln!("focus-winhelper: ERROR: {}", e);
-                std::process::exit(2);
-            }
+        Commands::FocusWinHelper { .. } => {
+            // Already handled above
+            unreachable!()
         }
         Commands::Ui => {
             heading("Test: ui");

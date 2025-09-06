@@ -83,20 +83,51 @@ impl HelperWindowBuilder {
 /// Build the hotki binary quietly.
 /// Output is suppressed to avoid interleaved cargo logs.
 pub fn build_hotki_quiet() -> Result<()> {
-    let status = Command::new("cargo")
+    // First check if the binary already exists and is recent
+    if let Ok(metadata) = std::fs::metadata("target/debug/hotki") {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(elapsed) = std::time::SystemTime::now().duration_since(modified) {
+                // If binary was built in the last 60 seconds, skip rebuild
+                if elapsed.as_secs() < 60 {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    
+    let mut child = Command::new("cargo")
         .args(["build", "-q", "-p", "hotki"])
         .env("CARGO_TERM_COLOR", "never")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .map_err(Error::Io)?;
 
-    if !status.success() {
-        return Err(Error::SpawnFailed(
-            "Failed to build hotki binary".to_string(),
-        ));
+    // Wait for up to 60 seconds
+    let timeout = std::time::Duration::from_secs(60);
+    let start = std::time::Instant::now();
+    
+    loop {
+        match child.try_wait().map_err(Error::Io)? {
+            Some(status) => {
+                if !status.success() {
+                    return Err(Error::SpawnFailed(
+                        "Failed to build hotki binary".to_string(),
+                    ));
+                }
+                return Ok(());
+            }
+            None => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    return Err(Error::SpawnFailed(
+                        "Build timeout: cargo build took too long".to_string(),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
-    Ok(())
 }
 
 /// Run a shell command and capture its output.
