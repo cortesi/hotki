@@ -11,6 +11,7 @@ use crate::{
     error::{Error, Result},
     process::HelperWindowBuilder,
     session::HotkiSession,
+    ui_interaction::{navigate_hud_menu, send_activation_chord},
     util::resolve_hotki_bin,
 };
 
@@ -18,17 +19,6 @@ use crate::{
 
 fn approx(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
-}
-
-// ---------- Local helpers ----------
-
-fn send_key(seq: &str) {
-    if let Some(ch) = mac_keycode::Chord::parse(seq) {
-        let rk = relaykey::RelayKey::new_unlabeled();
-        rk.key_down(0, ch.clone(), false);
-        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
-        rk.key_up(0, ch);
-    }
 }
 
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -120,9 +110,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     };
 
     // Drive: h -> o (hide on)
-    send_key("h");
-    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-    send_key("o");
+    navigate_hud_menu(&["h", "o"]);
 
     // Wait for position change
     let mut moved = false;
@@ -154,11 +142,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Drive: reopen HUD if needed and turn hide off (reveal)
     thread::sleep(config::ms(config::UI_STABILIZE_DELAY_MS));
-    send_key("shift+cmd+0");
+    send_activation_chord();
     thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-    send_key("h");
-    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-    send_key("f");
+    navigate_hud_menu(&["h", "f"]);
 
     // Wait until position roughly returns to original
     let mut restored = false;

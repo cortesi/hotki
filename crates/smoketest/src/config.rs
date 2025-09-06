@@ -24,9 +24,6 @@ pub const POLL_INTERVAL_MS: u64 = 50;
 /// Short delay between key events.
 pub const KEY_EVENT_DELAY_MS: u64 = 60;
 
-/// Delay after posting a key event.
-pub const KEY_POST_DELAY_MS: u64 = 60;
-
 /// Standard delay between UI actions.
 pub const UI_ACTION_DELAY_MS: u64 = 120;
 

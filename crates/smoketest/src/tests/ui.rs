@@ -1,30 +1,9 @@
-use std::thread;
-
 use crate::{
-    config,
     error::Result,
     results::Summary,
     test_runner::{TestConfig, TestRunner},
+    ui_interaction::send_key_sequence,
 };
-
-/// Helper to send a sequence of key chords.
-fn send_key_sequence(sequences: &[&str]) {
-    let gap = config::ms(config::MENU_OPEN_STAGGER_MS);
-    let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
-
-    for s in sequences {
-        if let Some(ch) = mac_keycode::Chord::parse(s) {
-            let relayer = relaykey::RelayKey::new_unlabeled();
-            relayer.key_down(0, ch.clone(), false);
-            thread::sleep(down_ms);
-            relayer.key_up(0, ch);
-            thread::sleep(gap);
-        } else {
-            eprintln!("failed to parse chord: {}", s);
-            thread::sleep(gap);
-        }
-    }
-}
 
 /// Run the standard UI demo test.
 pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {

@@ -10,6 +10,7 @@ use crate::{
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
     session::HotkiSession,
+    ui_interaction::send_key,
     util::resolve_hotki_bin,
 };
 
@@ -61,15 +62,6 @@ impl Drop for SessionGuard {
     }
 }
 
-fn send_key(seq: &str) {
-    if let Some(ch) = mac_keycode::Chord::parse(seq) {
-        let rk = relaykey::RelayKey::new_unlabeled();
-        let pid = 0; // global post
-        rk.key_down(pid, ch.clone(), false);
-        thread::sleep(config::ms(config::KEY_POST_DELAY_MS));
-        rk.key_up(pid, ch);
-    }
-}
 
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
     use hotki_server::Client;

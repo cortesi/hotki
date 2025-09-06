@@ -14,6 +14,7 @@ use crate::{
     error::{Error, Result},
     results::Summary,
     session::HotkiSession,
+    ui_interaction::{send_activation_chord, send_key},
 };
 
 // ===== Window discovery and capture =====
@@ -127,7 +128,6 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
 
     // Trigger notifications via chords
     let gap = config::ms(160);
-    let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
     for (k, name) in [
         ("t", None),
         ("s", Some("notify_success")),
@@ -135,26 +135,16 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
         ("w", Some("notify_warning")),
         ("e", Some("notify_error")),
     ] {
-        if let Some(ch) = mac_keycode::Chord::parse(k) {
-            let relayer = relaykey::RelayKey::new_unlabeled();
-            relayer.key_down(0, ch.clone(), false);
-            thread::sleep(down_ms);
-            relayer.key_up(0, ch);
-            thread::sleep(gap);
-            if let Some(n) = name {
-                thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-                let _ = capture_window_by_id_or_rect(pid, "Hotki Notification", &dir, n);
-            }
+        send_key(k);
+        thread::sleep(gap);
+        if let Some(n) = name {
+            thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
+            let _ = capture_window_by_id_or_rect(pid, "Hotki Notification", &dir, n);
         }
     }
 
     // Exit HUD and shutdown
-    if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-        let relayer = relaykey::RelayKey::new_unlabeled();
-        relayer.key_down(0, ch.clone(), false);
-        thread::sleep(down_ms);
-        relayer.key_up(0, ch);
-    }
+    send_activation_chord();
     sess.shutdown();
     sess.kill_and_wait();
 

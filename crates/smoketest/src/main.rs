@@ -9,6 +9,7 @@ mod results;
 mod session;
 mod test_runner;
 mod tests;
+mod ui_interaction;
 mod util;
 mod winhelper;
 
