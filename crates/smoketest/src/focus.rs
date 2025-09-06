@@ -12,15 +12,11 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
+    results::FocusOutcome,
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
 
-pub(crate) struct FocusOutcome {
-    pub title: String,
-    pub pid: i32,
-    pub elapsed_ms: u64,
-}
 
 pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
     let cwd = env::current_dir()?;

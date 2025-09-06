@@ -11,8 +11,10 @@ mod focus;
 mod hide;
 mod raise;
 mod repeat;
+mod results;
 mod screenshot;
 mod session;
+mod test_runner;
 mod ui;
 mod util;
 mod winhelper;
@@ -86,27 +88,8 @@ enum Commands {
     Preflight,
 }
 
-// Lightweight result types for UI/screenshot flows
-#[derive(Debug, Clone)]
-pub struct Summary {
-    pub hud_seen: bool,
-    pub time_to_hud_ms: Option<u64>,
-}
-
-impl Default for Summary {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Summary {
-    pub fn new() -> Self {
-        Self {
-            hud_seen: false,
-            time_to_hud_ms: None,
-        }
-    }
-}
+// Re-export common result types
+pub use results::{Summary, FocusOutcome, TestOutcome, TestDetails};
 
 fn heading(title: &str) {
     println!("\n==> {}", title);
@@ -145,7 +128,10 @@ fn main() {
         // Volume can be slightly slower; keep a floor to reduce flakiness
         Commands::Volume { .. } => {
             heading("Test: repeat-volume");
-            repeat_volume(std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS))
+            repeat_volume(std::cmp::max(
+                cli.duration,
+                config::MIN_VOLUME_TEST_DURATION_MS,
+            ))
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout),
         Commands::Raise => {
@@ -308,7 +294,10 @@ fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
     }
 
     heading("Test: repeat-volume");
-    let volume = count_volume(std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS));
+    let volume = count_volume(std::cmp::max(
+        duration_ms,
+        config::MIN_VOLUME_TEST_DURATION_MS,
+    ));
     if volume < 3 {
         eprintln!("FAIL repeat-volume: {} repeats (< 3)", volume);
         tracing::error!("repeat-volume failed: {} repeats (< 3)", volume);

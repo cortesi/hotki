@@ -23,9 +23,9 @@ use core_graphics2::window::{
 
 use crate::util::resolve_hotki_bin;
 use crate::{
-    Summary,
     config,
     error::{Error, Result},
+    results::Summary,
     session::HotkiSession,
 };
 
