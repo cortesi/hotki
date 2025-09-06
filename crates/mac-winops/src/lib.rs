@@ -37,7 +37,7 @@ pub use main_thread_ops::{
     request_place_move_grid, request_raise_window,
 };
 pub use raise::raise_window;
-pub use window::{Pos, WindowInfo, list_windows};
+pub use window::{Pos, WindowInfo, frontmost_window, list_windows};
 
 use ax::*;
 pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
@@ -817,11 +817,6 @@ pub fn focused_window_id(pid: i32) -> Result<WindowId> {
         }
     }
     Err(Error::FocusedWindow)
-}
-
-/// Convenience: return the frontmost on-screen window, if any.
-pub fn frontmost_window() -> Option<WindowInfo> {
-    list_windows().into_iter().next()
 }
 
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.

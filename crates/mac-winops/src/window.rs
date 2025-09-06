@@ -10,7 +10,7 @@ use core_graphics::window as cgw;
 use tracing::{trace, warn};
 
 use crate::WindowId;
-use crate::cfutil::{dict_get_i32, dict_get_string};
+use crate::cfutil::{dict_get_i32, dict_get_rect_i32, dict_get_string};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -88,13 +88,13 @@ pub fn list_windows() -> Vec<WindowInfo> {
             };
             let app = dict_get_string(d, key_app).unwrap_or_default();
             let title = dict_get_string(d, key_title).unwrap_or_default();
-            let pos = crate::cfutil::dict_get_rect_i32(d, key_bounds).map(|(x, y, w, h)| Pos {
+            let pos = dict_get_rect_i32(d, key_bounds).map(|(x, y, w, h)| Pos {
                 x,
                 y,
                 width: w,
                 height: h,
             });
-            let space = crate::cfutil::dict_get_i32(d, key_workspace.as_concrete_TypeRef());
+            let space = dict_get_i32(d, key_workspace.as_concrete_TypeRef());
             if frontmost_pid.is_none() {
                 frontmost_pid = Some(pid);
             }
@@ -116,4 +116,9 @@ pub fn list_windows() -> Vec<WindowInfo> {
         }
     }
     out
+}
+
+/// Convenience: return the frontmost on-screen window, if any.
+pub fn frontmost_window() -> Option<WindowInfo> {
+    list_windows().into_iter().next()
 }

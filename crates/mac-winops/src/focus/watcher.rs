@@ -6,7 +6,6 @@ use tracing::{debug, warn};
 use super::{
     FocusSnapshot,
     ax::{AXState, AxEvent, ax_is_trusted},
-    cg::front_app_title_pid,
 };
 
 // Legacy FocusEvent watcher removed.
@@ -27,7 +26,10 @@ pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) {
 
         debug!("Snapshot watcher thread started");
         loop {
-            let (app, mut title, pid) = front_app_title_pid();
+            let (app, mut title, pid) = match crate::frontmost_window() {
+                Some(w) => (w.app, w.title, w.pid),
+                None => (String::new(), String::new(), -1),
+            };
 
             let app_changed = app != last_app || pid != last_pid;
 

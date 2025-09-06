@@ -6,7 +6,6 @@
 //! - Exposed from `mac-winops` to avoid a separate crate.
 
 mod ax;
-mod cg;
 mod ns;
 mod watcher;
 
