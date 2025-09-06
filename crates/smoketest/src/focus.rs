@@ -1,6 +1,4 @@
 use std::{
-    env,
-    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -12,49 +10,11 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
+    process::HelperWindowBuilder,
     results::FocusOutcome,
     test_runner::{TestConfig, TestRunner},
 };
 
-/// Helper process management for focus test
-struct FocusTestHelper {
-    child: Option<Child>,
-    title: String,
-    pid: i32,
-}
-
-impl FocusTestHelper {
-    fn spawn(title: String, time_ms: u64) -> Result<Self> {
-        let current_exe = env::current_exe()?;
-        let mut child = Command::new(current_exe)
-            .arg("focus-winhelper")
-            .arg("--title")
-            .arg(&title)
-            .arg("--time")
-            .arg(time_ms.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| Error::SpawnFailed(e.to_string()))?;
-        
-        let pid = child.id() as i32;
-        Ok(Self {
-            child: Some(child),
-            title,
-            pid,
-        })
-    }
-}
-
-impl Drop for FocusTestHelper {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
 
 /// Listen for focus events on the given socket
 async fn listen_for_focus(
@@ -154,7 +114,9 @@ pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOu
             
             // Spawn helper window
             let helper_time = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let helper = FocusTestHelper::spawn(expected_title.clone(), helper_time)?;
+            let helper = HelperWindowBuilder::new(expected_title.clone())
+                .with_time_ms(helper_time)
+                .spawn()?;
             let expected_pid = helper.pid;
             
             // Wait for match or timeout

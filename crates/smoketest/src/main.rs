@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Command,
 };
 
 use clap::{Parser, Subcommand};
@@ -9,6 +9,7 @@ mod config;
 mod error;
 mod focus;
 mod hide;
+mod process;
 mod raise;
 mod repeat;
 mod results;
@@ -112,8 +113,9 @@ fn main() {
 
     // Always build the hotki binary once at startup to avoid running against a stale build.
     heading("Building hotki");
-    if !build_hotki_quiet() {
-        eprintln!("Failed to build 'hotki' binary. Try: cargo build -p hotki");
+    if let Err(e) = process::build_hotki_quiet() {
+        eprintln!("Failed to build 'hotki' binary: {}", e);
+        eprintln!("Try: cargo build -p hotki");
         std::process::exit(1);
     }
     match cli.command {
@@ -252,18 +254,6 @@ fn main() {
 
 //
 
-// Build the hotki binary quietly (always). Returns true on success.
-// Output is suppressed to avoid interleaved cargo logs.
-fn build_hotki_quiet() -> bool {
-    Command::new("cargo")
-        .args(["build", "-q", "-p", "hotki"]) // build the package for the workspace
-        .env("CARGO_TERM_COLOR", "never")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 //
 
