@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command},
     time::{Duration, Instant},
 };
@@ -7,40 +7,99 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
+    ui_interaction::send_activation_chord,
 };
 
-pub(crate) struct HotkiSession {
+/// State tracking for HotkiSession
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    Starting,
+    Running,
+    Stopped,
+}
+
+/// Builder for HotkiSession configuration
+pub struct HotkiSessionBuilder {
+    binary_path: PathBuf,
+    config_path: Option<PathBuf>,
+    with_logs: bool,
+}
+
+impl HotkiSessionBuilder {
+    pub fn new(binary_path: impl Into<PathBuf>) -> Self {
+        Self {
+            binary_path: binary_path.into(),
+            config_path: None,
+            with_logs: false,
+        }
+    }
+
+    pub fn with_config(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    pub fn with_logs(mut self, enable: bool) -> Self {
+        self.with_logs = enable;
+        self
+    }
+
+    pub fn spawn(self) -> Result<HotkiSession> {
+        let mut cmd = Command::new(&self.binary_path);
+
+        if self.with_logs {
+            cmd.env("RUST_LOG", config::TEST_LOG_CONFIG);
+        }
+
+        if let Some(cfg) = &self.config_path {
+            cmd.arg(cfg);
+        }
+
+        let child = cmd.spawn().map_err(|e| Error::SpawnFailed(e.to_string()))?;
+
+        let socket_path = socket_path_for_pid(child.id());
+
+        Ok(HotkiSession {
+            child,
+            socket_path,
+            state: SessionState::Starting,
+        })
+    }
+}
+
+pub struct HotkiSession {
     child: Child,
-    sock: String,
+    socket_path: String,
+    state: SessionState,
 }
 
 impl HotkiSession {
-    pub(crate) fn launch_with_config(
+    /// Create a new session builder
+    pub fn builder(binary_path: impl Into<PathBuf>) -> HotkiSessionBuilder {
+        HotkiSessionBuilder::new(binary_path)
+    }
+
+    /// Legacy constructor for compatibility
+    pub fn launch_with_config(
         hotki_bin: &Path,
         cfg_path: &Path,
         with_logs: bool,
     ) -> Result<HotkiSession> {
-        let mut cmd = Command::new(hotki_bin);
-        if with_logs {
-            cmd.env("RUST_LOG", config::TEST_LOG_CONFIG);
-        }
-        let child = cmd
-            .arg(cfg_path)
+        Self::builder(hotki_bin)
+            .with_config(cfg_path)
+            .with_logs(with_logs)
             .spawn()
-            .map_err(|e| Error::SpawnFailed(e.to_string()))?;
-        let sock = hotki_server::socket_path_for_pid(child.id());
-        Ok(HotkiSession { child, sock })
     }
 
-    pub(crate) fn pid(&self) -> u32 {
+    pub fn pid(&self) -> u32 {
         self.child.id()
     }
 
-    pub(crate) fn socket_path(&self) -> &str {
-        &self.sock
+    pub fn socket_path(&self) -> &str {
+        &self.socket_path
     }
 
-    pub(crate) fn wait_for_hud(&self, timeout_ms: u64) -> (bool, u64) {
+    pub fn wait_for_hud(&mut self, timeout_ms: u64) -> (bool, u64) {
         // Try to connect and wait for HudUpdate indicating HUD visible.
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -75,6 +134,9 @@ impl HotkiSession {
             }
         };
 
+        // Mark as running once connected
+        self.state = SessionState::Running;
+
         // Borrow connection
         let conn = match client.connection() {
             Ok(c) => c,
@@ -82,15 +144,8 @@ impl HotkiSession {
         };
 
         // Send activation chord periodically until HUD visible
-        let relayer = relaykey::RelayKey::new_unlabeled();
-        let mut last_sent = None;
-        if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-            let pid = 0;
-            relayer.key_down(pid, ch.clone(), false);
-            std::thread::sleep(config::ms(config::ACTIVATION_CHORD_DELAY_MS));
-            relayer.key_up(pid, ch);
-            last_sent = Some(Instant::now());
-        }
+        send_activation_chord();
+        let mut last_sent = Some(Instant::now());
 
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -120,21 +175,16 @@ impl HotkiSession {
             if let Some(last) = last_sent
                 && last.elapsed() >= Duration::from_millis(1000)
             {
-                if let Some(ch) = mac_keycode::Chord::parse("shift+cmd+0") {
-                    let pid = 0;
-                    relayer.key_down(pid, ch.clone(), false);
-                    std::thread::sleep(config::ms(config::ACTIVATION_CHORD_DELAY_MS));
-                    relayer.key_up(pid, ch);
-                }
+                send_activation_chord();
                 last_sent = Some(Instant::now());
             }
         }
         (false, start.elapsed().as_millis() as u64)
     }
 
-    pub(crate) fn shutdown(&self) {
+    pub fn shutdown(&mut self) {
         if let Ok(rt) = tokio::runtime::Runtime::new() {
-            let sock = self.sock.clone();
+            let sock = self.socket_path.clone();
             rt.block_on(async move {
                 if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
                     .with_connect_only()
@@ -145,10 +195,28 @@ impl HotkiSession {
                 }
             });
         }
+        self.state = SessionState::Stopped;
     }
 
-    pub(crate) fn kill_and_wait(&mut self) {
+    pub fn kill_and_wait(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.state = SessionState::Stopped;
     }
+}
+
+impl Drop for HotkiSession {
+    fn drop(&mut self) {
+        if self.state != SessionState::Stopped {
+            self.shutdown();
+            self.kill_and_wait();
+        }
+    }
+}
+
+// ===== Socket Path Management =====
+
+/// Generate the socket path for a given process ID
+pub fn socket_path_for_pid(pid: u32) -> String {
+    hotki_server::socket_path_for_pid(pid)
 }

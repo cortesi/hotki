@@ -76,9 +76,6 @@ pub const INITIAL_RETRY_ATTEMPTS: u32 = 3;
 /// Delay for waiting between event checks.
 pub const EVENT_CHECK_INTERVAL_MS: u64 = 300;
 
-/// Delay after sending activation chord.
-pub const ACTIVATION_CHORD_DELAY_MS: u64 = 80;
-
 // ===== Window and UI Constants =====
 
 /// Offset for window positioning tests.

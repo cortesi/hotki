@@ -41,4 +41,3 @@ pub fn navigate_hud_menu(path: &[&str]) {
         thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
     }
 }
-

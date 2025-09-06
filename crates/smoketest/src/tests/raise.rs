@@ -62,7 +62,6 @@ impl Drop for SessionGuard {
     }
 }
 
-
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
     use hotki_server::Client;
 
