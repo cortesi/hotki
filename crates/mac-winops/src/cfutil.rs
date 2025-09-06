@@ -50,24 +50,7 @@ pub(crate) fn dict_get_i32(dict: CFDictionaryRef, key: CFStringRef) -> Option<i3
     n.to_i64().map(|v| v as i32)
 }
 
-/// Get an f64 from CFDictionary for the given key.
-pub(crate) fn dict_get_f64(dict: CFDictionaryRef, key: CFStringRef) -> Option<f64> {
-    unsafe extern "C" {
-        fn CFGetTypeID(cf: CFTypeRef) -> u64;
-        fn CFNumberGetTypeID() -> u64;
-    }
-    let value = unsafe {
-        core_foundation::dictionary::CFDictionaryGetValue(dict, key as *const core::ffi::c_void)
-    } as CFTypeRef;
-    if value.is_null() {
-        return None;
-    }
-    if unsafe { CFGetTypeID(value) != CFNumberGetTypeID() } {
-        return None;
-    }
-    let n = unsafe { CFNumber::wrap_under_get_rule(value as _) };
-    n.to_f64()
-}
+// (no f64 numeric helper is currently required)
 
 /// Read a CGRect-like dictionary from `dict[key]` and return (x, y, width, height) as i32.
 /// The bounds dictionary uses CFString keys: "X", "Y", "Width", "Height" with CFNumber values.

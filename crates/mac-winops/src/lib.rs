@@ -11,7 +11,6 @@ use std::{collections::HashSet, ffi::c_void, ptr};
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
     base::{CFRelease, CFTypeRef, TCFType},
-    dictionary::CFDictionaryRef,
     string::{CFString, CFStringRef},
 };
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScreen};
@@ -37,7 +36,7 @@ pub use main_thread_ops::{
     request_place_move_grid, request_raise_window,
 };
 pub use raise::raise_window;
-pub use window::{Pos, WindowInfo, frontmost_window, list_windows};
+pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 
 use ax::*;
 pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
@@ -226,7 +225,8 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     };
 
     // Identify window key for restore using stable CGWindowID
-    if let Ok(wid) = focused_window_id(pid) {
+    if let Some(w) = frontmost_window_for_pid(pid) {
+        let wid = w.id;
         prev_key = Some((pid, wid));
     }
 
@@ -474,7 +474,7 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
     let cur_p = ax_get_point(win, attr_pos)?;
     let cur_s = ax_get_size(win, attr_size)?;
 
-    let key = focused_window_id(pid).ok().map(|id| (pid, id));
+    let key = frontmost_window_for_pid(pid).map(|w| (pid, w.id));
     let is_hidden = key
         .as_ref()
         .and_then(|k| HIDDEN_FRAMES.lock().ok().map(|m| m.contains_key(k)))
@@ -650,28 +650,6 @@ fn cell_rect(
     (x, y, w, h)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::cell_rect;
-
-    #[test]
-    fn cell_rect_corners_and_remainders() {
-        // Visible frame 100x100, 3x2 grid -> tile 33x50 with remainders w:1, h:0
-        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
-        // top-left (col 0, row 1 in top-left origin mapping)
-        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
-        assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
-
-        // top-right should absorb remainder width
-        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 1);
-        assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
-
-        // bottom row (row 0) gets full tile height; top row (row 1) as above
-        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
-        assert_eq!(y2, 50.0);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn find_cell_for_window(
     vf_x: f64,
@@ -759,66 +737,6 @@ fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     Ok(())
 }
 
-// ===== CoreGraphics Window List and Display FFI =====
-
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFTypeRef; // CFArrayRef
-}
-
-// CoreGraphics window list options used by focused_window_id
-const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
-const K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
-
-use crate::cfutil::{dict_get_f64, dict_get_i32};
-use core_graphics::window as cgw;
-
-/// Convenience: resolve the focused top-level window’s CGWindowID for `pid`.
-/// Best-effort: picks the first frontmost layer-0 on-screen window owned by pid.
-pub fn focused_window_id(pid: i32) -> Result<WindowId> {
-    ax_check()?;
-    unsafe {
-        let arr_ref = CGWindowListCopyWindowInfo(
-            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
-                | K_CG_WINDOW_LIST_OPTION_EXCLUDE_DESKTOP_ELEMENTS,
-            0,
-        );
-        if arr_ref.is_null() {
-            return Err(Error::FocusedWindow);
-        }
-        let arr: CFArray<*const c_void> = CFArray::wrap_under_create_rule(arr_ref as _);
-        let key_pid = cgw::kCGWindowOwnerPID;
-        let key_layer = cgw::kCGWindowLayer;
-        let key_num = cgw::kCGWindowNumber;
-        let _key_onscreen = cgw::kCGWindowIsOnscreen;
-        let key_alpha = cgw::kCGWindowAlpha;
-        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
-            let d = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as CFDictionaryRef;
-            if d.is_null() {
-                continue;
-            }
-            let dp = dict_get_i32(d, key_pid).unwrap_or(-1);
-            if dp != pid {
-                continue;
-            }
-            let layer = dict_get_i32(d, key_layer).unwrap_or(0) as i64;
-            if layer != 0 {
-                continue;
-            }
-            // Include windows regardless of the on‑screen flag; some newly created
-            // windows momentarily report false before becoming visible.
-            // Some windows briefly report zero alpha during creation; include them nevertheless.
-            let _alpha = dict_get_f64(d, key_alpha).unwrap_or(1.0);
-            if let Some(id) = dict_get_i32(d, key_num)
-                && id > 0
-            {
-                return Ok(id as u32);
-            }
-        }
-    }
-    Err(Error::FocusedWindow)
-}
-
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.
 fn activate_pid(pid: i32) -> Result<()> {
     let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
@@ -841,5 +759,27 @@ fn activate_pid(pid: i32) -> Result<()> {
         Ok(())
     } else {
         Err(Error::ActivationFailed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cell_rect;
+
+    #[test]
+    fn cell_rect_corners_and_remainders() {
+        // Visible frame 100x100, 3x2 grid -> tile 33x50 with remainders w:1, h:0
+        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
+        // top-left (col 0, row 1 in top-left origin mapping)
+        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
+        assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
+
+        // top-right should absorb remainder width
+        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 1);
+        assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
+
+        // bottom row (row 0) gets full tile height; top row (row 1) as above
+        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
+        assert_eq!(y2, 50.0);
     }
 }

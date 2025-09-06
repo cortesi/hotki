@@ -122,3 +122,8 @@ pub fn list_windows() -> Vec<WindowInfo> {
 pub fn frontmost_window() -> Option<WindowInfo> {
     list_windows().into_iter().next()
 }
+
+/// Convenience: return the frontmost on-screen window owned by `pid`, if any.
+pub fn frontmost_window_for_pid(pid: i32) -> Option<WindowInfo> {
+    list_windows().into_iter().find(|w| w.pid == pid)
+}
