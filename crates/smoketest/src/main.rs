@@ -1,10 +1,10 @@
-use std::{path::PathBuf, process::Command};
+use clap::Parser;
 
-use clap::{Parser, Subcommand};
-
+mod cli;
 mod config;
 mod error;
 mod logging;
+mod orchestrator;
 mod process;
 mod results;
 mod runtime;
@@ -15,81 +15,13 @@ mod ui_interaction;
 mod util;
 mod winhelper;
 
+use cli::{Cli, Commands};
 use error::print_hints;
+use orchestrator::{heading, run_all_tests, run_preflight};
 use tests::*;
-
-#[derive(Parser, Debug)]
-#[command(name = "smoketest", about = "Hotki smoketest tool", version)]
-struct Cli {
-    /// Enable logging to stdout/stderr at info level (respect RUST_LOG)
-    #[arg(long)]
-    logs: bool,
-
-    /// Default duration for repeat tests in milliseconds
-    #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
-    duration: u64,
-
-    /// Default timeout for UI readiness and waits in milliseconds
-    #[arg(long, default_value_t = config::DEFAULT_TIMEOUT_MS)]
-    timeout: u64,
-
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Measure relay repeats posted to the focused window
-    #[command(name = "repeat-relay")]
-    Relay {},
-    /// Measure number of shell invocations when repeating a shell command
-    #[command(name = "repeat-shell")]
-    Shell {},
-    /// Measure repeats by incrementing system volume from zero
-    #[command(name = "repeat-volume")]
-    Volume {},
-    /// Run all smoketests (repeats + UI demos)
-    #[command(name = "all")]
-    All,
-    /// Verify raise(action) by switching focus between two titled windows
-    Raise,
-    /// Verify focus tracking by activating a test window
-    Focus,
-    /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
-    Hide,
-    /// Internal helper: create a foreground window with a title for focus testing
-    #[command(hide = true, name = "focus-winhelper")]
-    FocusWinHelper {
-        /// Title to set on the helper window
-        #[arg(long)]
-        title: String,
-        /// How long to keep the window alive (ms)
-        #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
-        time: u64,
-    },
-    /// Launch UI with test config and drive a short HUD + theme cycle
-    Ui,
-    /// Take HUD-only screenshots for a theme
-    #[command(name = "screenshots")]
-    Screenshots {
-        /// Theme name to apply before capturing (optional)
-        #[arg(long)]
-        theme: Option<String>,
-        /// Output directory for PNG files
-        dir: PathBuf,
-    },
-    /// Launch UI in mini HUD mode and cycle themes
-    Minui,
-    /// Check required permissions and screen capture capability
-    Preflight,
-}
 
 // Re-export common result types
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
-
-fn heading(title: &str) {
-    println!("\n==> {}", title);
-}
 
 fn main() {
     let cli = Cli::parse();
@@ -120,17 +52,17 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Relay { .. } => {
+        Commands::Relay => {
             heading("Test: repeat-relay");
             repeat_relay(cli.duration)
         }
-        Commands::Shell { .. } => {
+        Commands::Shell => {
             heading("Test: repeat-shell");
             repeat_shell(cli.duration)
         }
-        // Volume can be slightly slower; keep a floor to reduce flakiness
-        Commands::Volume { .. } => {
+        Commands::Volume => {
             heading("Test: repeat-volume");
+            // Volume can be slightly slower; keep a floor to reduce flakiness
             repeat_volume(std::cmp::max(
                 cli.duration,
                 config::MIN_VOLUME_TEST_DURATION_MS,
@@ -236,174 +168,3 @@ fn main() {
         }
     }
 }
-
-//
-
-// (intentionally left without a generic fullscreen capture; HUD-only capture below)
-
-// Try to locate the NSWindow representing the HUD by matching the owner PID
-// and the window title ("Hotki HUD"). Returns (window_id, bounds) on success.
-//
-
-// Capture just the HUD window by CGWindowID; fall back to rect if needed.
-//
-
-// Find a visible notification window for a given PID (title="Hotki Notification").
-//
-
-//
-
-//
-
-//
-
-fn run_all_tests(duration_ms: u64, timeout_ms: u64) {
-    // Repeat tests: run sequentially; print result immediately after each
-    heading("Test: repeat-relay");
-    let relay = count_relay(duration_ms);
-    if relay < 3 {
-        eprintln!("FAIL repeat-relay: {} repeats (< 3)", relay);
-        logging::events::test_failure("repeat-relay", format!("Only {} repeats (< 3)", relay));
-        std::process::exit(1);
-    } else {
-        println!("repeat-relay: {} repeats", relay);
-    }
-
-    heading("Test: repeat-shell");
-    let shell = count_shell(duration_ms);
-    if shell < 3 {
-        eprintln!("FAIL repeat-shell: {} repeats (< 3)", shell);
-        logging::events::test_failure("repeat-shell", format!("Only {} repeats (< 3)", shell));
-        std::process::exit(1);
-    } else {
-        println!("repeat-shell: {} repeats", shell);
-    }
-
-    heading("Test: repeat-volume");
-    let volume = count_volume(std::cmp::max(
-        duration_ms,
-        config::MIN_VOLUME_TEST_DURATION_MS,
-    ));
-    if volume < 3 {
-        eprintln!("FAIL repeat-volume: {} repeats (< 3)", volume);
-        logging::events::test_failure("repeat-volume", format!("Only {} repeats (< 3)", volume));
-        std::process::exit(1);
-    } else {
-        println!("repeat-volume: {} repeats", volume);
-    }
-
-    // hotki was built once at startup; no additional build needed here.
-
-    // Focus test: verify engine observes a frontmost window title change
-    heading("Test: focus");
-    match crate::focus::run_focus_test(timeout_ms, false) {
-        Ok(out) => println!(
-            "focus: OK (title='{}', pid={}, time_to_match_ms={})",
-            out.title, out.pid, out.elapsed_ms
-        ),
-        Err(e) => {
-            eprintln!("focus: ERROR: {}", e);
-            logging::events::test_failure("focus", &e);
-            print_hints(&e);
-            std::process::exit(1);
-        }
-    }
-
-    // Raise test: verify raise by title twice
-    heading("Test: raise");
-    match crate::raise::run_raise_test(timeout_ms, false) {
-        Ok(()) => println!("raise: OK (raised by title twice)"),
-        Err(e) => {
-            eprintln!("raise: ERROR: {}", e);
-            logging::events::test_failure("raise", &e);
-            print_hints(&e);
-            std::process::exit(1);
-        }
-    }
-
-    // UI demos: ensure HUD appears and basic theme cycling works (ui + miniui)
-    heading("Test: ui");
-    match ui::run_ui_demo(timeout_ms) {
-        Ok(s) => println!(
-            "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
-            s.hud_seen, s.time_to_hud_ms
-        ),
-        Err(e) => {
-            eprintln!("ui: ERROR: {}", e);
-            logging::events::test_failure("ui_demo", &e);
-            print_hints(&e);
-            std::process::exit(1);
-        }
-    }
-    heading("Test: minui");
-    match ui::run_minui_demo(timeout_ms) {
-        Ok(s) => println!(
-            "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
-            s.hud_seen, s.time_to_hud_ms
-        ),
-        Err(e) => {
-            eprintln!("minui: ERROR: {}", e);
-            logging::events::test_failure("minui_demo", &e);
-            print_hints(&e);
-            std::process::exit(1);
-        }
-    }
-    println!("All smoketests passed");
-}
-
-fn run_preflight() -> bool {
-    // Accessibility and Input Monitoring via permissions crate
-    let p = permissions::check_permissions();
-    println!(
-        "permissions: accessibility={}, input_monitoring={}",
-        p.accessibility_ok, p.input_ok
-    );
-
-    // Screen Recording via screencapture
-    use std::ffi::OsStr;
-    let tmp = std::env::temp_dir().join(format!(
-        "hotki-smoketest-preflight-{}-{}.png",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let status = Command::new("screencapture")
-        .args([
-            OsStr::new("-x"),
-            OsStr::new("-R"),
-            OsStr::new("0,0,1,1"),
-            tmp.as_os_str(),
-        ])
-        .status();
-    let mut screen_ok = false;
-    if let Ok(st) = status {
-        screen_ok = st.success();
-    }
-    let _ = std::fs::remove_file(&tmp);
-    println!("screen_recording: {}", screen_ok);
-
-    if !p.accessibility_ok {
-        eprintln!(
-            "hint: grant Accessibility permission to your terminal under System Settings → Privacy & Security → Accessibility"
-        );
-    }
-    if !p.input_ok {
-        eprintln!(
-            "hint: grant Input Monitoring permission to your terminal under System Settings → Privacy & Security → Input Monitoring"
-        );
-    }
-    if !screen_ok {
-        eprintln!(
-            "hint: grant Screen Recording permission under System Settings → Privacy & Security → Screen Recording"
-        );
-    }
-    p.accessibility_ok && p.input_ok && screen_ok
-}
-
-//
-
-//
-
-//
