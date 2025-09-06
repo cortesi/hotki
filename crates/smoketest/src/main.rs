@@ -7,20 +7,16 @@ use clap::{Parser, Subcommand};
 
 mod config;
 mod error;
-mod focus;
-mod hide;
 mod process;
-mod raise;
-mod repeat;
 mod results;
-mod screenshot;
 mod session;
 mod test_runner;
-mod ui;
+mod tests;
 mod util;
 mod winhelper;
 
 use error::print_hints;
+use tests::*;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -257,7 +253,6 @@ fn main() {
 
 //
 
-use repeat::{count_relay, count_shell, count_volume, repeat_relay, repeat_shell, repeat_volume};
 
 //
 

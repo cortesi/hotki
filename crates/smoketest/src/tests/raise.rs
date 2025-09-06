@@ -148,7 +148,7 @@ fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
     false
 }
 
-pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
+pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
         return Err(Error::HotkiBinNotFound);
     };

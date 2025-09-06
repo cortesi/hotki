@@ -47,15 +47,14 @@ async fn listen_for_focus(
         let res = tokio::time::timeout(per_wait, conn.recv_event()).await;
         match res {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
-                if let Some(app) = cursor.app_ref() {
-                    if app.title == expected_title {
+                if let Some(app) = cursor.app_ref()
+                    && app.title == expected_title {
                         if let Ok(mut g) = matched.lock() {
                             *g = Some((app.title.clone(), app.pid));
                         }
                         found.store(true, Ordering::SeqCst);
                         break;
                     }
-                }
             }
             Ok(Ok(_)) => {}
             Ok(Err(_)) => break,
@@ -64,7 +63,7 @@ async fn listen_for_focus(
     }
 }
 
-pub(crate) fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
+pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
     let config = TestConfig::new(timeout_ms)
         .with_logs(with_logs);
 

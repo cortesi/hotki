@@ -12,7 +12,7 @@ use winit::event_loop::EventLoop;
 
 use crate::{config, process};
 
-pub(crate) fn count_relay(ms: u64) -> usize {
+pub fn count_relay(ms: u64) -> usize {
     let event_loop = EventLoop::new().unwrap();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -115,7 +115,7 @@ pub(crate) fn count_relay(ms: u64) -> usize {
     counter.0.load(Ordering::SeqCst)
 }
 
-pub(crate) fn repeat_relay(ms: u64) {
+pub fn repeat_relay(ms: u64) {
     println!("{} repeats", count_relay(ms));
 }
 
@@ -132,7 +132,7 @@ fn sh_single_quote(s: &str) -> String {
     out
 }
 
-pub(crate) fn count_shell(ms: u64) -> usize {
+pub fn count_shell(ms: u64) -> usize {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()
@@ -169,7 +169,7 @@ pub(crate) fn count_shell(ms: u64) -> usize {
     repeats
 }
 
-pub(crate) fn repeat_shell(ms: u64) {
+pub fn repeat_shell(ms: u64) {
     println!("{} repeats", count_shell(ms));
 }
 
@@ -184,7 +184,7 @@ fn set_volume_abs(level: u8) -> bool {
     process::osascript(&cmd).is_ok()
 }
 
-pub(crate) fn count_volume(ms: u64) -> usize {
+pub fn count_volume(ms: u64) -> usize {
     let original_volume = get_volume().unwrap_or(50);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
@@ -213,7 +213,7 @@ pub(crate) fn count_volume(ms: u64) -> usize {
     repeats as usize
 }
 
-pub(crate) fn repeat_volume(ms: u64) {
+pub fn repeat_volume(ms: u64) {
     let n = count_volume(ms);
     println!("{} repeats", n);
 }

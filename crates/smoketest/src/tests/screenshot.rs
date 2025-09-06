@@ -113,7 +113,7 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
     false
 }
 
-pub(crate) fn run_screenshots(
+pub fn run_screenshots(
     theme: Option<String>,
     dir: PathBuf,
     timeout_ms: u64,

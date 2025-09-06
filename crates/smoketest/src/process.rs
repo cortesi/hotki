@@ -27,8 +27,8 @@ impl ManagedChild {
     /// Kill the process and wait for it to exit.
     pub fn kill_and_wait(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
-            child.kill().map_err(|e| Error::Io(e))?;
-            child.wait().map_err(|e| Error::Io(e))?;
+            child.kill().map_err(Error::Io)?;
+            child.wait().map_err(Error::Io)?;
         }
         Ok(())
     }
@@ -121,7 +121,7 @@ pub fn build_hotki_quiet() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::SpawnFailed(
@@ -136,7 +136,7 @@ pub fn run_command(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !output.status.success() {
         return Err(Error::SpawnFailed(format!(
@@ -189,15 +189,15 @@ impl ScreenshotBuilder {
         cmd.arg("-x");  // No sound
 
         if let Some(id) = self.window_id {
-            cmd.args(&["-o", "-l", &id.to_string()]);
+            cmd.args(["-o", "-l", &id.to_string()]);
         } else if let Some((x, y, w, h)) = self.rect {
             let rect_str = format!("{},{},{},{}", x, y, w, h);
-            cmd.args(&["-R", &rect_str]);
+            cmd.args(["-R", &rect_str]);
         }
 
         cmd.arg(&self.path);
 
-        let status = cmd.status().map_err(|e| Error::Io(e))?;
+        let status = cmd.status().map_err(Error::Io)?;
         if !status.success() {
             return Err(Error::SpawnFailed("Screenshot capture failed".to_string()));
         }

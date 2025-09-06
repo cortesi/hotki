@@ -27,7 +27,7 @@ fn send_key_sequence(sequences: &[&str]) {
 }
 
 /// Run the standard UI demo test.
-pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
+pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
     let config = TestConfig::new(timeout_ms)
         .with_logs(true);
     
@@ -60,7 +60,7 @@ pub(crate) fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
 }
 
 /// Run the mini UI demo test.
-pub(crate) fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
+pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
     let ron_config = r#"(
         keys: [
             ("shift+cmd+0", "activate", keys([

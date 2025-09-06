@@ -160,7 +160,7 @@ fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
 // Wait for the AX window to be discoverable and return its pos/size.
 // (unused helper removed)
 
-pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
+pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
         return Err(Error::HotkiBinNotFound);
     };
@@ -172,7 +172,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .as_nanos();
     let title = config::hide_test_title(now);
     let helper_time = timeout_ms.saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
-    let mut helper = HelperWindowBuilder::new(&title)
+    let helper = HelperWindowBuilder::new(&title)
         .with_time_ms(helper_time)
         .spawn()?;
     let pid = helper.pid;
