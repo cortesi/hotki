@@ -341,21 +341,21 @@ pub fn drain_main_ops() {
                 let _ = fullscreen_nonnative(pid, desired);
             }
             MainOp::PlaceGrid {
-                pid,
+                id,
                 cols,
                 rows,
                 col,
                 row,
             } => {
-                let _ = place_grid(pid, cols, rows, col, row);
+                let _ = place_grid(id, cols, rows, col, row);
             }
             MainOp::PlaceMoveGrid {
-                pid,
+                id,
                 cols,
                 rows,
                 dir,
             } => {
-                let _ = place_move_grid(pid, cols, rows, dir);
+                let _ = place_move_grid(id, cols, rows, dir);
             }
             MainOp::ActivatePid { pid } => {
                 let _ = activate_pid(pid);
@@ -367,13 +367,13 @@ pub fn drain_main_ops() {
     }
 }
 
-/// Compute the visible frame for the screen containing the focused window and
+/// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).
-fn place_grid(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
     ax_check()?;
     // For visibleFrame we need AppKit; require main thread.
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let win = focused_window_for_pid(pid)?;
+    let (win, _pid_for_id) = ax_window_for_id(id)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
@@ -677,10 +677,10 @@ fn find_cell_for_window(
     None
 }
 
-fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
+fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let win = focused_window_for_pid(pid)?;
+    let (win, _pid_for_id) = ax_window_for_id(id)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
@@ -735,6 +735,54 @@ fn place_move_grid(pid: i32, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     )?;
     unsafe { CFRelease(win as CFTypeRef) };
     Ok(())
+}
+
+/// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.
+fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
+    // Look up pid via CG, then match AXWindowNumber.
+    let info = list_windows()
+        .into_iter()
+        .find(|w| w.id == id)
+        .ok_or(Error::FocusedWindow)?;
+    let pid = info.pid;
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return Err(Error::AppElement);
+    }
+    let mut wins_ref: CFTypeRef = ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        unsafe { CFRelease(app as CFTypeRef) };
+        return Err(Error::AxCode(err));
+    }
+    let arr = unsafe {
+        core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
+    };
+    let mut found: *mut c_void = ptr::null_mut();
+    for i in 0..unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        let wref = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+        if wref.is_null() {
+            continue;
+        }
+        let mut num_ref: CFTypeRef = ptr::null_mut();
+        let nerr = unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
+        if nerr != 0 || num_ref.is_null() {
+            continue;
+        }
+        let cfnum = unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+        let wid = cfnum.to_i64().unwrap_or(0) as u32;
+        if wid == id {
+            found = wref;
+            break;
+        }
+    }
+    if found.is_null() {
+        unsafe { CFRelease(app as CFTypeRef) };
+        return Err(Error::FocusedWindow);
+    }
+    unsafe { CFRetain(found as CFTypeRef) };
+    unsafe { CFRelease(app as CFTypeRef) };
+    Ok((found, pid))
 }
 
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.

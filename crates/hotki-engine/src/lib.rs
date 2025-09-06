@@ -532,8 +532,14 @@ impl Engine {
                 row,
             }) => {
                 let pid = self.current_pid();
-                if let Err(e) = mac_winops::request_place_grid(pid, cols, rows, col, row) {
-                    let _ = self.notifier.send_error("Place", format!("{}", e));
+                if let Some(w) = mac_winops::frontmost_window_for_pid(pid) {
+                    if let Err(e) = mac_winops::request_place_grid(w.id, cols, rows, col, row) {
+                        let _ = self.notifier.send_error("Place", format!("{}", e));
+                    }
+                } else {
+                    let _ = self
+                        .notifier
+                        .send_error("Place", "No focused window to place".to_string());
                 }
                 Ok(())
             }
@@ -545,8 +551,14 @@ impl Engine {
                     config::MoveDir::Up => mac_winops::MoveDir::Up,
                     config::MoveDir::Down => mac_winops::MoveDir::Down,
                 };
-                if let Err(e) = mac_winops::request_place_move_grid(pid, cols, rows, mdir) {
-                    let _ = self.notifier.send_error("Move", format!("{}", e));
+                if let Some(w) = mac_winops::frontmost_window_for_pid(pid) {
+                    if let Err(e) = mac_winops::request_place_move_grid(w.id, cols, rows, mdir) {
+                        let _ = self.notifier.send_error("Move", format!("{}", e));
+                    }
+                } else {
+                    let _ = self
+                        .notifier
+                        .send_error("Move", "No focused window to move".to_string());
                 }
                 Ok(())
             }
