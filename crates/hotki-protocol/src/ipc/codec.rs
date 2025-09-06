@@ -58,6 +58,7 @@ mod tests {
                 target: "test".into(),
                 message: "hello".into(),
             },
+            MsgToUI::Heartbeat(123456),
         ];
 
         for msg in samples {

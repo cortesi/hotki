@@ -765,11 +765,13 @@ fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
             continue;
         }
         let mut num_ref: CFTypeRef = ptr::null_mut();
-        let nerr = unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
+        let nerr =
+            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
         if nerr != 0 || num_ref.is_null() {
             continue;
         }
-        let cfnum = unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+        let cfnum =
+            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
         let wid = cfnum.to_i64().unwrap_or(0) as u32;
         if wid == id {
             found = wref;

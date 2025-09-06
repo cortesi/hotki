@@ -2,6 +2,8 @@ use std::{collections::VecDeque, path::Path, process::Command, thread};
 
 use egui::Context;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant as TokioInstant;
+use tokio::time::Sleep;
 use tracing::{debug, error, info};
 
 use crate::{app::AppEvent, logs, permissions::check_permissions};
@@ -260,10 +262,19 @@ pub fn spawn_key_runtime(
                     .await;
             }
 
+            // Heartbeat: if we don't receive any server message within timeout, exit.
+            let hb_timer: Sleep = tokio::time::sleep(hotki_protocol::ipc::heartbeat::timeout());
+            tokio::pin!(hb_timer);
+
             loop {
 
                 tokio::select! {
                     biased;
+                    // If the heartbeat timer fires, assume the backend is gone and exit gracefully
+                    _ = &mut hb_timer => {
+                        error!("No IPC activity within heartbeat timeout; exiting UI event loop");
+                        break;
+                    }
                     Some(msg) = rx_ctrl.recv() => {
                         match msg {
                             ControlMsg::SwitchTheme(name) => {
@@ -283,6 +294,8 @@ pub fn spawn_key_runtime(
                     resp = conn.recv_event() => {
                         match resp {
                             Ok(MsgToUI::HudUpdate { cursor }) => {
+                                // Any message indicates liveness; reset the heartbeat timer
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 current_cursor = cursor.clone();
                                 // Prefer app/title embedded on the cursor; fall back to message focus
                                 // Compute UI-facing fields from our Config using cursor context
@@ -298,18 +311,22 @@ pub fn spawn_key_runtime(
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::Notify { kind, title, text }) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 let _ = tx_keys.send(AppEvent::Notify { kind, title, text });
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ReloadConfig) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 let _ = tx_ctrl_runtime.send(ControlMsg::Reload);
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ClearNotifications) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 let _ = tx_keys.send(AppEvent::ClearNotifications);
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ShowDetails(arg)) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 use config::Toggle as Tg;
                                 match arg {
                                     Tg::On => {
@@ -325,6 +342,7 @@ pub fn spawn_key_runtime(
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ThemeNext) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 let current = current_cursor.override_theme.as_deref().unwrap_or("default");
                                 let next = config::themes::get_next_theme(current);
                                 current_cursor.set_theme(Some(next));
@@ -332,6 +350,7 @@ pub fn spawn_key_runtime(
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ThemePrev) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 let current = current_cursor.override_theme.as_deref().unwrap_or("default");
                                 let prev = config::themes::get_prev_theme(current);
                                 current_cursor.set_theme(Some(prev));
@@ -339,6 +358,7 @@ pub fn spawn_key_runtime(
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::ThemeSet(name)) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 if config::themes::theme_exists(&name) {
                                     current_cursor.set_theme(Some(&name));
                                     let _ = tx_keys.send(AppEvent::UpdateCursor(current_cursor.clone()));
@@ -352,6 +372,7 @@ pub fn spawn_key_runtime(
                                 egui_ctx.request_repaint();
                             }
                             Ok(MsgToUI::UserStyle(arg)) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 use config::Toggle as Tg;
                                 match arg {
                                     Tg::On => current_cursor.set_user_style_enabled(true),
@@ -364,8 +385,13 @@ pub fn spawn_key_runtime(
                             }
                             Ok(MsgToUI::HotkeyTriggered(_)) => {}
                             Ok(MsgToUI::Log { level, target, message }) => {
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                                 logs::push_server(level, target, message);
                                 egui_ctx.request_repaint();
+                            }
+                            Ok(MsgToUI::Heartbeat(_)) => {
+                                // Liveness tick; reset timer and do nothing else.
+                                hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                             }
                             Err(e) => {
                                 match e {
@@ -384,6 +410,9 @@ pub fn spawn_key_runtime(
                 }
             }
             info!("Exiting key loop");
+            // Terminate the process so any HUD windows are closed immediately.
+            // Relying on UI message processing can stall if the UI isn't repainting.
+            std::process::exit(0);
         });
     });
 }

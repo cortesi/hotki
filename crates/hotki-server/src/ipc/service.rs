@@ -47,6 +47,8 @@ pub struct HotkeyService {
     per_id_capacity: Option<usize>,
     /// Tao proxy for main-thread operations; passed to engine for focus watcher ownership
     proxy: tao::event_loop::EventLoopProxy<()>,
+    /// Ensure we only spawn one heartbeat loop across clones.
+    hb_running: Arc<AtomicBool>,
 }
 
 impl HotkeyService {
@@ -78,6 +80,7 @@ impl HotkeyService {
             shutdown,
             per_id_capacity: None,
             proxy,
+            hb_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -224,6 +227,28 @@ impl MrpcConnection for HotkeyService {
             ));
         }
         // No initial status snapshot; UI derives state from HudUpdate events.
+
+        // Start a single heartbeat loop. The loop exits when shutdown is set.
+        if !self.hb_running.swap(true, Ordering::SeqCst) {
+            let svc = self.clone();
+            tokio::spawn(async move {
+                use std::time::SystemTime;
+                let interval = hotki_protocol::ipc::heartbeat::interval();
+                loop {
+                    if svc.shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let ts = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    svc.broadcast_event(hotki_protocol::MsgToUI::Heartbeat(ts))
+                        .await;
+                    tokio::time::sleep(interval).await;
+                }
+                svc.hb_running.store(false, Ordering::SeqCst);
+            });
+        }
 
         Ok(())
     }

@@ -132,6 +132,30 @@ pub mod ipc {
 
     /// Codec for encoding/decoding UI messages used by the IPC layer.
     pub mod codec;
+
+    /// Heartbeat tuning parameters shared by client and server.
+    ///
+    /// - `interval()` is how often the server emits a heartbeat.
+    /// - `timeout()` is how long the client waits without receiving any
+    ///   message (including heartbeat) before assuming the server is gone.
+    pub mod heartbeat {
+        use std::time::Duration;
+
+        /// Default server→client heartbeat interval.
+        pub const INTERVAL_MS: u64 = 500;
+        /// Default client tolerance before declaring the server dead.
+        pub const TIMEOUT_MS: u64 = 2_000;
+
+        /// Convenience accessor for the interval as a `Duration`.
+        pub fn interval() -> Duration {
+            Duration::from_millis(INTERVAL_MS)
+        }
+
+        /// Convenience accessor for the timeout as a `Duration`.
+        pub fn timeout() -> Duration {
+            Duration::from_millis(TIMEOUT_MS)
+        }
+    }
 }
 
 /// Messages sent from the server to UI clients.
@@ -177,6 +201,11 @@ pub enum MsgToUI {
         target: String,
         message: String,
     },
+
+    /// Server→client heartbeat. The payload is a monotonic milliseconds
+    /// tick value from the server for debugging; the client treats any
+    /// received message as liveness.
+    Heartbeat(u64),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
