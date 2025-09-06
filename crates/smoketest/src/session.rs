@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{config, error::{Error, Result}};
+use crate::{
+    config,
+    error::{Error, Result},
+};
 
 pub(crate) struct HotkiSession {
     child: Child,
@@ -61,10 +64,10 @@ impl HotkiSession {
                     if Instant::now() >= deadline {
                         return (false, start.elapsed().as_millis() as u64);
                     }
-                    let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS { 
-                        config::INITIAL_RETRY_DELAY_MS 
-                    } else { 
-                        config::FAST_RETRY_DELAY_MS 
+                    let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS {
+                        config::INITIAL_RETRY_DELAY_MS
+                    } else {
+                        config::FAST_RETRY_DELAY_MS
                     };
                     std::thread::sleep(Duration::from_millis(delay));
                     continue;

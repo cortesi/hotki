@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    process::Command,
-};
+use std::{path::PathBuf, process::Command};
 
 use clap::{Parser, Subcommand};
 
@@ -86,7 +83,7 @@ enum Commands {
 }
 
 // Re-export common result types
-pub use results::{Summary, FocusOutcome, TestOutcome, TestDetails};
+pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 
 fn heading(title: &str) {
     println!("\n==> {}", title);
@@ -250,9 +247,7 @@ fn main() {
 
 //
 
-
 //
-
 
 //
 

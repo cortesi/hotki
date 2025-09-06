@@ -113,7 +113,6 @@ pub fn focus_test_title(test_id: u128) -> String {
     format!("hotki smoketest: focus {}-{}", std::process::id(), test_id)
 }
 
-
 /// Generate a unique window title for hide tests.
 pub fn hide_test_title(test_id: u128) -> String {
     format!("hotki smoketest: hide {}-{}", std::process::id(), test_id)

@@ -113,11 +113,7 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
     false
 }
 
-pub fn run_screenshots(
-    theme: Option<String>,
-    dir: PathBuf,
-    timeout_ms: u64,
-) -> Result<Summary> {
+pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> Result<Summary> {
     let cwd = env::current_dir()?;
     let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
     if !cfg_path.exists() {

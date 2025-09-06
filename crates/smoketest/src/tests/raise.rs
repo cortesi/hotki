@@ -1,8 +1,7 @@
 use std::{
     cmp, env, fs,
     path::PathBuf,
-    process,
-    thread,
+    process, thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -71,7 +70,6 @@ fn send_key(seq: &str) {
         rk.key_up(pid, ch);
     }
 }
-
 
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
     use hotki_server::Client;
@@ -178,7 +176,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     cleanup.child2 = Some(child2);
 
     // Ensure both helper windows are actually present before proceeding
-    if !wait_for_windows(&[(pid1, &title1), (pid2, &title2)], config::WAIT_BOTH_WINDOWS_MS) {
+    if !wait_for_windows(
+        &[(pid1, &title1), (pid2, &title2)],
+        config::WAIT_BOTH_WINDOWS_MS,
+    ) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 8000,
             expected: "helpers not visible in CG/AX".into(),

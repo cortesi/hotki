@@ -173,7 +173,6 @@ pub fn repeat_shell(ms: u64) {
     println!("{} repeats", count_shell(ms));
 }
 
-
 fn get_volume() -> Option<u64> {
     let out = process::osascript("output volume of (get volume settings)").ok()?;
     out.trim().parse::<u64>().ok()

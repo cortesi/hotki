@@ -32,26 +32,6 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Test assertion failed.
-    #[error("test failed: {0}")]
-    TestFailed(String),
-
-    /// Window not found.
-    #[error("window not found: {0}")]
-    WindowNotFound(String),
-
-    /// Timeout waiting for condition.
-    #[error("timeout after {0} ms waiting for: {1}")]
-    Timeout(u64, String),
-
-    /// Permission denied.
-    #[error("permission denied: {0}")]
-    PermissionDenied(String),
-
-    /// Client connection failed.
-    #[error("failed to connect to hotki server: {0}")]
-    ConnectionFailed(String),
-
     /// Invalid test state.
     #[error("invalid test state: {0}")]
     InvalidState(String),
@@ -90,22 +70,7 @@ pub fn print_hints(err: &Error) {
                 "hint: expected examples/test.ron relative to repo root (or pass a valid config)"
             );
         }
-        Error::PermissionDenied(perm) => {
-            eprintln!(
-                "hint: grant {} permission under System Settings → Privacy & Security",
-                perm
-            );
-        }
-        Error::ConnectionFailed(_) => {
-            eprintln!("hint: ensure hotki server is running and check socket path");
-            eprintln!("      use --logs to see connection attempts");
-        }
-        Error::SpawnFailed(_)
-        | Error::Io(_)
-        | Error::TestFailed(_)
-        | Error::WindowNotFound(_)
-        | Error::Timeout(_, _)
-        | Error::InvalidState(_) => {
+        Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {
             // No specific hints for these errors
         }
     }

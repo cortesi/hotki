@@ -17,8 +17,7 @@ pub struct TestOutcome {
 }
 
 /// Test-specific details that vary by test type.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum TestDetails {
     /// UI test details
     Ui {
@@ -26,24 +25,15 @@ pub enum TestDetails {
         time_to_hud_ms: Option<u64>,
     },
     /// Focus test details
-    Focus {
-        title: String,
-        pid: i32,
-    },
+    Focus { title: String, pid: i32 },
     /// Repeat test details
-    Repeat {
-        count: usize,
-        test_type: RepeatType,
-    },
+    Repeat { count: usize, test_type: RepeatType },
     /// Window operation test details
-    Window {
-        operation: WindowOperation,
-    },
+    Window { operation: WindowOperation },
     /// Generic test with no specific details
     #[default]
     Generic,
 }
-
 
 /// Types of repeat tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,9 +114,12 @@ impl TestOutcome {
     pub fn format_status(&self, test_name: &str) -> String {
         let status = if self.success { "OK" } else { "FAIL" };
         let elapsed = format!("{}ms", self.elapsed.as_millis());
-        
+
         match &self.details {
-            TestDetails::Ui { hud_seen, time_to_hud_ms } => {
+            TestDetails::Ui {
+                hud_seen,
+                time_to_hud_ms,
+            } => {
                 format!(
                     "{}: {} (hud_seen={}, time_to_hud_ms={:?}, elapsed={})",
                     test_name, status, hud_seen, time_to_hud_ms, elapsed
@@ -182,7 +175,7 @@ impl Summary {
             time_to_hud_ms: None,
         }
     }
-    
+
     /// Convert to the new TestOutcome format.
     pub fn to_outcome(self) -> TestOutcome {
         TestOutcome::success(TestDetails::Ui {
@@ -212,4 +205,3 @@ impl FocusOutcome {
         .with_elapsed_ms(self.elapsed_ms)
     }
 }
-

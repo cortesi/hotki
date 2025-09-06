@@ -1,6 +1,5 @@
 use std::{
-    cmp, env, fs,
-    thread,
+    cmp, env, fs, thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -30,7 +29,6 @@ unsafe extern "C" {
     fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut core::ffi::c_void) -> bool;
 }
 
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Cgp {
     x: f64,
@@ -53,7 +51,8 @@ fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cg
         return None;
     }
     let mut p = Cgp { x: 0.0, y: 0.0 };
-    let ok = unsafe { AXValueGetValue(v, config::AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
+    let ok =
+        unsafe { AXValueGetValue(v, config::AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
     unsafe { CFRelease(v) };
     if !ok { None } else { Some(p) }
 }
@@ -68,7 +67,8 @@ fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgs
         width: 0.0,
         height: 0.0,
     };
-    let ok = unsafe { AXValueGetValue(v, config::AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
+    let ok =
+        unsafe { AXValueGetValue(v, config::AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
     unsafe { CFRelease(v) };
     if !ok { None } else { Some(s) }
 }
@@ -155,7 +155,6 @@ fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
     }
     None
 }
-
 
 // Wait for the AX window to be discoverable and return its pos/size.
 // (unused helper removed)
@@ -266,7 +265,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Wait for position change
     let mut moved = false;
-    let deadline = Instant::now() + Duration::from_millis(cmp::max(config::HIDE_MIN_TIMEOUT_MS, timeout_ms / 4));
+    let deadline = Instant::now()
+        + Duration::from_millis(cmp::max(config::HIDE_MIN_TIMEOUT_MS, timeout_ms / 4));
     let mut _p_on = p0;
     while Instant::now() < deadline {
         if let Some(w) = ax_first_window_for_pid(pid)
@@ -303,7 +303,11 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Wait until position roughly returns to original
     let mut restored = false;
-    let deadline2 = Instant::now() + Duration::from_millis(cmp::max(config::HIDE_SECONDARY_MIN_TIMEOUT_MS, timeout_ms / 3));
+    let deadline2 = Instant::now()
+        + Duration::from_millis(cmp::max(
+            config::HIDE_SECONDARY_MIN_TIMEOUT_MS,
+            timeout_ms / 3,
+        ));
     while Instant::now() < deadline2 {
         if let Some(w) = ax_first_window_for_pid(pid)
             && let Some(p2) = ax_get_point(w, cfstr("AXPosition"))

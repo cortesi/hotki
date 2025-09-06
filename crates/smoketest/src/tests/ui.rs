@@ -11,7 +11,7 @@ use crate::{
 fn send_key_sequence(sequences: &[&str]) {
     let gap = config::ms(config::MENU_OPEN_STAGGER_MS);
     let down_ms = config::ms(config::ACTIVATION_CHORD_DELAY_MS);
-    
+
     for s in sequences {
         if let Some(ch) = mac_keycode::Chord::parse(s) {
             let relayer = relaykey::RelayKey::new_unlabeled();
@@ -28,9 +28,8 @@ fn send_key_sequence(sequences: &[&str]) {
 
 /// Run the standard UI demo test.
 pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
-    let config = TestConfig::new(timeout_ms)
-        .with_logs(true);
-    
+    let config = TestConfig::new(timeout_ms).with_logs(true);
+
     TestRunner::new("ui_demo", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
@@ -38,7 +37,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-            
+
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
@@ -46,7 +45,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
             seq.push("esc");
             seq.push("shift+cmd+0");
             send_key_sequence(&seq);
-            
+
             let mut sum = Summary::new();
             sum.hud_seen = true;
             sum.time_to_hud_ms = Some(time_to_hud);
@@ -74,11 +73,11 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
         ],
         style: (hud: (mode: mini)),
     )"#;
-    
+
     let config = TestConfig::new(timeout_ms)
         .with_temp_config(ron_config)
         .with_logs(false);
-    
+
     TestRunner::new("minui_demo", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
@@ -86,7 +85,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-            
+
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
@@ -94,7 +93,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
             seq.push("esc");
             seq.push("shift+cmd+0");
             send_key_sequence(&seq);
-            
+
             let mut sum = Summary::new();
             sum.hud_seen = true;
             sum.time_to_hud_ms = Some(time_to_hud);

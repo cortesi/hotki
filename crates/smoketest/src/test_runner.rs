@@ -18,8 +18,6 @@ pub struct TestConfig {
     pub timeout_ms: u64,
     /// Whether to enable logging
     pub with_logs: bool,
-    /// Test duration for repeat tests
-    pub duration_ms: Option<u64>,
     /// Custom config path (if not using default)
     pub config_path: Option<PathBuf>,
     /// Temporary config content (will create temp file)
@@ -32,7 +30,6 @@ impl TestConfig {
         Self {
             timeout_ms,
             with_logs: false,
-            duration_ms: None,
             config_path: None,
             temp_config: None,
         }
@@ -41,18 +38,6 @@ impl TestConfig {
     /// Enable logging for this test.
     pub fn with_logs(mut self, enabled: bool) -> Self {
         self.with_logs = enabled;
-        self
-    }
-
-    /// Set the duration for repeat tests.
-    pub fn with_duration(mut self, ms: u64) -> Self {
-        self.duration_ms = Some(ms);
-        self
-    }
-
-    /// Use a specific config file.
-    pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config_path = Some(path.into());
         self
     }
 
@@ -96,25 +81,14 @@ impl TestContext {
         self.elapsed().as_millis() as u64
     }
 
-    /// Check if timeout has been exceeded.
-    pub fn is_timeout(&self) -> bool {
-        self.elapsed_ms() > self.config.timeout_ms
-    }
-
     /// Get remaining time before timeout.
     pub fn remaining_ms(&self) -> u64 {
         self.config.timeout_ms.saturating_sub(self.elapsed_ms())
     }
 
-    /// Create a deadline for operations.
-    pub fn deadline(&self) -> Instant {
-        self.start_time + Duration::from_millis(self.config.timeout_ms)
-    }
-
     /// Launch hotki with the configured settings.
     pub fn launch_hotki(&mut self) -> Result<()> {
-        let hotki_bin = resolve_hotki_bin()
-            .ok_or(Error::HotkiBinNotFound)?;
+        let hotki_bin = resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
 
         // Determine config path
         let config_path = if let Some(content) = &self.config.temp_config {
@@ -135,11 +109,8 @@ impl TestContext {
         };
 
         // Launch session
-        let session = HotkiSession::launch_with_config(
-            &hotki_bin,
-            &config_path,
-            self.config.with_logs,
-        )?;
+        let session =
+            HotkiSession::launch_with_config(&hotki_bin, &config_path, self.config.with_logs)?;
         self.session = Some(session);
         Ok(())
     }
@@ -148,10 +119,12 @@ impl TestContext {
     pub fn wait_for_hud(&mut self) -> Result<u64> {
         let remaining = self.remaining_ms();
         let timeout = self.config.timeout_ms;
-        
-        let session = self.session.as_mut()
+
+        let session = self
+            .session
+            .as_mut()
             .ok_or_else(|| Error::InvalidState("No session launched".into()))?;
-        
+
         let (seen, time_ms) = session.wait_for_hud(remaining);
         if !seen {
             return Err(Error::HudNotVisible {
@@ -169,11 +142,6 @@ impl TestContext {
         }
     }
 
-    /// Register a temporary file for cleanup.
-    pub fn register_temp_file(&mut self, path: impl Into<PathBuf>) {
-        self.temp_files.push(path.into());
-    }
-
     /// Clean up all temporary files.
     fn cleanup_temp_files(&mut self) {
         for path in self.temp_files.drain(..) {
@@ -189,20 +157,23 @@ impl Drop for TestContext {
     }
 }
 
+// Type aliases to reduce complexity
+type SetupFn = Box<dyn FnOnce(&mut TestContext) -> Result<()>>;
+type ExecuteFn<T> = Box<dyn FnOnce(&mut TestContext) -> Result<T>>;
+type TeardownFn<T> = Box<dyn FnOnce(&mut TestContext, &T) -> Result<()>>;
+
 /// Builder pattern for test execution.
 pub struct TestRunner<T> {
-    name: String,
     config: TestConfig,
-    setup: Option<Box<dyn FnOnce(&mut TestContext) -> Result<()>>>,
-    execute: Option<Box<dyn FnOnce(&mut TestContext) -> Result<T>>>,
-    teardown: Option<Box<dyn FnOnce(&mut TestContext, &T) -> Result<()>>>,
+    setup: Option<SetupFn>,
+    execute: Option<ExecuteFn<T>>,
+    teardown: Option<TeardownFn<T>>,
 }
 
 impl<T> TestRunner<T> {
     /// Create a new test runner.
-    pub fn new(name: impl Into<String>, config: TestConfig) -> Self {
+    pub fn new(_name: impl Into<String>, config: TestConfig) -> Self {
         Self {
-            name: name.into(),
             config,
             setup: None,
             execute: None,
@@ -240,7 +211,7 @@ impl<T> TestRunner<T> {
     /// Run the test.
     pub fn run(self) -> Result<T> {
         let mut context = TestContext::new(self.config);
-        
+
         // Setup phase
         if let Some(setup) = self.setup {
             setup(&mut context)?;
@@ -262,86 +233,21 @@ impl<T> TestRunner<T> {
     }
 }
 
-/// Standard test pattern: launch hotki, wait for HUD, execute test
-pub fn run_standard_test<F, T>(
-    name: &str,
-    config: TestConfig,
-    test_fn: F,
-) -> Result<T>
-where
-    F: FnOnce(&mut TestContext) -> Result<T> + 'static,
-    T: 'static,
-{
-    TestRunner::new(name, config)
-        .with_setup(|ctx| {
-            ctx.launch_hotki()?;
-            ctx.wait_for_hud()?;
-            Ok(())
-        })
-        .with_execute(test_fn)
-        .with_teardown(|ctx, _| {
-            ctx.shutdown();
-            Ok(())
-        })
-        .run()
-}
-
 /// Create a temporary config file and return its path.
 pub fn create_temp_config(content: &str) -> Result<PathBuf> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    
+
     let temp_path = std::env::temp_dir().join(format!(
         "hotki-smoketest-{}-{}.ron",
         std::process::id(),
         timestamp
     ));
-    
+
     fs::write(&temp_path, content)?;
     Ok(temp_path)
-}
-
-/// Helper to wait for a condition with timeout.
-pub fn wait_for<F>(
-    condition: F,
-    timeout_ms: u64,
-    poll_interval_ms: u64,
-) -> bool
-where
-    F: Fn() -> bool,
-{
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let poll_interval = Duration::from_millis(poll_interval_ms);
-    
-    while Instant::now() < deadline {
-        if condition() {
-            return true;
-        }
-        std::thread::sleep(poll_interval);
-    }
-    false
-}
-
-/// Helper to retry an operation with delays.
-pub fn retry_with_delay<F, T>(
-    mut operation: F,
-    max_attempts: u32,
-    delay_ms: u64,
-) -> Option<T>
-where
-    F: FnMut() -> Option<T>,
-{
-    for _ in 0..max_attempts {
-        if let Some(result) = operation() {
-            return Some(result);
-        }
-        if delay_ms > 0 {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-        }
-    }
-    None
 }
