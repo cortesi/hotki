@@ -77,6 +77,9 @@ pub enum Commands {
     /// Launch UI in mini HUD mode and cycle themes
     Minui,
 
+    /// Toggle non-system (non-native) fullscreen on a helper window
+    Fullscreen,
+
     /// Check required permissions and screen capture capability
     Preflight,
 }

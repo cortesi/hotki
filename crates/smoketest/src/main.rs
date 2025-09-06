@@ -159,6 +159,17 @@ fn main() {
                 }
             }
         }
+        Commands::Fullscreen => {
+            heading("Test: fullscreen");
+            match tests::fullscreen::run_fullscreen_test(cli.timeout, cli.logs) {
+                Ok(()) => println!("fullscreen: OK (toggled non-native fullscreen)"),
+                Err(e) => {
+                    eprintln!("fullscreen: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Preflight => {
             heading("Test: preflight");
             let ok = run_preflight();

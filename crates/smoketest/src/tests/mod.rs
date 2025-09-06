@@ -1,6 +1,7 @@
 //! Test implementations for smoketest.
 
 pub mod focus;
+pub mod fullscreen;
 pub mod hide;
 pub mod raise;
 pub mod repeat;
