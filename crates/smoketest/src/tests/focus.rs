@@ -12,6 +12,7 @@ use crate::{
     error::{Error, Result},
     process::HelperWindowBuilder,
     results::FocusOutcome,
+    runtime,
     test_runner::{TestConfig, TestRunner},
 };
 
@@ -99,11 +100,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             let matched_clone = matched.clone();
 
             let listener = thread::spawn(move || {
-                let rt = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(_) => return,
-                };
-                rt.block_on(listen_for_focus(
+                let _ = runtime::block_on(listen_for_focus(
                     &socket_path,
                     expected_title_clone,
                     found_clone,

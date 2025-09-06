@@ -7,6 +7,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
+    runtime,
     ui_interaction::send_activation_chord,
 };
 
@@ -101,24 +102,20 @@ impl HotkiSession {
 
     pub fn wait_for_hud(&mut self, timeout_ms: u64) -> (bool, u64) {
         // Try to connect and wait for HudUpdate indicating HUD visible.
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(_) => return (false, 0),
-        };
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let start = Instant::now();
 
         // Connect with retry
         let mut attempts = 0;
         let mut client = loop {
-            match rt.block_on(async {
+            match runtime::block_on(async {
                 hotki_server::Client::new_with_socket(self.socket_path())
                     .with_connect_only()
                     .connect()
                     .await
             }) {
-                Ok(c) => break c,
-                Err(_) => {
+                Ok(Ok(c)) => break c,
+                Ok(Err(_)) | Err(_) => {
                     attempts += 1;
                     if Instant::now() >= deadline {
                         return (false, start.elapsed().as_millis() as u64);
@@ -150,9 +147,9 @@ impl HotkiSession {
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
             let chunk = std::cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
-            let res = rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
+            let res = runtime::block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
             match res {
-                Ok(Ok(msg)) => {
+                Ok(Ok(Ok(msg))) => {
                     if let hotki_protocol::MsgToUI::HudUpdate { cursor, .. } = msg {
                         let depth = cursor.depth();
                         let visible = cursor.viewing_root || depth > 0;
@@ -161,8 +158,8 @@ impl HotkiSession {
                         }
                     }
                 }
-                Ok(Err(_)) => break,
-                Err(_) => {}
+                Ok(Ok(Err(_))) => break,
+                Ok(Err(_)) | Err(_) => {}
             }
             // Smart side-check: look for the HUD window by title under the hotki server pid
             // to avoid missing HudUpdate races.
@@ -183,18 +180,16 @@ impl HotkiSession {
     }
 
     pub fn shutdown(&mut self) {
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
-            let sock = self.socket_path.clone();
-            rt.block_on(async move {
-                if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
-                    .with_connect_only()
-                    .connect()
-                    .await
-                {
-                    let _ = c.shutdown_server().await;
-                }
-            });
-        }
+        let sock = self.socket_path.clone();
+        let _ = runtime::block_on(async move {
+            if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
+                .with_connect_only()
+                .connect()
+                .await
+            {
+                let _ = c.shutdown_server().await;
+            }
+        });
         self.state = SessionState::Stopped;
     }
 

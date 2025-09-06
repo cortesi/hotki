@@ -9,6 +9,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
+    runtime,
     session::HotkiSession,
     ui_interaction::send_key,
     util::resolve_hotki_bin,
@@ -209,8 +210,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         return Err(Error::HudNotVisible { timeout_ms });
     }
 
-    // Reuse a single Tokio runtime for HUD event waits
-    let rt = tokio::runtime::Runtime::new().map_err(Error::Io)?;
+    // Use shared runtime for HUD event waits
 
     // Best‑effort: allow WindowServer to register helpers before driving raise
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
@@ -229,7 +229,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let ok1 = if ok1_front {
         true
     } else {
-        let ok_hud = rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
+        let ok_hud = runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2)).unwrap_or(false);
         if ok_hud {
             true
         } else {
@@ -237,7 +237,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             send_key("1");
             // One more attempt using CG frontmost first, then HUD
             wait_for_frontmost_title(&title1, timeout_ms / 2)
-                || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
+                || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2)).unwrap_or(false)
         }
     };
     if !ok1 {
@@ -248,7 +248,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         let _ = wait_for_windows(&[(pid1, &title1)], config::WAIT_WINDOW_RECHECK_MS);
         send_key("1");
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
-            || rt.block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2));
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2)).unwrap_or(false);
         if !ok1_retry {
             return Err(Error::FocusNotObserved {
                 timeout_ms,
@@ -274,14 +274,14 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let mut ok2 = if ok2_front {
         true
     } else {
-        let ok_hud = rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
+        let ok_hud = runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2)).unwrap_or(false);
         if ok_hud {
             true
         } else {
             thread::sleep(config::ms(config::RETRY_DELAY_MS));
             send_key("2");
             wait_for_frontmost_title(&title2, timeout_ms / 2)
-                || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
+                || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2)).unwrap_or(false)
         }
     };
     if !ok2 {
@@ -292,7 +292,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         let _ = wait_for_windows(&[(pid2, &title2)], config::WAIT_WINDOW_RECHECK_MS);
         send_key("2");
         ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
-            || rt.block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2));
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2)).unwrap_or(false);
     }
 
     if !ok2 {

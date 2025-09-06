@@ -6,6 +6,7 @@ mod config;
 mod error;
 mod process;
 mod results;
+mod runtime;
 mod session;
 mod test_runner;
 mod tests;

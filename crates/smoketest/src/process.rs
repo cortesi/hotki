@@ -84,15 +84,13 @@ impl HelperWindowBuilder {
 /// Output is suppressed to avoid interleaved cargo logs.
 pub fn build_hotki_quiet() -> Result<()> {
     // First check if the binary already exists and is recent
-    if let Ok(metadata) = std::fs::metadata("target/debug/hotki") {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(elapsed) = std::time::SystemTime::now().duration_since(modified) {
-                // If binary was built in the last 60 seconds, skip rebuild
-                if elapsed.as_secs() < 60 {
-                    return Ok(());
-                }
-            }
-        }
+    if let Ok(metadata) = std::fs::metadata("target/debug/hotki")
+        && let Ok(modified) = metadata.modified()
+        && let Ok(elapsed) = std::time::SystemTime::now().duration_since(modified)
+        && elapsed.as_secs() < 60
+    {
+        // If binary was built in the last 60 seconds, skip rebuild
+        return Ok(());
     }
     
     let mut child = Command::new("cargo")
