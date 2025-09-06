@@ -10,7 +10,7 @@ use mac_winops::focus::FocusSnapshot;
 use std::sync::Mutex;
 use winit::event_loop::EventLoop;
 
-use crate::config;
+use crate::{config, process};
 
 pub(crate) fn count_relay(ms: u64) -> usize {
     let event_loop = EventLoop::new().unwrap();
@@ -173,25 +173,15 @@ pub(crate) fn repeat_shell(ms: u64) {
     println!("{} repeats", count_shell(ms));
 }
 
-fn osascript(cmd: &str) -> std::io::Result<std::process::Output> {
-    std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(cmd)
-        .output()
-}
 
 fn get_volume() -> Option<u64> {
-    let out = osascript("output volume of (get volume settings)").ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.trim().parse::<u64>().ok()
+    let out = process::osascript("output volume of (get volume settings)").ok()?;
+    out.trim().parse::<u64>().ok()
 }
 
 fn set_volume_abs(level: u8) -> bool {
     let cmd = format!("set volume output volume {}", level.min(100));
-    osascript(&cmd).map(|o| o.status.success()).unwrap_or(false)
+    process::osascript(&cmd).is_ok()
 }
 
 pub(crate) fn count_volume(ms: u64) -> usize {

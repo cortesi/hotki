@@ -1,7 +1,5 @@
 use std::{
     cmp, env, fs,
-    path::PathBuf,
-    process::{self, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -14,6 +12,7 @@ use objc2_foundation::MainThreadMarker;
 use crate::{
     config,
     error::{Error, Result},
+    process::HelperWindowBuilder,
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
@@ -157,19 +156,6 @@ fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
     None
 }
 
-fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child> {
-    Command::new(exe)
-        .arg("focus-winhelper")
-        .arg("--title")
-        .arg(title)
-        .arg("--time")
-        .arg(time_ms.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| Error::SpawnFailed(e.to_string()))
-}
 
 // Wait for the AX window to be discoverable and return its pos/size.
 // (unused helper removed)
@@ -186,9 +172,10 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .as_nanos();
     let title = config::hide_test_title(now);
     let helper_time = timeout_ms.saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
-    let exe = env::current_exe()?;
-    let mut helper = spawn_helper(&exe, &title, helper_time)?;
-    let pid = helper.id() as i32;
+    let mut helper = HelperWindowBuilder::new(&title)
+        .with_time_ms(helper_time)
+        .spawn()?;
+    let pid = helper.pid;
     // Wait until the helper window is visible via CG or AX
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut ready = false;
@@ -203,8 +190,7 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
     }
     if !ready {
-        let _ = helper.kill();
-        let _ = helper.wait();
+        // helper cleans up automatically via Drop
         return Err(Error::FocusNotObserved {
             timeout_ms,
             expected: format!("helper window '{}' not visible", title),
@@ -299,11 +285,9 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             "debug: no movement detected after hide(on). last vs start x: {:.1} -> {:.1}",
             _p_on.x, p0.x
         );
-        // Cleanup helper + session
+        // Cleanup session (helper cleans up automatically via Drop)
         sess.shutdown();
         sess.kill_and_wait();
-        let _ = helper.kill();
-        let _ = helper.wait();
         return Err(Error::SpawnFailed(
             "window position did not change after hide(on)".into(),
         ));
@@ -336,11 +320,9 @@ pub(crate) fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         thread::sleep(config::ms(config::POLL_INTERVAL_MS + 30));
     }
 
-    // Cleanup
+    // Cleanup (helper cleans up automatically via Drop)
     sess.shutdown();
     sess.kill_and_wait();
-    let _ = helper.kill();
-    let _ = helper.wait();
 
     if !restored {
         return Err(Error::SpawnFailed(

@@ -1,7 +1,7 @@
 use std::{
     cmp, env, fs,
     path::PathBuf,
-    process::{self, Child, Command, Stdio},
+    process,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -9,13 +9,14 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
+    process::{HelperWindowBuilder, ManagedChild},
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
 
 struct Cleanup {
-    child1: Option<Child>,
-    child2: Option<Child>,
+    child1: Option<ManagedChild>,
+    child2: Option<ManagedChild>,
     tmp_path: Option<PathBuf>,
 }
 
@@ -31,14 +32,9 @@ impl Cleanup {
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let Some(mut c) = self.child1.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        if let Some(mut c) = self.child2.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
+        // ManagedChild instances clean up automatically
+        self.child1.take();
+        self.child2.take();
         if let Some(p) = self.tmp_path.take() {
             let _ = fs::remove_file(p);
         }
@@ -76,20 +72,6 @@ fn send_key(seq: &str) {
     }
 }
 
-fn spawn_helper(exe: &PathBuf, title: &str, time_ms: u64) -> Result<process::Child> {
-    let child = Command::new(exe)
-        .arg("focus-winhelper")
-        .arg("--title")
-        .arg(title)
-        .arg("--time")
-        .arg(time_ms.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| Error::SpawnFailed(e.to_string()))?;
-    Ok(child)
-}
 
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
     use hotki_server::Client;
@@ -181,15 +163,17 @@ pub(crate) fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Spawn two helper windows
     let helper_time = timeout_ms.saturating_add(8000);
-    let exe = env::current_exe()?;
     let mut cleanup = Cleanup::new();
-    let child1 = spawn_helper(&exe, &title1, helper_time)?;
+    let child1 = HelperWindowBuilder::new(&title1)
+        .with_time_ms(helper_time)
+        .spawn()?;
+    let pid1 = child1.pid;
     // Small stagger to avoid simultaneous window registration races in WindowServer
     thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
-    let child2 = spawn_helper(&exe, &title2, helper_time)?;
-
-    let pid1 = child1.id() as i32;
-    let pid2 = child2.id() as i32;
+    let child2 = HelperWindowBuilder::new(&title2)
+        .with_time_ms(helper_time)
+        .spawn()?;
+    let pid2 = child2.pid;
     cleanup.child1 = Some(child1);
     cleanup.child2 = Some(child2);
 
