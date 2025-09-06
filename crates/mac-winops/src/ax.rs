@@ -156,3 +156,70 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
     }
     Ok(())
 }
+/// Get the position of a window via Accessibility API.
+/// Returns None if the window is not found or permission is denied.
+pub fn ax_window_position(pid: i32, title: &str) -> Option<(f64, f64)> {
+    let window = ax_find_window_by_title(pid, title)?;
+    let pos = ax_get_point(window, cfstr("AXPosition")).ok()?;
+    Some((pos.x, pos.y))
+}
+
+/// Get the size of a window via Accessibility API.
+/// Returns None if the window is not found or permission is denied.
+pub fn ax_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
+    let window = ax_find_window_by_title(pid, title)?;
+    let size = ax_get_size(window, cfstr("AXSize")).ok()?;
+    Some((size.width, size.height))
+}
+
+/// Get the frame (position and size) of a window via Accessibility API.
+/// Returns None if the window is not found or permission is denied.
+pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))> {
+    let window = ax_find_window_by_title(pid, title)?;
+    let pos = ax_get_point(window, cfstr("AXPosition")).ok()?;
+    let size = ax_get_size(window, cfstr("AXSize")).ok()?;
+    Some(((pos.x, pos.y), (size.width, size.height)))
+}
+
+/// Find a window by title using Accessibility API.
+/// Returns the AXUIElement pointer for the window, or None if not found.
+fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut c_void> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return None;
+    }
+
+    let mut wins_ref: CFTypeRef = ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    unsafe { CFRelease(app as CFTypeRef) };
+
+    if err != 0 || wins_ref.is_null() {
+        return None;
+    }
+
+    let arr = unsafe {
+        core_foundation::array::CFArray::<*const c_void>::wrap_under_get_rule(wins_ref as _)
+    };
+
+    for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        let wref =
+            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
+        let w = wref as *mut c_void;
+        if w.is_null() {
+            continue;
+        }
+
+        let mut t_ref: CFTypeRef = ptr::null_mut();
+        let terr = unsafe { AXUIElementCopyAttributeValue(w, cfstr("AXTitle"), &mut t_ref) };
+        if terr != 0 || t_ref.is_null() {
+            continue;
+        }
+
+        let cfs = unsafe { CFString::wrap_under_get_rule(t_ref as CFStringRef) };
+        let t = cfs.to_string();
+        if t == title {
+            return Some(w);
+        }
+    }
+    None
+}

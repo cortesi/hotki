@@ -40,6 +40,7 @@ pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, list_windows};
 
 use ax::*;
+pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
 use frame_storage::*;
 use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};

@@ -3,8 +3,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
-use core_foundation::string::{CFString, CFStringRef};
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
@@ -16,101 +14,7 @@ use crate::{
     util::resolve_hotki_bin,
 };
 
-// ---------- Minimal AX FFI (public macOS frameworks) ----------
-
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXUIElementCreateApplication(pid: i32) -> *mut core::ffi::c_void;
-    fn AXUIElementCopyAttributeValue(
-        element: *mut core::ffi::c_void,
-        attr: CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
-    fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut core::ffi::c_void) -> bool;
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Cgp {
-    x: f64,
-    y: f64,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Cgs {
-    width: f64,
-    height: f64,
-}
-
-fn cfstr(s: &'static str) -> CFStringRef {
-    CFString::from_static_string(s).as_CFTypeRef() as CFStringRef
-}
-
-fn ax_get_point(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgp> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 || v.is_null() {
-        return None;
-    }
-    let mut p = Cgp { x: 0.0, y: 0.0 };
-    let ok =
-        unsafe { AXValueGetValue(v, config::AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut _) };
-    unsafe { CFRelease(v) };
-    if !ok { None } else { Some(p) }
-}
-
-fn ax_get_size(element: *mut core::ffi::c_void, attr: CFStringRef) -> Option<Cgs> {
-    let mut v: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
-    if err != 0 || v.is_null() {
-        return None;
-    }
-    let mut s = Cgs {
-        width: 0.0,
-        height: 0.0,
-    };
-    let ok =
-        unsafe { AXValueGetValue(v, config::AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut _) };
-    unsafe { CFRelease(v) };
-    if !ok { None } else { Some(s) }
-}
-
-/// Locate an AX window element for `pid` by exact title match.
-fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut core::ffi::c_void> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
-    let attr_windows = cfstr("AXWindows");
-    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(app, attr_windows, &mut wins_ref) };
-    unsafe { CFRelease(app as CFTypeRef) };
-    if err != 0 || wins_ref.is_null() {
-        return None;
-    }
-    let arr = unsafe {
-        core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_get_rule(
-            wins_ref as _,
-        )
-    };
-    for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
-        let wref =
-            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
-        let w = wref as *mut core::ffi::c_void;
-        if w.is_null() {
-            continue;
-        }
-        let mut t_ref: CFTypeRef = std::ptr::null_mut();
-        let terr = unsafe { AXUIElementCopyAttributeValue(w, cfstr("AXTitle"), &mut t_ref) };
-        if terr != 0 || t_ref.is_null() {
-            continue;
-        }
-        let cfs = unsafe { CFString::wrap_under_get_rule(t_ref as CFStringRef) };
-        let t = cfs.to_string();
-        if t == title {
-            return Some(w);
-        }
-    }
-    None
-}
+// ---------- Helper functions ----------
 
 fn approx(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
@@ -126,38 +30,6 @@ fn send_key(seq: &str) {
         rk.key_up(0, ch);
     }
 }
-
-/// First AXWindow element for a pid.
-fn ax_first_window_for_pid(pid: i32) -> Option<*mut core::ffi::c_void> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
-    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
-    unsafe { CFRelease(app as CFTypeRef) };
-    if err != 0 || wins_ref.is_null() {
-        return None;
-    }
-    let arr = unsafe {
-        core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_get_rule(
-            wins_ref as _,
-        )
-    };
-    let count = unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) };
-    for i in 0..count {
-        let wref =
-            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
-        let w = wref as *mut core::ffi::c_void;
-        if !w.is_null() {
-            return Some(w);
-        }
-    }
-    None
-}
-
-// Wait for the AX window to be discoverable and return its pos/size.
-// (unused helper removed)
 
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let Some(hotki_bin) = resolve_hotki_bin() else {
@@ -227,26 +99,15 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
 
     // Snapshot initial AX frame of the helper window
-    let (p0, s0) = if let Some(w) =
-        ax_find_window_by_title(pid, &title).or_else(|| ax_first_window_for_pid(pid))
-    {
-        if let (Some(p), Some(s)) = (
-            ax_get_point(w, cfstr("AXPosition")),
-            ax_get_size(w, cfstr("AXSize")),
-        ) {
-            (p, s)
+    let (p0, s0) =
+        if let Some(((px, py), (width, height))) = mac_winops::ax_window_frame(pid, &title) {
+            ((px, py), (width, height))
         } else {
             return Err(Error::FocusNotObserved {
                 timeout_ms,
-                expected: "AX frame for helper window".into(),
+                expected: "AX window for helper".into(),
             });
-        }
-    } else {
-        return Err(Error::FocusNotObserved {
-            timeout_ms,
-            expected: "AX window for helper".into(),
-        });
-    };
+        };
 
     // Compute expected target X on the main screen (1px sliver)
     let target_x = if let Some(mtm) = MainThreadMarker::new() {
@@ -255,7 +116,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         (vf.origin.x + vf.size.width) - 1.0
     } else {
         // Fallback guess: large X likely on right
-        p0.x + config::WINDOW_POSITION_OFFSET
+        p0.0 + config::WINDOW_POSITION_OFFSET
     };
 
     // Drive: h -> o (hide on)
@@ -269,11 +130,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         + Duration::from_millis(cmp::max(config::HIDE_MIN_TIMEOUT_MS, timeout_ms / 4));
     let mut _p_on = p0;
     while Instant::now() < deadline {
-        if let Some(w) = ax_first_window_for_pid(pid)
-            && let Some(p) = ax_get_point(w, cfstr("AXPosition"))
-        {
-            _p_on = p;
-            if !approx(p.x, p0.x, 2.0) || approx(p.x, target_x, 6.0) {
+        if let Some((px, py)) = mac_winops::ax_window_position(pid, &title) {
+            _p_on = (px, py);
+            if !approx(px, p0.0, 2.0) || approx(px, target_x, 6.0) {
                 moved = true;
                 break;
             }
@@ -283,7 +142,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !moved {
         eprintln!(
             "debug: no movement detected after hide(on). last vs start x: {:.1} -> {:.1}",
-            _p_on.x, p0.x
+            _p_on.0, p0.0
         );
         // Cleanup session (helper cleans up automatically via Drop)
         sess.shutdown();
@@ -309,12 +168,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             timeout_ms / 3,
         ));
     while Instant::now() < deadline2 {
-        if let Some(w) = ax_first_window_for_pid(pid)
-            && let Some(p2) = ax_get_point(w, cfstr("AXPosition"))
-            && let Some(s2) = ax_get_size(w, cfstr("AXSize"))
-        {
-            let pos_ok = approx(p2.x, p0.x, 8.0) && approx(p2.y, p0.y, 8.0);
-            let size_ok = approx(s2.width, s0.width, 8.0) && approx(s2.height, s0.height, 8.0);
+        if let Some(((px2, py2), (width2, height2))) = mac_winops::ax_window_frame(pid, &title) {
+            let pos_ok = approx(px2, p0.0, 8.0) && approx(py2, p0.1, 8.0);
+            let size_ok = approx(width2, s0.0, 8.0) && approx(height2, s0.1, 8.0);
             // quiet on success path
             if pos_ok && size_ok {
                 restored = true;

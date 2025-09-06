@@ -8,19 +8,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use core_foundation::dictionary::CFDictionaryRef;
-use core_foundation::{
-    array::CFArray,
-    base::{CFType, TCFType, TCFTypeRef},
-    dictionary::CFDictionary,
-    number::CFNumber,
-    string::CFString,
-};
-use core_graphics2::window::{
-    CGWindowListOption, copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowName,
-    kCGWindowNumber, kCGWindowOwnerPID,
-};
-
 use crate::util::resolve_hotki_bin;
 use crate::{
     config,
@@ -32,46 +19,14 @@ use crate::{
 // ===== Window discovery and capture =====
 
 fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, (i32, i32, i32, i32))> {
-    let arr: CFArray = copy_window_info(CGWindowListOption::OnScreenOnly, kCGNullWindowID)?;
-    for item in arr.iter() {
-        let dict_ref = unsafe { CFDictionaryRef::from_void_ptr(*item) };
-        let dict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(dict_ref) };
-        let owner_pid = unsafe { dict.find(kCGWindowOwnerPID) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))
-            .unwrap_or_default();
-        if owner_pid != pid {
-            continue;
-        }
-        let name = unsafe { dict.find(kCGWindowName) }
-            .and_then(|v| v.downcast::<CFString>())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        if name != title {
-            continue;
-        }
-        let win_id: u32 = unsafe { dict.find(kCGWindowNumber) }
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i64().map(|v| v as u32))?;
-        let bdict_any = unsafe { dict.find(kCGWindowBounds) }?;
-        let bdict_ref: CFDictionaryRef = bdict_any.as_CFTypeRef() as CFDictionaryRef;
-        let bdict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(bdict_ref) };
-        let kx = CFString::from_static_string("X");
-        let ky = CFString::from_static_string("Y");
-        let kw = CFString::from_static_string("Width");
-        let kh = CFString::from_static_string("Height");
-        let get = |k: &CFString| {
-            bdict
-                .find(k.clone())
-                .and_then(|v| v.downcast::<CFNumber>())
-                .and_then(|n| n.to_i64().map(|v| v as i32))
-        };
-        let (x, y, w, h) = (get(&kx)?, get(&ky)?, get(&kw)?, get(&kh)?);
-        return Some((win_id, (x, y, w, h)));
-    }
-    None
+    // Use mac-winops to get window information
+    mac_winops::list_windows()
+        .into_iter()
+        .find(|w| w.pid == pid as i32 && w.title == title)
+        .and_then(|w| {
+            w.pos
+                .map(|pos| (w.id, (pos.x, pos.y, pos.width, pos.height)))
+        })
 }
 
 fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -> bool {

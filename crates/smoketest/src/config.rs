@@ -95,12 +95,6 @@ pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
 
 // ===== CoreGraphics Constants =====
 
-/// AXValue type for CGPoint.
-pub const AX_VALUE_CGPOINT_TYPE: i32 = 1;
-
-/// AXValue type for CGSize.
-pub const AX_VALUE_CGSIZE_TYPE: i32 = 2;
-
 // ===== Test Configuration Paths =====
 
 /// Default test configuration file path relative to repo root.
