@@ -40,10 +40,14 @@ pub fn inject_key(seq: &str) -> bool {
         Some(c) => c,
         None => return false,
     };
+    // Canonicalize ident to engine format (e.g., cmd+shift+0)
+    let ident = mac_keycode::Chord::parse(seq)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| seq.to_string());
     // Drive down -> delay -> up
-    let ok = runtime::block_on(async { conn.inject_key_down(seq).await }).is_ok();
+    let ok = runtime::block_on(async { conn.inject_key_down(&ident).await }).is_ok();
     std::thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
-    let ok2 = runtime::block_on(async { conn.inject_key_up(seq).await }).is_ok();
+    let ok2 = runtime::block_on(async { conn.inject_key_up(&ident).await }).is_ok();
     ok && ok2
 }
 
