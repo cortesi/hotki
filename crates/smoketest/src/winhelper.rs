@@ -18,9 +18,12 @@ pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), Strin
     impl ApplicationHandler for HelperApp {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
             if self.window.is_none() {
+                use winit::dpi::{LogicalPosition, LogicalSize};
                 let attrs = winit::window::Window::default_attributes()
                     .with_title(self.title.clone())
-                    .with_visible(true);
+                    .with_visible(true)
+                    // Small helper window; reduce visual intrusion.
+                    .with_inner_size(LogicalSize::new(400.0, 260.0));
                 let win = elwt
                     .create_window(attrs)
                     .map_err(|e| e.to_string())
@@ -28,6 +31,19 @@ pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), Strin
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     unsafe { app.activate() };
+                }
+                // Place window at bottom-right corner of the main screen.
+                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                    use objc2_app_kit::NSScreen;
+                    let margin: f64 = 8.0;
+                    if let Some(scr) = NSScreen::mainScreen(mtm) {
+                        let vf = scr.visibleFrame();
+                        let w = 400.0_f64;
+                        let _h = 260.0_f64;
+                        let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
+                        let y = (vf.origin.y + margin).max(0.0);
+                        win.set_outer_position(LogicalPosition::new(x, y));
+                    }
                 }
                 self.window = Some(win);
             }

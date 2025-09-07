@@ -10,9 +10,9 @@ use crate::{
     config,
     error::{Error, Result},
     process::HelperWindowBuilder,
+    server_drive,
     session::HotkiSession,
     ui_interaction::{navigate_hud_menu, send_activation_chord},
-    server_drive,
     util::resolve_hotki_bin,
 };
 

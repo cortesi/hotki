@@ -193,6 +193,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         ])),
         ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
     ]
+    , style: (hud: (mode: hide))
 )
 "#,
         t1 = title1,
@@ -220,7 +221,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
-    if !wait_for_windows(&[(pid1, &title1)], config::WAIT_FIRST_WINDOW_MS) {
+    if !wait_for_windows(&[(pid1, &title1)], config::WAIT_FIRST_WINDOW_MS.min(3000)) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
@@ -272,7 +273,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     thread::sleep(config::ms(config::MENU_STABILIZE_DELAY_MS));
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
-    if !wait_for_windows(&[(pid2, &title2)], 6000) {
+    if !wait_for_windows(&[(pid2, &title2)], 3000) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("second window not visible before menu: '{}'", title2),

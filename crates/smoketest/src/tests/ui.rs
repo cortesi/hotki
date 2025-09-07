@@ -1,9 +1,9 @@
 use crate::{
     error::Result,
     results::Summary,
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key_sequence,
-    server_drive,
 };
 
 /// Run the standard UI demo test.
