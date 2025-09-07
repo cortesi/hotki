@@ -90,7 +90,98 @@ impl Connection {
             .ok_or_else(|| Error::Ipc("Event channel closed".into()))
     }
 
-    // simulate_key removed; smoketest drives via HID + UI event stream
+    /// Inject a synthetic key down for a bound identifier.
+    pub async fn inject_key_down(&mut self, ident: &str) -> Result<()> {
+        self.inject_key(ident, "down", false).await
+    }
+
+    /// Inject a synthetic key up for a bound identifier.
+    pub async fn inject_key_up(&mut self, ident: &str) -> Result<()> {
+        self.inject_key(ident, "up", false).await
+    }
+
+    /// Inject a synthetic repeat key down for a bound identifier.
+    pub async fn inject_key_repeat(&mut self, ident: &str) -> Result<()> {
+        self.inject_key(ident, "down", true).await
+    }
+
+    async fn inject_key(&mut self, ident: &str, kind: &str, repeat: bool) -> Result<()> {
+        // Build a typed request and encode it via serde to msgpack
+        let kind_enum = match kind {
+            "down" => crate::ipc::rpc::InjectKind::Down,
+            "up" => crate::ipc::rpc::InjectKind::Up,
+            other => return Err(Error::Ipc(format!("invalid kind: {}", other))),
+        };
+        let req = crate::ipc::rpc::InjectKeyReq {
+            ident: ident.to_string(),
+            kind: kind_enum,
+            repeat,
+        };
+        let response = self
+            .client
+            .send_request(
+                HotkeyMethod::InjectKey.as_str(),
+                &[super::rpc::enc_inject_key(&req)],
+            )
+            .await
+            .map_err(|e| Error::Ipc(format!("inject_key request failed: {}", e)))?;
+        match response {
+            Value::Boolean(true) => Ok(()),
+            other => Err(Error::Ipc(format!(
+                "Unexpected inject_key response: {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Get a snapshot of currently bound identifiers (sorted).
+    pub async fn get_bindings(&mut self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .send_request(HotkeyMethod::GetBindings.as_str(), &[])
+            .await
+            .map_err(|e| Error::Ipc(format!("get_bindings request failed: {}", e)))?;
+        match response {
+            Value::Array(vals) => {
+                let mut out = Vec::with_capacity(vals.len());
+                for v in vals {
+                    match v {
+                        Value::String(s) => out.push(s.to_string()),
+                        other => {
+                            return Err(Error::Ipc(format!(
+                                "Unexpected element in get_bindings: {:?}",
+                                other
+                            )));
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            other => Err(Error::Ipc(format!(
+                "Unexpected get_bindings response: {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Get the current depth (0 = root).
+    pub async fn get_depth(&mut self) -> Result<usize> {
+        let response = self
+            .client
+            .send_request(HotkeyMethod::GetDepth.as_str(), &[])
+            .await
+            .map_err(|e| Error::Ipc(format!("get_depth request failed: {}", e)))?;
+        match response {
+            Value::Integer(i) => match i.as_u64() {
+                Some(u) => Ok(u as usize),
+                None => Err(Error::Ipc("Invalid depth value".into())),
+            },
+            other => Err(Error::Ipc(format!(
+                "Unexpected get_depth response: {:?}",
+                other
+            ))),
+        }
+    }
 }
 
 /// Client-side connection handler for receiving events

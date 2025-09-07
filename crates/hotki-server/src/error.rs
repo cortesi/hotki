@@ -65,4 +65,6 @@ pub enum RpcErrorCode {
     EngineNotInitialized,
     #[error("EngineSetConfig")]
     EngineSetConfig,
+    #[error("KeyNotBound")]
+    KeyNotBound,
 }

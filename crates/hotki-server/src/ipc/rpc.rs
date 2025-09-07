@@ -5,12 +5,16 @@
 //! transport payload but exposes thin typed helpers for callers.
 
 use mrpc::Value;
+use serde::{Deserialize, Serialize};
 
 /// RPC request methods supported by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyMethod {
     Shutdown,
     SetConfig,
+    InjectKey,
+    GetBindings,
+    GetDepth,
 }
 
 impl HotkeyMethod {
@@ -19,6 +23,9 @@ impl HotkeyMethod {
         match self {
             HotkeyMethod::Shutdown => "shutdown",
             HotkeyMethod::SetConfig => "set_config",
+            HotkeyMethod::InjectKey => "inject_key",
+            HotkeyMethod::GetBindings => "get_bindings",
+            HotkeyMethod::GetDepth => "get_depth",
         }
     }
 
@@ -27,6 +34,9 @@ impl HotkeyMethod {
         match s {
             "shutdown" => Some(HotkeyMethod::Shutdown),
             "set_config" => Some(HotkeyMethod::SetConfig),
+            "inject_key" => Some(HotkeyMethod::InjectKey),
+            "get_bindings" => Some(HotkeyMethod::GetBindings),
+            "get_depth" => Some(HotkeyMethod::GetDepth),
             _ => None,
         }
     }
@@ -79,6 +89,59 @@ pub fn dec_event(v: Value) -> Result<hotki_protocol::MsgToUI, crate::Error> {
         .map_err(|e| crate::Error::Serialization(e.to_string()))
 }
 
+/// Inject key request: encoded as msgpack in a single Binary param.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InjectKeyReq {
+    pub ident: String,
+    pub kind: InjectKind,
+    #[serde(default)]
+    pub repeat: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InjectKind {
+    Down,
+    Up,
+}
+
+impl InjectKind {
+    pub fn to_event_kind(&self) -> mac_hotkey::EventKind {
+        match self {
+            InjectKind::Down => mac_hotkey::EventKind::KeyDown,
+            InjectKind::Up => mac_hotkey::EventKind::KeyUp,
+        }
+    }
+}
+
+/// Encode `inject_key` params as msgpack binary.
+pub fn enc_inject_key(req: &InjectKeyReq) -> Value {
+    let bytes = rmp_serde::to_vec_named(req).expect("InjectKeyReq to msgpack");
+    Value::Binary(bytes)
+}
+
+/// Convenience wrapper to build + encode an InjectKeyReq.
+#[allow(dead_code)]
+pub fn enc_inject_key_parts(ident: &str, kind: InjectKind, repeat: bool) -> Value {
+    enc_inject_key(&InjectKeyReq { ident: ident.into(), kind, repeat })
+}
+
+/// Decode `inject_key` param from msgpack binary.
+pub fn dec_inject_key_param(v: &Value) -> Result<InjectKeyReq, mrpc::RpcError> {
+    match v {
+        Value::Binary(bytes) => rmp_serde::from_slice::<InjectKeyReq>(bytes).map_err(|e| {
+            mrpc::RpcError::Service(mrpc::ServiceError {
+                name: crate::error::RpcErrorCode::InvalidConfig.to_string(),
+                value: Value::String(e.to_string().into()),
+            })
+        }),
+        _ => Err(mrpc::RpcError::Service(mrpc::ServiceError {
+            name: crate::error::RpcErrorCode::InvalidType.to_string(),
+            value: Value::String("expected binary msgpack".into()),
+        })),
+    }
+}
+
 // Error codes are defined in `crate::error::RpcErrorCode`.
 
 #[cfg(test)]
@@ -125,5 +188,17 @@ mod tests {
             }
             other => panic!("unexpected error: {:?}", other),
         }
+    }
+
+    #[test]
+    fn inject_key_roundtrip() {
+        let req = InjectKeyReq {
+            ident: "shift+cmd+0".into(),
+            kind: InjectKind::Down,
+            repeat: false,
+        };
+        let v = enc_inject_key(&req);
+        let dec = dec_inject_key_param(&v).expect("decode inject");
+        assert_eq!(req, dec);
     }
 }

@@ -332,6 +332,108 @@ impl MrpcConnection for HotkeyService {
                 Ok(Value::Boolean(true))
             }
 
+            Some(HotkeyMethod::InjectKey) => {
+                // Expect a single Binary param with msgpack-encoded InjectKeyReq
+                if params.is_empty() {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::MissingParams,
+                        &[("expected", Value::String("inject request".into()))],
+                    ));
+                }
+                let req = match crate::ipc::rpc::dec_inject_key_param(&params[0]) {
+                    Ok(r) => r,
+                    Err(e) => return Err(e),
+                };
+
+                // Ensure engine is initialized
+                if let Err(e) = self.ensure_engine_initialized().await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineInit,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+
+                // Access engine and resolve ident → id
+                let eng = match self.engine.lock().await.as_ref() {
+                    Some(e) => e.clone(),
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineNotInitialized,
+                            &[("message", Value::String("engine not initialized".into()))],
+                        ));
+                    }
+                };
+
+                let maybe_id = eng.resolve_id_for_ident(&req.ident).await;
+                let id = match maybe_id {
+                    Some(i) => i,
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::KeyNotBound,
+                            &[("ident", Value::String(req.ident.into()))],
+                        ));
+                    }
+                };
+
+                // Dispatch directly through the engine (same path as OS events)
+                eng.dispatch(id, req.kind.to_event_kind(), req.repeat).await;
+                Ok(Value::Boolean(true))
+            }
+
+            Some(HotkeyMethod::GetBindings) => {
+                // Ensure engine
+                if let Err(e) = self.ensure_engine_initialized().await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineInit,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+                let eng = match self.engine.lock().await.as_ref() {
+                    Some(e) => e.clone(),
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineNotInitialized,
+                            &[("message", Value::String("engine not initialized".into()))],
+                        ));
+                    }
+                };
+                let mut idents: Vec<String> = eng
+                    .bindings_snapshot()
+                    .await
+                    .into_iter()
+                    .map(|(ident, _)| ident)
+                    .collect();
+                // Keep ordering stable for consumers/tests
+                idents.sort();
+                // Return as Value::Array of Strings to avoid extra msgpack layer
+                let arr = idents
+                    .into_iter()
+                    .map(|s| Value::String(s.into()))
+                    .collect::<Vec<_>>();
+                Ok(Value::Array(arr))
+            }
+
+            Some(HotkeyMethod::GetDepth) => {
+                // Ensure engine
+                if let Err(e) = self.ensure_engine_initialized().await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineInit,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+                let eng = match self.engine.lock().await.as_ref() {
+                    Some(e) => e.clone(),
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineNotInitialized,
+                            &[("message", Value::String("engine not initialized".into()))],
+                        ));
+                    }
+                };
+                let depth = eng.get_depth().await as u64;
+                Ok(Value::Integer(depth.into()))
+            }
+
             None => {
                 warn!("Unknown method: {}", method);
                 Err(Self::typed_err(
