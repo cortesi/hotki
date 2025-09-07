@@ -12,7 +12,7 @@ use crate::{
     error::{Error, Result},
     process::HelperWindowBuilder,
     results::FocusOutcome,
-    runtime,
+    runtime, server_drive,
     test_runner::{TestConfig, TestRunner},
 };
 
@@ -31,12 +31,18 @@ async fn listen_for_focus(
         .await
     {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            ipc_down.store(true, Ordering::SeqCst);
+            return;
+        }
     };
 
     let conn = match client.connection() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            ipc_down.store(true, Ordering::SeqCst);
+            return;
+        }
     };
 
     let per_wait = config::ms(config::FOCUS_EVENT_POLL_MS);
@@ -66,6 +72,21 @@ async fn listen_for_focus(
             Err(_) => {}
         }
     }
+}
+
+// Prefer checking the current frontmost CG window title directly — this avoids
+// relying solely on HUD updates and reduces flakiness from event timing.
+fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if let Some(win) = mac_winops::frontmost_window()
+            && win.title == expected
+        {
+            return true;
+        }
+        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+    }
+    false
 }
 
 pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
@@ -108,9 +129,10 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             let matched_clone = matched.clone();
             let ipc_clone = ipc_down.clone();
 
+            let sock_for_listener = socket_path.clone();
             let listener = thread::spawn(move || {
                 let _ = runtime::block_on(listen_for_focus(
-                    &socket_path,
+                    &sock_for_listener,
                     expected_title_clone,
                     found_clone,
                     done_clone,
@@ -119,12 +141,68 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 ));
             });
 
+            // Initialize RPC driver so we can ping liveness during waits.
+            let _ = server_drive::init(&socket_path);
+
             // Spawn helper window
             let helper_time = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
             let helper = HelperWindowBuilder::new(expected_title.clone())
                 .with_time_ms(helper_time)
                 .spawn()?;
             let expected_pid = helper.pid;
+
+            // Ensure the helper window appears before trying to activate it
+            let visible_deadline = Instant::now()
+                + Duration::from_millis(std::cmp::min(
+                    timeout_ms,
+                    config::HIDE_FIRST_WINDOW_MAX_MS,
+                ));
+            let mut visible = false;
+            while Instant::now() < visible_deadline {
+                let wins = mac_winops::list_windows();
+                let cg_ok = wins
+                    .iter()
+                    .any(|w| w.pid == expected_pid && w.title == expected_title);
+                let ax_ok = mac_winops::ax_has_window_title(expected_pid, &expected_title);
+                if cg_ok || ax_ok {
+                    visible = true;
+                    break;
+                }
+                thread::sleep(config::ms(config::FOCUS_POLL_MS));
+            }
+            if !visible {
+                done.store(true, Ordering::SeqCst);
+                let _ = listener.join();
+                return Err(Error::FocusNotObserved {
+                    timeout_ms,
+                    expected: expected_title,
+                });
+            }
+
+            // Best‑effort: explicitly activate/raise the helper to make it frontmost
+            let _ = mac_winops::request_activate_pid(expected_pid);
+            thread::sleep(config::ms(150));
+            for _ in 0..20 {
+                if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
+                    if let Ok(mut g) = matched.lock() {
+                        *g = Some((expected_title.clone(), expected_pid));
+                    }
+                    found.store(true, Ordering::SeqCst);
+                    break;
+                }
+                if let Some(w) = mac_winops::list_windows()
+                    .into_iter()
+                    .find(|w| w.pid == expected_pid && w.title == expected_title)
+                {
+                    let _ = mac_winops::request_raise_window(expected_pid, w.id);
+                }
+                // AppleScript fallback to force frontmost
+                let _ = crate::process::osascript(&format!(
+                    "tell application \"System Events\" to set frontmost of (first process whose unix id is {}) to true",
+                    expected_pid
+                ));
+                thread::sleep(config::ms(150));
+            }
 
             // Wait for match or timeout
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -133,6 +211,24 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             while Instant::now() < deadline {
                 if found.load(Ordering::SeqCst) {
                     break;
+                }
+                // Fall back to CG frontmost check to reduce flakiness
+                if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
+                    if let Ok(mut g) = matched.lock() {
+                        *g = Some((expected_title.clone(), expected_pid));
+                    }
+                    found.store(true, Ordering::SeqCst);
+                    break;
+                }
+                // Attempt lazy init of RPC driver until connected
+                if !server_drive::is_ready() {
+                    let _ = server_drive::init(&socket_path);
+                }
+                // If back-end died after being reachable, bail early with clear error
+                if server_drive::is_ready() && !server_drive::check_alive() {
+                    done.store(true, Ordering::SeqCst);
+                    let _ = listener.join();
+                    return Err(Error::IpcDisconnected { during: "focus wait" });
                 }
                 thread::sleep(config::ms(config::FOCUS_POLL_MS));
             }

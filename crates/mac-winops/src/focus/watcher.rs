@@ -13,8 +13,14 @@ use super::{
 /// Start the background CG/AX watcher thread that emits coarser `FocusSnapshot`s.
 pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) {
     std::thread::spawn(move || {
-        // Skip known system apps that don't support AX observation
-        const SKIP_APPS: &[&str] = &["WindowManager", "Dock", "Control Center", "Spotlight"];
+        // Skip known system apps that don't support AX or shouldn't be treated as focus owners
+        const SKIP_APPS: &[&str] = &[
+            "WindowManager",
+            "Dock",
+            "Control Center",
+            "Spotlight",
+            "Window Server",
+        ];
 
         let mut last_app = String::new();
         let mut last_title = String::new();

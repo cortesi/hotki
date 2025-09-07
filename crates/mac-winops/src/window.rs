@@ -36,6 +36,8 @@ pub struct WindowInfo {
     pub id: WindowId,
     pub pos: Option<Pos>,
     pub space: Option<i32>,
+    /// CoreGraphics window layer (0 = standard app windows)
+    pub layer: i32,
     /// True for the globally frontmost on-screen layer-0 window.
     pub focused: bool,
 }
@@ -58,7 +60,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
         let mut frontmost_pid: Option<i32> = None;
         let mut focused_marked = false;
         let key_pid = cgw::kCGWindowOwnerPID;
-        let _key_layer = cgw::kCGWindowLayer;
+        let key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
         let key_app = cgw::kCGWindowOwnerName;
         let key_title = cgw::kCGWindowName;
@@ -93,10 +95,11 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 height: h,
             });
             let space = dict_get_i32(d, key_workspace.as_concrete_TypeRef());
+            let layer = dict_get_i32(d, key_layer).unwrap_or(0);
             if frontmost_pid.is_none() {
                 frontmost_pid = Some(pid);
             }
-            let focused = if !focused_marked && frontmost_pid == Some(pid) {
+            let focused = if !focused_marked && frontmost_pid == Some(pid) && layer == 0 {
                 focused_marked = true;
                 true
             } else {
@@ -109,6 +112,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 id,
                 pos,
                 space,
+                layer,
                 focused,
             });
         }
@@ -118,10 +122,25 @@ pub fn list_windows() -> Vec<WindowInfo> {
 
 /// Convenience: return the frontmost on-screen window, if any.
 pub fn frontmost_window() -> Option<WindowInfo> {
-    list_windows().into_iter().next()
+    let all = list_windows();
+    if let Some(w) = all
+        .iter()
+        .find(|w| w.layer == 0 && w.app != "Window Server")
+        .cloned()
+    {
+        return Some(w);
+    }
+    if let Some(w) = all.iter().find(|w| w.app != "Window Server").cloned() {
+        return Some(w);
+    }
+    all.into_iter().next()
 }
 
 /// Convenience: return the frontmost on-screen window owned by `pid`, if any.
 pub fn frontmost_window_for_pid(pid: i32) -> Option<WindowInfo> {
-    list_windows().into_iter().find(|w| w.pid == pid)
+    let all = list_windows();
+    if let Some(w) = all.iter().find(|w| w.pid == pid && w.layer == 0).cloned() {
+        return Some(w);
+    }
+    all.into_iter().find(|w| w.pid == pid)
 }
