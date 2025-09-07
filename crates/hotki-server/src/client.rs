@@ -162,7 +162,11 @@ impl Client {
         self
     }
 
-    /// Connect to the server, optionally spawning it first
+    /// Connect to the server, optionally spawning it first.
+    ///
+    /// If configured for auto‑spawn, this launches the server and performs a
+    /// short, fast readiness poll before falling back to bounded retries. On
+    /// success, the returned `Client` holds an active `Connection`.
     pub async fn connect(mut self) -> Result<Self> {
         // Check if we're already connected
         if self.connection.is_some() {

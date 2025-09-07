@@ -22,7 +22,14 @@ use crate::{Error, Result, default_socket_path};
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
 
-/// A hotkey server that manages the event loop and IPC communication
+/// A hotkey server that manages the Tao event loop and MRPC IPC.
+///
+/// Notes
+/// - Default socket path is per‑UID+PID; override with `with_socket_path`.
+/// - When auto‑spawned by the UI, the server watches `HOTKI_PARENT_PID` and
+///   requests shutdown as soon as the parent exits.
+/// - After the last client disconnects, the server starts an idle timer
+///   (configurable via `with_idle_timeout_secs`) and exits when it fires.
 pub struct Server {
     socket_path: String,
     idle_timeout_secs: u64,

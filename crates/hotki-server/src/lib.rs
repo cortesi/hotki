@@ -1,31 +1,40 @@
 //! Internal hotkey server integration for Hotki.
 //!
+//! This crate provides a thin server/client layer around the core engine to
+//! manage global hotkeys and communicate with the Hotki UI process.
 //!
-//! This crate is internal-only and not intended for public use. It provides
-//! a thin server/client layer around the core engine to manage global hotkeys
-//! and communicate with the Hotki UI process.
+//! Public API (internal stability)
+//! - `Server`: runs the Tao event loop and hosts the MRPC IPC server.
+//! - `Client`: connects to a server; can auto‑spawn a managed server.
+//! - `Connection`: typed RPCs and a stream of UI events (`MsgToUI`).
+//! - `socket_path_for_pid(pid)`: derives the per‑process socket path.
 //!
-//! Important: Socket Path Is Per-Process
-//! - Each UI instance owns its own server. The default socket path used by this
-//!   crate is derived from the current UID and process ID, so it is unique to the
-//!   running process. Downstream consumers should not assume a global singleton
-//!   server; spawn/connect per UI instance or pass an explicit socket path if you
-//!   want to coordinate between processes.
+//! Connection lifecycle and conventions
+//! - Per‑process socket path: The default socket path is derived from the
+//!   current UID and process ID. Each UI instance owns its own server; do not
+//!   assume a global singleton. To coordinate between processes, pass an
+//!   explicit socket path.
+//! - Auto‑spawn: `Client` can launch the current binary in `--server` mode and
+//!   propagate `RUST_LOG`. The parent UI PID is exported via `HOTKI_PARENT_PID`
+//!   so the backend exits immediately if the UI process terminates.
+//! - Idle shutdown: After the last client disconnects, the server starts an
+//!   idle timer (configurable; defaults to a few seconds) and exits when it
+//!   fires. A new client connection cancels the timer.
+//! - Event stream: Upon connection the server forwards log messages and UI
+//!   events (`MsgToUI`) to all clients. A lightweight heartbeat is sent at a
+//!   fixed interval to signal liveness.
 //!
-//! Focus Watcher Contract
-//! - Tao main thread: Creates the event loop and calls
-//!   `mac_focus_watcher::set_main_proxy(...)` once so background code can post a
-//!   user event to request NS observer installation.
-//! - Engine-owned watcher: When the engine initializes, it now owns and starts the
-//!   focus watcher internally via a snapshot stream (`FocusSnapshot`).
-//! - Main loop: Handles `Event::UserEvent(())` and calls
-//!   `mac_focus_watcher::install_ns_workspace_observer()` on the main thread for
-//!   safe observer installation. Focus changes are coalesced in the engine path.
+//! Focus watcher contract
+//! - Tao main thread: Creates the event loop and installs a proxy so background
+//!   code can post a user event to request NS observer installation.
+//! - Engine‑owned watcher: The engine owns and coalesces focus updates and
+//!   emits snapshots; the main loop performs the NS observer installation on
+//!   demand in response to a user event.
 //!
-//! Errors and User Guidance
+//! Errors and user guidance
 //! - If the watcher fails to start, the server emits a UI notification with
-//!   actionable guidance. On macOS this commonly means granting
-//!   Accessibility and/or Input Monitoring permissions in System Settings.
+//!   actionable guidance. On macOS this commonly means granting Accessibility
+//!   and/or Input Monitoring permissions in System Settings.
 
 use std::{process::id, sync::OnceLock};
 
@@ -56,9 +65,9 @@ pub(crate) fn default_socket_path() -> &'static str {
     })
 }
 
-/// Compute the per-process socket path for a specific PID (same scheme used by
-/// `default_socket_path`). Exposed for internal tools (e.g., smoketests) to
-/// avoid knowledge drift on the path convention.
+/// Compute the per‑process socket path for a specific PID (same scheme used by
+/// `default_socket_path`). This avoids knowledge drift in external tools like
+/// smoketests when connecting to a managed server.
 pub fn socket_path_for_pid(pid: u32) -> String {
     let uid = unsafe { libc::getuid() };
     format!("/tmp/hotki-server-{}-{}.sock", uid, pid)

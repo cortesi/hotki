@@ -14,7 +14,11 @@ use crate::{
     ipc::rpc::{HotkeyMethod, HotkeyNotification},
 };
 
-/// Active IPC connection
+/// Active IPC connection.
+///
+/// Holds the MRPC client and an unbounded channel that carries
+/// server→client notifications. Messages include HUD updates, log
+/// forwarding, and a heartbeat for liveness.
 pub struct Connection {
     client: MrpcClient<ClientHandler>,
     event_rx: UnboundedReceiver<MsgToUI>,
@@ -74,7 +78,11 @@ impl Connection {
         }
     }
 
-    /// Receive the next event from the server
+    /// Receive the next UI/log event from the server.
+    ///
+    /// Returns a `MsgToUI` value. Keep polling this to avoid backpressure on
+    /// the server’s event forwarder; disconnects are detected when the channel
+    /// closes.
     pub async fn recv_event(&mut self) -> Result<MsgToUI> {
         self.event_rx
             .recv()
