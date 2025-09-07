@@ -79,9 +79,9 @@ pub fn count_relay(ms: u64) -> usize {
                     if let Some(scr) = NSScreen::mainScreen(mtm) {
                         let vf = scr.visibleFrame();
                         let w = crate::config::HELPER_WIN_WIDTH;
-                        let h = crate::config::HELPER_WIN_HEIGHT;
                         let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
-                        let y = (vf.origin.y + vf.size.height - h - margin).max(0.0);
+                        // Use small Y from the visible frame's origin for top anchoring
+                        let y = (vf.origin.y + margin).max(0.0);
                         win.set_outer_position(LogicalPosition::new(x, y));
                     }
                 }
