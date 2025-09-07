@@ -72,7 +72,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
             ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
             ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
         ],
-        style: (hud: (mode: mini)),
+        style: (hud: (mode: mini, pos: se)),
     )"#;
 
     let config = TestConfig::new(timeout_ms)
