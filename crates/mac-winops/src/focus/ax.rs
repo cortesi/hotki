@@ -5,6 +5,8 @@ use core_foundation::{
     runloop::{CFRunLoop, CFRunLoopSource, CFRunLoopSourceRef, kCFRunLoopDefaultMode},
     string::{CFString, CFStringRef},
 };
+use objc2_app_kit::NSRunningApplication;
+use std::ffi::CStr;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
@@ -165,6 +167,88 @@ impl AXState {
         }
         let mode = unsafe { kCFRunLoopDefaultMode };
         let _ = CFRunLoop::run_in_mode(mode, std::time::Duration::from_millis(10), true);
+    }
+}
+
+/// Read the system-wide focused application and focused window title via AX.
+/// Returns (app_name, window_title, pid) if available. The app_name may be
+/// empty if an application name cannot be determined cheaply; callers should
+/// primarily rely on pid + title for identity.
+pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
+    if !ax_is_trusted() {
+        return None;
+    }
+    unsafe extern "C" {
+        fn AXUIElementCreateSystemWide() -> *mut c_void;
+        fn AXUIElementCopyAttributeValue(
+            element: *mut c_void,
+            attr: CFStringRef,
+            value: *mut CFTypeRef,
+        ) -> i32;
+        fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
+    }
+    unsafe {
+        let sys = AXUIElementCreateSystemWide();
+        if sys.is_null() {
+            return None;
+        }
+        let attr_focused_app = CFString::from_static_string("AXFocusedApplication");
+        let attr_focused_window = CFString::from_static_string("AXFocusedWindow");
+        let attr_title = CFString::from_static_string("AXTitle");
+
+        let mut app_ref: CFTypeRef = std::ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(
+            sys,
+            attr_focused_app.as_concrete_TypeRef(),
+            &mut app_ref,
+        );
+        if err != 0 || app_ref.is_null() {
+            return None;
+        }
+        // Resolve pid
+        let mut pid_out: i32 = -1;
+        let _ = AXUIElementGetPid(app_ref as *mut c_void, &mut pid_out as *mut i32);
+        // Resolve application name via NSRunningApplication
+        let app_name: String = match NSRunningApplication::runningApplicationWithProcessIdentifier(
+            pid_out as libc::pid_t,
+        ) {
+            Some(app) => match app.localizedName() {
+                Some(ns) => {
+                    let ptr = ns.UTF8String();
+                    if ptr.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                    }
+                }
+                None => String::new(),
+            },
+            None => String::new(),
+        };
+
+        // Focused window and its title
+        let mut win_ref: CFTypeRef = std::ptr::null_mut();
+        let werr = AXUIElementCopyAttributeValue(
+            app_ref as *mut c_void,
+            attr_focused_window.as_concrete_TypeRef(),
+            &mut win_ref,
+        );
+        if werr != 0 || win_ref.is_null() {
+            // No focused window; still return app and empty title
+            return Some((app_name, String::new(), pid_out));
+        }
+        let mut title_ref: CFTypeRef = std::ptr::null_mut();
+        let terr = AXUIElementCopyAttributeValue(
+            win_ref as *mut c_void,
+            attr_title.as_concrete_TypeRef(),
+            &mut title_ref,
+        );
+        if terr != 0 || title_ref.is_null() {
+            return Some((app_name, String::new(), pid_out));
+        }
+        let cfs = core_foundation::string::CFString::wrap_under_create_rule(title_ref as _);
+        let title = cfs.to_string();
+        Some((app_name, title, pid_out))
     }
 }
 

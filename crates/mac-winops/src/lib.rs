@@ -44,6 +44,16 @@ use frame_storage::*;
 use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};
 
+/// Applications to skip when determining focus/frontmost windows.
+/// These are system or overlay processes that shouldn't count as focus owners.
+pub const FOCUS_SKIP_APPS: &[&str] = &[
+    "WindowManager",
+    "Dock",
+    "Control Center",
+    "Spotlight",
+    "Window Server",
+];
+
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFRetain(cf: CFTypeRef) -> CFTypeRef;

@@ -13,14 +13,8 @@ use super::{
 /// Start the background CG/AX watcher thread that emits coarser `FocusSnapshot`s.
 pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) {
     std::thread::spawn(move || {
-        // Skip known system apps that don't support AX or shouldn't be treated as focus owners
-        const SKIP_APPS: &[&str] = &[
-            "WindowManager",
-            "Dock",
-            "Control Center",
-            "Spotlight",
-            "Window Server",
-        ];
+        // Skip known system apps that don't support AX or shouldn't be focus owners
+        const SKIP_APPS: &[&str] = crate::FOCUS_SKIP_APPS;
 
         let mut last_app = String::new();
         let mut last_title = String::new();
@@ -30,17 +24,18 @@ pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) {
         let mut warned_apps = HashSet::<String>::new();
         let (tx_ax, mut rx_ax) = tokio::sync::mpsc::unbounded_channel::<AxEvent>();
 
-        debug!("Snapshot watcher thread started");
+        debug!("Snapshot watcher thread started (AX system-wide focus)");
         loop {
-            let (app, mut title, pid) = match crate::frontmost_window() {
-                Some(w) => (w.app, w.title, w.pid),
+            // AX-first: read system-wide focused app/window
+            let (app, mut title, pid) = match super::ax::system_focus_snapshot() {
+                Some((app, title, pid)) => (app, title, pid),
                 None => (String::new(), String::new(), -1),
             };
 
-            let app_changed = app != last_app || pid != last_pid;
+            let app_changed = pid != last_pid || app != last_app;
 
             if app_changed {
-                // Attach/detach AX for new pid
+                // Attach/detach AX for new pid (for title changes inside app)
                 let should_skip = SKIP_APPS.iter().any(|&skip_app| app == skip_app);
                 if ax_is_trusted() && pid > 0 && !should_skip {
                     match ax.attach(pid, tx_ax.clone()) {
@@ -131,7 +126,7 @@ pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) {
                 }
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(80));
         }
     });
 }

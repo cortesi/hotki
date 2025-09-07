@@ -125,12 +125,16 @@ pub fn frontmost_window() -> Option<WindowInfo> {
     let all = list_windows();
     if let Some(w) = all
         .iter()
-        .find(|w| w.layer == 0 && w.app != "Window Server")
+        .find(|w| w.layer == 0 && !crate::FOCUS_SKIP_APPS.iter().any(|s| *s == w.app))
         .cloned()
     {
         return Some(w);
     }
-    if let Some(w) = all.iter().find(|w| w.app != "Window Server").cloned() {
+    if let Some(w) = all
+        .iter()
+        .find(|w| !crate::FOCUS_SKIP_APPS.iter().any(|s| *s == w.app))
+        .cloned()
+    {
         return Some(w);
     }
     all.into_iter().next()
