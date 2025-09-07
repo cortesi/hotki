@@ -80,9 +80,10 @@ pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         if let Some(binds) = get_bindings()
-            && binds.iter().any(|b| b == ident) {
-                return true;
-            }
+            && binds.iter().any(|b| b == ident)
+        {
+            return true;
+        }
         std::thread::sleep(config::ms(config::RETRY_DELAY_MS));
     }
     false

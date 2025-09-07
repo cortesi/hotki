@@ -27,17 +27,14 @@ pub const KEY_EVENT_DELAY_MS: u64 = 60;
 /// Standard delay between UI actions.
 pub const UI_ACTION_DELAY_MS: u64 = 120;
 
-/// Delay for UI stabilization.
-pub const UI_STABILIZE_DELAY_MS: u64 = 200;
+// Deprecated: use per-test tunables instead.
+// pub const UI_STABILIZE_DELAY_MS: u64 = 200;
 
 /// Delay between retry attempts.
 pub const RETRY_DELAY_MS: u64 = 300;
 
-
 /// Delay for window registration.
 pub const WINDOW_REGISTRATION_DELAY_MS: u64 = 200;
-
-
 
 // ===== Wait Timeouts =====
 
@@ -80,6 +77,8 @@ pub const HIDE_MIN_TIMEOUT_MS: u64 = 800;
 
 /// Minimum timeout for secondary hide operations (1/3 of main timeout).
 pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
+/// Delay after re-opening HUD (or activating mode) before sending next keys in hide test.
+pub const HIDE_REOPEN_DELAY_MS: u64 = 150;
 
 /// Default binding readiness gate for non-raise tests (RPC mode).
 pub const BINDING_GATE_DEFAULT_MS: u64 = 700;

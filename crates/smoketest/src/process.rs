@@ -122,7 +122,9 @@ pub fn build_hotki_quiet() -> Result<()> {
                         "Build timeout: cargo build took too long".to_string(),
                     ));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(crate::config::RETRY_DELAY_MS));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    crate::config::RETRY_DELAY_MS,
+                ));
             }
         }
     }

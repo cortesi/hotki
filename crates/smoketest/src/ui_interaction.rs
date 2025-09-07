@@ -12,11 +12,10 @@ fn use_rpc() -> bool {
 /// Send a single key chord using the RelayKey mechanism.
 /// This is the standard way tests interact with hotki.
 pub fn send_key(seq: &str) {
-    if use_rpc() && server_drive::is_ready()
-        && server_drive::inject_key(seq) {
-            return;
-        }
-        // fall back to HID on failure
+    if use_rpc() && server_drive::is_ready() && server_drive::inject_key(seq) {
+        return;
+    }
+    // fall back to HID on failure
     if let Some(ch) = mac_keycode::Chord::parse(seq) {
         let rk = relaykey::RelayKey::new_unlabeled();
         rk.key_down(0, ch.clone(), false);
@@ -27,11 +26,10 @@ pub fn send_key(seq: &str) {
 
 /// Send a sequence of key chords with delays between them.
 pub fn send_key_sequence(sequences: &[&str]) {
-    if use_rpc() && server_drive::is_ready()
-        && server_drive::inject_sequence(sequences) {
-            return;
-        }
-        // fall back to HID on failure
+    if use_rpc() && server_drive::is_ready() && server_drive::inject_sequence(sequences) {
+        return;
+    }
+    // fall back to HID on failure
     let rk = relaykey::RelayKey::new_unlabeled();
     for s in sequences {
         if let Some(ch) = mac_keycode::Chord::parse(s) {
@@ -48,11 +46,4 @@ pub fn send_activation_chord() {
     send_key("shift+cmd+0");
 }
 
-/// Navigate HUD menu by sending a sequence of keys.
-/// Useful for navigating to specific menu items.
-pub fn navigate_hud_menu(path: &[&str]) {
-    for key in path {
-        send_key(key);
-        thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-    }
-}
+// Deprecated: use explicit gated send_key calls in tests for reliability.

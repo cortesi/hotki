@@ -12,7 +12,7 @@ use crate::{
     process::HelperWindowBuilder,
     server_drive,
     session::HotkiSession,
-    ui_interaction::{navigate_hud_menu, send_activation_chord},
+    ui_interaction::send_activation_chord,
     util::resolve_hotki_bin,
 };
 
@@ -59,7 +59,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         });
     }
 
-    // Temporary config: shift+cmd+0 -> h -> (t/on/off)
+    // Temporary config: shift+cmd+0 -> h -> (t/on/off); hide HUD to reduce intrusiveness
     let cfg = r#"(
     keys: [
         ("shift+cmd+0", "activate", keys([
@@ -71,7 +71,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
         ])),
         ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-    ]
+    ],
+    style: (hud: (mode: hide))
 )
 "#
     .to_string();
@@ -110,11 +111,15 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         p0.0 + config::WINDOW_POSITION_OFFSET
     };
 
-    // Drive: h -> o (hide on). Wait for 'h' binding if using RPC
+    // Drive: send 'h' then gate and send 'o' (hide on)
     if server_drive::is_ready() {
         let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
     }
-    navigate_hud_menu(&["h", "o"]);
+    crate::ui_interaction::send_key("h");
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("o", crate::config::BINDING_GATE_DEFAULT_MS);
+    }
+    crate::ui_interaction::send_key("o");
 
     // Wait for position change
     let mut moved = false;
@@ -144,11 +149,18 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         ));
     }
 
-    // Drive: reopen HUD if needed and turn hide off (reveal)
-    thread::sleep(config::ms(config::UI_STABILIZE_DELAY_MS));
+    // Drive: reopen/activate and turn hide off (reveal)
+    thread::sleep(config::ms(config::HIDE_REOPEN_DELAY_MS));
     send_activation_chord();
     thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
-    navigate_hud_menu(&["h", "f"]);
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
+    }
+    crate::ui_interaction::send_key("h");
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("f", crate::config::BINDING_GATE_DEFAULT_MS);
+    }
+    crate::ui_interaction::send_key("f");
 
     // Wait until position roughly returns to original
     let mut restored = false;

@@ -63,7 +63,9 @@ pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
             let start_wait = Instant::now();
-            while after.is_none() && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS) {
+            while after.is_none()
+                && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS)
+            {
                 std::thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
                 after = mac_winops::ax_window_frame(helper.pid, &title);
             }
