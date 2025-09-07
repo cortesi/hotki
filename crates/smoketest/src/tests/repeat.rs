@@ -58,13 +58,32 @@ pub fn count_relay(ms: u64) -> usize {
     impl ApplicationHandler for RelayApp {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
             if self.window.is_none() {
+                use winit::dpi::{LogicalPosition, LogicalSize};
                 let attrs = winit::window::Window::default_attributes()
                     .with_title(config::RELAY_TEST_TITLE)
-                    .with_visible(true);
+                    .with_visible(true)
+                    // Make the popup smaller to reduce intrusion.
+                    .with_inner_size(LogicalSize::new(
+                        crate::config::HELPER_WIN_WIDTH,
+                        crate::config::HELPER_WIN_HEIGHT,
+                    ));
                 let win = elwt.create_window(attrs).expect("create window");
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     unsafe { app.activate() };
+                }
+                // Place the window at the top-right of the main screen.
+                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                    use objc2_app_kit::NSScreen;
+                    let margin: f64 = crate::config::HELPER_WIN_MARGIN;
+                    if let Some(scr) = NSScreen::mainScreen(mtm) {
+                        let vf = scr.visibleFrame();
+                        let w = crate::config::HELPER_WIN_WIDTH;
+                        let h = crate::config::HELPER_WIN_HEIGHT;
+                        let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
+                        let y = (vf.origin.y + vf.size.height - h - margin).max(0.0);
+                        win.set_outer_position(LogicalPosition::new(x, y));
+                    }
                 }
                 self.window = Some(win);
             }

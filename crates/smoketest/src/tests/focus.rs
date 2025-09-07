@@ -38,7 +38,7 @@ async fn listen_for_focus(
         Err(_) => return,
     };
 
-    let per_wait = config::ms(config::EVENT_CHECK_INTERVAL_MS);
+    let per_wait = config::ms(config::FOCUS_EVENT_POLL_MS);
     loop {
         if done.load(Ordering::SeqCst) {
             break;
@@ -65,7 +65,10 @@ async fn listen_for_focus(
 }
 
 pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
-    let config = TestConfig::new(timeout_ms).with_logs(with_logs);
+    let ron_config = "(keys: [], style: (hud: (mode: hide)))";
+    let config = TestConfig::new(timeout_ms)
+        .with_logs(with_logs)
+        .with_temp_config(ron_config);
 
     // Generate unique title for the test window
     let unique = SystemTime::now()
@@ -124,7 +127,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 if found.load(Ordering::SeqCst) {
                     break;
                 }
-                thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+                thread::sleep(config::ms(config::FOCUS_POLL_MS));
             }
 
             // Signal listener to stop

@@ -160,6 +160,13 @@ pub const HIDE_ACTIVATE_POST_DELAY_MS: u64 = 100;
 /// Max wait for the window to restore frame on hide(off).
 pub const HIDE_RESTORE_MAX_MS: u64 = 1200;
 
+// ===== Focus Test Tunables =====
+
+/// Poll interval for receiving focus HudUpdate events.
+pub const FOCUS_EVENT_POLL_MS: u64 = 150;
+/// Poll interval for the outer wait loop.
+pub const FOCUS_POLL_MS: u64 = 100;
+
 // ===== Helper Functions =====
 
 /// Convert milliseconds to Duration.

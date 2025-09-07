@@ -67,12 +67,13 @@ Readiness gating and RPC-first driving checklist (ticking items as we complete t
 - [x] focus (hidden HUD, tuned polling, constants hoisted)
 - [x] ui
 - [x] minui
-- [ ] fullscreen
-- [ ] screenshots
 - [ ] repeat_relay
 - [ ] repeat_shell
 - [ ] repeat_volume
+
 - [ ] preflight
+- [ ] fullscreen
+- [ ] screenshots
 
 ### Stage 4 Notes (UI + Minui)
 
