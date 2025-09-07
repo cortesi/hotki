@@ -84,12 +84,16 @@ fn main() {
     }
 
     // Screenshots require Screen Recording; fail fast with a clear error if not granted.
-    if matches!(cli.command, Commands::Screenshots { .. }) && !screen_recording_ok() {
-        eprintln!("ERROR: Screen Recording permission is required for screenshots");
-        eprintln!(
-            "Grant Screen Recording permission to your terminal under System Settings → Privacy & Security → Screen Recording."
-        );
-        std::process::exit(1);
+    if matches!(cli.command, Commands::Screenshots { .. }) {
+        let sr_ok = screen_recording_ok();
+        println!("screen_recording: {}", sr_ok);
+        if !sr_ok {
+            eprintln!("ERROR: Screen Recording permission is required for screenshots");
+            eprintln!(
+                "Grant Screen Recording permission to your terminal under System Settings → Privacy & Security → Screen Recording."
+            );
+            std::process::exit(1);
+        }
     }
 
     // Build the hotki binary once at startup to avoid running against a stale build.

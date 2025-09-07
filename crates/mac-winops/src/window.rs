@@ -58,7 +58,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
         let mut frontmost_pid: Option<i32> = None;
         let mut focused_marked = false;
         let key_pid = cgw::kCGWindowOwnerPID;
-        let key_layer = cgw::kCGWindowLayer;
+        let _key_layer = cgw::kCGWindowLayer;
         let key_num = cgw::kCGWindowNumber;
         let key_app = cgw::kCGWindowOwnerName;
         let key_title = cgw::kCGWindowName;
@@ -75,9 +75,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 continue;
             }
             let d = item as CFDictionaryRef;
-            if dict_get_i32(d, key_layer).unwrap_or(0) as i64 != 0 {
-                continue;
-            }
+            // Include all layers; some app windows (HUD/notifications) use non-zero layers.
             let pid = match dict_get_i32(d, key_pid) {
                 Some(p) => p,
                 None => continue,

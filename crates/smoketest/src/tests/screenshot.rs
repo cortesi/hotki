@@ -19,19 +19,20 @@ use crate::{
 
 // ===== Window discovery and capture =====
 
-fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, (i32, i32, i32, i32))> {
+fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, Option<(i32, i32, i32, i32)>)> {
     // Use mac-winops to get window information
     mac_winops::list_windows()
         .into_iter()
         .find(|w| w.pid == pid as i32 && w.title == title)
-        .and_then(|w| {
-            w.pos
-                .map(|pos| (w.id, (pos.x, pos.y, pos.width, pos.height)))
+        .map(|w| {
+            let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
+            (w.id, rect)
         })
 }
 
 fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
-    if let Some((win_id, (x, y, w, h))) = find_window_by_title(pid, title) {
+    if let Some((win_id, rect_opt)) = find_window_by_title(pid, title) {
+        eprintln!("screens: found window '{}' id={} rect={:?}", title, win_id, rect_opt);
         let sanitized = name
             .chars()
             .map(|c| {
@@ -43,6 +44,7 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
             })
             .collect::<String>();
         let path = dir.join(format!("{}.png", sanitized));
+        // First, try to capture by window id (works even if we lack precise bounds)
         let status = Command::new("screencapture")
             .args([
                 OsStr::new("-x"),
@@ -52,20 +54,35 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
                 path.as_os_str(),
             ])
             .status();
+        eprintln!("screens: screencapture -l {} -> {:?}", win_id, status);
         if matches!(status, Ok(s) if s.success()) {
             return true;
         }
-        let rect_arg = format!("{},{},{},{}", x, y, w, h);
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-R"),
-                OsStr::new(&rect_arg),
-                path.as_os_str(),
-            ])
-            .status();
-        return matches!(status, Ok(s) if s.success());
+        if let Some((x, y, w, h)) = rect_opt {
+            let rect_arg = format!("{},{},{},{}", x, y, w, h);
+            let status = Command::new("screencapture")
+                .args([
+                    OsStr::new("-x"),
+                    OsStr::new("-R"),
+                    OsStr::new(&rect_arg),
+                    path.as_os_str(),
+                ])
+                .status();
+            eprintln!("screens: screencapture -R {} -> {:?}", rect_arg, status);
+            return matches!(status, Ok(s) if s.success());
+        }
+        return false;
     }
+    eprintln!(
+        "screens: did not find window '{}' under pid {} (available: {:?})",
+        title,
+        pid,
+        mac_winops::list_windows()
+            .into_iter()
+            .filter(|w| w.pid == pid as i32)
+            .map(|w| (w.title, w.id, w.pos))
+            .collect::<Vec<_>>()
+    );
     false
 }
 
