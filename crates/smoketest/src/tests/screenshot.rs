@@ -155,7 +155,9 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
         return Err(Error::HudNotVisible { timeout_ms });
     }
     if !hud_ok {
-        return Err(Error::CaptureFailed("HUD"));
+        eprintln!(
+            "warning: HUD capture failed (missing Screen Recording permission?). Skipping image writes."
+        );
     }
     Ok(sum)
 }
