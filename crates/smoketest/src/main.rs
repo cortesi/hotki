@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod logging;
 mod orchestrator;
+mod proc_registry;
 mod process;
 mod results;
 mod runtime;
@@ -19,7 +20,32 @@ mod winhelper;
 use cli::{Cli, Commands};
 use error::print_hints;
 use orchestrator::{heading, run_all_tests, run_preflight};
+use std::sync::mpsc;
+use std::time::Duration;
 use tests::*;
+
+fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let out = f();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!(
+                "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
+                timeout_ms, name
+            );
+            crate::proc_registry::kill_all();
+            std::process::exit(2);
+        }
+    }
+}
 
 // Re-export common result types
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
@@ -72,7 +98,11 @@ fn main() {
         Commands::All => run_all_tests(cli.duration, cli.timeout),
         Commands::Raise => {
             heading("Test: raise");
-            match raise::run_raise_test(cli.timeout, cli.logs) {
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_with_watchdog("raise", timeout, move || {
+                raise::run_raise_test(timeout, logs)
+            }) {
                 Ok(()) => println!("raise: OK (raised by title twice)"),
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
@@ -83,7 +113,11 @@ fn main() {
         }
         Commands::Focus => {
             heading("Test: focus");
-            match focus::run_focus_test(cli.timeout, cli.logs) {
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_with_watchdog("focus", timeout, move || {
+                focus::run_focus_test(timeout, logs)
+            }) {
                 Ok(out) => {
                     println!(
                         "focus: OK (title='{}', pid={}, time_to_match_ms={})",
@@ -99,7 +133,9 @@ fn main() {
         }
         Commands::Hide => {
             heading("Test: hide");
-            match hide::run_hide_test(cli.timeout, cli.logs) {
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
                 Ok(()) => println!("hide: OK (toggle on/off roundtrip)"),
                 Err(e) => {
                     eprintln!("hide: ERROR: {}", e);

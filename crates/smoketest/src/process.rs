@@ -5,7 +5,10 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    proc_registry,
+};
 
 /// Managed child process that cleans up on drop.
 pub struct ManagedChild {
@@ -17,6 +20,7 @@ impl ManagedChild {
     /// Create a new managed child from a process.
     pub fn new(child: Child) -> Self {
         let pid = child.id() as i32;
+        proc_registry::register(pid);
         Self {
             child: Some(child),
             pid,
@@ -29,6 +33,7 @@ impl ManagedChild {
             child.kill().map_err(Error::Io)?;
             child.wait().map_err(Error::Io)?;
         }
+        proc_registry::unregister(self.pid);
         Ok(())
     }
 }

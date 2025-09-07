@@ -7,7 +7,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    logging, runtime, server_drive,
+    logging, proc_registry, runtime, server_drive,
     ui_interaction::send_activation_chord,
 };
 
@@ -59,6 +59,7 @@ impl HotkiSessionBuilder {
         let child = cmd.spawn().map_err(|e| Error::SpawnFailed(e.to_string()))?;
 
         let socket_path = socket_path_for_pid(child.id());
+        proc_registry::register(child.id() as i32);
 
         Ok(HotkiSession {
             child,
@@ -134,9 +135,8 @@ impl HotkiSession {
         // Mark as running once connected
         self.state = SessionState::Running;
 
-        // Initialize RPC driver if selected and not yet ready
-        let drive = std::env::var("HOTKI_DRIVE").unwrap_or_else(|_| "rpc".into());
-        if drive == "rpc" && !server_drive::is_ready() {
+        // Initialize RPC driver when not yet ready (standardized)
+        if !server_drive::is_ready() {
             let _ = server_drive::init(self.socket_path());
         }
 
@@ -201,8 +201,10 @@ impl HotkiSession {
     }
 
     pub fn kill_and_wait(&mut self) {
+        let pid = self.child.id() as i32;
         let _ = self.child.kill();
         let _ = self.child.wait();
+        proc_registry::unregister(pid);
         self.state = SessionState::Stopped;
     }
 }

@@ -149,6 +149,17 @@ pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
 
 pub const SCREENSHOT_FRAME_GAP_MS: u64 = 160;
 
+// ===== Hide Test Tunables =====
+
+/// Max wait for the helper window to appear initially.
+pub const HIDE_FIRST_WINDOW_MAX_MS: u64 = 2000;
+/// Poll interval for hide position/frame checks.
+pub const HIDE_POLL_MS: u64 = 50;
+/// Delay after activation before sending next hide keys.
+pub const HIDE_ACTIVATE_POST_DELAY_MS: u64 = 100;
+/// Max wait for the window to restore frame on hide(off).
+pub const HIDE_RESTORE_MAX_MS: u64 = 1200;
+
 // ===== Helper Functions =====
 
 /// Convert milliseconds to Duration.

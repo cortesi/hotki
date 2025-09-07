@@ -3,16 +3,12 @@
 use std::thread;
 
 use crate::{config, server_drive};
-use std::env;
-
-fn use_rpc() -> bool {
-    env::var("HOTKI_DRIVE").map(|v| v == "rpc").unwrap_or(true)
-}
+// RPC driver is always preferred when available; HID is a fallback.
 
 /// Send a single key chord using the RelayKey mechanism.
 /// This is the standard way tests interact with hotki.
 pub fn send_key(seq: &str) {
-    if use_rpc() && server_drive::is_ready() && server_drive::inject_key(seq) {
+    if server_drive::is_ready() && server_drive::inject_key(seq) {
         return;
     }
     // fall back to HID on failure
@@ -26,7 +22,7 @@ pub fn send_key(seq: &str) {
 
 /// Send a sequence of key chords with delays between them.
 pub fn send_key_sequence(sequences: &[&str]) {
-    if use_rpc() && server_drive::is_ready() && server_drive::inject_sequence(sequences) {
+    if server_drive::is_ready() && server_drive::inject_sequence(sequences) {
         return;
     }
     // fall back to HID on failure

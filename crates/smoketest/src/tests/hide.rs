@@ -39,7 +39,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .spawn()?;
     let pid = helper.pid;
     // Wait until the helper window is visible via CG or AX
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let deadline = Instant::now()
+        + Duration::from_millis(std::cmp::min(timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS));
     let mut ready = false;
     while Instant::now() < deadline {
         let wins = mac_winops::list_windows();
@@ -49,7 +50,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ready = true;
             break;
         }
-        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
+        thread::sleep(config::ms(config::HIDE_POLL_MS));
     }
     if !ready {
         // helper cleans up automatically via Drop
@@ -152,7 +153,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Drive: reopen/activate and turn hide off (reveal)
     thread::sleep(config::ms(config::HIDE_REOPEN_DELAY_MS));
     send_activation_chord();
-    thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
+    thread::sleep(config::ms(config::HIDE_ACTIVATE_POST_DELAY_MS));
     if server_drive::is_ready() {
         let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
     }
@@ -165,9 +166,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Wait until position roughly returns to original
     let mut restored = false;
     let deadline2 = Instant::now()
-        + Duration::from_millis(cmp::max(
-            config::HIDE_SECONDARY_MIN_TIMEOUT_MS,
-            timeout_ms / 3,
+        + Duration::from_millis(std::cmp::min(
+            config::HIDE_RESTORE_MAX_MS,
+            cmp::max(config::HIDE_SECONDARY_MIN_TIMEOUT_MS, timeout_ms / 3),
         ));
     while Instant::now() < deadline2 {
         if let Some(((px2, py2), (width2, height2))) = mac_winops::ax_window_frame(pid, &title) {
@@ -179,7 +180,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 break;
             }
         }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS + 30));
+        thread::sleep(config::ms(config::HIDE_POLL_MS));
     }
 
     // Cleanup (helper cleans up automatically via Drop)

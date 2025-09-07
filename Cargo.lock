@@ -4518,6 +4518,7 @@ dependencies = [
  "hotki-protocol",
  "hotki-server",
  "keymode",
+ "libc",
  "mac-keycode",
  "mac-winops",
  "objc2-app-kit 0.3.1",
