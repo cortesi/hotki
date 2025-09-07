@@ -70,10 +70,8 @@ Readiness gating and RPC-first driving checklist (ticking items as we complete t
 - [x] repeat_relay
 - [x] repeat_shell
 - [x] repeat_volume
-
-- [ ] preflight
+- [x] screenshots
 - [ ] fullscreen
-- [ ] screenshots
 
 ### Stage 4 Notes (UI + Minui)
 

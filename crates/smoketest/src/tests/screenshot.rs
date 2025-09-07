@@ -32,7 +32,6 @@ fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, Option<(i32, i32,
 
 fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
     if let Some((win_id, rect_opt)) = find_window_by_title(pid, title) {
-        eprintln!("screens: found window '{}' id={} rect={:?}", title, win_id, rect_opt);
         let sanitized = name
             .chars()
             .map(|c| {
@@ -54,7 +53,6 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
                 path.as_os_str(),
             ])
             .status();
-        eprintln!("screens: screencapture -l {} -> {:?}", win_id, status);
         if matches!(status, Ok(s) if s.success()) {
             return true;
         }
@@ -68,21 +66,10 @@ fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -
                     path.as_os_str(),
                 ])
                 .status();
-            eprintln!("screens: screencapture -R {} -> {:?}", rect_arg, status);
             return matches!(status, Ok(s) if s.success());
         }
         return false;
     }
-    eprintln!(
-        "screens: did not find window '{}' under pid {} (available: {:?})",
-        title,
-        pid,
-        mac_winops::list_windows()
-            .into_iter()
-            .filter(|w| w.pid == pid as i32)
-            .map(|w| (w.title, w.id, w.pos))
-            .collect::<Vec<_>>()
-    );
     false
 }
 

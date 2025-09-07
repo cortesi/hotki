@@ -7,6 +7,7 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
+use hotki_protocol::Toggle;
 
 /// Run a focused non-native fullscreen toggle against a helper window.
 ///
@@ -15,14 +16,23 @@ use crate::{
 /// - Spawn a helper window with a unique title and keep it frontmost.
 /// - Show HUD, press `f` to toggle non-native fullscreen.
 /// - Optionally validate the window frame changed; then immediately kill the helper.
-pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
+pub fn run_fullscreen_test(
+    timeout_ms: u64,
+    with_logs: bool,
+    state: Toggle,
+    native: bool,
+) -> Result<()> {
     // Minimal config: bind activation and fullscreen(toggle, nonnative)
-    let ron_config = r#"(
-        keys: [
-            // Bind a global chord to avoid relying on HUD/capture
-            ("shift+cmd+9", "Fullscreen (non-native)", fullscreen(toggle, nonnative), (global: true)),
-        ],
-    )"#;
+    let state_str = match state {
+        Toggle::Toggle => "toggle",
+        Toggle::On => "on",
+        Toggle::Off => "off",
+    };
+    let kind_suffix = if native { ", native" } else { "" };
+    let ron_config = format!(
+        "(\n        keys: [\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen({}{}) , (global: true)),\n        ],\n    )",
+        state_str, kind_suffix
+    );
 
     let config = TestConfig::new(timeout_ms)
         .with_temp_config(ron_config)

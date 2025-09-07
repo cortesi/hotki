@@ -1,7 +1,7 @@
 //! Command-line interface definitions for smoketest.
 
 use crate::config;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -21,6 +21,13 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum FsState {
+    Toggle,
+    On,
+    Off,
 }
 
 #[derive(Subcommand, Debug)]
@@ -77,7 +84,14 @@ pub enum Commands {
     /// Launch UI in mini HUD mode and cycle themes
     Minui,
 
-    /// Toggle non-system (non-native) fullscreen on a helper window
-    Fullscreen,
+    /// Control fullscreen on a helper window (toggle/on/off; native or non-native)
+    Fullscreen {
+        /// Desired state (toggle/on/off)
+        #[arg(long, value_enum, default_value_t = FsState::Toggle)]
+        state: FsState,
+        /// Use native system fullscreen instead of non-native
+        #[arg(long, default_value_t = false)]
+        native: bool,
+    },
     // Preflight smoketest removed.
 }

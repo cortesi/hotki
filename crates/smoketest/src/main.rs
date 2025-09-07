@@ -17,8 +17,9 @@ mod ui_interaction;
 mod util;
 mod winhelper;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, FsState};
 use error::print_hints;
+use hotki_protocol::Toggle;
 use orchestrator::{heading, run_all_tests};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -222,9 +223,14 @@ fn main() {
                 }
             }
         }
-        Commands::Fullscreen => {
+        Commands::Fullscreen { state, native } => {
             heading("Test: fullscreen");
-            match tests::fullscreen::run_fullscreen_test(cli.timeout, cli.logs) {
+            let toggle = match state {
+                FsState::Toggle => Toggle::Toggle,
+                FsState::On => Toggle::On,
+                FsState::Off => Toggle::Off,
+            };
+            match tests::fullscreen::run_fullscreen_test(cli.timeout, cli.logs, toggle, native) {
                 Ok(()) => println!("fullscreen: OK (toggled non-native fullscreen)"),
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);
