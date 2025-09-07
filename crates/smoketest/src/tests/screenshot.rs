@@ -127,7 +127,7 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
     let hud_ok = capture_window_by_id_or_rect(pid, "Hotki HUD", &dir, "hud");
 
     // Trigger notifications via chords
-    let gap = config::ms(160);
+    let gap = config::ms(config::SCREENSHOT_FRAME_GAP_MS);
     for (k, name) in [
         ("t", None),
         ("s", Some("notify_success")),

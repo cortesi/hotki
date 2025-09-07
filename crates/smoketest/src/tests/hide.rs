@@ -112,7 +112,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Drive: h -> o (hide on). Wait for 'h' binding if using RPC
     if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("h", 1500);
+        let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
     }
     navigate_hud_menu(&["h", "o"]);
 

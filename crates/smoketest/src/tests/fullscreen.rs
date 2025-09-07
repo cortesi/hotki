@@ -50,7 +50,7 @@ pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .spawn()?;
 
             // Give the system a moment to show and focus the helper
-            std::thread::sleep(config::ms(300));
+            std::thread::sleep(config::ms(config::FULLSCREEN_HELPER_SHOW_DELAY_MS));
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
@@ -58,13 +58,13 @@ pub fn run_fullscreen_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Trigger fullscreen toggle via global chord
             send_key("shift+cmd+9");
-            std::thread::sleep(config::ms(300));
+            std::thread::sleep(config::ms(config::FULLSCREEN_POST_TOGGLE_DELAY_MS));
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
             let start_wait = Instant::now();
-            while after.is_none() && start_wait.elapsed() < config::ms(1000) {
-                std::thread::sleep(config::ms(50));
+            while after.is_none() && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS) {
+                std::thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
                 after = mac_winops::ax_window_frame(helper.pid, &title);
             }
             let after = after.ok_or_else(|| {

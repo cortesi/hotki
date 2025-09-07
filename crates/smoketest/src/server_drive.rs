@@ -68,10 +68,7 @@ pub fn get_bindings() -> Option<Vec<String>> {
         Ok(g) => g,
         Err(_) => return None,
     };
-    let conn = match guard.as_mut() {
-        Some(c) => c,
-        None => return None,
-    };
+    let conn = guard.as_mut()?;
     match runtime::block_on(async { conn.get_bindings().await }) {
         Ok(Ok(v)) => Some(v),
         _ => None,
@@ -82,11 +79,10 @@ pub fn get_bindings() -> Option<Vec<String>> {
 pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
-        if let Some(binds) = get_bindings() {
-            if binds.iter().any(|b| b == ident) {
+        if let Some(binds) = get_bindings()
+            && binds.iter().any(|b| b == ident) {
                 return true;
             }
-        }
         std::thread::sleep(config::ms(config::RETRY_DELAY_MS));
     }
     false

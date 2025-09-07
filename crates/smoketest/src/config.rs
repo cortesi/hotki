@@ -33,17 +33,11 @@ pub const UI_STABILIZE_DELAY_MS: u64 = 200;
 /// Delay between retry attempts.
 pub const RETRY_DELAY_MS: u64 = 300;
 
-/// Delay when opening menus in sequence.
-pub const MENU_OPEN_STAGGER_MS: u64 = 150;
 
 /// Delay for window registration.
 pub const WINDOW_REGISTRATION_DELAY_MS: u64 = 200;
 
-/// Delay after menu operations to allow stabilization.
-pub const MENU_STABILIZE_DELAY_MS: u64 = 250;
 
-/// Delay between menu key presses.
-pub const MENU_KEY_DELAY_MS: u64 = 120;
 
 // ===== Wait Timeouts =====
 
@@ -53,8 +47,8 @@ pub const WAIT_BOTH_WINDOWS_MS: u64 = 15000;
 /// Timeout for waiting for the first window.
 pub const WAIT_FIRST_WINDOW_MS: u64 = 6000;
 
-/// Timeout for rechecking window presence.
-pub const WAIT_WINDOW_RECHECK_MS: u64 = 1500;
+// (legacy per-test menu timing constants have been removed; use test-specific
+// tunables below instead.)
 
 /// Extra time to add to helper window lifetime.
 pub const HELPER_WINDOW_EXTRA_TIME_MS: u64 = 5000;
@@ -86,6 +80,9 @@ pub const HIDE_MIN_TIMEOUT_MS: u64 = 800;
 
 /// Minimum timeout for secondary hide operations (1/3 of main timeout).
 pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
+
+/// Default binding readiness gate for non-raise tests (RPC mode).
+pub const BINDING_GATE_DEFAULT_MS: u64 = 700;
 
 // ===== Helper Window Defaults =====
 
@@ -141,6 +138,17 @@ pub fn hide_test_title(test_id: u128) -> String {
 
 /// Base title for relay repeat test window.
 pub const RELAY_TEST_TITLE: &str = "hotki smoketest: relayrepeat";
+
+// ===== Fullscreen Test Tunables =====
+
+pub const FULLSCREEN_HELPER_SHOW_DELAY_MS: u64 = 300;
+pub const FULLSCREEN_POST_TOGGLE_DELAY_MS: u64 = 300;
+pub const FULLSCREEN_WAIT_TOTAL_MS: u64 = 1000;
+pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
+
+// ===== Screenshot Test Tunables =====
+
+pub const SCREENSHOT_FRAME_GAP_MS: u64 = 160;
 
 // ===== Helper Functions =====
 

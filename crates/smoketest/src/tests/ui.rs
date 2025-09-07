@@ -20,7 +20,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
 
             // If driving via RPC, wait for 't' binding before injecting
             if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("t", 1500);
+                let _ = server_drive::wait_for_ident("t", crate::config::BINDING_GATE_DEFAULT_MS);
             }
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
@@ -71,7 +71,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
             let time_to_hud = ctx.wait_for_hud()?;
 
             if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("t", 1500);
+                let _ = server_drive::wait_for_ident("t", crate::config::BINDING_GATE_DEFAULT_MS);
             }
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
