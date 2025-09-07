@@ -79,7 +79,5 @@ pub enum Commands {
 
     /// Toggle non-system (non-native) fullscreen on a helper window
     Fullscreen,
-
-    /// Check required permissions and screen capture capability
-    Preflight,
+    // Preflight smoketest removed.
 }

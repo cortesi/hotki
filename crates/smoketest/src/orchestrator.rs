@@ -1,63 +1,10 @@
 //! Test orchestration and execution logic.
 
 use crate::{config, error::print_hints, logging, tests::*};
-use std::process::Command;
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {
     println!("\n==> {}", title);
-}
-
-/// Run preflight checks for permissions and capabilities.
-pub fn run_preflight() -> bool {
-    // Accessibility and Input Monitoring via permissions crate
-    let p = permissions::check_permissions();
-    println!(
-        "permissions: accessibility={}, input_monitoring={}",
-        p.accessibility_ok, p.input_ok
-    );
-
-    // Screen Recording via screencapture
-    use std::ffi::OsStr;
-    let tmp = std::env::temp_dir().join(format!(
-        "hotki-smoketest-preflight-{}-{}.png",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let status = Command::new("screencapture")
-        .args([
-            OsStr::new("-x"),
-            OsStr::new("-R"),
-            OsStr::new("0,0,1,1"),
-            tmp.as_os_str(),
-        ])
-        .status();
-    let mut screen_ok = false;
-    if let Ok(st) = status {
-        screen_ok = st.success();
-    }
-    let _ = std::fs::remove_file(&tmp);
-    println!("screen_recording: {}", screen_ok);
-
-    if !p.accessibility_ok {
-        eprintln!(
-            "hint: grant Accessibility permission to your terminal under System Settings → Privacy & Security → Accessibility"
-        );
-    }
-    if !p.input_ok {
-        eprintln!(
-            "hint: grant Input Monitoring permission to your terminal under System Settings → Privacy & Security → Input Monitoring"
-        );
-    }
-    if !screen_ok {
-        eprintln!(
-            "hint: grant Screen Recording permission under System Settings → Privacy & Security → Screen Recording"
-        );
-    }
-    p.accessibility_ok && p.input_ok && screen_ok
 }
 
 /// Run all smoketests sequentially.

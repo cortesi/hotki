@@ -19,7 +19,7 @@ mod winhelper;
 
 use cli::{Cli, Commands};
 use error::print_hints;
-use orchestrator::{heading, run_all_tests, run_preflight};
+use orchestrator::{heading, run_all_tests};
 use std::sync::mpsc;
 use std::time::Duration;
 use tests::*;
@@ -56,7 +56,7 @@ fn main() {
     // Initialize logging if requested
     logging::init_logging(cli.logs);
 
-    // For the helper command, skip the build and heading
+    // For the helper command, skip permission/build checks and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
         match cli.command {
             Commands::FocusWinHelper { title, time } => {
@@ -68,6 +68,19 @@ fn main() {
             _ => unreachable!(),
         }
         return;
+    }
+
+    // Enforce required permissions for all smoketests.
+    let p = permissions::check_permissions();
+    if !p.accessibility_ok || !p.input_ok {
+        eprintln!(
+            "ERROR: required permissions missing (accessibility={}, input_monitoring={})",
+            p.accessibility_ok, p.input_ok
+        );
+        eprintln!(
+            "Grant Accessibility and Input Monitoring to your terminal under System Settings → Privacy & Security."
+        );
+        std::process::exit(1);
     }
 
     // Build the hotki binary once at startup to avoid running against a stale build.
@@ -206,13 +219,6 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-        }
-        Commands::Preflight => {
-            heading("Test: preflight");
-            let ok = run_preflight();
-            if !ok {
-                std::process::exit(1);
-            }
-        }
+        } // Preflight smoketest removed.
     }
 }
