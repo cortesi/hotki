@@ -177,7 +177,7 @@ impl HotkiSession {
                 return (true, start.elapsed().as_millis() as u64);
             }
             if let Some(last) = last_sent
-                && last.elapsed() >= Duration::from_millis(1000)
+                && last.elapsed() >= Duration::from_millis(config::ACTIVATION_RESEND_INTERVAL_MS)
             {
                 send_activation_chord();
                 last_sent = Some(Instant::now());

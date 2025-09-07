@@ -152,7 +152,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let title2 = format!("hotki smoketest: raise-2 {}-{}", process::id(), now);
 
     // Spawn two helper windows
-    let helper_time = timeout_ms.saturating_add(8000);
+    let helper_time = timeout_ms.saturating_add(config::RAISE_HELPER_EXTRA_MS);
     let mut cleanup = Cleanup::new();
     let child1 = HelperWindowBuilder::new(&title1)
         .with_time_ms(helper_time)
@@ -216,12 +216,15 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Best‑effort: allow WindowServer to register helpers before driving raise
     // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
     if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("r", config::WAIT_WINDOW_RECHECK_MS);
+        let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
     }
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
-    if !wait_for_windows(&[(pid1, &title1)], config::WAIT_FIRST_WINDOW_MS.min(3000)) {
+    if !wait_for_windows(
+        &[(pid1, &title1)],
+        config::WAIT_FIRST_WINDOW_MS.min(config::RAISE_FIRST_WINDOW_MAX_MS),
+    ) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
@@ -229,7 +232,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
     // Wait for '1' binding to appear under 'raise' if driving via RPC
     if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("1", config::WAIT_WINDOW_RECHECK_MS);
+        let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
     }
     send_key("1");
 
@@ -243,7 +246,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         if ok_hud {
             true
         } else {
-            thread::sleep(config::ms(config::RETRY_DELAY_MS));
+            std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
             send_key("1");
             // One more attempt using CG frontmost first, then HUD
             wait_for_frontmost_title(&title1, timeout_ms / 2)
@@ -254,9 +257,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !ok1 {
         // Final robust attempt: reopen HUD and try raise again
         send_key("shift+cmd+0");
-        thread::sleep(config::ms(config::MENU_OPEN_STAGGER_MS));
+        std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid1, &title1)], config::WAIT_WINDOW_RECHECK_MS);
+        let _ = wait_for_windows(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
         send_key("1");
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
             || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
@@ -270,10 +273,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
 
     // Reopen HUD and raise second window
-    thread::sleep(config::ms(config::MENU_STABILIZE_DELAY_MS));
+    std::thread::sleep(config::ms(config::RAISE_MENU_STABILIZE_MS));
     send_key("shift+cmd+0");
     // Ensure the second helper is visible (CG or AX) before issuing '2'
-    if !wait_for_windows(&[(pid2, &title2)], 3000) {
+    if !wait_for_windows(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
         return Err(Error::FocusNotObserved {
             timeout_ms: 6000,
             expected: format!("second window not visible before menu: '{}'", title2),
@@ -281,9 +284,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     }
     send_key("r");
     if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("2", config::WAIT_WINDOW_RECHECK_MS);
+        let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
     }
-    thread::sleep(config::ms(config::MENU_KEY_DELAY_MS));
+    std::thread::sleep(config::ms(config::RAISE_MENU_KEY_DELAY_MS));
     send_key("2");
     let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
     let mut ok2 = if ok2_front {
@@ -304,9 +307,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !ok2 {
         // Final robust attempt for the second window as well
         send_key("shift+cmd+0");
-        thread::sleep(config::ms(config::MENU_OPEN_STAGGER_MS));
+        std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
         send_key("r");
-        let _ = wait_for_windows(&[(pid2, &title2)], config::WAIT_WINDOW_RECHECK_MS);
+        let _ = wait_for_windows(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
         send_key("2");
         ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
             || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))

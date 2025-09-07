@@ -87,6 +87,39 @@ pub const HIDE_MIN_TIMEOUT_MS: u64 = 800;
 /// Minimum timeout for secondary hide operations (1/3 of main timeout).
 pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
 
+// ===== Helper Window Defaults =====
+
+/// Default helper window width in pixels for test helpers.
+pub const HELPER_WIN_WIDTH: f64 = 280.0;
+/// Default helper window height in pixels for test helpers.
+pub const HELPER_WIN_HEIGHT: f64 = 180.0;
+/// Margin from screen edge when placing helper windows.
+pub const HELPER_WIN_MARGIN: f64 = 8.0;
+
+// ===== Raise Test Tunables =====
+
+/// Extra lifetime added to helper windows beyond overall timeout.
+pub const RAISE_HELPER_EXTRA_MS: u64 = 2500;
+/// Max wait for the first helper window to appear.
+pub const RAISE_FIRST_WINDOW_MAX_MS: u64 = 2000;
+/// Retry sleep for certain short polls in raise.
+pub const RAISE_RETRY_SLEEP_MS: u64 = 120;
+/// Small delay after re-opening HUD between steps.
+pub const RAISE_MENU_OPEN_STAGGER_MS: u64 = 100;
+/// Small stabilization delay before second raise run.
+pub const RAISE_MENU_STABILIZE_MS: u64 = 120;
+/// Delay between menu key presses when needed.
+pub const RAISE_MENU_KEY_DELAY_MS: u64 = 80;
+/// Short recheck timeout for window presence.
+pub const RAISE_WINDOW_RECHECK_MS: u64 = 800;
+/// Binding gate timeout for RPC identifier readiness.
+pub const RAISE_BINDING_GATE_MS: u64 = 700;
+
+// ===== Session Tunables =====
+
+/// Interval to resend activation chord while waiting for HUD.
+pub const ACTIVATION_RESEND_INTERVAL_MS: u64 = 500;
+
 // ===== CoreGraphics Constants =====
 
 // ===== Test Configuration Paths =====

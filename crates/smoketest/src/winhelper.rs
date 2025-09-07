@@ -23,7 +23,10 @@ pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), Strin
                     .with_title(self.title.clone())
                     .with_visible(true)
                     // Small helper window; reduce visual intrusion.
-                    .with_inner_size(LogicalSize::new(400.0, 260.0));
+                    .with_inner_size(LogicalSize::new(
+                        crate::config::HELPER_WIN_WIDTH,
+                        crate::config::HELPER_WIN_HEIGHT,
+                    ));
                 let win = elwt
                     .create_window(attrs)
                     .map_err(|e| e.to_string())
@@ -35,11 +38,10 @@ pub(crate) fn run_focus_winhelper(title: &str, time_ms: u64) -> Result<(), Strin
                 // Place window at bottom-right corner of the main screen.
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     use objc2_app_kit::NSScreen;
-                    let margin: f64 = 8.0;
+                    let margin: f64 = crate::config::HELPER_WIN_MARGIN;
                     if let Some(scr) = NSScreen::mainScreen(mtm) {
                         let vf = scr.visibleFrame();
-                        let w = 400.0_f64;
-                        let _h = 260.0_f64;
+                        let w = crate::config::HELPER_WIN_WIDTH;
                         let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
                         let y = (vf.origin.y + margin).max(0.0);
                         win.set_outer_position(LogicalPosition::new(x, y));
