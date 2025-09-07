@@ -12,6 +12,7 @@ use crate::{
     process::HelperWindowBuilder,
     session::HotkiSession,
     ui_interaction::{navigate_hud_menu, send_activation_chord},
+    server_drive,
     util::resolve_hotki_bin,
 };
 
@@ -109,7 +110,10 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         p0.0 + config::WINDOW_POSITION_OFFSET
     };
 
-    // Drive: h -> o (hide on)
+    // Drive: h -> o (hide on). Wait for 'h' binding if using RPC
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("h", 1500);
+    }
     navigate_hud_menu(&["h", "o"]);
 
     // Wait for position change
