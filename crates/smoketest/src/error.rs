@@ -24,9 +24,6 @@ pub enum Error {
     #[error("did not observe matching focus title within {timeout_ms} ms (expected: '{expected}')")]
     FocusNotObserved { timeout_ms: u64, expected: String },
 
-    /// Screen capture failed.
-    #[error("failed to capture {0} window")]
-    CaptureFailed(&'static str),
 
     /// I/O operation failed.
     #[error("I/O error: {0}")]
@@ -46,11 +43,9 @@ pub fn print_hints(err: &Error) {
             eprintln!("hint: set HOTKI_BIN to an existing binary or run: cargo build --bin hotki");
         }
         Error::HudNotVisible { .. } => {
-            eprintln!("hint: the activation chord is sent via Accessibility (HID)");
-            eprintln!(
-                "      ensure the terminal/shell running smoketest is allowed under System Settings → Privacy & Security → Accessibility"
-            );
-            eprintln!("      also check hotki logs with --logs for server startup issues");
+            eprintln!("hint: we inject the activation chord via RPC");
+            eprintln!("      check that the server started (use --logs) and bindings are ready");
+            eprintln!("      also ensure Accessibility is granted for best reliability");
         }
         Error::FocusNotObserved { .. } => {
             eprintln!(
@@ -59,12 +54,7 @@ pub fn print_hints(err: &Error) {
             eprintln!("      grant Accessibility permission for faster title updates (optional)");
             eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
         }
-        Error::CaptureFailed(_) => {
-            eprintln!("hint: screencapture requires Screen Recording permission for the terminal");
-            eprintln!(
-                "      grant it under System Settings → Privacy & Security → Screen Recording"
-            );
-        }
+        
         Error::MissingConfig(_) => {
             eprintln!(
                 "hint: expected examples/test.ron relative to repo root (or pass a valid config)"

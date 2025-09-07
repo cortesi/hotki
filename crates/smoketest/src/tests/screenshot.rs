@@ -19,7 +19,8 @@ use crate::{
 
 // ===== Window discovery and capture =====
 
-fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, Option<(i32, i32, i32, i32)>)> {
+type Rect = (i32, i32, i32, i32);
+fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, Option<Rect>)> {
     // Use mac-winops to get window information
     mac_winops::list_windows()
         .into_iter()

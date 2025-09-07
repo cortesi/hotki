@@ -10,7 +10,6 @@ hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
-relaykey = { path = "../relaykey" }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }
 winit = "0.30"
 objc2-app-kit = { version = "0.3.1", features = ["NSScreen", "libc"] }
