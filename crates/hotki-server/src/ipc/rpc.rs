@@ -123,7 +123,11 @@ pub fn enc_inject_key(req: &InjectKeyReq) -> Value {
 /// Convenience wrapper to build + encode an InjectKeyReq.
 #[allow(dead_code)]
 pub fn enc_inject_key_parts(ident: &str, kind: InjectKind, repeat: bool) -> Value {
-    enc_inject_key(&InjectKeyReq { ident: ident.into(), kind, repeat })
+    enc_inject_key(&InjectKeyReq {
+        ident: ident.into(),
+        kind,
+        repeat,
+    })
 }
 
 /// Decode `inject_key` param from msgpack binary.

@@ -2,11 +2,22 @@
 
 use std::thread;
 
-use crate::config;
+use crate::{config, server_drive};
+use std::env;
+
+fn use_rpc() -> bool {
+    env::var("HOTKI_DRIVE").map(|v| v == "rpc").unwrap_or(true)
+}
 
 /// Send a single key chord using the RelayKey mechanism.
 /// This is the standard way tests interact with hotki.
 pub fn send_key(seq: &str) {
+    if use_rpc() && server_drive::is_ready() {
+        if server_drive::inject_key(seq) {
+            return;
+        }
+        // fall back to HID on failure
+    }
     if let Some(ch) = mac_keycode::Chord::parse(seq) {
         let rk = relaykey::RelayKey::new_unlabeled();
         rk.key_down(0, ch.clone(), false);
@@ -17,6 +28,12 @@ pub fn send_key(seq: &str) {
 
 /// Send a sequence of key chords with delays between them.
 pub fn send_key_sequence(sequences: &[&str]) {
+    if use_rpc() && server_drive::is_ready() {
+        if server_drive::inject_sequence(sequences) {
+            return;
+        }
+        // fall back to HID on failure
+    }
     let rk = relaykey::RelayKey::new_unlabeled();
     for s in sequences {
         if let Some(ch) = mac_keycode::Chord::parse(s) {

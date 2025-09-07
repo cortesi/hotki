@@ -8,6 +8,7 @@ mod orchestrator;
 mod process;
 mod results;
 mod runtime;
+mod server_drive;
 mod session;
 mod test_runner;
 mod tests;

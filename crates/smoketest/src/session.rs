@@ -7,7 +7,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    logging, runtime,
+    logging, runtime, server_drive,
     ui_interaction::send_activation_chord,
 };
 
@@ -133,6 +133,12 @@ impl HotkiSession {
 
         // Mark as running once connected
         self.state = SessionState::Running;
+
+        // Initialize RPC driver if selected and not yet ready
+        let drive = std::env::var("HOTKI_DRIVE").unwrap_or_else(|_| "rpc".into());
+        if drive == "rpc" && !server_drive::is_ready() {
+            let _ = server_drive::init(self.socket_path());
+        }
 
         // Borrow connection
         let conn = match client.connection() {
