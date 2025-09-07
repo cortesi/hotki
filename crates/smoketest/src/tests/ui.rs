@@ -8,7 +8,24 @@ use crate::{
 
 /// Run the standard UI demo test.
 pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
-    let config = TestConfig::new(timeout_ms).with_logs(true);
+    // Keep HUD visible and anchor it to the bottom-right (se) for this demo.
+    let ron_config = r#"(
+        keys: [
+            ("shift+cmd+0", "activate", keys([
+                ("t", "Theme tester", keys([
+                    ("h", "Theme Prev", theme_prev, (noexit: true)),
+                    ("l", "Theme Next", theme_next, (noexit: true)),
+                ])),
+            ])),
+            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
+            ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
+        ],
+        style: (hud: (mode: hud, pos: se)),
+    )"#;
+
+    let config = TestConfig::new(timeout_ms)
+        .with_temp_config(ron_config)
+        .with_logs(true);
 
     TestRunner::new("ui_demo", config)
         .with_setup(|ctx| {
