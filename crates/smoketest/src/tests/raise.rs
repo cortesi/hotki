@@ -9,7 +9,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
-    runtime,
+    runtime, server_drive,
     session::HotkiSession,
     ui_interaction::send_key,
     util::resolve_hotki_bin,
@@ -213,6 +213,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Use shared runtime for HUD event waits
 
     // Best‑effort: allow WindowServer to register helpers before driving raise
+    // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("r", config::WAIT_WINDOW_RECHECK_MS);
+    }
     // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
     send_key("r");
     // Ensure the first helper is visible (CG or AX) before issuing '1'
@@ -221,6 +225,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             timeout_ms: 6000,
             expected: format!("first window not visible before menu: '{}'", title1),
         });
+    }
+    // Wait for '1' binding to appear under 'raise' if driving via RPC
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("1", config::WAIT_WINDOW_RECHECK_MS);
     }
     send_key("1");
 
@@ -271,6 +279,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         });
     }
     send_key("r");
+    if server_drive::is_ready() {
+        let _ = server_drive::wait_for_ident("2", config::WAIT_WINDOW_RECHECK_MS);
+    }
     thread::sleep(config::ms(config::MENU_KEY_DELAY_MS));
     send_key("2");
     let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
