@@ -101,8 +101,12 @@ impl HotkiSession {
         &self.socket_path
     }
 
-    pub fn wait_for_hud(&mut self, timeout_ms: u64) -> (bool, u64) {
-        // Try to connect and wait for HudUpdate indicating HUD visible.
+    /// Preferred HUD wait with explicit IPC disconnect detection.
+    ///
+    /// - Ok(elapsed_ms) when HUD becomes visible
+    /// - Err(IpcDisconnected) if the MRPC event channel closes unexpectedly
+    /// - Err(HudNotVisible) if the timeout elapses without visibility
+    pub fn wait_for_hud_checked(&mut self, timeout_ms: u64) -> crate::error::Result<u64> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let start = Instant::now();
 
@@ -119,7 +123,7 @@ impl HotkiSession {
                 Ok(Err(_)) | Err(_) => {
                     attempts += 1;
                     if Instant::now() >= deadline {
-                        return (false, start.elapsed().as_millis() as u64);
+                        return Err(crate::error::Error::HudNotVisible { timeout_ms });
                     }
                     let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS {
                         config::INITIAL_RETRY_DELAY_MS
@@ -135,7 +139,6 @@ impl HotkiSession {
         // Mark as running once connected
         self.state = SessionState::Running;
 
-        // Initialize RPC driver when not yet ready (standardized)
         if !server_drive::is_ready() {
             let _ = server_drive::init(self.socket_path());
         }
@@ -143,7 +146,11 @@ impl HotkiSession {
         // Borrow connection
         let conn = match client.connection() {
             Ok(c) => c,
-            Err(_) => return (false, start.elapsed().as_millis() as u64),
+            Err(_) => {
+                return Err(crate::error::Error::IpcDisconnected {
+                    during: "waiting for HUD",
+                });
+            }
         };
 
         // Send activation chord periodically until HUD visible
@@ -161,20 +168,23 @@ impl HotkiSession {
                         let depth = cursor.depth();
                         let visible = cursor.viewing_root || depth > 0;
                         if visible {
-                            return (true, start.elapsed().as_millis() as u64);
+                            return Ok(start.elapsed().as_millis() as u64);
                         }
                     }
                 }
-                Ok(Ok(Err(_))) => break,
+                Ok(Ok(Err(_))) => {
+                    return Err(crate::error::Error::IpcDisconnected {
+                        during: "waiting for HUD",
+                    });
+                }
                 Ok(Err(_)) | Err(_) => {}
             }
-            // Smart side-check: look for the HUD window by title under the hotki server pid
-            // to avoid missing HudUpdate races.
+            // Side-check to catch HUD presence even if we missed an event.
             if mac_winops::list_windows()
                 .into_iter()
                 .any(|w| w.pid == self.pid() as i32 && w.title == "Hotki HUD")
             {
-                return (true, start.elapsed().as_millis() as u64);
+                return Ok(start.elapsed().as_millis() as u64);
             }
             if let Some(last) = last_sent
                 && last.elapsed() >= Duration::from_millis(config::ACTIVATION_RESEND_INTERVAL_MS)
@@ -183,7 +193,7 @@ impl HotkiSession {
                 last_sent = Some(Instant::now());
             }
         }
-        (false, start.elapsed().as_millis() as u64)
+        Err(crate::error::Error::HudNotVisible { timeout_ms })
     }
 
     pub fn shutdown(&mut self) {

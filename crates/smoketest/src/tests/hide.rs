@@ -86,10 +86,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Launch hotki
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
-    let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
-    if !hud_ok {
-        return Err(Error::HudNotVisible { timeout_ms });
-    }
+    let _ = sess.wait_for_hud_checked(timeout_ms)?;
 
     // Snapshot initial AX frame of the helper window
     let (p0, s0) =
@@ -166,8 +163,10 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Wait until position roughly returns to original
     let mut restored = false;
     let deadline2 = Instant::now()
-            + Duration::from_millis((timeout_ms / 3)
-                .clamp(config::HIDE_SECONDARY_MIN_TIMEOUT_MS, config::HIDE_RESTORE_MAX_MS));
+        + Duration::from_millis((timeout_ms / 3).clamp(
+            config::HIDE_SECONDARY_MIN_TIMEOUT_MS,
+            config::HIDE_RESTORE_MAX_MS,
+        ));
     while Instant::now() < deadline2 {
         if let Some(((px2, py2), (width2, height2))) = mac_winops::ax_window_frame(pid, &title) {
             let pos_ok = approx(px2, p0.0, 8.0) && approx(py2, p0.1, 8.0);

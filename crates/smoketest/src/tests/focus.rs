@@ -23,6 +23,7 @@ async fn listen_for_focus(
     found: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     matched: Arc<Mutex<Option<(String, i32)>>>,
+    ipc_down: Arc<AtomicBool>,
 ) {
     let mut client = match hotki_server::Client::new_with_socket(socket_path)
         .with_connect_only()
@@ -58,7 +59,10 @@ async fn listen_for_focus(
                 }
             }
             Ok(Ok(_)) => {}
-            Ok(Err(_)) => break,
+            Ok(Err(_)) => {
+                ipc_down.store(true, Ordering::SeqCst);
+                break;
+            }
             Err(_) => {}
         }
     }
@@ -81,6 +85,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
     let found = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
     let matched: Arc<Mutex<Option<(String, i32)>>> = Arc::new(Mutex::new(None));
+    let ipc_down = Arc::new(AtomicBool::new(false));
 
     TestRunner::new("focus_test", config)
         .with_setup(|ctx| {
@@ -101,6 +106,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             let found_clone = found.clone();
             let done_clone = done.clone();
             let matched_clone = matched.clone();
+            let ipc_clone = ipc_down.clone();
 
             let listener = thread::spawn(move || {
                 let _ = runtime::block_on(listen_for_focus(
@@ -109,6 +115,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                     found_clone,
                     done_clone,
                     matched_clone,
+                    ipc_clone,
                 ));
             });
 
@@ -136,6 +143,11 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
 
             // Check if we found the window
             if !found.load(Ordering::SeqCst) {
+                if ipc_down.load(Ordering::SeqCst) {
+                    return Err(Error::IpcDisconnected {
+                        during: "listening for focus",
+                    });
+                }
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: expected_title.clone(),

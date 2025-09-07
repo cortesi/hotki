@@ -125,7 +125,7 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
     };
 
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &used_cfg_path, true)?;
-    let (seen_hud, t_hud) = sess.wait_for_hud(timeout_ms);
+    let t_hud = sess.wait_for_hud_checked(timeout_ms)?;
 
     let _ = fs::create_dir_all(&dir);
     let pid = sess.pid();
@@ -154,11 +154,8 @@ pub fn run_screenshots(theme: Option<String>, dir: PathBuf, timeout_ms: u64) -> 
     sess.kill_and_wait();
 
     let mut sum = Summary::new();
-    sum.hud_seen = seen_hud;
+    sum.hud_seen = true;
     sum.time_to_hud_ms = Some(t_hud);
-    if !seen_hud {
-        return Err(Error::HudNotVisible { timeout_ms });
-    }
     if !hud_ok {
         eprintln!(
             "warning: HUD capture failed (missing Screen Recording permission?). Skipping image writes."

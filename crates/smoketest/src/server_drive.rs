@@ -9,7 +9,6 @@ fn conn_slot() -> &'static Mutex<Option<hotki_server::Connection>> {
 }
 
 /// Initialize a shared MRPC connection to the hotki-server at `socket_path`.
-/// Subsequent send functions will use this connection when `HOTKI_DRIVE=rpc`.
 pub fn init(socket_path: &str) -> bool {
     let res =
         runtime::block_on(async { hotki_server::Connection::connect_unix(socket_path).await });
@@ -87,4 +86,21 @@ pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> bool {
         std::thread::sleep(config::ms(config::RETRY_DELAY_MS));
     }
     false
+}
+
+/// Quick liveness probe against the backend via a lightweight RPC.
+/// Returns false if the connection is not ready or the RPC fails.
+pub fn check_alive() -> bool {
+    let mut guard = match conn_slot().lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let conn = match guard.as_mut() {
+        Some(c) => c,
+        None => return false,
+    };
+    matches!(
+        runtime::block_on(async { conn.get_depth().await }),
+        Ok(Ok(_))
+    )
 }

@@ -125,13 +125,13 @@ impl TestContext {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("No session launched".into()))?;
 
-        let (seen, time_ms) = session.wait_for_hud(remaining);
-        if !seen {
-            return Err(Error::HudNotVisible {
+        match session.wait_for_hud_checked(remaining) {
+            Ok(ms) => Ok(ms),
+            Err(Error::HudNotVisible { .. }) => Err(Error::HudNotVisible {
                 timeout_ms: timeout,
-            });
+            }),
+            Err(e) => Err(e),
         }
-        Ok(time_ms)
     }
 
     /// Shutdown the hotki session.

@@ -4,6 +4,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -69,6 +70,13 @@ pub fn run_fullscreen_test(
             // Trigger fullscreen toggle via global chord
             send_key("shift+cmd+9");
             std::thread::sleep(config::ms(config::FULLSCREEN_POST_TOGGLE_DELAY_MS));
+
+            // If the backend crashed as a result of fullscreen, surface it immediately.
+            if !server_drive::check_alive() {
+                return Err(Error::IpcDisconnected {
+                    during: "fullscreen toggle",
+                });
+            }
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);

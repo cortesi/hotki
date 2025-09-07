@@ -24,6 +24,9 @@ pub enum Error {
     #[error("did not observe matching focus title within {timeout_ms} ms (expected: '{expected}')")]
     FocusNotObserved { timeout_ms: u64, expected: String },
 
+    /// MRPC event stream closed unexpectedly while a smoketest was running.
+    #[error("IPC disconnected unexpectedly while {during}")]
+    IpcDisconnected { during: &'static str },
 
     /// I/O operation failed.
     #[error("I/O error: {0}")]
@@ -54,7 +57,7 @@ pub fn print_hints(err: &Error) {
             eprintln!("      grant Accessibility permission for faster title updates (optional)");
             eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
         }
-        
+
         Error::MissingConfig(_) => {
             eprintln!(
                 "hint: expected examples/test.ron relative to repo root (or pass a valid config)"
@@ -62,6 +65,12 @@ pub fn print_hints(err: &Error) {
         }
         Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {
             // No specific hints for these errors
+        }
+        Error::IpcDisconnected { .. } => {
+            eprintln!("hint: backend crashed or exited; run with --logs to capture cause");
+            eprintln!(
+                "      if this happened during fullscreen, check macOS accessibility issues and AXFullScreen support"
+            );
         }
     }
 }

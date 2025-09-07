@@ -63,7 +63,9 @@ impl Drop for SessionGuard {
     }
 }
 
-async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
+use crate::error::Error as StError;
+
+async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<bool> {
     use hotki_server::Client;
 
     let mut client = match Client::new_with_socket(sock)
@@ -72,11 +74,19 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
         .await
     {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => {
+            return Err(StError::IpcDisconnected {
+                during: "connecting for title events",
+            });
+        }
     };
     let conn = match client.connection() {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => {
+            return Err(StError::IpcDisconnected {
+                during: "waiting for title events",
+            });
+        }
     };
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -88,15 +98,19 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> bool {
                 if let Some(app) = cursor.app_ref()
                     && app.title == expected
                 {
-                    return true;
+                    return Ok(true);
                 }
             }
             Ok(Ok(_)) => {}
-            Ok(Err(_)) => return false,
+            Ok(Err(_)) => {
+                return Err(StError::IpcDisconnected {
+                    during: "waiting for title events",
+                });
+            }
             Err(_) => {}
         }
     }
-    false
+    Ok(false)
 }
 
 // Prefer checking the actual frontmost CG window title; this validates raise
@@ -206,10 +220,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Launch session and wait for HUD
     let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
     let _sess_guard = SessionGuard::new(&mut sess);
-    let (hud_ok, _ms) = sess.wait_for_hud(timeout_ms);
-    if !hud_ok {
-        return Err(Error::HudNotVisible { timeout_ms });
-    }
+    let _ = sess.wait_for_hud_checked(timeout_ms)?;
 
     // Use shared runtime for HUD event waits
 
@@ -238,21 +249,17 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     // Wait for focus to title1 (prefer frontmost CG check; fall back to HUD)
     let ok1_front = wait_for_frontmost_title(&title1, timeout_ms / 2);
-    let ok1 = if ok1_front {
+    let ok1 = if ok1_front
+        || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??
+    {
         true
     } else {
-        let ok_hud = runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
-            .unwrap_or(false);
-        if ok_hud {
-            true
-        } else {
-            std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
-            send_key("1");
-            // One more attempt using CG frontmost first, then HUD
-            wait_for_frontmost_title(&title1, timeout_ms / 2)
-                || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
-                    .unwrap_or(false)
-        }
+        std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
+        send_key("1");
+        // One more attempt using CG frontmost first, then HUD
+
+        wait_for_frontmost_title(&title1, timeout_ms / 2)
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??
     };
     if !ok1 {
         // Final robust attempt: reopen HUD and try raise again
@@ -262,8 +269,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         let _ = wait_for_windows(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
         send_key("1");
         let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))
-                .unwrap_or(false);
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??;
         if !ok1_retry {
             return Err(Error::FocusNotObserved {
                 timeout_ms,
@@ -289,20 +295,16 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     std::thread::sleep(config::ms(config::RAISE_MENU_KEY_DELAY_MS));
     send_key("2");
     let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
-    let mut ok2 = if ok2_front {
+    let mut ok2 = if ok2_front
+        || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??
+    {
         true
     } else {
-        let ok_hud = runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
-            .unwrap_or(false);
-        if ok_hud {
-            true
-        } else {
-            thread::sleep(config::ms(config::RETRY_DELAY_MS));
-            send_key("2");
-            wait_for_frontmost_title(&title2, timeout_ms / 2)
-                || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
-                    .unwrap_or(false)
-        }
+        thread::sleep(config::ms(config::RETRY_DELAY_MS));
+        send_key("2");
+
+        wait_for_frontmost_title(&title2, timeout_ms / 2)
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??
     };
     if !ok2 {
         // Final robust attempt for the second window as well
@@ -312,8 +314,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         let _ = wait_for_windows(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
         send_key("2");
         ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))
-                .unwrap_or(false);
+            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??;
     }
 
     if !ok2 {
