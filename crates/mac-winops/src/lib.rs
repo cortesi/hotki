@@ -156,33 +156,47 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
         warn!("focused_window_for_pid: AXUIElementCreateApplication returned null");
         return Err(Error::AppElement);
     }
-    let attr_focused_window = cfstr("AXFocusedWindow");
-    let mut win: CFTypeRef = ptr::null_mut();
-    debug!("focused_window_for_pid: calling AXUIElementCopyAttributeValue(AXFocusedWindow)");
-    let err = unsafe { AXUIElementCopyAttributeValue(app, attr_focused_window, &mut win) };
-    debug!(
-        "focused_window_for_pid: AXUIElementCopyAttributeValue returned err={} ptr={:?}",
-        err, win
-    );
+
+    // Prefer scanning AXWindows for AXFocused/AXMain to avoid AXFocusedWindow crash on macOS 15.5.
+    let mut wins_ref: CFTypeRef = ptr::null_mut();
+    let err_w = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    if err_w == 0 && !wins_ref.is_null() {
+        let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
+        let n = unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) };
+        for i in 0..n {
+            let w = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+            if w.is_null() {
+                continue;
+            }
+            // Prefer AXFocused; fall back to AXMain
+            if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
+                unsafe { CFRetain(w as CFTypeRef) };
+                unsafe { CFRelease(app as CFTypeRef) };
+                debug!("focused_window_for_pid: found window via AXFocused");
+                return Ok(w);
+            }
+            if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
+                unsafe { CFRetain(w as CFTypeRef) };
+                unsafe { CFRelease(app as CFTypeRef) };
+                debug!("focused_window_for_pid: found window via AXMain");
+                return Ok(w);
+            }
+        }
+    }
+
+    // Fallback: try mapping CG frontmost window for pid via AXWindowNumber.
+    if let Some(info) = frontmost_window_for_pid(pid) {
+        // Reuse existing helper to resolve AX element by CGWindowID
+        if let Ok((w, _pid)) = ax_window_for_id(info.id) {
+            unsafe { CFRelease(app as CFTypeRef) };
+            debug!("focused_window_for_pid: fallback via AXWindowNumber");
+            return Ok(w);
+        }
+    }
+
     unsafe { CFRelease(app as CFTypeRef) };
-    debug!("focused_window_for_pid: released app element");
-    if err != 0 {
-        warn!(
-            "focused_window_for_pid: AX copy focused window failed: code {}",
-            err
-        );
-        return if err == K_AX_ERROR_INVALID_UI_ELEMENT {
-            Err(Error::WindowGone)
-        } else {
-            Err(Error::AxCode(err))
-        };
-    }
-    if win.is_null() {
-        debug!("focused_window_for_pid: no focused window");
-        return Err(Error::FocusedWindow);
-    }
-    debug!("focused_window_for_pid: got focused window");
-    Ok(win as *mut c_void)
+    debug!("focused_window_for_pid: no focused window");
+    Err(Error::FocusedWindow)
 }
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.

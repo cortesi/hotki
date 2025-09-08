@@ -5,6 +5,9 @@ use core_foundation::{
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
     string::{CFString, CFStringRef},
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::thread_local;
 
 use crate::error::{Error, Result};
 use crate::geometry::{CGPoint, CGSize};
@@ -41,9 +44,20 @@ const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 // AX error for invalid UI element (window closed / stale reference)
 const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
 
+thread_local! {
+    static ATTR_STRINGS: RefCell<HashMap<&'static str, CFString>> = RefCell::new(HashMap::new());
+}
+
 pub fn cfstr(name: &'static str) -> CFStringRef {
-    // Use a non-owning CFString backed by a static &'static str; no release needed.
-    CFString::from_static_string(name).as_concrete_TypeRef()
+    // Return a stable CFStringRef for known attribute/action names. This avoids
+    // relying on toll‑free bridging of static strings, which can trip pointer
+    // authentication on recent macOS versions when CoreFoundation treats the
+    // input as an Objective‑C NSString internally.
+    ATTR_STRINGS.with(|cell| {
+        let mut m = cell.borrow_mut();
+        let s = m.entry(name).or_insert_with(|| CFString::new(name));
+        s.as_concrete_TypeRef()
+    })
 }
 
 pub fn ax_check() -> Result<()> {
