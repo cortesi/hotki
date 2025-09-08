@@ -49,11 +49,6 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         ) -> i32;
         fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
         fn AXUIElementCopyActionNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
-        fn AXUIElementIsAttributeSettable(
-            element: *mut c_void,
-            attr: CFStringRef,
-            settable: *mut bool,
-        ) -> i32;
         fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
     }
 

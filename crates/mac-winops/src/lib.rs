@@ -44,8 +44,6 @@ use frame_storage::*;
 use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};
 
-// AX error for invalid UI element (window closed / stale reference)
-const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
 
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.
