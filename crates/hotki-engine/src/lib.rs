@@ -363,6 +363,11 @@ impl Engine {
                 Ok(())
             }
             Ok(KeyResponse::Fullscreen { desired, kind }) => {
+                tracing::info!(
+                    "Engine: fullscreen action received: desired={:?} kind={:?}",
+                    desired,
+                    kind
+                );
                 // Map Toggle -> mac_winops::Desired
                 let d = match desired {
                     config::Toggle::On => mac_winops::Desired::On,
@@ -371,8 +376,20 @@ impl Engine {
                 };
                 let pid = self.current_pid();
                 let res = match kind {
-                    config::FullscreenKind::Native => mac_winops::fullscreen_native(pid, d),
+                    config::FullscreenKind::Native => {
+                        tracing::info!(
+                            "Engine: queueing fullscreen_native on main thread pid={} d={:?}",
+                            pid,
+                            d
+                        );
+                        mac_winops::request_fullscreen_native(pid, d)
+                    }
                     config::FullscreenKind::Nonnative => {
+                        tracing::info!(
+                            "Engine: queueing fullscreen_nonnative pid={} d={:?}",
+                            pid,
+                            d
+                        );
                         mac_winops::request_fullscreen_nonnative(pid, d)
                     }
                 };

@@ -32,6 +32,7 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFBooleanGetValue(b: CFTypeRef) -> bool;
+    fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -198,7 +199,7 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut c_void> {
     }
 
     let arr = unsafe {
-        core_foundation::array::CFArray::<*const c_void>::wrap_under_get_rule(wins_ref as _)
+        core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
     };
 
     for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
@@ -215,9 +216,11 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut c_void> {
             continue;
         }
 
-        let cfs = unsafe { CFString::wrap_under_get_rule(t_ref as CFStringRef) };
+        let cfs = unsafe { CFString::wrap_under_create_rule(t_ref as CFStringRef) };
         let t = cfs.to_string();
         if t == title {
+            // Retain the AX window element so it remains valid after `arr` is released.
+            unsafe { CFRetain(w as CFTypeRef) };
             return Some(w);
         }
     }

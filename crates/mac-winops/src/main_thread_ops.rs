@@ -22,6 +22,10 @@ pub enum MoveDir {
 
 /// Queue of operations that must run on the AppKit main thread.
 pub enum MainOp {
+    FullscreenNative {
+        pid: i32,
+        desired: Desired,
+    },
     FullscreenNonNative {
         pid: i32,
         desired: Desired,
@@ -54,6 +58,11 @@ pub static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(Vec
 /// Schedule a non‑native fullscreen operation to be executed on the AppKit main
 /// thread and wake the Tao event loop.
 pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
+    tracing::info!(
+        "MainOps: enqueue FullscreenNonNative pid={} desired={:?}",
+        pid,
+        desired
+    );
     if MAIN_OPS
         .lock()
         .map(|mut q| q.push_back(MainOp::FullscreenNonNative { pid, desired }))
@@ -62,6 +71,24 @@ pub fn request_fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         return Err(Error::QueuePoisoned);
     }
     // Wake the Tao main loop to handle user event and drain ops
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Schedule a native fullscreen operation (AXFullScreen) on the AppKit main thread.
+pub fn request_fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
+    tracing::info!(
+        "MainOps: enqueue FullscreenNative pid={} desired={:?}",
+        pid,
+        desired
+    );
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::FullscreenNative { pid, desired }))
+        .is_err()
+    {
+        return Err(Error::QueuePoisoned);
+    }
     let _ = crate::focus::post_user_event();
     Ok(())
 }

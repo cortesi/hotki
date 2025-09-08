@@ -344,6 +344,7 @@ impl MrpcConnection for HotkeyService {
                     Ok(r) => r,
                     Err(e) => return Err(e),
                 };
+                tracing::info!(target: "hotki_server::ipc::service", "InjectKey: ident={} kind={:?} repeat={}", req.ident, req.kind, req.repeat);
 
                 // Ensure engine is initialized
                 if let Err(e) = self.ensure_engine_initialized().await {
@@ -368,15 +369,18 @@ impl MrpcConnection for HotkeyService {
                 let id = match maybe_id {
                     Some(i) => i,
                     None => {
+                        tracing::warn!(target: "hotki_server::ipc::service", "InjectKey: ident not bound: {}", req.ident);
                         return Err(Self::typed_err(
                             crate::error::RpcErrorCode::KeyNotBound,
                             &[("ident", Value::String(req.ident.into()))],
                         ));
                     }
                 };
+                tracing::info!(target: "hotki_server::ipc::service", "InjectKey: resolved id={} for ident={} -> dispatch", id, req.ident);
 
                 // Dispatch directly through the engine (same path as OS events)
                 eng.dispatch(id, req.kind.to_event_kind(), req.repeat).await;
+                tracing::info!(target: "hotki_server::ipc::service", "InjectKey: dispatch done for id={}", id);
                 Ok(Value::Boolean(true))
             }
 

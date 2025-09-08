@@ -6,7 +6,8 @@ use crate::server_drive;
 /// Send a single key chord using the RelayKey mechanism.
 /// This is the standard way tests interact with hotki.
 pub fn send_key(seq: &str) {
-    let _ = server_drive::inject_key(seq);
+    let ok = server_drive::inject_key(seq);
+    eprintln!("[send_key] inject {} -> {}", seq, ok);
 }
 
 /// Send a sequence of key chords with delays between them.

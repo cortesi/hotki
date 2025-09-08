@@ -108,19 +108,19 @@ fn main() {
     match cli.command {
         Commands::Relay => {
             heading("Test: repeat-relay");
-            repeat_relay(cli.duration)
+            let duration = cli.duration;
+            run_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
         }
         Commands::Shell => {
             heading("Test: repeat-shell");
-            repeat_shell(cli.duration)
+            let duration = cli.duration;
+            run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
         }
         Commands::Volume => {
             heading("Test: repeat-volume");
             // Volume can be slightly slower; keep a floor to reduce flakiness
-            repeat_volume(std::cmp::max(
-                cli.duration,
-                config::MIN_VOLUME_TEST_DURATION_MS,
-            ))
+            let duration = std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
+            run_with_watchdog("repeat-volume", cli.timeout, move || repeat_volume(duration));
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs),
         Commands::Seq { tests } => {
@@ -180,7 +180,8 @@ fn main() {
         }
         Commands::Ui => {
             heading("Test: ui");
-            match ui::run_ui_demo(cli.timeout) {
+            let timeout = cli.timeout;
+            match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
                 Ok(sum) => {
                     println!(
                         "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -196,7 +197,10 @@ fn main() {
         }
         Commands::Screenshots { theme, dir } => {
             heading("Test: screenshots");
-            match screenshot::run_screenshots(theme, dir, cli.timeout) {
+            let timeout = cli.timeout;
+            match run_with_watchdog("screenshots", timeout, move || {
+                screenshot::run_screenshots(theme, dir, timeout)
+            }) {
                 Ok(sum) => {
                     println!(
                         "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -212,7 +216,8 @@ fn main() {
         }
         Commands::Minui => {
             heading("Test: minui");
-            match ui::run_minui_demo(cli.timeout) {
+            let timeout = cli.timeout;
+            match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
                 Ok(sum) => {
                     println!(
                         "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
@@ -233,7 +238,11 @@ fn main() {
                 FsState::On => Toggle::On,
                 FsState::Off => Toggle::Off,
             };
-            match tests::fullscreen::run_fullscreen_test(cli.timeout, cli.logs, toggle, native) {
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_with_watchdog("fullscreen", timeout, move || {
+                tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native)
+            }) {
                 Ok(()) => println!("fullscreen: OK (toggled non-native fullscreen)"),
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);

@@ -32,8 +32,8 @@ mod window;
 
 pub use error::{Error, Result};
 pub use main_thread_ops::{
-    MoveDir, request_activate_pid, request_fullscreen_nonnative, request_place_grid,
-    request_place_move_grid, request_raise_window,
+    MoveDir, request_activate_pid, request_fullscreen_native, request_fullscreen_nonnative,
+    request_place_grid, request_place_move_grid, request_raise_window,
 };
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
@@ -165,6 +165,11 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
 /// Requires Accessibility permission. If AXFullScreen is not available, the
 /// function synthesizes the standard ⌃⌘F shortcut as a fallback.
 pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
+    tracing::info!(
+        "WinOps: fullscreen_native enter pid={} desired={:?}",
+        pid,
+        desired
+    );
     ax_check()?;
     let win = focused_window_for_pid(pid)?;
     let attr_fullscreen = cfstr("AXFullScreen");
@@ -196,6 +201,7 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
             let rk = RelayKey::new();
             rk.key_down(pid, chord.clone(), false);
             rk.key_up(pid, chord);
+            tracing::info!("WinOps: fullscreen_native fallback keystroke sent");
             Ok(())
         }
     }
@@ -207,9 +213,15 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
 /// Requires Accessibility permission and must run on the AppKit main thread
 /// (uses `NSScreen::visibleFrame`).
 pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
+    tracing::info!(
+        "WinOps: fullscreen_nonnative enter pid={} desired={:?}",
+        pid,
+        desired
+    );
     ax_check()?;
     // For visibleFrame we need AppKit; require main thread.
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    tracing::debug!("WinOps: have MainThreadMarker");
     let win = focused_window_for_pid(pid)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
@@ -220,6 +232,13 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
     // Determine target screen visible frame
     let vf = visible_frame_containing_point(mtm, cur_p);
+    tracing::debug!(
+        "WinOps: visible frame x={} y={} w={} h={}",
+        vf.0,
+        vf.1,
+        vf.2,
+        vf.3
+    );
     let target_p = CGPoint { x: vf.0, y: vf.1 };
     let target_s = CGSize {
         width: vf.2,
@@ -241,6 +260,7 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     }
 
     if do_set_to_full {
+        tracing::debug!("WinOps: setting to non-native fullscreen frame");
         // Store previous frame if we have a key and not already stored
         if let Some(k) = prev_key
             && let Ok(mut map) = PREV_FRAMES.lock()
@@ -255,6 +275,7 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         ax_set_point(win, attr_pos, target_p)?;
         ax_set_size(win, attr_size, target_s)?;
     } else {
+        tracing::debug!("WinOps: restoring from previous frame if any");
         // Restore if available
         let restored = if let Some(k) = prev_key {
             if let Ok(mut map) = PREV_FRAMES.lock() {
@@ -278,6 +299,7 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         }
     }
     unsafe { CFRelease(win as CFTypeRef) };
+    tracing::info!("WinOps: fullscreen_nonnative exit");
     Ok(())
 }
 
@@ -294,9 +316,9 @@ fn frame_containing_point_with(
     p: CGPoint,
     kind: FrameKind,
 ) -> (f64, f64, f64, f64) {
-    let screens = NSScreen::screens(mtm);
+    // Try to find a screen containing the point.
     let mut chosen = None;
-    for s in screens.iter() {
+    for s in NSScreen::screens(mtm).iter() {
         let fr = match kind {
             FrameKind::Visible => s.visibleFrame(),
             FrameKind::Full => s.frame(),
@@ -310,30 +332,23 @@ fn frame_containing_point_with(
             break;
         }
     }
-    let rect = if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
-        match kind {
+    // Prefer the chosen screen; otherwise try main, then first.
+    if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
+        let r = match kind {
             FrameKind::Visible => scr.visibleFrame(),
             FrameKind::Full => scr.frame(),
-        }
-    } else {
-        // Fallback to the first screen
-        match NSScreen::screens(mtm).iter().next() {
-            Some(s) => match kind {
-                FrameKind::Visible => s.visibleFrame(),
-                FrameKind::Full => s.frame(),
-            },
-            None => match kind {
-                FrameKind::Visible => NSScreen::mainScreen(mtm).unwrap().visibleFrame(),
-                FrameKind::Full => NSScreen::mainScreen(mtm).unwrap().frame(),
-            },
-        }
-    };
-    (
-        rect.origin.x,
-        rect.origin.y,
-        rect.size.width,
-        rect.size.height,
-    )
+        };
+        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
+    }
+    if let Some(s) = NSScreen::screens(mtm).iter().next() {
+        let r = match kind {
+            FrameKind::Visible => s.visibleFrame(),
+            FrameKind::Full => s.frame(),
+        };
+        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
+    }
+    // As a last resort, return a zero rect to avoid panics.
+    (0.0, 0.0, 0.0, 0.0)
 }
 
 fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
@@ -347,7 +362,20 @@ pub fn drain_main_ops() {
         let op_opt = MAIN_OPS.lock().ok().and_then(|mut q| q.pop_front());
         let Some(op) = op_opt else { break };
         match op {
+            MainOp::FullscreenNative { pid, desired } => {
+                tracing::info!(
+                    "MainOps: drain FullscreenNative pid={} desired={:?}",
+                    pid,
+                    desired
+                );
+                let _ = fullscreen_native(pid, desired);
+            }
             MainOp::FullscreenNonNative { pid, desired } => {
+                tracing::info!(
+                    "MainOps: drain FullscreenNonNative pid={} desired={:?}",
+                    pid,
+                    desired
+                );
                 let _ = fullscreen_nonnative(pid, desired);
             }
             MainOp::PlaceGrid {

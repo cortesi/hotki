@@ -45,6 +45,23 @@ pub fn run_fullscreen_test(
             Ok(())
         })
         .with_execute(|ctx| {
+            // Ensure RPC driver is connected to the right backend before driving keys.
+            if let Some(sess) = ctx.session.as_ref() {
+                let sock = sess.socket_path().to_string();
+                let start = std::time::Instant::now();
+                let mut inited = crate::server_drive::init(&sock);
+                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    inited = crate::server_drive::init(&sock);
+                }
+                eprintln!(
+                    "[fullscreen] server_drive::init (with retries) -> {}",
+                    inited
+                );
+                // Wait briefly until the binding is registered so injects resolve.
+                let waited = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
+                eprintln!("[fullscreen] wait_for_ident -> {}", waited);
+            }
             // Spawn helper window with unique title
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -66,17 +83,22 @@ pub fn run_fullscreen_test(
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("Failed to read initial window frame".into()))?;
+            eprintln!("[fullscreen] got initial frame: {:?}", before);
 
             // Trigger fullscreen toggle via global chord
+            eprintln!("[fullscreen] sending toggle key");
             send_key("shift+cmd+9");
             std::thread::sleep(config::ms(config::FULLSCREEN_POST_TOGGLE_DELAY_MS));
+            eprintln!("[fullscreen] post-toggle delay done");
 
             // If the backend crashed as a result of fullscreen, surface it immediately.
             if !server_drive::check_alive() {
+                eprintln!("[fullscreen] backend not alive after toggle");
                 return Err(Error::IpcDisconnected {
                     during: "fullscreen toggle",
                 });
             }
+            eprintln!("[fullscreen] backend alive; reading updated frame");
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
