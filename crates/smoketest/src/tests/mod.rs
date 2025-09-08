@@ -9,6 +9,4 @@ pub mod screenshot;
 pub mod ui;
 
 // Re-export the main test functions for easier access
-pub use repeat::{
-    count_relay, count_shell, count_volume, repeat_relay, repeat_shell, repeat_volume,
-};
+pub use repeat::{repeat_relay, repeat_shell, repeat_volume};

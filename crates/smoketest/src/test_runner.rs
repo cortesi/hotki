@@ -140,6 +140,8 @@ impl TestContext {
             session.shutdown();
             session.kill_and_wait();
         }
+        // Ensure any shared RPC connection from a prior test is cleared.
+        crate::server_drive::reset();
     }
 
     /// Clean up all temporary files.

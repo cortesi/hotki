@@ -122,7 +122,10 @@ fn main() {
                 config::MIN_VOLUME_TEST_DURATION_MS,
             ))
         }
-        Commands::All => run_all_tests(cli.duration, cli.timeout),
+        Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs),
+        Commands::Seq { tests } => {
+            orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, cli.logs)
+        }
         Commands::Raise => {
             heading("Test: raise");
             let timeout = cli.timeout;

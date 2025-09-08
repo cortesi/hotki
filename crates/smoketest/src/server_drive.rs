@@ -29,6 +29,13 @@ pub fn is_ready() -> bool {
     conn_slot().lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
+/// Drop the shared MRPC connection so subsequent tests start clean.
+pub fn reset() {
+    if let Ok(mut g) = conn_slot().lock() {
+        *g = None;
+    }
+}
+
 /// Inject a single key press (down + small delay + up) via MRPC.
 pub fn inject_key(seq: &str) -> bool {
     let mut guard = match conn_slot().lock() {

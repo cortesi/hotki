@@ -24,6 +24,20 @@ pub struct Cli {
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum SeqTest {
+    RepeatRelay,
+    RepeatShell,
+    RepeatVolume,
+    Focus,
+    Raise,
+    Hide,
+    Fullscreen,
+    Ui,
+    Minui,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum FsState {
     Toggle,
     On,
@@ -47,6 +61,16 @@ pub enum Commands {
     /// Run all smoketests (repeats + UI demos)
     #[command(name = "all")]
     All,
+
+    /// Run a sequence of smoketests in order
+    ///
+    /// Example: smoketest seq repeat-relay focus ui
+    #[command(name = "seq")]
+    Seq {
+        /// One or more test names to run in order
+        #[arg(value_enum, value_name = "TEST", num_args = 1..)]
+        tests: Vec<SeqTest>,
+    },
 
     /// Verify raise(action) by switching focus between two titled windows
     Raise,
