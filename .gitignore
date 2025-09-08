@@ -1,5 +1,7 @@
 /target
 tmp
+.idea
+crates/*/Cargo.lock
 .postgres
 .DS_Store
 AGENTS.md
