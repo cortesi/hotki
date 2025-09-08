@@ -99,7 +99,6 @@ pub fn build_tray_and_listeners(
     }
 
     {
-        let tx = tx.clone();
         let tx_ctrl = tx_ctrl.clone();
         let egui_ctx = egui_ctx.clone();
         thread::spawn(move || {
@@ -112,7 +111,8 @@ pub fn build_tray_and_listeners(
                     let _ = tx_ctrl.send(ControlMsg::OpenPermissionsHelp);
                     egui_ctx.request_repaint();
                 } else if ev.id == quit_id {
-                    let _ = tx.send(AppEvent::Quit);
+                    // Request a graceful shutdown via the runtime control path
+                    let _ = tx_ctrl.send(ControlMsg::Shutdown);
                     egui_ctx.request_repaint();
                 } else {
                     // Check if it's a theme selection

@@ -2,6 +2,7 @@ use std::{collections::VecDeque, path::Path, process::Command, thread};
 
 use egui::Context;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Duration;
 use tokio::time::Instant as TokioInstant;
 use tokio::time::Sleep;
 use tracing::{debug, error, info};
@@ -16,6 +17,8 @@ pub enum ControlMsg {
     Reload,
     OpenAccessibility,
     OpenInputMonitoring,
+    /// Gracefully shut down the UI and exit the process
+    Shutdown,
     /// Request a theme switch by name (handled here on the live Config)
     SwitchTheme(String),
     OpenPermissionsHelp,
@@ -93,6 +96,9 @@ async fn handle_control_msg(
     match msg {
         ControlMsg::Reload => {
             reload_and_broadcast(conn, ui_config, config_path, tx_keys, egui_ctx).await
+        }
+        ControlMsg::Shutdown => {
+            // Handled in the event loop branches; no action here.
         }
         ControlMsg::SwitchTheme(name) => {
             if config::themes::theme_exists(&name) {
@@ -200,6 +206,13 @@ pub fn spawn_key_runtime(
                     }
                     Some(msg) = rx_ctrl.recv() => {
                         match msg {
+                            ControlMsg::Shutdown => {
+                                // Ask UI to hide everything, allow a brief window to process, then exit
+                                let _ = tx_keys.send(AppEvent::Shutdown);
+                                egui_ctx.request_repaint();
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                std::process::exit(0);
+                            }
                             ControlMsg::Reload | ControlMsg::SwitchTheme(_) => {
                                 preconnect_queue.push_back(msg);
                             }
@@ -277,6 +290,12 @@ pub fn spawn_key_runtime(
                     }
                     Some(msg) = rx_ctrl.recv() => {
                         match msg {
+                            ControlMsg::Shutdown => {
+                                let _ = tx_keys.send(AppEvent::Shutdown);
+                                egui_ctx.request_repaint();
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                std::process::exit(0);
+                            }
                             ControlMsg::SwitchTheme(name) => {
                                 if config::themes::theme_exists(&name) {
                                     current_cursor.set_theme(Some(&name));

@@ -362,6 +362,8 @@ impl Hud {
     /// Render and update the HUD viewport.
     pub fn render(&mut self, ctx: &Context) {
         if !self.visible {
+            // Ensure the viewport is hidden if we were previously visible
+            ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
             return;
         }
 
@@ -523,5 +525,11 @@ impl Hud {
         self.last_pos = Some(pos);
         self.last_opacity = Some(self.cfg.opacity.clamp(0.0, 1.0));
         self.last_size = Some(size);
+    }
+
+    /// Hide the HUD viewport and stop rendering until made visible again.
+    pub fn hide(&mut self, ctx: &Context) {
+        self.visible = false;
+        ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
     }
 }

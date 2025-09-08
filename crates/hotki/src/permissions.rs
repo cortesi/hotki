@@ -23,6 +23,10 @@ impl PermissionsHelp {
         self.visible = true;
     }
 
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+
     pub fn set_control_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ControlMsg>) {
         self.tx_ctrl = Some(tx);
     }

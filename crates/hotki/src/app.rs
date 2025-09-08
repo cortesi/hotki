@@ -13,6 +13,7 @@ use hotki_protocol::NotifyKind;
 
 pub enum AppEvent {
     Quit,
+    Shutdown,
     ShowDetails,
     HideDetails,
     ShowPermissionsHelp,
@@ -61,6 +62,23 @@ impl App for HotkiApp {
             match ev {
                 AppEvent::Quit => {
                     std::process::exit(0);
+                }
+                AppEvent::Shutdown => {
+                    // Hide all viewports and remove tray icon to allow a graceful exit
+                    let (keys, _visible, parent_title) = self.hud.get_state();
+                    // Ensure HUD viewport is hidden and stop rendering
+                    self.hud.hide(ctx);
+                    // Clear notifications and hide their windows
+                    self.notifications.clear_all(ctx);
+                    // Hide Details and Permissions windows
+                    self.details.hide();
+                    self.permissions.hide();
+                    // Drop tray icon
+                    self._tray = None;
+                    // Preserve last cursor and config, but request a repaint to flush hides
+                    // Optionally keep keys invisible
+                    self.hud.set_keys(keys, false, parent_title);
+                    ctx.request_repaint();
                 }
                 AppEvent::ShowDetails => {
                     self.details.show();
