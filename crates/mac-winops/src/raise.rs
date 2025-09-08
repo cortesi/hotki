@@ -102,7 +102,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         }
     }
 
-    // Decide fallback only if we attempted focus hints
+    // Decide fallback if we cannot raise via AX
     let need_fallback: bool;
     if found.is_null() {
         info!(
@@ -111,72 +111,42 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         );
         need_fallback = true;
     } else {
-        // Try setting AXFocusedWindow on the app
-        info!("raise_window: setting AXFocusedWindow on app element");
-        let mut settable = false;
-        let can_set = unsafe {
-            let rc = AXUIElementIsAttributeSettable(app, cfstr("AXFocusedWindow"), &mut settable);
-            if rc != 0 {
-                warn!(
-                    "AXUIElementIsAttributeSettable(AXFocusedWindow) failed: {}",
-                    rc
-                );
-            }
-            rc == 0 && settable
+        // Best-effort hints on the window itself; avoid AXFocusedWindow entirely.
+        let _ = unsafe {
+            AXUIElementSetAttributeValue(
+                found,
+                cfstr("AXMain"),
+                core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+            )
         };
-        let mut step_failed = false;
-        if can_set {
-            let set_err = unsafe {
-                AXUIElementSetAttributeValue(app, cfstr("AXFocusedWindow"), found as CFTypeRef)
-            };
-            if set_err != 0 {
-                warn!(
-                    "AXUIElementSetAttributeValue(AXFocusedWindow) failed: {}",
-                    set_err
-                );
-                step_failed = true;
-            }
-        } else {
-            info!("raise_window: AXFocusedWindow not settable; skipping set");
-            step_failed = true;
-        }
-        if !step_failed {
-            // Hint AXMain on the window (ignore error)
-            let _ = unsafe {
-                AXUIElementSetAttributeValue(
-                    found,
-                    cfstr("AXMain"),
-                    core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+        let _ = unsafe {
+            AXUIElementSetAttributeValue(
+                found,
+                cfstr("AXFocused"),
+                core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+            )
+        };
+
+        // Try AXRaise on the app first, then on the window.
+        let mut raised = false;
+        let mut acts_ref: CFTypeRef = null_mut();
+        let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
+        if acts_err == 0 && !acts_ref.is_null() {
+            let arr = unsafe {
+                core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
+                    acts_ref as _,
                 )
             };
-            // Also try marking the window as AXFocused (ignore error)
-            let _ = unsafe {
-                AXUIElementSetAttributeValue(
-                    found,
-                    cfstr("AXFocused"),
-                    core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
-                )
-            };
-            // Only call AXRaise if supported on the app element
-            let mut acts_ref: CFTypeRef = null_mut();
             let mut can_raise = false;
-            let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
-            if acts_err == 0 && !acts_ref.is_null() {
-                let arr = unsafe {
-                    core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
-                        acts_ref as _,
-                    )
-                };
-                unsafe {
-                    for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
-                        let name = core_foundation::array::CFArrayGetValueAtIndex(
-                            arr.as_concrete_TypeRef(),
-                            j,
-                        ) as CFStringRef;
-                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
-                            can_raise = true;
-                            break;
-                        }
+            unsafe {
+                for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
+                    let name = core_foundation::array::CFArrayGetValueAtIndex(
+                        arr.as_concrete_TypeRef(),
+                        j,
+                    ) as CFStringRef;
+                    if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
+                        can_raise = true;
+                        break;
                     }
                 }
             }
@@ -187,31 +157,32 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                         "AXUIElementPerformAction(app, AXRaise) failed: {}",
                         app_raise
                     );
+                } else {
+                    raised = true;
                 }
-            } else {
-                info!("raise_window: app does not support AXRaise; checking window actions");
-                // Try AXRaise on the window element if available
-                let mut w_acts_ref: CFTypeRef = null_mut();
+            }
+        }
+
+        if !raised {
+            info!("raise_window: app does not support AXRaise or failed; checking window actions");
+            let mut w_acts_ref: CFTypeRef = null_mut();
+            let w_acts_err = unsafe { AXUIElementCopyActionNames(found, &mut w_acts_ref) };
+            if w_acts_err == 0 && !w_acts_ref.is_null() {
+                let arr = unsafe {
+                    core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
+                        w_acts_ref as _,
+                    )
+                };
                 let mut w_can_raise = false;
-                let w_acts_err = unsafe { AXUIElementCopyActionNames(found, &mut w_acts_ref) };
-                if w_acts_err == 0 && !w_acts_ref.is_null() {
-                    let arr = unsafe {
-                        core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
-                            w_acts_ref as _,
-                        )
-                    };
-                    unsafe {
-                        for j in
-                            0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef())
-                        {
-                            let name = core_foundation::array::CFArrayGetValueAtIndex(
-                                arr.as_concrete_TypeRef(),
-                                j,
-                            ) as CFStringRef;
-                            if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
-                                w_can_raise = true;
-                                break;
-                            }
+                unsafe {
+                    for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
+                        let name = core_foundation::array::CFArrayGetValueAtIndex(
+                            arr.as_concrete_TypeRef(),
+                            j,
+                        ) as CFStringRef;
+                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
+                            w_can_raise = true;
+                            break;
                         }
                     }
                 }
@@ -222,13 +193,15 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                             "AXUIElementPerformAction(window, AXRaise) failed: {}",
                             w_raise
                         );
+                    } else {
+                        raised = true;
                     }
                 } else {
                     info!("raise_window: window does not support AXRaise; skipping action");
                 }
             }
         }
-        need_fallback = step_failed;
+        need_fallback = !raised;
     }
 
     unsafe { core_foundation::base::CFRelease(app as CFTypeRef) };
