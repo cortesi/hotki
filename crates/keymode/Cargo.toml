@@ -10,10 +10,10 @@ keywords.workspace = true
 
 [dependencies]
 mac-keycode = { path = "../mac-keycode" }
-tracing = "0.1"
-regex = "1"
+tracing = { workspace = true }
+regex = { workspace = true }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 
 [dev-dependencies]
-ron = "0.11.0"
+ron = { workspace = true }

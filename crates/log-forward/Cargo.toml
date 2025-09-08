@@ -10,7 +10,6 @@ keywords.workspace = true
 
 [dependencies]
 hotki-protocol = { path = "../hotki-protocol" }
-tokio = { version = "1", features = ["sync"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
-
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "registry"] }

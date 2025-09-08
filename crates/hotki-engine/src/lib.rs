@@ -43,6 +43,25 @@ use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use repeater::ExecSpec;
 
+#[inline]
+fn to_desired(t: config::Toggle) -> mac_winops::Desired {
+    match t {
+        config::Toggle::On => mac_winops::Desired::On,
+        config::Toggle::Off => mac_winops::Desired::Off,
+        config::Toggle::Toggle => mac_winops::Desired::Toggle,
+    }
+}
+
+#[inline]
+fn to_move_dir(d: config::MoveDir) -> mac_winops::MoveDir {
+    match d {
+        config::MoveDir::Left => mac_winops::MoveDir::Left,
+        config::MoveDir::Right => mac_winops::MoveDir::Right,
+        config::MoveDir::Up => mac_winops::MoveDir::Up,
+        config::MoveDir::Down => mac_winops::MoveDir::Down,
+    }
+}
+
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
@@ -369,11 +388,7 @@ impl Engine {
                     kind
                 );
                 // Map Toggle -> mac_winops::Desired
-                let d = match desired {
-                    config::Toggle::On => mac_winops::Desired::On,
-                    config::Toggle::Off => mac_winops::Desired::Off,
-                    config::Toggle::Toggle => mac_winops::Desired::Toggle,
-                };
+                let d = to_desired(desired);
                 let pid = self.current_pid();
                 let res = match kind {
                     config::FullscreenKind::Native => {
@@ -562,12 +577,7 @@ impl Engine {
             }
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
                 let pid = self.current_pid();
-                let mdir = match dir {
-                    config::MoveDir::Left => mac_winops::MoveDir::Left,
-                    config::MoveDir::Right => mac_winops::MoveDir::Right,
-                    config::MoveDir::Up => mac_winops::MoveDir::Up,
-                    config::MoveDir::Down => mac_winops::MoveDir::Down,
-                };
+                let mdir = to_move_dir(dir);
                 if let Some(w) = mac_winops::frontmost_window_for_pid(pid) {
                     if let Err(e) = mac_winops::request_place_move_grid(w.id, cols, rows, mdir) {
                         let _ = self.notifier.send_error("Move", format!("{}", e));
@@ -605,11 +615,7 @@ impl Engine {
                     );
                 }
                 tracing::debug!("Hide action received: desired={:?}", desired);
-                let d = match desired {
-                    config::Toggle::On => mac_winops::Desired::On,
-                    config::Toggle::Off => mac_winops::Desired::Off,
-                    config::Toggle::Toggle => mac_winops::Desired::Toggle,
-                };
+                let d = to_desired(desired);
                 let pid = self.current_pid();
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);

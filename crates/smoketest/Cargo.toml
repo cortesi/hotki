@@ -10,18 +10,18 @@ hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
-tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 winit = "0.30"
 objc2-app-kit = { version = "0.3.1", features = ["NSScreen", "libc"] }
 objc2-foundation = "0.3.1"
 keymode = { path = "../keymode" }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 core-foundation = "0.10.1"
 core-graphics = "0.25.0"
 core-graphics2 = "0.4.1"
 config = { version = "0.0.1", path = "../config" }
-regex = "1.11.2"
+regex = { workspace = true }
 permissions = { version = "0.1.0", path = "../permissions" }
-thiserror = "2.0.16"
-libc = "0.2"
+thiserror = { workspace = true }
+libc = { workspace = true }

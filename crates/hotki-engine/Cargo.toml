@@ -14,12 +14,12 @@ mac-hotkey = { path = "../mac-hotkey" }
 mac-winops = { path = "../mac-winops" }
 tao = "0.34"
 
-tokio = { version = "1.47", features = ["rt", "sync", "time"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tokio-util = "0.7.16"
-thiserror = "2.0"
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
 core-foundation = "0.10"
 io-kit-sys = "0.4.1"
 relaykey = { version = "0.0.1", path = "../relaykey" }
-regex = "1"
+regex = { workspace = true }

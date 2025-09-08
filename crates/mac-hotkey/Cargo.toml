@@ -13,9 +13,9 @@ path = "src/lib.rs"
 [dependencies]
 mac-keycode = { path = "../mac-keycode" }
 bitflags = "2"
-crossbeam-channel = "0.5"
-thiserror = "2"
-tracing = "0.1.41"
+crossbeam-channel = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 eventtag = { path = "../eventtag" }
 core-foundation = "0.10.1"
 permissions = { path = "../permissions" }
