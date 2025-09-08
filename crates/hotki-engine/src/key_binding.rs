@@ -5,7 +5,7 @@ use std::{
 };
 
 use mac_keycode::Chord;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::Result;
 
@@ -75,9 +75,9 @@ impl KeyBindingManager {
             key_pairs.len()
         );
 
-        // Log all keys that will be active after this update (info-level)
+        // Log all keys that will be active after this update (debug-level)
         let all_keys: Vec<String> = key_pairs.iter().map(|(k, _)| k.clone()).collect();
-        info!("Keys rebound ({}): {:?}", all_keys.len(), all_keys);
+        debug!("Keys rebound ({}): {:?}", all_keys.len(), all_keys);
 
         // Incremental update to avoid any interception gap:
         // 1) Unregister removed keys

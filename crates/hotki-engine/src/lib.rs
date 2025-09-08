@@ -32,7 +32,7 @@ const KEY_PROC_WARN_MS: u64 = 5;
 use hotki_protocol::MsgToUI;
 use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 pub use error::{Error, Result};
 pub use notification::NotificationDispatcher;
@@ -260,7 +260,7 @@ impl Engine {
             *g = snap.clone();
         }
         let start = Instant::now();
-        info!(
+        debug!(
             "Focus changed: app='{}' title='{}' pid={}",
             snap.app, snap.title, snap.pid
         );
@@ -363,7 +363,7 @@ impl Engine {
                 Ok(())
             }
             Ok(KeyResponse::Fullscreen { desired, kind }) => {
-                tracing::info!(
+                tracing::debug!(
                     "Engine: fullscreen action received: desired={:?} kind={:?}",
                     desired,
                     kind
@@ -377,7 +377,7 @@ impl Engine {
                 let pid = self.current_pid();
                 let res = match kind {
                     config::FullscreenKind::Native => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Engine: queueing fullscreen_native on main thread pid={} d={:?}",
                             pid,
                             d
@@ -385,7 +385,7 @@ impl Engine {
                         mac_winops::request_fullscreen_native(pid, d)
                     }
                     config::FullscreenKind::Nonnative => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Engine: queueing fullscreen_nonnative pid={} d={:?}",
                             pid,
                             d
@@ -402,7 +402,7 @@ impl Engine {
                 use hotki_protocol::NotifyKind;
                 use regex::Regex;
                 // Compile regexes if present; on error, notify and abort this action.
-                tracing::info!("Raise action: app={:?} title={:?}", app, title);
+                tracing::debug!("Raise action: app={:?} title={:?}", app, title);
                 // Invalidate any pending debounce tasks from previous raise actions
                 let nonce = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
                 let mut invalid = false;
@@ -434,7 +434,7 @@ impl Engine {
                 };
                 if !invalid {
                     let all = mac_winops::list_windows();
-                    tracing::info!("Raise: list_windows count={}", all.len());
+                    tracing::debug!("Raise: list_windows count={}", all.len());
                     if all.is_empty() {
                         let _ = self.notifier.send_notification(
                             NotifyKind::Info,
@@ -443,7 +443,7 @@ impl Engine {
                         );
                     } else {
                         let cur = mac_winops::frontmost_window();
-                        tracing::info!(
+                        tracing::debug!(
                             "Raise: current frontmost={:?}",
                             cur.as_ref().map(|w| (&w.app, &w.title, w.pid, w.id))
                         );
@@ -462,7 +462,7 @@ impl Engine {
                                 idx_match.push(i);
                             }
                         }
-                        tracing::info!("Raise: matched count={}", idx_match.len());
+                        tracing::debug!("Raise: matched count={}", idx_match.len());
                         if idx_match.is_empty() {
                             // Debounce: retry multiple times before notifying; if a match appears, activate it.
                             let app_re2 = app_re.clone();
@@ -498,7 +498,7 @@ impl Engine {
                                         return;
                                     }
                                     // Quiet fallback: avoid user-facing notification to reduce noise during fast app launches.
-                                    tracing::info!(
+                                    tracing::debug!(
                                         "Raise: no matching window after debounce; suppressing notification"
                                     );
                                 }
@@ -521,7 +521,7 @@ impl Engine {
                                 idx_match[0]
                             };
                             let target = &all[target_idx];
-                            tracing::info!(
+                            tracing::debug!(
                                 "Raise: target pid={} id={} app='{}' title='{}'",
                                 target.pid,
                                 target.id,
@@ -652,7 +652,7 @@ impl Engine {
 
         let location_changed = loc_before != loc_after;
         if location_changed {
-            info!(
+            debug!(
                 "Location changed: {:?} -> {:?} (triggered by key: {})",
                 loc_before.path(),
                 loc_after.path(),

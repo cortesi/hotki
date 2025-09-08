@@ -7,7 +7,7 @@ use crate::server_drive;
 /// This is the standard way tests interact with hotki.
 pub fn send_key(seq: &str) {
     let ok = server_drive::inject_key(seq);
-    eprintln!("[send_key] inject {} -> {}", seq, ok);
+    let _ = ok;
 }
 
 /// Send a sequence of key chords with delays between them.

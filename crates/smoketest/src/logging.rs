@@ -8,7 +8,7 @@ const DEFAULT_LOG_CONFIG: &str = concat!(
     "info,",
     "hotki=info,",
     "hotki_server=info,",
-    "hotki_engine=info,",
+    "hotki_engine=warn,",
     "mac_winops=info,",
     "mac_hotkey=info,",
     "mac_focus_watcher=info,",
