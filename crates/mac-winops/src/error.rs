@@ -19,6 +19,10 @@ pub enum Error {
     #[error("AX operation failed: code {0}")]
     AxCode(i32),
 
+    /// The AX element became invalid (e.g., window closed) during the operation.
+    #[error("AX element invalid (window gone)")]
+    WindowGone,
+
     /// Operation must be executed on the main thread.
     #[error("Operation requires main thread")]
     MainThread,

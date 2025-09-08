@@ -120,7 +120,9 @@ fn main() {
             heading("Test: repeat-volume");
             // Volume can be slightly slower; keep a floor to reduce flakiness
             let duration = std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
-            run_with_watchdog("repeat-volume", cli.timeout, move || repeat_volume(duration));
+            run_with_watchdog("repeat-volume", cli.timeout, move || {
+                repeat_volume(duration)
+            });
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs),
         Commands::Seq { tests } => {

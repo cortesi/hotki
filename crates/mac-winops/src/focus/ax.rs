@@ -203,6 +203,7 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
             &mut app_ref,
         );
         if err != 0 || app_ref.is_null() {
+            CFRelease(sys);
             return None;
         }
         // Resolve pid
@@ -235,6 +236,8 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         );
         if werr != 0 || win_ref.is_null() {
             // No focused window; still return app and empty title
+            CFRelease(app_ref);
+            CFRelease(sys);
             return Some((app_name, String::new(), pid_out));
         }
         let mut title_ref: CFTypeRef = std::ptr::null_mut();
@@ -244,10 +247,17 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
             &mut title_ref,
         );
         if terr != 0 || title_ref.is_null() {
+            CFRelease(win_ref);
+            CFRelease(app_ref);
+            CFRelease(sys);
             return Some((app_name, String::new(), pid_out));
         }
         let cfs = core_foundation::string::CFString::wrap_under_create_rule(title_ref as _);
         let title = cfs.to_string();
+        // Release in reverse order of acquisition
+        CFRelease(win_ref);
+        CFRelease(app_ref);
+        CFRelease(sys);
         Some((app_name, title, pid_out))
     }
 }

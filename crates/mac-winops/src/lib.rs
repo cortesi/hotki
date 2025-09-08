@@ -44,6 +44,9 @@ use frame_storage::*;
 use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};
 
+// AX error for invalid UI element (window closed / stale reference)
+const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
+
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.
 pub const FOCUS_SKIP_APPS: &[&str] = &[
@@ -61,6 +64,24 @@ unsafe extern "C" {
 
 /// Alias for CoreGraphics CGWindowID (kCGWindowNumber).
 pub type WindowId = u32;
+
+/// RAII guard that releases a retained AX element on drop.
+struct AXElem(*mut c_void);
+impl AXElem {
+    #[inline]
+    fn new(ptr: *mut c_void) -> Self {
+        Self(ptr)
+    }
+    #[inline]
+    fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+impl Drop for AXElem {
+    fn drop(&mut self) {
+        unsafe { CFRelease(self.0 as CFTypeRef) };
+    }
+}
 
 /// Desired state for operations that can turn on/off or toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +171,11 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
             "focused_window_for_pid: AX copy focused window failed: code {}",
             err
         );
-        return Err(Error::AxCode(err));
+        return if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            Err(Error::WindowGone)
+        } else {
+            Err(Error::AxCode(err))
+        };
     }
     if win.is_null() {
         debug!("focused_window_for_pid: no focused window");
@@ -226,81 +251,85 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
-    // Read current frame
-    let cur_p = ax_get_point(win, attr_pos)?;
-    let cur_s = ax_get_size(win, attr_size)?;
+    // Run body in a closure so we always release `win`.
+    let result = (|| -> Result<()> {
+        // Read current frame
+        let cur_p = ax_get_point(win, attr_pos)?;
+        let cur_s = ax_get_size(win, attr_size)?;
 
-    // Determine target screen visible frame
-    let vf = visible_frame_containing_point(mtm, cur_p);
-    tracing::debug!(
-        "WinOps: visible frame x={} y={} w={} h={}",
-        vf.0,
-        vf.1,
-        vf.2,
-        vf.3
-    );
-    let target_p = CGPoint { x: vf.0, y: vf.1 };
-    let target_s = CGSize {
-        width: vf.2,
-        height: vf.3,
-    };
+        // Determine target screen visible frame
+        let vf = visible_frame_containing_point(mtm, cur_p);
+        tracing::debug!(
+            "WinOps: visible frame x={} y={} w={} h={}",
+            vf.0,
+            vf.1,
+            vf.2,
+            vf.3
+        );
+        let target_p = CGPoint { x: vf.0, y: vf.1 };
+        let target_s = CGSize {
+            width: vf.2,
+            height: vf.3,
+        };
 
-    let mut prev_key: Option<(i32, WindowId)> = None;
-    let is_full = rect_eq(cur_p, cur_s, target_p, target_s);
-    let do_set_to_full = match desired {
-        Desired::On => true,
-        Desired::Off => false,
-        Desired::Toggle => !is_full,
-    };
+        let mut prev_key: Option<(i32, WindowId)> = None;
+        let is_full = rect_eq(cur_p, cur_s, target_p, target_s);
+        let do_set_to_full = match desired {
+            Desired::On => true,
+            Desired::Off => false,
+            Desired::Toggle => !is_full,
+        };
 
-    // Identify window key for restore using stable CGWindowID
-    if let Some(w) = frontmost_window_for_pid(pid) {
-        let wid = w.id;
-        prev_key = Some((pid, wid));
-    }
-
-    if do_set_to_full {
-        tracing::debug!("WinOps: setting to non-native fullscreen frame");
-        // Store previous frame if we have a key and not already stored
-        if let Some(k) = prev_key
-            && let Ok(mut map) = PREV_FRAMES.lock()
-        {
-            if map.len() >= PREV_FRAMES_CAP
-                && let Some(old_k) = map.keys().next().cloned()
-            {
-                let _ = map.remove(&old_k);
-            }
-            map.entry(k).or_insert((cur_p, cur_s));
+        // Identify window key for restore using stable CGWindowID
+        if let Some(w) = frontmost_window_for_pid(pid) {
+            let wid = w.id;
+            prev_key = Some((pid, wid));
         }
-        ax_set_point(win, attr_pos, target_p)?;
-        ax_set_size(win, attr_size, target_s)?;
-    } else {
-        tracing::debug!("WinOps: restoring from previous frame if any");
-        // Restore if available
-        let restored = if let Some(k) = prev_key {
-            if let Ok(mut map) = PREV_FRAMES.lock() {
-                if let Some((p, s)) = map.remove(&k) {
-                    if !rect_eq(p, s, cur_p, cur_s) {
-                        ax_set_point(win, attr_pos, p)?;
-                        ax_set_size(win, attr_size, s)?;
+
+        if do_set_to_full {
+            tracing::debug!("WinOps: setting to non-native fullscreen frame");
+            // Store previous frame if we have a key and not already stored
+            if let Some(k) = prev_key
+                && let Ok(mut map) = PREV_FRAMES.lock()
+            {
+                if map.len() >= PREV_FRAMES_CAP
+                    && let Some(old_k) = map.keys().next().cloned()
+                {
+                    let _ = map.remove(&old_k);
+                }
+                map.entry(k).or_insert((cur_p, cur_s));
+            }
+            ax_set_point(win, attr_pos, target_p)?;
+            ax_set_size(win, attr_size, target_s)?;
+        } else {
+            tracing::debug!("WinOps: restoring from previous frame if any");
+            // Restore if available
+            let restored = if let Some(k) = prev_key {
+                if let Ok(mut map) = PREV_FRAMES.lock() {
+                    if let Some((p, s)) = map.remove(&k) {
+                        if !rect_eq(p, s, cur_p, cur_s) {
+                            ax_set_point(win, attr_pos, p)?;
+                            ax_set_size(win, attr_size, s)?;
+                        }
+                        true
+                    } else {
+                        false
                     }
-                    true
                 } else {
                     false
                 }
             } else {
                 false
+            };
+            if !restored {
+                debug!("no previous frame to restore; non-native Off is a no-op");
             }
-        } else {
-            false
-        };
-        if !restored {
-            debug!("no previous frame to restore; non-native Off is a no-op");
         }
-    }
+        Ok(())
+    })();
     unsafe { CFRelease(win as CFTypeRef) };
     tracing::info!("WinOps: fullscreen_nonnative exit");
-    Ok(())
+    result
 }
 
 // Compute the visible frame (excluding menu bar and Dock) of the screen
@@ -415,36 +444,38 @@ fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
-    // Read current frame to find screen containing the window's point
-    let cur_p = ax_get_point(win, attr_pos)?;
-    let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
-    // Clamp to grid bounds defensively
-    let col = col.min(cols.saturating_sub(1));
-    let row = row.min(rows.saturating_sub(1));
-    let (x, y, w, h) = cell_rect(
-        vf_x,
-        vf_y,
-        vf_w.max(1.0),
-        vf_h.max(1.0),
-        cols,
-        rows,
-        col,
-        row,
-    );
+    let result = (|| -> Result<()> {
+        // Read current frame to find screen containing the window's point
+        let cur_p = ax_get_point(win, attr_pos)?;
+        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+        // Clamp to grid bounds defensively
+        let col = col.min(cols.saturating_sub(1));
+        let row = row.min(rows.saturating_sub(1));
+        let (x, y, w, h) = cell_rect(
+            vf_x,
+            vf_y,
+            vf_w.max(1.0),
+            vf_h.max(1.0),
+            cols,
+            rows,
+            col,
+            row,
+        );
 
-    // Set position first, then size to avoid initial height clamping by AppKit
-    ax_set_point(win, attr_pos, CGPoint { x, y })?;
-    ax_set_size(
-        win,
-        attr_size,
-        CGSize {
-            width: w,
-            height: h,
-        },
-    )?;
-
+        // Set position first, then size to avoid initial height clamping by AppKit
+        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_size(
+            win,
+            attr_size,
+            CGSize {
+                width: w,
+                height: h,
+            },
+        )?;
+        Ok(())
+    })();
     unsafe { CFRelease(win as CFTypeRef) };
-    Ok(())
+    result
 }
 
 /// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
@@ -472,7 +503,7 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
     ax_check()?;
     let _ = request_activate_pid(pid);
     // Resolve a top-level AXWindow
-    let win: *mut c_void = unsafe {
+    let win_raw: *mut c_void = unsafe {
         let app = AXUIElementCreateApplication(pid);
         if app.is_null() {
             return Err(Error::AppElement);
@@ -506,11 +537,11 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
         }
         chosen
     };
+    let win = AXElem::new(win_raw);
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
-
-    let cur_p = ax_get_point(win, attr_pos)?;
-    let cur_s = ax_get_size(win, attr_size)?;
+    let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+    let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
 
     let key = frontmost_window_for_pid(pid).map(|w| (pid, w.id));
     let is_hidden = key
@@ -546,11 +577,11 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
         };
 
         // Attempt move with size no-op first
-        let _ = ax_set_size(win, attr_size, cur_s);
-        ax_set_point(win, attr_pos, CGPoint { x: tx, y: ty })?;
+        let _ = ax_set_size(win.as_ptr(), attr_size, cur_s);
+        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty })?;
 
         // If we didn't move horizontally, try a small nudge towards target and retry
-        if let Ok(p1) = ax_get_point(win, attr_pos)
+        if let Ok(p1) = ax_get_point(win.as_ptr(), attr_pos)
             && approx_eq_eps(p1.x, cur_p.x, 1.0)
         {
             let nudge_x = if tx >= cur_p.x {
@@ -559,19 +590,19 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
                 cur_p.x - 40.0
             };
             let _ = ax_set_point(
-                win,
+                win.as_ptr(),
                 attr_pos,
                 CGPoint {
                     x: nudge_x,
                     y: cur_p.y,
                 },
             );
-            let _ = ax_set_point(win, attr_pos, CGPoint { x: tx, y: ty });
+            let _ = ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty });
         }
 
         // Tightening pass: iteratively nudge toward the requested corner with
         // a diminishing step to squeeze a few extra pixels off-screen.
-        if let Ok(mut best) = ax_get_point(win, attr_pos) {
+        if let Ok(mut best) = ax_get_point(win.as_ptr(), attr_pos) {
             let mut step = 128.0;
             for _ in 0..3 {
                 // X axis drive
@@ -587,8 +618,8 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
                             y: best.y,
                         },
                     };
-                    let _ = ax_set_point(win, attr_pos, cand);
-                    if let Ok(np) = ax_get_point(win, attr_pos) {
+                    let _ = ax_set_point(win.as_ptr(), attr_pos, cand);
+                    if let Ok(np) = ax_get_point(win.as_ptr(), attr_pos) {
                         let improved = match corner {
                             ScreenCorner::BottomRight => np.x > best.x + 0.5,
                             ScreenCorner::BottomLeft | ScreenCorner::TopLeft => np.x < best.x - 0.5,
@@ -614,8 +645,8 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
                             y: best.y - local,
                         },
                     };
-                    let _ = ax_set_point(win, attr_pos, cand);
-                    if let Ok(np) = ax_get_point(win, attr_pos) {
+                    let _ = ax_set_point(win.as_ptr(), attr_pos, cand);
+                    if let Ok(np) = ax_get_point(win.as_ptr(), attr_pos) {
                         let improved = match corner {
                             ScreenCorner::BottomRight | ScreenCorner::BottomLeft => {
                                 np.y > best.y + 0.5
@@ -636,11 +667,10 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
         && let Ok(mut map) = HIDDEN_FRAMES.lock()
         && let Some((p, s)) = map.remove(&k)
     {
-        let _ = ax_set_size(win, attr_size, s);
-        let _ = ax_set_point(win, attr_pos, p);
+        let _ = ax_set_size(win.as_ptr(), attr_size, s);
+        let _ = ax_set_point(win.as_ptr(), attr_pos, p);
     }
 
-    unsafe { CFRelease(win as CFTypeRef) };
     Ok(())
 }
 
@@ -722,57 +752,60 @@ fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<(
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
-    let cur_p = ax_get_point(win, attr_pos)?;
-    let cur_s = ax_get_size(win, attr_size)?;
-    let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+    let result = (|| -> Result<()> {
+        let cur_p = ax_get_point(win, attr_pos)?;
+        let cur_s = ax_get_size(win, attr_size)?;
+        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
 
-    let eps = 2.0;
-    let cur_cell = find_cell_for_window(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
+        let eps = 2.0;
+        let cur_cell = find_cell_for_window(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
 
-    // First invocation from a non-aligned position places at visual top‑left.
-    // With our row indexing, some environments report coordinates such that
-    // choosing row 0 may map to the bottom visually; prefer the row that
-    // aligns to the topmost cell for first placement.
-    let (next_col, next_row) = match cur_cell {
-        None => (0, rows.saturating_sub(1)),
-        Some((c, r)) => {
-            let (mut nc, mut nr) = (c, r);
-            match dir {
-                MoveDir::Left => {
-                    nc = nc.saturating_sub(1);
-                }
-                MoveDir::Right => {
-                    if nc + 1 < cols {
-                        nc += 1;
+        // First invocation from a non-aligned position places at visual top‑left.
+        // With our row indexing, some environments report coordinates such that
+        // choosing row 0 may map to the bottom visually; prefer the row that
+        // aligns to the topmost cell for first placement.
+        let (next_col, next_row) = match cur_cell {
+            None => (0, rows.saturating_sub(1)),
+            Some((c, r)) => {
+                let (mut nc, mut nr) = (c, r);
+                match dir {
+                    MoveDir::Left => {
+                        nc = nc.saturating_sub(1);
+                    }
+                    MoveDir::Right => {
+                        if nc + 1 < cols {
+                            nc += 1;
+                        }
+                    }
+                    // Up decreases visual Y (moves down one row index in top-left origin)
+                    MoveDir::Up => {
+                        if nr + 1 < rows {
+                            nr += 1;
+                        }
+                    }
+                    // Down increases visual Y (moves up one row index)
+                    MoveDir::Down => {
+                        nr = nr.saturating_sub(1);
                     }
                 }
-                // Up decreases visual Y (moves down one row index in top-left origin)
-                MoveDir::Up => {
-                    if nr + 1 < rows {
-                        nr += 1;
-                    }
-                }
-                // Down increases visual Y (moves up one row index)
-                MoveDir::Down => {
-                    nr = nr.saturating_sub(1);
-                }
+                (nc, nr)
             }
-            (nc, nr)
-        }
-    };
+        };
 
-    let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
-    ax_set_point(win, attr_pos, CGPoint { x, y })?;
-    ax_set_size(
-        win,
-        attr_size,
-        CGSize {
-            width: w,
-            height: h,
-        },
-    )?;
+        let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
+        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_size(
+            win,
+            attr_size,
+            CGSize {
+                width: w,
+                height: h,
+            },
+        )?;
+        Ok(())
+    })();
     unsafe { CFRelease(win as CFTypeRef) };
-    Ok(())
+    result
 }
 
 /// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.

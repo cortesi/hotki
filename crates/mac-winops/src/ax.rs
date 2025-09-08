@@ -38,6 +38,8 @@ unsafe extern "C" {
 // AXValue type constants (per Apple docs)
 const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
 const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
+// AX error for invalid UI element (window closed / stale reference)
+const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
 
 pub fn cfstr(name: &'static str) -> CFStringRef {
     // Use a non-owning CFString backed by a static &'static str; no release needed.
@@ -56,6 +58,9 @@ pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> 
     let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
+        if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            return Err(Error::WindowGone);
+        }
         // Not all windows expose AXFullScreen; treat as unsupported.
         return Err(Error::AxCode(err));
     }
@@ -86,6 +91,9 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
     let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
+        if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            return Err(Error::WindowGone);
+        }
         return Err(Error::AxCode(err));
     }
     if v.is_null() {
@@ -105,6 +113,9 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     let mut v: CFTypeRef = ptr::null_mut();
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
+        if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            return Err(Error::WindowGone);
+        }
         return Err(Error::AxCode(err));
     }
     if v.is_null() {
@@ -161,25 +172,37 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_position(pid: i32, title: &str) -> Option<(f64, f64)> {
     let window = ax_find_window_by_title(pid, title)?;
-    let pos = ax_get_point(window, cfstr("AXPosition")).ok()?;
-    Some((pos.x, pos.y))
+    let res = ax_get_point(window, cfstr("AXPosition"))
+        .ok()
+        .map(|pos| (pos.x, pos.y));
+    unsafe { CFRelease(window as CFTypeRef) };
+    res
 }
 
 /// Get the size of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
     let window = ax_find_window_by_title(pid, title)?;
-    let size = ax_get_size(window, cfstr("AXSize")).ok()?;
-    Some((size.width, size.height))
+    let res = ax_get_size(window, cfstr("AXSize"))
+        .ok()
+        .map(|s| (s.width, s.height));
+    unsafe { CFRelease(window as CFTypeRef) };
+    res
 }
 
 /// Get the frame (position and size) of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))> {
     let window = ax_find_window_by_title(pid, title)?;
-    let pos = ax_get_point(window, cfstr("AXPosition")).ok()?;
-    let size = ax_get_size(window, cfstr("AXSize")).ok()?;
-    Some(((pos.x, pos.y), (size.width, size.height)))
+    let res = match (
+        ax_get_point(window, cfstr("AXPosition")).ok(),
+        ax_get_size(window, cfstr("AXSize")).ok(),
+    ) {
+        (Some(pos), Some(size)) => Some(((pos.x, pos.y), (size.width, size.height))),
+        _ => None,
+    };
+    unsafe { CFRelease(window as CFTypeRef) };
+    res
 }
 
 /// Find a window by title using Accessibility API.
