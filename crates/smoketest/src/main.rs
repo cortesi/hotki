@@ -48,6 +48,46 @@ where
     }
 }
 
+// Some tests (e.g., those that create a winit/Tao EventLoop) must run on the
+// main thread on macOS. This variant keeps the test on the main thread and
+// enforces a timeout via a background watchdog.
+fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let canceled = Arc::new(AtomicBool::new(false));
+    let canceled_flag = canceled.clone();
+    let name_owned = name.to_string();
+    let watchdog = thread::spawn(move || {
+        let start = Instant::now();
+        loop {
+            if canceled_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            if start.elapsed() >= Duration::from_millis(timeout_ms) {
+                eprintln!(
+                    "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
+                    timeout_ms, name_owned
+                );
+                crate::proc_registry::kill_all();
+                std::process::exit(2);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    });
+
+    // Run the test body on the main thread
+    let out = f();
+    canceled.store(true, Ordering::SeqCst);
+    let _ = watchdog.join();
+    out
+}
+
 // Re-export common result types
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 
@@ -109,7 +149,8 @@ fn main() {
         Commands::Relay => {
             heading("Test: repeat-relay");
             let duration = cli.duration;
-            run_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
+            // repeat‑relay opens a winit EventLoop; it must run on the main thread.
+            run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
         }
         Commands::Shell => {
             heading("Test: repeat-shell");
