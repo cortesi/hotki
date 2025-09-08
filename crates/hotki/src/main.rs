@@ -14,7 +14,6 @@ mod details;
 mod fonts;
 mod hud;
 mod logs;
-mod macos_window;
 mod notification;
 mod permissions;
 mod runtime;

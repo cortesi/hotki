@@ -2,9 +2,14 @@ use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSApplication, NSColor, NSEvent, NSScreen, NSWindowCollectionBehavior};
 use objc2_foundation::MainThreadMarker;
 
-pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<(), &'static str> {
+use crate::error::{Error, Result};
+
+/// Apply full transparency and rounded corners to an NSWindow with the given title.
+///
+/// Requires AppKit main thread.
+pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
     let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS window ops must be called on main thread");
+        return Err(Error::MainThread);
     };
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
@@ -33,10 +38,31 @@ pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<(), &
     Ok(())
 }
 
-pub fn get_window_frame(title_match: &str) -> Result<Option<(f32, f32, f32, f32)>, &'static str> {
+/// Set a window (by title) to appear on all Spaces/desktops.
+///
+/// Requires AppKit main thread.
+pub fn set_on_all_spaces(title_match: &str) -> Result<()> {
     let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS window ops must be called on main thread");
+        return Err(Error::MainThread);
     };
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    for w in windows.iter() {
+        let title = w.title();
+        let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
+        if is_match {
+            unsafe { w.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces) };
+        }
+    }
+    Ok(())
+}
+
+/// Return the frame (x, y, w, h) for an NSWindow matching `title_match` using
+/// AppKit coordinates (origin at bottom-left). Returns `None` if not found.
+///
+/// Requires AppKit main thread; returns `None` if not on main thread.
+pub fn frame_by_title(title_match: &str) -> Option<(f32, f32, f32, f32)> {
+    let mtm = MainThreadMarker::new()?;
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
     for w in windows.iter() {
@@ -44,37 +70,21 @@ pub fn get_window_frame(title_match: &str) -> Result<Option<(f32, f32, f32, f32)
         let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
         if is_match {
             let fr = w.frame();
-            return Ok(Some((
+            return Some((
                 fr.origin.x as f32,
                 fr.origin.y as f32,
                 fr.size.width as f32,
                 fr.size.height as f32,
-            )));
+            ));
         }
     }
-    Ok(None)
+    None
 }
 
-/// Set window to appear on all desktops/spaces
-pub fn set_window_on_all_spaces(title_match: &str) -> Result<(), &'static str> {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS window ops must be called on main thread");
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    let windows = app.windows();
-    for w in windows.iter() {
-        let title = w.title();
-        let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
-        if is_match {
-            // Set collection behavior to appear on all spaces
-            unsafe {
-                w.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces);
-            }
-        }
-    }
-    Ok(())
-}
-
+/// Compute the active screen frame at the mouse location as `(x, y, w, h, global_top)`.
+///
+/// `global_top` is the maximum top Y across all screens, used to convert to
+/// top-left coordinate space.
 pub fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
     unsafe {
         let mtm = MainThreadMarker::new().expect("Main thread required");

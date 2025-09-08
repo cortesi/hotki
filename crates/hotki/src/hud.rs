@@ -5,7 +5,7 @@ use egui::{
 
 use config::{FontWeight, Mode, Pos};
 
-use crate::{fonts, macos_window};
+use crate::fonts;
 
 // HUD layout constants
 const HUD_MIN_WIDTH: f32 = 240.0;
@@ -159,7 +159,7 @@ impl Hud {
 
     /// Get the active screen frame as `(x, y, w, h, global_top)`.
     fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
-        macos_window::active_screen_frame()
+        mac_winops::screen::active_frame()
     }
 
     /// FontId for key tokens inside key boxes.
@@ -398,12 +398,12 @@ impl Hud {
         ctx.show_viewport_immediate(self.id, builder, |hud_ctx, _| {
             // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.
             if let Err(e) =
-                macos_window::apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64)
+                mac_winops::nswindow::apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64)
             {
                 tracing::error!("{}", e);
             }
             // Make HUD appear on all desktops/spaces
-            if let Err(e) = macos_window::set_window_on_all_spaces("Hotki HUD") {
+            if let Err(e) = mac_winops::nswindow::set_on_all_spaces("Hotki HUD") {
                 tracing::error!("{}", e);
             }
 

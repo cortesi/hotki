@@ -9,7 +9,7 @@ use egui_extras::{Column, TableBuilder};
 use config::NotifyTheme;
 use hotki_protocol::NotifyKind;
 
-use crate::{macos_window, notification::BacklogEntry, runtime::ControlMsg};
+use crate::{notification::BacklogEntry, runtime::ControlMsg};
 
 const DETAILS_PAD: f32 = 12.0;
 const HEADER_H: f32 = 22.0;
@@ -415,15 +415,8 @@ pub struct WindowGeom {
 
 fn current_geom_top_left() -> Option<WindowGeom> {
     // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
-    let (_sx, _sy, _sw, _sh, global_top) = macos_window::active_screen_frame();
-    let (x_b, y_b, w, h) = match macos_window::get_window_frame("Details") {
-        Ok(Some(frame)) => frame,
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::error!("{}", e);
-            return None;
-        }
-    };
+    let (_sx, _sy, _sw, _sh, global_top) = mac_winops::screen::active_frame();
+    let (x_b, y_b, w, h) = mac_winops::nswindow::frame_by_title("Details")?;
     let x_t = x_b; // x is the same
     let y_t = global_top - (y_b + h);
     Some(WindowGeom {

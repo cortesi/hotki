@@ -27,7 +27,9 @@ pub mod focus;
 mod frame_storage;
 mod geometry;
 mod main_thread_ops;
+pub mod nswindow;
 mod raise;
+pub mod screen;
 mod window;
 
 pub use error::{Error, Result};
@@ -43,7 +45,6 @@ pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
 use frame_storage::*;
 use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};
-
 
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.
