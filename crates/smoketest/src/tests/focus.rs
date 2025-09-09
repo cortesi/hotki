@@ -25,15 +25,23 @@ async fn listen_for_focus(
     matched: Arc<Mutex<Option<(String, i32)>>>,
     ipc_down: Arc<AtomicBool>,
 ) {
-    let mut client = match hotki_server::Client::new_with_socket(socket_path)
-        .with_connect_only()
-        .connect()
-        .await
-    {
-        Ok(c) => c,
-        Err(_) => {
-            ipc_down.store(true, Ordering::SeqCst);
-            return;
+    // Retry connect briefly to avoid racing server startup
+    let mut client = loop {
+        match hotki_server::Client::new_with_socket(socket_path)
+            .with_connect_only()
+            .connect()
+            .await
+        {
+            Ok(c) => break c,
+            Err(_) => {
+                if done.load(Ordering::SeqCst) {
+                    ipc_down.store(true, Ordering::SeqCst);
+                    return;
+                }
+                // Short retry window
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
         }
     };
 
@@ -110,6 +118,14 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 .ok_or_else(|| Error::InvalidState("No session".into()))?
                 .socket_path()
                 .to_string();
+
+            // Initialize RPC driver before starting the listener to reduce races
+            let start = Instant::now();
+            let mut inited = server_drive::init(&socket_path);
+            while !inited && start.elapsed() < Duration::from_millis(3000) {
+                thread::sleep(Duration::from_millis(50));
+                inited = server_drive::init(&socket_path);
+            }
 
             // Start background listener
             let expected_title_clone = expected_title.clone();
