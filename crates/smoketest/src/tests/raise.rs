@@ -1,3 +1,24 @@
+//! Raise-by-title smoketest.
+//!
+//! What this verifies
+//! - The `raise(title: ...)`` action brings the targeted window to the front.
+//! - Two helper windows with unique titles are spawned; we drive `r → 1` to
+//!   raise the first, then `r → 2` to raise the second.
+//! - Focus detection is cross-checked via two mechanisms: the system’s
+//!   frontmost window title (CG) and HUDUpdate events from the backend.
+//!
+//! Acceptance criteria
+//! - Both helper windows become visible (CG or AX) before attempting to raise.
+//! - After `r → 1`, the frontmost window matches `title1` within the per-step
+//!   timeout; after `r → 2`, it matches `title2` within the per-step timeout.
+//! - If the backend IPC disconnects while waiting for events, the test fails
+//!   with `IpcDisconnected`.
+//! - If the expected focus is not observed in time, the test fails with
+//!   `FocusNotObserved { expected, timeout_ms }`.
+//!
+//! Notes
+//! - The test gates on server identifiers to avoid racing binding
+//!   registration, and retries key paths once if necessary.
 use std::{
     cmp, process,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},

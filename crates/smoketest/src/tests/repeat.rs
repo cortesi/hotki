@@ -1,3 +1,22 @@
+//! Repeat throughput smoketests.
+//!
+//! What this verifies
+//! - These routines measure repeat throughput for three paths and print a
+//!   count after running for a caller-supplied duration:
+//!   - `repeat_relay`: Post repeated key events to the focused window using the
+//!     engine’s relay path and count repeat callbacks.
+//!   - `repeat_shell`: Execute a tiny shell command repeatedly and count file
+//!     bytes written.
+//!   - `repeat_volume`: Repeatedly bump system output volume from zero and
+//!     derive the count from the final volume.
+//!
+//! Acceptance criteria
+//! - Each routine runs for approximately the requested duration and completes
+//!   without panic, printing a non-negative repeat count to stdout.
+//! - No explicit minimum throughput is asserted; failures are defined as
+//!   runtime errors (e.g., inability to create/read files or interact with the
+//!   system volume), not low counts.
+//! - `repeat_volume` restores the original system volume on exit.
 use std::{
     sync::{
         Arc,

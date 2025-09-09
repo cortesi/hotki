@@ -1,3 +1,24 @@
+//! Hide on/off smoketest.
+//!
+//! What this verifies
+//! - The `hide(toggle|on|off)` actions move a focused window off-screen to the
+//!   right edge (leaving a 1 px sliver) and restore it to its original frame.
+//! - We operate on a helper window we create, and we measure its position and
+//!   size via AX APIs.
+//!
+//! Acceptance criteria
+//! - After driving `h → o` (hide on), the helper’s X position changes away from
+//!   the original and is approximately at the right-edge sliver of the visible
+//!   frame (within a small tolerance).
+//! - After reopening and driving `h → f` (hide off), the window’s position and
+//!   size return approximately to their original values (within a small
+//!   tolerance).
+//! - If frames cannot be read, or no movement/restoration is observed within
+//!   the configured time windows, the test fails with a descriptive error.
+//!
+//! Notes
+//! - The HUD is hidden; we explicitly keep the helper frontmost to avoid
+//!   acting on the wrong window.
 use std::{
     cmp, thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},

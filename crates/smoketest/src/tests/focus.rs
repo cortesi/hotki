@@ -1,3 +1,22 @@
+//! Focus-tracking smoketest.
+//!
+//! What this verifies
+//! - Hotki reports focus for a newly created helper window.
+//! - We accept either of two independent signals: a HUDUpdate event whose
+//!   cursor app title matches the helper title, or the system’s current
+//!   frontmost window (via Core Graphics) has the expected title.
+//!
+//! Acceptance criteria
+//! - Within `timeout_ms`, at least one of the above signals is observed.
+//! - IPC to the backend remains connected while waiting; if it disconnects the
+//!   test fails with `IpcDisconnected`.
+//! - On success, the test returns a `FocusOutcome` containing the observed
+//!   title, pid, and elapsed time.
+//! - On failure, the test errors with `FocusNotObserved { expected, timeout_ms }`.
+//!
+//! Notes
+//! - The HUD is hidden for this test; we avoid depending on HUD visuals and
+//!   keep the helper window frontmost proactively to reduce flakiness.
 use std::{
     sync::{
         Arc, Mutex,

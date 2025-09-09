@@ -1,3 +1,16 @@
+//! UI demo smoketests.
+//!
+//! What this verifies
+//! - `run_ui_demo`: Launch the UI with a test config, wait for the HUD to
+//!   become ready, then drive a small theme-cycle sequence (show tester, next
+//!   theme a few times, back, exit).
+//! - `run_minui_demo`: Same as above, but with the mini HUD mode.
+//!
+//! Acceptance criteria
+//! - The HUD is observed (readiness gate satisfied) and a `Summary` is
+//!   returned with `hud_seen = true` and `time_to_hud_ms` set.
+//! - The driving sequence completes without backend errors, and the session is
+//!   cleanly torn down.
 use crate::{
     error::Result,
     results::Summary,

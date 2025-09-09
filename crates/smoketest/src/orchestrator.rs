@@ -193,7 +193,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     run("repeat-volume", vol_duration);
 
     // Focus and window ops
-    run("focus", duration_ms);
+    run("focus_tracking", duration_ms);
     run("raise", duration_ms);
     run("place", duration_ms);
     run("fullscreen", duration_ms);
@@ -215,7 +215,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::RepeatRelay => "repeat-relay",
         SeqTest::RepeatShell => "repeat-shell",
         SeqTest::RepeatVolume => "repeat-volume",
-        SeqTest::Focus => "focus",
+        SeqTest::Focus => "focus_tracking",
         SeqTest::Raise => "raise",
         SeqTest::Hide => "hide",
         SeqTest::Place => "place",

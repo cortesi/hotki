@@ -1,3 +1,18 @@
+//! Fullscreen control smoketest.
+//!
+//! What this verifies
+//! - Toggling fullscreen (native or non-native) on a focused helper window via
+//!   a bound key path executes without backend errors and yields readable
+//!   before/after window frames via AX.
+//!
+//! Acceptance criteria
+//! - The test captures an initial frame, drives fullscreen using the configured
+//!   binding, then successfully reads a non-`None` frame afterward within
+//!   `FULLSCREEN_WAIT_TOTAL_MS` while polling at `FULLSCREEN_WAIT_POLL_MS`.
+//! - Backend connectivity remains healthy during the wait; an IPC failure
+//!   causes the test to fail with `IpcDisconnected`.
+//! - A significant area change is expected but not enforced strictly; this is a
+//!   smoke check rather than a pixel-perfect assertion.
 use std::time::Instant;
 
 use super::helpers::{ensure_frontmost, spawn_helper_visible};

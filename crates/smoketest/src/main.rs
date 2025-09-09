@@ -231,28 +231,28 @@ fn main() {
         }
         Commands::Focus => {
             if !cli.quiet {
-                heading("Test: focus");
+                heading("Test: focus_tracking");
             }
             let timeout = cli.timeout;
             let logs = cli.logs;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("focus");
+                crate::process::write_overlay_status("focus_tracking");
             }
-            match run_with_watchdog("focus", timeout, move || {
+            match run_with_watchdog("focus_tracking", timeout, move || {
                 focus::run_focus_test(timeout, logs)
             }) {
                 Ok(out) => {
                     if !cli.quiet {
                         println!(
-                            "focus: OK (title='{}', pid={}, time_to_match_ms={})",
+                            "focus_tracking: OK (title='{}', pid={}, time_to_match_ms={})",
                             out.title, out.pid, out.elapsed_ms
                         );
                     }
                 }
                 Err(e) => {
-                    eprintln!("focus: ERROR: {}", e);
+                    eprintln!("focus_tracking: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
                         let _ = o.kill_and_wait();

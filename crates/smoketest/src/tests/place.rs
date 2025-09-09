@@ -1,3 +1,22 @@
+//! Grid placement smoketest.
+//!
+//! What this verifies
+//! - Placing a window into every cell of an `cols × rows` grid positions it to
+//!   the exact cell rectangle derived from the screen’s AppKit visible frame.
+//! - The test computes the expected rectangle for each cell and compares the
+//!   observed AX frame against it.
+//!
+//! Acceptance criteria
+//! - For every `(col,row)` cell, after sending the bound key, the helper
+//!   window’s `(x, y, w, h)` matches the expected cell rectangle within
+//!   `PLACE_EPS` tolerance and before `PLACE_STEP_TIMEOUT_MS` expires.
+//! - If the helper CGWindowId cannot be found, the screen’s visible frame
+//!   cannot be resolved, or any cell fails to match within tolerance/time, the
+//!   test fails with a detailed mismatch error (expected vs. actual).
+//!
+//! Notes
+//! - The HUD is hidden; a `g` binding raises the helper before each placement
+//!   to ensure the correct target pid.
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use objc2_app_kit::NSScreen;

@@ -84,6 +84,7 @@ pub enum Commands {
     Raise,
 
     /// Verify focus tracking by activating a test window
+    #[command(name = "focus_tracking")]
     Focus,
 
     /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
