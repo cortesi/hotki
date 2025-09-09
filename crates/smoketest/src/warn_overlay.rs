@@ -1,4 +1,5 @@
 use crate::config;
+use objc2::rc::Retained;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 /// Run a borderless, always-on-top overlay window instructing the user to avoid typing.
@@ -13,6 +14,11 @@ pub fn run_warn_overlay() -> Result<(), String> {
 
     struct OverlayApp {
         window: Option<winit::window::Window>,
+        title_label: Option<Retained<objc2_app_kit::NSTextField>>,
+        warn_label: Option<Retained<objc2_app_kit::NSTextField>>,
+        status_path: Option<std::path::PathBuf>,
+        last_title: String,
+        next_deadline: Option<std::time::Instant>,
     }
 
     impl ApplicationHandler for OverlayApp {
@@ -62,28 +68,47 @@ pub fn run_warn_overlay() -> Result<(), String> {
                             });
                             if is_match {
                                 if let Some(view) = w.contentView() {
-                                    use objc2_app_kit::NSTextField;
-                                    let text = NSString::from_str(
-                                        "Hands off the keyboard while smoketests run.",
-                                    );
-                                    let label = unsafe { NSTextField::labelWithString(&text, mtm) };
-                                    // Set a slightly larger system font
-                                    use objc2_app_kit::{NSFont, NSTextAlignment};
-                                    let font = unsafe { NSFont::boldSystemFontOfSize(16.0) };
-                                    unsafe { label.setFont(Some(&font)) };
-                                    unsafe { label.setAlignment(NSTextAlignment::Center) };
-                                    // Size and center vertically within the window
+                                    use objc2_app_kit::{NSFont, NSTextAlignment, NSTextField};
                                     let margin_x: f64 = 12.0;
                                     let lw =
                                         (config::WARN_OVERLAY_WIDTH - 2.0 * margin_x).max(10.0);
-                                    let lh: f64 = 26.0;
-                                    let ly = (config::WARN_OVERLAY_HEIGHT - lh) / 2.0;
-                                    let frame = NSRect::new(
-                                        NSPoint::new(margin_x, ly),
-                                        NSSize::new(lw, lh),
+
+                                    // Warning text (centered)
+                                    let warn_text = NSString::from_str(
+                                        "Hands off the keyboard while smoketests run.",
                                     );
-                                    unsafe { label.setFrame(frame) };
-                                    unsafe { view.addSubview(&label) };
+                                    let warn =
+                                        unsafe { NSTextField::labelWithString(&warn_text, mtm) };
+                                    let warn_font = unsafe { NSFont::boldSystemFontOfSize(16.0) };
+                                    unsafe { warn.setFont(Some(&warn_font)) };
+                                    unsafe { warn.setAlignment(NSTextAlignment::Center) };
+                                    let warn_h: f64 = 26.0;
+                                    let warn_y = (config::WARN_OVERLAY_HEIGHT - warn_h) / 2.0;
+                                    let warn_frame = NSRect::new(
+                                        NSPoint::new(margin_x, warn_y),
+                                        NSSize::new(lw, warn_h),
+                                    );
+                                    unsafe { warn.setFrame(warn_frame) };
+                                    unsafe { view.addSubview(&warn) };
+
+                                    // Title label (current test), centered above warning
+                                    let title_text = NSString::from_str("Preparing tests...");
+                                    let title =
+                                        unsafe { NSTextField::labelWithString(&title_text, mtm) };
+                                    let title_font = unsafe { NSFont::boldSystemFontOfSize(18.0) };
+                                    unsafe { title.setFont(Some(&title_font)) };
+                                    unsafe { title.setAlignment(NSTextAlignment::Center) };
+                                    let title_h: f64 = 22.0;
+                                    let title_y = warn_y + warn_h + 8.0;
+                                    let title_frame = NSRect::new(
+                                        NSPoint::new(margin_x, title_y),
+                                        NSSize::new(lw, title_h),
+                                    );
+                                    unsafe { title.setFrame(title_frame) };
+                                    unsafe { view.addSubview(&title) };
+
+                                    self.warn_label = Some(warn);
+                                    self.title_label = Some(title);
                                 }
                                 break;
                             }
@@ -92,6 +117,11 @@ pub fn run_warn_overlay() -> Result<(), String> {
                 }
 
                 self.window = Some(win);
+
+                // Capture status path from env for title updates
+                self.status_path = std::env::var("HOTKI_SMOKETEST_STATUS_PATH")
+                    .ok()
+                    .map(Into::into);
             }
         }
 
@@ -108,11 +138,41 @@ pub fn run_warn_overlay() -> Result<(), String> {
         }
 
         fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
-            elwt.set_control_flow(ControlFlow::Wait);
+            // Periodically poll the status file and update title if it changed
+            use std::time::{Duration, Instant};
+            let now = Instant::now();
+            let deadline = self
+                .next_deadline
+                .unwrap_or_else(|| now + Duration::from_millis(250));
+
+            if now >= deadline {
+                if let (Some(path), Some(label)) = (&self.status_path, &self.title_label)
+                    && let Ok(s) = std::fs::read_to_string(path) {
+                        let name = s.trim();
+                        if !name.is_empty() && name != self.last_title
+                            && let Some(_mtm) = objc2_foundation::MainThreadMarker::new() {
+                                let ns = NSString::from_str(name);
+                                unsafe { label.setStringValue(&ns) };
+                                self.last_title = name.to_string();
+                            }
+                    }
+                self.next_deadline = Some(now + Duration::from_millis(250));
+            }
+            let next = self
+                .next_deadline
+                .unwrap_or_else(|| now + std::time::Duration::from_millis(250));
+            elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 
-    let mut app = OverlayApp { window: None };
+    let mut app = OverlayApp {
+        window: None,
+        title_label: None,
+        warn_label: None,
+        status_path: None,
+        last_title: String::new(),
+        next_deadline: None,
+    };
     let _ = event_loop.run_app(&mut app);
     Ok(())
 }

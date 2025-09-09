@@ -2,6 +2,7 @@
 
 use std::{
     env,
+    path::PathBuf,
     process::{Child, Command, Stdio},
     thread,
     time::Duration,
@@ -90,8 +91,10 @@ impl HelperWindowBuilder {
 /// Spawn the hands-off warning overlay (returns a managed child to kill later).
 pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let exe = env::current_exe()?;
+    let status_path = overlay_status_path_for_current_run();
     let child = Command::new(exe)
         .arg("warn-overlay")
+        .env("HOTKI_SMOKETEST_STATUS_PATH", &status_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -111,6 +114,17 @@ pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
         }
         Err(_) => None,
     }
+}
+
+/// Compute the overlay status file path for the current smoketest run.
+pub fn overlay_status_path_for_current_run() -> PathBuf {
+    std::env::temp_dir().join(format!("hotki-smoketest-status-{}.txt", std::process::id()))
+}
+
+/// Write the current test name to the overlay status file. Best-effort.
+pub fn write_overlay_status(name: &str) {
+    let path = overlay_status_path_for_current_run();
+    let _ = std::fs::write(path, name.as_bytes());
 }
 
 /// Build the hotki binary quietly.

@@ -163,10 +163,14 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         std::thread::sleep(std::time::Duration::from_millis(
             crate::config::WARN_OVERLAY_INITIAL_DELAY_MS,
         ));
+        // Initialize overlay title
+        crate::process::write_overlay_status("Preparing tests...");
     }
 
     // Helper to run + print one-line summary
     let mut run = |name: &str, dur: u64| {
+        // Update overlay title to current test
+        crate::process::write_overlay_status(name);
         let (ok, details) = run_subtest_capture(name, dur, timeout_ms);
         if ok {
             println!("{}... OK", name);

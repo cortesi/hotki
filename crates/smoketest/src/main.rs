@@ -238,6 +238,7 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("focus");
             }
             match run_with_watchdog("focus", timeout, move || {
                 focus::run_focus_test(timeout, logs)
@@ -272,6 +273,7 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("hide");
             }
             match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
                 Ok(()) => {
@@ -301,6 +303,7 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place");
             }
             match run_on_main_with_watchdog("place", timeout, move || {
                 tests::place::run_place_test(timeout, logs)
@@ -339,6 +342,7 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("ui");
             }
             match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
                 Ok(sum) => {
