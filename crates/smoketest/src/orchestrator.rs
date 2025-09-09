@@ -87,8 +87,11 @@ fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool
             );
         }
     };
+    // In orchestrated runs, a single overlay is spawned by the parent.
+    // Disable overlays in subtests to avoid multiple top-most windows.
     let args: Vec<String> = vec![
         "--quiet".into(),
+        "--no-warn".into(),
         "--duration".into(),
         duration_ms.to_string(),
         "--timeout".into(),
