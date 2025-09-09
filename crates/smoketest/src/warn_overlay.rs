@@ -147,15 +147,21 @@ pub fn run_warn_overlay() -> Result<(), String> {
 
             if now >= deadline {
                 if let (Some(path), Some(label)) = (&self.status_path, &self.title_label)
-                    && let Ok(s) = std::fs::read_to_string(path) {
-                        let name = s.trim();
-                        if !name.is_empty() && name != self.last_title
-                            && let Some(_mtm) = objc2_foundation::MainThreadMarker::new() {
-                                let ns = NSString::from_str(name);
-                                unsafe { label.setStringValue(&ns) };
-                                self.last_title = name.to_string();
-                            }
+                    && let Ok(s) = std::fs::read_to_string(path)
+                {
+                    let name = s.trim();
+                    if !name.is_empty()
+                        && name != self.last_title
+                        && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
+                    {
+                        let ns = NSString::from_str(name);
+                        unsafe { label.setStringValue(&ns) };
+                        self.last_title = name.to_string();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
                     }
+                }
                 self.next_deadline = Some(now + Duration::from_millis(250));
             }
             let next = self
