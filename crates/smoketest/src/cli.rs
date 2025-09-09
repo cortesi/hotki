@@ -2,7 +2,6 @@
 
 use crate::config;
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "smoketest", about = "Hotki smoketest tool", version)]
@@ -96,14 +95,7 @@ pub enum Commands {
     Ui,
 
     /// Take HUD-only screenshots for a theme
-    #[command(name = "screenshots")]
-    Screenshots {
-        /// Theme name to apply before capturing (optional)
-        #[arg(long)]
-        theme: Option<String>,
-        /// Output directory for PNG files
-        dir: PathBuf,
-    },
+    // Screenshots extracted to separate tool: hotki-shots
 
     /// Launch UI in mini HUD mode and cycle themes
     Minui,

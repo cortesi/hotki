@@ -1,0 +1,15 @@
+[package]
+name = "hotki-shots"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap = { version = "*", features = ["derive"] }
+hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
+hotki-server = { path = "../hotki-server" }
+mac-keycode = { version = "0.0.1", path = "../mac-keycode" }
+mac-winops = { path = "../mac-winops" }
+regex = "*"
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+

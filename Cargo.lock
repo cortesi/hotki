@@ -2270,6 +2270,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hotki-shots"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "hotki-protocol",
+ "hotki-server",
+ "mac-keycode",
+ "mac-winops",
+ "regex",
+ "tokio",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

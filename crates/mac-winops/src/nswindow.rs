@@ -26,7 +26,7 @@ pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
                 let layer_opt = unsafe { view.layer() };
                 if let Some(layer) = layer_opt {
                     layer.setMasksToBounds(true);
-                    layer.setCornerRadius(radius);
+                    let _ = radius;
                 }
             }
             let current_alpha = unsafe { w.alphaValue() };

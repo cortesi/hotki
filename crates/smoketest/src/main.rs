@@ -124,18 +124,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Screenshots require Screen Recording; fail fast with a clear error if not granted.
-    if matches!(cli.command, Commands::Screenshots { .. }) {
-        let sr_ok = screen_recording_ok();
-        println!("screen_recording: {}", sr_ok);
-        if !sr_ok {
-            eprintln!("ERROR: Screen Recording permission is required for screenshots");
-            eprintln!(
-                "Grant Screen Recording permission to your terminal under System Settings → Privacy & Security → Screen Recording."
-            );
-            std::process::exit(1);
-        }
-    }
+    // Screenshots extracted to separate tool: hotki-shots
 
     // Build the hotki binary once at startup to avoid running against a stale build.
     heading("Building hotki");
@@ -238,25 +227,7 @@ fn main() {
                 }
             }
         }
-        Commands::Screenshots { theme, dir } => {
-            heading("Test: screenshots");
-            let timeout = cli.timeout;
-            match run_with_watchdog("screenshots", timeout, move || {
-                screenshot::run_screenshots(theme, dir, timeout)
-            }) {
-                Ok(sum) => {
-                    println!(
-                        "screenshots: OK (hud_seen={}, time_to_hud_ms={:?})",
-                        sum.hud_seen, sum.time_to_hud_ms
-                    );
-                }
-                Err(e) => {
-                    eprintln!("screenshots: ERROR: {}", e);
-                    print_hints(&e);
-                    std::process::exit(1);
-                }
-            }
-        }
+        // Screenshots extracted to separate tool: hotki-shots
         Commands::Minui => {
             heading("Test: minui");
             let timeout = cli.timeout;
@@ -298,25 +269,4 @@ fn main() {
 }
 
 // Try capturing a 1×1 rectangle to test Screen Recording permission quickly.
-fn screen_recording_ok() -> bool {
-    use std::ffi::OsStr;
-    let tmp = std::env::temp_dir().join(format!(
-        "hotki-smoketest-preflight-{}-{}.png",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let status = std::process::Command::new("screencapture")
-        .args([
-            OsStr::new("-x"),
-            OsStr::new("-R"),
-            OsStr::new("0,0,1,1"),
-            tmp.as_os_str(),
-        ])
-        .status();
-    let ok = status.map(|s| s.success()).unwrap_or(false);
-    let _ = std::fs::remove_file(&tmp);
-    ok
-}
+// Screenshots moved to hotki-shots tool
