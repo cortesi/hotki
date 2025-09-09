@@ -99,7 +99,8 @@ pub fn run_warn_overlay() -> Result<(), String> {
                                     let countdown = unsafe {
                                         NSTextField::labelWithString(&countdown_text, mtm)
                                     };
-                                    let countdown_font = unsafe { NSFont::boldSystemFontOfSize(32.0) };
+                                    let countdown_font =
+                                        unsafe { NSFont::boldSystemFontOfSize(32.0) };
                                     unsafe { countdown.setFont(Some(&countdown_font)) };
                                     unsafe { countdown.setAlignment(NSTextAlignment::Center) };
                                     // Bright blue countdown color
@@ -119,9 +120,8 @@ pub fn run_warn_overlay() -> Result<(), String> {
                                     unsafe { view.addSubview(&countdown) };
 
                                     // Warning text (at bottom, subtle)
-                                    let warn_text = NSString::from_str(
-                                        "Hands off keyboard during tests",
-                                    );
+                                    let warn_text =
+                                        NSString::from_str("Hands off keyboard during tests");
                                     let warn =
                                         unsafe { NSTextField::labelWithString(&warn_text, mtm) };
                                     let warn_font = unsafe { NSFont::systemFontOfSize(12.0) };
@@ -173,9 +173,9 @@ pub fn run_warn_overlay() -> Result<(), String> {
             // Periodically poll the status file and update title if it changed
             use std::time::{Duration, Instant};
             let now = Instant::now();
-            
+
             // Check if we should update (either no deadline set yet, or deadline passed)
-            let should_update = self.next_deadline.map_or(true, |deadline| now >= deadline);
+            let should_update = self.next_deadline.is_none_or(|deadline| now >= deadline);
 
             if should_update {
                 // Update countdown timer or spinner
@@ -183,20 +183,21 @@ pub fn run_warn_overlay() -> Result<(), String> {
                     let elapsed = now.duration_since(self.start_time);
                     let grace_ms = config::WARN_OVERLAY_INITIAL_DELAY_MS;
                     let remaining_ms = grace_ms.saturating_sub(elapsed.as_millis() as u64);
-                    
+
                     if let Some(countdown_label) = &self.countdown_label
                         && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
                     {
                         if remaining_ms > 0 {
                             // Show countdown number
-                            let secs = (remaining_ms + 999) / 1000; // Round up
+                            let secs = remaining_ms.div_ceil(1000); // Round up
                             let text = format!("{}", secs);
                             let ns = NSString::from_str(&text);
                             unsafe { countdown_label.setStringValue(&ns) };
                         } else {
                             // Show spinner animation
                             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                            let frame_idx = ((elapsed.as_millis() / 100) as usize) % spinner_frames.len();
+                            let frame_idx =
+                                ((elapsed.as_millis() / 100) as usize) % spinner_frames.len();
                             let ns = NSString::from_str(spinner_frames[frame_idx]);
                             unsafe { countdown_label.setStringValue(&ns) };
                         }
@@ -207,34 +208,34 @@ pub fn run_warn_overlay() -> Result<(), String> {
                 }
 
                 // Update test name from status file
-                if let (Some(path), Some(label)) = (&self.status_path, &self.title_label) {
-                    if let Ok(s) = std::fs::read_to_string(path) {
-                        let name = s.trim();
-                        if !name.is_empty()
-                            && name != self.last_title
-                            && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
+                if let (Some(path), Some(label)) = (&self.status_path, &self.title_label)
+                    && let Ok(s) = std::fs::read_to_string(path)
+                {
+                    let name = s.trim();
+                    if !name.is_empty()
+                        && name != self.last_title
+                        && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
+                    {
+                        // Check if transitioning from prep to a real test
+                        if (self.last_title == "..." || self.last_title == "Preparing tests...")
+                            && name != "Preparing tests..."
                         {
-                            // Check if transitioning from prep to a real test
-                            if (self.last_title == "..." || self.last_title == "Preparing tests...") 
-                                && name != "Preparing tests..." 
-                            {
-                                // Real test starting, but keep animating spinner
-                                // self.countdown_active = false;
-                            }
-                            
-                            // Show the test name, or "..." if still preparing
-                            let display_name = if name == "Preparing tests..." {
-                                "..."
-                            } else {
-                                name
-                            };
-                            
-                            let ns = NSString::from_str(display_name);
-                            unsafe { label.setStringValue(&ns) };
-                            self.last_title = name.to_string();
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
+                            // Real test starting, but keep animating spinner
+                            // self.countdown_active = false;
+                        }
+
+                        // Show the test name, or "..." if still preparing
+                        let display_name = if name == "Preparing tests..." {
+                            "..."
+                        } else {
+                            name
+                        };
+
+                        let ns = NSString::from_str(display_name);
+                        unsafe { label.setStringValue(&ns) };
+                        self.last_title = name.to_string();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
                         }
                     }
                 }

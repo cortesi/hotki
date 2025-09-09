@@ -88,18 +88,8 @@ pub fn run_fullscreen_test(
                 .ok_or_else(|| Error::InvalidState("Failed to read initial window frame".into()))?;
             let _ = &before;
 
-            // Trigger fullscreen toggle via global chord
+            // Trigger fullscreen toggle via global chord, then actively wait for a frame update
             send_key("shift+cmd+9");
-            std::thread::sleep(config::ms(config::FULLSCREEN_POST_TOGGLE_DELAY_MS));
-
-            // If the backend crashed as a result of fullscreen, surface it immediately.
-            if !server_drive::check_alive() {
-                eprintln!("[fullscreen] backend not alive after toggle");
-                return Err(Error::IpcDisconnected {
-                    during: "fullscreen toggle",
-                });
-            }
-            // backend alive; continue to read updated frame
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
@@ -107,6 +97,13 @@ pub fn run_fullscreen_test(
             while after.is_none()
                 && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS)
             {
+                // Bail early if backend died
+                if !server_drive::check_alive() {
+                    eprintln!("[fullscreen] backend not alive during toggle wait");
+                    return Err(Error::IpcDisconnected {
+                        during: "fullscreen toggle",
+                    });
+                }
                 std::thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
                 after = mac_winops::ax_window_frame(helper.pid, &title);
             }

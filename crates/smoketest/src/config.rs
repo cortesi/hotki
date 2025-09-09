@@ -77,8 +77,6 @@ pub const HIDE_MIN_TIMEOUT_MS: u64 = 800;
 
 /// Minimum timeout for secondary hide operations (1/3 of main timeout).
 pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
-/// Delay after re-opening HUD (or activating mode) before sending next keys in hide test.
-pub const HIDE_REOPEN_DELAY_MS: u64 = 150;
 
 /// Default binding readiness gate for non-raise tests (RPC mode).
 pub const BINDING_GATE_DEFAULT_MS: u64 = 700;
@@ -109,14 +107,7 @@ pub const PLACE_STEP_TIMEOUT_MS: u64 = 3000;
 pub const RAISE_HELPER_EXTRA_MS: u64 = 2500;
 /// Max wait for the first helper window to appear.
 pub const RAISE_FIRST_WINDOW_MAX_MS: u64 = 2000;
-/// Retry sleep for certain short polls in raise.
-pub const RAISE_RETRY_SLEEP_MS: u64 = 120;
-/// Small delay after re-opening HUD between steps.
-pub const RAISE_MENU_OPEN_STAGGER_MS: u64 = 100;
-/// Small stabilization delay before second raise run.
-pub const RAISE_MENU_STABILIZE_MS: u64 = 120;
-/// Delay between menu key presses when needed.
-pub const RAISE_MENU_KEY_DELAY_MS: u64 = 80;
+// (legacy per-step delays for raise have been removed; active gating is used instead.)
 /// Short recheck timeout for window presence.
 pub const RAISE_WINDOW_RECHECK_MS: u64 = 800;
 /// Binding gate timeout for RPC identifier readiness.
@@ -152,7 +143,7 @@ pub const RELAY_TEST_TITLE: &str = "hotki smoketest: relayrepeat";
 // ===== Fullscreen Test Tunables =====
 
 pub const FULLSCREEN_HELPER_SHOW_DELAY_MS: u64 = 300;
-pub const FULLSCREEN_POST_TOGGLE_DELAY_MS: u64 = 300;
+// Post-toggle delay removed in favor of actively waiting for frame changes.
 pub const FULLSCREEN_WAIT_TOTAL_MS: u64 = 1000;
 pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
 

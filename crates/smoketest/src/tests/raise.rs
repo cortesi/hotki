@@ -1,5 +1,5 @@
 use std::{
-    cmp, process, thread,
+    cmp, process,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -130,8 +130,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .with_time_ms(helper_time)
                 .spawn()?;
             let pid1 = child1.pid;
-            // Small stagger to avoid simultaneous registration races
-            thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
+            // Small active wait to let the first window register before spawning the second
+            let _ =
+                wait_for_windows_visible(&[(pid1, &title1)], config::WINDOW_REGISTRATION_DELAY_MS);
             let child2 = HelperWindowBuilder::new(&title2)
                 .with_time_ms(helper_time)
                 .spawn()?;
@@ -184,7 +185,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             {
                 true
             } else {
-                std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
+                // Actively wait for the '1' binding under raise, then retry
+                if server_drive::is_ready() {
+                    let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
+                }
                 send_key("1");
                 wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
                     || runtime::block_on(wait_for_title(
@@ -196,7 +200,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !ok1 {
                 // Final robust attempt: reopen HUD and try raise again
                 send_key("shift+cmd+0");
-                std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
+                if server_drive::is_ready() {
+                    let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
+                }
                 send_key("r");
                 let _ =
                     wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
@@ -216,8 +222,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Reopen HUD and raise second window
-            std::thread::sleep(config::ms(config::RAISE_MENU_STABILIZE_MS));
             send_key("shift+cmd+0");
+            if server_drive::is_ready() {
+                let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
+            }
             // Ensure the second helper is visible (CG or AX) before issuing '2'
             if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
@@ -229,7 +237,6 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if server_drive::is_ready() {
                 let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
             }
-            std::thread::sleep(config::ms(config::RAISE_MENU_KEY_DELAY_MS));
             send_key("2");
             let ok2_front = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2);
             let mut ok2 = if ok2_front
@@ -237,7 +244,10 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             {
                 true
             } else {
-                thread::sleep(config::ms(config::RETRY_DELAY_MS));
+                // Actively wait for the '2' binding again, then retry immediately
+                if server_drive::is_ready() {
+                    let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
+                }
                 send_key("2");
                 wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
                     || runtime::block_on(wait_for_title(
@@ -249,7 +259,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !ok2 {
                 // Final robust attempt for the second window as well
                 send_key("shift+cmd+0");
-                std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
+                if server_drive::is_ready() {
+                    let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
+                }
                 send_key("r");
                 let _ =
                     wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);

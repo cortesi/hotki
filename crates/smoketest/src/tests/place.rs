@@ -3,6 +3,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
+use super::helpers::wait_for_frontmost_title;
 use crate::{
     config,
     error::{Error, Result},
@@ -200,16 +201,15 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let _wid = find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
 
-            // Ensure helper is frontmost via backend raise binding
+            // Ensure helper is frontmost via backend raise binding; actively wait for it
             send_key("g");
-            std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
+            let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
 
             // Iterate all grid cells in row-major order (top-left is (0,0))
-            let mut _checks = 0usize;
             for (col, row, key) in key_for_cell {
-                    // Re-raise helper to ensure engine targets the right pid
+                    // Re-raise helper to ensure engine targets the right pid and wait until frontmost
                     send_key("g");
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
+                    let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
                     // Recompute visible frame based on current AX position (matches backend logic)
                     let (vf_x, vf_y, vf_w, vf_h) = if let Some((px, py)) =
                         mac_winops::ax_window_position(helper.pid, &title)
@@ -250,7 +250,6 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                             ),
                         }));
                     }
-                    _checks += 1;
                 }
 
             // Kill helper explicitly to exercise teardown

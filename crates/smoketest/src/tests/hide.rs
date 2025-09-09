@@ -122,9 +122,14 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Drive: reopen/activate and turn hide off (reveal)
-            thread::sleep(config::ms(config::HIDE_REOPEN_DELAY_MS));
             send_activation_chord();
-            thread::sleep(config::ms(config::HIDE_ACTIVATE_POST_DELAY_MS));
+            // Actively wait for the hide submenu root ('h') to be available instead of sleeping.
+            if crate::server_drive::is_ready() {
+                let _ = crate::server_drive::wait_for_ident(
+                    "h",
+                    crate::config::BINDING_GATE_DEFAULT_MS,
+                );
+            }
             // Raise helper again before revealing to avoid toggling an unrelated window.
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
             let _ = wait_for_ident_if_ready("h", crate::config::BINDING_GATE_DEFAULT_MS);
