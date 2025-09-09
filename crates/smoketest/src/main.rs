@@ -292,6 +292,37 @@ fn main() {
                 let _ = o.kill_and_wait();
             }
         }
+        Commands::Place => {
+            if !cli.quiet {
+                heading("Test: place");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
+            match run_on_main_with_watchdog("place", timeout, move || {
+                tests::place::run_place_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place: OK (cycled all grid cells)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
         Commands::FocusWinHelper { .. } => {
             // Already handled above
             unreachable!()

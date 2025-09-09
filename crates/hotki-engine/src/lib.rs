@@ -86,6 +86,8 @@ pub struct Engine {
     focus_snapshot: Arc<Mutex<mac_winops::focus::FocusSnapshot>>,
     /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
     raise_nonce: Arc<AtomicU64>,
+    /// Last pid explicitly targeted by a Raise action (used as a hint for subsequent Place).
+    last_target_pid: Arc<Mutex<Option<i32>>>,
 }
 
 impl Engine {
@@ -139,6 +141,7 @@ impl Engine {
             config: config_arc,
             focus_snapshot: focus_snapshot_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
+            last_target_pid: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -503,6 +506,7 @@ impl Engine {
                             let app_re2 = app_re.clone();
                             let title_re2 = title_re.clone();
                             let raise_nonce = self.raise_nonce.clone();
+                            let last_pid_hint = self.last_target_pid.clone();
                             tokio::spawn(async move {
                                 let mut activated = false;
                                 for _ in 0..24 {
@@ -523,6 +527,9 @@ impl Engine {
                                             .unwrap_or(true);
                                         aok && tok
                                     }) {
+                                        if let Ok(mut g) = last_pid_hint.lock() {
+                                            *g = Some(target.pid);
+                                        }
                                         let _ = mac_winops::request_activate_pid(target.pid);
                                         activated = true;
                                         break;
@@ -563,6 +570,9 @@ impl Engine {
                                 target.app,
                                 target.title
                             );
+                            if let Ok(mut g) = self.last_target_pid.lock() {
+                                *g = Some(target.pid);
+                            }
                             if let Err(e) = mac_winops::request_activate_pid(target.pid) {
                                 if let mac_winops::Error::MainThread = e {
                                     tracing::warn!(
@@ -583,15 +593,59 @@ impl Engine {
                 col,
                 row,
             }) => {
-                let pid = self.current_pid();
-                if let Some(w) = mac_winops::frontmost_window_for_pid(pid) {
-                    if let Err(e) = mac_winops::request_place_grid(w.id, cols, rows, col, row) {
-                        let _ = self.notifier.send_error("Place", format!("{}", e));
+                // Prefer pid targeted by the most recent Raise; fall back to CG frontmost (skips our UI) then snapshot pid.
+                let (pid, pid_src) = if let Ok(mut g) = self.last_target_pid.lock() {
+                    if let Some(p) = *g {
+                        *g = None;
+                        (p, "raise")
+                    } else if let Some(w) = mac_winops::frontmost_window() {
+                        (w.pid, "frontmost")
+                    } else {
+                        (self.current_pid(), "snapshot")
                     }
+                } else if let Some(w) = mac_winops::frontmost_window() {
+                    (w.pid, "frontmost")
                 } else {
-                    let _ = self
-                        .notifier
-                        .send_error("Place", "No focused window to place".to_string());
+                    (self.current_pid(), "snapshot")
+                };
+
+                // Log current focus/frontmost context for diagnostics
+                let snap = self.current_snapshot();
+                let front = mac_winops::frontmost_window();
+                if let Some(ref f) = front {
+                    tracing::debug!(
+                        "Place: chosen pid={} (src={}) | focus app='{}' title='{}' pid={} | frontmost pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
+                        pid,
+                        pid_src,
+                        snap.app,
+                        snap.title,
+                        snap.pid,
+                        f.pid,
+                        f.id,
+                        f.app,
+                        f.title,
+                        cols,
+                        rows,
+                        col,
+                        row
+                    );
+                } else {
+                    tracing::debug!(
+                        "Place: chosen pid={} (src={}) | focus app='{}' title='{}' pid={} | frontmost=<none> cols={} rows={} col={} row={}",
+                        pid,
+                        pid_src,
+                        snap.app,
+                        snap.title,
+                        snap.pid,
+                        cols,
+                        rows,
+                        col,
+                        row
+                    );
+                }
+
+                if let Err(e) = mac_winops::request_place_grid_focused(pid, cols, rows, col, row) {
+                    let _ = self.notifier.send_error("Place", format!("{}", e));
                 }
                 Ok(())
             }

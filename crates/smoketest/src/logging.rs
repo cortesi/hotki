@@ -59,8 +59,8 @@ pub fn init_for(logs: bool, quiet: bool) {
 /// Get the standard RUST_LOG configuration string for child processes.
 ///
 /// This is used when spawning hotki sessions with logging enabled.
-pub fn log_config_for_child() -> &'static str {
-    DEFAULT_LOG_CONFIG
+pub fn log_config_for_child() -> String {
+    std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_LOG_CONFIG.to_string())
 }
 
 // (no structured test event helpers at the moment)

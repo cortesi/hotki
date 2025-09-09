@@ -39,6 +39,7 @@ pub enum SeqTest {
     Focus,
     Raise,
     Hide,
+    Place,
     Fullscreen,
     Ui,
     Minui,
@@ -87,6 +88,9 @@ pub enum Commands {
 
     /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
     Hide,
+
+    /// Verify window placement into a grid by cycling a helper window through all cells
+    Place,
 
     /// Internal helper: create a foreground window with a title for focus testing
     #[command(hide = true, name = "focus-winhelper")]

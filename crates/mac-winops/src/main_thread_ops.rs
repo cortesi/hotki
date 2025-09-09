@@ -43,6 +43,13 @@ pub enum MainOp {
         rows: u32,
         dir: MoveDir,
     },
+    PlaceGridFocused {
+        pid: i32,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+    },
     /// Best-effort app activation for a pid (fallback for raise).
     ActivatePid {
         pid: i32,
@@ -133,6 +140,36 @@ pub fn request_place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir)
                 cols,
                 rows,
                 dir,
+            })
+        })
+        .is_err()
+    {
+        return Err(Error::QueuePoisoned);
+    }
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Schedule placement of the focused window for `pid` into a grid cell on the AppKit main thread.
+pub fn request_place_grid_focused(
+    pid: i32,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(Error::Unsupported);
+    }
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| {
+            q.push_back(MainOp::PlaceGridFocused {
+                pid,
+                cols,
+                rows,
+                col,
+                row,
             })
         })
         .is_err()

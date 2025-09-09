@@ -35,7 +35,7 @@ mod window;
 pub use error::{Error, Result};
 pub use main_thread_ops::{
     MoveDir, request_activate_pid, request_fullscreen_native, request_fullscreen_nonnative,
-    request_place_grid, request_place_move_grid, request_raise_window,
+    request_place_grid, request_place_grid_focused, request_place_move_grid, request_raise_window,
 };
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
@@ -54,6 +54,8 @@ pub const FOCUS_SKIP_APPS: &[&str] = &[
     "Control Center",
     "Spotlight",
     "Window Server",
+    "hotki",
+    "Hotki",
 ];
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -192,7 +194,28 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
             return Ok(w);
         }
     }
-
+    // Final fallback: choose the first top-level AXWindow from AXWindows list.
+    unsafe {
+        let mut wins_ref: CFTypeRef = ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        if err == 0 && !wins_ref.is_null() {
+            let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+            let n = CFArrayGetCount(arr.as_concrete_TypeRef());
+            for i in 0..n {
+                let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+                if w.is_null() {
+                    continue;
+                }
+                let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
+                if role == "AXWindow" {
+                    CFRetain(w as CFTypeRef);
+                    CFRelease(app as CFTypeRef);
+                    debug!("focused_window_for_pid: fallback to first AXWindow entry");
+                    return Ok(w);
+                }
+            }
+        }
+    }
     unsafe { CFRelease(app as CFTypeRef) };
     debug!("focused_window_for_pid: no focused window");
     Err(Error::FocusedWindow)
@@ -414,6 +437,15 @@ pub fn drain_main_ops() {
             } => {
                 let _ = place_move_grid(id, cols, rows, dir);
             }
+            MainOp::PlaceGridFocused {
+                pid,
+                cols,
+                rows,
+                col,
+                row,
+            } => {
+                let _ = place_grid_focused(pid, cols, rows, col, row);
+            }
             MainOp::ActivatePid { pid } => {
                 let _ = activate_pid(pid);
             }
@@ -465,6 +497,68 @@ fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<
         Ok(())
     })();
     unsafe { CFRelease(win as CFTypeRef) };
+    result
+}
+
+/// Place the currently focused window of `pid` into the specified grid cell on its current screen.
+///
+/// This is a convenience variant of `place_grid` that resolves the window via Accessibility focus
+/// rather than a CGWindowID and performs the move immediately (no main-op queueing).
+#[allow(clippy::too_many_arguments)]
+pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    tracing::info!(
+        "WinOps: place_grid_focused enter pid={} cols={} rows={} col={} row={}",
+        pid,
+        cols,
+        rows,
+        col,
+        row
+    );
+    ax_check()?;
+    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    let win = focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+    let result = (|| -> Result<()> {
+        let cur_p = ax_get_point(win, attr_pos)?;
+        let cur_s = ax_get_size(win, attr_size)?;
+        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+        let col = col.min(cols.saturating_sub(1));
+        let row = row.min(rows.saturating_sub(1));
+        let (x, y, w, h) = cell_rect(
+            vf_x,
+            vf_y,
+            vf_w.max(1.0),
+            vf_h.max(1.0),
+            cols,
+            rows,
+            col,
+            row,
+        );
+        tracing::debug!(
+            "WinOps: place_grid_focused current x={:.1} y={:.1} w={:.1} h={:.1} | target x={:.1} y={:.1} w={:.1} h={:.1}",
+            cur_p.x,
+            cur_p.y,
+            cur_s.width,
+            cur_s.height,
+            x,
+            y,
+            w,
+            h
+        );
+        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_size(
+            win,
+            attr_size,
+            CGSize {
+                width: w,
+                height: h,
+            },
+        )?;
+        Ok(())
+    })();
+    unsafe { CFRelease(win as CFTypeRef) };
+    tracing::info!("WinOps: place_grid_focused exit");
     result
 }
 
@@ -820,26 +914,39 @@ fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
         core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
     };
     let mut found: *mut c_void = ptr::null_mut();
+    let mut fallback_first_window: *mut c_void = ptr::null_mut();
     for i in 0..unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) } {
         let wref = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
         if wref.is_null() {
             continue;
         }
+        // Remember the first top-level AXWindow as a fallback when AXWindowNumber is unavailable
+        if fallback_first_window.is_null() {
+            let role = ax_get_string(wref, cfstr("AXRole")).unwrap_or_default();
+            if role == "AXWindow" {
+                fallback_first_window = wref;
+            }
+        }
         let mut num_ref: CFTypeRef = ptr::null_mut();
         let nerr =
             unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
-        if nerr != 0 || num_ref.is_null() {
-            continue;
-        }
-        let cfnum =
-            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
-        let wid = cfnum.to_i64().unwrap_or(0) as u32;
-        if wid == id {
-            found = wref;
-            break;
+        if nerr == 0 && !num_ref.is_null() {
+            let cfnum =
+                unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+            let wid = cfnum.to_i64().unwrap_or(0) as u32;
+            if wid == id {
+                found = wref;
+                break;
+            }
         }
     }
     if found.is_null() {
+        // Fallback: return the first AXWindow if available (useful for single-window apps)
+        if !fallback_first_window.is_null() {
+            unsafe { CFRetain(fallback_first_window as CFTypeRef) };
+            unsafe { CFRelease(app as CFTypeRef) };
+            return Ok((fallback_first_window, pid));
+        }
         unsafe { CFRelease(app as CFTypeRef) };
         return Err(Error::FocusedWindow);
     }

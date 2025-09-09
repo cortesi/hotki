@@ -92,6 +92,17 @@ pub const HELPER_WIN_HEIGHT: f64 = 180.0;
 /// Margin from screen edge when placing helper windows.
 pub const HELPER_WIN_MARGIN: f64 = 8.0;
 
+// ===== Place Test Tunables =====
+/// Default number of columns for placement grid.
+pub const PLACE_COLS: u32 = 3;
+/// Default number of rows for placement grid.
+pub const PLACE_ROWS: u32 = 2;
+/// Epsilon in pixels for frame comparisons in placement checks.
+pub const PLACE_EPS: f64 = 2.0;
+/// Poll interval while waiting for placement to settle.
+pub const PLACE_POLL_MS: u64 = 50;
+/// Per-cell timeout while waiting for the expected frame.
+pub const PLACE_STEP_TIMEOUT_MS: u64 = 3000;
 // ===== Raise Test Tunables =====
 
 /// Extra lifetime added to helper windows beyond overall timeout.

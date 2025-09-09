@@ -188,6 +188,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Focus and window ops
     run("focus", duration_ms);
     run("raise", duration_ms);
+    run("place", duration_ms);
     run("fullscreen", duration_ms);
 
     // UI demos
@@ -210,6 +211,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::Focus => "focus",
         SeqTest::Raise => "raise",
         SeqTest::Hide => "hide",
+        SeqTest::Place => "place",
         SeqTest::Fullscreen => "fullscreen",
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",
