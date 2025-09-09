@@ -163,6 +163,13 @@ pub const FOCUS_EVENT_POLL_MS: u64 = 150;
 /// Poll interval for the outer wait loop.
 pub const FOCUS_POLL_MS: u64 = 100;
 
+// ===== Warning Overlay Tunables =====
+/// Initial delay before starting tests after showing the hands-off overlay.
+pub const WARN_OVERLAY_INITIAL_DELAY_MS: u64 = 2000;
+/// Default size for the hands-off overlay window.
+pub const WARN_OVERLAY_WIDTH: f64 = 520.0;
+pub const WARN_OVERLAY_HEIGHT: f64 = 120.0;
+
 // ===== Helper Functions =====
 
 /// Convert milliseconds to Duration.

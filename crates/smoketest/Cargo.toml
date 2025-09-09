@@ -12,8 +12,9 @@ mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 winit = "0.30"
-objc2-app-kit = { version = "0.3.1", features = ["NSScreen", "libc"] }
+objc2-app-kit = { version = "0.3.1", features = ["NSScreen", "NSTextField", "NSFont", "libc"] }
 objc2-foundation = "0.3.1"
+objc2 = "0.6.2"
 keymode = { path = "../keymode" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

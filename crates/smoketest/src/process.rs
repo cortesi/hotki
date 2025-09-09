@@ -3,6 +3,8 @@
 use std::{
     env,
     process::{Child, Command, Stdio},
+    thread,
+    time::Duration,
 };
 
 use crate::{
@@ -82,6 +84,32 @@ impl HelperWindowBuilder {
             .map_err(|e| Error::SpawnFailed(e.to_string()))?;
 
         Ok(ManagedChild::new(child))
+    }
+}
+
+/// Spawn the hands-off warning overlay (returns a managed child to kill later).
+pub fn spawn_warn_overlay() -> Result<ManagedChild> {
+    let exe = env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("warn-overlay")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| Error::SpawnFailed(e.to_string()))?;
+    Ok(ManagedChild::new(child))
+}
+
+/// Spawn the warning overlay and wait the standard initial delay.
+pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
+    match spawn_warn_overlay() {
+        Ok(child) => {
+            thread::sleep(Duration::from_millis(
+                crate::config::WARN_OVERLAY_INITIAL_DELAY_MS,
+            ));
+            Some(child)
+        }
+        Err(_) => None,
     }
 }
 

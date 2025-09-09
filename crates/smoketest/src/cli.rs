@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(long)]
     pub quiet: bool,
 
+    /// Disable the hands-off keyboard warning overlay
+    #[arg(long)]
+    pub no_warn: bool,
+
     /// Default duration for repeat tests in milliseconds
     #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
     pub duration: u64,
@@ -94,6 +98,10 @@ pub enum Commands {
         #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
         time: u64,
     },
+
+    /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)
+    #[command(hide = true, name = "warn-overlay")]
+    WarnOverlay,
 
     /// Launch UI with test config and drive a short HUD + theme cycle
     Ui,

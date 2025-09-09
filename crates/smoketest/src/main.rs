@@ -15,6 +15,7 @@ mod test_runner;
 mod tests;
 mod ui_interaction;
 mod util;
+mod warn_overlay;
 mod winhelper;
 
 use cli::{Cli, Commands, FsState};
@@ -97,7 +98,7 @@ fn main() {
     // Initialize logging according to flags
     logging::init_for(cli.logs, cli.quiet);
 
-    // For the helper command, skip permission/build checks and heading
+    // For helper commands, skip permission/build checks and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
         match cli.command {
             Commands::FocusWinHelper { title, time } => {
@@ -107,6 +108,16 @@ fn main() {
                 }
             }
             _ => unreachable!(),
+        }
+        return;
+    }
+    if matches!(cli.command, Commands::WarnOverlay) {
+        match warn_overlay::run_warn_overlay() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("warn-overlay: ERROR: {}", e);
+                std::process::exit(2);
+            }
         }
         return;
     }
@@ -142,15 +153,29 @@ fn main() {
                 heading("Test: repeat-relay");
             }
             let duration = cli.duration;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             // repeat‑relay opens a winit EventLoop; it must run on the main thread.
             run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
         }
         Commands::Shell => {
             if !cli.quiet {
                 heading("Test: repeat-shell");
             }
             let duration = cli.duration;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
         }
         Commands::Volume => {
             if !cli.quiet {
@@ -158,11 +183,18 @@ fn main() {
             }
             // Volume can be slightly slower; keep a floor to reduce flakiness
             let duration = std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             run_with_watchdog("repeat-volume", cli.timeout, move || {
                 repeat_volume(duration)
             });
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
         }
-        Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs),
+        Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs, !cli.no_warn),
         Commands::Seq { tests } => {
             orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, cli.logs)
         }
@@ -172,6 +204,10 @@ fn main() {
             }
             let timeout = cli.timeout;
             let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("raise", timeout, move || {
                 raise::run_raise_test(timeout, logs)
             }) {
@@ -183,8 +219,14 @@ fn main() {
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
             }
         }
         Commands::Focus => {
@@ -193,6 +235,10 @@ fn main() {
             }
             let timeout = cli.timeout;
             let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("focus", timeout, move || {
                 focus::run_focus_test(timeout, logs)
             }) {
@@ -207,8 +253,14 @@ fn main() {
                 Err(e) => {
                     eprintln!("focus: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
             }
         }
         Commands::Hide => {
@@ -217,6 +269,10 @@ fn main() {
             }
             let timeout = cli.timeout;
             let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
                 Ok(()) => {
                     if !cli.quiet {
@@ -226,11 +282,21 @@ fn main() {
                 Err(e) => {
                     eprintln!("hide: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
             }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
         }
         Commands::FocusWinHelper { .. } => {
+            // Already handled above
+            unreachable!()
+        }
+        Commands::WarnOverlay => {
             // Already handled above
             unreachable!()
         }
@@ -239,6 +305,10 @@ fn main() {
                 heading("Test: ui");
             }
             let timeout = cli.timeout;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
                 Ok(sum) => {
                     if !cli.quiet {
@@ -251,8 +321,14 @@ fn main() {
                 Err(e) => {
                     eprintln!("ui: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
             }
         }
         // Screenshots extracted to separate tool: hotki-shots
@@ -261,6 +337,10 @@ fn main() {
                 heading("Test: minui");
             }
             let timeout = cli.timeout;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
                 Ok(sum) => {
                     if !cli.quiet {
@@ -273,8 +353,14 @@ fn main() {
                 Err(e) => {
                     eprintln!("minui: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
             }
         }
         Commands::Fullscreen { state, native } => {
@@ -288,6 +374,10 @@ fn main() {
             };
             let timeout = cli.timeout;
             let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+            }
             match run_with_watchdog("fullscreen", timeout, move || {
                 tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native)
             }) {
@@ -299,8 +389,14 @@ fn main() {
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);
                     print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
                     std::process::exit(1);
                 }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
             }
         } // Preflight smoketest removed.
     }

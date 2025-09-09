@@ -153,8 +153,17 @@ fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool
 }
 
 /// Run all smoketests sequentially in isolated subprocesses.
-pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool) {
+pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
     let mut all_ok = true;
+
+    // Optionally show the hands-off overlay for the entire run
+    let mut overlay: Option<crate::process::ManagedChild> = None;
+    if warn_overlay && let Ok(child) = crate::process::spawn_warn_overlay() {
+        overlay = Some(child);
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::config::WARN_OVERLAY_INITIAL_DELAY_MS,
+        ));
+    }
 
     // Helper to run + print one-line summary
     let mut run = |name: &str, dur: u64| {
@@ -185,6 +194,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool) {
     run("ui", duration_ms);
     run("minui", duration_ms);
 
+    if let Some(mut c) = overlay {
+        let _ = c.kill_and_wait();
+    }
     if !all_ok {
         std::process::exit(1);
     }
