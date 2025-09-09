@@ -102,26 +102,53 @@ impl Client {
 
     /// Enable automatic server spawning using the default command.
     ///
-    /// The default command is the current executable with the "--server" argument.
-    /// This is equivalent to calling `with_server_command(current_exe, ["--server", "--socket", <socket_path>])`.
+    /// The default command is the current executable with `--server` and a
+    /// `--socket <path>` pair matching this client's `socket_path`.
+    ///
+    /// Idempotent: calling this multiple times preserves existing `env` and
+    /// other args, ensures a single `--server`, and replaces any prior
+    /// `--socket` pair with the current `socket_path`.
     pub fn with_auto_spawn_server(mut self) -> Self {
         if let Ok(current_exe) = env::current_exe() {
-            let mut config = ProcessConfig::new(current_exe);
-            // Pass the socket path to the server so it uses the same one as the client
-            config.args = vec![
-                "--server".to_string(),
-                "--socket".to_string(),
-                self.socket_path.clone(),
-            ];
-            // Propagate our PID so the server can watch the UI and exit
-            // immediately if the frontend process goes away for any reason.
+            // Start from existing config if present to avoid clobbering env like RUST_LOG
+            let mut config = self
+                .server_config
+                .take()
+                .unwrap_or_else(|| ProcessConfig::new(current_exe.clone()));
+            // Always set executable to current exe
+            config.executable = current_exe;
+
+            // Ensure exactly one --server flag
+            if !config.args.iter().any(|a| a == "--server") {
+                config.args.insert(0, "--server".to_string());
+            }
+            // Remove any existing --socket option and its value
+            let mut new_args: Vec<String> = Vec::with_capacity(config.args.len() + 2);
+            let mut i = 0;
+            while i < config.args.len() {
+                if config.args[i] == "--socket" {
+                    i += 1;
+                    if i < config.args.len() {
+                        i += 1;
+                    }
+                } else {
+                    new_args.push(config.args[i].clone());
+                    i += 1;
+                }
+            }
+            // Append a single, authoritative --socket pair
+            new_args.push("--socket".to_string());
+            new_args.push(self.socket_path.clone());
+            config.args = new_args;
+
+            // Propagate/refresh parent PID so server exits with the UI process
             let ppid = std::process::id().to_string();
-            // Replace existing HOTKI_PARENT_PID if present, otherwise push
             if let Some((_, v)) = config.env.iter_mut().find(|(k, _)| k == "HOTKI_PARENT_PID") {
                 *v = ppid;
             } else {
                 config.env.push(("HOTKI_PARENT_PID".to_string(), ppid));
             }
+
             self.server_config = Some(config);
         }
         self
@@ -129,7 +156,10 @@ impl Client {
 
     /// Propagate a log filter to the spawned server via `RUST_LOG`.
     ///
-    /// Call after `with_auto_spawn_server()` (or ensure a server_config exists).
+    /// Order independent: may be called before or after
+    /// [`with_auto_spawn_server`]. If no server config exists yet, this method
+    /// seeds one using the current executable and the correct `--server` and
+    /// `--socket` args.
     pub fn with_server_log_filter(mut self, filter: impl Into<String>) -> Self {
         let filter = filter.into();
         // Ensure we have a config to attach env to.
@@ -137,6 +167,7 @@ impl Client {
             && let Ok(current_exe) = env::current_exe()
         {
             let mut config = ProcessConfig::new(current_exe);
+            // Ensure we pass our socket path
             config.args = vec![
                 "--server".to_string(),
                 "--socket".to_string(),
@@ -353,15 +384,99 @@ impl Drop for Client {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_client_builder() {
-        let client = Client::new_with_socket("/test/socket.sock");
-        assert_eq!(client.socket_path, "/test/socket.sock");
+    fn count_flag(args: &[String], flag: &str) -> usize {
+        args.iter().filter(|a| a.as_str() == flag).count()
     }
 
     #[test]
-    fn test_client_default_socket_path() {
+    fn client_default_socket_path() {
         let client = Client::new();
         assert_eq!(client.socket_path, default_socket_path());
+        // auto-spawn seeded
+        let cfg = client.server_config.as_ref().expect("server config");
+        assert!(cfg.args.iter().any(|a| a == "--server"));
+        // expect a single --socket pair
+        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
+    }
+
+    #[test]
+    fn with_socket_path_updates_args_after_auto() {
+        let client = Client::new().with_socket_path("/tmp/custom.sock");
+        let cfg = client.server_config.as_ref().expect("server config");
+        // exactly one socket flag and value equals the client's socket_path
+        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
+        let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
+        assert_eq!(cfg.args[idx + 1], "/tmp/custom.sock");
+    }
+
+    #[test]
+    fn with_socket_path_before_auto_then_auto() {
+        // Start connect-only (no server_config), change path, then enable auto
+        let client = Client::new()
+            .with_connect_only()
+            .with_socket_path("/tmp/early.sock")
+            .with_auto_spawn_server();
+        let cfg = client.server_config.as_ref().expect("server config");
+        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
+        let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
+        assert_eq!(cfg.args[idx + 1], "/tmp/early.sock");
+        assert!(cfg.args.iter().any(|a| a == "--server"));
+    }
+
+    #[test]
+    fn auto_spawn_idempotent_no_dup_flags() {
+        let client = Client::new()
+            .with_auto_spawn_server() // already auto; call again to test idempotency
+            .with_auto_spawn_server();
+        let cfg = client.server_config.as_ref().expect("server config");
+        // Only one --server and one --socket
+        assert_eq!(count_flag(&cfg.args, "--server"), 1);
+        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
+        // HOTKI_PARENT_PID is present
+        assert!(cfg.env.iter().any(|(k, _)| k == "HOTKI_PARENT_PID"));
+    }
+
+    #[test]
+    fn log_filter_order_independent() {
+        // filter before auto
+        let c1 = Client::new()
+            .with_connect_only()
+            .with_server_log_filter("a=info")
+            .with_auto_spawn_server();
+        let cfg1 = c1.server_config.as_ref().expect("server config");
+        assert_eq!(
+            cfg1.env
+                .iter()
+                .find(|(k, _)| k == "RUST_LOG")
+                .map(|(_, v)| v.as_str()),
+            Some("a=info")
+        );
+
+        // filter after auto
+        let c2 = Client::new()
+            .with_auto_spawn_server()
+            .with_server_log_filter("b=debug");
+        let cfg2 = c2.server_config.as_ref().expect("server config");
+        assert_eq!(
+            cfg2.env
+                .iter()
+                .find(|(k, _)| k == "RUST_LOG")
+                .map(|(_, v)| v.as_str()),
+            Some("b=debug")
+        );
+
+        // filter override
+        let c3 = Client::new()
+            .with_auto_spawn_server()
+            .with_server_log_filter("first")
+            .with_server_log_filter("second");
+        let cfg3 = c3.server_config.as_ref().expect("server config");
+        assert_eq!(
+            cfg3.env
+                .iter()
+                .find(|(k, _)| k == "RUST_LOG")
+                .map(|(_, v)| v.as_str()),
+            Some("second")
+        );
     }
 }

@@ -12,7 +12,6 @@ use hotki_protocol::NotifyKind;
 // Control messages moved to control.rs
 
 pub enum AppEvent {
-    Quit,
     Shutdown,
     ShowDetails,
     HideDetails,
@@ -60,9 +59,6 @@ impl App for HotkiApp {
 
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
-                AppEvent::Quit => {
-                    std::process::exit(0);
-                }
                 AppEvent::Shutdown => {
                     // Hide all viewports and remove tray icon to allow a graceful exit
                     let (keys, _visible, parent_title) = self.hud.get_state();
