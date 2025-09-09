@@ -94,8 +94,8 @@ pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize logging if requested
-    logging::init_logging(cli.logs);
+    // Initialize logging according to flags
+    logging::init_for(cli.logs, cli.quiet);
 
     // For the helper command, skip permission/build checks and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
@@ -127,7 +127,9 @@ fn main() {
     // Screenshots extracted to separate tool: hotki-shots
 
     // Build the hotki binary once at startup to avoid running against a stale build.
-    heading("Building hotki");
+    if !cli.quiet {
+        heading("Building hotki");
+    }
     if let Err(e) = process::build_hotki_quiet() {
         eprintln!("Failed to build 'hotki' binary: {}", e);
         eprintln!("Try: cargo build -p hotki");
@@ -136,18 +138,24 @@ fn main() {
 
     match cli.command {
         Commands::Relay => {
-            heading("Test: repeat-relay");
+            if !cli.quiet {
+                heading("Test: repeat-relay");
+            }
             let duration = cli.duration;
             // repeat‑relay opens a winit EventLoop; it must run on the main thread.
             run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
         }
         Commands::Shell => {
-            heading("Test: repeat-shell");
+            if !cli.quiet {
+                heading("Test: repeat-shell");
+            }
             let duration = cli.duration;
             run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
         }
         Commands::Volume => {
-            heading("Test: repeat-volume");
+            if !cli.quiet {
+                heading("Test: repeat-volume");
+            }
             // Volume can be slightly slower; keep a floor to reduce flakiness
             let duration = std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
             run_with_watchdog("repeat-volume", cli.timeout, move || {
@@ -159,13 +167,19 @@ fn main() {
             orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, cli.logs)
         }
         Commands::Raise => {
-            heading("Test: raise");
+            if !cli.quiet {
+                heading("Test: raise");
+            }
             let timeout = cli.timeout;
             let logs = cli.logs;
             match run_with_watchdog("raise", timeout, move || {
                 raise::run_raise_test(timeout, logs)
             }) {
-                Ok(()) => println!("raise: OK (raised by title twice)"),
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("raise: OK (raised by title twice)")
+                    }
+                }
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
                     print_hints(&e);
@@ -174,17 +188,21 @@ fn main() {
             }
         }
         Commands::Focus => {
-            heading("Test: focus");
+            if !cli.quiet {
+                heading("Test: focus");
+            }
             let timeout = cli.timeout;
             let logs = cli.logs;
             match run_with_watchdog("focus", timeout, move || {
                 focus::run_focus_test(timeout, logs)
             }) {
                 Ok(out) => {
-                    println!(
-                        "focus: OK (title='{}', pid={}, time_to_match_ms={})",
-                        out.title, out.pid, out.elapsed_ms
-                    );
+                    if !cli.quiet {
+                        println!(
+                            "focus: OK (title='{}', pid={}, time_to_match_ms={})",
+                            out.title, out.pid, out.elapsed_ms
+                        );
+                    }
                 }
                 Err(e) => {
                     eprintln!("focus: ERROR: {}", e);
@@ -194,11 +212,17 @@ fn main() {
             }
         }
         Commands::Hide => {
-            heading("Test: hide");
+            if !cli.quiet {
+                heading("Test: hide");
+            }
             let timeout = cli.timeout;
             let logs = cli.logs;
             match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
-                Ok(()) => println!("hide: OK (toggle on/off roundtrip)"),
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("hide: OK (toggle on/off roundtrip)")
+                    }
+                }
                 Err(e) => {
                     eprintln!("hide: ERROR: {}", e);
                     print_hints(&e);
@@ -211,14 +235,18 @@ fn main() {
             unreachable!()
         }
         Commands::Ui => {
-            heading("Test: ui");
+            if !cli.quiet {
+                heading("Test: ui");
+            }
             let timeout = cli.timeout;
             match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
                 Ok(sum) => {
-                    println!(
-                        "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                        sum.hud_seen, sum.time_to_hud_ms
-                    );
+                    if !cli.quiet {
+                        println!(
+                            "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                            sum.hud_seen, sum.time_to_hud_ms
+                        );
+                    }
                 }
                 Err(e) => {
                     eprintln!("ui: ERROR: {}", e);
@@ -229,14 +257,18 @@ fn main() {
         }
         // Screenshots extracted to separate tool: hotki-shots
         Commands::Minui => {
-            heading("Test: minui");
+            if !cli.quiet {
+                heading("Test: minui");
+            }
             let timeout = cli.timeout;
             match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
                 Ok(sum) => {
-                    println!(
-                        "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                        sum.hud_seen, sum.time_to_hud_ms
-                    );
+                    if !cli.quiet {
+                        println!(
+                            "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                            sum.hud_seen, sum.time_to_hud_ms
+                        );
+                    }
                 }
                 Err(e) => {
                     eprintln!("minui: ERROR: {}", e);
@@ -246,7 +278,9 @@ fn main() {
             }
         }
         Commands::Fullscreen { state, native } => {
-            heading("Test: fullscreen");
+            if !cli.quiet {
+                heading("Test: fullscreen");
+            }
             let toggle = match state {
                 FsState::Toggle => Toggle::Toggle,
                 FsState::On => Toggle::On,
@@ -257,7 +291,11 @@ fn main() {
             match run_with_watchdog("fullscreen", timeout, move || {
                 tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native)
             }) {
-                Ok(()) => println!("fullscreen: OK (toggled non-native fullscreen)"),
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("fullscreen: OK (toggled non-native fullscreen)")
+                    }
+                }
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);
                     print_hints(&e);

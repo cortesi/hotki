@@ -1,5 +1,6 @@
 //! Test orchestration and execution logic.
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -74,48 +75,119 @@ fn run_subtest_with_watchdog(subcmd: &str, duration_ms: u64, timeout_ms: u64, lo
     }
 }
 
+/// Run a child `smoketest` subcommand with a watchdog, capturing output and forcing quiet mode.
+/// Returns (success, stderr + newline + stdout) for error details.
+fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool, String) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                false,
+                format!("orchestrator: failed to resolve current_exe: {}", e),
+            );
+        }
+    };
+    let args: Vec<String> = vec![
+        "--quiet".into(),
+        "--duration".into(),
+        duration_ms.to_string(),
+        "--timeout".into(),
+        timeout_ms.to_string(),
+        subcmd.into(),
+    ];
+
+    let mut child = match Command::new(exe)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                false,
+                format!("orchestrator: failed to spawn subtest '{}': {}", subcmd, e),
+            );
+        }
+    };
+
+    // Watchdog: allow some overhead on top of the configured timeout.
+    let overhead = Duration::from_millis(15_000);
+    let max_wait = Duration::from_millis(timeout_ms).saturating_add(overhead);
+    let deadline = Instant::now() + max_wait;
+
+    // Poll for completion or timeout
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+            }
+            Err(_) => break false,
+        }
+    };
+
+    // Gather outputs
+    let mut stderr = String::new();
+    let mut stdout = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_string(&mut stderr);
+    }
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_string(&mut stdout);
+    }
+    let details = if stderr.trim().is_empty() {
+        stdout
+    } else if stdout.trim().is_empty() {
+        stderr
+    } else {
+        format!("{}\n{}", stderr, stdout)
+    };
+    (success, details)
+}
+
 /// Run all smoketests sequentially in isolated subprocesses.
-pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, logs: bool) {
+pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool) {
+    let mut all_ok = true;
+
+    // Helper to run + print one-line summary
+    let mut run = |name: &str, dur: u64| {
+        let (ok, details) = run_subtest_capture(name, dur, timeout_ms);
+        if ok {
+            println!("{}... OK", name);
+        } else {
+            all_ok = false;
+            println!("{}... FAIL", name);
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
+        }
+    };
+
     // Repeat tests
-    heading("Test: repeat-relay");
-    if !run_subtest_with_watchdog("repeat-relay", duration_ms, timeout_ms, logs) {
-        std::process::exit(1);
-    }
-
-    heading("Test: repeat-shell");
-    if !run_subtest_with_watchdog("repeat-shell", duration_ms, timeout_ms, logs) {
-        std::process::exit(1);
-    }
-
-    heading("Test: repeat-volume");
+    run("repeat-relay", duration_ms);
+    run("repeat-shell", duration_ms);
     let vol_duration = std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
-    if !run_subtest_with_watchdog("repeat-volume", vol_duration, timeout_ms, logs) {
-        std::process::exit(1);
-    }
+    run("repeat-volume", vol_duration);
 
     // Focus and window ops
-    heading("Test: focus");
-    if !run_subtest_with_watchdog("focus", duration_ms, timeout_ms, logs) {
-        std::process::exit(1);
-    }
-
-    heading("Test: raise");
-    if !run_subtest_with_watchdog("raise", duration_ms, timeout_ms, logs) {
-        std::process::exit(1);
-    }
+    run("focus", duration_ms);
+    run("raise", duration_ms);
+    run("fullscreen", duration_ms);
 
     // UI demos
-    heading("Test: ui");
-    if !run_subtest_with_watchdog("ui", duration_ms, timeout_ms, logs) {
+    run("ui", duration_ms);
+    run("minui", duration_ms);
+
+    if !all_ok {
         std::process::exit(1);
     }
-
-    heading("Test: minui");
-    if !run_subtest_with_watchdog("minui", duration_ms, timeout_ms, logs) {
-        std::process::exit(1);
-    }
-
-    println!("All smoketests passed");
 }
 
 fn to_subcmd(t: SeqTest) -> &'static str {

@@ -18,13 +18,22 @@ const DEFAULT_LOG_CONFIG: &str = concat!(
 /// Global flag to track if logging has been initialized
 static LOGGING_INITIALIZED: OnceLock<()> = OnceLock::new();
 
-/// Initialize logging for tests.
-///
-/// This sets up tracing with the appropriate filters and format.
-/// It can be called multiple times safely - only the first call will have effect.
-pub fn init_logging(enable: bool) {
+/// Initialize logging considering `logs` and `quiet` flags.
+/// - When `quiet` is true: force WARN+ regardless of RUST_LOG.
+/// - Else when `logs` is true: INFO+ using RUST_LOG or default filters.
+/// - Else: do not initialize subscriber (no tracing output).
+pub fn init_for(logs: bool, quiet: bool) {
     LOGGING_INITIALIZED.get_or_init(|| {
-        if enable {
+        if quiet {
+            // Force warn+ without consulting environment
+            let env_filter = tracing_subscriber::EnvFilter::new("warn");
+            let _ = tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().without_time())
+                .try_init();
+            return;
+        }
+        if logs {
             // Create env filter, defaulting to our standard config if RUST_LOG not set
             let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| DEFAULT_LOG_CONFIG.into());
@@ -44,6 +53,8 @@ pub fn init_logging(enable: bool) {
         }
     });
 }
+
+// no legacy initializer
 
 /// Get the standard RUST_LOG configuration string for child processes.
 ///

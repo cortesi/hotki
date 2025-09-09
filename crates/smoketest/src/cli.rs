@@ -10,6 +10,10 @@ pub struct Cli {
     #[arg(long)]
     pub logs: bool,
 
+    /// Suppress headings and non-error output (used by orchestrated runs)
+    #[arg(long)]
+    pub quiet: bool,
+
     /// Default duration for repeat tests in milliseconds
     #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
     pub duration: u64,

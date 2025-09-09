@@ -54,13 +54,9 @@ pub fn run_fullscreen_test(
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     inited = crate::server_drive::init(&sock);
                 }
-                eprintln!(
-                    "[fullscreen] server_drive::init (with retries) -> {}",
-                    inited
-                );
+                let _ = inited;
                 // Wait briefly until the binding is registered so injects resolve.
-                let waited = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
-                eprintln!("[fullscreen] wait_for_ident -> {}", waited);
+                let _ = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
             }
             // Spawn helper window with unique title
             let ts = std::time::SystemTime::now()
@@ -90,13 +86,11 @@ pub fn run_fullscreen_test(
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("Failed to read initial window frame".into()))?;
-            eprintln!("[fullscreen] got initial frame: {:?}", before);
+            let _ = &before;
 
             // Trigger fullscreen toggle via global chord
-            eprintln!("[fullscreen] sending toggle key");
             send_key("shift+cmd+9");
             std::thread::sleep(config::ms(config::FULLSCREEN_POST_TOGGLE_DELAY_MS));
-            eprintln!("[fullscreen] post-toggle delay done");
 
             // If the backend crashed as a result of fullscreen, surface it immediately.
             if !server_drive::check_alive() {
@@ -105,7 +99,7 @@ pub fn run_fullscreen_test(
                     during: "fullscreen toggle",
                 });
             }
-            eprintln!("[fullscreen] backend alive; reading updated frame");
+            // backend alive; continue to read updated frame
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
