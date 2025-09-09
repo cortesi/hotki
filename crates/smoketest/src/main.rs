@@ -267,6 +267,3 @@ fn main() {
         } // Preflight smoketest removed.
     }
 }
-
-// Try capturing a 1×1 rectangle to test Screen Recording permission quickly.
-// Screenshots moved to hotki-shots tool

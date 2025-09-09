@@ -9,8 +9,6 @@ use crate::{details::Details, hud::Hud, notification::NotificationCenter};
 use config::Config;
 use hotki_protocol::NotifyKind;
 
-// Control messages moved to control.rs
-
 pub enum AppEvent {
     Shutdown,
     ShowDetails,
@@ -32,7 +30,6 @@ pub enum AppEvent {
     ReloadUI(Box<Config>),
     /// Update the current UI Location (used for theme/user-style flags now stored on Location)
     UpdateCursor(config::Cursor),
-    // (no backend operations here)
 }
 
 pub struct HotkiApp {

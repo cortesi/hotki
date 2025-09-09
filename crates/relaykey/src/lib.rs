@@ -203,8 +203,6 @@ impl Poster for MacPoster {
     }
 }
 
-// sys implementation moved to sys.rs
-
 /// Stateful relayer that forwards live key Down/Up events to the
 /// foreground application, ensuring only one relayed key is held at a time.
 #[derive(Clone)]

@@ -94,5 +94,3 @@ pub struct NotifyTheme {
     pub error: NotifyWindowStyle,
     pub success: NotifyWindowStyle,
 }
-
-// Toggle moved to hotki-protocol; re-exported from crate root.
