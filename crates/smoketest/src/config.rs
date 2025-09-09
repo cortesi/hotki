@@ -145,11 +145,6 @@ pub const FULLSCREEN_POST_TOGGLE_DELAY_MS: u64 = 300;
 pub const FULLSCREEN_WAIT_TOTAL_MS: u64 = 1000;
 pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
 
-// ===== Screenshot Test Tunables =====
-
-#[allow(dead_code)]
-pub const SCREENSHOT_FRAME_GAP_MS: u64 = 160;
-
 // ===== Hide Test Tunables =====
 
 /// Max wait for the helper window to appear initially.

@@ -52,16 +52,4 @@ pub fn log_config_for_child() -> &'static str {
     DEFAULT_LOG_CONFIG
 }
 
-/// Test event logging helpers for structured output
-pub mod events {
-    #[allow(dead_code)]
-    /// Log test failure
-    pub fn test_failure(name: &str, error: impl std::fmt::Display) {
-        tracing::error!(
-            test = name,
-            event = "failure",
-            error = %error,
-            "Test failed"
-        );
-    }
-}
+// (no structured test event helpers at the moment)

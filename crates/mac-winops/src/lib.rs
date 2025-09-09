@@ -347,24 +347,11 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
 // Compute the visible frame (excluding menu bar and Dock) of the screen
 // containing `p`. Falls back to main screen when not found.
-#[allow(dead_code)]
-enum FrameKind {
-    Visible,
-    Full,
-}
-
-fn frame_containing_point_with(
-    mtm: MainThreadMarker,
-    p: CGPoint,
-    kind: FrameKind,
-) -> (f64, f64, f64, f64) {
+fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
     // Try to find a screen containing the point.
     let mut chosen = None;
     for s in NSScreen::screens(mtm).iter() {
-        let fr = match kind {
-            FrameKind::Visible => s.visibleFrame(),
-            FrameKind::Full => s.frame(),
-        };
+        let fr = s.visibleFrame();
         let x = fr.origin.x;
         let y = fr.origin.y;
         let w = fr.size.width;
@@ -376,25 +363,15 @@ fn frame_containing_point_with(
     }
     // Prefer the chosen screen; otherwise try main, then first.
     if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
-        let r = match kind {
-            FrameKind::Visible => scr.visibleFrame(),
-            FrameKind::Full => scr.frame(),
-        };
+        let r = scr.visibleFrame();
         return (r.origin.x, r.origin.y, r.size.width, r.size.height);
     }
     if let Some(s) = NSScreen::screens(mtm).iter().next() {
-        let r = match kind {
-            FrameKind::Visible => s.visibleFrame(),
-            FrameKind::Full => s.frame(),
-        };
+        let r = s.visibleFrame();
         return (r.origin.x, r.origin.y, r.size.width, r.size.height);
     }
     // As a last resort, return a zero rect to avoid panics.
     (0.0, 0.0, 0.0, 0.0)
-}
-
-fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
-    frame_containing_point_with(mtm, p, FrameKind::Visible)
 }
 
 /// Drain and execute any pending main-thread operations. Call from the Tao main thread
