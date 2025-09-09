@@ -89,6 +89,12 @@ pub struct Engine {
 }
 
 impl Engine {
+    fn sync_focus_now(&self) {
+        let snap = mac_winops::focus::poll_now();
+        if let Ok(mut g) = self.focus_snapshot.lock() {
+            *g = snap;
+        }
+    }
     fn current_snapshot(&self) -> mac_winops::focus::FocusSnapshot {
         self.focus_snapshot
             .lock()
@@ -150,10 +156,22 @@ impl Engine {
         let _ = watcher.start();
         let mut rx = watcher.subscribe();
 
-        // Seed current snapshot immediately (best-effort); spawn async processing next
+        // Seed current snapshot immediately (best-effort).
+        // Prefer the watcher's last snapshot; if it's uninitialized, fall back to
+        // querying the current frontmost window via CG to provide a consistent
+        // initial focus view before any key handling occurs.
         {
             let eng_clone = eng.clone();
-            let snap = watcher.current();
+            let mut snap = watcher.current();
+            if snap.pid <= 0
+                && let Some(w) = mac_winops::frontmost_window()
+            {
+                snap = mac_winops::focus::FocusSnapshot {
+                    app: w.app,
+                    title: w.title,
+                    pid: w.pid,
+                };
+            }
             tokio::spawn(async move {
                 let _ = eng_clone.on_focus_snapshot(snap).await;
             });
@@ -303,6 +321,8 @@ impl Engine {
     /// Process a key event and return whether depth changed (requiring rebind)
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
+        // Ensure our snapshot is fresh before computing context or acting on windows.
+        self.sync_focus_now();
         let fs = self.current_snapshot();
         let pid = self.current_pid();
 
@@ -593,7 +613,7 @@ impl Engine {
                 // Event log including current window info
                 let snap = self.current_snapshot();
                 let front = mac_winops::frontmost_window();
-                if let Some(f) = front {
+                if let Some(ref f) = front {
                     tracing::info!(
                         "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost pid={} id={} app='{}' title='{}'",
                         desired,
@@ -616,8 +636,8 @@ impl Engine {
                 }
                 tracing::debug!("Hide action received: desired={:?}", desired);
                 let d = to_desired(desired);
-                let pid = self.current_pid();
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
+                let pid = self.current_pid();
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
                 if let Err(e) = mac_winops::hide_bottom_left(pid, d) {
                     let _ = self.notifier.send_error("Hide", format!("{}", e));

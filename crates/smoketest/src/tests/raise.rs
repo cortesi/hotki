@@ -1,67 +1,16 @@
 use std::{
-    cmp, env, fs,
-    path::PathBuf,
-    process, thread,
+    cmp, process, thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     config,
     error::{Error, Result},
-    process::{HelperWindowBuilder, ManagedChild},
+    process::HelperWindowBuilder,
     runtime, server_drive,
-    session::HotkiSession,
+    test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
-    util::resolve_hotki_bin,
 };
-
-struct Cleanup {
-    child1: Option<ManagedChild>,
-    child2: Option<ManagedChild>,
-    tmp_path: Option<PathBuf>,
-}
-
-impl Cleanup {
-    fn new() -> Self {
-        Self {
-            child1: None,
-            child2: None,
-            tmp_path: None,
-        }
-    }
-}
-
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        // ManagedChild instances clean up automatically
-        self.child1.take();
-        self.child2.take();
-        if let Some(p) = self.tmp_path.take() {
-            let _ = fs::remove_file(p);
-        }
-    }
-}
-
-struct SessionGuard {
-    sess: *mut HotkiSession,
-}
-
-impl SessionGuard {
-    fn new(sess: &mut HotkiSession) -> Self {
-        Self { sess }
-    }
-}
-
-impl Drop for SessionGuard {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.sess.is_null() {
-                (*self.sess).shutdown();
-                (*self.sess).kill_and_wait();
-            }
-        }
-    }
-}
 
 use crate::error::Error as StError;
 
@@ -153,10 +102,6 @@ fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
 }
 
 pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
-    let Some(hotki_bin) = resolve_hotki_bin() else {
-        return Err(Error::HotkiBinNotFound);
-    };
-
     // Two unique titles
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -165,37 +110,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let title1 = format!("hotki smoketest: raise-1 {}-{}", process::id(), now);
     let title2 = format!("hotki smoketest: raise-2 {}-{}", process::id(), now);
 
-    // Spawn two helper windows
-    let helper_time = timeout_ms.saturating_add(config::RAISE_HELPER_EXTRA_MS);
-    let mut cleanup = Cleanup::new();
-    let child1 = HelperWindowBuilder::new(&title1)
-        .with_time_ms(helper_time)
-        .spawn()?;
-    let pid1 = child1.pid;
-    // Small stagger to avoid simultaneous window registration races in WindowServer
-    thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
-    let child2 = HelperWindowBuilder::new(&title2)
-        .with_time_ms(helper_time)
-        .spawn()?;
-    let pid2 = child2.pid;
-    cleanup.child1 = Some(child1);
-    cleanup.child2 = Some(child2);
-
-    // Ensure both helper windows are actually present before proceeding
-    if !wait_for_windows(
-        &[(pid1, &title1), (pid2, &title2)],
-        config::WAIT_BOTH_WINDOWS_MS,
-    ) {
-        return Err(Error::FocusNotObserved {
-            timeout_ms: 8000,
-            expected: "helpers not visible in CG/AX".into(),
-        });
-    }
-
-    // Do not pre-gate here; we'll wait right before driving the raise keys.
-
     // Build a temporary config enabling raise by title under: shift+cmd+0 -> r -> 1/2
-    let cfg = format!(
+    let ron_config = format!(
         r#"(
     keys: [
         ("shift+cmd+0", "activate", keys([
@@ -213,115 +129,179 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         t1 = title1,
         t2 = title2
     );
-    let tmp_path = env::temp_dir().join(format!("hotki-smoketest-raise-{}.ron", now));
-    fs::write(&tmp_path, cfg)?;
-    cleanup.tmp_path = Some(tmp_path.clone());
+    let config = TestConfig::new(timeout_ms)
+        .with_logs(with_logs)
+        .with_temp_config(ron_config);
 
-    // Launch session and wait for HUD
-    let mut sess = HotkiSession::launch_with_config(&hotki_bin, &tmp_path, with_logs)?;
-    let _sess_guard = SessionGuard::new(&mut sess);
-    let _ = sess.wait_for_hud_checked(timeout_ms)?;
+    TestRunner::new("raise_test", config)
+        .with_setup(|ctx| {
+            ctx.launch_hotki()?;
+            // Optionally wait for HUD so server bindings are ready
+            let _ = ctx.wait_for_hud()?;
+            Ok(())
+        })
+        .with_execute(move |ctx| {
+            // Initialize RPC driver for key injects
+            if let Some(sess) = ctx.session.as_ref() {
+                let sock = sess.socket_path().to_string();
+                let start = std::time::Instant::now();
+                let mut inited = crate::server_drive::init(&sock);
+                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    inited = crate::server_drive::init(&sock);
+                }
+            }
 
-    // Use shared runtime for HUD event waits
+            // Spawn two helper windows
+            let helper_time = ctx
+                .config
+                .timeout_ms
+                .saturating_add(config::RAISE_HELPER_EXTRA_MS);
+            let child1 = HelperWindowBuilder::new(&title1)
+                .with_time_ms(helper_time)
+                .spawn()?;
+            let pid1 = child1.pid;
+            // Small stagger to avoid simultaneous registration races
+            thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
+            let child2 = HelperWindowBuilder::new(&title2)
+                .with_time_ms(helper_time)
+                .spawn()?;
+            let pid2 = child2.pid;
+            // Keep child1/child2 alive for the duration of this execute block.
 
-    // Best‑effort: allow WindowServer to register helpers before driving raise
-    // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
-    if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-    }
-    // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
-    send_key("r");
-    // Ensure the first helper is visible (CG or AX) before issuing '1'
-    if !wait_for_windows(
-        &[(pid1, &title1)],
-        config::WAIT_FIRST_WINDOW_MS.min(config::RAISE_FIRST_WINDOW_MAX_MS),
-    ) {
-        return Err(Error::FocusNotObserved {
-            timeout_ms: 6000,
-            expected: format!("first window not visible before menu: '{}'", title1),
-        });
-    }
-    // Wait for '1' binding to appear under 'raise' if driving via RPC
-    if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
-    }
-    send_key("1");
+            // Ensure both helper windows are actually present before proceeding
+            if !wait_for_windows(
+                &[(pid1, &title1), (pid2, &title2)],
+                config::WAIT_BOTH_WINDOWS_MS,
+            ) {
+                return Err(Error::FocusNotObserved {
+                    timeout_ms: 8000,
+                    expected: "helpers not visible in CG/AX".into(),
+                });
+            }
 
-    // Wait for focus to title1 (prefer frontmost CG check; fall back to HUD)
-    let ok1_front = wait_for_frontmost_title(&title1, timeout_ms / 2);
-    let ok1 = if ok1_front
-        || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??
-    {
-        true
-    } else {
-        std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
-        send_key("1");
-        // One more attempt using CG frontmost first, then HUD
+            // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
+            if server_drive::is_ready() {
+                let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
+            }
+            // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
+            send_key("r");
+            // Ensure the first helper is visible (CG or AX) before issuing '1'
+            if !wait_for_windows(
+                &[(pid1, &title1)],
+                config::WAIT_FIRST_WINDOW_MS.min(config::RAISE_FIRST_WINDOW_MAX_MS),
+            ) {
+                return Err(Error::FocusNotObserved {
+                    timeout_ms: 6000,
+                    expected: format!("first window not visible before menu: '{}'", title1),
+                });
+            }
+            // Wait for '1' binding to appear under 'raise' if driving via RPC
+            if server_drive::is_ready() {
+                let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
+            }
+            send_key("1");
 
-        wait_for_frontmost_title(&title1, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??
-    };
-    if !ok1 {
-        // Final robust attempt: reopen HUD and try raise again
-        send_key("shift+cmd+0");
-        std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
-        send_key("r");
-        let _ = wait_for_windows(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
-        send_key("1");
-        let ok1_retry = wait_for_frontmost_title(&title1, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title1, timeout_ms / 2))??;
-        if !ok1_retry {
-            return Err(Error::FocusNotObserved {
-                timeout_ms,
-                expected: title1,
-            });
-        }
-    }
+            // Wait for focus to title1 (prefer frontmost CG check; fall back to HUD)
+            let sock = ctx
+                .session
+                .as_ref()
+                .ok_or_else(|| Error::InvalidState("No session".into()))?
+                .socket_path()
+                .to_string();
+            let ok1_front = wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2);
+            let ok1 = if ok1_front
+                || runtime::block_on(wait_for_title(&sock, &title1, ctx.config.timeout_ms / 2))??
+            {
+                true
+            } else {
+                std::thread::sleep(config::ms(config::RAISE_RETRY_SLEEP_MS));
+                send_key("1");
+                wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
+                    || runtime::block_on(wait_for_title(
+                        &sock,
+                        &title1,
+                        ctx.config.timeout_ms / 2,
+                    ))??
+            };
+            if !ok1 {
+                // Final robust attempt: reopen HUD and try raise again
+                send_key("shift+cmd+0");
+                std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
+                send_key("r");
+                let _ = wait_for_windows(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
+                send_key("1");
+                let ok1_retry = wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
+                    || runtime::block_on(wait_for_title(
+                        &sock,
+                        &title1,
+                        ctx.config.timeout_ms / 2,
+                    ))??;
+                if !ok1_retry {
+                    return Err(Error::FocusNotObserved {
+                        timeout_ms: ctx.config.timeout_ms,
+                        expected: title1,
+                    });
+                }
+            }
 
-    // Reopen HUD and raise second window
-    std::thread::sleep(config::ms(config::RAISE_MENU_STABILIZE_MS));
-    send_key("shift+cmd+0");
-    // Ensure the second helper is visible (CG or AX) before issuing '2'
-    if !wait_for_windows(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
-        return Err(Error::FocusNotObserved {
-            timeout_ms: 6000,
-            expected: format!("second window not visible before menu: '{}'", title2),
-        });
-    }
-    send_key("r");
-    if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
-    }
-    std::thread::sleep(config::ms(config::RAISE_MENU_KEY_DELAY_MS));
-    send_key("2");
-    let ok2_front = wait_for_frontmost_title(&title2, timeout_ms / 2);
-    let mut ok2 = if ok2_front
-        || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??
-    {
-        true
-    } else {
-        thread::sleep(config::ms(config::RETRY_DELAY_MS));
-        send_key("2");
+            // Reopen HUD and raise second window
+            std::thread::sleep(config::ms(config::RAISE_MENU_STABILIZE_MS));
+            send_key("shift+cmd+0");
+            // Ensure the second helper is visible (CG or AX) before issuing '2'
+            if !wait_for_windows(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
+                return Err(Error::FocusNotObserved {
+                    timeout_ms: 6000,
+                    expected: format!("second window not visible before menu: '{}'", title2),
+                });
+            }
+            send_key("r");
+            if server_drive::is_ready() {
+                let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
+            }
+            std::thread::sleep(config::ms(config::RAISE_MENU_KEY_DELAY_MS));
+            send_key("2");
+            let ok2_front = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2);
+            let mut ok2 = if ok2_front
+                || runtime::block_on(wait_for_title(&sock, &title2, ctx.config.timeout_ms / 2))??
+            {
+                true
+            } else {
+                thread::sleep(config::ms(config::RETRY_DELAY_MS));
+                send_key("2");
+                wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
+                    || runtime::block_on(wait_for_title(
+                        &sock,
+                        &title2,
+                        ctx.config.timeout_ms / 2,
+                    ))??
+            };
+            if !ok2 {
+                // Final robust attempt for the second window as well
+                send_key("shift+cmd+0");
+                std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
+                send_key("r");
+                let _ = wait_for_windows(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
+                send_key("2");
+                ok2 = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
+                    || runtime::block_on(wait_for_title(
+                        &sock,
+                        &title2,
+                        ctx.config.timeout_ms / 2,
+                    ))??;
+            }
 
-        wait_for_frontmost_title(&title2, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??
-    };
-    if !ok2 {
-        // Final robust attempt for the second window as well
-        send_key("shift+cmd+0");
-        std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
-        send_key("r");
-        let _ = wait_for_windows(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
-        send_key("2");
-        ok2 = wait_for_frontmost_title(&title2, timeout_ms / 2)
-            || runtime::block_on(wait_for_title(sess.socket_path(), &title2, timeout_ms / 2))??;
-    }
-
-    if !ok2 {
-        return Err(Error::FocusNotObserved {
-            timeout_ms,
-            expected: title2,
-        });
-    }
-    Ok(())
+            if !ok2 {
+                return Err(Error::FocusNotObserved {
+                    timeout_ms: ctx.config.timeout_ms,
+                    expected: title2,
+                });
+            }
+            Ok(())
+        })
+        .with_teardown(|ctx, _| {
+            ctx.shutdown();
+            Ok(())
+        })
+        .run()
 }

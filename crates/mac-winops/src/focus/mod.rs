@@ -68,6 +68,26 @@ pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) -> Result<(),
     Ok(())
 }
 
+/// Poll the current focus synchronously and return a `FocusSnapshot`.
+///
+/// Priority:
+/// 1) AX system focus (app + focused window title + pid) if Accessibility is granted.
+/// 2) Fallback to CoreGraphics frontmost window info (title may be empty).
+/// 3) Default snapshot (pid = -1) if neither is available.
+pub fn poll_now() -> FocusSnapshot {
+    if let Some((app, title, pid)) = ax::system_focus_snapshot() {
+        FocusSnapshot { app, title, pid }
+    } else if let Some(w) = crate::frontmost_window() {
+        FocusSnapshot {
+            app: w.app,
+            title: w.title,
+            pid: w.pid,
+        }
+    } else {
+        FocusSnapshot::default()
+    }
+}
+
 /// Engine-friendly watcher handle that owns lifecycle and broadcasts snapshots.
 pub struct FocusWatcher {
     proxy: tao::event_loop::EventLoopProxy<()>,
@@ -103,6 +123,25 @@ impl FocusWatcher {
         ) = unbounded_channel();
         // Spawn background watcher thread
         watcher::start_watcher_snapshots(tx_snap);
+
+        // Seed `last` immediately with a best-effort snapshot so early
+        // consumers have a consistent view before the watcher emits.
+        {
+            let initial = if let Some((app, title, pid)) = ax::system_focus_snapshot() {
+                FocusSnapshot { app, title, pid }
+            } else if let Some(w) = crate::frontmost_window() {
+                FocusSnapshot {
+                    app: w.app,
+                    title: w.title,
+                    pid: w.pid,
+                }
+            } else {
+                FocusSnapshot::default()
+            };
+            if let Ok(mut g) = self.last.lock() {
+                *g = initial;
+            }
+        }
 
         // Forwarder thread: update last + broadcast to subscribers
         let last = self.last.clone();
