@@ -16,9 +16,12 @@ pub fn run_warn_overlay() -> Result<(), String> {
         window: Option<winit::window::Window>,
         title_label: Option<Retained<objc2_app_kit::NSTextField>>,
         warn_label: Option<Retained<objc2_app_kit::NSTextField>>,
+        countdown_label: Option<Retained<objc2_app_kit::NSTextField>>,
         status_path: Option<std::path::PathBuf>,
         last_title: String,
         next_deadline: Option<std::time::Instant>,
+        start_time: std::time::Instant,
+        countdown_active: bool,
     }
 
     impl ApplicationHandler for OverlayApp {
@@ -68,38 +71,22 @@ pub fn run_warn_overlay() -> Result<(), String> {
                             });
                             if is_match {
                                 if let Some(view) = w.contentView() {
-                                    use objc2_app_kit::{NSFont, NSTextAlignment, NSTextField};
+                                    use objc2_app_kit::{
+                                        NSColor, NSFont, NSTextAlignment, NSTextField,
+                                    };
                                     let margin_x: f64 = 12.0;
                                     let lw =
                                         (config::WARN_OVERLAY_WIDTH - 2.0 * margin_x).max(10.0);
 
-                                    // Warning text (centered)
-                                    let warn_text = NSString::from_str(
-                                        "Hands off the keyboard while smoketests run.",
-                                    );
-                                    let warn =
-                                        unsafe { NSTextField::labelWithString(&warn_text, mtm) };
-                                    let warn_font = unsafe { NSFont::boldSystemFontOfSize(16.0) };
-                                    unsafe { warn.setFont(Some(&warn_font)) };
-                                    unsafe { warn.setAlignment(NSTextAlignment::Center) };
-                                    let warn_h: f64 = 26.0;
-                                    let warn_y = (config::WARN_OVERLAY_HEIGHT - warn_h) / 2.0;
-                                    let warn_frame = NSRect::new(
-                                        NSPoint::new(margin_x, warn_y),
-                                        NSSize::new(lw, warn_h),
-                                    );
-                                    unsafe { warn.setFrame(warn_frame) };
-                                    unsafe { view.addSubview(&warn) };
-
-                                    // Title label (current test), centered above warning
-                                    let title_text = NSString::from_str("Preparing tests...");
+                                    // Title label (test name) - centered, MOST VISUAL WEIGHT
+                                    let title_text = NSString::from_str("...");
                                     let title =
                                         unsafe { NSTextField::labelWithString(&title_text, mtm) };
-                                    let title_font = unsafe { NSFont::boldSystemFontOfSize(18.0) };
+                                    let title_font = unsafe { NSFont::boldSystemFontOfSize(24.0) };
                                     unsafe { title.setFont(Some(&title_font)) };
                                     unsafe { title.setAlignment(NSTextAlignment::Center) };
-                                    let title_h: f64 = 22.0;
-                                    let title_y = warn_y + warn_h + 8.0;
+                                    let title_h: f64 = 32.0;
+                                    let title_y = (config::WARN_OVERLAY_HEIGHT - title_h) / 2.0;
                                     let title_frame = NSRect::new(
                                         NSPoint::new(margin_x, title_y),
                                         NSSize::new(lw, title_h),
@@ -107,8 +94,53 @@ pub fn run_warn_overlay() -> Result<(), String> {
                                     unsafe { title.setFrame(title_frame) };
                                     unsafe { view.addSubview(&title) };
 
+                                    // Countdown/spinner label (above title)
+                                    let countdown_text = NSString::from_str("2");
+                                    let countdown = unsafe {
+                                        NSTextField::labelWithString(&countdown_text, mtm)
+                                    };
+                                    let countdown_font = unsafe { NSFont::boldSystemFontOfSize(32.0) };
+                                    unsafe { countdown.setFont(Some(&countdown_font)) };
+                                    unsafe { countdown.setAlignment(NSTextAlignment::Center) };
+                                    // Bright blue countdown color
+                                    let countdown_color = unsafe {
+                                        NSColor::colorWithCalibratedRed_green_blue_alpha(
+                                            0.2, 0.6, 1.0, 1.0,
+                                        )
+                                    };
+                                    unsafe { countdown.setTextColor(Some(&countdown_color)) };
+                                    let countdown_h: f64 = 40.0;
+                                    let countdown_y = title_y + title_h + 4.0;
+                                    let countdown_frame = NSRect::new(
+                                        NSPoint::new(margin_x, countdown_y),
+                                        NSSize::new(lw, countdown_h),
+                                    );
+                                    unsafe { countdown.setFrame(countdown_frame) };
+                                    unsafe { view.addSubview(&countdown) };
+
+                                    // Warning text (at bottom, subtle)
+                                    let warn_text = NSString::from_str(
+                                        "Hands off keyboard during tests",
+                                    );
+                                    let warn =
+                                        unsafe { NSTextField::labelWithString(&warn_text, mtm) };
+                                    let warn_font = unsafe { NSFont::systemFontOfSize(12.0) };
+                                    unsafe { warn.setFont(Some(&warn_font)) };
+                                    unsafe { warn.setAlignment(NSTextAlignment::Center) };
+                                    let warn_color = unsafe { NSColor::secondaryLabelColor() };
+                                    unsafe { warn.setTextColor(Some(&warn_color)) };
+                                    let warn_h: f64 = 16.0;
+                                    let warn_y = 8.0;
+                                    let warn_frame = NSRect::new(
+                                        NSPoint::new(margin_x, warn_y),
+                                        NSSize::new(lw, warn_h),
+                                    );
+                                    unsafe { warn.setFrame(warn_frame) };
+                                    unsafe { view.addSubview(&warn) };
+
                                     self.warn_label = Some(warn);
                                     self.title_label = Some(title);
+                                    self.countdown_label = Some(countdown);
                                 }
                                 break;
                             }
@@ -141,32 +173,76 @@ pub fn run_warn_overlay() -> Result<(), String> {
             // Periodically poll the status file and update title if it changed
             use std::time::{Duration, Instant};
             let now = Instant::now();
-            let deadline = self
-                .next_deadline
-                .unwrap_or_else(|| now + Duration::from_millis(250));
+            
+            // Check if we should update (either no deadline set yet, or deadline passed)
+            let should_update = self.next_deadline.map_or(true, |deadline| now >= deadline);
 
-            if now >= deadline {
-                if let (Some(path), Some(label)) = (&self.status_path, &self.title_label)
-                    && let Ok(s) = std::fs::read_to_string(path)
-                {
-                    let name = s.trim();
-                    if !name.is_empty()
-                        && name != self.last_title
+            if should_update {
+                // Update countdown timer or spinner
+                if self.countdown_active {
+                    let elapsed = now.duration_since(self.start_time);
+                    let grace_ms = config::WARN_OVERLAY_INITIAL_DELAY_MS;
+                    let remaining_ms = grace_ms.saturating_sub(elapsed.as_millis() as u64);
+                    
+                    if let Some(countdown_label) = &self.countdown_label
                         && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
                     {
-                        let ns = NSString::from_str(name);
-                        unsafe { label.setStringValue(&ns) };
-                        self.last_title = name.to_string();
+                        if remaining_ms > 0 {
+                            // Show countdown number
+                            let secs = (remaining_ms + 999) / 1000; // Round up
+                            let text = format!("{}", secs);
+                            let ns = NSString::from_str(&text);
+                            unsafe { countdown_label.setStringValue(&ns) };
+                        } else {
+                            // Show spinner animation
+                            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                            let frame_idx = ((elapsed.as_millis() / 100) as usize) % spinner_frames.len();
+                            let ns = NSString::from_str(spinner_frames[frame_idx]);
+                            unsafe { countdown_label.setStringValue(&ns) };
+                        }
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
                     }
                 }
-                self.next_deadline = Some(now + Duration::from_millis(250));
+
+                // Update test name from status file
+                if let (Some(path), Some(label)) = (&self.status_path, &self.title_label) {
+                    if let Ok(s) = std::fs::read_to_string(path) {
+                        let name = s.trim();
+                        if !name.is_empty()
+                            && name != self.last_title
+                            && let Some(_mtm) = objc2_foundation::MainThreadMarker::new()
+                        {
+                            // Check if transitioning from prep to a real test
+                            if (self.last_title == "..." || self.last_title == "Preparing tests...") 
+                                && name != "Preparing tests..." 
+                            {
+                                // Real test starting, but keep animating spinner
+                                // self.countdown_active = false;
+                            }
+                            
+                            // Show the test name, or "..." if still preparing
+                            let display_name = if name == "Preparing tests..." {
+                                "..."
+                            } else {
+                                name
+                            };
+                            
+                            let ns = NSString::from_str(display_name);
+                            unsafe { label.setStringValue(&ns) };
+                            self.last_title = name.to_string();
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
+                self.next_deadline = Some(now + Duration::from_millis(100));
             }
             let next = self
                 .next_deadline
-                .unwrap_or_else(|| now + std::time::Duration::from_millis(250));
+                .unwrap_or_else(|| now + std::time::Duration::from_millis(100));
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
@@ -175,9 +251,12 @@ pub fn run_warn_overlay() -> Result<(), String> {
         window: None,
         title_label: None,
         warn_label: None,
+        countdown_label: None,
         status_path: None,
-        last_title: String::new(),
+        last_title: String::from("..."),
         next_deadline: None,
+        start_time: std::time::Instant::now(),
+        countdown_active: true,
     };
     let _ = event_loop.run_app(&mut app);
     Ok(())

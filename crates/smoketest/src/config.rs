@@ -179,7 +179,7 @@ pub const FOCUS_POLL_MS: u64 = 100;
 pub const WARN_OVERLAY_INITIAL_DELAY_MS: u64 = 2000;
 /// Default size for the hands-off overlay window.
 pub const WARN_OVERLAY_WIDTH: f64 = 520.0;
-pub const WARN_OVERLAY_HEIGHT: f64 = 120.0;
+pub const WARN_OVERLAY_HEIGHT: f64 = 140.0;
 
 // ===== Helper Functions =====
 
