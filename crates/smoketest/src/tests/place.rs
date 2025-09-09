@@ -124,9 +124,10 @@ fn wait_for_expected_frame(
 }
 
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
-    // Bind a menu under shift+cmd+0 → p with numbered entries for each grid cell.
-    // Example for 3x2:
-    //   shift+cmd+0 → p → 1..6 where 1=(0,0), 2=(1,0), 3=(2,0), 4=(0,1), 5=(1,1), 6=(2,1)
+    // Bind all actions directly at the top level (no nested modes, HUD hidden).
+    // Keys:
+    //   g → raise helper by title (noexit)
+    //   1..N (and letters thereafter) → place into each grid cell (row-major)
     let cols = config::PLACE_COLS;
     let rows = config::PLACE_ROWS;
     let mut entries = String::new();
@@ -155,20 +156,18 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .as_nanos();
     let helper_title = format!("hotki smoketest: place {}-{}", std::process::id(), now_pre);
     let ron_config: String = format!(
-        "(\n    keys: [\n        (\"shift+cmd+0\", \"activate\", keys([\n            (\"p\", \"place {}x{}\", keys([\n{}            ])),\n            (\"r\", \"raise\", keys([(\"g\", \"go\", raise(title: \"{}\"), (noexit: true))])),\n            (\"shift+cmd+0\", \"exit\", exit, (global: true, hide: true)),\n        ]), (global: true)),\n        (\"esc\", \"Back\", pop, (global: true, hide: true, hud_only: true)),\n    ],\n    style: (hud: (mode: hide))\n)\n",
-        cols, rows, entries, helper_title
+        "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n{}    ],\n    style: (hud: (mode: hide))\n)\n",
+        helper_title, entries
     );
     let config = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
-        // Ensure HUD is visible so setup can gate on readiness
-        .with_temp_config(
-            ron_config.replace("style: (hud: (mode: hide))", "style: (hud: (mode: hud))"),
-        );
+        // HUD remains hidden; bind top-level keys directly
+        .with_temp_config(ron_config);
 
     TestRunner::new("place_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            let _ = ctx.wait_for_hud()?;
+            // Connect to backend and gate on bindings being present
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
                 let start = std::time::Instant::now();
@@ -178,6 +177,9 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     inited = server_drive::init(&sock);
                 }
             }
+            // Wait for a couple of identifiers we expect at top-level
+            let _ = server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
+            let _ = server_drive::wait_for_ident("1", crate::config::BINDING_GATE_DEFAULT_MS);
             Ok(())
         })
         .with_execute(move |ctx| {
@@ -198,22 +200,14 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let _wid = find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
 
-            // Ensure helper is frontmost via backend raise binding (enter activation first)
-            send_key("shift+cmd+0");
-            std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
-            send_key("r");
-            std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
+            // Ensure helper is frontmost via backend raise binding
             send_key("g");
             std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
 
             // Iterate all grid cells in row-major order (top-left is (0,0))
             let mut _checks = 0usize;
             for (col, row, key) in key_for_cell {
-                    // Enter activation and re-raise helper to ensure engine targets the right pid
-                    send_key("shift+cmd+0");
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
-                    send_key("r");
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
+                    // Re-raise helper to ensure engine targets the right pid
                     send_key("g");
                     std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
                     // Recompute visible frame based on current AX position (matches backend logic)
@@ -229,16 +223,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     // Compute expected cell rect
                     let (ex, ey, ew, eh) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
 
-                    // Ensure we are back at activation menu: first exit any submode, then re-enter
-                    send_key("shift+cmd+0");
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
-                    send_key("shift+cmd+0");
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
-
-                    // Drive backend: open place menu then choose entry for this cell
-                    send_key("p");
-                    // Small settle between menu transition and next key
-                    std::thread::sleep(Duration::from_millis(crate::config::UI_ACTION_DELAY_MS));
+                    // Drive backend: send the key for this cell directly (no nested modes)
                     let key_str = key.to_string();
                     send_key(&key_str);
 
