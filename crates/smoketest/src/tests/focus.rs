@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use super::helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title};
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
     results::FocusOutcome,
     runtime, server_drive,
     test_runner::{TestConfig, TestRunner},
@@ -76,18 +76,7 @@ async fn listen_for_focus(
 
 // Prefer checking the current frontmost CG window title directly — this avoids
 // relying solely on HUD updates and reduces flakiness from event timing.
-fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if let Some(win) = mac_winops::frontmost_window()
-            && win.title == expected
-        {
-            return true;
-        }
-        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
-    }
-    false
-}
+// Use helpers::wait_for_frontmost_title
 
 pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
     let ron_config = "(keys: [], style: (hud: (mode: hide)))";
@@ -145,63 +134,25 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             let _ = server_drive::init(&socket_path);
 
             // Spawn helper window
-            let helper_time = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let helper = HelperWindowBuilder::new(expected_title.clone())
-                .with_time_ms(helper_time)
-                .spawn()?;
+            let helper_time = ctx
+                .config
+                .timeout_ms
+                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+            let helper = spawn_helper_visible(
+                expected_title.clone(),
+                helper_time,
+                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                config::FOCUS_POLL_MS,
+            )?;
             let expected_pid = helper.pid;
 
-            // Ensure the helper window appears before trying to activate it
-            let visible_deadline = Instant::now()
-                + Duration::from_millis(std::cmp::min(
-                    timeout_ms,
-                    config::HIDE_FIRST_WINDOW_MAX_MS,
-                ));
-            let mut visible = false;
-            while Instant::now() < visible_deadline {
-                let wins = mac_winops::list_windows();
-                let cg_ok = wins
-                    .iter()
-                    .any(|w| w.pid == expected_pid && w.title == expected_title);
-                let ax_ok = mac_winops::ax_has_window_title(expected_pid, &expected_title);
-                if cg_ok || ax_ok {
-                    visible = true;
-                    break;
+            // Best‑effort: explicitly bring helper to front
+            ensure_frontmost(expected_pid, &expected_title, 20, 150);
+            if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
+                if let Ok(mut g) = matched.lock() {
+                    *g = Some((expected_title.clone(), expected_pid));
                 }
-                thread::sleep(config::ms(config::FOCUS_POLL_MS));
-            }
-            if !visible {
-                done.store(true, Ordering::SeqCst);
-                let _ = listener.join();
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: expected_title,
-                });
-            }
-
-            // Best‑effort: explicitly activate/raise the helper to make it frontmost
-            let _ = mac_winops::request_activate_pid(expected_pid);
-            thread::sleep(config::ms(150));
-            for _ in 0..20 {
-                if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
-                    if let Ok(mut g) = matched.lock() {
-                        *g = Some((expected_title.clone(), expected_pid));
-                    }
-                    found.store(true, Ordering::SeqCst);
-                    break;
-                }
-                if let Some(w) = mac_winops::list_windows()
-                    .into_iter()
-                    .find(|w| w.pid == expected_pid && w.title == expected_title)
-                {
-                    let _ = mac_winops::request_raise_window(expected_pid, w.id);
-                }
-                // AppleScript fallback to force frontmost
-                let _ = crate::process::osascript(&format!(
-                    "tell application \"System Events\" to set frontmost of (first process whose unix id is {}) to true",
-                    expected_pid
-                ));
-                thread::sleep(config::ms(150));
+                found.store(true, Ordering::SeqCst);
             }
 
             // Wait for match or timeout
@@ -228,7 +179,9 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 if server_drive::is_ready() && !server_drive::check_alive() {
                     done.store(true, Ordering::SeqCst);
                     let _ = listener.join();
-                    return Err(Error::IpcDisconnected { during: "focus wait" });
+                    return Err(Error::IpcDisconnected {
+                        during: "focus wait",
+                    });
                 }
                 thread::sleep(config::ms(config::FOCUS_POLL_MS));
             }

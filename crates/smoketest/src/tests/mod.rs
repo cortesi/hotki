@@ -2,6 +2,7 @@
 
 pub mod focus;
 pub mod fullscreen;
+pub mod helpers;
 pub mod hide;
 pub mod raise;
 pub mod repeat;

@@ -21,3 +21,12 @@ pub fn send_activation_chord() {
 }
 
 // Deprecated: use explicit gated send_key calls in tests for reliability.
+
+/// Wait for a binding ident if the RPC driver is ready.
+/// Returns whether the ident was observed within the timeout when attempted.
+pub fn wait_for_ident_if_ready(ident: &str, timeout_ms: u64) -> bool {
+    if crate::server_drive::is_ready() {
+        return crate::server_drive::wait_for_ident(ident, timeout_ms);
+    }
+    false
+}

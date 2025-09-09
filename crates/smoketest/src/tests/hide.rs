@@ -6,20 +6,13 @@ use std::{
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
+use super::helpers::{approx, ensure_frontmost, spawn_helper_visible};
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
-    server_drive,
     test_runner::{TestConfig, TestRunner},
-    ui_interaction::send_activation_chord,
+    ui_interaction::{send_activation_chord, wait_for_ident_if_ready},
 };
-
-// ---------- Helper functions ----------
-
-fn approx(a: f64, b: f64, eps: f64) -> bool {
-    (a - b).abs() <= eps
-}
 
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Temporary config: shift+cmd+0 -> h -> (t/on/off); hide HUD to reduce intrusiveness
@@ -61,35 +54,13 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .config
                 .timeout_ms
                 .saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
-            let helper = HelperWindowBuilder::new(&title)
-                .with_time_ms(helper_time)
-                .spawn()?;
+            let helper = spawn_helper_visible(
+                title.clone(),
+                helper_time,
+                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                config::HIDE_POLL_MS,
+            )?;
             let pid = helper.pid;
-
-            // Wait until the helper window is visible via CG or AX
-            let deadline = Instant::now()
-                + Duration::from_millis(std::cmp::min(
-                    ctx.config.timeout_ms,
-                    config::HIDE_FIRST_WINDOW_MAX_MS,
-                ));
-            let mut ready = false;
-            while Instant::now() < deadline {
-                let wins = mac_winops::list_windows();
-                let cg_ok = wins.iter().any(|w| w.pid == pid && w.title == title);
-                let ax_ok = mac_winops::ax_has_window_title(pid, &title);
-                if cg_ok || ax_ok {
-                    ready = true;
-                    break;
-                }
-                thread::sleep(config::ms(config::HIDE_POLL_MS));
-            }
-            if !ready {
-                // helper cleans up automatically via Drop
-                return Err(Error::FocusNotObserved {
-                    timeout_ms: ctx.config.timeout_ms,
-                    expected: format!("helper window '{}' not visible", title),
-                });
-            }
 
             // Snapshot initial AX frame of the helper window
             let (p0, s0) = if let Some(((px, py), (width, height))) =
@@ -114,24 +85,12 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             };
 
             // Ensure the helper window is frontmost before issuing hide commands.
-            if let Some(w) = mac_winops::list_windows()
-                .into_iter()
-                .find(|w| w.pid == pid && w.title == title)
-            {
-                let _ = mac_winops::request_raise_window(pid, w.id);
-            } else {
-                let _ = mac_winops::request_activate_pid(pid);
-            }
-            thread::sleep(config::ms(config::HIDE_ACTIVATE_POST_DELAY_MS));
+            ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
 
             // Drive: send 'h' then gate and send 'o' (hide on)
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
+            let _ = wait_for_ident_if_ready("h", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("h");
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("o", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
+            let _ = wait_for_ident_if_ready("o", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("o");
 
             // Wait for position change
@@ -167,22 +126,10 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             send_activation_chord();
             thread::sleep(config::ms(config::HIDE_ACTIVATE_POST_DELAY_MS));
             // Raise helper again before revealing to avoid toggling an unrelated window.
-            if let Some(w) = mac_winops::list_windows()
-                .into_iter()
-                .find(|w| w.pid == pid && w.title == title)
-            {
-                let _ = mac_winops::request_raise_window(pid, w.id);
-            } else {
-                let _ = mac_winops::request_activate_pid(pid);
-            }
-            thread::sleep(config::ms(config::HIDE_ACTIVATE_POST_DELAY_MS));
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("h", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
+            ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
+            let _ = wait_for_ident_if_ready("h", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("h");
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("f", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
+            let _ = wait_for_ident_if_ready("f", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("f");
 
             // Wait until position roughly returns to original

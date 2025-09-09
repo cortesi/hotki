@@ -147,6 +147,7 @@ pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
 
 // ===== Screenshot Test Tunables =====
 
+#[allow(dead_code)]
 pub const SCREENSHOT_FRAME_GAP_MS: u64 = 160;
 
 // ===== Hide Test Tunables =====

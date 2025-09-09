@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use super::helpers::{wait_for_frontmost_title, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
@@ -64,42 +65,10 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
 
 // Prefer checking the actual frontmost CG window title; this validates raise
 // independent of our HUD event flow and avoids races.
-fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if let Some(win) = mac_winops::frontmost_window()
-            && win.title == expected
-        {
-            return true;
-        }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
-    }
-    false
-}
+// Use helpers::wait_for_frontmost_title
 
 // Wait until all given (pid,title) pairs are present in the on-screen CG list.
-fn wait_for_windows(expected: &[(i32, &str)], timeout_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        let wins = mac_winops::list_windows();
-        let all_found = expected.iter().all(|(pid, title)| {
-            let cg_present = wins.iter().any(|w| w.pid == *pid && w.title == *title);
-            let ax_present = mac_winops::ax_has_window_title(*pid, title);
-            cg_present || ax_present
-        });
-        if all_found {
-            return true;
-        }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
-    }
-    // Debug: print current windows for diagnosis
-    let wins = mac_winops::list_windows();
-    eprintln!("debug: visible windows:");
-    for w in wins {
-        eprintln!("  pid={} app='{}' title='{}'", w.pid, w.app, w.title);
-    }
-    false
-}
+// Use helpers::wait_for_windows_visible
 
 pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Two unique titles
@@ -170,7 +139,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Keep child1/child2 alive for the duration of this execute block.
 
             // Ensure both helper windows are actually present before proceeding
-            if !wait_for_windows(
+            if !wait_for_windows_visible(
                 &[(pid1, &title1), (pid2, &title2)],
                 config::WAIT_BOTH_WINDOWS_MS,
             ) {
@@ -187,7 +156,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
             send_key("r");
             // Ensure the first helper is visible (CG or AX) before issuing '1'
-            if !wait_for_windows(
+            if !wait_for_windows_visible(
                 &[(pid1, &title1)],
                 config::WAIT_FIRST_WINDOW_MS.min(config::RAISE_FIRST_WINDOW_MAX_MS),
             ) {
@@ -229,7 +198,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 send_key("shift+cmd+0");
                 std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
                 send_key("r");
-                let _ = wait_for_windows(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
+                let _ =
+                    wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
                 send_key("1");
                 let ok1_retry = wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
                     || runtime::block_on(wait_for_title(
@@ -249,7 +219,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             std::thread::sleep(config::ms(config::RAISE_MENU_STABILIZE_MS));
             send_key("shift+cmd+0");
             // Ensure the second helper is visible (CG or AX) before issuing '2'
-            if !wait_for_windows(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
+            if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("second window not visible before menu: '{}'", title2),
@@ -281,7 +251,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 send_key("shift+cmd+0");
                 std::thread::sleep(config::ms(config::RAISE_MENU_OPEN_STAGGER_MS));
                 send_key("r");
-                let _ = wait_for_windows(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
+                let _ =
+                    wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
                 send_key("2");
                 ok2 = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
                     || runtime::block_on(wait_for_title(

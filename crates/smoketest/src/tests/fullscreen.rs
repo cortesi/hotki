@@ -1,9 +1,9 @@
 use std::time::Instant;
 
+use super::helpers::{ensure_frontmost, spawn_helper_visible};
 use crate::{
     config,
     error::{Error, Result},
-    process::{HelperWindowBuilder, ManagedChild},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
@@ -73,12 +73,19 @@ pub fn run_fullscreen_test(
                 .config
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let mut helper: ManagedChild = HelperWindowBuilder::new(title.clone())
-                .with_time_ms(helper_time)
-                .spawn()?;
-
-            // Give the system a moment to show and focus the helper
-            std::thread::sleep(config::ms(config::FULLSCREEN_HELPER_SHOW_DELAY_MS));
+            let mut helper = spawn_helper_visible(
+                title.clone(),
+                helper_time,
+                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
+            )?;
+            // Make sure the helper is the focused window before toggling fullscreen.
+            ensure_frontmost(
+                helper.pid,
+                &title,
+                4,
+                config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
+            );
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
