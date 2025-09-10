@@ -303,6 +303,9 @@ fn reconcile(
     // Build key set and additions/updates
     let mut seen_keys: Vec<WindowKey> = Vec::with_capacity(wins.len());
 
+    // Cache display bounds for this reconcile pass.
+    let displays = mac_winops::screen::list_display_bounds();
+
     for (idx, w) in wins.iter().enumerate() {
         let key = WindowKey {
             pid: w.pid,
@@ -311,6 +314,10 @@ fn reconcile(
         seen_keys.push(key);
         let is_focus = Some(key) == new_focused;
         let z = idx as u32;
+        let display_id = match (w.pos, displays.is_empty()) {
+            (Some(pos), false) => best_display_id(&pos, &displays),
+            _ => None,
+        };
         if let Some(existing) = state.store.get_mut(&key) {
             let mut changed = false;
             let new_title = if is_focus {
@@ -336,6 +343,10 @@ fn reconcile(
             }
             if !existing.on_active_space {
                 existing.on_active_space = true;
+                changed = true;
+            }
+            if existing.display_id != display_id {
+                existing.display_id = display_id;
                 changed = true;
             }
             if existing.focused != is_focus {
@@ -370,7 +381,7 @@ fn reconcile(
                 layer: w.layer,
                 z,
                 on_active_space: true,
-                display_id: None,
+                display_id,
                 focused: is_focus,
                 meta: Vec::new(),
                 last_seen: now,
@@ -408,4 +419,28 @@ impl WorldHandle {
     pub fn hint_refresh(&self) {
         let _ = self.tx.send(Command::HintRefresh);
     }
+}
+
+fn best_display_id(pos: &Pos, displays: &[(u32, i32, i32, i32, i32)]) -> Option<u32> {
+    let (x, y, w, h) = (pos.x, pos.y, pos.width, pos.height);
+    let l1 = x;
+    let t1 = y;
+    let r1 = x + w;
+    let b1 = y + h;
+    let mut best_id = None;
+    let mut best_area: i64 = 0;
+    for &(id, dx, dy, dw, dh) in displays.iter() {
+        let l2 = dx;
+        let t2 = dy;
+        let r2 = dx + dw;
+        let b2 = dy + dh;
+        let iw = (r1.min(r2) - l1.max(l2)).max(0) as i64;
+        let ih = (b1.min(b2) - t1.max(t2)).max(0) as i64;
+        let area = iw * ih;
+        if area > best_area {
+            best_area = area;
+            best_id = Some(id);
+        }
+    }
+    if best_area > 0 { best_id } else { None }
 }
