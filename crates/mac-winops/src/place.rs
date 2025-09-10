@@ -7,7 +7,7 @@ use crate::{
 use core_foundation::base::{CFRelease, CFTypeRef};
 use objc2_foundation::MainThreadMarker;
 
-pub(crate) use crate::ax_window_for_id;
+use crate::ax::ax_window_for_id;
 
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).

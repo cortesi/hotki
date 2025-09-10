@@ -8,7 +8,7 @@ use crate::{
 use core_foundation::base::{CFRelease, CFTypeRef};
 use objc2_foundation::MainThreadMarker;
 
-pub(crate) use crate::ax_window_for_id;
+use crate::ax::ax_window_for_id;
 
 /// Focus the next window in the given direction on the current screen within the
 /// current Space. Uses CG for enumeration + AppKit for screen geometry and AX for

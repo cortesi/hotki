@@ -9,8 +9,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::thread_local;
 
+use crate::WindowId;
 use crate::error::{Error, Result};
 use crate::geom::{CGPoint, CGSize};
+use crate::window;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -181,6 +183,70 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
         return Err(Error::AxCode(err));
     }
     Ok(())
+}
+
+/// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.
+pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
+    // Look up pid via CG, then match AXWindowNumber.
+    let info = window::list_windows()
+        .into_iter()
+        .find(|w| w.id == id)
+        .ok_or(Error::FocusedWindow)?;
+    let pid = info.pid;
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return Err(Error::AppElement);
+    }
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        unsafe { CFRelease(app as CFTypeRef) };
+        return Err(Error::AxCode(err));
+    }
+    let arr = unsafe {
+        core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
+    };
+    let mut found: *mut c_void = std::ptr::null_mut();
+    let mut fallback_first_window: *mut c_void = std::ptr::null_mut();
+    for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        let wref =
+            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) }
+                as *mut c_void;
+        if wref.is_null() {
+            continue;
+        }
+        // Remember the first top-level AXWindow as a fallback when AXWindowNumber is unavailable
+        if fallback_first_window.is_null() {
+            let role = ax_get_string(wref, cfstr("AXRole")).unwrap_or_default();
+            if role == "AXWindow" {
+                fallback_first_window = wref;
+            }
+        }
+        let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        let nerr =
+            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
+        if nerr == 0 && !num_ref.is_null() {
+            let cfnum =
+                unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+            let wid = cfnum.to_i64().unwrap_or(0) as u32;
+            if wid == id {
+                found = wref;
+                break;
+            }
+        }
+    }
+    if found.is_null() {
+        if !fallback_first_window.is_null() {
+            unsafe { CFRetain(fallback_first_window as CFTypeRef) };
+            unsafe { CFRelease(app as CFTypeRef) };
+            return Ok((fallback_first_window, pid));
+        }
+        unsafe { CFRelease(app as CFTypeRef) };
+        return Err(Error::FocusedWindow);
+    }
+    unsafe { CFRetain(found as CFTypeRef) };
+    unsafe { CFRelease(app as CFTypeRef) };
+    Ok((found, pid))
 }
 /// Get the position of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
