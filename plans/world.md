@@ -240,9 +240,9 @@ pub enum WorldEvent {
 
 #### Stage 5: Display + Z‑Order + Active‑Space
 
-- [ ] Compute `display_id` by intersecting window bounds with active display frames.
-- [ ] Set `on_active_space` from `kCGWindowIsOnscreen`. ([Apple Developer][11])
-- [ ] Ensure `z` reflects CG front‑to‑back order for layer‑0 windows.
+- [x] Compute `display_id` by intersecting window bounds with active display frames.
+- [x] Set `on_active_space` from the OnScreen CG snapshot (effectively `kCGWindowIsOnscreen`).
+- [x] Ensure `z` reflects CG front‑to‑back order for layer‑0 windows.
 
 #### Stage 6: Engine Wiring
 
