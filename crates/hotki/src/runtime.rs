@@ -221,17 +221,25 @@ impl ConnectionDriver {
         }
         debug!("Config sent to server engine");
 
-        // Apply any queued preconnect messages now that we are connected
+        // Apply any queued preconnect messages now that we are connected.
+        // Ensure theme switches use the same override path for consistency.
         while let Some(msg) = preconnect_queue.pop_front() {
-            handle_control_msg(
-                conn,
-                msg,
-                &mut self.ui_config,
-                &self.config_path,
-                &self.tx_keys,
-                &self.egui_ctx,
-            )
-            .await;
+            match msg {
+                ControlMsg::SwitchTheme(name) => {
+                    self.apply_ui_override(UiOverride::ThemeSet(name));
+                }
+                other => {
+                    handle_control_msg(
+                        conn,
+                        other,
+                        &mut self.ui_config,
+                        &self.config_path,
+                        &self.tx_keys,
+                        &self.egui_ctx,
+                    )
+                    .await;
+                }
+            }
         }
 
         Some(client)
