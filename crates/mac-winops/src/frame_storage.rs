@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 
 use crate::{
     WindowId,
-    geometry::{CGPoint, CGSize},
+    geom::{CGPoint, CGSize},
 };
 
 /// In-memory storage of pre-maximize frames to allow toggling back.

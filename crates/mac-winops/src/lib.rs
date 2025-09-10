@@ -25,7 +25,7 @@ mod cfutil;
 mod error;
 pub mod focus;
 mod frame_storage;
-mod geometry;
+mod geom;
 mod main_thread_ops;
 pub mod nswindow;
 mod raise;
@@ -41,10 +41,11 @@ pub use main_thread_ops::{
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 
+use crate::geom::overshoot_target as geom_overshoot;
 use ax::*;
 pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
 use frame_storage::*;
-use geometry::{CGPoint, CGSize, approx_eq_eps, rect_eq};
+use geom::{CGPoint, CGSize, approx_eq_eps, rect_eq};
 use main_thread_ops::{MAIN_OPS, MainOp};
 
 /// Applications to skip when determining focus/frontmost windows.
@@ -376,11 +377,13 @@ fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f6
     let mut chosen = None;
     for s in NSScreen::screens(mtm).iter() {
         let fr = s.visibleFrame();
-        let x = fr.origin.x;
-        let y = fr.origin.y;
-        let w = fr.size.width;
-        let h = fr.size.height;
-        if p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h {
+        let r = geom::Rect {
+            x: fr.origin.x,
+            y: fr.origin.y,
+            w: fr.size.width,
+            h: fr.size.height,
+        };
+        if geom::point_in_rect(p.x, p.y, &r) {
             chosen = Some(s);
             break;
         }
@@ -477,7 +480,7 @@ fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<
         // Clamp to grid bounds defensively
         let col = col.min(cols.saturating_sub(1));
         let row = row.min(rows.saturating_sub(1));
-        let (x, y, w, h) = cell_rect(
+        let (x, y, w, h) = geom::grid_cell_rect(
             vf_x,
             vf_y,
             vf_w.max(1.0),
@@ -522,43 +525,35 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
         let (ax_origin, _pid_for_id) = ax_window_for_id(origin.id)?;
         let o_pos = ax_get_point(ax_origin, cfstr("AXPosition"))?;
         let o_size = ax_get_size(ax_origin, cfstr("AXSize"))?;
-        let o_x = o_pos.x;
-        let o_y = o_pos.y;
-        let o_right = o_x + o_size.width.max(1.0);
-        let o_top = o_y + o_size.height.max(1.0);
-        let o_left = o_x;
-        let o_bottom = o_y;
-        let o_cx = o_x + o_size.width.max(1.0) / 2.0;
-        let o_cy = o_y + o_size.height.max(1.0) / 2.0;
+        let o_rect = geom::Rect {
+            x: o_pos.x,
+            y: o_pos.y,
+            w: o_size.width.max(1.0),
+            h: o_size.height.max(1.0),
+        };
+        let o_cx = o_rect.cx();
+        let o_cy = o_rect.cy();
         tracing::info!(
             "FocusDir origin(AX): pid={} id={} x={:.1} y={:.1} w={:.1} h={:.1}",
             origin.pid,
             origin.id,
-            o_x,
-            o_y,
-            o_size.width,
-            o_size.height
+            o_rect.x,
+            o_rect.y,
+            o_rect.w,
+            o_rect.h
         );
 
-        // Helper closures
-        let overlap = |a1: f64, a2: f64, b1: f64, b2: f64| -> f64 {
-            let l = a1.max(b1);
-            let r = a2.min(b2);
-            (r - l).max(0.0)
-        };
-        // let in_vf = |cx: f64, cy: f64| -> bool {
-        //     cx >= vf_x && cx <= vf_x + vf_w && cy >= vf_y && cy <= vf_y + vf_h
-        // };
+        // Geometry helpers provided by crate::geom
 
         let eps = 16.0f64; // generous tolerance to absorb CG/AX rounding and menu bar offsets
 
         // Scan CG windows for candidates
         let all = list_windows();
         // Track best candidates with preference for same-app windows
-        let mut primary_best_same: Option<(f64, f64, i32, WindowId)> = None;
-        let mut primary_best_other: Option<(f64, f64, i32, WindowId)> = None;
-        let mut fallback_best_same: Option<(f64, i32, WindowId)> = None;
-        let mut fallback_best_other: Option<(f64, i32, WindowId)> = None;
+        let mut primary_best_same: Option<(i32, f64, f64, i32, WindowId)> = None;
+        let mut primary_best_other: Option<(i32, f64, f64, i32, WindowId)> = None;
+        let mut fallback_best_same: Option<(i32, f64, i32, WindowId)> = None;
+        let mut fallback_best_other: Option<(i32, f64, i32, WindowId)> = None;
 
         for w in all.into_iter() {
             if w.layer != 0 {
@@ -575,9 +570,30 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
                 continue;
             }
             // Retrieve candidate geometry via AX to stay in AppKit coordinate space
-            let (cand_left, cand_bottom, cand_w, cand_h) = {
+            let (cand_left, cand_bottom, cand_w, cand_h, id_match) = {
                 match ax_window_for_id(w.id) {
                     Ok((cax, _)) => {
+                        // determine if AXWindowNumber matches CG id (prefer these)
+                        let mut id_match = false;
+                        unsafe {
+                            use core_foundation::base::TCFType;
+                            let mut num_ref: CFTypeRef = ptr::null_mut();
+                            let nerr = AXUIElementCopyAttributeValue(
+                                cax,
+                                cfstr("AXWindowNumber"),
+                                &mut num_ref,
+                            );
+                            if nerr == 0 && !num_ref.is_null() {
+                                let cfnum =
+                                    core_foundation::number::CFNumber::wrap_under_create_rule(
+                                        num_ref as _,
+                                    );
+                                let wid = cfnum.to_i64().unwrap_or(0) as u32;
+                                if wid == w.id {
+                                    id_match = true;
+                                }
+                            }
+                        }
                         let p = match ax_get_point(cax, cfstr("AXPosition")) {
                             Ok(v) => v,
                             Err(_) => {
@@ -593,57 +609,53 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
                             }
                         };
                         unsafe { CFRelease(cax as CFTypeRef) };
-                        (p.x, p.y, s.width.max(1.0), s.height.max(1.0))
+                        (p.x, p.y, s.width.max(1.0), s.height.max(1.0), id_match)
                     }
                     Err(_) => continue,
                 }
             };
-            let left = cand_left;
-            let bottom = cand_bottom;
-            let width = cand_w;
-            let height = cand_h;
-            let right = left + width;
-            let top = bottom + height;
-            let cx = left + width / 2.0;
-            let cy = bottom + height / 2.0;
+            let c_rect = geom::Rect {
+                x: cand_left,
+                y: cand_bottom,
+                w: cand_w,
+                h: cand_h,
+            };
+            let cx = c_rect.cx();
+            let cy = c_rect.cy();
 
             // (v1) Do not restrict to same screen to improve robustness.
 
             // Primary gating: edge-first selection within direction beam
             // Require substantial alignment on the orthogonal axis to avoid diagonal hops.
-            let min_h = (o_top - o_bottom).abs().min(height);
-            let min_w = (o_right - o_left).abs().min(width);
-            let overlap_y = overlap(o_bottom, o_top, bottom, top);
-            let overlap_x = overlap(o_left, o_right, left, right);
-            let same_row = overlap_y >= (0.8 * min_h);
-            let same_col = overlap_x >= (0.8 * min_w);
+            let same_row = geom::same_row_by_overlap(&o_rect, &c_rect, 0.8);
+            let same_col = geom::same_col_by_overlap(&o_rect, &c_rect, 0.8);
             let primary = match dir {
                 MoveDir::Right => {
-                    if left >= o_right - eps && same_row {
-                        Some((left - o_right, (cy - o_cy).abs()))
+                    if c_rect.left() >= o_rect.right() - eps && same_row {
+                        Some((c_rect.left() - o_rect.right(), (cy - o_cy).abs()))
                     } else {
                         None
                     }
                 }
                 MoveDir::Left => {
-                    if right <= o_left + eps && same_row {
-                        Some((o_left - right, (cy - o_cy).abs()))
+                    if c_rect.right() <= o_rect.left() + eps && same_row {
+                        Some((o_rect.left() - c_rect.right(), (cy - o_cy).abs()))
                     } else {
                         None
                     }
                 }
                 MoveDir::Up => {
                     // Top-left origin semantics: above means candidate's top <= origin's bottom + eps
-                    if top <= o_bottom + eps && same_col {
-                        Some((o_bottom - top, (cx - o_cx).abs()))
+                    if c_rect.top() <= o_rect.bottom() + eps && same_col {
+                        Some((o_rect.bottom() - c_rect.top(), (cx - o_cx).abs()))
                     } else {
                         None
                     }
                 }
                 MoveDir::Down => {
                     // Top-left origin semantics: below means candidate's bottom >= origin's top - eps
-                    if bottom >= o_top - eps && same_col {
-                        Some((bottom - o_top, (cx - o_cx).abs()))
+                    if c_rect.bottom() >= o_rect.top() - eps && same_col {
+                        Some((c_rect.bottom() - o_rect.top(), (cx - o_cx).abs()))
                     } else {
                         None
                     }
@@ -656,20 +668,25 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
                 } else {
                     &mut primary_best_other
                 };
+                let pref = if id_match { 0 } else { 1 };
                 match best_slot {
-                    None => *best_slot = Some((axis_delta, tie, w.pid, w.id)),
-                    Some((best_axis, best_tie, _, _)) => {
-                        if axis_delta < *best_axis
-                            || (approx_eq_eps(axis_delta, *best_axis, eps) && tie < *best_tie)
+                    None => *best_slot = Some((pref, axis_delta, tie, w.pid, w.id)),
+                    Some((best_pref, best_axis, best_tie, _, _)) => {
+                        if pref < *best_pref
+                            || (pref == *best_pref
+                                && (axis_delta < *best_axis
+                                    || (approx_eq_eps(axis_delta, *best_axis, eps)
+                                        && tie < *best_tie)))
                         {
-                            *best_slot = Some((axis_delta, tie, w.pid, w.id));
+                            *best_slot = Some((pref, axis_delta, tie, w.pid, w.id));
                         }
                     }
                 }
                 tracing::debug!(
-                    "FocusDir primary cand pid={} id={} axis_delta={:.1} tie={:.1}",
+                    "FocusDir primary cand pid={} id={} pref={} axis_delta={:.1} tie={:.1}",
                     w.pid,
                     w.id,
+                    pref,
                     axis_delta,
                     tie
                 );
@@ -692,11 +709,15 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
             let score = match dir {
                 MoveDir::Right | MoveDir::Left => {
                     let bias = if same_row { 0.25 } else { 1.0 };
-                    dx * dx + (bias * dy.abs()) * (bias * dy.abs())
+                    let (primary, secondary) =
+                        geom::center_distance_bias(&o_rect, &c_rect, geom::Axis::Horizontal);
+                    primary * primary + (bias * secondary) * (bias * secondary)
                 }
                 MoveDir::Up | MoveDir::Down => {
                     let bias = if same_col { 0.25 } else { 1.0 };
-                    dy * dy + (bias * dx.abs()) * (bias * dx.abs())
+                    let (primary, secondary) =
+                        geom::center_distance_bias(&o_rect, &c_rect, geom::Axis::Vertical);
+                    primary * primary + (bias * secondary) * (bias * secondary)
                 }
             };
             let best_slot = if w.app == origin.app {
@@ -704,30 +725,32 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
             } else {
                 &mut fallback_best_other
             };
+            let pref = if id_match { 0 } else { 1 };
             match best_slot {
-                None => *best_slot = Some((score, w.pid, w.id)),
-                Some((best, _, _)) => {
-                    if score < *best {
-                        *best_slot = Some((score, w.pid, w.id));
+                None => *best_slot = Some((pref, score, w.pid, w.id)),
+                Some((best_pref, best, _, _)) => {
+                    if pref < *best_pref || (pref == *best_pref && score < *best) {
+                        *best_slot = Some((pref, score, w.pid, w.id));
                     }
                 }
             }
             tracing::debug!(
-                "FocusDir fallback cand pid={} id={} score={:.1}",
+                "FocusDir fallback cand pid={} id={} pref={} score={:.1}",
                 w.pid,
                 w.id,
+                pref,
                 score
             );
         }
 
         // Choose target
-        let target = if let Some((_d, _t, pid, id)) = primary_best_same {
+        let target = if let Some((_pref, _d, _t, pid, id)) = primary_best_same {
             Some((pid, id))
-        } else if let Some((_d, _t, pid, id)) = primary_best_other {
+        } else if let Some((_pref, _d, _t, pid, id)) = primary_best_other {
             Some((pid, id))
-        } else if let Some((_s, pid, id)) = fallback_best_same {
+        } else if let Some((_pref, _s, pid, id)) = fallback_best_same {
             Some((pid, id))
-        } else if let Some((_s, pid, id)) = fallback_best_other {
+        } else if let Some((_pref, _s, pid, id)) = fallback_best_other {
             Some((pid, id))
         } else {
             None
@@ -766,7 +789,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
         let col = col.min(cols.saturating_sub(1));
         let row = row.min(rows.saturating_sub(1));
-        let (x, y, w, h) = cell_rect(
+        let (x, y, w, h) = geom::grid_cell_rect(
             vf_x,
             vf_y,
             vf_w.max(1.0),
@@ -891,15 +914,10 @@ pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<(
             map.insert(k, (cur_p, cur_s));
         }
 
-        // Compute target for requested screen corner. We intentionally overshoot off-screen
-        // by a large delta and rely on WindowServer clamping to achieve the tightest allowed
-        // placement. This is more aggressive than an exact 1px calculation and tends to
-        // minimize visible area, especially on the left edge.
-        let (tx, ty) = match corner {
-            ScreenCorner::BottomRight => (cur_p.x + 100_000.0, cur_p.y + 100_000.0),
-            ScreenCorner::BottomLeft => (cur_p.x - 100_000.0, cur_p.y + 100_000.0),
-            ScreenCorner::TopLeft => (cur_p.x - 100_000.0, cur_p.y - 100_000.0),
-        };
+        // Compute target for requested screen corner using a large overshoot; rely on
+        // WindowServer clamping to achieve the tightest allowed placement.
+        let tgt = geom_overshoot(cur_p, corner, 100_000.0);
+        let (tx, ty) = (tgt.x, tgt.y);
 
         // Attempt move with size no-op first
         let _ = ax_set_size(win.as_ptr(), attr_size, cur_s);
@@ -1006,66 +1024,7 @@ pub fn hide_bottom_left(pid: i32, desired: Desired) -> Result<()> {
     hide_corner(pid, desired, ScreenCorner::BottomLeft)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cell_rect(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-) -> (f64, f64, f64, f64) {
-    // Top-left origin: (0,0) is top-left; y increases downward.
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
-    let rem_w = vf_w - tile_w * (cols as f64);
-    let rem_h = vf_h - tile_h * (rows as f64);
-
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
-        tile_w + rem_w
-    } else {
-        tile_w
-    };
-    let y = vf_y + tile_h * (row as f64);
-    let h = if row == rows.saturating_sub(1) {
-        tile_h + rem_h
-    } else {
-        tile_h
-    };
-    (x, y, w, h)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn find_cell_for_window(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    pos: CGPoint,
-    size: CGSize,
-    eps: f64,
-) -> Option<(u32, u32)> {
-    for row in 0..rows {
-        for col in 0..cols {
-            let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
-            if approx_eq_eps(pos.x, x, eps)
-                && approx_eq_eps(pos.y, y, eps)
-                && approx_eq_eps(size.width, w, eps)
-                && approx_eq_eps(size.height, h, eps)
-            {
-                return Some((col, row));
-            }
-        }
-    }
-    None
-}
+// grid helpers now provided by crate::geom
 
 fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
     ax_check()?;
@@ -1080,7 +1039,7 @@ fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<(
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
 
         let eps = 2.0;
-        let cur_cell = find_cell_for_window(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
+        let cur_cell = geom::grid_find_cell(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
 
         // First invocation from a non-aligned position places at visual top‑left (row 0).
         let (next_col, next_row) = match cur_cell {
@@ -1111,7 +1070,8 @@ fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<(
             }
         };
 
-        let (x, y, w, h) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
+        let (x, y, w, h) =
+            geom::grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
         ax_set_point(win, attr_pos, CGPoint { x, y })?;
         ax_set_size(
             win,
@@ -1217,7 +1177,7 @@ fn activate_pid(pid: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::cell_rect;
+    use crate::geom::grid_cell_rect as cell_rect;
 
     #[test]
     fn cell_rect_corners_and_remainders() {

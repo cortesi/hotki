@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::thread_local;
 
 use crate::error::{Error, Result};
-use crate::geometry::{CGPoint, CGSize};
+use crate::geom::{CGPoint, CGSize};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
