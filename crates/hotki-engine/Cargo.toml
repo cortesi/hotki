@@ -12,6 +12,7 @@ hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
 mac-winops = { path = "../mac-winops" }
+hotki-world = { path = "../hotki-world" }
 tao = "0.34"
 
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

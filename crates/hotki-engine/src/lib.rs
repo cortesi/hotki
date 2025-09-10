@@ -38,6 +38,7 @@ use mac_keycode::Chord;
 use tracing::{debug, trace, warn};
 
 pub use error::{Error, Result};
+pub use hotki_world::{WorldEvent, WorldWindow};
 pub use notification::NotificationDispatcher;
 pub use relay::RelayHandler;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
@@ -94,6 +95,8 @@ pub struct Engine {
     /// Last pid explicitly targeted by a Raise action (used as a hint for subsequent Place).
     last_target_pid: Arc<Mutex<Option<i32>>>,
     winops: Arc<dyn WinOps>,
+    /// Window world service handle
+    world: hotki_world::WorldHandle,
 }
 
 impl Engine {
@@ -138,6 +141,10 @@ impl Engine {
             config::Style::default(),
         )));
 
+        // Prepare shared winops and world before constructing Self
+        let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
+        let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+
         Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
@@ -149,7 +156,8 @@ impl Engine {
             focus_snapshot: focus_snapshot_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
-            winops: Arc::new(RealWinOps),
+            winops,
+            world,
         }
     }
 
@@ -176,6 +184,8 @@ impl Engine {
             config::Style::default(),
         )));
 
+        let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+
         Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
@@ -188,6 +198,7 @@ impl Engine {
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
+            world,
         }
     }
 
@@ -366,6 +377,16 @@ impl Engine {
     /// Get a read-only snapshot of currently bound keys as (identifier, chord) pairs.
     pub async fn bindings_snapshot(&self) -> Vec<(String, mac_keycode::Chord)> {
         self.binding_manager.lock().await.bindings_snapshot()
+    }
+
+    /// Re-export: current world snapshot of windows.
+    pub async fn world_snapshot(&self) -> Vec<WorldWindow> {
+        self.world.snapshot().await
+    }
+
+    /// Re-export: subscribe to world events (Added/Updated/Removed/FocusChanged).
+    pub fn world_events(&self) -> tokio::sync::broadcast::Receiver<WorldEvent> {
+        self.world.subscribe()
     }
 
     /// Process a key event and return whether depth changed (requiring rebind)

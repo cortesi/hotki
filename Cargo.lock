@@ -2216,6 +2216,7 @@ dependencies = [
  "config",
  "core-foundation 0.10.1",
  "hotki-protocol",
+ "hotki-world",
  "io-kit-sys",
  "keymode",
  "mac-hotkey",
@@ -2288,6 +2289,7 @@ name = "hotki-world"
 version = "0.1.0"
 dependencies = [
  "mac-winops",
+ "permissions",
  "tokio",
 ]
 
