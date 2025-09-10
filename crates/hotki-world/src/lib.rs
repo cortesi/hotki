@@ -100,6 +100,17 @@ pub enum WorldEvent {
     FocusChanged(Option<WindowKey>),
 }
 
+/// Diagnostic snapshot of world internals.
+#[derive(Clone, Debug, Default)]
+pub struct WorldStatus {
+    pub windows_count: usize,
+    pub focused: Option<WindowKey>,
+    pub last_tick_ms: u64,
+    pub current_poll_ms: u64,
+    pub debounce_cache: usize,
+    pub capabilities: Capabilities,
+}
+
 /// Cheap, clonable handle to the world service.
 #[derive(Clone, Debug)]
 pub struct WorldHandle {
@@ -140,6 +151,13 @@ impl WorldHandle {
         let _ = self.tx.send(Command::Capabilities { respond: tx });
         rx.await.unwrap_or_default()
     }
+
+    /// Get internal diagnostics: counts, timings, permissions.
+    pub async fn status(&self) -> WorldStatus {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Status { respond: tx });
+        rx.await.unwrap_or_default()
+    }
 }
 
 /// World constructor. Spawns the service and returns a handle.
@@ -170,6 +188,10 @@ struct WorldState {
     capabilities: Capabilities,
     seen_seq: u64,
     last_emit: HashMap<WindowKey, Instant>,
+    last_tick_ms: u64,
+    current_poll_ms: u64,
+    warned_ax: bool,
+    warned_screen: bool,
 }
 
 impl WorldState {
@@ -180,6 +202,10 @@ impl WorldState {
             capabilities: Capabilities::default(),
             seen_seq: 0,
             last_emit: HashMap::new(),
+            last_tick_ms: 0,
+            current_poll_ms: 0,
+            warned_ax: false,
+            warned_screen: false,
         }
     }
 }
@@ -200,6 +226,10 @@ enum Command {
     },
     /// Hint that focus/frontmost likely changed: trigger immediate reconcile.
     HintRefresh,
+    /// Return diagnostics.
+    Status {
+        respond: oneshot::Sender<WorldStatus>,
+    },
 }
 
 async fn run_actor(
@@ -236,12 +266,28 @@ async fn run_actor(
                         current_ms = cfg.poll_ms_min;
                         next_tick.as_mut().reset(TokioInstant::now());
                     }
+                    Command::Status { respond } => {
+                        let status = WorldStatus {
+                            windows_count: state.store.len(),
+                            focused: state.focused,
+                            last_tick_ms: state.last_tick_ms,
+                            current_poll_ms: state.current_poll_ms,
+                            debounce_cache: state.last_emit.len(),
+                            capabilities: state.capabilities.clone(),
+                        };
+                        let _ = respond.send(status);
+                    }
                 }
             }
             _ = &mut next_tick => {
+                // Update permissions; warn once if missing.
+                update_capabilities(&mut state);
+                let t0 = Instant::now();
                 let had_changes = reconcile(&mut state, &events, &*winops);
+                state.last_tick_ms = t0.elapsed().as_millis() as u64;
                 if had_changes { current_ms = cfg.poll_ms_min; }
                 else { current_ms = (current_ms + 50).min(cfg.poll_ms_max.max(current_ms)); }
+                state.current_poll_ms = current_ms;
                 next_tick.as_mut().reset(TokioInstant::now() + Duration::from_millis(current_ms));
             }
         }
@@ -418,6 +464,33 @@ impl WorldHandle {
     /// Hint that the frontmost app/window likely changed; triggers immediate refresh.
     pub fn hint_refresh(&self) {
         let _ = self.tx.send(Command::HintRefresh);
+    }
+}
+
+fn update_capabilities(state: &mut WorldState) {
+    let ax_ok = permissions::accessibility_ok();
+    let sr_ok = permissions::screen_recording_ok();
+    state.capabilities.accessibility = if ax_ok {
+        PermissionState::Granted
+    } else {
+        PermissionState::Denied
+    };
+    state.capabilities.screen_recording = if sr_ok {
+        PermissionState::Granted
+    } else {
+        PermissionState::Denied
+    };
+    if !ax_ok && !state.warned_ax {
+        tracing::warn!(
+            "Accessibility permission denied: focus/title quality will degrade. Grant access in System Settings > Privacy & Security > Accessibility."
+        );
+        state.warned_ax = true;
+    }
+    if !sr_ok && !state.warned_screen {
+        tracing::warn!(
+            "Screen Recording permission denied: some window titles may be blank. Grant access in System Settings > Privacy & Security > Screen Recording."
+        );
+        state.warned_screen = true;
     }
 }
 

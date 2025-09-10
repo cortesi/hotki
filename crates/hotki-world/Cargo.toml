@@ -9,3 +9,4 @@ license = "MIT"
 tokio = { workspace = true }
 mac-winops = { path = "../mac-winops" }
 permissions = { path = "../permissions" }
+tracing = { workspace = true }

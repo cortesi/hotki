@@ -16,6 +16,7 @@
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn CGPreflightListenEventAccess() -> bool;
+    fn CGPreflightScreenCaptureAccess() -> bool;
 }
 
 pub fn accessibility_ok() -> bool {
@@ -30,6 +31,15 @@ pub fn input_monitoring_ok() -> bool {
     unsafe { CGPreflightListenEventAccess() }
 }
 
+/// Check if the application has the "Screen Recording" permission.
+///
+/// Returns `true` when the process is allowed to access screen content via
+/// CoreGraphics APIs that require Screen Recording permission (e.g., window
+/// titles in `CGWindowListCopyWindowInfo`), and `false` otherwise.
+pub fn screen_recording_ok() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
 /// Current permission status for the process.
 #[derive(Debug, Clone, Copy)]
 pub struct PermissionsStatus {
@@ -37,6 +47,8 @@ pub struct PermissionsStatus {
     pub accessibility_ok: bool,
     /// Input Monitoring permission; `true` if granted.
     pub input_ok: bool,
+    /// Screen Recording permission; `true` if granted.
+    pub screen_recording_ok: bool,
 }
 
 /// Query both Accessibility and Input Monitoring permissions.
@@ -48,5 +60,6 @@ pub fn check_permissions() -> PermissionsStatus {
     PermissionsStatus {
         accessibility_ok: accessibility_ok(),
         input_ok: input_monitoring_ok(),
+        screen_recording_ok: screen_recording_ok(),
     }
 }
