@@ -81,7 +81,7 @@ impl WinOps for RealWinOps {
     }
 }
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use crate::WindowInfo as WI;
 
 /// Simple mock implementation for tests (enabled with `test-utils` feature).
@@ -90,11 +90,17 @@ pub struct MockWinOps {
     calls: Arc<Mutex<Vec<String>>>,
     front_for_pid: Arc<Mutex<Option<WI>>>,
     windows: Arc<Mutex<Vec<WI>>>,
+    fail_focus_dir: Arc<AtomicBool>,
 }
 
 impl MockWinOps {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            front_for_pid: Arc::new(Mutex::new(None)),
+            windows: Arc::new(Mutex::new(Vec::new())),
+            fail_focus_dir: Arc::new(AtomicBool::new(false)),
+        }
     }
     pub fn set_frontmost_for_pid(&self, info: Option<WI>) {
         if let Ok(mut g) = self.front_for_pid.lock() {
@@ -112,6 +118,7 @@ impl MockWinOps {
             .map(|g| g.iter().any(|x| x == s))
             .unwrap_or(false)
     }
+    pub fn set_fail_focus_dir(&self, v: bool) { self.fail_focus_dir.store(v, Ordering::SeqCst); }
     fn note(&self, s: &str) {
         if let Ok(mut g) = self.calls.lock() {
             g.push(s.to_string());
@@ -151,6 +158,9 @@ impl WinOps for MockWinOps {
     }
     fn request_focus_dir(&self, _dir: MoveDir) -> WinResult<()> {
         self.note("focus_dir");
+        if self.fail_focus_dir.load(Ordering::SeqCst) {
+            return Err(crate::error::Error::MainThread);
+        }
         Ok(())
     }
     fn request_activate_pid(&self, _pid: i32) -> WinResult<()> {

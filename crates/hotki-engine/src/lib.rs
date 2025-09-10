@@ -211,14 +211,12 @@ impl Engine {
             let eng_clone = eng.clone();
             let winops = eng.winops.clone();
             let mut snap = watcher.current();
-            if snap.pid <= 0 {
-                if let Some(w) = winops.frontmost_window() {
-                    snap = mac_winops::focus::FocusSnapshot {
-                        app: w.app,
-                        title: w.title,
-                        pid: w.pid,
-                    };
-                }
+            if snap.pid <= 0 && let Some(w) = winops.frontmost_window() {
+                snap = mac_winops::focus::FocusSnapshot {
+                    app: w.app,
+                    title: w.title,
+                    pid: w.pid,
+                };
             }
             tokio::spawn(async move {
                 let _ = eng_clone.on_focus_snapshot(snap).await;

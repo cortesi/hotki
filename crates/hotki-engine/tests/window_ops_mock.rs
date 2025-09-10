@@ -154,6 +154,107 @@ async fn engine_raise_activates_on_match() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn engine_focus_error_propagates_notification() {
+    ensure_no_os_interaction();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockWinOps::new());
+    mock.set_fail_focus_dir(true);
+    let mgr = Arc::new(mac_hotkey::Manager::new().expect("manager"));
+    let engine = Engine::new_with_ops(mgr, tx, mock.clone());
+    let keys = keymode::Keys::from_ron("[(\"a\", \"focus left\", focus(left))]").unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+    engine
+        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
+            app: "X".into(),
+            title: "T".into(),
+            pid: 123,
+        })
+        .await
+        .unwrap();
+    let id = engine.resolve_id_for_ident("a").await.unwrap();
+    engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await;
+
+    // Drain messages until we see an error notification about Focus
+    let mut saw_error = false;
+    for _ in 0..10 {
+        if let Ok(msg) = rx.try_recv() {
+            if let hotki_protocol::MsgToUI::Notify { kind, title, .. } = msg {
+                if matches!(kind, hotki_protocol::NotifyKind::Error) && title == "Focus" {
+                    saw_error = true;
+                    break;
+                }
+            }
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+    assert!(saw_error, "expected Focus error notification");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn engine_raise_debounce_then_activate() {
+    // Debounce path: initially no match, then a match appears; expect activate_pid after debounce.
+    ensure_no_os_interaction();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockWinOps::new());
+    let mgr = Arc::new(mac_hotkey::Manager::new().expect("manager"));
+    let engine = Engine::new_with_ops(mgr, tx, mock.clone());
+    let keys = keymode::Keys::from_ron(
+        "[(\"a\", \"raise\", raise(app: \"^App$\", title: \"Win\"))]",
+    )
+    .unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+    engine
+        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
+            app: "Other".into(),
+            title: "X".into(),
+            pid: 1,
+        })
+        .await
+        .unwrap();
+
+    // Start with non-matching windows so the debounce path is engaged (idx_match.is_empty but not all.is_empty)
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 8,
+        pid: 222,
+        app: "OtherApp".into(),
+        title: "OtherWin".into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: false,
+    }]);
+    // Dispatch raise (will debounce)
+    let id = engine.resolve_id_for_ident("a").await.unwrap();
+    engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await;
+
+    // After a short delay, install a matching window; the loop polls every 250ms.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 9,
+        pid: 321,
+        app: "App".into(),
+        title: "Win".into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: false,
+    }]);
+
+    // Allow debounce to observe and act
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert!(mock.calls_contains("activate_pid"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn engine_place_move_uses_winops() {
     ensure_no_os_interaction();
     let (tx, _rx): (mpsc::UnboundedSender<MsgToUI>, mpsc::UnboundedReceiver<MsgToUI>) =
