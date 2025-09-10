@@ -212,25 +212,25 @@ pub enum WorldEvent {
 
 #### Stage 1: Crate Skeleton
 
-- [ ] Create `crates/hotki-world` with `edition = 2024`.
-- [ ] Add dependencies: `tokio`, `mac-winops`.
-- [ ] Define public types: `WorldHandle`, `WorldEvent`, `WorldCfg`, `Capabilities`, `WorldWindow`.
-- [ ] Expose `World::spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle`.
+- [x] Create `crates/hotki-world` with `edition = 2024`.
+- [x] Add dependencies: `tokio`, `mac-winops`.
+- [x] Define public types: `WorldHandle`, `WorldEvent`, `WorldCfg`, `Capabilities`, `WorldWindow`.
+- [x] Expose `World::spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle`.
 
 #### Stage 2: Actor + Storage
 
-- [ ] Implement single‑writer actor with `mpsc::UnboundedReceiver<Command>`.
-- [ ] Add `broadcast::Sender<WorldEvent>` for subscribers.
-- [ ] Implement in‑memory `HashMap<WindowKey, WorldWindow>` store.
-- [ ] Track `focused: Option<WindowKey>` and `seen_seq: u64`.
-- [ ] Implement queries: `snapshot`, `get`, `subscribe`, `focused`, `capabilities`.
+- [x] Implement single‑writer actor with `mpsc::UnboundedReceiver<Command>`.
+- [x] Add `broadcast::Sender<WorldEvent>` for subscribers.
+- [x] Implement in‑memory `HashMap<WindowKey, WorldWindow>` store.
+- [x] Track `focused: Option<WindowKey>` and `seen_seq: u64`.
+- [x] Implement queries: `snapshot`, `get`, `subscribe`, `focused`, `capabilities`.
 
 #### Stage 3: Polling + Hints (Adaptive)
 
-- [ ] Implement adaptive interval bounded by `cfg.poll_ms_min` and `cfg.poll_ms_max`.
-- [ ] Trigger immediate reconcile on `FocusSnapshot` or app‑activation hints.
-- [ ] Debounce identical deltas within ~50 ms.
-- [ ] Record `z` as CG enumeration index.
+- [x] Implement adaptive interval bounded by `cfg.poll_ms_min` and `cfg.poll_ms_max`.
+- [x] Trigger immediate reconcile on hint (`hint_refresh`); engine wiring follows in Stage 6.
+- [x] Debounce identical deltas within ~50 ms.
+- [x] Record `z` as CG enumeration index.
 
 #### Stage 4: Focus + Title Precedence
 
@@ -291,9 +291,9 @@ pub enum WorldEvent {
 
 ### Validation Steps (Checklist)
 
-- [ ] Run `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples`.
-- [ ] Run `cargo fmt --all`.
-- [ ] Run `cargo test --all`.
+- [x] Run `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples`.
+- [x] Run `cargo fmt --all`.
+- [x] Run `cargo test --all`.
 - [ ] Local smoke with and without permissions; confirm `Capabilities`, titles, and focus behavior.
 - [ ] Multi‑display smoke; verify `display_id` mapping and z‑order correctness.
 
