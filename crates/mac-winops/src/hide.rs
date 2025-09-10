@@ -58,7 +58,7 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
             }
         }
         if !chosen.is_null() {
-            unsafe { CFRetain(chosen as CFTypeRef) };
+            CFRetain(chosen as CFTypeRef);
         }
         CFRelease(app as CFTypeRef);
         if chosen.is_null() {
