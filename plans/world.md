@@ -234,9 +234,9 @@ pub enum WorldEvent {
 
 #### Stage 4: Focus + Title Precedence
 
-- [ ] Use AX for `focused` window and preferred title.
-- [ ] Fallback to CG title when Screen Recording is denied; degrade gracefully when AX is denied.
-- [ ] Map `AXFocusedWindow` to `WindowKey`; fallback: frontmost PID + topmost layer‑0 CG window.
+- [x] Use AX for `focused` window and preferred title.
+- [x] Fallback to CG title when Screen Recording is denied; degrade gracefully when AX is denied.
+- [x] Map `AXFocusedWindow` to `WindowKey`; fallback: frontmost PID + topmost layer‑0 CG window.
 
 #### Stage 5: Display + Z‑Order + Active‑Space
 
