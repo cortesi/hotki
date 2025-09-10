@@ -1,0 +1,11 @@
+[package]
+name = "hotki-world"
+version = "0.1.0"
+edition = "2024"
+description = "World service: window state snapshot + events for Hotki"
+license = "MIT"
+
+[dependencies]
+tokio = { workspace = true }
+mac-winops = { path = "../mac-winops" }
+

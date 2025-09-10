@@ -1,4 +1,3 @@
-
 use std::fmt::Write;
 
 use tracing::field::{Field, Visit};
