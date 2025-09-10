@@ -87,7 +87,12 @@ pub fn frame_by_title(title_match: &str) -> Option<(f32, f32, f32, f32)> {
 /// top-left coordinate space.
 pub fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
     unsafe {
-        let mtm = MainThreadMarker::new().expect("Main thread required");
+        // Fall back to a reasonable default frame if not on the main thread or no screens are found.
+        const DEFAULT_W: f32 = 1440.0;
+        const DEFAULT_H: f32 = 900.0;
+        let Some(mtm) = MainThreadMarker::new() else {
+            return (0.0, 0.0, DEFAULT_W, DEFAULT_H, DEFAULT_H);
+        };
         let screens = NSScreen::screens(mtm);
         let mut global_top: f32 = f32::MIN;
         for scr in screens.iter() {
@@ -115,21 +120,36 @@ pub fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
                 break;
             }
         }
-        let fr = if let Some(fr) = chosen_frame {
-            fr
-        } else if let Some(main) = NSScreen::mainScreen(mtm) {
-            main.frame()
-        } else if let Some(first) = screens.iter().next() {
-            first.frame()
-        } else {
-            NSScreen::screens(mtm).iter().next().unwrap().frame()
-        };
-        (
-            fr.origin.x as f32,
-            fr.origin.y as f32,
-            fr.size.width as f32,
-            fr.size.height as f32,
-            global_top,
-        )
+        if let Some(fr) = chosen_frame {
+            return (
+                fr.origin.x as f32,
+                fr.origin.y as f32,
+                fr.size.width as f32,
+                fr.size.height as f32,
+                global_top,
+            );
+        }
+        if let Some(main) = NSScreen::mainScreen(mtm) {
+            let fr = main.frame();
+            return (
+                fr.origin.x as f32,
+                fr.origin.y as f32,
+                fr.size.width as f32,
+                fr.size.height as f32,
+                global_top,
+            );
+        }
+        if let Some(first) = screens.iter().next() {
+            let fr = first.frame();
+            return (
+                fr.origin.x as f32,
+                fr.origin.y as f32,
+                fr.size.width as f32,
+                fr.size.height as f32,
+                global_top,
+            );
+        }
+        // No screens found: return a default frame at origin with a sensible size.
+        (0.0, 0.0, DEFAULT_W, DEFAULT_H, DEFAULT_H)
     }
 }

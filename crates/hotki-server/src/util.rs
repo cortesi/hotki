@@ -43,7 +43,7 @@ mod tests {
 
         thread::spawn(move || {
             for i in 0..n {
-                tx.send(i).unwrap();
+                let _ = tx.send(i);
             }
             // sender drops here
         });

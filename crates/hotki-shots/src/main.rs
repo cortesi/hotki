@@ -98,7 +98,10 @@ fn socket_path_for_pid(pid: u32) -> String {
 fn wait_for_hud(sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
     // Connect client with retry
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(_) => return false,
+    };
     let mut client = loop {
         let res = rt.block_on(async {
             hotki_server::Client::new_with_socket(sock)
@@ -251,7 +254,15 @@ fn main() {
     let _ = fs::create_dir_all(&cli.dir);
 
     // Connect once for key injection
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("ERROR: failed to create Tokio runtime: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
+            std::process::exit(2);
+        }
+    };
     let mut client = rt
         .block_on(async {
             hotki_server::Client::new_with_socket(&sock)

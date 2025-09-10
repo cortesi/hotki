@@ -26,4 +26,4 @@ permissions = { version = "0.1.0", path = "../permissions" }
 
 [dev-dependencies]
 regex = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
