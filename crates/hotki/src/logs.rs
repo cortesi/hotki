@@ -78,50 +78,12 @@ where
     S: Subscriber,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let meta = event.metadata();
-        let level = meta.level().to_string();
-        let target = meta.target().to_string();
-
-        // Extract a message from event fields
-        use tracing::field::{Field, Visit};
-        struct MsgVisitor {
-            msg: Option<String>,
-            fields: String,
-        }
-        impl Visit for MsgVisitor {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                if field.name() == "message" {
-                    self.msg = Some(value.to_string());
-                } else {
-                    let _ = std::fmt::Write::write_fmt(
-                        &mut self.fields,
-                        format_args!("{}=\"{}\" ", field.name(), value),
-                    );
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.msg = Some(format!("{:?}", value));
-                } else {
-                    let _ = std::fmt::Write::write_fmt(
-                        &mut self.fields,
-                        format_args!("{}={:?} ", field.name(), value),
-                    );
-                }
-            }
-        }
-        let mut vis = MsgVisitor {
-            msg: None,
-            fields: String::new(),
-        };
-        event.record(&mut vis);
-        let rendered = vis.msg.unwrap_or_else(|| vis.fields.trim_end().to_string());
-
+        let r = logfmt::render_event(event);
         push(LogEntry {
             side: Side::Client,
-            level,
-            target,
-            message: rendered,
+            level: r.level,
+            target: r.target,
+            message: r.message,
         });
     }
 }

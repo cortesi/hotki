@@ -13,15 +13,9 @@
 //!
 //! The layer is lightweight and no-ops when no sink is set.
 
-use std::{
-    fmt::Write,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{
-    Event, Subscriber,
-    field::{Field, Visit},
-};
+use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 use hotki_protocol::MsgToUI;
@@ -60,41 +54,11 @@ where
         };
         let Some(tx) = tx_opt else { return };
 
-        // Pull fields from the event
-        struct MsgVisitor {
-            msg: Option<String>,
-            fields: String,
-        }
-        impl Visit for MsgVisitor {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                if field.name() == "message" {
-                    self.msg = Some(value.to_string());
-                } else {
-                    let _ = write!(&mut self.fields, "{}=\"{}\" ", field.name(), value);
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.msg = Some(format!("{:?}", value));
-                } else {
-                    let _ = write!(&mut self.fields, "{}={:?} ", field.name(), value);
-                }
-            }
-        }
-        let mut vis = MsgVisitor {
-            msg: None,
-            fields: String::new(),
-        };
-        event.record(&mut vis);
-        let rendered = vis.msg.unwrap_or_else(|| vis.fields.trim_end().to_string());
-
-        let meta = event.metadata();
-        let level = meta.level().to_string();
-        let target = meta.target().to_string();
+        let r = logfmt::render_event(event);
         let _ = tx.send(MsgToUI::Log {
-            level,
-            target,
-            message: rendered,
+            level: r.level,
+            target: r.target,
+            message: r.message,
         });
     }
 }

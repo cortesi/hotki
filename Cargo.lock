@@ -2193,6 +2193,7 @@ dependencies = [
  "image",
  "keymode",
  "log-forward",
+ "logfmt",
  "mac-winops",
  "objc2 0.6.2",
  "objc2-app-kit 0.3.1",
@@ -2749,9 +2750,17 @@ name = "log-forward"
 version = "0.0.1"
 dependencies = [
  "hotki-protocol",
+ "logfmt",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "logfmt"
+version = "0.0.1"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

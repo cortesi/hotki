@@ -11,6 +11,7 @@ permissions = { path = "../permissions" }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 log-forward = { path = "../log-forward" }
+logfmt = { path = "../logfmt" }
 mac-winops = { path = "../mac-winops" }
 
 eframe = "0.32.2"
