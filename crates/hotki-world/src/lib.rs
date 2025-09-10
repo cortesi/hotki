@@ -3,11 +3,13 @@
 //! Maintains types and constructor for the World service.
 //! This stage provides the public API surface only; implementation arrives in later stages.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mac_winops::ops::WinOps;
 use mac_winops::{Pos, WindowId};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// Unique key for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,8 +100,46 @@ pub enum WorldEvent {
 }
 
 /// Cheap, clonable handle to the world service.
-#[derive(Clone, Debug, Default)]
-pub struct WorldHandle;
+#[derive(Clone, Debug)]
+pub struct WorldHandle {
+    tx: mpsc::UnboundedSender<Command>,
+    events: broadcast::Sender<WorldEvent>,
+}
+
+impl WorldHandle {
+    /// Subscribe to the global event stream (no filters in Stage 2).
+    pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
+        self.events.subscribe()
+    }
+
+    /// Get a full snapshot of current windows.
+    pub async fn snapshot(&self) -> Vec<WorldWindow> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Snapshot { respond: tx });
+        rx.await.unwrap_or_default()
+    }
+
+    /// Lookup a window by key.
+    pub async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Get { key, respond: tx });
+        rx.await.unwrap_or(None)
+    }
+
+    /// Current focused window key, if any.
+    pub async fn focused(&self) -> Option<WindowKey> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Focused { respond: tx });
+        rx.await.unwrap_or(None)
+    }
+
+    /// Current capabilities and permission state.
+    pub async fn capabilities(&self) -> Capabilities {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Capabilities { respond: tx });
+        rx.await.unwrap_or_default()
+    }
+}
 
 /// World constructor. Spawns the service and returns a handle.
 ///
@@ -109,6 +149,75 @@ pub struct World;
 impl World {
     #[allow(unused_variables)]
     pub fn spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle {
-        WorldHandle
+        let (tx, rx) = mpsc::unbounded_channel();
+        // Keep event buffer moderate; callers should keep up.
+        let (evt_tx, _evt_rx) = broadcast::channel(256);
+
+        let state = WorldState::new();
+        tokio::spawn(run_actor(rx, evt_tx.clone(), state));
+
+        WorldHandle { tx, events: evt_tx }
+    }
+}
+
+// ===== Stage 2: Actor + Storage =====
+
+#[derive(Clone, Debug, Default)]
+struct WorldState {
+    store: HashMap<WindowKey, WorldWindow>,
+    focused: Option<WindowKey>,
+    capabilities: Capabilities,
+    seen_seq: u64,
+}
+
+impl WorldState {
+    fn new() -> Self {
+        Self {
+            store: HashMap::new(),
+            focused: None,
+            capabilities: Capabilities::default(),
+            seen_seq: 0,
+        }
+    }
+}
+
+enum Command {
+    Snapshot {
+        respond: oneshot::Sender<Vec<WorldWindow>>,
+    },
+    Get {
+        key: WindowKey,
+        respond: oneshot::Sender<Option<WorldWindow>>,
+    },
+    Focused {
+        respond: oneshot::Sender<Option<WindowKey>>,
+    },
+    Capabilities {
+        respond: oneshot::Sender<Capabilities>,
+    },
+}
+
+async fn run_actor(
+    mut rx: mpsc::UnboundedReceiver<Command>,
+    _events: broadcast::Sender<WorldEvent>,
+    state: WorldState,
+) {
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            Command::Snapshot { respond } => {
+                let mut v: Vec<WorldWindow> = state.store.values().cloned().collect();
+                v.sort_by_key(|w| (w.z, w.pid, w.id));
+                let _ = respond.send(v);
+            }
+            Command::Get { key, respond } => {
+                let _ = respond.send(state.store.get(&key).cloned());
+            }
+            Command::Focused { respond } => {
+                let _ = respond.send(state.focused);
+            }
+            Command::Capabilities { respond } => {
+                let _ = respond.send(state.capabilities.clone());
+            }
+        }
     }
 }
