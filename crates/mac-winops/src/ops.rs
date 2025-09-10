@@ -91,6 +91,14 @@ pub struct MockWinOps {
     front_for_pid: Arc<Mutex<Option<WI>>>,
     windows: Arc<Mutex<Vec<WI>>>,
     fail_focus_dir: Arc<AtomicBool>,
+    frontmost: Arc<Mutex<Option<WI>>>,
+    last_place_grid_pid: Arc<Mutex<Option<i32>>>,
+    fail_fullscreen_native: Arc<AtomicBool>,
+    fail_fullscreen_nonnative: Arc<AtomicBool>,
+    fail_place_grid_focused: Arc<AtomicBool>,
+    fail_place_move_grid: Arc<AtomicBool>,
+    fail_activate_pid: Arc<AtomicBool>,
+    fail_hide: Arc<AtomicBool>,
 }
 
 impl MockWinOps {
@@ -100,6 +108,14 @@ impl MockWinOps {
             front_for_pid: Arc::new(Mutex::new(None)),
             windows: Arc::new(Mutex::new(Vec::new())),
             fail_focus_dir: Arc::new(AtomicBool::new(false)),
+            frontmost: Arc::new(Mutex::new(None)),
+            last_place_grid_pid: Arc::new(Mutex::new(None)),
+            fail_fullscreen_native: Arc::new(AtomicBool::new(false)),
+            fail_fullscreen_nonnative: Arc::new(AtomicBool::new(false)),
+            fail_place_grid_focused: Arc::new(AtomicBool::new(false)),
+            fail_place_move_grid: Arc::new(AtomicBool::new(false)),
+            fail_activate_pid: Arc::new(AtomicBool::new(false)),
+            fail_hide: Arc::new(AtomicBool::new(false)),
         }
     }
     pub fn set_frontmost_for_pid(&self, info: Option<WI>) {
@@ -119,6 +135,19 @@ impl MockWinOps {
             .unwrap_or(false)
     }
     pub fn set_fail_focus_dir(&self, v: bool) { self.fail_focus_dir.store(v, Ordering::SeqCst); }
+    pub fn set_frontmost(&self, w: Option<WI>) { if let Ok(mut g) = self.frontmost.lock() { *g = w; } }
+    pub fn last_place_grid_pid(&self) -> Option<i32> {
+        match self.last_place_grid_pid.lock() {
+            Ok(g) => *g,
+            Err(_) => None,
+        }
+    }
+    pub fn set_fail_fullscreen_native(&self, v: bool) { self.fail_fullscreen_native.store(v, Ordering::SeqCst); }
+    pub fn set_fail_fullscreen_nonnative(&self, v: bool) { self.fail_fullscreen_nonnative.store(v, Ordering::SeqCst); }
+    pub fn set_fail_place_grid_focused(&self, v: bool) { self.fail_place_grid_focused.store(v, Ordering::SeqCst); }
+    pub fn set_fail_place_move_grid(&self, v: bool) { self.fail_place_move_grid.store(v, Ordering::SeqCst); }
+    pub fn set_fail_activate_pid(&self, v: bool) { self.fail_activate_pid.store(v, Ordering::SeqCst); }
+    pub fn set_fail_hide(&self, v: bool) { self.fail_hide.store(v, Ordering::SeqCst); }
     fn note(&self, s: &str) {
         if let Ok(mut g) = self.calls.lock() {
             g.push(s.to_string());
@@ -129,10 +158,12 @@ impl MockWinOps {
 impl WinOps for MockWinOps {
     fn request_fullscreen_native(&self, _pid: i32, _d: crate::Desired) -> WinResult<()> {
         self.note("fullscreen_native");
+        if self.fail_fullscreen_native.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
     fn request_fullscreen_nonnative(&self, _pid: i32, _d: crate::Desired) -> WinResult<()> {
         self.note("fullscreen_nonnative");
+        if self.fail_fullscreen_nonnative.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
     fn request_place_grid_focused(
@@ -144,6 +175,8 @@ impl WinOps for MockWinOps {
         _row: u32,
     ) -> WinResult<()> {
         self.note("place_grid_focused");
+        if let Ok(mut g) = self.last_place_grid_pid.lock() { *g = Some(_pid); }
+        if self.fail_place_grid_focused.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
     fn request_place_move_grid(
@@ -154,6 +187,7 @@ impl WinOps for MockWinOps {
         _dir: MoveDir,
     ) -> WinResult<()> {
         self.note("place_move");
+        if self.fail_place_move_grid.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
     fn request_focus_dir(&self, _dir: MoveDir) -> WinResult<()> {
@@ -165,6 +199,7 @@ impl WinOps for MockWinOps {
     }
     fn request_activate_pid(&self, _pid: i32) -> WinResult<()> {
         self.note("activate_pid");
+        if self.fail_activate_pid.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
     fn list_windows(&self) -> Vec<WindowInfo> {
@@ -174,13 +209,14 @@ impl WinOps for MockWinOps {
         }
     }
     fn frontmost_window(&self) -> Option<WindowInfo> {
-        None
+        self.frontmost.lock().ok().and_then(|g| g.clone())
     }
     fn frontmost_window_for_pid(&self, _pid: i32) -> Option<WindowInfo> {
         self.front_for_pid.lock().ok().and_then(|g| g.clone())
     }
     fn hide_bottom_left(&self, _pid: i32, _desired: crate::Desired) -> WinResult<()> {
         self.note("hide");
+        if self.fail_hide.load(Ordering::SeqCst) { return Err(crate::error::Error::MainThread); }
         Ok(())
     }
 }
