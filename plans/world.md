@@ -251,9 +251,9 @@ pub enum WorldEvent {
 
 #### Stage 7: Diagnostics + Capabilities
 
-- [ ] Implement `world.status()` with last tick duration, window counts, debounce metrics, and current poll interval.
-- [ ] Detect and expose `Capabilities { accessibility, screen_recording }`.
-- [ ] Surface user‑visible warnings when permissions are missing.
+- [x] Implement `world.status()` with last tick duration, window counts, debounce metrics, and current poll interval.
+- [x] Detect and expose `Capabilities { accessibility, screen_recording }`.
+- [x] Surface user‑visible warnings when permissions are missing.
 
 #### Stage 8: Tests
 
