@@ -6,7 +6,7 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::{collections::HashSet, ffi::c_void, ptr};
+use std::{ffi::c_void, ptr};
 
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
@@ -17,19 +17,21 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScre
 use objc2_foundation::MainThreadMarker;
 use tracing::{debug, warn};
 
-use mac_keycode::{Chord, Key, Modifier};
-use relaykey::RelayKey;
-
 mod ax;
 mod cfutil;
 mod error;
 pub mod focus;
+mod focus_dir;
 mod frame_storage;
+mod fullscreen;
 mod geom;
+mod hide;
 mod main_thread_ops;
 pub mod nswindow;
+mod place;
 mod raise;
 pub mod screen;
+mod screen_util;
 mod window;
 
 pub use error::{Error, Result};
@@ -41,12 +43,13 @@ pub use main_thread_ops::{
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 
-use crate::geom::overshoot_target as geom_overshoot;
 use ax::*;
 pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
-use frame_storage::*;
-use geom::{CGPoint, CGSize, approx_eq_eps, rect_eq};
+pub use fullscreen::{fullscreen_native, fullscreen_nonnative};
+use geom::{CGPoint, CGSize, approx_eq_eps};
+pub use hide::{hide_bottom_left, hide_corner};
 use main_thread_ops::{MAIN_OPS, MainOp};
+pub use place::place_grid_focused;
 
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.
@@ -69,14 +72,14 @@ unsafe extern "C" {
 pub type WindowId = u32;
 
 /// RAII guard that releases a retained AX element on drop.
-struct AXElem(*mut c_void);
+pub(crate) struct AXElem(*mut c_void);
 impl AXElem {
     #[inline]
-    fn new(ptr: *mut c_void) -> Self {
+    pub(crate) fn new(ptr: *mut c_void) -> Self {
         Self(ptr)
     }
     #[inline]
-    fn as_ptr(&self) -> *mut c_void {
+    pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.0
     }
 }
@@ -152,7 +155,7 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
     false
 }
 
-fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
+pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
     debug!("focused_window_for_pid: pid={}", pid);
     let app = unsafe { AXUIElementCreateApplication(pid) };
     if app.is_null() {
@@ -227,179 +230,16 @@ fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
 ///
 /// Requires Accessibility permission. If AXFullScreen is not available, the
 /// function synthesizes the standard ⌃⌘F shortcut as a fallback.
-pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
-    tracing::info!(
-        "WinOps: fullscreen_native enter pid={} desired={:?}",
-        pid,
-        desired
-    );
-    ax_check()?;
-    let win = focused_window_for_pid(pid)?;
-    let attr_fullscreen = cfstr("AXFullScreen");
-    match ax_bool(win, attr_fullscreen) {
-        Ok(Some(cur)) => {
-            let target = match desired {
-                Desired::On => true,
-                Desired::Off => false,
-                Desired::Toggle => !cur,
-            };
-            if target != cur {
-                ax_set_bool(win, attr_fullscreen, target)?;
-            }
-            // win retained by AX; release
-            unsafe { CFRelease(win as CFTypeRef) };
-            Ok(())
-        }
-        // If the attribute is missing/unsupported, fall back to keystroke.
-        _ => {
-            unsafe { CFRelease(win as CFTypeRef) };
-            // Fallback only makes sense for Toggle or “turn on/off” when app supports it via menu.
-            let mut mods = HashSet::new();
-            mods.insert(Modifier::Control);
-            mods.insert(Modifier::Command);
-            let chord = Chord {
-                key: Key::F,
-                modifiers: mods,
-            };
-            let rk = RelayKey::new();
-            rk.key_down(pid, chord.clone(), false);
-            rk.key_up(pid, chord);
-            tracing::info!("WinOps: fullscreen_native fallback keystroke sent");
-            Ok(())
-        }
-    }
-}
+// moved to crate::fullscreen::fullscreen_native
 
 /// Toggle or set non‑native full screen (maximize to visible frame in current Space)
 /// for the focused window of `pid`.
 ///
 /// Requires Accessibility permission and must run on the AppKit main thread
 /// (uses `NSScreen::visibleFrame`).
-pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
-    tracing::info!(
-        "WinOps: fullscreen_nonnative enter pid={} desired={:?}",
-        pid,
-        desired
-    );
-    ax_check()?;
-    // For visibleFrame we need AppKit; require main thread.
-    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    tracing::debug!("WinOps: have MainThreadMarker");
-    let win = focused_window_for_pid(pid)?;
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
+// moved to crate::fullscreen::fullscreen_nonnative
 
-    // Run body in a closure so we always release `win`.
-    let result = (|| -> Result<()> {
-        // Read current frame
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
-
-        // Determine target screen visible frame
-        let vf = visible_frame_containing_point(mtm, cur_p);
-        tracing::debug!(
-            "WinOps: visible frame x={} y={} w={} h={}",
-            vf.0,
-            vf.1,
-            vf.2,
-            vf.3
-        );
-        let target_p = CGPoint { x: vf.0, y: vf.1 };
-        let target_s = CGSize {
-            width: vf.2,
-            height: vf.3,
-        };
-
-        let mut prev_key: Option<(i32, WindowId)> = None;
-        let is_full = rect_eq(cur_p, cur_s, target_p, target_s);
-        let do_set_to_full = match desired {
-            Desired::On => true,
-            Desired::Off => false,
-            Desired::Toggle => !is_full,
-        };
-
-        // Identify window key for restore using stable CGWindowID
-        if let Some(w) = frontmost_window_for_pid(pid) {
-            let wid = w.id;
-            prev_key = Some((pid, wid));
-        }
-
-        if do_set_to_full {
-            tracing::debug!("WinOps: setting to non-native fullscreen frame");
-            // Store previous frame if we have a key and not already stored
-            if let Some(k) = prev_key
-                && let Ok(mut map) = PREV_FRAMES.lock()
-            {
-                if map.len() >= PREV_FRAMES_CAP
-                    && let Some(old_k) = map.keys().next().cloned()
-                {
-                    let _ = map.remove(&old_k);
-                }
-                map.entry(k).or_insert((cur_p, cur_s));
-            }
-            ax_set_point(win, attr_pos, target_p)?;
-            ax_set_size(win, attr_size, target_s)?;
-        } else {
-            tracing::debug!("WinOps: restoring from previous frame if any");
-            // Restore if available
-            let restored = if let Some(k) = prev_key {
-                if let Ok(mut map) = PREV_FRAMES.lock() {
-                    if let Some((p, s)) = map.remove(&k) {
-                        if !rect_eq(p, s, cur_p, cur_s) {
-                            ax_set_point(win, attr_pos, p)?;
-                            ax_set_size(win, attr_size, s)?;
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if !restored {
-                debug!("no previous frame to restore; non-native Off is a no-op");
-            }
-        }
-        Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    tracing::info!("WinOps: fullscreen_nonnative exit");
-    result
-}
-
-// Compute the visible frame (excluding menu bar and Dock) of the screen
-// containing `p`. Falls back to main screen when not found.
-fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> (f64, f64, f64, f64) {
-    // Try to find a screen containing the point.
-    let mut chosen = None;
-    for s in NSScreen::screens(mtm).iter() {
-        let fr = s.visibleFrame();
-        let r = geom::Rect {
-            x: fr.origin.x,
-            y: fr.origin.y,
-            w: fr.size.width,
-            h: fr.size.height,
-        };
-        if geom::point_in_rect(p.x, p.y, &r) {
-            chosen = Some(s);
-            break;
-        }
-    }
-    // Prefer the chosen screen; otherwise try main, then first.
-    if let Some(scr) = chosen.or_else(|| NSScreen::mainScreen(mtm)) {
-        let r = scr.visibleFrame();
-        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
-    }
-    if let Some(s) = NSScreen::screens(mtm).iter().next() {
-        let r = s.visibleFrame();
-        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
-    }
-    // As a last resort, return a zero rect to avoid panics.
-    (0.0, 0.0, 0.0, 0.0)
-}
+// moved to screen_util::visible_frame_containing_point
 
 /// Drain and execute any pending main-thread operations. Call from the Tao main thread
 /// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
@@ -431,7 +271,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                let _ = place_grid(id, cols, rows, col, row);
+                let _ = crate::place::place_grid(id, cols, rows, col, row);
             }
             MainOp::PlaceMoveGrid {
                 id,
@@ -439,7 +279,7 @@ pub fn drain_main_ops() {
                 rows,
                 dir,
             } => {
-                let _ = place_move_grid(id, cols, rows, dir);
+                let _ = crate::place::place_move_grid(id, cols, rows, dir);
             }
             MainOp::PlaceGridFocused {
                 pid,
@@ -448,7 +288,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                let _ = place_grid_focused(pid, cols, rows, col, row);
+                let _ = crate::place::place_grid_focused(pid, cols, rows, col, row);
             }
             MainOp::ActivatePid { pid } => {
                 let _ = activate_pid(pid);
@@ -457,59 +297,19 @@ pub fn drain_main_ops() {
                 let _ = crate::raise::raise_window(pid, id);
             }
             MainOp::FocusDir { dir } => {
-                let _ = focus_dir(dir);
+                let _ = crate::focus_dir::focus_dir(dir);
             }
         }
     }
 }
 
-/// Compute the visible frame for the screen containing the given window and
-/// place the window into the specified grid cell (top-left is (0,0)).
-fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    ax_check()?;
-    // For visibleFrame we need AppKit; require main thread.
-    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let (win, _pid_for_id) = ax_window_for_id(id)?;
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
-
-    let result = (|| -> Result<()> {
-        // Read current frame to find screen containing the window's point
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
-        // Clamp to grid bounds defensively
-        let col = col.min(cols.saturating_sub(1));
-        let row = row.min(rows.saturating_sub(1));
-        let (x, y, w, h) = geom::grid_cell_rect(
-            vf_x,
-            vf_y,
-            vf_w.max(1.0),
-            vf_h.max(1.0),
-            cols,
-            rows,
-            col,
-            row,
-        );
-
-        // Set position first, then size to avoid initial height clamping by AppKit
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
-        ax_set_size(
-            win,
-            attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
-        )?;
-        Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    result
-}
+// moved to crate::place::place_grid
 
 /// Focus the next window in the given direction on the current screen within the
 /// current Space. Uses CG for enumeration + AppKit for screen geometry and AX for
 /// the origin window frame and final raise.
+// moved to crate::focus_dir::focus_dir
+// moved to focus_dir::focus_dir
 fn focus_dir(dir: MoveDir) -> Result<()> {
     ax_check()?;
     let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
@@ -768,63 +568,7 @@ fn focus_dir(dir: MoveDir) -> Result<()> {
 ///
 /// This is a convenience variant of `place_grid` that resolves the window via Accessibility focus
 /// rather than a CGWindowID and performs the move immediately (no main-op queueing).
-#[allow(clippy::too_many_arguments)]
-pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    tracing::info!(
-        "WinOps: place_grid_focused enter pid={} cols={} rows={} col={} row={}",
-        pid,
-        cols,
-        rows,
-        col,
-        row
-    );
-    ax_check()?;
-    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let win = focused_window_for_pid(pid)?;
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
-    let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
-        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
-        let col = col.min(cols.saturating_sub(1));
-        let row = row.min(rows.saturating_sub(1));
-        let (x, y, w, h) = geom::grid_cell_rect(
-            vf_x,
-            vf_y,
-            vf_w.max(1.0),
-            vf_h.max(1.0),
-            cols,
-            rows,
-            col,
-            row,
-        );
-        tracing::debug!(
-            "WinOps: place_grid_focused current x={:.1} y={:.1} w={:.1} h={:.1} | target x={:.1} y={:.1} w={:.1} h={:.1}",
-            cur_p.x,
-            cur_p.y,
-            cur_s.width,
-            cur_s.height,
-            x,
-            y,
-            w,
-            h
-        );
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
-        ax_set_size(
-            win,
-            attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
-        )?;
-        Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    tracing::info!("WinOps: place_grid_focused exit");
-    result
-}
+// moved to crate::place::place_grid_focused
 
 /// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
 /// remains visible at the requested screen corner.
@@ -843,249 +587,13 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
 /// - macOS won’t allow windows to be fully off‑screen; titlebar chrome may be
 ///   kept visible depending on the app/window style. The tightening pass helps
 ///   minimize this but cannot bypass system constraints.
-pub fn hide_corner(pid: i32, desired: Desired, corner: ScreenCorner) -> Result<()> {
-    debug!(
-        "hide_corner: entry pid={} desired={:?} corner={:?}",
-        pid, desired, corner
-    );
-    ax_check()?;
-    let _ = request_activate_pid(pid);
-    // Resolve a top-level AXWindow
-    let win_raw: *mut c_void = unsafe {
-        let app = AXUIElementCreateApplication(pid);
-        if app.is_null() {
-            return Err(Error::AppElement);
-        }
-        let mut wins_ref: CFTypeRef = ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
-        if err != 0 || wins_ref.is_null() {
-            CFRelease(app as CFTypeRef);
-            return Err(Error::FocusedWindow);
-        }
-        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
-        let mut chosen: *mut c_void = ptr::null_mut();
-        for i in 0..n {
-            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
-            if w.is_null() {
-                continue;
-            }
-            let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
-            if role == "AXWindow" {
-                chosen = w;
-                break;
-            }
-        }
-        if !chosen.is_null() {
-            let _ = CFRetain(chosen as CFTypeRef);
-        }
-        CFRelease(app as CFTypeRef);
-        if chosen.is_null() {
-            return Err(Error::FocusedWindow);
-        }
-        chosen
-    };
-    let win = AXElem::new(win_raw);
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
-    let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
-    let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
+// moved to crate::hide::hide_corner
 
-    let key = frontmost_window_for_pid(pid).map(|w| (pid, w.id));
-    let is_hidden = key
-        .as_ref()
-        .and_then(|k| HIDDEN_FRAMES.lock().ok().map(|m| m.contains_key(k)))
-        .unwrap_or(false);
-    let do_hide = match desired {
-        Desired::On => true,
-        Desired::Off => false,
-        Desired::Toggle => !is_hidden,
-    };
-
-    if do_hide {
-        if let Some(k) = key
-            && let Ok(mut map) = HIDDEN_FRAMES.lock()
-        {
-            if map.len() >= HIDDEN_FRAMES_CAP
-                && let Some(old_k) = map.keys().next().cloned()
-            {
-                let _ = map.remove(&old_k);
-            }
-            map.insert(k, (cur_p, cur_s));
-        }
-
-        // Compute target for requested screen corner using a large overshoot; rely on
-        // WindowServer clamping to achieve the tightest allowed placement.
-        let tgt = geom_overshoot(cur_p, corner, 100_000.0);
-        let (tx, ty) = (tgt.x, tgt.y);
-
-        // Attempt move with size no-op first
-        let _ = ax_set_size(win.as_ptr(), attr_size, cur_s);
-        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty })?;
-
-        // If we didn't move horizontally, try a small nudge towards target and retry
-        if let Ok(p1) = ax_get_point(win.as_ptr(), attr_pos)
-            && approx_eq_eps(p1.x, cur_p.x, 1.0)
-        {
-            let nudge_x = if tx >= cur_p.x {
-                cur_p.x + 40.0
-            } else {
-                cur_p.x - 40.0
-            };
-            let _ = ax_set_point(
-                win.as_ptr(),
-                attr_pos,
-                CGPoint {
-                    x: nudge_x,
-                    y: cur_p.y,
-                },
-            );
-            let _ = ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty });
-        }
-
-        // Tightening pass: iteratively nudge toward the requested corner with
-        // a diminishing step to squeeze a few extra pixels off-screen.
-        if let Ok(mut best) = ax_get_point(win.as_ptr(), attr_pos) {
-            let mut step = 128.0;
-            for _ in 0..3 {
-                // X axis drive
-                let mut local = step;
-                while local >= 1.0 {
-                    let cand = match corner {
-                        ScreenCorner::BottomRight => CGPoint {
-                            x: best.x + local,
-                            y: best.y,
-                        },
-                        ScreenCorner::BottomLeft | ScreenCorner::TopLeft => CGPoint {
-                            x: best.x - local,
-                            y: best.y,
-                        },
-                    };
-                    let _ = ax_set_point(win.as_ptr(), attr_pos, cand);
-                    if let Ok(np) = ax_get_point(win.as_ptr(), attr_pos) {
-                        let improved = match corner {
-                            ScreenCorner::BottomRight => np.x > best.x + 0.5,
-                            ScreenCorner::BottomLeft | ScreenCorner::TopLeft => np.x < best.x - 0.5,
-                        };
-                        if improved {
-                            best = np;
-                            continue;
-                        }
-                    }
-                    local /= 2.0;
-                }
-
-                // Y axis drive
-                let mut local = step;
-                while local >= 1.0 {
-                    let cand = match corner {
-                        ScreenCorner::BottomRight | ScreenCorner::BottomLeft => CGPoint {
-                            x: best.x,
-                            y: best.y + local,
-                        },
-                        ScreenCorner::TopLeft => CGPoint {
-                            x: best.x,
-                            y: best.y - local,
-                        },
-                    };
-                    let _ = ax_set_point(win.as_ptr(), attr_pos, cand);
-                    if let Ok(np) = ax_get_point(win.as_ptr(), attr_pos) {
-                        let improved = match corner {
-                            ScreenCorner::BottomRight | ScreenCorner::BottomLeft => {
-                                np.y > best.y + 0.5
-                            }
-                            ScreenCorner::TopLeft => np.y < best.y - 0.5,
-                        };
-                        if improved {
-                            best = np;
-                            continue;
-                        }
-                    }
-                    local /= 2.0;
-                }
-                step /= 2.0;
-            }
-        }
-    } else if let Some(k) = key
-        && let Ok(mut map) = HIDDEN_FRAMES.lock()
-        && let Some((p, s)) = map.remove(&k)
-    {
-        let _ = ax_set_size(win.as_ptr(), attr_size, s);
-        let _ = ax_set_point(win.as_ptr(), attr_pos, p);
-    }
-
-    Ok(())
-}
-
-/// Hide or reveal the focused window at the bottom-left corner of the screen.
-///
-/// This is a convenience wrapper around `hide_corner` with `ScreenCorner::BottomLeft`.
-pub fn hide_bottom_left(pid: i32, desired: Desired) -> Result<()> {
-    hide_corner(pid, desired, ScreenCorner::BottomLeft)
-}
+// moved to crate::hide::hide_bottom_left
 
 // grid helpers now provided by crate::geom
 
-fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
-    ax_check()?;
-    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let (win, _pid_for_id) = ax_window_for_id(id)?;
-    let attr_pos = cfstr("AXPosition");
-    let attr_size = cfstr("AXSize");
-
-    let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
-        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
-
-        let eps = 2.0;
-        let cur_cell = geom::grid_find_cell(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
-
-        // First invocation from a non-aligned position places at visual top‑left (row 0).
-        let (next_col, next_row) = match cur_cell {
-            None => (0, 0),
-            Some((c, r)) => {
-                let (mut nc, mut nr) = (c, r);
-                match dir {
-                    MoveDir::Left => {
-                        nc = nc.saturating_sub(1);
-                    }
-                    MoveDir::Right => {
-                        if nc + 1 < cols {
-                            nc += 1;
-                        }
-                    }
-                    // In bottom-left coords, moving up decreases the row index (towards 0)
-                    MoveDir::Up => {
-                        nr = nr.saturating_sub(1);
-                    }
-                    // Moving down increases the row index (towards rows-1)
-                    MoveDir::Down => {
-                        if nr + 1 < rows {
-                            nr += 1;
-                        }
-                    }
-                }
-                (nc, nr)
-            }
-        };
-
-        let (x, y, w, h) =
-            geom::grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
-        ax_set_size(
-            win,
-            attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
-        )?;
-        Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    result
-}
+// moved to crate::place::place_move_grid
 
 /// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.
 fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
