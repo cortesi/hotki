@@ -246,8 +246,8 @@ pub enum WorldEvent {
 
 #### Stage 6: Engine Wiring
 
-- [ ] Integrate `hotki-engine` `FocusWatcher`; forward `FocusSnapshot` via `send_focus_hint`.
-- [ ] Re‑export `world_snapshot()` and `world_events()` for read‑only consumption.
+- [x] Integrate `hotki-engine` `FocusWatcher`; forward a refresh hint on snapshots.
+- [x] Re‑export `world_snapshot()` and `world_events()` for read‑only consumption.
 
 #### Stage 7: Diagnostics + Capabilities
 
