@@ -2560,6 +2560,7 @@ dependencies = [
  "mac-keycode",
  "regex",
  "ron",
+ "thiserror 2.0.16",
  "tracing",
 ]
 

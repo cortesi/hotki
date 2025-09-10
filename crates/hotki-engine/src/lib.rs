@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod deps;
 mod error;
 mod key_binding;
 mod key_state;
@@ -24,7 +25,6 @@ mod notification;
 mod relay;
 mod repeater;
 mod ticker;
-mod deps;
 
 // Timing constants for warning thresholds
 const BIND_UPDATE_WARN_MS: u64 = 10;
@@ -40,11 +40,11 @@ pub use notification::NotificationDispatcher;
 pub use relay::RelayHandler;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
 
+use deps::RealHotkeyApi;
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
-use repeater::ExecSpec;
-use deps::RealHotkeyApi;
 use mac_winops::ops::{RealWinOps, WinOps};
+use repeater::ExecSpec;
 
 #[inline]
 fn to_desired(t: config::Toggle) -> mac_winops::Desired {
@@ -211,7 +211,9 @@ impl Engine {
             let eng_clone = eng.clone();
             let winops = eng.winops.clone();
             let mut snap = watcher.current();
-            if snap.pid <= 0 && let Some(w) = winops.frontmost_window() {
+            if snap.pid <= 0
+                && let Some(w) = winops.frontmost_window()
+            {
                 snap = mac_winops::focus::FocusSnapshot {
                     app: w.app,
                     title: w.title,
@@ -699,10 +701,7 @@ impl Engine {
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
                 let mdir = to_move_dir(dir);
                 if let Some(w) = self.winops.frontmost_window_for_pid(self.current_pid()) {
-                    if let Err(e) = self
-                        .winops
-                        .request_place_move_grid(w.id, cols, rows, mdir)
-                    {
+                    if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir) {
                         let _ = self.notifier.send_error("Move", format!("{}", e));
                     }
                 } else {
@@ -787,7 +786,7 @@ impl Engine {
             }
             Err(e) => {
                 warn!("Key handler error for {}: {}", identifier, e);
-                self.notifier.send_error("Key", e)?;
+                self.notifier.send_error("Key", e.to_string())?;
                 Ok(())
             }
         }?;

@@ -1,3 +1,4 @@
+use crate::KeymodeError;
 use hotki_protocol::MsgToUI;
 use mac_keycode::Chord;
 
@@ -79,7 +80,11 @@ impl State {
     }
 
     /// Process a key press (no context). Equivalent to `handle_key_with_context` with empty app/title.
-    pub fn handle_key(&mut self, cfg: &config::Config, key: &Chord) -> Result<KeyResponse, String> {
+    pub fn handle_key(
+        &mut self,
+        cfg: &config::Config,
+        key: &Chord,
+    ) -> Result<KeyResponse, KeymodeError> {
         self.handle_key_with_context(cfg, key, "", "")
     }
 
@@ -89,7 +94,7 @@ impl State {
         action: &Action,
         attrs: &KeysAttrs,
         entered_index: Option<usize>,
-    ) -> Result<KeyResponse, String> {
+    ) -> Result<KeyResponse, KeymodeError> {
         match action {
             Action::Place(grid, at) => {
                 let (gx, gy) = match grid {
@@ -99,15 +104,14 @@ impl State {
                     config::AtSpec::At(config::At(x, y)) => (*x, *y),
                 };
                 if ix >= gx || iy >= gy {
-                    return Err(format!(
-                        "place(): at() out of range: got ({}, {}) for grid ({} x {})\n  Valid x: 0..{}  |  Valid y: 0..{}",
+                    return Err(KeymodeError::PlaceAtOutOfRange {
                         ix,
                         iy,
                         gx,
                         gy,
-                        gx.saturating_sub(1),
-                        gy.saturating_sub(1)
-                    ));
+                        max_x: gx.saturating_sub(1),
+                        max_y: gy.saturating_sub(1),
+                    });
                 }
                 let resp = KeyResponse::Place {
                     cols: gx,
@@ -143,7 +147,7 @@ impl State {
             }
             Action::Raise(spec) => {
                 if spec.app.is_none() && spec.title.is_none() {
-                    return Err("raise(): at least one of app or title must be provided".into());
+                    return Err(KeymodeError::RaiseMissingAppOrTitle);
                 }
                 let resp = KeyResponse::Raise {
                     app: spec.app.clone(),
@@ -187,7 +191,7 @@ impl State {
                         }
                         Ok(response)
                     }
-                    None => Err(format!("Invalid relay keyspec '{}'", spec)),
+                    None => Err(KeymodeError::InvalidRelayKeyspec { spec: spec.clone() }),
                 }
             }
             Action::Pop => {
@@ -371,7 +375,7 @@ impl State {
         key: &Chord,
         app: &str,
         title: &str,
-    ) -> Result<KeyResponse, String> {
+    ) -> Result<KeyResponse, KeymodeError> {
         if let Some((action, attrs, entered_index)) = cfg.action(&self.cursor, key, app, title) {
             return self.execute_action(&action, &attrs, entered_index);
         }

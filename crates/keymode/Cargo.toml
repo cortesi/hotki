@@ -14,6 +14,7 @@ tracing = { workspace = true }
 regex = { workspace = true }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 ron = { workspace = true }

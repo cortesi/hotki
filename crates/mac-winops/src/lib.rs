@@ -26,11 +26,11 @@ mod fullscreen;
 mod geom;
 mod hide;
 mod main_thread_ops;
+pub mod ops;
 mod place;
 mod raise;
 mod screen_util;
 mod window;
-pub mod ops;
 
 pub mod focus;
 pub mod nswindow;
