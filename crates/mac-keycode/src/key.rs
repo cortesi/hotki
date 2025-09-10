@@ -1,3 +1,4 @@
+#[allow(missing_docs)]
 #[repr(u16)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Key {

@@ -5,7 +5,9 @@ use std::fmt;
 /// A key chord: a set of modifiers plus a single key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Chord {
+    /// Set of modifier keys held down for this chord.
     pub modifiers: HashSet<Modifier>,
+    /// The non-modifier key for this chord.
     pub key: Key,
 }
 

@@ -6,6 +6,7 @@ use crate::{Action, KeysAttrs, NotificationType};
 
 /// Result of handling a key press
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum KeyResponse {
     /// No message; operation succeeded
     Ok,
@@ -61,7 +62,9 @@ pub enum KeyResponse {
 /// Optional repeat configuration for shell actions
 #[derive(Debug, Clone, Copy)]
 pub struct ShellRepeatConfig {
+    /// Optional initial delay before first repeat (milliseconds).
     pub initial_delay_ms: Option<u64>,
+    /// Optional interval between repeats (milliseconds).
     pub interval_ms: Option<u64>,
 }
 

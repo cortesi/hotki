@@ -4,6 +4,7 @@ use crate::Key;
 
 /// Modifier keys available on macOS keyboards.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[allow(missing_docs)]
 pub enum Modifier {
     Command,
     Shift,

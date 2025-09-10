@@ -1,3 +1,7 @@
+//! Shared configuration types (modes, themes, parsing) used by Hotki.
+#![allow(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
+
 use std::{collections::HashSet, convert::TryFrom};
 
 use serde::{Deserialize, Serialize};

@@ -11,6 +11,8 @@
 //! - [`RepeatSpec`] and [`RepeatObserver`]: instrumentation hooks
 //!
 //! All other modules are crate-private implementation details.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex},

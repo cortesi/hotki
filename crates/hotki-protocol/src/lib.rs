@@ -1,10 +1,20 @@
+//! Hotki protocol types for client/server IPC and UI integration.
+//!
+//! This crate defines the serializable message types and supporting
+//! structures that the backend server and the UI exchange.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
+
 use serde::{Deserialize, Serialize};
 
 /// Focused application context used by UI/HUD rendering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct App {
+    /// Application name (e.g., "Safari").
     pub app: String,
+    /// Active window title for the focused app.
     pub title: String,
+    /// Process identifier for the focused app.
     pub pid: i32,
 }
 
@@ -111,8 +121,11 @@ impl Cursor {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Toggle {
+    /// Set the option to enabled/on.
     On,
+    /// Set the option to disabled/off.
     Off,
+    /// Flip the current option state.
     Toggle,
 }
 
@@ -165,12 +178,18 @@ pub enum MsgToUI {
     HotkeyTriggered(String),
 
     /// HUD update containing the current cursor (with optional App context)
-    HudUpdate { cursor: Cursor },
+    HudUpdate {
+        /// Cursor state describing the current key mode and overrides.
+        cursor: Cursor,
+    },
 
     /// Notification request for the UI
     Notify {
+        /// Notification kind (controls styling/severity).
         kind: NotifyKind,
+        /// Notification title text.
         title: String,
+        /// Notification body text.
         text: String,
     },
 
@@ -197,8 +216,11 @@ pub enum MsgToUI {
 
     /// Streaming log message from the server
     Log {
+        /// Log level string (e.g., "info").
         level: String,
+        /// Log target/module.
         target: String,
+        /// Rendered log message fields.
         message: String,
     },
 
@@ -208,10 +230,15 @@ pub enum MsgToUI {
     Heartbeat(u64),
 }
 
+/// Notification kinds supported by the UI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NotifyKind {
+    /// Informational notification.
     Info,
+    /// Warning notification.
     Warn,
+    /// Error notification.
     Error,
+    /// Success/affirmation notification.
     Success,
 }

@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Error type for keymode state handling
 #[derive(Debug, Error)]
+#[allow(missing_docs)]
 pub enum KeymodeError {
     /// `place(grid(x, y), at(ix, iy))` coordinates out of range
     #[error(

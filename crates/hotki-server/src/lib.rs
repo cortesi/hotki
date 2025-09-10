@@ -35,6 +35,8 @@
 //! - If the watcher fails to start, the server emits a UI notification with
 //!   actionable guidance. On macOS this commonly means granting Accessibility
 //!   and/or Input Monitoring permissions in System Settings.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{process::id, sync::OnceLock};
 

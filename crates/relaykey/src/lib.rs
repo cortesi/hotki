@@ -6,6 +6,8 @@
 //!
 //! Events are posted directly; no wrapping or synthetic repeats. Invoke
 //! `on_key_down(chord, is_repeat)` and `on_key_up(chord)` as needed.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 use std::{collections::HashSet, sync::Arc};
 
 use core_graphics::{

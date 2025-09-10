@@ -17,6 +17,8 @@
 //!   active, no interception occurs. Some system-reserved shortcuts may not be
 //!   interceptable.
 //!
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 use std::{
     collections::{HashMap, HashSet},
     result::Result as StdResult,

@@ -1,3 +1,7 @@
+//! Keymode: interpret chords against a nested key mode configuration.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
+
 mod error;
 mod state;
 

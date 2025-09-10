@@ -1,0 +1,11 @@
+## Project-wide Clippy preferences
+## Note: Severity (warn/deny) is configured via crate-level attributes.
+## This file only uses Clippy's recognized toggles to avoid parse errors.
+
+# Prefer explicit imports over wildcard imports.
+warn-on-all-wildcard-imports = true
+
+# Allow common prints/dbg in tests.
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+allow-panic-in-tests = true

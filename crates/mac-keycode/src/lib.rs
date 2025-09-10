@@ -10,6 +10,9 @@
 //! stripped; digits prefixed with `Digit`). Values are hex and the enum is
 //! `repr(u16)`.
 
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
+
 mod key;
 pub use key::Key;
 

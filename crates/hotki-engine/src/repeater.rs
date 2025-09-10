@@ -123,7 +123,9 @@ pub enum ExecSpec {
 /// Optional repeat configuration overrides
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RepeatSpec {
+    /// Optional initial delay before the first repeat (milliseconds).
     pub initial_delay_ms: Option<u64>,
+    /// Optional interval between repeats (milliseconds).
     pub interval_ms: Option<u64>,
 }
 
@@ -141,7 +143,9 @@ pub struct Repeater {
 
 /// Observer interface for repeat ticks (used by tests/tools)
 pub trait RepeatObserver: Send + Sync {
+    /// Called whenever a relay (key) repeat tick fires for the given id.
     fn on_relay_repeat(&self, _id: &str) {}
+    /// Called whenever a shell repeat tick fires for the given id.
     fn on_shell_repeat(&self, _id: &str) {}
 }
 

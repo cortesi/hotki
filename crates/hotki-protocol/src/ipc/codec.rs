@@ -5,8 +5,10 @@ use thiserror::Error;
 /// Errors from encoding/decoding UI messages.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The provided value was not a binary payload.
     #[error("expected binary message payload, got {0:?}")]
     InvalidValueType(Value),
+    /// Deserialization via rmp_serde failed.
     #[error(transparent)]
     Decode(#[from] rmp_serde::decode::Error),
 }
@@ -18,6 +20,10 @@ pub fn msg_to_value(msg: &MsgToUI) -> Value {
 }
 
 /// Decode an `mrpc::Value` (binary) back into a `MsgToUI`.
+///
+/// # Errors
+/// Returns an error if the binary payload cannot be decoded into a valid
+/// `MsgToUI` message using `rmp_serde`.
 pub fn value_to_msg(value: Value) -> Result<MsgToUI, Error> {
     match value {
         Value::Binary(bytes) => {

@@ -12,7 +12,8 @@
 //! - Call [`clear_sink`] when the client disconnects.
 //!
 //! The layer is lightweight and no-ops when no sink is set.
-
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{Event, Subscriber};
