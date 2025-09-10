@@ -8,13 +8,14 @@ use mac_keycode::Chord;
 use tracing::{debug, trace, warn};
 
 use crate::Result;
+use crate::deps::{CaptureToken, HotkeyApi};
 
 /// Threshold for warning about slow binding updates that may cause key drops
 const BIND_UPDATE_WARN_MS: u64 = 10;
 
 /// Manages hotkey bindings and their lifecycle
 pub struct KeyBindingManager {
-    manager: Arc<mac_hotkey::Manager>,
+    api: Arc<dyn HotkeyApi>,
     // Registration maps
     id_map: HashMap<u32, String>,
     /// Map registration id → Chord. Stored alongside id → identifier so the
@@ -27,16 +28,16 @@ pub struct KeyBindingManager {
     inv_map: HashMap<String, u32>,
     last_bound: HashSet<String>,
     /// Guard that keeps capture-all active while present
-    capture_guard: Option<mac_hotkey::CaptureGuard>,
+    capture_guard: Option<Box<dyn CaptureToken>>,
     /// Test mode: when true, simulate registrations without OS intercepts.
     fake: bool,
     next_id: u32,
 }
 
 impl KeyBindingManager {
-    pub fn new(manager: Arc<mac_hotkey::Manager>) -> Self {
+    pub fn new_with_api(api: Arc<dyn HotkeyApi>) -> Self {
         Self {
-            manager,
+            api,
             id_map: HashMap::new(),
             chord_map: HashMap::new(),
             inv_map: HashMap::new(),
@@ -88,7 +89,7 @@ impl KeyBindingManager {
         for ident in removed_keys.iter() {
             if let Some(id) = self.inv_map.remove(ident) {
                 if !self.fake {
-                    self.manager.unregister(id)?;
+                    self.api.unregister(id)?;
                 }
                 self.id_map.remove(&id);
                 self.chord_map.remove(&id);
@@ -103,7 +104,7 @@ impl KeyBindingManager {
                     self.next_id += 1;
                     self.next_id
                 } else {
-                    self.manager.intercept(chord.clone())
+                    self.api.intercept(chord.clone())
                 };
                 self.id_map.insert(id, ident.clone());
                 self.chord_map.insert(id, chord.clone());
@@ -135,7 +136,7 @@ impl KeyBindingManager {
         }
         match (active, self.capture_guard.is_some()) {
             (true, false) => {
-                self.capture_guard = Some(self.manager.capture_all());
+                self.capture_guard = Some(self.api.capture_all());
                 tracing::debug!("capture_all_enabled");
             }
             (false, true) => {

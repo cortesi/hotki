@@ -24,6 +24,7 @@ mod notification;
 mod relay;
 mod repeater;
 mod ticker;
+mod deps;
 
 // Timing constants for warning thresholds
 const BIND_UPDATE_WARN_MS: u64 = 10;
@@ -42,6 +43,8 @@ pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use repeater::ExecSpec;
+use deps::RealHotkeyApi;
+use mac_winops::ops::{RealWinOps, WinOps};
 
 #[inline]
 fn to_desired(t: config::Toggle) -> mac_winops::Desired {
@@ -88,6 +91,7 @@ pub struct Engine {
     raise_nonce: Arc<AtomicU64>,
     /// Last pid explicitly targeted by a Raise action (used as a hint for subsequent Place).
     last_target_pid: Arc<Mutex<Option<i32>>>,
+    winops: Arc<dyn WinOps>,
 }
 
 impl Engine {
@@ -115,8 +119,9 @@ impl Engine {
         manager: Arc<mac_hotkey::Manager>,
         event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
     ) -> Self {
-        let binding_manager_arc =
-            Arc::new(tokio::sync::Mutex::new(KeyBindingManager::new(manager)));
+        let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
+            KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
+        ));
         // Create shared focus/relay instances
         let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
         let relay_handler = RelayHandler::new();
@@ -142,6 +147,45 @@ impl Engine {
             focus_snapshot: focus_snapshot_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
+            winops: Arc::new(RealWinOps),
+        }
+    }
+
+    /// Create a new engine with a custom window-ops implementation (useful for tests).
+    pub fn new_with_ops(
+        manager: Arc<mac_hotkey::Manager>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        winops: Arc<dyn WinOps>,
+    ) -> Self {
+        let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
+            KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
+        ));
+        // Create shared focus/relay instances
+        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
+        let relay_handler = RelayHandler::new();
+        let notifier = NotificationDispatcher::new(event_tx.clone());
+        let repeater = Repeater::new(
+            focus_snapshot_arc.clone(),
+            relay_handler.clone(),
+            notifier.clone(),
+        );
+        let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
+            keymode::Keys::default(),
+            config::Style::default(),
+        )));
+
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(State::new())),
+            binding_manager: binding_manager_arc,
+            key_tracker: KeyStateTracker::new(),
+            relay_handler,
+            notifier,
+            repeater,
+            config: config_arc,
+            focus_snapshot: focus_snapshot_arc,
+            raise_nonce: Arc::new(AtomicU64::new(0)),
+            last_target_pid: Arc::new(Mutex::new(None)),
+            winops,
         }
     }
 
@@ -165,15 +209,16 @@ impl Engine {
         // initial focus view before any key handling occurs.
         {
             let eng_clone = eng.clone();
+            let winops = eng.winops.clone();
             let mut snap = watcher.current();
-            if snap.pid <= 0
-                && let Some(w) = mac_winops::frontmost_window()
-            {
-                snap = mac_winops::focus::FocusSnapshot {
-                    app: w.app,
-                    title: w.title,
-                    pid: w.pid,
-                };
+            if snap.pid <= 0 {
+                if let Some(w) = winops.frontmost_window() {
+                    snap = mac_winops::focus::FocusSnapshot {
+                        app: w.app,
+                        title: w.title,
+                        pid: w.pid,
+                    };
+                }
             }
             tokio::spawn(async move {
                 let _ = eng_clone.on_focus_snapshot(snap).await;
@@ -420,7 +465,7 @@ impl Engine {
                             pid,
                             d
                         );
-                        mac_winops::request_fullscreen_native(pid, d)
+                        self.winops.request_fullscreen_native(pid, d)
                     }
                     config::FullscreenKind::Nonnative => {
                         tracing::debug!(
@@ -428,7 +473,7 @@ impl Engine {
                             pid,
                             d
                         );
-                        mac_winops::request_fullscreen_nonnative(pid, d)
+                        self.winops.request_fullscreen_nonnative(pid, d)
                     }
                 };
                 if let Err(e) = res {
@@ -471,7 +516,7 @@ impl Engine {
                     None
                 };
                 if !invalid {
-                    let all = mac_winops::list_windows();
+                    let all = self.winops.list_windows();
                     tracing::debug!("Raise: list_windows count={}", all.len());
                     if all.is_empty() {
                         let _ = self.notifier.send_notification(
@@ -480,7 +525,7 @@ impl Engine {
                             "No windows on screen".into(),
                         );
                     } else {
-                        let cur = mac_winops::frontmost_window();
+                        let cur = self.winops.frontmost_window();
                         tracing::debug!(
                             "Raise: current frontmost={:?}",
                             cur.as_ref().map(|w| (&w.app, &w.title, w.pid, w.id))
@@ -507,6 +552,7 @@ impl Engine {
                             let title_re2 = title_re.clone();
                             let raise_nonce = self.raise_nonce.clone();
                             let last_pid_hint = self.last_target_pid.clone();
+                            let winops = self.winops.clone();
                             tokio::spawn(async move {
                                 let mut activated = false;
                                 for _ in 0..24 {
@@ -515,7 +561,7 @@ impl Engine {
                                         return;
                                     }
                                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                                    let all2 = mac_winops::list_windows();
+                                    let all2 = winops.list_windows();
                                     if let Some(target) = all2.iter().find(|w| {
                                         let aok = app_re2
                                             .as_ref()
@@ -530,7 +576,7 @@ impl Engine {
                                         if let Ok(mut g) = last_pid_hint.lock() {
                                             *g = Some(target.pid);
                                         }
-                                        let _ = mac_winops::request_activate_pid(target.pid);
+                                        let _ = winops.request_activate_pid(target.pid);
                                         activated = true;
                                         break;
                                     }
@@ -573,7 +619,7 @@ impl Engine {
                             if let Ok(mut g) = self.last_target_pid.lock() {
                                 *g = Some(target.pid);
                             }
-                            if let Err(e) = mac_winops::request_activate_pid(target.pid) {
+                            if let Err(e) = self.winops.request_activate_pid(target.pid) {
                                 if let mac_winops::Error::MainThread = e {
                                     tracing::warn!(
                                         "Raise requires main thread; scheduling failed: {}",
@@ -598,12 +644,12 @@ impl Engine {
                     if let Some(p) = *g {
                         *g = None;
                         (p, "raise")
-                    } else if let Some(w) = mac_winops::frontmost_window() {
+                    } else if let Some(w) = self.winops.frontmost_window() {
                         (w.pid, "frontmost")
                     } else {
                         (self.current_pid(), "snapshot")
                     }
-                } else if let Some(w) = mac_winops::frontmost_window() {
+                } else if let Some(w) = self.winops.frontmost_window() {
                     (w.pid, "frontmost")
                 } else {
                     (self.current_pid(), "snapshot")
@@ -611,7 +657,7 @@ impl Engine {
 
                 // Log current focus/frontmost context for diagnostics
                 let snap = self.current_snapshot();
-                let front = mac_winops::frontmost_window();
+                let front = self.winops.frontmost_window();
                 if let Some(ref f) = front {
                     tracing::debug!(
                         "Place: chosen pid={} (src={}) | focus app='{}' title='{}' pid={} | frontmost pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
@@ -644,16 +690,21 @@ impl Engine {
                     );
                 }
 
-                if let Err(e) = mac_winops::request_place_grid_focused(pid, cols, rows, col, row) {
+                if let Err(e) = self
+                    .winops
+                    .request_place_grid_focused(pid, cols, rows, col, row)
+                {
                     let _ = self.notifier.send_error("Place", format!("{}", e));
                 }
                 Ok(())
             }
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
-                let pid = self.current_pid();
                 let mdir = to_move_dir(dir);
-                if let Some(w) = mac_winops::frontmost_window_for_pid(pid) {
-                    if let Err(e) = mac_winops::request_place_move_grid(w.id, cols, rows, mdir) {
+                if let Some(w) = self.winops.frontmost_window_for_pid(self.current_pid()) {
+                    if let Err(e) = self
+                        .winops
+                        .request_place_move_grid(w.id, cols, rows, mdir)
+                    {
                         let _ = self.notifier.send_error("Move", format!("{}", e));
                     }
                 } else {
@@ -666,7 +717,7 @@ impl Engine {
             Ok(KeyResponse::Hide { desired }) => {
                 // Event log including current window info
                 let snap = self.current_snapshot();
-                let front = mac_winops::frontmost_window();
+                let front = self.winops.frontmost_window();
                 if let Some(ref f) = front {
                     tracing::info!(
                         "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost pid={} id={} app='{}' title='{}'",
@@ -693,7 +744,7 @@ impl Engine {
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
                 let pid = self.current_pid();
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-                if let Err(e) = mac_winops::hide_bottom_left(pid, d) {
+                if let Err(e) = self.winops.hide_bottom_left(pid, d) {
                     let _ = self.notifier.send_error("Hide", format!("{}", e));
                 }
                 Ok(())
@@ -704,7 +755,7 @@ impl Engine {
                 match resp {
                     KeyResponse::Focus { dir } => {
                         tracing::info!("Engine: focus(dir={:?})", dir);
-                        if let Err(e) = mac_winops::request_focus_dir(to_move_dir(dir)) {
+                        if let Err(e) = self.winops.request_focus_dir(to_move_dir(dir)) {
                             if let mac_winops::Error::MainThread = e {
                                 tracing::warn!(
                                     "Focus requires main thread; scheduling failed: {}",
