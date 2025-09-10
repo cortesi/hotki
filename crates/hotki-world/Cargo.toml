@@ -8,4 +8,4 @@ license = "MIT"
 [dependencies]
 tokio = { workspace = true }
 mac-winops = { path = "../mac-winops" }
-
+permissions = { path = "../permissions" }

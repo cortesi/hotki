@@ -260,9 +260,48 @@ fn reconcile(
     let wins: Vec<WindowInfo> = winops.list_windows();
     let mut had_changes = false;
 
+    // Focus: prefer AX if available; fall back to CG-derived focus flag.
+    let cg_focus_key = wins
+        .iter()
+        .find(|w| w.layer == 0 && w.focused)
+        .map(|w| WindowKey {
+            pid: w.pid,
+            id: w.id,
+        })
+        .or_else(|| {
+            wins.first().map(|w| WindowKey {
+                pid: w.pid,
+                id: w.id,
+            })
+        });
+
+    let mut ax_focus_key: Option<WindowKey> = None;
+    let mut ax_focus_title: Option<String> = None;
+    if permissions::accessibility_ok()
+        && let Some(front_pid) = wins
+            .iter()
+            .find(|w| w.layer == 0)
+            .map(|w| w.pid)
+            .or_else(|| wins.first().map(|w| w.pid))
+        && let Some(ax_id) = mac_winops::ax_focused_window_id_for_pid(front_pid)
+    {
+        let candidate = WindowKey {
+            pid: front_pid,
+            id: ax_id,
+        };
+        if wins
+            .iter()
+            .any(|w| w.pid == candidate.pid && w.id == candidate.id)
+        {
+            ax_focus_title = mac_winops::ax_title_for_window_id(ax_id);
+            ax_focus_key = Some(candidate);
+        }
+    }
+
+    let new_focused = ax_focus_key.or(cg_focus_key);
+
     // Build key set and additions/updates
     let mut seen_keys: Vec<WindowKey> = Vec::with_capacity(wins.len());
-    let mut new_focused: Option<WindowKey> = None;
 
     for (idx, w) in wins.iter().enumerate() {
         let key = WindowKey {
@@ -270,14 +309,17 @@ fn reconcile(
             id: w.id,
         };
         seen_keys.push(key);
-        if w.focused {
-            new_focused = Some(key);
-        }
+        let is_focus = Some(key) == new_focused;
         let z = idx as u32;
         if let Some(existing) = state.store.get_mut(&key) {
             let mut changed = false;
-            if existing.title != w.title {
-                existing.title = w.title.clone();
+            let new_title = if is_focus {
+                ax_focus_title.clone().unwrap_or_else(|| w.title.clone())
+            } else {
+                w.title.clone()
+            };
+            if existing.title != new_title {
+                existing.title = new_title;
                 changed = true;
             }
             if existing.layer != w.layer {
@@ -294,6 +336,10 @@ fn reconcile(
             }
             if !existing.on_active_space {
                 existing.on_active_space = true;
+                changed = true;
+            }
+            if existing.focused != is_focus {
+                existing.focused = is_focus;
                 changed = true;
             }
             existing.last_seen = now;
@@ -313,7 +359,11 @@ fn reconcile(
             had_changes = true;
             let ww = WorldWindow {
                 app: w.app.clone(),
-                title: w.title.clone(),
+                title: if is_focus {
+                    ax_focus_title.clone().unwrap_or_else(|| w.title.clone())
+                } else {
+                    w.title.clone()
+                },
                 pid: w.pid,
                 id: w.id,
                 pos: w.pos,
@@ -321,7 +371,7 @@ fn reconcile(
                 z,
                 on_active_space: true,
                 display_id: None,
-                focused: w.focused,
+                focused: is_focus,
                 meta: Vec::new(),
                 last_seen: now,
                 seen_seq: seq,

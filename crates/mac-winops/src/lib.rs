@@ -155,6 +155,84 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
     false
 }
 
+/// Best-effort: return the focused window's CG `WindowId` for a given `pid` using AX semantics.
+///
+/// Tries `AXFocused` first, then `AXMain`, and falls back to CG's frontmost window for the pid.
+/// Returns `None` if nothing is found or AX is unavailable.
+pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
+    if !permissions::accessibility_ok() {
+        return frontmost_window_for_pid(pid).map(|w| w.id);
+    }
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return frontmost_window_for_pid(pid).map(|w| w.id);
+        }
+        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        if err != 0 || wins_ref.is_null() {
+            CFRelease(app as CFTypeRef);
+            return frontmost_window_for_pid(pid).map(|w| w.id);
+        }
+        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
+        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
+        // Prefer AXFocused; then AXMain
+        let mut chosen: *mut c_void = std::ptr::null_mut();
+        for i in 0..n {
+            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+            if w.is_null() {
+                continue;
+            }
+            if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
+                chosen = w;
+                break;
+            }
+        }
+        if chosen.is_null() {
+            for i in 0..n {
+                let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+                if w.is_null() {
+                    continue;
+                }
+                if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
+                    chosen = w;
+                    break;
+                }
+            }
+        }
+        if chosen.is_null() {
+            CFRelease(app as CFTypeRef);
+            return frontmost_window_for_pid(pid).map(|w| w.id);
+        }
+        let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        let nerr = AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref);
+        if nerr != 0 || num_ref.is_null() {
+            CFRelease(app as CFTypeRef);
+            return frontmost_window_for_pid(pid).map(|w| w.id);
+        }
+        let cfnum = core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _);
+        let wid = cfnum.to_i64().unwrap_or(0) as u32;
+        CFRelease(app as CFTypeRef);
+        if wid == 0 {
+            frontmost_window_for_pid(pid).map(|w| w.id)
+        } else {
+            Some(wid)
+        }
+    }
+}
+
+/// Best-effort: return the AX title for a given CG `WindowId`.
+/// Returns `None` if AX is unavailable or the window cannot be resolved.
+pub fn ax_title_for_window_id(id: WindowId) -> Option<String> {
+    if !permissions::accessibility_ok() {
+        return None;
+    }
+    match ax_window_for_id(id) {
+        Ok((w, _pid)) => ax_get_string(w, cfstr("AXTitle")),
+        Err(_) => None,
+    }
+}
+
 pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
     debug!("focused_window_for_pid: pid={}", pid);
     let app = unsafe { AXUIElementCreateApplication(pid) };
