@@ -80,6 +80,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::HIDE_POLL_MS,
+                "H",
             )?;
             let pid = helper.pid;
 

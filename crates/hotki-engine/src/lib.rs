@@ -53,12 +53,12 @@ fn to_desired(t: config::Toggle) -> mac_winops::Desired {
 }
 
 #[inline]
-fn to_move_dir(d: config::MoveDir) -> mac_winops::MoveDir {
+fn to_move_dir(d: config::Dir) -> mac_winops::MoveDir {
     match d {
-        config::MoveDir::Left => mac_winops::MoveDir::Left,
-        config::MoveDir::Right => mac_winops::MoveDir::Right,
-        config::MoveDir::Up => mac_winops::MoveDir::Up,
-        config::MoveDir::Down => mac_winops::MoveDir::Down,
+        config::Dir::Left => mac_winops::MoveDir::Left,
+        config::Dir::Right => mac_winops::MoveDir::Right,
+        config::Dir::Up => mac_winops::MoveDir::Up,
+        config::Dir::Down => mac_winops::MoveDir::Down,
     }
 }
 
@@ -702,6 +702,19 @@ impl Engine {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured
                 match resp {
+                    KeyResponse::Focus { dir } => {
+                        tracing::info!("Engine: focus(dir={:?})", dir);
+                        if let Err(e) = mac_winops::request_focus_dir(to_move_dir(dir)) {
+                            if let mac_winops::Error::MainThread = e {
+                                tracing::warn!(
+                                    "Focus requires main thread; scheduling failed: {}",
+                                    e
+                                );
+                            }
+                            let _ = self.notifier.send_error("Focus", format!("{}", e));
+                        }
+                        Ok(())
+                    }
                     KeyResponse::ShellAsync {
                         command,
                         ok_notify,

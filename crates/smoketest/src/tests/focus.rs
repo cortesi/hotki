@@ -178,6 +178,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::FOCUS_POLL_MS,
+                "F",
             )?;
             let expected_pid = helper.pid;
 

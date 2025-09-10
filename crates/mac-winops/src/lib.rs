@@ -34,8 +34,9 @@ mod window;
 
 pub use error::{Error, Result};
 pub use main_thread_ops::{
-    MoveDir, request_activate_pid, request_fullscreen_native, request_fullscreen_nonnative,
-    request_place_grid, request_place_grid_focused, request_place_move_grid, request_raise_window,
+    MoveDir, request_activate_pid, request_focus_dir, request_fullscreen_native,
+    request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
+    request_place_move_grid, request_raise_window,
 };
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
@@ -452,6 +453,9 @@ pub fn drain_main_ops() {
             MainOp::RaiseWindow { pid, id } => {
                 let _ = crate::raise::raise_window(pid, id);
             }
+            MainOp::FocusDir { dir } => {
+                let _ = focus_dir(dir);
+            }
         }
     }
 }
@@ -498,6 +502,243 @@ fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<
     })();
     unsafe { CFRelease(win as CFTypeRef) };
     result
+}
+
+/// Focus the next window in the given direction on the current screen within the
+/// current Space. Uses CG for enumeration + AppKit for screen geometry and AX for
+/// the origin window frame and final raise.
+fn focus_dir(dir: MoveDir) -> Result<()> {
+    ax_check()?;
+    let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+
+    // Determine origin via CG frontmost window (layer 0 preferred by frontmost_window)
+    let origin = match frontmost_window() {
+        Some(w) => w,
+        None => return Err(Error::FocusedWindow),
+    };
+
+    (|| -> Result<()> {
+        // Use AX for origin geometry (AppKit coords, bottom-left origin)
+        let (ax_origin, _pid_for_id) = ax_window_for_id(origin.id)?;
+        let o_pos = ax_get_point(ax_origin, cfstr("AXPosition"))?;
+        let o_size = ax_get_size(ax_origin, cfstr("AXSize"))?;
+        let o_x = o_pos.x;
+        let o_y = o_pos.y;
+        let o_right = o_x + o_size.width.max(1.0);
+        let o_top = o_y + o_size.height.max(1.0);
+        let o_left = o_x;
+        let o_bottom = o_y;
+        let o_cx = o_x + o_size.width.max(1.0) / 2.0;
+        let o_cy = o_y + o_size.height.max(1.0) / 2.0;
+        tracing::info!(
+            "FocusDir origin(AX): pid={} id={} x={:.1} y={:.1} w={:.1} h={:.1}",
+            origin.pid,
+            origin.id,
+            o_x,
+            o_y,
+            o_size.width,
+            o_size.height
+        );
+
+        // Helper closures
+        let overlap = |a1: f64, a2: f64, b1: f64, b2: f64| -> f64 {
+            let l = a1.max(b1);
+            let r = a2.min(b2);
+            (r - l).max(0.0)
+        };
+        // let in_vf = |cx: f64, cy: f64| -> bool {
+        //     cx >= vf_x && cx <= vf_x + vf_w && cy >= vf_y && cy <= vf_y + vf_h
+        // };
+
+        let eps = 16.0f64; // generous tolerance to absorb CG/AX rounding and menu bar offsets
+
+        // Scan CG windows for candidates
+        let all = list_windows();
+        // Track best candidates with preference for same-app windows
+        let mut primary_best_same: Option<(f64, f64, i32, WindowId)> = None;
+        let mut primary_best_other: Option<(f64, f64, i32, WindowId)> = None;
+        let mut fallback_best_same: Option<(f64, i32, WindowId)> = None;
+        let mut fallback_best_other: Option<(f64, i32, WindowId)> = None;
+
+        for w in all.into_iter() {
+            if w.layer != 0 {
+                continue;
+            }
+            if w.pid == origin.pid && w.id == origin.id {
+                continue;
+            }
+            // Space filter: prefer matching origin's Space; allow None (unknown) to pass.
+            if let Some(s) = origin.space
+                && let Some(ws) = w.space
+                && ws != s
+            {
+                continue;
+            }
+            // Retrieve candidate geometry via AX to stay in AppKit coordinate space
+            let (cand_left, cand_bottom, cand_w, cand_h) = {
+                match ax_window_for_id(w.id) {
+                    Ok((cax, _)) => {
+                        let p = match ax_get_point(cax, cfstr("AXPosition")) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                unsafe { CFRelease(cax as CFTypeRef) };
+                                continue;
+                            }
+                        };
+                        let s = match ax_get_size(cax, cfstr("AXSize")) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                unsafe { CFRelease(cax as CFTypeRef) };
+                                continue;
+                            }
+                        };
+                        unsafe { CFRelease(cax as CFTypeRef) };
+                        (p.x, p.y, s.width.max(1.0), s.height.max(1.0))
+                    }
+                    Err(_) => continue,
+                }
+            };
+            let left = cand_left;
+            let bottom = cand_bottom;
+            let width = cand_w;
+            let height = cand_h;
+            let right = left + width;
+            let top = bottom + height;
+            let cx = left + width / 2.0;
+            let cy = bottom + height / 2.0;
+
+            // (v1) Do not restrict to same screen to improve robustness.
+
+            // Primary gating: edge-first selection within direction beam
+            // Require substantial alignment on the orthogonal axis to avoid diagonal hops.
+            let min_h = (o_top - o_bottom).abs().min(height);
+            let min_w = (o_right - o_left).abs().min(width);
+            let overlap_y = overlap(o_bottom, o_top, bottom, top);
+            let overlap_x = overlap(o_left, o_right, left, right);
+            let same_row = overlap_y >= (0.8 * min_h);
+            let same_col = overlap_x >= (0.8 * min_w);
+            let primary = match dir {
+                MoveDir::Right => {
+                    if left >= o_right - eps && same_row {
+                        Some((left - o_right, (cy - o_cy).abs()))
+                    } else {
+                        None
+                    }
+                }
+                MoveDir::Left => {
+                    if right <= o_left + eps && same_row {
+                        Some((o_left - right, (cy - o_cy).abs()))
+                    } else {
+                        None
+                    }
+                }
+                MoveDir::Up => {
+                    // Top-left origin semantics: above means candidate's top <= origin's bottom + eps
+                    if top <= o_bottom + eps && same_col {
+                        Some((o_bottom - top, (cx - o_cx).abs()))
+                    } else {
+                        None
+                    }
+                }
+                MoveDir::Down => {
+                    // Top-left origin semantics: below means candidate's bottom >= origin's top - eps
+                    if bottom >= o_top - eps && same_col {
+                        Some((bottom - o_top, (cx - o_cx).abs()))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some((axis_delta, tie)) = primary {
+                let best_slot = if w.app == origin.app {
+                    &mut primary_best_same
+                } else {
+                    &mut primary_best_other
+                };
+                match best_slot {
+                    None => *best_slot = Some((axis_delta, tie, w.pid, w.id)),
+                    Some((best_axis, best_tie, _, _)) => {
+                        if axis_delta < *best_axis
+                            || (approx_eq_eps(axis_delta, *best_axis, eps) && tie < *best_tie)
+                        {
+                            *best_slot = Some((axis_delta, tie, w.pid, w.id));
+                        }
+                    }
+                }
+                tracing::debug!(
+                    "FocusDir primary cand pid={} id={} axis_delta={:.1} tie={:.1}",
+                    w.pid,
+                    w.id,
+                    axis_delta,
+                    tie
+                );
+                continue;
+            }
+
+            // Fallback: center-based directional gating with axis-biased distance
+            let dx = cx - o_cx;
+            let dy = cy - o_cy;
+            let fallback_ok = match dir {
+                MoveDir::Right => dx > eps,
+                MoveDir::Left => dx < -eps,
+                // Top-left origin semantics: moving up decreases Y, down increases Y
+                MoveDir::Up => dy < -eps,
+                MoveDir::Down => dy > eps,
+            };
+            if !fallback_ok {
+                continue;
+            }
+            let score = match dir {
+                MoveDir::Right | MoveDir::Left => {
+                    let bias = if same_row { 0.25 } else { 1.0 };
+                    dx * dx + (bias * dy.abs()) * (bias * dy.abs())
+                }
+                MoveDir::Up | MoveDir::Down => {
+                    let bias = if same_col { 0.25 } else { 1.0 };
+                    dy * dy + (bias * dx.abs()) * (bias * dx.abs())
+                }
+            };
+            let best_slot = if w.app == origin.app {
+                &mut fallback_best_same
+            } else {
+                &mut fallback_best_other
+            };
+            match best_slot {
+                None => *best_slot = Some((score, w.pid, w.id)),
+                Some((best, _, _)) => {
+                    if score < *best {
+                        *best_slot = Some((score, w.pid, w.id));
+                    }
+                }
+            }
+            tracing::debug!(
+                "FocusDir fallback cand pid={} id={} score={:.1}",
+                w.pid,
+                w.id,
+                score
+            );
+        }
+
+        // Choose target
+        let target = if let Some((_d, _t, pid, id)) = primary_best_same {
+            Some((pid, id))
+        } else if let Some((_d, _t, pid, id)) = primary_best_other {
+            Some((pid, id))
+        } else if let Some((_s, pid, id)) = fallback_best_same {
+            Some((pid, id))
+        } else if let Some((_s, pid, id)) = fallback_best_other {
+            Some((pid, id))
+        } else {
+            None
+        };
+        if let Some((pid, id)) = target {
+            tracing::info!("FocusDir target pid={} id={}", pid, id);
+            let _ = crate::raise::raise_window(pid, id);
+            let _ = request_activate_pid(pid);
+        }
+        Ok(())
+    })()
 }
 
 /// Place the currently focused window of `pid` into the specified grid cell on its current screen.
@@ -776,6 +1017,7 @@ fn cell_rect(
     col: u32,
     row: u32,
 ) -> (f64, f64, f64, f64) {
+    // Top-left origin: (0,0) is top-left; y increases downward.
     let c = cols.max(1) as f64;
     let r = rows.max(1) as f64;
     let tile_w = (vf_w / c).floor().max(1.0);
@@ -789,11 +1031,7 @@ fn cell_rect(
     } else {
         tile_w
     };
-    let y = if row == rows.saturating_sub(1) {
-        vf_y
-    } else {
-        vf_y + rem_h + tile_h * ((rows - 1 - row) as f64)
-    };
+    let y = vf_y + tile_h * (row as f64);
     let h = if row == rows.saturating_sub(1) {
         tile_h + rem_h
     } else {
@@ -844,12 +1082,9 @@ fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<(
         let eps = 2.0;
         let cur_cell = find_cell_for_window(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
 
-        // First invocation from a non-aligned position places at visual top‑left.
-        // With our row indexing, some environments report coordinates such that
-        // choosing row 0 may map to the bottom visually; prefer the row that
-        // aligns to the topmost cell for first placement.
+        // First invocation from a non-aligned position places at visual top‑left (row 0).
         let (next_col, next_row) = match cur_cell {
-            None => (0, rows.saturating_sub(1)),
+            None => (0, 0),
             Some((c, r)) => {
                 let (mut nc, mut nr) = (c, r);
                 match dir {
@@ -861,15 +1096,15 @@ fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<(
                             nc += 1;
                         }
                     }
-                    // Up decreases visual Y (moves down one row index in top-left origin)
+                    // In bottom-left coords, moving up decreases the row index (towards 0)
                     MoveDir::Up => {
+                        nr = nr.saturating_sub(1);
+                    }
+                    // Moving down increases the row index (towards rows-1)
+                    MoveDir::Down => {
                         if nr + 1 < rows {
                             nr += 1;
                         }
-                    }
-                    // Down increases visual Y (moves up one row index)
-                    MoveDir::Down => {
-                        nr = nr.saturating_sub(1);
                     }
                 }
                 (nc, nr)
@@ -988,16 +1223,16 @@ mod tests {
     fn cell_rect_corners_and_remainders() {
         // Visible frame 100x100, 3x2 grid -> tile 33x50 with remainders w:1, h:0
         let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
-        // top-left (col 0, row 1 in top-left origin mapping)
-        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
+        // top-left is (col 0, row 0) in top-left origin mapping
+        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
         assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
 
         // top-right should absorb remainder width
-        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 1);
+        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 0);
         assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
 
-        // bottom row (row 0) gets full tile height; top row (row 1) as above
-        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
+        // bottom row (row 1) starts at y=50
+        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
         assert_eq!(y2, 50.0);
     }
 }

@@ -89,6 +89,7 @@ pub fn run_fullscreen_test(
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
+                "FS",
             )?;
             // Make sure the helper is the focused window before toggling fullscreen.
             ensure_frontmost(

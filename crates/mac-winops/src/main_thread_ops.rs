@@ -58,6 +58,11 @@ pub enum MainOp {
         pid: i32,
         id: WindowId,
     },
+    /// Focus navigation: move focus to the next window in the given direction
+    /// on the current screen within the current Space.
+    FocusDir {
+        dir: MoveDir,
+    },
 }
 
 pub static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -199,6 +204,19 @@ pub fn request_activate_pid(pid: i32) -> Result<()> {
     if MAIN_OPS
         .lock()
         .map(|mut q| q.push_back(MainOp::ActivatePid { pid }))
+        .is_err()
+    {
+        return Err(Error::QueuePoisoned);
+    }
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Schedule a directional focus change on the AppKit main thread.
+pub fn request_focus_dir(dir: MoveDir) -> Result<()> {
+    if MAIN_OPS
+        .lock()
+        .map(|mut q| q.push_back(MainOp::FocusDir { dir }))
         .is_err()
     {
         return Err(Error::QueuePoisoned);

@@ -72,6 +72,10 @@ impl NotificationDispatcher {
                 // Engine handles movement directly; no UI message.
                 Ok(())
             }
+            KeyResponse::Focus { .. } => {
+                // Engine handles focus navigation directly; no UI message.
+                Ok(())
+            }
             KeyResponse::Raise { .. } => {
                 // Engine handles raise directly; no UI message.
                 Ok(())

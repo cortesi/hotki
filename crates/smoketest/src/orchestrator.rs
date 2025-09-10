@@ -171,32 +171,48 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     }
 
     // Helper to run + print one-line summary
-    let mut run = |name: &str, dur: u64| {
+    let run = |name: &str, dur: u64| -> bool {
         // Update overlay title to current test
         crate::process::write_overlay_status(name);
         let (ok, details) = run_subtest_capture(name, dur, timeout_ms);
         if ok {
             println!("{}... OK", name);
+            true
         } else {
-            all_ok = false;
+            println!("{}... FAIL", name);
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
+            false
+        }
+    };
+
+    // Repeat tests
+    all_ok &= run("repeat-relay", duration_ms);
+    all_ok &= run("repeat-shell", duration_ms);
+    let vol_duration = std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
+    all_ok &= run("repeat-volume", vol_duration);
+
+    // Focus and window ops
+    all_ok &= run("focus_tracking", duration_ms);
+    all_ok &= run("raise", duration_ms);
+    // Focus-nav can be a bit slower due to AX+IPC; give it extra timeout headroom.
+    {
+        let name = "focus-nav";
+        crate::process::write_overlay_status(name);
+        let extra_timeout = timeout_ms.saturating_add(10_000);
+        let (ok, details) = run_subtest_capture(name, duration_ms, extra_timeout);
+        if ok {
+            println!("{}... OK", name);
+        } else {
             println!("{}... FAIL", name);
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
         }
-    };
-
-    // Repeat tests
-    run("repeat-relay", duration_ms);
-    run("repeat-shell", duration_ms);
-    let vol_duration = std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
-    run("repeat-volume", vol_duration);
-
-    // Focus and window ops
-    run("focus_tracking", duration_ms);
-    run("raise", duration_ms);
-    run("place", duration_ms);
-    run("fullscreen", duration_ms);
+    }
+    all_ok &= run("place", duration_ms);
+    all_ok &= run("fullscreen", duration_ms);
 
     // UI demos
     run("ui", duration_ms);

@@ -89,7 +89,7 @@ fn cell_rect(
     col: u32,
     row: u32,
 ) -> (f64, f64, f64, f64) {
-    // Match mac-winops::cell_rect exactly
+    // Match mac-winops::cell_rect (top-left origin; row 0 is top)
     let c = cols.max(1) as f64;
     let r = rows.max(1) as f64;
     let tile_w = (vf_w / c).floor().max(1.0);
@@ -103,11 +103,7 @@ fn cell_rect(
     } else {
         tile_w
     };
-    let y = if row == rows.saturating_sub(1) {
-        vf_y
-    } else {
-        vf_y + rem_h + tile_h * ((rows - 1 - row) as f64)
-    };
+    let y = vf_y + tile_h * (row as f64);
     let h = if row == rows.saturating_sub(1) {
         tile_h + rem_h
     } else {
@@ -214,6 +210,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
+                "P",
             )?;
 
             // Resolve CG window id

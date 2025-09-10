@@ -187,7 +187,13 @@ pub enum Action {
     /// - If the window is not currently aligned to any cell in the grid,
     ///   the first invocation places it at (0, 0).
     /// - Movement clamps at the edges (no wrap-around).
-    PlaceMove(GridSpec, MoveDir),
+    PlaceMove(GridSpec, Dir),
+    /// Focus the next window in the specified direction, constrained to the
+    /// current screen and Space.
+    ///
+    /// Syntax:
+    /// - focus(left|right|up|down)
+    Focus(Dir),
     /// Raise a window matching the given spec (regexes for app/title).
     ///
     /// Syntax examples:
@@ -268,10 +274,10 @@ impl<'de> Deserialize<'de> for Grid {
     }
 }
 
-/// Direction for grid movement.
+/// Direction for directional actions (grid movement, focus navigation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MoveDir {
+pub enum Dir {
     Left,
     Right,
     Up,
@@ -559,7 +565,7 @@ mod place_parse_tests {
         let k = Keys::from_ron("[(\"g\", \"Move left\", place_move(grid(3, 2), left))]")
             .expect("parse");
         match &k.keys[0].2 {
-            Action::PlaceMove(GridSpec::Grid(Grid(gx, gy)), MoveDir::Left) => {
+            Action::PlaceMove(GridSpec::Grid(Grid(gx, gy)), Dir::Left) => {
                 assert_eq!((*gx, *gy), (3, 2));
             }
             other => panic!("unexpected: {:?}", other),

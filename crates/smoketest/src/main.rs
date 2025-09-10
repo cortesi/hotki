@@ -101,8 +101,39 @@ fn main() {
     // For helper commands, skip permission/build checks and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
         match cli.command {
-            Commands::FocusWinHelper { title, time } => {
-                if let Err(e) = winhelper::run_focus_winhelper(&title, time) {
+            Commands::FocusWinHelper {
+                title,
+                time,
+                slot,
+                grid,
+                size,
+                pos,
+                label_text,
+            } => {
+                let grid_tuple = grid.and_then(|v| {
+                    if v.len() == 4 {
+                        Some((v[0], v[1], v[2], v[3]))
+                    } else {
+                        None
+                    }
+                });
+                let size_tuple = size.and_then(|v| {
+                    if v.len() == 2 {
+                        Some((v[0], v[1]))
+                    } else {
+                        None
+                    }
+                });
+                let pos_tuple = pos.and_then(|v| {
+                    if v.len() == 2 {
+                        Some((v[0], v[1]))
+                    } else {
+                        None
+                    }
+                });
+                if let Err(e) = winhelper::run_focus_winhelper(
+                    &title, time, slot, grid_tuple, size_tuple, pos_tuple, label_text,
+                ) {
                     eprintln!("focus-winhelper: ERROR: {}", e);
                     std::process::exit(2);
                 }
@@ -218,6 +249,38 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
+        Commands::FocusNav => {
+            if !cli.quiet {
+                heading("Test: focus-nav");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("focus-nav");
+            }
+            match run_on_main_with_watchdog("focus-nav", timeout, move || {
+                tests::focus_nav::run_focus_nav_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("focus-nav: OK (navigated right, down, left, up)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("focus-nav: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
                         let _ = o.kill_and_wait();

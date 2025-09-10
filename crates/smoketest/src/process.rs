@@ -51,6 +51,10 @@ impl Drop for ManagedChild {
 pub struct HelperWindowBuilder {
     title: String,
     time_ms: u64,
+    grid: Option<(u32, u32, u32, u32)>,
+    size: Option<(f64, f64)>,
+    pos: Option<(f64, f64)>,
+    label_text: Option<String>,
 }
 
 impl HelperWindowBuilder {
@@ -59,6 +63,10 @@ impl HelperWindowBuilder {
         Self {
             title: title.into(),
             time_ms: 30000, // Default 30 seconds
+            grid: None,
+            size: None,
+            pos: None,
+            label_text: None,
         }
     }
 
@@ -68,16 +76,60 @@ impl HelperWindowBuilder {
         self
     }
 
+    // with_slot intentionally omitted in favor of with_grid in tests.
+
+    /// Place into an arbitrary grid cell (top-left origin)
+    pub fn with_grid(mut self, cols: u32, rows: u32, col: u32, row: u32) -> Self {
+        self.grid = Some((cols, rows, col, row));
+        self
+    }
+
+    /// Set requested window size
+    pub fn with_size(mut self, width: f64, height: f64) -> Self {
+        self.size = Some((width, height));
+        self
+    }
+
+    /// Set requested window position (x, y)
+    pub fn with_position(mut self, x: f64, y: f64) -> Self {
+        self.pos = Some((x, y));
+        self
+    }
+
+    /// Set explicit label text to display
+    pub fn with_label_text(mut self, text: impl Into<String>) -> Self {
+        self.label_text = Some(text.into());
+        self
+    }
+
     /// Spawn the helper window process.
     pub fn spawn(self) -> Result<ManagedChild> {
         let exe = env::current_exe()?;
 
-        let child = Command::new(exe)
-            .arg("focus-winhelper")
+        let mut cmd = Command::new(exe);
+        cmd.arg("focus-winhelper")
             .arg("--title")
             .arg(&self.title)
             .arg("--time")
-            .arg(self.time_ms.to_string())
+            .arg(self.time_ms.to_string());
+        if let Some((c, r, col, row)) = self.grid {
+            cmd.arg("--grid").args([
+                c.to_string(),
+                r.to_string(),
+                col.to_string(),
+                row.to_string(),
+            ]);
+        }
+        if let Some((w, h)) = self.size {
+            cmd.arg("--size").args([w.to_string(), h.to_string()]);
+        }
+        if let Some((x, y)) = self.pos {
+            cmd.arg("--pos").args([x.to_string(), y.to_string()]);
+        }
+        if let Some(ref txt) = self.label_text {
+            cmd.arg("--label-text").arg(txt);
+        }
+        let child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

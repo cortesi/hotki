@@ -149,6 +149,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .saturating_add(config::RAISE_HELPER_EXTRA_MS);
             let child1 = HelperWindowBuilder::new(&title1)
                 .with_time_ms(helper_time)
+                .with_size(800.0, 600.0)
+                .with_position(60.0, 60.0)
                 .spawn()?;
             let pid1 = child1.pid;
             // Small active wait to let the first window register before spawning the second
@@ -156,6 +158,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 wait_for_windows_visible(&[(pid1, &title1)], config::WINDOW_REGISTRATION_DELAY_MS);
             let child2 = HelperWindowBuilder::new(&title2)
                 .with_time_ms(helper_time)
+                .with_size(800.0, 600.0)
+                .with_position(1000.0, 60.0)
                 .spawn()?;
             let pid2 = child2.pid;
             // Keep child1/child2 alive for the duration of this execute block.

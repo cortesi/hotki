@@ -39,8 +39,10 @@ pub enum KeyResponse {
     PlaceMove {
         cols: u32,
         rows: u32,
-        dir: config::MoveDir,
+        dir: config::Dir,
     },
+    /// Focus the next window in the given direction.
+    Focus { dir: config::Dir },
     /// Fullscreen operation request handled in the engine/backend
     Fullscreen {
         desired: config::Toggle,
@@ -127,6 +129,13 @@ impl State {
                     rows: gy,
                     dir: *dir,
                 };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(resp)
+            }
+            Action::Focus(dir) => {
+                let resp = KeyResponse::Focus { dir: *dir };
                 if !attrs.noexit() {
                     self.reset();
                 }

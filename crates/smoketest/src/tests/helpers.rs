@@ -85,9 +85,11 @@ pub fn spawn_helper_visible(
     lifetime_ms: u64,
     visible_timeout_ms: u64,
     poll_ms: u64,
+    label_text: &str,
 ) -> Result<ManagedChild> {
     let helper = HelperWindowBuilder::new(title.clone())
         .with_time_ms(lifetime_ms)
+        .with_label_text(label_text)
         .spawn()?;
     if !wait_for_window_visible(helper.pid, &title, visible_timeout_ms, poll_ms) {
         return Err(Error::FocusNotObserved {

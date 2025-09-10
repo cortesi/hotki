@@ -83,8 +83,12 @@ pub enum Commands {
     /// Verify raise(action) by switching focus between two titled windows
     Raise,
 
+    /// Verify focus(dir) by navigating between arranged helper windows
+    #[command(name = "focus-nav")]
+    FocusNav,
+
     /// Verify focus tracking by activating a test window
-    #[command(name = "focus_tracking")]
+    #[command(name = "focus-tracking")]
     Focus,
 
     /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
@@ -102,6 +106,21 @@ pub enum Commands {
         /// How long to keep the window alive (ms)
         #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
         time: u64,
+        /// Optional 2x2 grid slot: 1=tl, 2=tr, 3=bl, 4=br
+        #[arg(long)]
+        slot: Option<u8>,
+        /// Optional explicit grid placement (cols, rows, col, row)
+        #[arg(long, value_names = ["COLS", "ROWS", "COL", "ROW"])]
+        grid: Option<Vec<u32>>,
+        /// Optional size (width, height)
+        #[arg(long, value_names = ["W", "H"])]
+        size: Option<Vec<f64>>,
+        /// Optional position (x, y) in AppKit logical coords
+        #[arg(long, value_names = ["X", "Y"])]
+        pos: Option<Vec<f64>>,
+        /// Optional label text to render centered inside the window
+        #[arg(long)]
+        label_text: Option<String>,
     },
 
     /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)
