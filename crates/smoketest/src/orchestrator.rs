@@ -194,7 +194,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("repeat-volume", vol_duration);
 
     // Focus and window ops
-    all_ok &= run("focus_tracking", duration_ms);
+    all_ok &= run("focus-tracking", duration_ms);
     all_ok &= run("raise", duration_ms);
     // Focus-nav can be a bit slower due to AX+IPC; give it extra timeout headroom.
     {
@@ -231,7 +231,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::RepeatRelay => "repeat-relay",
         SeqTest::RepeatShell => "repeat-shell",
         SeqTest::RepeatVolume => "repeat-volume",
-        SeqTest::Focus => "focus_tracking",
+        SeqTest::Focus => "focus-tracking",
         SeqTest::Raise => "raise",
         SeqTest::Hide => "hide",
         SeqTest::Place => "place",

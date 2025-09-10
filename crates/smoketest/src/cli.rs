@@ -72,7 +72,7 @@ pub enum Commands {
 
     /// Run a sequence of smoketests in order
     ///
-    /// Example: smoketest seq repeat-relay focus_tracking ui
+    /// Example: smoketest seq repeat-relay focus-tracking ui
     #[command(name = "seq")]
     Seq {
         /// One or more test names to run in order

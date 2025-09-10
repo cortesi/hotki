@@ -10,7 +10,6 @@ use crate::{
     config,
     error::{Error, Result},
     process::HelperWindowBuilder,
-    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -150,40 +149,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let title_bl = format!("hotki smoketest: focus-bl {}-{}", std::process::id(), now);
     let title_br = format!("hotki smoketest: focus-br {}-{}", std::process::id(), now);
 
-    // Minimal config: activation + focus dir bindings under a submenu 'f'
+    // Minimal config: direct global bindings for focus directions to avoid HUD submenu latency
     let ron_config = format!(
-        r#"(
-    keys: [
-        ("shift+cmd+0", "activate", keys([
-            ("f", "Focus", keys([
-                ("h", "left", focus(left)),
-                ("l", "right", focus(right)),
-                ("k", "up", focus(up)),
-                ("j", "down", focus(down)),
-            ])),
-            ("r", "Raise", keys([
-                ("1", "tl", raise(title: "{t_tl}")),
-                ("2", "tr", raise(title: "{t_tr}")),
-                ("3", "bl", raise(title: "{t_bl}")),
-                ("4", "br", raise(title: "{t_br}")),
-            ])),
-            ("p", "Place", keys([
-                ("1", "tl", place(grid(2, 2), at(0, 0))),
-                ("2", "tr", place(grid(2, 2), at(1, 0))),
-                ("3", "bl", place(grid(2, 2), at(0, 1))),
-                ("4", "br", place(grid(2, 2), at(1, 1))),
-            ])),
-            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-        ])),
-        ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-    ],
-    style: (hud: (mode: hide))
-)
-"#,
-        t_tl = title_tl,
-        t_tr = title_tr,
-        t_bl = title_bl,
-        t_br = title_br
+        "(\n    keys: [\n        (\"ctrl+alt+h\", \"left\", focus(left), (global: true, hide: true)),\n        (\"ctrl+alt+l\", \"right\", focus(right), (global: true, hide: true)),\n        (\"ctrl+alt+k\", \"up\", focus(up), (global: true, hide: true)),\n        (\"ctrl+alt+j\", \"down\", focus(down), (global: true, hide: true)),\n        (\"ctrl+alt+1\", \"tl\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+2\", \"tr\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+3\", \"bl\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+4\", \"br\", raise(title: \"{}\"), (global: true, hide: true)),\n    ],\n    style: (hud: (mode: hide))\n)\n",
+        title_tl, title_tr, title_bl, title_br
     );
 
     let config = TestConfig::new(timeout_ms)
@@ -193,7 +162,20 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("focus_nav_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            let _ = ctx.wait_for_hud()?; // ensure server is ready
+            // Initialize RPC driver and gate on one of the direct bindings to avoid HUD waits
+            if let Some(sess) = ctx.session.as_ref() {
+                let sock = sess.socket_path().to_string();
+                let start = std::time::Instant::now();
+                let mut inited = crate::server_drive::init(&sock);
+                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    inited = crate::server_drive::init(&sock);
+                }
+                let _ = crate::server_drive::wait_for_ident(
+                    "ctrl+alt+h",
+                    crate::config::BINDING_GATE_DEFAULT_MS,
+                );
+            }
             Ok(())
         })
         .with_execute(move |_ctx| {
@@ -238,17 +220,9 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Helpers self-place into 2x2 via mac-winops; no server placement required
 
-            // Initialize RPC driver for key injects (best‑effort)
-            // Establish initial focus via raise(title): TL
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-            }
-            send_key("r");
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
-            }
-            send_key("1");
-            if !wait_for_frontmost_title(&title_tl, timeout_ms / 2) {
+            // Establish initial focus quickly via direct raise binding
+            send_key("ctrl+alt+1");
+            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tl.clone(),
@@ -286,18 +260,15 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
             assert_frontmost_cell(&title_tl, 0, 0)?;
 
-            // Helper to drive focus(dir)
+            // Helper to drive focus(dir) via direct global bindings
             let drive = |dir: &str| {
-                crate::ui_interaction::send_activation_chord();
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident("f", config::RAISE_BINDING_GATE_MS);
+                match dir {
+                    "h" => send_key("ctrl+alt+h"),
+                    "l" => send_key("ctrl+alt+l"),
+                    "k" => send_key("ctrl+alt+k"),
+                    "j" => send_key("ctrl+alt+j"),
+                    _ => {}
                 }
-                send_key("f");
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident(dir, config::RAISE_BINDING_GATE_MS);
-                }
-                send_key(dir);
-                // Log after driving a direction
                 log_frontmost();
             };
 
@@ -305,7 +276,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             assert_frontmost_cell(&title_tl, 0, 0)?;
             drive("l"); // RIGHT
-            if !wait_for_frontmost_title(&title_tr, timeout_ms / 2) {
+            if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tr.clone(),
@@ -316,7 +287,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             assert_frontmost_cell(&title_tr, 1, 0)?;
             drive("j"); // DOWN
-            if !wait_for_frontmost_title(&title_br, timeout_ms / 2) {
+            if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_br.clone(),
@@ -327,7 +298,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             assert_frontmost_cell(&title_br, 1, 1)?;
             drive("h"); // LEFT
-            if !wait_for_frontmost_title(&title_bl, timeout_ms / 2) {
+            if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_bl.clone(),
@@ -338,7 +309,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             assert_frontmost_cell(&title_bl, 0, 1)?;
             drive("k"); // UP
-            if !wait_for_frontmost_title(&title_tl, timeout_ms / 2) {
+            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tl.clone(),

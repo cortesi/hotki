@@ -113,6 +113,10 @@ pub const RAISE_WINDOW_RECHECK_MS: u64 = 800;
 /// Binding gate timeout for RPC identifier readiness.
 pub const RAISE_BINDING_GATE_MS: u64 = 700;
 
+// ===== Focus-Nav Test Tunables =====
+/// Per-step wait for focus-nav frontmost checks and transitions.
+pub const FOCUS_NAV_STEP_TIMEOUT_MS: u64 = 800;
+
 // ===== Session Tunables =====
 
 /// Interval to resend activation chord while waiting for HUD.
