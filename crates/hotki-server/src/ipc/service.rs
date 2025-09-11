@@ -158,7 +158,7 @@ impl HotkeyService {
         let engine = self.engine.clone();
         tokio::spawn(async move {
             // Ensure engine exists and get world handle
-            let world = loop {
+            let _world = loop {
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
@@ -537,6 +537,56 @@ impl MrpcConnection for HotkeyService {
                 };
                 let st = eng.world_status().await;
                 Ok(enc_world_status(&st))
+            }
+
+            Some(HotkeyMethod::GetWorldSnapshot) => {
+                // Ensure engine
+                if let Err(e) = self.ensure_engine_initialized().await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineInit,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+                let eng = match self.engine.lock().await.as_ref() {
+                    Some(e) => e.clone(),
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineNotInitialized,
+                            &[("message", Value::String("engine not initialized".into()))],
+                        ));
+                    }
+                };
+                let wh = eng.world_handle();
+                // Obtain consistent snapshot + focused key
+                let (_rx, snap, focused_key) = wh.subscribe_with_snapshot().await;
+                // Convert to protocol types
+                let mut wins: Vec<hotki_protocol::WorldWindowLite> = snap
+                    .into_iter()
+                    .map(|w| hotki_protocol::WorldWindowLite {
+                        app: w.app,
+                        title: w.title,
+                        pid: w.pid,
+                        id: w.id,
+                        z: w.z,
+                        focused: w.focused,
+                        display_id: w.display_id,
+                    })
+                    .collect();
+                wins.sort_by_key(|w| (w.z, w.pid, w.id));
+                let focused = focused_key.and_then(|k| {
+                    wins.iter()
+                        .find(|w| w.pid == k.pid && w.id == k.id)
+                        .map(|w| hotki_protocol::App {
+                            app: w.app.clone(),
+                            title: w.title.clone(),
+                            pid: w.pid,
+                        })
+                });
+                let payload = crate::ipc::rpc::WorldSnapshotLite {
+                    windows: wins,
+                    focused,
+                };
+                Ok(crate::ipc::rpc::enc_world_snapshot(&payload))
             }
 
             None => {

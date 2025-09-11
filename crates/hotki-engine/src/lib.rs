@@ -98,17 +98,13 @@ pub struct Engine {
     winops: Arc<dyn WinOps>,
     /// Window world service handle
     world: hotki_world::WorldHandle,
+    /// Cached world focus context (app, title, pid), updated by World events
+    focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
     /// If true, poll focus snapshot synchronously at dispatch; else trust last snapshot.
     sync_focus_on_dispatch: bool,
 }
 
 impl Engine {
-    fn sync_focus_now(&self) {
-        let snap = mac_winops::focus::poll_now();
-        if let Ok(mut g) = self.focus_snapshot.lock() {
-            *g = snap;
-        }
-    }
     fn current_snapshot(&self) -> mac_winops::focus::FocusSnapshot {
         self.focus_snapshot
             .lock()
@@ -148,7 +144,7 @@ impl Engine {
         let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
         let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
 
-        Self {
+        let eng = Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
@@ -161,8 +157,11 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            focus_ctx: Arc::new(Mutex::new(None)),
             sync_focus_on_dispatch: true,
-        }
+        };
+        eng.spawn_world_focus_subscription();
+        eng
     }
 
     /// Create a new engine with a custom window-ops implementation (useful for tests).
@@ -190,7 +189,7 @@ impl Engine {
 
         let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
 
-        Self {
+        let eng = Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
@@ -203,8 +202,11 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            focus_ctx: Arc::new(Mutex::new(None)),
             sync_focus_on_dispatch: true,
-        }
+        };
+        eng.spawn_world_focus_subscription();
+        eng
     }
 
     /// Custom constructor for tests and advanced scenarios.
@@ -232,7 +234,7 @@ impl Engine {
             config::Style::default(),
         )));
 
-        Self {
+        let eng = Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
@@ -245,8 +247,11 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            focus_ctx: Arc::new(Mutex::new(None)),
             sync_focus_on_dispatch: false,
-        }
+        };
+        eng.spawn_world_focus_subscription();
+        eng
     }
 
     /// Create an Engine that will own and drive the focus watcher using a Tao EventLoopProxy.
@@ -269,17 +274,7 @@ impl Engine {
         // initial focus view before any key handling occurs.
         {
             let eng_clone = eng.clone();
-            let winops = eng.winops.clone();
-            let mut snap = watcher.current();
-            if snap.pid <= 0
-                && let Some(w) = winops.frontmost_window()
-            {
-                snap = mac_winops::focus::FocusSnapshot {
-                    app: w.app,
-                    title: w.title,
-                    pid: w.pid,
-                };
-            }
+            let snap = watcher.current();
             tokio::spawn(async move {
                 let _ = eng_clone.on_focus_snapshot(snap).await;
             });
@@ -300,10 +295,41 @@ impl Engine {
         self.world.clone()
     }
 
+    fn spawn_world_focus_subscription(&self) {
+        let world = self.world.clone();
+        let focus_ctx = self.focus_ctx.clone();
+        tokio::spawn(async move {
+            let (mut rx, seed) = world.subscribe_with_context().await;
+            if let Some(ctx) = seed
+                && let Ok(mut g) = focus_ctx.lock()
+            {
+                *g = Some(ctx);
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(hotki_world::WorldEvent::FocusChanged(Some(key))) => {
+                        if let Some(ctx) = world.context_for_key(key).await
+                            && let Ok(mut g) = focus_ctx.lock()
+                        {
+                            *g = Some(ctx);
+                        }
+                    }
+                    Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
+                        if let Ok(mut g) = focus_ctx.lock() {
+                            *g = None;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     async fn rebind_current_context(&self) -> Result<()> {
-        let fs = self.current_snapshot();
-        debug!("Rebinding with context: app={}, title={}", fs.app, fs.title);
-        self.rebind_and_refresh(&fs.app, &fs.title).await
+        let (app, title, _pid) = self.current_context_tuple();
+        debug!("Rebinding with context: app={}, title={}", app, title);
+        self.rebind_and_refresh(&app, &title).await
     }
 
     async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
@@ -327,7 +353,7 @@ impl Engine {
             let cursor = cursor.with_app(hotki_protocol::App {
                 app: app.to_string(),
                 title: title.to_string(),
-                pid: self.current_pid(),
+                pid: self.current_pid_world_first(),
             });
             debug!("HUD update: cursor {:?}", cursor.path());
             self.notifier.send_hud_update_cursor(cursor)?;
@@ -342,7 +368,7 @@ impl Engine {
         let cur_with_app = cur.clone().with_app(hotki_protocol::App {
             app: app.to_string(),
             title: title.to_string(),
-            pid: self.current_pid(),
+            pid: self.current_pid_world_first(),
         });
         let hud_visible = cfg_guard.hud_visible(&cur);
         let capture = cfg_guard.mode_requests_capture(&cur);
@@ -449,17 +475,15 @@ impl Engine {
     /// Process a key event and return whether depth changed (requiring rebind)
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
-        // Ensure our snapshot is fresh before computing context or acting on windows
-        // unless explicitly disabled for tests.
+        // On dispatch, nudge world to refresh and proceed with cached context
         if self.sync_focus_on_dispatch {
-            self.sync_focus_now();
+            self.world.hint_refresh();
         }
-        let fs = self.current_snapshot();
-        let pid = self.current_pid();
+        let (app_ctx, title_ctx, pid) = self.current_context_tuple();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
-            identifier, fs.app, fs.title
+            identifier, app_ctx, title_ctx
         );
 
         // CRITICAL: Single lock acquisition to avoid race conditions
@@ -467,7 +491,7 @@ impl Engine {
         let (loc_before, loc_after, response) = {
             let mut st = self.state.lock().await;
             let loc_before = st.current_cursor();
-            let resp = st.handle_key_with_context(&cfg_for_handle, chord, &fs.app, &fs.title);
+            let resp = st.handle_key_with_context(&cfg_for_handle, chord, &app_ctx, &title_ctx);
             let loc_after = st.current_cursor();
             (loc_before, loc_after, resp)
         };
@@ -540,7 +564,7 @@ impl Engine {
                 );
                 // Map Toggle -> mac_winops::Desired
                 let d = to_desired(desired);
-                let pid = self.current_pid();
+                let pid = self.current_pid_world_first();
                 let res = match kind {
                     config::FullscreenKind::Native => {
                         tracing::debug!(
@@ -562,15 +586,15 @@ impl Engine {
                 if let Err(e) = res {
                     let _ = self.notifier.send_error("Fullscreen", format!("{}", e));
                 }
+                self.hint_refresh();
                 Ok(())
             }
             Ok(KeyResponse::Raise { app, title }) => {
-                use hotki_protocol::NotifyKind;
                 use regex::Regex;
                 // Compile regexes if present; on error, notify and abort this action.
                 tracing::debug!("Raise action: app={:?} title={:?}", app, title);
                 // Invalidate any pending debounce tasks from previous raise actions
-                let nonce = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
+                let _nonce = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
                 let mut invalid = false;
                 let app_re = if let Some(s) = app.as_ref() {
                     match Regex::new(s) {
@@ -599,22 +623,15 @@ impl Engine {
                     None
                 };
                 if !invalid {
-                    let all = self.winops.list_windows();
-                    tracing::debug!("Raise: list_windows count={}", all.len());
-                    if all.is_empty() {
-                        let _ = self.notifier.send_notification(
-                            NotifyKind::Info,
-                            "Raise".into(),
-                            "No windows on screen".into(),
-                        );
+                    // Prefer world snapshot; fallback to WinOps only if world snapshot is empty
+                    let mut wsnap = self.world.snapshot().await;
+                    wsnap.sort_by_key(|w| w.z);
+                    if wsnap.is_empty() {
+                        tracing::debug!("Raise(World): empty snapshot; no-op");
                     } else {
-                        let cur = self.winops.frontmost_window();
-                        tracing::debug!(
-                            "Raise: current frontmost={:?}",
-                            cur.as_ref().map(|w| (&w.app, &w.title, w.pid, w.id))
-                        );
-
-                        let matches = |w: &mac_winops::WindowInfo| -> bool {
+                        // World snapshot available
+                        let focused = self.world.focused_window().await;
+                        let matches = |w: &hotki_world::WorldWindow| -> bool {
                             let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
                             let tok = title_re
                                 .as_ref()
@@ -623,63 +640,19 @@ impl Engine {
                             aok && tok
                         };
                         let mut idx_match: Vec<usize> = Vec::new();
-                        for (i, w) in all.iter().enumerate() {
+                        for (i, w) in wsnap.iter().enumerate() {
                             if matches(w) {
                                 idx_match.push(i);
                             }
                         }
-                        tracing::debug!("Raise: matched count={}", idx_match.len());
+                        tracing::debug!("Raise(World): matched count={}", idx_match.len());
                         if idx_match.is_empty() {
-                            // Debounce: retry multiple times before notifying; if a match appears, activate it.
-                            let app_re2 = app_re.clone();
-                            let title_re2 = title_re.clone();
-                            let raise_nonce = self.raise_nonce.clone();
-                            let last_pid_hint = self.last_target_pid.clone();
-                            let winops = self.winops.clone();
-                            tokio::spawn(async move {
-                                let mut activated = false;
-                                for _ in 0..24 {
-                                    // Cancel if a new Raise action started
-                                    if raise_nonce.load(Ordering::SeqCst) != nonce {
-                                        return;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                                    let all2 = winops.list_windows();
-                                    if let Some(target) = all2.iter().find(|w| {
-                                        let aok = app_re2
-                                            .as_ref()
-                                            .map(|r| r.is_match(&w.app))
-                                            .unwrap_or(true);
-                                        let tok = title_re2
-                                            .as_ref()
-                                            .map(|r| r.is_match(&w.title))
-                                            .unwrap_or(true);
-                                        aok && tok
-                                    }) {
-                                        if let Ok(mut g) = last_pid_hint.lock() {
-                                            *g = Some(target.pid);
-                                        }
-                                        let _ = winops.request_activate_pid(target.pid);
-                                        activated = true;
-                                        break;
-                                    }
-                                }
-                                if !activated {
-                                    if raise_nonce.load(Ordering::SeqCst) != nonce {
-                                        return;
-                                    }
-                                    // Quiet fallback: avoid user-facing notification to reduce noise during fast app launches.
-                                    tracing::debug!(
-                                        "Raise: no matching window after debounce; suppressing notification"
-                                    );
-                                }
-                            });
+                            tracing::debug!("Raise(World): no match in snapshot; no-op");
                         } else {
-                            let target_idx = if let Some(c) = &cur {
+                            let target_idx = if let Some(c) = focused.as_ref() {
                                 if matches(c) {
-                                    // Find the next match behind the current one
                                     let cur_index =
-                                        all.iter().position(|w| w.id == c.id && w.pid == c.pid);
+                                        wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
                                     if let Some(ci) = cur_index {
                                         idx_match.into_iter().find(|&i| i > ci).unwrap_or(ci)
                                     } else {
@@ -691,9 +664,9 @@ impl Engine {
                             } else {
                                 idx_match[0]
                             };
-                            let target = &all[target_idx];
+                            let target = &wsnap[target_idx];
                             tracing::debug!(
-                                "Raise: target pid={} id={} app='{}' title='{}'",
+                                "Raise(World): target pid={} id={} app='{}' title='{}'",
                                 target.pid,
                                 target.id,
                                 target.app,
@@ -711,6 +684,7 @@ impl Engine {
                                 }
                                 let _ = self.notifier.send_error("Raise", format!("{}", e));
                             }
+                            self.hint_refresh();
                         }
                     }
                 }
@@ -722,37 +696,45 @@ impl Engine {
                 col,
                 row,
             }) => {
-                // Prefer pid targeted by the most recent Raise; fall back to CG frontmost (skips our UI) then snapshot pid.
-                let (pid, pid_src) = if let Ok(mut g) = self.last_target_pid.lock() {
-                    if let Some(p) = *g {
-                        *g = None;
-                        (p, "raise")
-                    } else if let Some(w) = self.winops.frontmost_window() {
-                        (w.pid, "frontmost")
+                // Prefer last Raise pid; else world focused; fallback to CG frontmost only if world has no snapshot yet
+                let raise_pid = self.last_target_pid.lock().ok().and_then(|mut g| g.take());
+                let (pid, pid_src) = if let Some(p) = raise_pid {
+                    (p, "raise")
+                } else if let Some((_, _, p)) = self.focus_ctx.lock().ok().and_then(|g| g.clone()) {
+                    (p, "world")
+                } else {
+                    let mut snap = self.world.snapshot().await;
+                    snap.sort_by_key(|w| w.z);
+                    if snap.is_empty() {
+                        (self.current_pid(), "snapshot")
+                    } else if let Some(w) = self
+                        .world
+                        .focused_window()
+                        .await
+                        .or_else(|| snap.first().cloned())
+                    {
+                        (w.pid, "world_top")
                     } else {
                         (self.current_pid(), "snapshot")
                     }
-                } else if let Some(w) = self.winops.frontmost_window() {
-                    (w.pid, "frontmost")
-                } else {
-                    (self.current_pid(), "snapshot")
                 };
 
-                // Log current focus/frontmost context for diagnostics
-                let snap = self.current_snapshot();
-                let front = self.winops.frontmost_window();
-                if let Some(ref f) = front {
+                // Log using world context + world topmost for visibility
+                let (wapp, wtitle, wpid) = self.current_context_tuple();
+                let mut snap = self.world.snapshot().await;
+                snap.sort_by_key(|w| w.z);
+                if let Some(top) = snap.first() {
                     tracing::debug!(
-                        "Place: chosen pid={} (src={}) | focus app='{}' title='{}' pid={} | frontmost pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
+                        "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
                         pid,
                         pid_src,
-                        snap.app,
-                        snap.title,
-                        snap.pid,
-                        f.pid,
-                        f.id,
-                        f.app,
-                        f.title,
+                        wapp,
+                        wtitle,
+                        wpid,
+                        top.pid,
+                        top.id,
+                        top.app,
+                        top.title,
                         cols,
                         rows,
                         col,
@@ -760,12 +742,12 @@ impl Engine {
                     );
                 } else {
                     tracing::debug!(
-                        "Place: chosen pid={} (src={}) | focus app='{}' title='{}' pid={} | frontmost=<none> cols={} rows={} col={} row={}",
+                        "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top=<none> cols={} rows={} col={} row={}",
                         pid,
                         pid_src,
-                        snap.app,
-                        snap.title,
-                        snap.pid,
+                        wapp,
+                        wtitle,
+                        wpid,
                         cols,
                         rows,
                         col,
@@ -779,13 +761,30 @@ impl Engine {
                 {
                     let _ = self.notifier.send_error("Place", format!("{}", e));
                 }
+                self.hint_refresh();
                 Ok(())
             }
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
                 let mdir = to_move_dir(dir);
-                if let Some(w) = self.winops.frontmost_window_for_pid(self.current_pid()) {
-                    if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir) {
-                        let _ = self.notifier.send_error("Move", format!("{}", e));
+                let pid = self.current_pid_world_first();
+                let mut snap = self.world.snapshot().await;
+                snap.sort_by_key(|w| w.z);
+                if !snap.is_empty() {
+                    let candidate = snap
+                        .iter()
+                        .filter(|w| w.pid == pid)
+                        .min_by_key(|w| (!w.focused, w.z))
+                        .cloned();
+                    if let Some(w) = candidate {
+                        if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir)
+                        {
+                            let _ = self.notifier.send_error("Move", format!("{}", e));
+                        }
+                        self.hint_refresh();
+                    } else {
+                        let _ = self
+                            .notifier
+                            .send_error("Move", "No focused window to move".to_string());
                     }
                 } else {
                     let _ = self
@@ -795,38 +794,40 @@ impl Engine {
                 Ok(())
             }
             Ok(KeyResponse::Hide { desired }) => {
-                // Event log including current window info
-                let snap = self.current_snapshot();
-                let front = self.winops.frontmost_window();
-                if let Some(ref f) = front {
+                // Event log using world context + topmost-by-z
+                let (wapp, wtitle, wpid) = self.current_context_tuple();
+                let mut snap = self.world.snapshot().await;
+                snap.sort_by_key(|w| w.z);
+                if let Some(top) = snap.first() {
                     tracing::info!(
-                        "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost pid={} id={} app='{}' title='{}'",
+                        "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top pid={} id={} app='{}' title='{}'",
                         desired,
-                        snap.app,
-                        snap.title,
-                        snap.pid,
-                        f.pid,
-                        f.id,
-                        f.app,
-                        f.title
+                        wapp,
+                        wtitle,
+                        wpid,
+                        top.pid,
+                        top.id,
+                        top.app,
+                        top.title
                     );
                 } else {
                     tracing::info!(
-                        "Hide: request desired={:?}; focus app='{}' title='{}' pid={}; frontmost=<none>",
+                        "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top=<none>",
                         desired,
-                        snap.app,
-                        snap.title,
-                        snap.pid
+                        wapp,
+                        wtitle,
+                        wpid
                     );
                 }
                 tracing::debug!("Hide action received: desired={:?}", desired);
                 let d = to_desired(desired);
                 // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
-                let pid = self.current_pid();
+                let pid = self.current_pid_world_first();
                 tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
                 if let Err(e) = self.winops.hide_bottom_left(pid, d) {
                     let _ = self.notifier.send_error("Hide", format!("{}", e));
                 }
+                self.hint_refresh();
                 Ok(())
             }
             Ok(resp) => {
@@ -844,6 +845,7 @@ impl Engine {
                             }
                             let _ = self.notifier.send_error("Focus", format!("{}", e));
                         }
+                        self.hint_refresh();
                         Ok(())
                     }
                     KeyResponse::ShellAsync {
@@ -883,7 +885,7 @@ impl Engine {
                 identifier
             );
             // Invoke hook to rebind and refresh HUD using current context
-            self.rebind_and_refresh(&fs.app, &fs.title).await?;
+            self.rebind_and_refresh(&app_ctx, &title_ctx).await?;
         }
         trace!(
             "Key event completed in {:?}: {} (location_changed: {})",
@@ -963,5 +965,30 @@ impl Engine {
     /// Resolve a registration id for an identifier (e.g., "cmd+k"). Intended for diagnostics/tests.
     pub async fn resolve_id_for_ident(&self, ident: &str) -> Option<u32> {
         self.binding_manager.lock().await.id_for_ident(ident)
+    }
+}
+
+impl Engine {
+    fn current_pid_world_first(&self) -> i32 {
+        if let Ok(g) = self.focus_ctx.lock()
+            && let Some((_, _, p)) = &*g
+        {
+            return *p;
+        }
+        self.current_pid()
+    }
+
+    fn current_context_tuple(&self) -> (String, String, i32) {
+        if let Ok(g) = self.focus_ctx.lock()
+            && let Some((a, t, p)) = &*g
+        {
+            return (a.clone(), t.clone(), *p);
+        }
+        let fs = self.current_snapshot();
+        (fs.app, fs.title, fs.pid)
+    }
+
+    fn hint_refresh(&self) {
+        self.world.hint_refresh();
     }
 }

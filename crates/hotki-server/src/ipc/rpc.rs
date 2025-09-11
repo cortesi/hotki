@@ -16,6 +16,7 @@ pub enum HotkeyMethod {
     GetBindings,
     GetDepth,
     GetWorldStatus,
+    GetWorldSnapshot,
 }
 
 impl HotkeyMethod {
@@ -28,6 +29,7 @@ impl HotkeyMethod {
             HotkeyMethod::GetBindings => "get_bindings",
             HotkeyMethod::GetDepth => "get_depth",
             HotkeyMethod::GetWorldStatus => "get_world_status",
+            HotkeyMethod::GetWorldSnapshot => "get_world_snapshot",
         }
     }
 
@@ -40,6 +42,7 @@ impl HotkeyMethod {
             "get_bindings" => Some(HotkeyMethod::GetBindings),
             "get_depth" => Some(HotkeyMethod::GetDepth),
             "get_world_status" => Some(HotkeyMethod::GetWorldStatus),
+            "get_world_snapshot" => Some(HotkeyMethod::GetWorldSnapshot),
             _ => None,
         }
     }
@@ -137,6 +140,21 @@ pub fn enc_event(event: &hotki_protocol::MsgToUI) -> Value {
 pub fn dec_event(v: Value) -> Result<hotki_protocol::MsgToUI, crate::Error> {
     hotki_protocol::ipc::codec::value_to_msg(v)
         .map_err(|e| crate::Error::Serialization(e.to_string()))
+}
+
+/// Lightweight snapshot payload for `get_world_snapshot` method.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorldSnapshotLite {
+    /// Current windows in z-order (0 = frontmost first).
+    pub windows: Vec<hotki_protocol::WorldWindowLite>,
+    /// Focused context, if any.
+    pub focused: Option<hotki_protocol::App>,
+}
+
+/// Encode a world snapshot to msgpack binary `Value`.
+pub fn enc_world_snapshot(snap: &WorldSnapshotLite) -> Value {
+    let bytes = rmp_serde::to_vec_named(snap).expect("WorldSnapshotLite to msgpack");
+    Value::Binary(bytes)
 }
 
 /// Inject key request: encoded as msgpack in a single Binary param.

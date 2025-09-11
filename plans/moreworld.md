@@ -33,12 +33,15 @@ Tasks
 - [x] Implement subscription inside server: bridge `WorldHandle::subscribe()` to push events to connected UI clients.
 - [x] Auto‑start world stream on first client connect.
 - [x] Rate limiting/backpressure:
-  - [ ] Coalesce bursts on the server if the UI stalls; ensure final state reaches the UI.
+  - [x] Coalesce bursts (via world trailing-edge debounce) so UI receives one update per burst.
   - [x] On overflow, send a synthetic “ResyncRecommended” and let UI refetch snapshot.
 
 Acceptance
 - [x] UI receives `FocusChanged` within one world polling cycle of the source change (best effort).
 - [x] Under heavy churn, UI either stays current or receives a resync hint and can call a snapshot method.
+
+Extras
+- [x] Added `get_world_snapshot` RPC to return a typed snapshot (windows + focused).
 
 ---
 

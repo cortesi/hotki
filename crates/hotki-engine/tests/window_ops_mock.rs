@@ -20,7 +20,7 @@ async fn engine_uses_window_ops_for_focus() {
     ) = mpsc::unbounded_channel();
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
 
     // Simple config: single binding that triggers focus(left)
@@ -55,7 +55,7 @@ async fn engine_hide_uses_winops() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"a\", \"hide\", hide(on))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -82,7 +82,7 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"n\", \"fs native\", fullscreen(on, native)), (\"f\", \"fs nonnative\", fullscreen(on, nonnative))]",
@@ -128,7 +128,7 @@ async fn engine_raise_activates_on_match() {
         focused: false,
     }]);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"a\", \"raise\", raise(app: \"^Zed$\", title: \"Downloads\"))]",
@@ -184,7 +184,7 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         },
     ]);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"r\", \"raise\", raise(title: \"raise-me\")), (\"p\", \"place\", place(grid(2,2), at(0,0)))]",
@@ -212,11 +212,36 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         .dispatch(id_p, mac_hotkey::EventKind::KeyDown, false)
         .await;
     assert_eq!(mock.last_place_grid_pid(), Some(200));
-    // Next place should use frontmost (cleared hint)
+    // Simulate focus moving to pid 200 in the world snapshot
+    mock.set_windows(vec![
+        mac_winops::WindowInfo {
+            id: 1,
+            pid: 100,
+            app: "A".into(),
+            title: "front".into(),
+            pos: None,
+            space: None,
+            layer: 0,
+            focused: false,
+        },
+        mac_winops::WindowInfo {
+            id: 2,
+            pid: 200,
+            app: "B".into(),
+            title: "raise-me".into(),
+            pos: None,
+            space: None,
+            layer: 0,
+            focused: true,
+        },
+    ]);
+    engine.world_handle().hint_refresh();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    // Next place should use world-focused (cleared hint)
     engine
         .dispatch(id_p, mac_hotkey::EventKind::KeyDown, false)
         .await;
-    assert_eq!(mock.last_place_grid_pid(), Some(100));
+    assert_eq!(mock.last_place_grid_pid(), Some(200));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -226,7 +251,7 @@ async fn engine_fullscreen_error_notifies() {
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_fullscreen_nonnative(true);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"f\", \"fs\", fullscreen(on, nonnative))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -390,67 +415,7 @@ async fn engine_focus_error_propagates_notification() {
     assert!(saw_error, "expected Focus error notification");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn engine_raise_debounce_then_activate() {
-    // Debounce path: initially no match, then a match appears; expect activate_pid after debounce.
-    ensure_no_os_interaction();
-    // Use virtual time to avoid wall-clock delays in debounce loop
-    tokio::time::pause();
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockWinOps::new());
-    let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
-    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
-    let keys =
-        keymode::Keys::from_ron("[(\"a\", \"raise\", raise(app: \"^App$\", title: \"Win\"))]")
-            .unwrap();
-    let cfg = config::Config::from_parts(keys, config::Style::default());
-    let mut engine = engine;
-    engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "Other".into(),
-            title: "X".into(),
-            pid: 1,
-        })
-        .await
-        .unwrap();
-
-    // Start with non-matching windows so the debounce path is engaged (idx_match.is_empty but not all.is_empty)
-    mock.set_windows(vec![mac_winops::WindowInfo {
-        id: 8,
-        pid: 222,
-        app: "OtherApp".into(),
-        title: "OtherWin".into(),
-        pos: None,
-        space: None,
-        layer: 0,
-        focused: false,
-    }]);
-    // Dispatch raise (will debounce)
-    let id = engine.resolve_id_for_ident("a").await.unwrap();
-    engine
-        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
-
-    // Ensure the spawned debounce task is scheduled
-    tokio::task::yield_now().await;
-    // Install a matching window now and advance time to trigger the debounce check (250ms intervals).
-    mock.set_windows(vec![mac_winops::WindowInfo {
-        id: 9,
-        pid: 321,
-        app: "App".into(),
-        title: "Win".into(),
-        pos: None,
-        space: None,
-        layer: 0,
-        focused: false,
-    }]);
-    // Advance time enough for the spawned debounce loop to wake and act.
-    tokio::time::advance(std::time::Duration::from_millis(260)).await;
-    tokio::task::yield_now().await;
-    assert!(mock.calls_contains("activate_pid"));
-}
+// Debounce-based raise behavior removed: world-only model does no engine-side retries.
 
 #[tokio::test(flavor = "current_thread")]
 async fn engine_place_move_uses_winops() {
@@ -460,8 +425,8 @@ async fn engine_place_move_uses_winops() {
         mpsc::UnboundedReceiver<MsgToUI>,
     ) = mpsc::unbounded_channel();
     let mock = Arc::new(MockWinOps::new());
-    // Ensure the engine finds a frontmost window for current pid
-    mock.set_frontmost_for_pid(Some(mac_winops::WindowInfo {
+    // Ensure the world snapshot has a window for the current pid
+    mock.set_windows(vec![mac_winops::WindowInfo {
         id: 7,
         pid: 99,
         app: "X".into(),
@@ -470,7 +435,7 @@ async fn engine_place_move_uses_winops() {
         space: None,
         layer: 0,
         focused: true,
-    }));
+    }]);
     let mgr = Arc::new(mac_hotkey::Manager::new().expect("manager"));
     let engine = Engine::new_with_ops(mgr, tx, mock.clone());
     let keys =

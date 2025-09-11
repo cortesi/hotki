@@ -253,6 +253,35 @@ impl WorldHandle {
         self.focused_window().await.map(|w| (w.app, w.title, w.pid))
     }
 
+    /// Subscribe to world events and return an initial focus context, if any.
+    ///
+    /// The seed context is derived atomically relative to the returned
+    /// snapshot+focused pair, but exposed here as a concise tuple to simplify
+    /// downstream consumers.
+    pub async fn subscribe_with_context(
+        &self,
+    ) -> (
+        broadcast::Receiver<WorldEvent>,
+        Option<(String, String, i32)>,
+    ) {
+        let (rx, snap, focused) = self.subscribe_with_snapshot().await;
+        let ctx = if let Some(fk) = focused {
+            snap.iter()
+                .find(|w| w.pid == fk.pid && w.id == fk.id)
+                .map(|w| (w.app.clone(), w.title.clone(), w.pid))
+        } else {
+            snap.iter()
+                .min_by_key(|w| w.z)
+                .map(|w| (w.app.clone(), w.title.clone(), w.pid))
+        };
+        (rx, ctx)
+    }
+
+    /// Resolve a key to a lightweight context tuple `(app, title, pid)`.
+    pub async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
+        self.get(key).await.map(|w| (w.app, w.title, w.pid))
+    }
+
     /// Current capabilities and permission state.
     pub async fn capabilities(&self) -> Capabilities {
         let (tx, rx) = oneshot::channel();
@@ -340,6 +369,8 @@ struct WorldState {
     capabilities: Capabilities,
     seen_seq: u64,
     last_emit: HashMap<WindowKey, Instant>,
+    /// Pending coalesced Updated events with their flush deadline.
+    coalesce: HashMap<WindowKey, Instant>,
     last_tick_ms: u64,
     current_poll_ms: u64,
     warned_ax: bool,
@@ -354,6 +385,7 @@ impl WorldState {
             capabilities: Capabilities::default(),
             seen_seq: 0,
             last_emit: HashMap::new(),
+            coalesce: HashMap::new(),
             last_tick_ms: 0,
             current_poll_ms: 0,
             warned_ax: false,
@@ -403,6 +435,22 @@ async fn run_actor(
     tokio::pin!(next_tick);
     // Immediate first reconcile (no initial delay)
     next_tick.as_mut().reset(TokioInstant::now());
+
+    // Coalesce timer: sleeps until earliest pending coalesce deadline.
+    let mut next_coalesce_due: Option<Instant>;
+    let coalesce_tick = sleep(Duration::from_millis(1_000));
+    tokio::pin!(coalesce_tick);
+    // Start disabled
+    coalesce_tick.as_mut().reset(TokioInstant::from_std(
+        Instant::now() + Duration::from_secs(3600),
+    ));
+
+    // Perform an immediate first reconcile to seed state before serving requests
+    update_capabilities(&mut state);
+    let t0 = Instant::now();
+    let _ = reconcile(&mut state, &events, &*winops);
+    state.last_tick_ms = t0.elapsed().as_millis() as u64;
+    state.current_poll_ms = current_ms;
 
     loop {
         tokio::select! {
@@ -459,6 +507,36 @@ async fn run_actor(
                 else { current_ms = (current_ms + 50).min(cfg.poll_ms_max.max(current_ms)); }
                 state.current_poll_ms = current_ms;
                 next_tick.as_mut().reset(TokioInstant::now() + Duration::from_millis(current_ms));
+
+                // Update coalesce timer to earliest pending deadline
+                next_coalesce_due = state.coalesce.values().copied().min();
+                if let Some(due) = next_coalesce_due {
+                    coalesce_tick.as_mut().reset(TokioInstant::from_std(due));
+                }
+            }
+            _ = &mut coalesce_tick => {
+                let now = Instant::now();
+                // Emit coalesced updates whose deadline has passed
+                let keys: Vec<WindowKey> = state
+                    .coalesce
+                    .iter()
+                    .filter_map(|(k, &due)| if due <= now { Some(*k) } else { None })
+                    .collect();
+                for k in keys.iter() {
+                    if state.store.contains_key(k) {
+                        let _ = events.send(WorldEvent::Updated(*k, WindowDelta));
+                        state.last_emit.insert(*k, now);
+                    }
+                    state.coalesce.remove(k);
+                }
+                // Re-arm the timer for the next earliest deadline
+                next_coalesce_due = state.coalesce.values().copied().min();
+                if let Some(due) = next_coalesce_due {
+                    coalesce_tick.as_mut().reset(TokioInstant::from_std(due));
+                } else {
+                    // No pending deadlines; park far in the future
+                    coalesce_tick.as_mut().reset(TokioInstant::from_std(Instant::now() + Duration::from_secs(3600)));
+                }
             }
         }
     }
@@ -573,14 +651,8 @@ fn reconcile(
             existing.seen_seq = seq;
             if changed {
                 had_changes = true;
-                let do_emit = match state.last_emit.get(&key) {
-                    Some(t) => now.duration_since(*t) >= Duration::from_millis(50),
-                    None => true,
-                };
-                if do_emit {
-                    let _ = events.send(WorldEvent::Updated(key, WindowDelta));
-                    state.last_emit.insert(key, now);
-                }
+                // Trailing-edge debounce: schedule coalesced Updated after quiet period
+                state.coalesce.insert(key, now + Duration::from_millis(50));
             }
         } else {
             had_changes = true;
@@ -617,6 +689,7 @@ fn reconcile(
             had_changes = true;
             state.store.remove(&key);
             state.last_emit.remove(&key);
+            state.coalesce.remove(&key);
             let _ = events.send(WorldEvent::Removed(key));
         }
     }

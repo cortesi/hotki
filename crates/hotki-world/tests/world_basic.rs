@@ -682,6 +682,114 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 }
 
 #[test]
+fn coalesced_trailing_update_after_quiet_period() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let mock = Arc::new(MockWinOps::new());
+        mock.set_windows(vec![win(
+            "AppA",
+            "T0",
+            42,
+            420,
+            Pos {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            0,
+            true,
+        )]);
+        let world = World::spawn(
+            mock.clone() as Arc<dyn WinOps>,
+            WorldCfg {
+                poll_ms_min: 10,
+                poll_ms_max: 10,
+                include_offscreen: false,
+                ax_watch_frontmost: false,
+                events_buffer: 64,
+            },
+        );
+        let mut rx = world.subscribe();
+        // Drain startup events (Added/FocusChanged)
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        while let Ok(_e) = rx.try_recv() {}
+
+        // Rapid changes within 50ms window: should yield a single Updated after quiet
+        mock.set_windows(vec![win(
+            "AppA",
+            "T1",
+            42,
+            420,
+            Pos {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            0,
+            true,
+        )]);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        mock.set_windows(vec![win(
+            "AppA",
+            "T2",
+            42,
+            420,
+            Pos {
+                x: 5,
+                y: 5,
+                width: 110,
+                height: 110,
+            },
+            0,
+            true,
+        )]);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        mock.set_windows(vec![win(
+            "AppA",
+            "T3",
+            42,
+            420,
+            Pos {
+                x: 5,
+                y: 5,
+                width: 120,
+                height: 110,
+            },
+            0,
+            true,
+        )]);
+        world.hint_refresh();
+
+        // Expect exactly one Updated event emitted after the quiet period
+        let start = tokio::time::Instant::now();
+        let mut cnt = 0u32;
+        let mut got = false;
+        while start.elapsed() < Duration::from_millis(800) {
+            if let Ok(ev) = rx.try_recv() {
+                if let WorldEvent::Updated(k, _) = ev
+                    && k == (WindowKey { pid: 42, id: 420 })
+                {
+                    cnt += 1;
+                    got = true;
+                }
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        assert!(
+            got,
+            "expected one coalesced Updated event after quiet period"
+        );
+        assert_eq!(cnt, 1, "should emit exactly one coalesced Updated");
+    });
+}
+
+#[test]
 fn startup_focus_event_and_context_and_snapshot() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
