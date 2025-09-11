@@ -264,7 +264,7 @@ pub enum WorldEvent {
 - [x] Test startup: additions, z‑order, and `on_active_space` flags.
 - [x] Test AX focus and title precedence.
 - [x] Test multi‑display `display_id` mapping.
-- [ ] Test debounce behavior on repetitive move/resize/title changes (events).
+- [x] Test debounce behavior on repetitive move/resize/title changes (events).
 
 #### Backlog
 

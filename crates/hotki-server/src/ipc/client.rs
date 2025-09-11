@@ -252,13 +252,19 @@ impl WorldStatusLite {
                                 _ => {}
                             },
                             Some("last_tick_ms") => {
-                                if let Value::Integer(i) = val { last_tick_ms = i.as_u64().unwrap_or(0); }
+                                if let Value::Integer(i) = val {
+                                    last_tick_ms = i.as_u64().unwrap_or(0);
+                                }
                             }
                             Some("current_poll_ms") => {
-                                if let Value::Integer(i) = val { current_poll_ms = i.as_u64().unwrap_or(0); }
+                                if let Value::Integer(i) = val {
+                                    current_poll_ms = i.as_u64().unwrap_or(0);
+                                }
                             }
                             Some("debounce_cache") => {
-                                if let Value::Integer(i) = val { debounce_cache = i.as_u64().unwrap_or(0); }
+                                if let Value::Integer(i) = val {
+                                    debounce_cache = i.as_u64().unwrap_or(0);
+                                }
                             }
                             Some("capabilities") => {
                                 if let Value::Map(cap) = val {
@@ -266,10 +272,16 @@ impl WorldStatusLite {
                                         if let Value::String(cs) = ck {
                                             match cs.as_str() {
                                                 Some("accessibility") => {
-                                                    if let Value::Integer(i) = cv { accessibility = i.as_i64().unwrap_or(-1) as i32; }
+                                                    if let Value::Integer(i) = cv {
+                                                        accessibility =
+                                                            i.as_i64().unwrap_or(-1) as i32;
+                                                    }
                                                 }
                                                 Some("screen_recording") => {
-                                                    if let Value::Integer(i) = cv { screen_recording = i.as_i64().unwrap_or(-1) as i32; }
+                                                    if let Value::Integer(i) = cv {
+                                                        screen_recording =
+                                                            i.as_i64().unwrap_or(-1) as i32;
+                                                    }
                                                 }
                                                 _ => {}
                                             }
@@ -281,9 +293,21 @@ impl WorldStatusLite {
                         }
                     }
                 }
-                Ok(WorldStatusLite { windows_count, focused_pid, focused_id, last_tick_ms, current_poll_ms, debounce_cache, accessibility, screen_recording })
+                Ok(WorldStatusLite {
+                    windows_count,
+                    focused_pid,
+                    focused_id,
+                    last_tick_ms,
+                    current_poll_ms,
+                    debounce_cache,
+                    accessibility,
+                    screen_recording,
+                })
             }
-            other => Err(Error::Ipc(format!("invalid world status value: {:?}", other))),
+            other => Err(Error::Ipc(format!(
+                "invalid world status value: {:?}",
+                other
+            ))),
         }
     }
 }

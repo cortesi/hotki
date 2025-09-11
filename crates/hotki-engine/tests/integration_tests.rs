@@ -6,32 +6,29 @@ use std::{
     time::Duration,
 };
 
+use hotki_engine::MockHotkeyApi;
 use hotki_engine::{
     Engine, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec, Repeater,
 };
 use hotki_protocol::MsgToUI;
+use hotki_world::World;
 use keymode::Keys;
 use mac_winops::focus::FocusSnapshot;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 /// Ensure tests run without invoking real OS intercepts
-fn ensure_no_os_interaction() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| unsafe {
-        // Avoid real OS interception/relay when running tests
-        std::env::set_var("HOTKI_TEST_FAKE_BINDINGS", "1");
-        std::env::set_var("HOTKI_TEST_FAKE_RELAY", "1");
-    });
-}
+fn ensure_no_os_interaction() {}
 
 /// Test helper to create a test engine with mock components
 async fn create_test_engine() -> (Engine, mpsc::UnboundedReceiver<MsgToUI>) {
     ensure_no_os_interaction();
     let (tx, rx) = mpsc::unbounded_channel();
-    let manager = Arc::new(mac_hotkey::Manager::new().expect("create manager"));
-    let engine = Engine::new(manager, tx);
+    let api = Arc::new(MockHotkeyApi::new());
+    let world = World::spawn_noop();
+    // Use mocked hotkeys, no relay, no world polling
+    let engine =
+        Engine::new_with_api_and_ops(api, tx, Arc::new(mac_winops::ops::RealWinOps), false, world);
     (engine, rx)
 }
 
@@ -206,7 +203,7 @@ async fn test_ticker_cancel_semantics() {
     // Test repeater stop vs stop_sync semantics instead
     // since ticker module is private
     let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
-    let relay = RelayHandler::new();
+    let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);

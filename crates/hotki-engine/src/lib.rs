@@ -37,6 +37,7 @@ use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
 use tracing::{debug, trace, warn};
 
+pub use deps::MockHotkeyApi;
 pub use error::{Error, Result};
 pub use hotki_world::{WorldEvent, WorldWindow};
 pub use notification::NotificationDispatcher;
@@ -185,6 +186,47 @@ impl Engine {
         )));
 
         let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(State::new())),
+            binding_manager: binding_manager_arc,
+            key_tracker: KeyStateTracker::new(),
+            relay_handler,
+            notifier,
+            repeater,
+            config: config_arc,
+            focus_snapshot: focus_snapshot_arc,
+            raise_nonce: Arc::new(AtomicU64::new(0)),
+            last_target_pid: Arc::new(Mutex::new(None)),
+            winops,
+            world,
+        }
+    }
+
+    /// Custom constructor for tests and advanced scenarios.
+    /// Allows injecting a `HotkeyApi`, `WinOps`, relay enable flag, and an explicit World handle.
+    pub fn new_with_api_and_ops(
+        api: Arc<dyn deps::HotkeyApi>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        winops: Arc<dyn WinOps>,
+        relay_enabled: bool,
+        world: hotki_world::WorldHandle,
+    ) -> Self {
+        let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
+            KeyBindingManager::new_with_api(api),
+        ));
+        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
+        let relay_handler = RelayHandler::new_with_enabled(relay_enabled);
+        let notifier = NotificationDispatcher::new(event_tx.clone());
+        let repeater = Repeater::new(
+            focus_snapshot_arc.clone(),
+            relay_handler.clone(),
+            notifier.clone(),
+        );
+        let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
+            keymode::Keys::default(),
+            config::Style::default(),
+        )));
 
         Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),

@@ -28,20 +28,30 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
             Ok(Ok(c)) => break c,
             _ => {
                 if std::time::Instant::now() >= deadline {
-                    return Err(Error::IpcDisconnected { during: "world-status connect" });
+                    return Err(Error::IpcDisconnected {
+                        during: "world-status connect",
+                    });
                 }
-                std::thread::sleep(std::time::Duration::from_millis(config::FAST_RETRY_DELAY_MS));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    config::FAST_RETRY_DELAY_MS,
+                ));
             }
         }
     };
-    let conn = client.connection().map_err(|_| Error::IpcDisconnected { during: "world-status conn" })?;
+    let conn = client.connection().map_err(|_| Error::IpcDisconnected {
+        during: "world-status conn",
+    })?;
 
     // Poll world status a few times to let world tick at least once
     let mut ok = false;
     for _ in 0..10 {
         match crate::runtime::block_on(async { conn.get_world_status().await }) {
             Ok(Ok(ws)) => {
-                if ws.accessibility == 1 && ws.screen_recording == 1 && ws.current_poll_ms >= 10 && ws.current_poll_ms <= 5000 {
+                if ws.accessibility == 1
+                    && ws.screen_recording == 1
+                    && ws.current_poll_ms >= 10
+                    && ws.current_poll_ms <= 5000
+                {
                     ok = true;
                     break;
                 }
@@ -52,7 +62,9 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     if !ok {
-        return Err(Error::InvalidState("world-status acceptance conditions not met (check permissions)".into()));
+        return Err(Error::InvalidState(
+            "world-status acceptance conditions not met (check permissions)".into(),
+        ));
     }
 
     // Cleanly shutdown server

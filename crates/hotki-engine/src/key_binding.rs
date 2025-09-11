@@ -43,9 +43,16 @@ impl KeyBindingManager {
             inv_map: HashMap::new(),
             last_bound: HashSet::new(),
             capture_guard: None,
-            fake: std::env::var("HOTKI_TEST_FAKE_BINDINGS").is_ok() || cfg!(test),
+            fake: false, // default; updated below
             next_id: 1000,
         }
+        .with_fake_mode()
+    }
+
+    fn with_fake_mode(mut self) -> Self {
+        // Decide fake mode based on API type
+        self.fake = self.api.is_fake();
+        self
     }
 
     /// Update bindings based on the desired key pairs

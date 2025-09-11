@@ -61,15 +61,33 @@ pub fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
         hotki_world::PermissionState::Unknown => -1,
     };
     let caps = V::Map(vec![
-        (V::String("accessibility".into()), V::Integer(cap_to_i(&ws.capabilities.accessibility).into())),
-        (V::String("screen_recording".into()), V::Integer(cap_to_i(&ws.capabilities.screen_recording).into())),
+        (
+            V::String("accessibility".into()),
+            V::Integer(cap_to_i(&ws.capabilities.accessibility).into()),
+        ),
+        (
+            V::String("screen_recording".into()),
+            V::Integer(cap_to_i(&ws.capabilities.screen_recording).into()),
+        ),
     ]);
     V::Map(vec![
-        (V::String("windows_count".into()), V::Integer((ws.windows_count as i64).into())),
+        (
+            V::String("windows_count".into()),
+            V::Integer((ws.windows_count as i64).into()),
+        ),
         (V::String("focused".into()), focused),
-        (V::String("last_tick_ms".into()), V::Integer((ws.last_tick_ms as i64).into())),
-        (V::String("current_poll_ms".into()), V::Integer((ws.current_poll_ms as i64).into())),
-        (V::String("debounce_cache".into()), V::Integer((ws.debounce_cache as i64).into())),
+        (
+            V::String("last_tick_ms".into()),
+            V::Integer((ws.last_tick_ms as i64).into()),
+        ),
+        (
+            V::String("current_poll_ms".into()),
+            V::Integer((ws.current_poll_ms as i64).into()),
+        ),
+        (
+            V::String("debounce_cache".into()),
+            V::Integer((ws.debounce_cache as i64).into()),
+        ),
         (V::String("capabilities".into()), caps),
     ])
 }

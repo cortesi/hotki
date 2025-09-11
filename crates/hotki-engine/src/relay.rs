@@ -22,25 +22,26 @@ pub struct RelayHandler {
 
 impl Default for RelayHandler {
     fn default() -> Self {
-        Self::new()
+        Self::new_with_enabled(true)
     }
 }
 
 impl RelayHandler {
-    /// Create a new relay handler.
-    pub fn new() -> Self {
-        let fake = std::env::var("HOTKI_TEST_FAKE_RELAY").is_ok()
-            || std::env::var("HOTKI_TEST_FAKE_BINDINGS").is_ok()
-            || cfg!(test);
-        let relay_key = if fake {
-            None
-        } else {
+    /// Create a new relay handler with relay enabled/disabled.
+    pub fn new_with_enabled(enabled: bool) -> Self {
+        let relay_key = if enabled {
             Some(relaykey::RelayKey::new())
+        } else {
+            None
         };
         Self {
             active: Arc::new(Mutex::new(HashMap::new())),
             relay_key,
         }
+    }
+    /// Create a relay handler with relays enabled (production default).
+    pub fn new() -> Self {
+        Self::new_with_enabled(true)
     }
 
     /// Start relaying a chord to a pid (posts an initial KeyDown).

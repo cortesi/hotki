@@ -177,6 +177,36 @@ impl World {
 
         WorldHandle { tx, events: evt_tx }
     }
+
+    /// Spawn a no-op world suitable for tests. Responds immediately with
+    /// default/empty data and emits no events. No polling or background work.
+    pub fn spawn_noop() -> WorldHandle {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (evt_tx, _evt_rx) = broadcast::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    Command::Snapshot { respond } => {
+                        let _ = respond.send(Vec::new());
+                    }
+                    Command::Get { respond, .. } => {
+                        let _ = respond.send(None);
+                    }
+                    Command::Focused { respond } => {
+                        let _ = respond.send(None);
+                    }
+                    Command::Capabilities { respond } => {
+                        let _ = respond.send(Capabilities::default());
+                    }
+                    Command::HintRefresh => {}
+                    Command::Status { respond } => {
+                        let _ = respond.send(WorldStatus::default());
+                    }
+                }
+            }
+        });
+        WorldHandle { tx, events: evt_tx }
+    }
 }
 
 // ===== Stage 2: Actor + Storage =====
@@ -533,20 +563,27 @@ struct TestOverrides {
 }
 
 fn acc_ok() -> bool {
-    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.acc_ok)) { return v; }
+    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.acc_ok)) {
+        return v;
+    }
     permissions::accessibility_ok()
 }
 
 fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
-    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_focus.clone())) {
-        if p == pid { return Some(id); }
+    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_focus))
+        && p == pid
+    {
+        return Some(id);
     }
     mac_winops::ax_focused_window_id_for_pid(pid)
 }
 
 fn ax_title_for_window_id(id: u32) -> Option<String> {
-    if let Some((tid, title)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_title.clone())) {
-        if tid == id { return Some(title); }
+    if let Some((tid, title)) =
+        TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_title.clone()))
+        && tid == id
+    {
+        return Some(title);
     }
     mac_winops::ax_title_for_window_id(id)
 }
@@ -562,19 +599,39 @@ fn list_display_bounds() -> Vec<(u32, i32, i32, i32, i32)> {
 pub mod test_api {
     use super::{TEST_OVERRIDES, TestOverrides};
     pub fn set_accessibility_ok(v: bool) {
-        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.acc_ok = Some(v); } });
+        TEST_OVERRIDES.with(|o| {
+            if let Ok(mut s) = o.lock() {
+                s.acc_ok = Some(v);
+            }
+        });
     }
     pub fn set_ax_focus(pid: i32, id: u32) {
-        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.ax_focus = Some((pid, id)); } });
+        TEST_OVERRIDES.with(|o| {
+            if let Ok(mut s) = o.lock() {
+                s.ax_focus = Some((pid, id));
+            }
+        });
     }
     pub fn set_ax_title(id: u32, title: &str) {
         let t = title.to_string();
-        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.ax_title = Some((id, t)); } });
+        TEST_OVERRIDES.with(|o| {
+            if let Ok(mut s) = o.lock() {
+                s.ax_title = Some((id, t));
+            }
+        });
     }
     pub fn set_displays(v: Vec<(u32, i32, i32, i32, i32)>) {
-        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.displays = Some(v); } });
+        TEST_OVERRIDES.with(|o| {
+            if let Ok(mut s) = o.lock() {
+                s.displays = Some(v);
+            }
+        });
     }
     pub fn clear() {
-        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { *s = TestOverrides::default(); } });
+        TEST_OVERRIDES.with(|o| {
+            if let Ok(mut s) = o.lock() {
+                *s = TestOverrides::default();
+            }
+        });
     }
 }
