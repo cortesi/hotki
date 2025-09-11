@@ -2,6 +2,8 @@
 //!
 //! Maintains types and constructor for the World service.
 //! This stage provides the public API surface only; implementation arrives in later stages.
+#![warn(missing_docs)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
