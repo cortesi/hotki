@@ -28,17 +28,17 @@ Acceptance
 ## Step 2 — Add server push channel for world events to UI
 
 Tasks
-- [ ] Define encoding for `WorldEvent` (Added/Removed/Updated/FocusChanged) in `hotki-server` using MRPC values.
-- [ ] Add a dedicated notification route (e.g., `HotkeyNotification::World`) or reuse the existing notify channel with a new envelope type.
-- [ ] Implement subscription inside server: bridge `WorldHandle::subscribe()` to push events to connected UI clients.
-- [ ] Provide request to start/stop world stream from the UI (or auto‑start on client connect).
-- [ ] Rate limiting/backpressure:
+- [x] Define encoding for `WorldEvent` (Added/Removed/Updated/FocusChanged) in `hotki-protocol`/server using MRPC values (`MsgToUI::World(WorldStreamMsg)` with `WorldWindowLite`).
+- [x] Reuse existing notify channel with a new envelope type (`MsgToUI::World`).
+- [x] Implement subscription inside server: bridge `WorldHandle::subscribe()` to push events to connected UI clients.
+- [x] Auto‑start world stream on first client connect.
+- [x] Rate limiting/backpressure:
   - [ ] Coalesce bursts on the server if the UI stalls; ensure final state reaches the UI.
-  - [ ] On overflow, send a synthetic “ResyncRecommended” and let UI refetch snapshot.
+  - [x] On overflow, send a synthetic “ResyncRecommended” and let UI refetch snapshot.
 
 Acceptance
-- [ ] UI receives `FocusChanged` within one world polling cycle of the source change (best effort).
-- [ ] Under heavy churn, UI either stays current or receives a resync hint and can call a snapshot method.
+- [x] UI receives `FocusChanged` within one world polling cycle of the source change (best effort).
+- [x] Under heavy churn, UI either stays current or receives a resync hint and can call a snapshot method.
 
 ---
 

@@ -695,7 +695,12 @@ fn startup_focus_event_and_context_and_snapshot() {
             "TitleX",
             300,
             30,
-            Pos { x: 0, y: 0, width: 200, height: 150 },
+            Pos {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 150,
+            },
             0,
             true,
         )]);
@@ -713,7 +718,10 @@ fn startup_focus_event_and_context_and_snapshot() {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(snap_ok, "expected startup snapshot to include initial window");
+        assert!(
+            snap_ok,
+            "expected startup snapshot to include initial window"
+        );
 
         // Focused context should match the focused window
         let ctx = world.focused_context().await;

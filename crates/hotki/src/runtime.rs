@@ -360,6 +360,22 @@ impl ConnectionDriver {
                             // Liveness tick; reset timer and do nothing else.
                             hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
                         }
+                        Ok(MsgToUI::World(msg)) => {
+                            // World event stream; record liveness and log.
+                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
+                            match msg {
+                                hotki_protocol::WorldStreamMsg::FocusChanged(Some(app)) => {
+                                    debug!("World FocusChanged: app={} pid={} title={}", app.app, app.pid, app.title);
+                                }
+                                hotki_protocol::WorldStreamMsg::FocusChanged(None) => {
+                                    debug!("World FocusChanged: none");
+                                }
+                                hotki_protocol::WorldStreamMsg::ResyncRecommended => {
+                                    debug!("World ResyncRecommended: UI may request snapshot later");
+                                }
+                                _ => {}
+                            }
+                        }
                         Err(e) => {
                             match e {
                                 // Channel closed is expected on shutdown; log at info level

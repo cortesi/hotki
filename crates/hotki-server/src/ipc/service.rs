@@ -26,7 +26,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification, enc_world_status};
 use hotki_engine::Engine;
-use hotki_protocol::MsgToUI;
+use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
@@ -49,6 +49,7 @@ pub struct HotkeyService {
     proxy: tao::event_loop::EventLoopProxy<()>,
     /// Ensure we only spawn one heartbeat loop across clones.
     hb_running: Arc<AtomicBool>,
+    world_forwarder_running: Arc<AtomicBool>,
 }
 
 impl HotkeyService {
@@ -81,6 +82,7 @@ impl HotkeyService {
             per_id_capacity: None,
             proxy,
             hb_running: Arc::new(AtomicBool::new(false)),
+            world_forwarder_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -144,6 +146,81 @@ impl HotkeyService {
             }
             self.broadcast_event(event).await;
         }
+    }
+
+    /// Start forwarding world events to the UI channel as MsgToUI::World.
+    fn start_world_forwarder(&self) {
+        if self.world_forwarder_running.swap(true, Ordering::SeqCst) {
+            return; // already running
+        }
+        let shutdown = self.shutdown.clone();
+        let event_tx = self.event_tx.clone();
+        let engine = self.engine.clone();
+        tokio::spawn(async move {
+            // Ensure engine exists and get world handle
+            let world = loop {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Some(eng) = engine.lock().await.as_ref() {
+                    break eng.clone();
+                }
+                // engine not initialized yet; wait briefly
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            };
+            let wh = {
+                let eng = engine.lock().await;
+                // safe to unwrap: loop above ensured Some
+                eng.as_ref().unwrap().world_handle()
+            };
+            let mut rx = wh.subscribe();
+            loop {
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                match rx.recv().await {
+                    Ok(ev) => {
+                        let msg_opt: Option<WorldStreamMsg> = match ev {
+                            hotki_world::WorldEvent::Added(w) => {
+                                Some(WorldStreamMsg::Added(WorldWindowLite {
+                                    app: w.app,
+                                    title: w.title,
+                                    pid: w.pid,
+                                    id: w.id,
+                                    z: w.z,
+                                    focused: w.focused,
+                                    display_id: w.display_id,
+                                }))
+                            }
+                            hotki_world::WorldEvent::Removed(k) => Some(WorldStreamMsg::Removed {
+                                pid: k.pid,
+                                id: k.id,
+                            }),
+                            hotki_world::WorldEvent::Updated(k, _d) => {
+                                Some(WorldStreamMsg::Updated {
+                                    pid: k.pid,
+                                    id: k.id,
+                                })
+                            }
+                            hotki_world::WorldEvent::MetaAdded(_, _)
+                            | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
+                            hotki_world::WorldEvent::FocusChanged(_k) => {
+                                let ctx = wh.focused_context().await;
+                                let app = ctx.map(|(app, title, pid)| App { app, title, pid });
+                                Some(WorldStreamMsg::FocusChanged(app))
+                            }
+                        };
+                        if let Some(msg) = msg_opt {
+                            let _ = event_tx.send(MsgToUI::World(msg));
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = event_tx.send(MsgToUI::World(WorldStreamMsg::ResyncRecommended));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
     }
 
     /// Broadcast an event to all connected clients
@@ -212,6 +289,9 @@ impl MrpcConnection for HotkeyService {
                 service_clone.forward_events(event_rx).await;
             });
         }
+
+        // Begin world forwarder if not already running
+        self.start_world_forwarder();
 
         // Set up log forwarding to this client
         // Bind the global log sink to the single event channel. Logs are then

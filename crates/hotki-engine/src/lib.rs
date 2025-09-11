@@ -295,6 +295,11 @@ impl Engine {
         eng
     }
 
+    /// Access the world service handle for event subscriptions and snapshots.
+    pub fn world_handle(&self) -> hotki_world::WorldHandle {
+        self.world.clone()
+    }
+
     async fn rebind_current_context(&self) -> Result<()> {
         let fs = self.current_snapshot();
         debug!("Rebinding with context: app={}, title={}", fs.app, fs.title);
