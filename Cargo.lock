@@ -2253,6 +2253,7 @@ dependencies = [
  "futures",
  "hotki-engine",
  "hotki-protocol",
+ "hotki-world",
  "keymode",
  "libc",
  "log-forward",

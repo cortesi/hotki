@@ -15,6 +15,7 @@ pub enum HotkeyMethod {
     InjectKey,
     GetBindings,
     GetDepth,
+    GetWorldStatus,
 }
 
 impl HotkeyMethod {
@@ -26,6 +27,7 @@ impl HotkeyMethod {
             HotkeyMethod::InjectKey => "inject_key",
             HotkeyMethod::GetBindings => "get_bindings",
             HotkeyMethod::GetDepth => "get_depth",
+            HotkeyMethod::GetWorldStatus => "get_world_status",
         }
     }
 
@@ -37,9 +39,39 @@ impl HotkeyMethod {
             "inject_key" => Some(HotkeyMethod::InjectKey),
             "get_bindings" => Some(HotkeyMethod::GetBindings),
             "get_depth" => Some(HotkeyMethod::GetDepth),
+            "get_world_status" => Some(HotkeyMethod::GetWorldStatus),
             _ => None,
         }
     }
+}
+
+/// Encode world status into an MRPC value for transport.
+pub fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
+    use mrpc::Value as V;
+    let focused = match ws.focused {
+        Some(k) => V::Map(vec![
+            (V::String("pid".into()), V::Integer((k.pid as i64).into())),
+            (V::String("id".into()), V::Integer((k.id as i64).into())),
+        ]),
+        None => V::Nil,
+    };
+    let cap_to_i = |p: &hotki_world::PermissionState| match p {
+        hotki_world::PermissionState::Granted => 1,
+        hotki_world::PermissionState::Denied => 0,
+        hotki_world::PermissionState::Unknown => -1,
+    };
+    let caps = V::Map(vec![
+        (V::String("accessibility".into()), V::Integer(cap_to_i(&ws.capabilities.accessibility).into())),
+        (V::String("screen_recording".into()), V::Integer(cap_to_i(&ws.capabilities.screen_recording).into())),
+    ]);
+    V::Map(vec![
+        (V::String("windows_count".into()), V::Integer((ws.windows_count as i64).into())),
+        (V::String("focused".into()), focused),
+        (V::String("last_tick_ms".into()), V::Integer((ws.last_tick_ms as i64).into())),
+        (V::String("current_poll_ms".into()), V::Integer((ws.current_poll_ms as i64).into())),
+        (V::String("debounce_cache".into()), V::Integer((ws.debounce_cache as i64).into())),
+        (V::String("capabilities".into()), caps),
+    ])
 }
 
 /// One-way server→client notification channels.

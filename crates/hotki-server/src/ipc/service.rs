@@ -24,7 +24,7 @@ use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Valu
 use tokio::sync::{Mutex as AsyncMutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification};
+use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification, enc_world_status};
 use hotki_engine::Engine;
 use hotki_protocol::MsgToUI;
 
@@ -436,6 +436,27 @@ impl MrpcConnection for HotkeyService {
                 };
                 let depth = eng.get_depth().await as u64;
                 Ok(Value::Integer(depth.into()))
+            }
+
+            Some(HotkeyMethod::GetWorldStatus) => {
+                // Ensure engine
+                if let Err(e) = self.ensure_engine_initialized().await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineInit,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+                let eng = match self.engine.lock().await.as_ref() {
+                    Some(e) => e.clone(),
+                    None => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineNotInitialized,
+                            &[("message", Value::String("engine not initialized".into()))],
+                        ));
+                    }
+                };
+                let st = eng.world_status().await;
+                Ok(enc_world_status(&st))
             }
 
             None => {

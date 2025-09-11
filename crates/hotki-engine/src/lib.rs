@@ -389,6 +389,11 @@ impl Engine {
         self.world.subscribe()
     }
 
+    /// Diagnostics: world status snapshot (counts, timings, permissions).
+    pub async fn world_status(&self) -> hotki_world::WorldStatus {
+        self.world.status().await
+    }
+
     /// Process a key event and return whether depth changed (requiring rebind)
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
