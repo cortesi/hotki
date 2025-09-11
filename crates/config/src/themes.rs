@@ -1,3 +1,16 @@
+//! Theme registry and helpers.
+//!
+//! Important: deadlock avoidance when loading themes.
+//!
+//! This module uses a `OnceLock<HashMap<..>>` to store compiled themes. When
+//! populating the map inside `get_or_init`, we must not call any function that
+//! (directly or indirectly) tries to access the same `themes()` initializer,
+//! or we’d re-enter the `OnceLock` initialization and deadlock.
+//!
+//! Therefore, theme files are parsed via `ron::from_str` into a `RawConfig`
+//! wrapper and then converted into a `Style`, instead of going through the
+//! higher-level loader API. Do not replace this with a call that resolves
+//! themes dynamically.
 use std::{collections::HashMap, sync::OnceLock};
 
 use crate::Style;

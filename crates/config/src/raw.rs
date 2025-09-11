@@ -9,10 +9,15 @@ use super::{
 
 // ===== FIELD WRAPPERS FOR OPTIONAL VALUES =====
 
-/// Generic optional wrapper that accepts:
-/// - missing/`()` as None
-/// - plain value `T` as Some(T)
-/// - `Option<T>` (Some/None) for completeness
+/// Generic optional wrapper used when deserializing user config values.
+///
+/// Purpose
+/// - Treats an omitted field or explicit unit `()` as not provided (None).
+/// - Accepts a plain value `T` as provided (Some(T)).
+/// - Accepts an `Option<T>` for completeness and pass‑through.
+///
+/// This wrapper lets top‑level and nested style sections be succinct while still
+/// allowing explicit nulling where supported.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Maybe<T> {
@@ -155,13 +160,18 @@ impl RawNotify {
     /// Internal helper: apply overrides over a base Notify
     fn apply_over(self, base: &Notify) -> Notify {
         let defaults = base.clone();
+        macro_rules! or_field {
+            ($field:ident) => {
+                self.$field.unwrap_or(defaults.$field)
+            };
+        }
         Notify {
-            width: self.width.unwrap_or(defaults.width),
-            pos: self.pos.unwrap_or(defaults.pos),
-            opacity: self.opacity.unwrap_or(defaults.opacity),
-            timeout: self.timeout.unwrap_or(defaults.timeout),
-            buffer: self.buffer.unwrap_or(defaults.buffer),
-            radius: self.radius.unwrap_or(defaults.radius),
+            width: or_field!(width),
+            pos: or_field!(pos),
+            opacity: or_field!(opacity),
+            timeout: or_field!(timeout),
+            buffer: or_field!(buffer),
+            radius: or_field!(radius),
             info: self
                 .info
                 .map(|s| s.into_notify_style(defaults.info.clone()))
@@ -248,47 +258,66 @@ pub struct RawHud {
 
 // Shared color fallback for HUD
 fn color_or(src: &Option<String>, default: (u8, u8, u8)) -> (u8, u8, u8) {
-    src.as_deref().and_then(parse_rgb).unwrap_or(default)
+    match src.as_deref() {
+        Some(s) => match parse_rgb(s) {
+            Some(rgb) => rgb,
+            None => {
+                eprintln!("Warning: invalid color '{}', using default", s);
+                default
+            }
+        },
+        None => default,
+    }
 }
 
 impl RawHud {
     /// Internal helper: apply overrides over a base Hud
     fn apply_over(self, base: &Hud) -> Hud {
+        macro_rules! or_field {
+            ($self_:expr, $defaults:expr, $field:ident) => {
+                $self_.$field.unwrap_or($defaults.$field)
+            };
+        }
+        macro_rules! color_field {
+            ($self_:expr, $defaults:expr, $field:ident) => {
+                color_or(&$self_.$field, $defaults.$field)
+            };
+        }
         let defaults = base.clone();
-        let mode = self.mode.unwrap_or(defaults.mode);
-        let font_size = self.font_size.unwrap_or(defaults.font_size);
-        let title_fg = color_or(&self.title_fg, defaults.title_fg);
-        let bg = color_or(&self.bg, defaults.bg);
-        let key_fg = color_or(&self.key_fg, defaults.key_fg);
-        let key_bg = color_or(&self.key_bg, defaults.key_bg);
-        let mod_fg = color_or(&self.mod_fg, defaults.mod_fg);
-        let mod_bg = color_or(&self.mod_bg, defaults.mod_bg);
-        let tag_fg = color_or(&self.tag_fg, defaults.tag_fg);
+        let mode = or_field!(self, defaults, mode);
+        let font_size = or_field!(self, defaults, font_size);
+        let title_fg = color_field!(self, defaults, title_fg);
+        let bg = color_field!(self, defaults, bg);
+        let key_fg = color_field!(self, defaults, key_fg);
+        let key_bg = color_field!(self, defaults, key_bg);
+        let mod_fg = color_field!(self, defaults, mod_fg);
+        let mod_bg = color_field!(self, defaults, mod_bg);
+        let tag_fg = color_field!(self, defaults, tag_fg);
 
         Hud {
             mode,
-            pos: self.pos.unwrap_or(defaults.pos),
-            offset: self.offset.unwrap_or(defaults.offset),
+            pos: or_field!(self, defaults, pos),
+            offset: or_field!(self, defaults, offset),
             font_size,
-            title_font_weight: self.title_font_weight.unwrap_or(defaults.title_font_weight),
+            title_font_weight: or_field!(self, defaults, title_font_weight),
             // key_font_size and tag_font_size default to font_size if not specified
             key_font_size: self.key_font_size.unwrap_or(font_size),
-            key_font_weight: self.key_font_weight.unwrap_or(defaults.key_font_weight),
+            key_font_weight: or_field!(self, defaults, key_font_weight),
             tag_font_size: self.tag_font_size.unwrap_or(font_size),
-            tag_font_weight: self.tag_font_weight.unwrap_or(defaults.tag_font_weight),
+            tag_font_weight: or_field!(self, defaults, tag_font_weight),
             title_fg,
             bg,
             key_fg,
             key_bg,
             mod_fg,
-            mod_font_weight: self.mod_font_weight.unwrap_or(defaults.mod_font_weight),
+            mod_font_weight: or_field!(self, defaults, mod_font_weight),
             mod_bg,
             tag_fg,
-            opacity: self.opacity.unwrap_or(defaults.opacity),
-            key_radius: self.key_radius.unwrap_or(defaults.key_radius),
-            key_pad_x: self.key_pad_x.unwrap_or(defaults.key_pad_x),
-            key_pad_y: self.key_pad_y.unwrap_or(defaults.key_pad_y),
-            radius: self.radius.unwrap_or(defaults.radius),
+            opacity: or_field!(self, defaults, opacity),
+            key_radius: or_field!(self, defaults, key_radius),
+            key_pad_x: or_field!(self, defaults, key_pad_x),
+            key_pad_y: or_field!(self, defaults, key_pad_y),
+            radius: or_field!(self, defaults, radius),
             tag_submenu: self
                 .tag_submenu
                 .unwrap_or_else(|| defaults.tag_submenu.clone()),
