@@ -6,29 +6,13 @@ use hotki_world::{WindowKey, World, WorldCfg, WorldEvent};
 use mac_winops::ops::{MockWinOps, WinOps};
 use mac_winops::{Pos, WindowId, WindowInfo};
 
-fn win(
-    app: &str,
-    title: &str,
-    pid: i32,
-    id: WindowId,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    layer: i32,
-    focused: bool,
-) -> WindowInfo {
+fn win(app: &str, title: &str, pid: i32, id: WindowId, pos: Pos, layer: i32, focused: bool) -> WindowInfo {
     WindowInfo {
         app: app.into(),
         title: title.into(),
         pid,
         id,
-        pos: Some(Pos {
-            x,
-            y,
-            width: w,
-            height: h,
-        }),
+        pos: Some(pos),
         space: Some(1),
         layer,
         focused,
@@ -53,8 +37,8 @@ fn startup_adds_and_z_order() {
     rt.block_on(async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
-            win("AppA", "A1", 100, 1, 0, 0, 100, 100, 0, true), // frontmost
-            win("AppB", "B1", 200, 2, 0, 0, 100, 100, 0, false),
+            win("AppA", "A1", 100, 1, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, true), // frontmost
+            win("AppB", "B1", 200, 2, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, false),
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
 
@@ -91,8 +75,8 @@ fn focus_changes_emit_event_and_snapshot_updates() {
     rt.block_on(async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
-            win("AppA", "A1", 100, 1, 0, 0, 100, 100, 0, true),
-            win("AppB", "B1", 200, 2, 0, 0, 100, 100, 0, false),
+            win("AppA", "A1", 100, 1, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, true),
+            win("AppB", "B1", 200, 2, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, false),
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         let mut rx = world.subscribe();
@@ -103,8 +87,8 @@ fn focus_changes_emit_event_and_snapshot_updates() {
 
         // Flip focus to AppB
         mock.set_windows(vec![
-            win("AppA", "A1", 100, 1, 0, 0, 100, 100, 0, false),
-            win("AppB", "B1", 200, 2, 0, 0, 100, 100, 0, true),
+            win("AppA", "A1", 100, 1, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, false),
+            win("AppB", "B1", 200, 2, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, true),
         ]);
 
         // Observe FocusChanged event to AppB
@@ -138,14 +122,30 @@ fn title_update_reflected_in_snapshot() {
         .unwrap();
     rt.block_on(async move {
         let mock = Arc::new(MockWinOps::new());
-        mock.set_windows(vec![win("AppA", "Old", 100, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "Old",
+            100,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         let _rx = world.subscribe();
         // Wait for initial Added and debounce window to expire
         tokio::time::sleep(Duration::from_millis(80)).await;
 
         // Change title
-        mock.set_windows(vec![win("AppA", "New", 100, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "New",
+            100,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
 
         // Confirm snapshot reflects new title
         let mut ok = false;
@@ -174,8 +174,8 @@ fn ax_focus_and_title_precedence() {
         // Two windows for same app; CG marks first as focused, but AX will point to second.
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
-            win("AppA", "CG-Title-1", 10, 101, 0, 0, 100, 100, 0, true),
-            win("AppA", "CG-Title-2", 10, 102, 0, 0, 100, 100, 0, false),
+            win("AppA", "CG-Title-1", 10, 101, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, true),
+            win("AppA", "CG-Title-2", 10, 102, Pos { x: 0, y: 0, width: 100, height: 100 }, 0, false),
         ]);
 
         // Force AX path and declare AX focused window + AX title for the second window.
@@ -208,10 +208,10 @@ fn display_mapping_selects_best_overlap() {
         world_test::set_displays(vec![(1, 0, 0, 800, 600), (2, 800, 0, 800, 600)]);
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
-            win("AppA", "Left", 1, 1, 10, 10, 200, 200, 0, true),
-            win("AppB", "Right", 2, 2, 900, 10, 200, 200, 0, false),
+            win("AppA", "Left", 1, 1, Pos { x: 10, y: 10, width: 200, height: 200 }, 0, true),
+            win("AppB", "Right", 2, 2, Pos { x: 900, y: 10, width: 200, height: 200 }, 0, false),
             // Overlapping across both, but larger overlap on right
-            win("AppC", "Overlap", 3, 3, 700, 10, 300, 300, 0, false),
+            win("AppC", "Overlap", 3, 3, Pos { x: 700, y: 10, width: 300, height: 300 }, 0, false),
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -233,7 +233,15 @@ fn debounce_updates_within_window() {
         .unwrap();
     rt.block_on(async move {
         let mock = Arc::new(MockWinOps::new());
-        mock.set_windows(vec![win("AppA", "T0", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T0",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         let world = World::spawn(
             mock.clone() as Arc<dyn WinOps>,
             WorldCfg {
@@ -248,7 +256,15 @@ fn debounce_updates_within_window() {
         while let Ok(_e) = rx.try_recv() {}
 
         // First change -> expect snapshot to update
-        mock.set_windows(vec![win("AppA", "T1", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T1",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         let mut ok = false;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
         while tokio::time::Instant::now() < deadline {
@@ -264,7 +280,15 @@ fn debounce_updates_within_window() {
         assert!(ok, "expected snapshot to update after first change");
 
         // Second change within 50ms window -> should be coalesced (no extra Updated)
-        mock.set_windows(vec![win("AppA", "T2", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T2",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         // Second change within 50ms; snapshot should update too (debounce only affects events)
         let mut ok2 = false;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
@@ -282,7 +306,15 @@ fn debounce_updates_within_window() {
 
         // After 60ms, another change should emit again
         tokio::time::sleep(Duration::from_millis(60)).await;
-        mock.set_windows(vec![win("AppA", "T3", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T3",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         // Third change after debounce window; snapshot must reflect T3
         let mut ok3 = false;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
@@ -309,7 +341,15 @@ fn debounce_event_coalescing_for_repetitive_changes() {
     rt.block_on(async move {
         let mock = Arc::new(MockWinOps::new());
         // Start with a single focused window
-        mock.set_windows(vec![win("AppA", "T0", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T0",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         let world = World::spawn(
             mock.clone() as Arc<dyn WinOps>,
             WorldCfg {
@@ -329,11 +369,35 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         //  - title change
         //  - move
         //  - resize
-        mock.set_windows(vec![win("AppA", "T1", 1, 1, 0, 0, 100, 100, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T1",
+            1,
+            1,
+            Pos { x: 0, y: 0, width: 100, height: 100 },
+            0,
+            true,
+        )]);
         tokio::time::sleep(Duration::from_millis(5)).await;
-        mock.set_windows(vec![win("AppA", "T1", 1, 1, 10, 5, 100, 100, 0, true)]); // move
+        mock.set_windows(vec![win(
+            "AppA",
+            "T1",
+            1,
+            1,
+            Pos { x: 10, y: 5, width: 100, height: 100 },
+            0,
+            true,
+        )]); // move
         tokio::time::sleep(Duration::from_millis(5)).await;
-        mock.set_windows(vec![win("AppA", "T2", 1, 1, 10, 5, 120, 110, 0, true)]); // resize + title
+        mock.set_windows(vec![win(
+            "AppA",
+            "T2",
+            1,
+            1,
+            Pos { x: 10, y: 5, width: 120, height: 110 },
+            0,
+            true,
+        )]); // resize + title
 
         // Trigger immediate reconcile to observe burst deterministically.
         world.hint_refresh();
@@ -366,7 +430,15 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 
         // After debounce window (>50ms), another change should emit a NEW Updated event.
         tokio::time::sleep(Duration::from_millis(70)).await;
-        mock.set_windows(vec![win("AppA", "T3", 1, 1, 20, 10, 130, 120, 0, true)]);
+        mock.set_windows(vec![win(
+            "AppA",
+            "T3",
+            1,
+            1,
+            Pos { x: 20, y: 10, width: 130, height: 120 },
+            0,
+            true,
+        )]);
         world.hint_refresh();
 
         // Expect one more Updated for the same window.

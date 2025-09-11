@@ -17,7 +17,9 @@ use tokio::time::{Instant as TokioInstant, sleep};
 /// Unique key for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowKey {
+    /// Process identifier that owns the window.
     pub pid: i32,
+    /// Core Graphics window id (`kCGWindowNumber`). Stable for the lifetime of the window.
     pub id: WindowId,
 }
 
@@ -28,29 +30,57 @@ pub struct WindowMeta;
 /// Identifier for a display.
 pub type DisplayId = u32;
 
+/// Display bounds tuple: `(display_id, x, y, width, height)` in Cocoa screen coordinates.
+pub type DisplayBounds = (DisplayId, i32, i32, i32, i32);
+
 /// Snapshot of a single window.
 #[derive(Clone, Debug)]
 pub struct WorldWindow {
+    /// Human-readable application name (from CoreGraphics `kCGWindowOwnerName`).
     pub app: String,
+    /// Window title.
+    ///
+    /// If Accessibility is granted and the window is focused, the title prefers the
+    /// AX value for the focused window for better fidelity; otherwise the CoreGraphics
+    /// title is used. When Screen Recording permission is denied, some titles may be
+    /// blank as macOS may redact them.
     pub title: String,
+    /// Owning process id.
     pub pid: i32,
+    /// Core Graphics window id (`kCGWindowNumber`).
     pub id: WindowId,
+    /// Window bounds in screen coordinates, when known.
+    /// `None` if the window is off-screen or CoreGraphics did not report bounds.
     pub pos: Option<Pos>,
+    /// CoreGraphics window layer (0 = standard app windows). Non-zero layers are
+    /// overlays such as HUD/notification windows.
     pub layer: i32,
+    /// Monotonic z-order index within the current snapshot: 0 is frontmost, larger
+    /// values are farther back. Derived from CoreGraphics enumeration order.
     pub z: u32,
+    /// True if the window is observed on the active Space in the current snapshot.
     pub on_active_space: bool,
+    /// Identifier of the display with the largest overlap of the window's bounds, if any.
     pub display_id: Option<DisplayId>,
+    /// True if this is the focused window according to AX (preferred) or CG fallback.
     pub focused: bool,
+    /// Opaque metadata tags associated with the window (reserved for future use).
     pub meta: Vec<WindowMeta>,
+    /// Timestamp when this window was last observed during reconciliation.
     pub last_seen: Instant,
+    /// Sequence number of the last scan in which this window was seen. Useful for
+    /// debugging and tests.
     pub seen_seq: u64,
 }
 
 /// Permission state for capabilities that affect data quality.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionState {
+    /// Permission is granted.
     Granted,
+    /// Permission is explicitly denied.
     Denied,
+    /// Permission has not been determined yet.
     Unknown,
 }
 
@@ -63,16 +93,26 @@ impl Default for PermissionState {
 /// Reported capabilities and current permission state.
 #[derive(Clone, Debug, Default)]
 pub struct Capabilities {
+    /// Accessibility permission. Needed for accurate focus tracking and for
+    /// reading AX titles of the focused window.
     pub accessibility: PermissionState,
+    /// Screen Recording permission. Without this, CoreGraphics may redact some
+    /// window titles, resulting in blank titles.
     pub screen_recording: PermissionState,
 }
 
 /// Configuration for the world service.
 #[derive(Clone, Debug)]
 pub struct WorldCfg {
+    /// Minimum polling interval in milliseconds. Used immediately after changes or
+    /// on a refresh hint.
     pub poll_ms_min: u64,
+    /// Maximum polling interval in milliseconds when idle. The actor exponentially
+    /// backs off up to this bound.
     pub poll_ms_max: u64,
+    /// Reserved for future use. Off‑screen windows are currently not enumerated.
     pub include_offscreen: bool,
+    /// Reserved for future use. AX frontmost watching is not yet enabled here.
     pub ax_watch_frontmost: bool,
 }
 
@@ -94,22 +134,35 @@ pub struct WindowDelta;
 /// World events stream payloads.
 #[derive(Clone, Debug)]
 pub enum WorldEvent {
+    /// A new window was observed. Carries the initial snapshot of that window.
     Added(WorldWindow),
+    /// A previously observed window disappeared from the active Space.
     Removed(WindowKey),
+    /// A window's properties changed. Updates are coalesced with a ~50ms debounce
+    /// to avoid flooding on rapid changes.
     Updated(WindowKey, WindowDelta),
+    /// A metadata tag was attached to a window (reserved for future use).
     MetaAdded(WindowKey, WindowMeta),
+    /// A metadata tag was removed from a window (reserved for future use).
     MetaRemoved(WindowKey, WindowMeta),
+    /// The focused window changed. `None` indicates no focused window.
     FocusChanged(Option<WindowKey>),
 }
 
 /// Diagnostic snapshot of world internals.
 #[derive(Clone, Debug, Default)]
 pub struct WorldStatus {
+    /// Number of windows currently tracked.
     pub windows_count: usize,
+    /// Key of the currently focused window, if any.
     pub focused: Option<WindowKey>,
+    /// Time spent (ms) in the most recent reconciliation pass.
     pub last_tick_ms: u64,
+    /// Current polling interval (ms) after backoff/adaptation.
     pub current_poll_ms: u64,
+    /// Size of the internal debounce cache used to coalesce updates.
     pub debounce_cache: usize,
+    /// Reported capability/permission state affecting data quality.
     pub capabilities: Capabilities,
 }
 
@@ -121,12 +174,18 @@ pub struct WorldHandle {
 }
 
 impl WorldHandle {
-    /// Subscribe to the global event stream (no filters in Stage 2).
+    /// Subscribe to the world event stream.
+    ///
+    /// The stream includes Added/Updated/Removed and FocusChanged events. Callers
+    /// should drain events promptly to avoid backpressure on the broadcast buffer.
     pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
         self.events.subscribe()
     }
 
     /// Get a full snapshot of current windows.
+    ///
+    /// The returned vector is not sorted; callers may sort by `z` or other fields
+    /// if a specific order is required.
     pub async fn snapshot(&self) -> Vec<WorldWindow> {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::Snapshot { respond: tx });
@@ -162,13 +221,21 @@ impl WorldHandle {
     }
 }
 
-/// World constructor. Spawns the service and returns a handle.
+/// World constructor. Spawns the background actor and returns a handle.
 ///
-/// Stage 1: define the API surface. Implementation is added in later stages.
+/// The actor continuously reconciles CoreGraphics/AX window state on a dynamic
+/// polling interval between `poll_ms_min` and `poll_ms_max`, emitting events to
+/// subscribers and serving snapshots via the handle.
 pub struct World;
 
 impl World {
     #[allow(unused_variables)]
+    /// Start the world service.
+    ///
+    /// - `winops`: abstraction for window enumeration and helpers (real or mock)
+    /// - `cfg`: tuning parameters for polling/backoff
+    ///
+    /// Returns a [`WorldHandle`] for querying snapshots and subscribing to events.
     pub fn spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle {
         let (tx, rx) = mpsc::unbounded_channel();
         // Keep event buffer moderate; callers should keep up.
@@ -526,7 +593,7 @@ fn update_capabilities(state: &mut WorldState) {
     }
 }
 
-fn best_display_id(pos: &Pos, displays: &[(u32, i32, i32, i32, i32)]) -> Option<u32> {
+fn best_display_id(pos: &Pos, displays: &[DisplayBounds]) -> Option<DisplayId> {
     let (x, y, w, h) = (pos.x, pos.y, pos.width, pos.height);
     let l1 = x;
     let t1 = y;
@@ -561,7 +628,7 @@ struct TestOverrides {
     acc_ok: Option<bool>,
     ax_focus: Option<(i32, u32)>,
     ax_title: Option<(u32, String)>,
-    displays: Option<Vec<(u32, i32, i32, i32, i32)>>,
+    displays: Option<Vec<DisplayBounds>>,
 }
 
 fn acc_ok() -> bool {
@@ -590,7 +657,7 @@ fn ax_title_for_window_id(id: u32) -> Option<String> {
     mac_winops::ax_title_for_window_id(id)
 }
 
-fn list_display_bounds() -> Vec<(u32, i32, i32, i32, i32)> {
+fn list_display_bounds() -> Vec<DisplayBounds> {
     if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.displays.clone())) {
         return v;
     }
@@ -599,7 +666,7 @@ fn list_display_bounds() -> Vec<(u32, i32, i32, i32, i32)> {
 
 #[doc(hidden)]
 pub mod test_api {
-    use super::{TEST_OVERRIDES, TestOverrides};
+    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides};
     pub fn set_accessibility_ok(v: bool) {
         TEST_OVERRIDES.with(|o| {
             if let Ok(mut s) = o.lock() {
@@ -622,7 +689,7 @@ pub mod test_api {
             }
         });
     }
-    pub fn set_displays(v: Vec<(u32, i32, i32, i32, i32)>) {
+    pub fn set_displays(v: Vec<DisplayBounds>) {
         TEST_OVERRIDES.with(|o| {
             if let Ok(mut s) = o.lock() {
                 s.displays = Some(v);

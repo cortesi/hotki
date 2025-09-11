@@ -68,7 +68,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     }
 
     // Cleanly shutdown server
-    let _ = client.shutdown_server();
+    let _ = crate::runtime::block_on(async { client.shutdown_server().await });
     session.kill_and_wait();
     Ok(())
 }
