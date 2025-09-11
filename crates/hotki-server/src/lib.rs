@@ -24,17 +24,21 @@
 //!   events (`MsgToUI`) to all clients. A lightweight heartbeat is sent at a
 //!   fixed interval to signal liveness.
 //!
-//! Focus watcher contract
-//! - Tao main thread: Creates the event loop and installs a proxy so background
-//!   code can post a user event to request NS observer installation.
-//! - Engine‑owned watcher: The engine owns and coalesces focus updates and
-//!   emits snapshots; the main loop performs the NS observer installation on
-//!   demand in response to a user event.
+//! World read path and forwarding
+//! - The engine embeds and drives the `hotki-world` service; it is the sole
+//!   source of truth for window/focus state on macOS.
+//! - There is no engine‑side CG/AX fallback or separate focus watcher.
+//! - The server forwards `WorldEvent`s to clients and exposes RPCs for world
+//!   snapshots and status. Clients should use the snapshot on reconnect and
+//!   then resume streaming.
+//! - Permission state (AX/Input Monitoring/Screen Recording) is surfaced via
+//!   `WorldStatus` and should be presented in the UI as actionable guidance.
 //!
 //! Errors and user guidance
-//! - If the watcher fails to start, the server emits a UI notification with
-//!   actionable guidance. On macOS this commonly means granting Accessibility
-//!   and/or Input Monitoring permissions in System Settings.
+//! - If world initialization encounters missing permissions or backpressure,
+//!   the server emits notifications and status fields to guide the user. On
+//!   macOS this commonly means granting Accessibility, Input Monitoring, and
+//!   Screen Recording permissions in System Settings.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 

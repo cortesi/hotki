@@ -1,5 +1,12 @@
 //! IPC service implementation for hotkey manager
 //!
+//! World read path
+//! - `hotki-world` is authoritative for window/focus state. The service
+//!   ensures a single forwarder instance per server and relays `WorldEvent`s
+//!   to the UI stream, with snapshot-on-reconnect semantics.
+//! - There are no CoreGraphics/AX focus fallbacks in the engine; actions rely
+//!   on the world cache and nudge refresh via `hint_refresh()`.
+//!
 //! # Locking Strategy
 //!
 //! - Prefer Tokio locks inside async paths. The `clients` list uses

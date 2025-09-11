@@ -11,6 +11,16 @@
 //! - [`RepeatSpec`] and [`RepeatObserver`]: instrumentation hooks
 //!
 //! All other modules are crate-private implementation details.
+//!
+//! World Read Path
+//! - The engine reads focus/window state exclusively from `hotki-world`.
+//! - There is no FocusWatcher and no CoreGraphics/AX fallback path.
+//! - Actions call `world.hint_refresh()` to nudge refresh but operate on the
+//!   cached world context; dispatch paths are free of synchronous focus reads.
+//! - Early startup policy: if the world snapshot is empty, focus-driven
+//!   actions are a no-op with a debug log.
+//! - Repeat/relay targets follow the world-backed PID cache and hand off
+//!   seamlessly when focus changes.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
