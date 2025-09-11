@@ -145,5 +145,8 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         native: bool,
     },
+    /// Query world status via RPC and verify basic invariants
+    #[command(name = "world-status")]
+    WorldStatus,
     // Preflight smoketest removed.
 }

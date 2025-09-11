@@ -9,6 +9,7 @@ pub mod place;
 pub mod raise;
 pub mod repeat;
 pub mod ui;
+pub mod world_status;
 
 // Re-export the main test functions for easier access
 pub use repeat::{repeat_relay, repeat_shell, repeat_volume};

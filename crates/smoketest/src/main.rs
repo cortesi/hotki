@@ -497,5 +497,25 @@ fn main() {
                 let _ = o.kill_and_wait();
             }
         } // Preflight smoketest removed.
+        Commands::WorldStatus => {
+            if !cli.quiet {
+                heading("Test: world-status");
+            }
+            let timeout = cli.timeout;
+            match run_with_watchdog("world-status", timeout, move || {
+                tests::world_status::run_world_status_test(timeout, cli.logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("world-status: OK (permissions granted; status sane)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("world-status: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }

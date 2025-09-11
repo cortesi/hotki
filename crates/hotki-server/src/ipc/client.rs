@@ -182,6 +182,110 @@ impl Connection {
             ))),
         }
     }
+
+    /// Get a diagnostic world status snapshot.
+    pub async fn get_world_status(&mut self) -> Result<WorldStatusLite> {
+        let response = self
+            .client
+            .send_request(HotkeyMethod::GetWorldStatus.as_str(), &[])
+            .await
+            .map_err(|e| Error::Ipc(format!("get_world_status request failed: {}", e)))?;
+        WorldStatusLite::from_value(response)
+    }
+}
+
+/// Minimal decoded view of WorldStatus used by smoketests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldStatusLite {
+    pub windows_count: u64,
+    pub focused_pid: Option<i64>,
+    pub focused_id: Option<i64>,
+    pub last_tick_ms: u64,
+    pub current_poll_ms: u64,
+    pub debounce_cache: u64,
+    pub accessibility: i32,
+    pub screen_recording: i32,
+}
+
+impl WorldStatusLite {
+    fn from_value(v: Value) -> Result<Self> {
+        match v {
+            Value::Map(entries) => {
+                let mut windows_count = 0u64;
+                let mut focused_pid: Option<i64> = None;
+                let mut focused_id: Option<i64> = None;
+                let mut last_tick_ms = 0u64;
+                let mut current_poll_ms = 0u64;
+                let mut debounce_cache = 0u64;
+                let mut accessibility = -1i32;
+                let mut screen_recording = -1i32;
+
+                for (k, val) in entries {
+                    if let Value::String(s) = &k {
+                        match s.as_str() {
+                            Some("windows_count") => {
+                                if let Value::Integer(i) = val {
+                                    windows_count = i.as_u64().unwrap_or(0);
+                                }
+                            }
+                            Some("focused") => match val {
+                                Value::Map(f) => {
+                                    for (fk, fv) in f {
+                                        if let Value::String(fs) = fk {
+                                            match fs.as_str() {
+                                                Some("pid") => {
+                                                    if let Value::Integer(i) = fv {
+                                                        focused_pid = i.as_i64();
+                                                    }
+                                                }
+                                                Some("id") => {
+                                                    if let Value::Integer(i) = fv {
+                                                        focused_id = i.as_i64();
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                Value::Nil => {}
+                                _ => {}
+                            },
+                            Some("last_tick_ms") => {
+                                if let Value::Integer(i) = val { last_tick_ms = i.as_u64().unwrap_or(0); }
+                            }
+                            Some("current_poll_ms") => {
+                                if let Value::Integer(i) = val { current_poll_ms = i.as_u64().unwrap_or(0); }
+                            }
+                            Some("debounce_cache") => {
+                                if let Value::Integer(i) = val { debounce_cache = i.as_u64().unwrap_or(0); }
+                            }
+                            Some("capabilities") => {
+                                if let Value::Map(cap) = val {
+                                    for (ck, cv) in cap {
+                                        if let Value::String(cs) = ck {
+                                            match cs.as_str() {
+                                                Some("accessibility") => {
+                                                    if let Value::Integer(i) = cv { accessibility = i.as_i64().unwrap_or(-1) as i32; }
+                                                }
+                                                Some("screen_recording") => {
+                                                    if let Value::Integer(i) = cv { screen_recording = i.as_i64().unwrap_or(-1) as i32; }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(WorldStatusLite { windows_count, focused_pid, focused_id, last_tick_ms, current_poll_ms, debounce_cache, accessibility, screen_recording })
+            }
+            other => Err(Error::Ipc(format!("invalid world status value: {:?}", other))),
+        }
+    }
 }
 
 /// Client-side connection handler for receiving events
