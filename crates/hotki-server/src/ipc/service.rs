@@ -226,7 +226,13 @@ impl HotkeyService {
         let clients_snapshot = { self.clients.lock().await.clone() };
 
         // Convert event to MRPC Value (binary serde payload)
-        let value = crate::ipc::rpc::enc_event(&event);
+        let value = match crate::ipc::rpc::enc_event(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to encode event for broadcast: {}", e);
+                return;
+            }
+        };
 
         // Send concurrently; retain only successful clients
         let mut survivors = Vec::with_capacity(clients_snapshot.len());
@@ -580,7 +586,12 @@ impl MrpcConnection for HotkeyService {
                     windows: wins,
                     focused,
                 };
-                Ok(crate::ipc::rpc::enc_world_snapshot(&payload))
+                crate::ipc::rpc::enc_world_snapshot(&payload).map_err(|e| {
+                    Self::typed_err(
+                        crate::error::RpcErrorCode::InvalidType,
+                        &[("message", Value::String(e.to_string().into()))],
+                    )
+                })
             }
 
             None => {

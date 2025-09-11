@@ -41,7 +41,7 @@ fn buffer() -> &'static Mutex<VecDeque<LogEntry>> {
 }
 
 pub fn push(entry: LogEntry) {
-    let mut buf = buffer().lock().expect("logs mutex poisoned");
+    let mut buf = buffer().lock().unwrap_or_else(|e| e.into_inner());
     if buf.len() > 5000 {
         buf.pop_front();
     }
@@ -60,14 +60,14 @@ pub fn push_server(level: String, target: String, message: String) {
 pub fn snapshot() -> Vec<LogEntry> {
     buffer()
         .lock()
-        .expect("logs mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .cloned()
         .collect()
 }
 
 pub fn clear() {
-    buffer().lock().expect("logs mutex poisoned").clear();
+    buffer().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// Tracing layer that records client-side logs into the buffer.

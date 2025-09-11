@@ -37,7 +37,13 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
                         config::WARN_OVERLAY_WIDTH,
                         config::WARN_OVERLAY_HEIGHT,
                     ));
-                let win = elwt.create_window(attrs).expect("create overlay window");
+                let win = match elwt.create_window(attrs) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        eprintln!("warn_overlay: failed to create window: {}", e);
+                        return;
+                    }
+                };
                 // Ensure always-on-top using runtime API if available
                 #[allow(unused_imports)]
                 use winit::window::WindowLevel;

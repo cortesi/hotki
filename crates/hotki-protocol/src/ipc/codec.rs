@@ -11,12 +11,15 @@ pub enum Error {
     /// Deserialization via rmp_serde failed.
     #[error(transparent)]
     Decode(#[from] rmp_serde::decode::Error),
+    /// Serialization via rmp_serde failed.
+    #[error(transparent)]
+    Encode(#[from] rmp_serde::encode::Error),
 }
 
 /// Encode a `MsgToUI` message into an `mrpc::Value` as a binary payload.
-pub fn msg_to_value(msg: &MsgToUI) -> Value {
-    let bytes = rmp_serde::to_vec_named(msg).unwrap_or_default();
-    Value::Binary(bytes)
+pub fn msg_to_value(msg: &MsgToUI) -> Result<Value, Error> {
+    let bytes = rmp_serde::to_vec_named(msg)?;
+    Ok(Value::Binary(bytes))
 }
 
 /// Decode an `mrpc::Value` (binary) back into a `MsgToUI`.
@@ -74,7 +77,7 @@ mod tests {
         ];
 
         for msg in samples {
-            let val = msg_to_value(&msg);
+            let val = msg_to_value(&msg).expect("encode");
             let back = value_to_msg(val).expect("decode");
             assert_eq!(format!("{:?}", msg), format!("{:?}", back));
         }

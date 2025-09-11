@@ -64,12 +64,10 @@ impl Connection {
     /// Set the full configuration (typed convenience method).
     pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
         debug!("Sending set_config request");
+        let param = super::rpc::enc_set_config(&cfg)?;
         let response = self
             .client
-            .send_request(
-                HotkeyMethod::SetConfig.as_str(),
-                &[super::rpc::enc_set_config(&cfg)],
-            )
+            .send_request(HotkeyMethod::SetConfig.as_str(), &[param])
             .await
             .map_err(|e| Error::Ipc(format!("Set config request failed: {}", e)))?;
         match response {
@@ -117,12 +115,10 @@ impl Connection {
             kind: kind_enum,
             repeat,
         };
+        let param = super::rpc::enc_inject_key(&req)?;
         let response = self
             .client
-            .send_request(
-                HotkeyMethod::InjectKey.as_str(),
-                &[super::rpc::enc_inject_key(&req)],
-            )
+            .send_request(HotkeyMethod::InjectKey.as_str(), &[param])
             .await
             .map_err(|e| Error::Ipc(format!("inject_key request failed: {}", e)))?;
         match response {

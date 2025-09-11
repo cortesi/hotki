@@ -34,7 +34,7 @@ pub fn build_tray_and_listeners(
     tx: tokio_mpsc::UnboundedSender<AppEvent>,
     tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     egui_ctx: Context,
-) -> TrayIcon {
+) -> Option<TrayIcon> {
     let (menu, reload_id, help_id, quit_id, theme_ids) = {
         let menu = Menu::new();
         let reload = MenuItem::new("Reload Config", true, None);
@@ -65,7 +65,7 @@ pub fn build_tray_and_listeners(
         )
     };
 
-    let tray_icon: TrayIcon = {
+    let tray_icon_opt: Option<TrayIcon> = {
         let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false);
@@ -75,10 +75,16 @@ pub fn build_tray_and_listeners(
             // appropriately for Light/Dark modes. Keep dev icon colored.
             builder = builder.with_icon_as_template(!cfg!(debug_assertions));
         }
-        builder.with_tooltip("hotki").build().expect("tray icon")
+        match builder.with_tooltip("hotki").build() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::error!("Failed to create tray icon: {}", e);
+                None
+            }
+        }
     };
 
-    {
+    if tray_icon_opt.is_some() {
         let tx = tx.clone();
         let egui_ctx = egui_ctx.clone();
         thread::spawn(move || {
@@ -98,7 +104,7 @@ pub fn build_tray_and_listeners(
         });
     }
 
-    {
+    if tray_icon_opt.is_some() {
         let tx_ctrl = tx_ctrl.clone();
         let egui_ctx = egui_ctx.clone();
         thread::spawn(move || {
@@ -128,5 +134,5 @@ pub fn build_tray_and_listeners(
         });
     }
 
-    tray_icon
+    tray_icon_opt
 }

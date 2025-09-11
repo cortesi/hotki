@@ -203,7 +203,7 @@ fn main() -> eframe::Result<()> {
 
             Ok(Box::new(HotkiApp {
                 rx,
-                _tray: Some(tray_icon),
+                _tray: tray_icon,
                 hud: Hud::new(&app_cfg.hud(&root_cursor)),
                 notifications,
                 details,

@@ -45,10 +45,13 @@ pub(crate) fn run_focus_winhelper(
                             .map(|s| s.1)
                             .unwrap_or(crate::config::HELPER_WIN_HEIGHT),
                     ));
-                let win = elwt
-                    .create_window(attrs)
-                    .map_err(|e| e.to_string())
-                    .expect("create window");
+                let win = match elwt.create_window(attrs) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        eprintln!("winhelper: failed to create window: {}", e);
+                        return;
+                    }
+                };
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     unsafe { app.activate() };

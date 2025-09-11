@@ -547,7 +547,13 @@ pub fn spawn_key_runtime(
     let egui_ctx = egui_ctx.clone();
     let tx_ctrl_runtime = tx_ctrl_runtime.clone();
     thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::error!("Failed to create Tokio runtime: {}", e);
+                return;
+            }
+        };
         rt.block_on(async move {
             info!("Loaded mode; delegating to server engine");
             let mut driver = ConnectionDriver::new(

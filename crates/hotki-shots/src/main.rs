@@ -263,15 +263,29 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let mut client = rt
-        .block_on(async {
-            hotki_server::Client::new_with_socket(&sock)
-                .with_connect_only()
-                .connect()
-                .await
-        })
-        .expect("connect to server");
-    let conn = client.connection().expect("connection");
+    let mut client = match rt.block_on(async {
+        hotki_server::Client::new_with_socket(&sock)
+            .with_connect_only()
+            .connect()
+            .await
+    }) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ERROR: failed to connect to server: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
+            std::process::exit(2);
+        }
+    };
+    let conn = match client.connection() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ERROR: failed to get connection: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
+            std::process::exit(2);
+        }
+    };
 
     // Capture HUD first
     let hud_ok = capture_window_by_id_or_rect(hotki_pid, "Hotki HUD", &cli.dir, "hud");

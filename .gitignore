@@ -6,3 +6,4 @@ crates/*/Cargo.lock
 .DS_Store
 AGENTS.md
 CLAUDE.md
+plans

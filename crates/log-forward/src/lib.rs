@@ -30,13 +30,13 @@ fn sink() -> &'static Mutex<Option<UnboundedSender<MsgToUI>>> {
 
 /// Set the forwarding sink (called when a client connects).
 pub fn set_sink(tx: hotki_protocol::ipc::UiTx) {
-    let mut guard = sink().lock().expect("log sink mutex poisoned");
+    let mut guard = sink().lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(tx);
 }
 
 /// Clear the forwarding sink (called when a client disconnects).
 pub fn clear_sink() {
-    let mut guard = sink().lock().expect("log sink mutex poisoned");
+    let mut guard = sink().lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
 }
 
@@ -49,10 +49,7 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         // Early-exit if there is no sink set
-        let tx_opt = {
-            let guard = sink().lock().expect("log sink mutex poisoned");
-            guard.clone()
-        };
+        let tx_opt = { sink().lock().unwrap_or_else(|e| e.into_inner()).clone() };
         let Some(tx) = tx_opt else { return };
 
         let r = logfmt::render_event(event);

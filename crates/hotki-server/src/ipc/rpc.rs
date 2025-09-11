@@ -110,9 +110,9 @@ impl HotkeyNotification {
 }
 
 /// Encode `set_config` params.
-pub fn enc_set_config(cfg: &config::Config) -> Value {
-    let bytes = rmp_serde::to_vec_named(cfg).expect("config::Config to msgpack");
-    Value::Binary(bytes)
+pub fn enc_set_config(cfg: &config::Config) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(cfg)?;
+    Ok(Value::Binary(bytes))
 }
 
 /// Decode `set_config` params.
@@ -132,8 +132,9 @@ pub fn dec_set_config_param(v: &Value) -> Result<config::Config, mrpc::RpcError>
 }
 
 /// Encode a generic UI event for notifications to clients.
-pub fn enc_event(event: &hotki_protocol::MsgToUI) -> Value {
+pub fn enc_event(event: &hotki_protocol::MsgToUI) -> crate::Result<Value> {
     hotki_protocol::ipc::codec::msg_to_value(event)
+        .map_err(|e| crate::Error::Serialization(e.to_string()))
 }
 
 /// Decode a generic UI event from a notification param value.
@@ -152,9 +153,9 @@ pub struct WorldSnapshotLite {
 }
 
 /// Encode a world snapshot to msgpack binary `Value`.
-pub fn enc_world_snapshot(snap: &WorldSnapshotLite) -> Value {
-    let bytes = rmp_serde::to_vec_named(snap).expect("WorldSnapshotLite to msgpack");
-    Value::Binary(bytes)
+pub fn enc_world_snapshot(snap: &WorldSnapshotLite) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(snap)?;
+    Ok(Value::Binary(bytes))
 }
 
 /// Inject key request: encoded as msgpack in a single Binary param.
@@ -183,9 +184,9 @@ impl InjectKind {
 }
 
 /// Encode `inject_key` params as msgpack binary.
-pub fn enc_inject_key(req: &InjectKeyReq) -> Value {
-    let bytes = rmp_serde::to_vec_named(req).expect("InjectKeyReq to msgpack");
-    Value::Binary(bytes)
+pub fn enc_inject_key(req: &InjectKeyReq) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(req)?;
+    Ok(Value::Binary(bytes))
 }
 
 // enc_inject_key_parts removed (unused)
@@ -220,7 +221,7 @@ mod tests {
     #[test]
     fn set_config_roundtrip() {
         let cfg = config::Config::default();
-        let v = enc_set_config(&cfg);
+        let v = enc_set_config(&cfg).expect("encode");
         let dec = dec_set_config_param(&v).expect("decode");
         // Default roundtrip should preserve style key font size default, etc.
         assert_eq!(
@@ -261,7 +262,7 @@ mod tests {
             kind: InjectKind::Down,
             repeat: false,
         };
-        let v = enc_inject_key(&req);
+        let v = enc_inject_key(&req).expect("encode");
         let dec = dec_inject_key_param(&v).expect("decode inject");
         assert_eq!(req, dec);
     }

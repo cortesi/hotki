@@ -13,12 +13,18 @@ static SHARED_RUNTIME: OnceLock<Arc<Mutex<Runtime>>> = OnceLock::new();
 /// This ensures we use a single runtime instance across all tests,
 /// avoiding the overhead of creating multiple runtimes.
 pub fn shared_runtime() -> Result<Arc<Mutex<Runtime>>> {
-    Ok(SHARED_RUNTIME
-        .get_or_init(|| {
-            let rt = Runtime::new().expect("Failed to create tokio runtime");
-            Arc::new(Mutex::new(rt))
-        })
-        .clone())
+    if let Some(rt) = SHARED_RUNTIME.get() {
+        return Ok(rt.clone());
+    }
+    let rt = Runtime::new()
+        .map_err(|e| Error::InvalidState(format!("Failed to create tokio runtime: {}", e)))?;
+    let arc = Arc::new(Mutex::new(rt));
+    // If another thread set it first, return that instance to keep a single runtime.
+    if SHARED_RUNTIME.set(arc.clone()).is_err() {
+        Ok(SHARED_RUNTIME.get().unwrap().clone())
+    } else {
+        Ok(arc)
+    }
 }
 
 /// Execute an async function on the shared runtime.
