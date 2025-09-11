@@ -156,14 +156,17 @@ and formalizes permission handling.&#x20;
   * No direct ownership. Can request snapshots or subscribe to events (with filters) for
     diagnostics.
 
-### Permissions, Degradation, and UX
+### Permission Requirements
 
-* **Accessibility (AX):** If denied, world still runs on CG, but `focused` becomes
-  best‑effort and AX‑only fields degrade. Expose this in `capabilities()`. ([Apple Support][7])
+World requires both permissions to operate:
 
-* **Screen Recording:** If denied, CG titles (`kCGWindowName`) are often missing. Prefer
-  AX titles for focus app; otherwise leave empty. Surface a warning and advice to grant
-  permission in Settings. ([Apple Support][5], [Stack Overflow][6])
+* Accessibility (AX): must be granted for focus, titles, and AX‑based signals. ([Apple Support][7])
+* Screen Recording: must be granted to access reliable window metadata via CG and for
+  consistent titles. ([Apple Support][5], [Stack Overflow][6])
+
+If either permission is missing, the World service is considered non‑operational for the
+purposes of development and testing. We do not support “with/without permissions” modes in
+this project. Diagnostics may still surface the missing permission state to inform setup.
 
 ### API Sketch (Rust)
 
@@ -259,7 +262,7 @@ pub enum WorldEvent {
 
 - [x] Provide mock `WinOps` for CG/AX.
 - [x] Test startup: additions, z‑order, and `on_active_space` flags.
-- [ ] Test AX focus and title precedence (with/without permissions granted).
+- [ ] Test AX focus and title precedence.
 - [ ] Test multi‑display `display_id` mapping.
 - [ ] Test debounce behavior on repetitive move/resize/title changes.
 
@@ -274,8 +277,8 @@ pub enum WorldEvent {
 * **CG polling overhead.** Adaptive cadence + burst‑on‑hint reduce CPU. CG calls are
   documented as relatively expensive; profile under realistic loads. ([Apple Developer][8])
 
-* **Permissions missing.** Degrade gracefully; expose `Capabilities`; provide UX to
-  guide users to grant Screen Recording and Accessibility. ([Apple Support][5])
+* **Permissions.** AX and Screen Recording are required; diagnostics report status and advise
+  on remediation if missing. ([Apple Support][5])
 
 * **Spaces metadata.** We avoid deprecated `kCGWindowWorkspace`; rely on
   `kCGWindowIsOnscreen` for active‑Space presence. ([Apple Developer][1])
@@ -287,14 +290,14 @@ pub enum WorldEvent {
 - [ ] Crate builds; all unit/integration tests pass; no panics.
 - [ ] Under a running server, World tracks windows and logs deltas and z‑order.
 - [ ] Adaptive polling visibly backs off when idle and speeds up on hints.
-- [ ] With missing permissions, diagnostics are clear and functionality gracefully degrades.
+- [ ] With permissions granted (AX + Screen Recording), diagnostics reflect Granted state.
 
 ### Validation Steps (Checklist)
 
 - [x] Run `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples`.
 - [x] Run `cargo fmt --all`.
 - [x] Run `cargo test --all`.
-- [ ] Local smoke with and without permissions; confirm `Capabilities`, titles, and focus behavior.
+- [ ] Local smoke with permissions granted; confirm `Capabilities` show Granted and titles/focus behavior is correct.
 - [ ] Multi‑display smoke; verify `display_id` mapping and z‑order correctness.
 
 ---

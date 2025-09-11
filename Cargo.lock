@@ -2289,6 +2289,7 @@ name = "hotki-world"
 version = "0.1.0"
 dependencies = [
  "mac-winops",
+ "once_cell",
  "permissions",
  "tokio",
  "tracing",

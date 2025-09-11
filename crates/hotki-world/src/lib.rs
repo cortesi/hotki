@@ -323,13 +323,13 @@ fn reconcile(
 
     let mut ax_focus_key: Option<WindowKey> = None;
     let mut ax_focus_title: Option<String> = None;
-    if permissions::accessibility_ok()
+    if acc_ok()
         && let Some(front_pid) = wins
             .iter()
             .find(|w| w.layer == 0)
             .map(|w| w.pid)
             .or_else(|| wins.first().map(|w| w.pid))
-        && let Some(ax_id) = mac_winops::ax_focused_window_id_for_pid(front_pid)
+        && let Some(ax_id) = ax_focused_window_id_for_pid(front_pid)
     {
         let candidate = WindowKey {
             pid: front_pid,
@@ -339,7 +339,7 @@ fn reconcile(
             .iter()
             .any(|w| w.pid == candidate.pid && w.id == candidate.id)
         {
-            ax_focus_title = mac_winops::ax_title_for_window_id(ax_id);
+            ax_focus_title = ax_title_for_window_id(ax_id);
             ax_focus_key = Some(candidate);
         }
     }
@@ -350,7 +350,7 @@ fn reconcile(
     let mut seen_keys: Vec<WindowKey> = Vec::with_capacity(wins.len());
 
     // Cache display bounds for this reconcile pass.
-    let displays = mac_winops::screen::list_display_bounds();
+    let displays = list_display_bounds();
 
     for (idx, w) in wins.iter().enumerate() {
         let key = WindowKey {
@@ -516,4 +516,65 @@ fn best_display_id(pos: &Pos, displays: &[(u32, i32, i32, i32, i32)]) -> Option<
         }
     }
     if best_area > 0 { best_id } else { None }
+}
+
+// ===== AX and permission shims (overridable for tests) =====
+use std::sync::Mutex;
+thread_local! {
+    static TEST_OVERRIDES: Mutex<TestOverrides> = Mutex::new(TestOverrides::default());
+}
+
+#[derive(Default, Clone)]
+struct TestOverrides {
+    acc_ok: Option<bool>,
+    ax_focus: Option<(i32, u32)>,
+    ax_title: Option<(u32, String)>,
+    displays: Option<Vec<(u32, i32, i32, i32, i32)>>,
+}
+
+fn acc_ok() -> bool {
+    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.acc_ok)) { return v; }
+    permissions::accessibility_ok()
+}
+
+fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
+    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_focus.clone())) {
+        if p == pid { return Some(id); }
+    }
+    mac_winops::ax_focused_window_id_for_pid(pid)
+}
+
+fn ax_title_for_window_id(id: u32) -> Option<String> {
+    if let Some((tid, title)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_title.clone())) {
+        if tid == id { return Some(title); }
+    }
+    mac_winops::ax_title_for_window_id(id)
+}
+
+fn list_display_bounds() -> Vec<(u32, i32, i32, i32, i32)> {
+    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.displays.clone())) {
+        return v;
+    }
+    mac_winops::screen::list_display_bounds()
+}
+
+#[doc(hidden)]
+pub mod test_api {
+    use super::{TEST_OVERRIDES, TestOverrides};
+    pub fn set_accessibility_ok(v: bool) {
+        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.acc_ok = Some(v); } });
+    }
+    pub fn set_ax_focus(pid: i32, id: u32) {
+        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.ax_focus = Some((pid, id)); } });
+    }
+    pub fn set_ax_title(id: u32, title: &str) {
+        let t = title.to_string();
+        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.ax_title = Some((id, t)); } });
+    }
+    pub fn set_displays(v: Vec<(u32, i32, i32, i32, i32)>) {
+        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { s.displays = Some(v); } });
+    }
+    pub fn clear() {
+        TEST_OVERRIDES.with(|o| { if let Ok(mut s) = o.lock() { *s = TestOverrides::default(); } });
+    }
 }
