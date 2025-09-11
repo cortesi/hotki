@@ -13,7 +13,7 @@ use hotki_engine::{
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use keymode::Keys;
-use mac_winops::focus::FocusSnapshot;
+use mac_winops::ops::MockWinOps;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
@@ -25,11 +25,38 @@ async fn create_test_engine() -> (Engine, mpsc::UnboundedReceiver<MsgToUI>) {
     ensure_no_os_interaction();
     let (tx, rx) = mpsc::unbounded_channel();
     let api = Arc::new(MockHotkeyApi::new());
+    // Use noop world for tests that don't need focus
     let world = World::spawn_noop();
-    // Use mocked hotkeys, no relay, no world polling
     let engine =
         Engine::new_with_api_and_ops(api, tx, Arc::new(mac_winops::ops::RealWinOps), false, world);
     (engine, rx)
+}
+
+async fn create_test_engine_with_mock(
+    relay_enabled: bool,
+) -> (Engine, mpsc::UnboundedReceiver<MsgToUI>, Arc<MockWinOps>) {
+    ensure_no_os_interaction();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let api = Arc::new(MockHotkeyApi::new());
+    let mock = Arc::new(MockWinOps::new());
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), relay_enabled, world);
+    (engine, rx, mock)
+}
+
+async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &str, pid: i32) {
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 1,
+        pid,
+        app: app.into(),
+        title: title.into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: true,
+    }]);
+    engine.world_handle().hint_refresh();
+    tokio::time::sleep(Duration::from_millis(60)).await;
 }
 
 /// Test helper to create a minimal Keys configuration
@@ -48,30 +75,15 @@ fn create_test_keys() -> Keys {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rebind_on_depth_change() {
-    let (mut engine, mut rx) = create_test_engine().await;
+    let (mut engine, mut rx, mock) = create_test_engine_with_mock(false).await;
     let keys = create_test_keys();
 
     // Set initial mode
     let cfg = config::Config::from_parts(keys, config::Style::default());
     engine.set_config(cfg).await.expect("set config");
 
-    // Simulate focus events to trigger initial binding
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "TestApp".into(),
-            title: "".into(),
-            pid: 1234,
-        })
-        .await
-        .expect("focus app");
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "TestApp".into(),
-            title: "TestWindow".into(),
-            pid: 1234,
-        })
-        .await
-        .expect("focus title");
+    // Seed world focus to trigger initial binding
+    set_world_focus(&engine, &mock, "TestApp", "TestWindow", 1234).await;
 
     // Clear initial messages
     while rx.try_recv().is_ok() {}
@@ -202,14 +214,14 @@ async fn test_ticker_cancel_semantics() {
     ensure_no_os_interaction();
     // Test repeater stop vs stop_sync semantics instead
     // since ticker module is private
-    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
+    let focus = Arc::new(Mutex::new(None::<i32>));
     let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);
 
     // Test non-blocking stop
-    focus.lock().unwrap().pid = 1234;
+    *focus.lock().unwrap() = Some(1234);
     repeater.start_relay_repeat(
         "test_stop".to_string(),
         mac_keycode::Chord::parse("cmd+a").unwrap(),
@@ -310,7 +322,7 @@ async fn test_repeater_with_observer() {
         }
     }
 
-    let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
+    let focus = Arc::new(Mutex::new(None::<i32>));
     // Disable real key posting while exercising repeat observer behavior
     let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -325,7 +337,7 @@ async fn test_repeater_with_observer() {
     repeater.set_repeat_observer(observer.clone());
 
     // Test relay repeat observation
-    focus.lock().unwrap().pid = 1234;
+    *focus.lock().unwrap() = Some(1234);
 
     // The observer is only called during actual repeat ticks, not the initial execution
     // So we need to make sure repeats actually happen

@@ -20,7 +20,7 @@ use keymode::{KeyResponse, NotificationType};
 use mac_keycode::Chord;
 
 use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
-use mac_winops::focus::FocusSnapshot;
+use std::option::Option;
 
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.
@@ -134,7 +134,7 @@ pub struct RepeatSpec {
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    focus: Arc<Mutex<FocusSnapshot>>, // read-only provider for current pid
+    focus_pid: Arc<Mutex<Option<i32>>>, // read-only provider for current pid
     relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
@@ -152,7 +152,7 @@ pub trait RepeatObserver: Send + Sync {
 impl Repeater {
     /// Create a new repeater bound to the given focus/relay/notifier components.
     pub fn new(
-        focus: Arc<Mutex<FocusSnapshot>>,
+        focus_pid: Arc<Mutex<Option<i32>>>,
         relay: RelayHandler,
         notifier: NotificationDispatcher,
     ) -> Self {
@@ -161,7 +161,7 @@ impl Repeater {
         Self {
             sys_initial,
             sys_interval,
-            focus,
+            focus_pid,
             relay,
             notifier,
             ticker: Ticker::new(),
@@ -253,7 +253,7 @@ impl Repeater {
             }
             ExecSpec::Relay { chord } => {
                 // Start relay immediately (non-repeat)
-                let pid = self.focus.lock().map(|f| f.pid).unwrap_or(-1);
+                let pid = self.focus_pid.lock().ok().and_then(|g| *g).unwrap_or(-1);
                 self.relay
                     .start_relay(id.clone(), chord.clone(), pid, false);
 
@@ -311,7 +311,7 @@ impl Repeater {
     ) {
         let (initial_delay, interval) = self.effective_timings(repeat);
         let relay = self.relay.clone();
-        let focus = self.focus.clone();
+        let focus_pid = self.focus_pid.clone();
         let id_for_log = id.clone();
         let ch = chord.clone();
 
@@ -321,7 +321,7 @@ impl Repeater {
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
         self.ticker.start(id, initial_delay, interval, move || {
-            let pid = focus.lock().map(|f| f.pid).unwrap_or(-1);
+            let pid = focus_pid.lock().ok().and_then(|g| *g).unwrap_or(-1);
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);

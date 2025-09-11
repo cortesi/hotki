@@ -89,8 +89,8 @@ pub struct Engine {
     repeater: Repeater,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
-    /// Last known focus snapshot (app/title/pid) when using engine-owned watcher
-    focus_snapshot: Arc<Mutex<mac_winops::focus::FocusSnapshot>>,
+    /// Cached world PID for the focused application/window.
+    focus_pid: Arc<Mutex<Option<i32>>>,
     /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
     raise_nonce: Arc<AtomicU64>,
     /// Last pid explicitly targeted by a Raise action (used as a hint for subsequent Place).
@@ -105,16 +105,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    fn current_snapshot(&self) -> mac_winops::focus::FocusSnapshot {
-        self.focus_snapshot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    fn current_pid(&self) -> i32 {
-        self.focus_snapshot.lock().map(|g| g.pid).unwrap_or(-1)
-    }
     /// Create a new engine.
     ///
     /// - `manager`: platform hotkey manager used for key registration
@@ -127,11 +117,11 @@ impl Engine {
             KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
         ));
         // Create shared focus/relay instances
-        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
+        let focus_pid_arc: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new(
-            focus_snapshot_arc.clone(),
+            focus_pid_arc.clone(),
             relay_handler.clone(),
             notifier.clone(),
         );
@@ -152,7 +142,7 @@ impl Engine {
             notifier,
             repeater,
             config: config_arc,
-            focus_snapshot: focus_snapshot_arc,
+            focus_pid: focus_pid_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
@@ -174,11 +164,11 @@ impl Engine {
             KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
         ));
         // Create shared focus/relay instances
-        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
+        let focus_pid_arc: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new(
-            focus_snapshot_arc.clone(),
+            focus_pid_arc.clone(),
             relay_handler.clone(),
             notifier.clone(),
         );
@@ -197,7 +187,7 @@ impl Engine {
             notifier,
             repeater,
             config: config_arc,
-            focus_snapshot: focus_snapshot_arc,
+            focus_pid: focus_pid_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
@@ -221,11 +211,11 @@ impl Engine {
         let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
             KeyBindingManager::new_with_api(api),
         ));
-        let focus_snapshot_arc = Arc::new(Mutex::new(mac_winops::focus::FocusSnapshot::default()));
+        let focus_pid_arc: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
         let relay_handler = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new(
-            focus_snapshot_arc.clone(),
+            focus_pid_arc.clone(),
             relay_handler.clone(),
             notifier.clone(),
         );
@@ -242,7 +232,7 @@ impl Engine {
             notifier,
             repeater,
             config: config_arc,
-            focus_snapshot: focus_snapshot_arc,
+            focus_pid: focus_pid_arc,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
@@ -254,42 +244,6 @@ impl Engine {
         eng
     }
 
-    /// Create an Engine that will own and drive the focus watcher using a Tao EventLoopProxy.
-    /// Server migration will switch to this constructor; legacy `new` remains for compatibility.
-    pub fn new_with_proxy(
-        manager: Arc<mac_hotkey::Manager>,
-        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
-        proxy: tao::event_loop::EventLoopProxy<()>,
-    ) -> Self {
-        let eng = Self::new(manager, event_tx);
-
-        // Start engine-owned focus watcher and subscribe to snapshots
-        let watcher = mac_winops::focus::FocusWatcher::new(proxy);
-        let _ = watcher.start();
-        let mut rx = watcher.subscribe();
-
-        // Seed current snapshot immediately (best-effort).
-        // Prefer the watcher's last snapshot; if it's uninitialized, fall back to
-        // querying the current frontmost window via CG to provide a consistent
-        // initial focus view before any key handling occurs.
-        {
-            let eng_clone = eng.clone();
-            let snap = watcher.current();
-            tokio::spawn(async move {
-                let _ = eng_clone.on_focus_snapshot(snap).await;
-            });
-        }
-
-        let eng_clone = eng.clone();
-        tokio::spawn(async move {
-            while let Some(snap) = rx.recv().await {
-                let _ = eng_clone.on_focus_snapshot(snap).await;
-            }
-        });
-
-        eng
-    }
-
     /// Access the world service handle for event subscriptions and snapshots.
     pub fn world_handle(&self) -> hotki_world::WorldHandle {
         self.world.clone()
@@ -298,12 +252,17 @@ impl Engine {
     fn spawn_world_focus_subscription(&self) {
         let world = self.world.clone();
         let focus_ctx = self.focus_ctx.clone();
+        let focus_pid = self.focus_pid.clone();
         tokio::spawn(async move {
             let (mut rx, seed) = world.subscribe_with_context().await;
             if let Some(ctx) = seed
                 && let Ok(mut g) = focus_ctx.lock()
             {
+                let p = ctx.2;
                 *g = Some(ctx);
+                if let Ok(mut pg) = focus_pid.lock() {
+                    *pg = Some(p);
+                }
             }
             loop {
                 match rx.recv().await {
@@ -311,12 +270,19 @@ impl Engine {
                         if let Some(ctx) = world.context_for_key(key).await
                             && let Ok(mut g) = focus_ctx.lock()
                         {
+                            let p = ctx.2;
                             *g = Some(ctx);
+                            if let Ok(mut pg) = focus_pid.lock() {
+                                *pg = Some(p);
+                            }
                         }
                     }
                     Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
                         if let Ok(mut g) = focus_ctx.lock() {
                             *g = None;
+                        }
+                        if let Ok(mut pg) = focus_pid.lock() {
+                            *pg = None;
                         }
                     }
                     Ok(_) => {}
@@ -396,7 +362,7 @@ impl Engine {
             tracing::debug!("bindings updated, clearing repeater + relay");
             // Async clear to avoid blocking the runtime thread
             self.repeater.clear_async().await;
-            let pid = self.current_pid();
+            let pid = self.current_pid_world_first();
             self.relay_handler.stop_all(pid);
         }
 
@@ -427,25 +393,7 @@ impl Engine {
         self.rebind_current_context().await
     }
 
-    // Legacy on_focus_event removed; use on_focus_snapshot instead.
-
-    /// Handle a coalesced focus snapshot produced by an engine-owned watcher.
-    pub async fn on_focus_snapshot(&self, snap: mac_winops::focus::FocusSnapshot) -> Result<()> {
-        // Update cached snapshot
-        if let Ok(mut g) = self.focus_snapshot.lock() {
-            *g = snap.clone();
-        }
-        let start = Instant::now();
-        debug!(
-            "Focus changed: app='{}' title='{}' pid={}",
-            snap.app, snap.title, snap.pid
-        );
-
-        // Update HUD and bindings with new context
-        self.rebind_and_refresh(&snap.app, &snap.title).await?;
-        debug!("Focus snapshot processed in {:?}", start.elapsed());
-        Ok(())
-    }
+    // (No legacy focus snapshot hook; engine relies solely on world.)
 
     /// Get the current depth (0 = root) if state is initialized.
     pub async fn get_depth(&self) -> usize {
@@ -706,7 +654,8 @@ impl Engine {
                     let mut snap = self.world.snapshot().await;
                     snap.sort_by_key(|w| w.z);
                     if snap.is_empty() {
-                        (self.current_pid(), "snapshot")
+                        tracing::debug!("Place(World): empty snapshot; no-op");
+                        return Ok(false);
                     } else if let Some(w) = self
                         .world
                         .focused_window()
@@ -715,7 +664,8 @@ impl Engine {
                     {
                         (w.pid, "world_top")
                     } else {
-                        (self.current_pid(), "snapshot")
+                        tracing::debug!("Place(World): no top window; no-op");
+                        return Ok(false);
                     }
                 };
 
@@ -898,7 +848,7 @@ impl Engine {
 
     /// Handle a key up event
     fn handle_key_up(&self, identifier: &str) {
-        let pid = self.current_pid();
+        let pid = self.current_pid_world_first();
         self.repeater.stop_sync(identifier);
         if self.relay_handler.stop_relay(identifier, pid) {
             debug!("Stopped relay for {}", identifier);
@@ -907,7 +857,7 @@ impl Engine {
 
     /// Handle a repeat key event for active relays
     fn handle_repeat(&self, identifier: &str) {
-        let pid = self.current_pid();
+        let pid = self.current_pid_world_first();
         // Forward OS repeat to active relay target, if any
         if self.relay_handler.repeat_relay(identifier, pid) {
             // If a software ticker is active for this id, stop it to avoid double repeats.
@@ -975,7 +925,10 @@ impl Engine {
         {
             return *p;
         }
-        self.current_pid()
+        if let Ok(pg) = self.focus_pid.lock() {
+            return (*pg).unwrap_or(-1);
+        }
+        -1
     }
 
     fn current_context_tuple(&self) -> (String, String, i32) {
@@ -984,8 +937,7 @@ impl Engine {
         {
             return (a.clone(), t.clone(), *p);
         }
-        let fs = self.current_snapshot();
-        (fs.app, fs.title, fs.pid)
+        (String::new(), String::new(), -1)
     }
 
     fn hint_refresh(&self) {

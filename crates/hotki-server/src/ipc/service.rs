@@ -45,8 +45,6 @@ pub struct HotkeyService {
     shutdown: Arc<AtomicBool>,
     /// Optional cap on per-id in-flight events (worker queue capacity)
     per_id_capacity: Option<usize>,
-    /// Tao proxy for main-thread operations; passed to engine for focus watcher ownership
-    proxy: tao::event_loop::EventLoopProxy<()>,
     /// Ensure we only spawn one heartbeat loop across clones.
     hb_running: Arc<AtomicBool>,
     world_forwarder_running: Arc<AtomicBool>,
@@ -64,11 +62,7 @@ impl HotkeyService {
             value: Value::Map(map),
         })
     }
-    pub fn new(
-        manager: Arc<mac_hotkey::Manager>,
-        shutdown: Arc<AtomicBool>,
-        proxy: tao::event_loop::EventLoopProxy<()>,
-    ) -> Self {
+    pub fn new(manager: Arc<mac_hotkey::Manager>, shutdown: Arc<AtomicBool>) -> Self {
         // Create event channel
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -80,7 +74,6 @@ impl HotkeyService {
             clients: Arc::new(AsyncMutex::new(Vec::new())),
             shutdown,
             per_id_capacity: None,
-            proxy,
             hb_running: Arc::new(AtomicBool::new(false)),
             world_forwarder_running: Arc::new(AtomicBool::new(false)),
         }
@@ -92,13 +85,11 @@ impl HotkeyService {
     pub fn builder(
         manager: Arc<mac_hotkey::Manager>,
         shutdown: Arc<AtomicBool>,
-        proxy: tao::event_loop::EventLoopProxy<()>,
     ) -> HotkeyServiceBuilder {
         HotkeyServiceBuilder {
             manager,
             shutdown,
             per_id_capacity: None,
-            proxy,
         }
     }
 
@@ -124,11 +115,7 @@ impl HotkeyService {
         let mut engine_guard = self.engine.lock().await;
         // Double-check in case of race condition
         if engine_guard.is_none() {
-            *engine_guard = Some(Engine::new_with_proxy(
-                self.manager.clone(),
-                event_tx,
-                self.proxy.clone(),
-            ));
+            *engine_guard = Some(Engine::new(self.manager.clone(), event_tx));
         }
         Ok(())
     }
@@ -705,7 +692,6 @@ pub struct HotkeyServiceBuilder {
     manager: Arc<mac_hotkey::Manager>,
     shutdown: Arc<AtomicBool>,
     per_id_capacity: Option<usize>,
-    proxy: tao::event_loop::EventLoopProxy<()>,
 }
 
 impl HotkeyServiceBuilder {
@@ -718,7 +704,7 @@ impl HotkeyServiceBuilder {
 
     /// Build the service with the configured options.
     pub fn build(self) -> HotkeyService {
-        let mut svc = HotkeyService::new(self.manager, self.shutdown, self.proxy);
+        let mut svc = HotkeyService::new(self.manager, self.shutdown);
         svc.per_id_capacity = self.per_id_capacity;
         svc
     }

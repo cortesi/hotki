@@ -11,6 +11,21 @@ use tokio::sync::mpsc;
 
 fn ensure_no_os_interaction() {}
 
+async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &str, pid: i32) {
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 1,
+        pid,
+        app: app.into(),
+        title: title.into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: true,
+    }]);
+    engine.world_handle().hint_refresh();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn engine_uses_window_ops_for_focus() {
     ensure_no_os_interaction();
@@ -28,14 +43,7 @@ async fn engine_uses_window_ops_for_focus() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 42,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 42).await;
 
     // Dispatch the bound key
     let id = engine
@@ -61,14 +69,7 @@ async fn engine_hide_uses_winops() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 77,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 77).await;
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -91,14 +92,7 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 123,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 123).await;
     let id_n = engine.resolve_id_for_ident("n").await.unwrap();
     engine
         .dispatch(id_n, mac_hotkey::EventKind::KeyDown, false)
@@ -137,14 +131,31 @@ async fn engine_raise_activates_on_match() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
+    // Seed world with current focus and a matching target window
+    mock.set_windows(vec![
+        mac_winops::WindowInfo {
+            id: 1,
+            pid: 1,
             app: "Foo".into(),
             title: "Bar".into(),
-            pid: 1,
-        })
-        .await
-        .unwrap();
+            pos: None,
+            space: None,
+            layer: 0,
+            focused: true,
+        },
+        mac_winops::WindowInfo {
+            id: 3,
+            pid: 888,
+            app: "Zed".into(),
+            title: "Downloads".into(),
+            pos: None,
+            space: None,
+            layer: 0,
+            focused: false,
+        },
+    ]);
+    engine.world_handle().hint_refresh();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -193,14 +204,9 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "A".into(),
-            title: "front".into(),
-            pid: 100,
-        })
-        .await
-        .unwrap();
+    // World already has A focused and B present via set_windows above.
+    engine.world_handle().hint_refresh();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     // Raise to B
     let id_r = engine.resolve_id_for_ident("r").await.unwrap();
     engine
@@ -257,14 +263,7 @@ async fn engine_fullscreen_error_notifies() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 11,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 11).await;
     let id = engine.resolve_id_for_ident("f").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -294,20 +293,13 @@ async fn engine_hide_error_notifies() {
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_hide(true);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"h\", \"hide\", hide(on))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 22,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 22).await;
     let id = engine.resolve_id_for_ident("h").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -335,21 +327,14 @@ async fn engine_raise_invalid_regex_notifies() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     // invalid regex for app
     let keys = keymode::Keys::from_ron("[(\"r\", \"raise\", raise(app: \"(unclosed\"))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 33,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 33).await;
     let id = engine.resolve_id_for_ident("r").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -384,14 +369,7 @@ async fn engine_focus_error_propagates_notification() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 123,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 123).await;
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -443,14 +421,7 @@ async fn engine_place_move_uses_winops() {
     let cfg = config::Config::from_parts(keys, config::Style::default());
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
-    engine
-        .on_focus_snapshot(mac_winops::focus::FocusSnapshot {
-            app: "X".into(),
-            title: "T".into(),
-            pid: 99,
-        })
-        .await
-        .unwrap();
+    set_world_focus(&engine, &mock, "X", "T", 99).await;
     let id = engine
         .resolve_id_for_ident("a")
         .await
