@@ -26,6 +26,7 @@ pub(crate) fn run_focus_winhelper(
         size: Option<(f64, f64)>,
         pos: Option<(f64, f64)>,
         label_text: Option<String>,
+        error: Option<String>,
     }
 
     impl ApplicationHandler for HelperApp {
@@ -48,7 +49,8 @@ pub(crate) fn run_focus_winhelper(
                 let win = match elwt.create_window(attrs) {
                     Ok(w) => w,
                     Err(e) => {
-                        eprintln!("winhelper: failed to create window: {}", e);
+                        self.error = Some(format!("winhelper: failed to create window: {}", e));
+                        elwt.exit();
                         return;
                     }
                 };
@@ -221,7 +223,12 @@ pub(crate) fn run_focus_winhelper(
         size,
         pos,
         label_text,
+        error: None,
     };
     let _ = event_loop.run_app(&mut app);
-    Ok(())
+    if let Some(e) = app.error.take() {
+        Err(e)
+    } else {
+        Ok(())
+    }
 }

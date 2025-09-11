@@ -22,6 +22,7 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
         next_deadline: Option<std::time::Instant>,
         start_time: std::time::Instant,
         countdown_active: bool,
+        error: Option<String>,
     }
 
     impl ApplicationHandler for OverlayApp {
@@ -40,7 +41,8 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
                 let win = match elwt.create_window(attrs) {
                     Ok(w) => w,
                     Err(e) => {
-                        eprintln!("warn_overlay: failed to create window: {}", e);
+                        self.error = Some(format!("warn_overlay: failed to create window: {}", e));
+                        elwt.exit();
                         return;
                     }
                 };
@@ -261,7 +263,12 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
         next_deadline: None,
         start_time: std::time::Instant::now(),
         countdown_active: true,
+        error: None,
     };
     let _ = event_loop.run_app(&mut app);
-    Ok(())
+    if let Some(e) = app.error.take() {
+        Err(e)
+    } else {
+        Ok(())
+    }
 }
