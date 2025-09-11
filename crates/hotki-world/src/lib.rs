@@ -1,7 +1,19 @@
-//! hotki-world: Window State Service (skeleton)
+//! hotki-world: Window State Service
 //!
-//! Maintains types and constructor for the World service.
-//! This stage provides the public API surface only; implementation arrives in later stages.
+//! Single source of truth for window and focus state on macOS.
+//!
+//! Focus rules:
+//! - Prefer Accessibility (AX) focus when available, fall back to CoreGraphics
+//!   heuristics. When AX identifies the focused window, its AX title is
+//!   preferred over the CG title for better fidelity.
+//!
+//! Event debounce:
+//! - `Updated` events are coalesced with a ~50ms debounce to reduce chatter
+//!   during rapid title/geometry changes. Snapshots always reflect latest state.
+//!
+//! Display mapping:
+//! - Each window is mapped to the display with the greatest overlap of its
+//!   bounds among current screens.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -114,6 +126,9 @@ pub struct WorldCfg {
     pub include_offscreen: bool,
     /// Reserved for future use. AX frontmost watching is not yet enabled here.
     pub ax_watch_frontmost: bool,
+    /// Broadcast buffer size for world events. If consumers lag behind,
+    /// older events are dropped and receivers observe `RecvError::Lagged`.
+    pub events_buffer: usize,
 }
 
 impl Default for WorldCfg {
@@ -123,6 +138,7 @@ impl Default for WorldCfg {
             poll_ms_max: 1000,
             include_offscreen: false,
             ax_watch_frontmost: false,
+            events_buffer: 256,
         }
     }
 }
@@ -182,6 +198,25 @@ impl WorldHandle {
         self.events.subscribe()
     }
 
+    /// Subscribe and fetch a consistent snapshot + focused key from the actor.
+    ///
+    /// The snapshot and focused key are produced atomically relative to each
+    /// other. Events may already be buffered in the returned receiver; treat
+    /// the snapshot as baseline and then apply subsequent events.
+    pub async fn subscribe_with_snapshot(
+        &self,
+    ) -> (
+        broadcast::Receiver<WorldEvent>,
+        Vec<WorldWindow>,
+        Option<WindowKey>,
+    ) {
+        let rx = self.events.subscribe();
+        let (tx, rx_once) = oneshot::channel();
+        let _ = self.tx.send(Command::SnapshotFocus { respond: tx });
+        let (snap, focused) = rx_once.await.unwrap_or_default();
+        (rx, snap, focused)
+    }
+
     /// Get a full snapshot of current windows.
     ///
     /// The returned vector is not sorted; callers may sort by `z` or other fields
@@ -204,6 +239,18 @@ impl WorldHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::Focused { respond: tx });
         rx.await.unwrap_or(None)
+    }
+
+    /// Current focused window with full info, if any.
+    pub async fn focused_window(&self) -> Option<WorldWindow> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::FocusedWindow { respond: tx });
+        rx.await.unwrap_or(None)
+    }
+
+    /// Convenience accessor for `(app, title, pid)` of the focused window.
+    pub async fn focused_context(&self) -> Option<(String, String, i32)> {
+        self.focused_window().await.map(|w| (w.app, w.title, w.pid))
     }
 
     /// Current capabilities and permission state.
@@ -239,7 +286,7 @@ impl World {
     pub fn spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle {
         let (tx, rx) = mpsc::unbounded_channel();
         // Keep event buffer moderate; callers should keep up.
-        let (evt_tx, _evt_rx) = broadcast::channel(256);
+        let (evt_tx, _evt_rx) = broadcast::channel(cfg.events_buffer.max(8));
 
         let state = WorldState::new();
         tokio::spawn(run_actor(rx, evt_tx.clone(), state, winops, cfg));
@@ -263,6 +310,12 @@ impl World {
                     }
                     Command::Focused { respond } => {
                         let _ = respond.send(None);
+                    }
+                    Command::FocusedWindow { respond } => {
+                        let _ = respond.send(None);
+                    }
+                    Command::SnapshotFocus { respond } => {
+                        let _ = respond.send((Vec::new(), None));
                     }
                     Command::Capabilities { respond } => {
                         let _ = respond.send(Capabilities::default());
@@ -320,6 +373,13 @@ enum Command {
     Focused {
         respond: oneshot::Sender<Option<WindowKey>>,
     },
+    FocusedWindow {
+        respond: oneshot::Sender<Option<WorldWindow>>,
+    },
+    /// Snapshot and focused key together for consistent seeding.
+    SnapshotFocus {
+        respond: oneshot::Sender<(Vec<WorldWindow>, Option<WindowKey>)>,
+    },
     Capabilities {
         respond: oneshot::Sender<Capabilities>,
     },
@@ -341,6 +401,8 @@ async fn run_actor(
     let mut current_ms = cfg.poll_ms_min.max(10);
     let next_tick = sleep(Duration::from_millis(current_ms));
     tokio::pin!(next_tick);
+    // Immediate first reconcile (no initial delay)
+    next_tick.as_mut().reset(TokioInstant::now());
 
     loop {
         tokio::select! {
@@ -357,6 +419,15 @@ async fn run_actor(
                     }
                     Command::Focused { respond } => {
                         let _ = respond.send(state.focused);
+                    }
+                    Command::FocusedWindow { respond } => {
+                        let w = state.focused.and_then(|k| state.store.get(&k).cloned());
+                        let _ = respond.send(w);
+                    }
+                    Command::SnapshotFocus { respond } => {
+                        let mut v: Vec<WorldWindow> = state.store.values().cloned().collect();
+                        v.sort_by_key(|w| (w.z, w.pid, w.id));
+                        let _ = respond.send((v, state.focused));
                     }
                     Command::Capabilities { respond } => {
                         let _ = respond.send(state.capabilities.clone());
