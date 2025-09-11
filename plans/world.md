@@ -257,8 +257,8 @@ pub enum WorldEvent {
 
 #### Stage 8: Tests
 
-- [ ] Provide mock `WinOps` for CG/AX.
-- [ ] Test startup: additions, z‑order, and `on_active_space` flags.
+- [x] Provide mock `WinOps` for CG/AX.
+- [x] Test startup: additions, z‑order, and `on_active_space` flags.
 - [ ] Test AX focus and title precedence (with/without permissions granted).
 - [ ] Test multi‑display `display_id` mapping.
 - [ ] Test debounce behavior on repetitive move/resize/title changes.
