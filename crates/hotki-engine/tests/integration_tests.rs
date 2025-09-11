@@ -311,7 +311,8 @@ async fn test_repeater_with_observer() {
     }
 
     let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
-    let relay = RelayHandler::new();
+    // Disable real key posting while exercising repeat observer behavior
+    let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);
