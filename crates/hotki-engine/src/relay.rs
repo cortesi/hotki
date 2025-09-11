@@ -123,8 +123,8 @@ mod tests {
 
     #[test]
     fn start_repeat_stop_flow() {
-        // Test with fake relay (None) - just verify state management
-        let handler = RelayHandler::new();
+        // Test with relay disabled (no OS keystrokes) - just verify state management
+        let handler = RelayHandler::new_with_enabled(false);
         let id = "id1".to_string();
         let ch = chord(Key::A);
 

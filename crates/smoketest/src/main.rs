@@ -142,8 +142,8 @@ fn main() {
         }
         return;
     }
-    if matches!(cli.command, Commands::WarnOverlay) {
-        match warn_overlay::run_warn_overlay() {
+    if let Commands::WarnOverlay { status_path } = &cli.command {
+        match warn_overlay::run_warn_overlay(status_path.clone()) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("warn-overlay: ERROR: {}", e);
@@ -393,7 +393,7 @@ fn main() {
             // Already handled above
             unreachable!()
         }
-        Commands::WarnOverlay => {
+        Commands::WarnOverlay { .. } => {
             // Already handled above
             unreachable!()
         }

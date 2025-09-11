@@ -125,7 +125,11 @@ pub enum Commands {
 
     /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)
     #[command(hide = true, name = "warn-overlay")]
-    WarnOverlay,
+    WarnOverlay {
+        /// Optional path from which the overlay reads status text to display
+        #[arg(long)]
+        status_path: Option<std::path::PathBuf>,
+    },
 
     /// Launch UI with test config and drive a short HUD + theme cycle
     Ui,

@@ -98,6 +98,8 @@ pub struct Engine {
     winops: Arc<dyn WinOps>,
     /// Window world service handle
     world: hotki_world::WorldHandle,
+    /// If true, poll focus snapshot synchronously at dispatch; else trust last snapshot.
+    sync_focus_on_dispatch: bool,
 }
 
 impl Engine {
@@ -159,6 +161,7 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            sync_focus_on_dispatch: true,
         }
     }
 
@@ -200,6 +203,7 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            sync_focus_on_dispatch: true,
         }
     }
 
@@ -241,6 +245,7 @@ impl Engine {
             last_target_pid: Arc::new(Mutex::new(None)),
             winops,
             world,
+            sync_focus_on_dispatch: false,
         }
     }
 
@@ -439,8 +444,11 @@ impl Engine {
     /// Process a key event and return whether depth changed (requiring rebind)
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
-        // Ensure our snapshot is fresh before computing context or acting on windows.
-        self.sync_focus_now();
+        // Ensure our snapshot is fresh before computing context or acting on windows
+        // unless explicitly disabled for tests.
+        if self.sync_focus_on_dispatch {
+            self.sync_focus_now();
+        }
         let fs = self.current_snapshot();
         let pid = self.current_pid();
 

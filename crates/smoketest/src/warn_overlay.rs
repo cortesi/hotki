@@ -4,7 +4,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 /// Run a borderless, always-on-top overlay window instructing the user to avoid typing.
 /// The window stays up until the process is killed by the parent orchestrator.
-pub fn run_warn_overlay() -> Result<(), String> {
+pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(), String> {
     // Create winit event loop; do not explicitly activate the app to avoid stealing focus.
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
@@ -150,10 +150,7 @@ pub fn run_warn_overlay() -> Result<(), String> {
 
                 self.window = Some(win);
 
-                // Capture status path from env for title updates
-                self.status_path = std::env::var("HOTKI_SMOKETEST_STATUS_PATH")
-                    .ok()
-                    .map(Into::into);
+                // Status path is pre-configured before run loop starts.
             }
         }
 
@@ -253,7 +250,7 @@ pub fn run_warn_overlay() -> Result<(), String> {
         title_label: None,
         warn_label: None,
         countdown_label: None,
-        status_path: None,
+        status_path: status_path_arg,
         last_title: String::from("..."),
         next_deadline: None,
         start_time: std::time::Instant::now(),

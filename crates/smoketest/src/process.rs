@@ -146,7 +146,8 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let status_path = overlay_status_path_for_current_run();
     let child = Command::new(exe)
         .arg("warn-overlay")
-        .env("HOTKI_SMOKETEST_STATUS_PATH", &status_path)
+        .arg("--status-path")
+        .arg(status_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
