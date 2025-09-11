@@ -262,9 +262,9 @@ pub enum WorldEvent {
 
 - [x] Provide mock `WinOps` for CG/AX.
 - [x] Test startup: additions, z‑order, and `on_active_space` flags.
-- [ ] Test AX focus and title precedence.
-- [ ] Test multi‑display `display_id` mapping.
-- [ ] Test debounce behavior on repetitive move/resize/title changes.
+- [x] Test AX focus and title precedence.
+- [x] Test multi‑display `display_id` mapping.
+- [ ] Test debounce behavior on repetitive move/resize/title changes (events).
 
 #### Backlog
 
