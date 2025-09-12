@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{cli::SeqTest, config};
+use serde::Serialize;
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {
@@ -15,7 +16,13 @@ pub fn heading(title: &str) {
 
 /// Run a child `smoketest` subcommand with a watchdog.
 /// Returns true on success, false on failure/timeout.
-fn run_subtest_with_watchdog(subcmd: &str, duration_ms: u64, timeout_ms: u64, logs: bool) -> bool {
+fn run_subtest_with_watchdog(
+    subcmd: &str,
+    duration_ms: u64,
+    timeout_ms: u64,
+    logs: bool,
+    extra_args: &[String],
+) -> bool {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -33,6 +40,7 @@ fn run_subtest_with_watchdog(subcmd: &str, duration_ms: u64, timeout_ms: u64, lo
         args.push("--logs".into());
     }
     args.push(subcmd.into());
+    args.extend(extra_args.iter().cloned());
 
     let mut child = match Command::new(exe)
         .args(&args)
@@ -78,7 +86,12 @@ fn run_subtest_with_watchdog(subcmd: &str, duration_ms: u64, timeout_ms: u64, lo
 
 /// Run a child `smoketest` subcommand with a watchdog, capturing output and forcing quiet mode.
 /// Returns (success, stderr + newline + stdout) for error details.
-fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool, String) {
+fn run_subtest_capture(
+    subcmd: &str,
+    duration_ms: u64,
+    timeout_ms: u64,
+    extra_args: &[String],
+) -> (bool, String) {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -90,15 +103,16 @@ fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool
     };
     // In orchestrated runs, a single overlay is spawned by the parent.
     // Disable overlays in subtests to avoid multiple top-most windows.
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "--quiet".into(),
         "--no-warn".into(),
         "--duration".into(),
         duration_ms.to_string(),
         "--timeout".into(),
         timeout_ms.to_string(),
-        subcmd.into(),
     ];
+    args.push(subcmd.into());
+    args.extend(extra_args.iter().cloned());
 
     let mut child = match Command::new(exe)
         .args(&args)
@@ -157,6 +171,16 @@ fn run_subtest_capture(subcmd: &str, duration_ms: u64, timeout_ms: u64) -> (bool
 }
 
 /// Run all smoketests sequentially in isolated subprocesses.
+#[derive(Serialize)]
+struct PlaceFlexSettings {
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    force_size_pos: bool,
+    pos_first_only: bool,
+}
+
 pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
     let mut all_ok = true;
 
@@ -175,7 +199,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     let run = |name: &str, dur: u64| -> bool {
         // Update overlay title to current test
         crate::process::write_overlay_status(name);
-        let (ok, details) = run_subtest_capture(name, dur, timeout_ms);
+        let (ok, details) = run_subtest_capture(name, dur, timeout_ms, &[]);
         if ok {
             println!("{}... OK", name);
             true
@@ -205,7 +229,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let name = "focus-nav";
         crate::process::write_overlay_status(name);
         let extra_timeout = timeout_ms.saturating_add(10_000);
-        let (ok, details) = run_subtest_capture(name, duration_ms, extra_timeout);
+        let (ok, details) = run_subtest_capture(name, duration_ms, extra_timeout, &[]);
         if ok {
             println!("{}... OK", name);
         } else {
@@ -218,8 +242,73 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place", duration_ms);
     all_ok &= run("place-minimized", duration_ms);
     all_ok &= run("place-zoomed", duration_ms);
-    // Stage‑3/8: explicitly exercise the size->pos fallback path
-    all_ok &= run("place-fallback", duration_ms);
+    // Stage‑3/8 variants via place-flex
+    // Variant 1: force size->pos on 2x2 grid BR cell
+    {
+        let cfg = PlaceFlexSettings { cols: 2, rows: 2, col: 1, row: 1, force_size_pos: true, pos_first_only: false };
+        let args = vec![
+            "place-flex".to_string(),
+            "--cols".into(), cfg.cols.to_string(),
+            "--rows".into(), cfg.rows.to_string(),
+            "--col".into(), cfg.col.to_string(),
+            "--row".into(), cfg.row.to_string(),
+            "--force-size-pos".into(),
+        ];
+        // Update overlay + print settings
+        crate::process::write_overlay_status("place-flex");
+        let json = serde_json::to_string(&cfg).unwrap_or_default();
+        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        if ok {
+            println!("place-flex... OK\n  settings: {}", json);
+        } else {
+            println!("place-flex... FAIL\n  settings: {}", json);
+            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+        }
+        all_ok &= ok;
+    }
+    // Variant 2: pos-first-only true on default grid TL cell
+    {
+        let cfg = PlaceFlexSettings { cols: config::PLACE_COLS, rows: config::PLACE_ROWS, col: 0, row: 0, force_size_pos: false, pos_first_only: true };
+        let args = vec![
+            "place-flex".to_string(),
+            "--cols".into(), cfg.cols.to_string(),
+            "--rows".into(), cfg.rows.to_string(),
+            "--col".into(), cfg.col.to_string(),
+            "--row".into(), cfg.row.to_string(),
+            "--pos-first-only".into(),
+        ];
+        crate::process::write_overlay_status("place-flex");
+        let json = serde_json::to_string(&cfg).unwrap_or_default();
+        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        if ok {
+            println!("place-flex... OK\n  settings: {}", json);
+        } else {
+            println!("place-flex... FAIL\n  settings: {}", json);
+            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+        }
+        all_ok &= ok;
+    }
+    // Variant 3: normal path on default grid BL cell
+    {
+        let cfg = PlaceFlexSettings { cols: config::PLACE_COLS, rows: config::PLACE_ROWS, col: 0, row: 1, force_size_pos: false, pos_first_only: false };
+        let args = vec![
+            "place-flex".to_string(),
+            "--cols".into(), cfg.cols.to_string(),
+            "--rows".into(), cfg.rows.to_string(),
+            "--col".into(), cfg.col.to_string(),
+            "--row".into(), cfg.row.to_string(),
+        ];
+        crate::process::write_overlay_status("place-flex");
+        let json = serde_json::to_string(&cfg).unwrap_or_default();
+        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        if ok {
+            println!("place-flex... OK\n  settings: {}", json);
+        } else {
+            println!("place-flex... FAIL\n  settings: {}", json);
+            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+        }
+        all_ok &= ok;
+    }
     all_ok &= run("fullscreen", duration_ms);
 
     // UI demos
@@ -263,7 +352,7 @@ pub fn run_sequence_tests(tests: &[SeqTest], duration_ms: u64, timeout_ms: u64, 
         } else {
             duration_ms
         };
-        if !run_subtest_with_watchdog(name, dur, timeout_ms, logs) {
+        if !run_subtest_with_watchdog(name, dur, timeout_ms, logs, &[]) {
             std::process::exit(1);
         }
     }
