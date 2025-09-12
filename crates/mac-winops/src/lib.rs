@@ -319,7 +319,9 @@ pub fn drain_main_ops() {
                     pid,
                     desired
                 );
-                let _ = fullscreen_native(pid, desired);
+                if let Err(e) = fullscreen_native(pid, desired) {
+                    tracing::warn!("FullscreenNative failed: pid={} err={}", pid, e);
+                }
             }
             MainOp::FullscreenNonNative { pid, desired } => {
                 tracing::info!(
@@ -327,7 +329,9 @@ pub fn drain_main_ops() {
                     pid,
                     desired
                 );
-                let _ = fullscreen_nonnative(pid, desired);
+                if let Err(e) = fullscreen_nonnative(pid, desired) {
+                    tracing::warn!("FullscreenNonNative failed: pid={} err={}", pid, e);
+                }
             }
             MainOp::PlaceGrid {
                 id,
@@ -336,7 +340,17 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                let _ = crate::place::place_grid(id, cols, rows, col, row);
+                if let Err(e) = crate::place::place_grid(id, cols, rows, col, row) {
+                    tracing::warn!(
+                        "PlaceGrid failed: id={} cols={} rows={} col={} row={} err={}",
+                        id,
+                        cols,
+                        rows,
+                        col,
+                        row,
+                        e
+                    );
+                }
             }
             MainOp::PlaceMoveGrid {
                 id,
@@ -344,7 +358,16 @@ pub fn drain_main_ops() {
                 rows,
                 dir,
             } => {
-                let _ = crate::place::place_move_grid(id, cols, rows, dir);
+                if let Err(e) = crate::place::place_move_grid(id, cols, rows, dir) {
+                    tracing::warn!(
+                        "PlaceMoveGrid failed: id={} cols={} rows={} dir={:?} err={}",
+                        id,
+                        cols,
+                        rows,
+                        dir,
+                        e
+                    );
+                }
             }
             MainOp::PlaceGridFocused {
                 pid,
@@ -353,16 +376,32 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                let _ = crate::place::place_grid_focused(pid, cols, rows, col, row);
+                if let Err(e) = crate::place::place_grid_focused(pid, cols, rows, col, row) {
+                    tracing::warn!(
+                        "PlaceGridFocused failed: pid={} cols={} rows={} col={} row={} err={}",
+                        pid,
+                        cols,
+                        rows,
+                        col,
+                        row,
+                        e
+                    );
+                }
             }
             MainOp::ActivatePid { pid } => {
-                let _ = activate_pid(pid);
+                if let Err(e) = activate_pid(pid) {
+                    tracing::warn!("ActivatePid failed: pid={} err={}", pid, e);
+                }
             }
             MainOp::RaiseWindow { pid, id } => {
-                let _ = crate::raise::raise_window(pid, id);
+                if let Err(e) = crate::raise::raise_window(pid, id) {
+                    tracing::warn!("RaiseWindow failed: pid={} id={} err={}", pid, id, e);
+                }
             }
             MainOp::FocusDir { dir } => {
-                let _ = crate::focus_dir::focus_dir(dir);
+                if let Err(e) = crate::focus_dir::focus_dir(dir) {
+                    tracing::warn!("FocusDir failed: dir={:?} err={}", dir, e);
+                }
             }
         }
     }
