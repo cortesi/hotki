@@ -213,14 +213,14 @@ async fn test_ticker_cancel_semantics() {
     ensure_no_os_interaction();
     // Test repeater stop vs stop_sync semantics instead
     // since ticker module is private
-    let focus = Arc::new(Mutex::new(None::<i32>));
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
-    let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);
+    let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
     // Test non-blocking stop
-    *focus.lock().unwrap() = Some(1234);
+    *focus_ctx.lock().unwrap() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
     repeater.start_relay_repeat(
         "test_stop".to_string(),
         mac_keycode::Chord::parse("cmd+a").unwrap(),
@@ -321,12 +321,12 @@ async fn test_repeater_with_observer() {
         }
     }
 
-    let focus = Arc::new(Mutex::new(None::<i32>));
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     // Disable real key posting while exercising repeat observer behavior
     let relay = RelayHandler::new_with_enabled(false);
     let (tx, _rx) = mpsc::unbounded_channel();
     let notifier = NotificationDispatcher::new(tx);
-    let repeater = Repeater::new(focus.clone(), relay.clone(), notifier);
+    let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
     let observer = Arc::new(TestObserver {
         relay_count: AtomicUsize::new(0),
@@ -336,7 +336,7 @@ async fn test_repeater_with_observer() {
     repeater.set_repeat_observer(observer.clone());
 
     // Test relay repeat observation
-    *focus.lock().unwrap() = Some(1234);
+    *focus_ctx.lock().unwrap() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
 
     // The observer is only called during actual repeat ticks, not the initial execution
     // So we need to make sure repeats actually happen

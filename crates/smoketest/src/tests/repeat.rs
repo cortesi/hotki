@@ -39,13 +39,18 @@ pub fn count_relay(ms: u64) -> usize {
         .expect("tokio runtime");
     let _guard = rt.enter();
 
-    let focus = Arc::new(Mutex::new(None::<i32>));
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
-    if let Ok(mut f) = focus.lock() {
-        *f = Some(std::process::id() as i32);
+    let repeater =
+        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+    if let Ok(mut f) = focus_ctx.lock() {
+        *f = Some((
+            "smoketest-app".to_string(),
+            crate::config::RELAY_TEST_TITLE.to_string(),
+            std::process::id() as i32,
+        ));
     }
 
     struct Counter(AtomicUsize);
@@ -178,11 +183,12 @@ pub fn count_shell(ms: u64) -> usize {
         .expect("tokio runtime");
     let _guard = rt.enter();
 
-    let focus = Arc::new(Mutex::new(None::<i32>));
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
+    let repeater =
+        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
 
     let path = std::env::temp_dir().join(format!(
         "hotki-smoketest-shell-{}-{}.log",
@@ -234,11 +240,12 @@ pub fn count_volume(ms: u64) -> usize {
     let script = "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + 1)";
     let cmd = format!("osascript -e '{}'", script.replace('\n', "' -e '"));
 
-    let focus = Arc::new(Mutex::new(None::<i32>));
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater = hotki_engine::Repeater::new(focus.clone(), relay.clone(), notifier.clone());
+    let repeater =
+        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
 
     let id = "smoketest-volume".to_string();
     repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));
