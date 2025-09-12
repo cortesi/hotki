@@ -52,6 +52,7 @@ mod focus;
 mod key_binding;
 mod key_state;
 mod notification;
+mod regex_cache;
 mod relay;
 mod repeater;
 mod services;
@@ -73,6 +74,7 @@ use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
 use mac_winops::ops::{RealWinOps, WinOps};
 pub use notification::NotificationDispatcher;
+use regex_cache::RegexCache;
 pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
@@ -118,6 +120,8 @@ pub struct Engine {
     focus: FocusState,
     /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
     raise_nonce: Arc<AtomicU64>,
+    /// Cache for compiled regular expressions used by actions like Raise
+    regex_cache: Arc<RegexCache>,
     // winops/world are part of `svc`
 }
 
@@ -163,6 +167,7 @@ impl Engine {
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
+            regex_cache: Arc::new(RegexCache::new()),
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -205,6 +210,7 @@ impl Engine {
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
+            regex_cache: Arc::new(RegexCache::new()),
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -247,6 +253,7 @@ impl Engine {
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
+            regex_cache: Arc::new(RegexCache::new()),
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -643,12 +650,11 @@ impl Engine {
     }
 
     async fn handle_action_raise(&self, app: Option<String>, title: Option<String>) -> Result<()> {
-        use regex::Regex;
         tracing::debug!("Raise action: app={:?} title={:?}", app, title);
         let _ = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
         let mut invalid = false;
         let app_re = if let Some(s) = app.as_ref() {
-            match Regex::new(s) {
+            match self.regex_cache.get_or_compile(s).await {
                 Ok(r) => Some(r),
                 Err(e) => {
                     self.svc
@@ -662,7 +668,7 @@ impl Engine {
             None
         };
         let title_re = if let Some(s) = title.as_ref() {
-            match Regex::new(s) {
+            match self.regex_cache.get_or_compile(s).await {
                 Ok(r) => Some(r),
                 Err(e) => {
                     self.svc
