@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use crate::{notification::NotificationDispatcher, relay::RelayHandler, repeater::Repeater};
 use mac_winops::ops::WinOps;
+
+use crate::{notification::NotificationDispatcher, relay::RelayHandler, repeater::Repeater};
 
 /// Groups long‑lived engine services to reduce top‑level `Engine` fields
 /// and make dependencies explicit at construction sites.

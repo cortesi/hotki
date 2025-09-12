@@ -133,17 +133,6 @@ pub trait PidProvider: Send + Sync {
 }
 
 #[derive(Clone)]
-struct PidFromPidArc {
-    pid: Arc<Mutex<Option<i32>>>,
-}
-
-impl PidProvider for PidFromPidArc {
-    fn current_pid(&self) -> i32 {
-        self.pid.lock().ok().and_then(|g| *g).unwrap_or(-1)
-    }
-}
-
-#[derive(Clone)]
 struct PidFromCtxArc {
     ctx: Arc<Mutex<Option<(String, String, i32)>>>,
 }
@@ -179,25 +168,6 @@ pub trait RepeatObserver: Send + Sync {
 }
 
 impl Repeater {
-    /// Create a new repeater bound to the given focus/relay/notifier components.
-    pub fn new(
-        focus_pid: Arc<Mutex<Option<i32>>>,
-        relay: RelayHandler,
-        notifier: NotificationDispatcher,
-    ) -> Self {
-        let sys_initial = Duration::from_millis(SYS_INITIAL_DELAY_MS);
-        let sys_interval = Duration::from_millis(SYS_INTERVAL_MS);
-        Self {
-            sys_initial,
-            sys_interval,
-            pid_provider: Arc::new(PidFromPidArc { pid: focus_pid }),
-            relay,
-            notifier,
-            ticker: Ticker::new(),
-            repeat_observer: Arc::new(Mutex::new(None)),
-        }
-    }
-
     /// Create a repeater backed by a focus context (world-derived).
     pub fn new_with_ctx(
         focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
