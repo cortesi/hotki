@@ -5,6 +5,7 @@ use core_foundation::{
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
     string::{CFString, CFStringRef},
 };
+use tracing::{Level, debug, enabled};
 
 use crate::{
     AXElem, WindowId,
@@ -26,6 +27,11 @@ unsafe extern "C" {
         attr: CFStringRef,
         value: CFTypeRef,
     ) -> i32;
+    pub fn AXUIElementIsAttributeSettable(
+        element: *mut c_void,
+        attr: CFStringRef,
+        out_settable: *mut bool,
+    ) -> i32;
 
     // AXValue helpers for CGPoint/CGSize
     fn AXValueCreate(theType: i32, valuePtr: *const c_void) -> CFTypeRef;
@@ -43,6 +49,29 @@ const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
 const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 // AX error for invalid UI element (window closed / stale reference)
 const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
+
+#[inline]
+fn ax_error_name(code: i32) -> &'static str {
+    match code {
+        0 => "Success",
+        -25200 => "Failure",
+        -25201 => "IllegalArgument",
+        -25202 => "InvalidUIElement",
+        -25203 => "InvalidObserver",
+        -25204 => "CannotComplete",
+        -25205 => "AttributeUnsupported",
+        -25206 => "ActionUnsupported",
+        -25207 => "NotificationUnsupported",
+        -25208 => "NotImplemented",
+        -25209 => "NotificationAlreadyRegistered",
+        -25210 => "NotificationNotRegistered",
+        -25211 => "APIDisabled",
+        -25212 => "NoValue",
+        -25213 => "ParameterizedAttributeUnsupported",
+        -25214 => "NotEnoughPrecision",
+        _ => "Unknown",
+    }
+}
 
 thread_local! {
     static ATTR_STRINGS: RefCell<HashMap<&'static str, CFString>> = RefCell::new(HashMap::new());
@@ -75,9 +104,19 @@ pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> 
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            debug!(
+                "AXUIElementCopyAttributeValue(bool) -> {} ({})",
+                ax_error_name(err),
+                err
+            );
             return Err(Error::WindowGone);
         }
-        // Not all windows expose AXFullScreen; treat as unsupported.
+        debug!(
+            "AXUIElementCopyAttributeValue(bool) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
+        // Not all windows expose this attribute; surface the code upstream.
         return Err(Error::AxCode(err));
     }
     if v.is_null() {
@@ -113,8 +152,18 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            debug!(
+                "AXUIElementCopyAttributeValue(CGPoint) -> {} ({})",
+                ax_error_name(err),
+                err
+            );
             return Err(Error::WindowGone);
         }
+        debug!(
+            "AXUIElementCopyAttributeValue(CGPoint) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
         return Err(Error::AxCode(err));
     }
     if v.is_null() {
@@ -127,6 +176,7 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
     // SAFETY: We own `v` via Create rule.
     unsafe { CFRelease(v) };
     if !ok {
+        debug!("AXValueGetValue(CGPoint) returned false (unsupported type)");
         return Err(Error::Unsupported);
     }
     Ok(p)
@@ -138,8 +188,18 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            debug!(
+                "AXUIElementCopyAttributeValue(CGSize) -> {} ({})",
+                ax_error_name(err),
+                err
+            );
             return Err(Error::WindowGone);
         }
+        debug!(
+            "AXUIElementCopyAttributeValue(CGSize) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
         return Err(Error::AxCode(err));
     }
     if v.is_null() {
@@ -154,6 +214,7 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     // SAFETY: We own `v` via Create rule.
     unsafe { CFRelease(v) };
     if !ok {
+        debug!("AXValueGetValue(CGSize) returned false (unsupported type)");
         return Err(Error::Unsupported);
     }
     Ok(s)
@@ -177,10 +238,38 @@ pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Resu
     if v.is_null() {
         return Err(Error::Unsupported);
     }
+    // Optionally surface settable state in debug builds.
+    if enabled!(Level::DEBUG) {
+        let mut settable = false;
+        let serr = unsafe { AXUIElementIsAttributeSettable(element, attr, &mut settable) };
+        if serr == 0 {
+            debug!("AXIsAttributeSettable(CGPoint) -> settable={}", settable);
+        } else {
+            debug!(
+                "AXIsAttributeSettable(CGPoint) failed: code={} ({})",
+                serr,
+                ax_error_name(serr)
+            );
+        }
+    }
     // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
     unsafe { CFRelease(v) };
     if err != 0 {
+        debug!(
+            "AXUIElementSetAttributeValue(CGPoint) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
+        if enabled!(Level::DEBUG) {
+            let role = ax_get_string(element, cfstr("AXRole")).unwrap_or_default();
+            let subrole = ax_get_string(element, cfstr("AXSubrole")).unwrap_or_default();
+            let title = ax_get_string(element, cfstr("AXTitle")).unwrap_or_default();
+            debug!(
+                "AX context: role='{}' subrole='{}' title='{}' for CGPoint set",
+                role, subrole, title
+            );
+        }
         return Err(Error::AxCode(err));
     }
     Ok(())
@@ -192,10 +281,38 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
     if v.is_null() {
         return Err(Error::Unsupported);
     }
+    // Optionally surface settable state in debug builds.
+    if enabled!(Level::DEBUG) {
+        let mut settable = false;
+        let serr = unsafe { AXUIElementIsAttributeSettable(element, attr, &mut settable) };
+        if serr == 0 {
+            debug!("AXIsAttributeSettable(CGSize) -> settable={}", settable);
+        } else {
+            debug!(
+                "AXIsAttributeSettable(CGSize) failed: code={} ({})",
+                serr,
+                ax_error_name(serr)
+            );
+        }
+    }
     // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
     unsafe { CFRelease(v) };
     if err != 0 {
+        debug!(
+            "AXUIElementSetAttributeValue(CGSize) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
+        if enabled!(Level::DEBUG) {
+            let role = ax_get_string(element, cfstr("AXRole")).unwrap_or_default();
+            let subrole = ax_get_string(element, cfstr("AXSubrole")).unwrap_or_default();
+            let title = ax_get_string(element, cfstr("AXTitle")).unwrap_or_default();
+            debug!(
+                "AX context: role='{}' subrole='{}' title='{}' for CGSize set",
+                role, subrole, title
+            );
+        }
         return Err(Error::AxCode(err));
     }
     Ok(())

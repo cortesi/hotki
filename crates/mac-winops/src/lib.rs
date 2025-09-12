@@ -277,13 +277,25 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<AXElem> {
                 continue;
             }
             // Prefer AXFocused; fall back to AXMain
-            if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
-                debug!("focused_window_for_pid: found window via AXFocused");
-                return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
+            match ax_bool(w, cfstr("AXFocused")) {
+                Ok(Some(true)) => {
+                    debug!("focused_window_for_pid: found window via AXFocused");
+                    return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
+                }
+                Err(e) => {
+                    debug!("focused_window_for_pid: AXFocused check error: {}", e);
+                }
+                _ => {}
             }
-            if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
-                debug!("focused_window_for_pid: found window via AXMain");
-                return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
+            match ax_bool(w, cfstr("AXMain")) {
+                Ok(Some(true)) => {
+                    debug!("focused_window_for_pid: found window via AXMain");
+                    return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
+                }
+                Err(e) => {
+                    debug!("focused_window_for_pid: AXMain check error: {}", e);
+                }
+                _ => {}
             }
         }
     }
