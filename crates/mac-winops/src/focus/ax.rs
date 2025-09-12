@@ -21,8 +21,8 @@ pub(crate) fn ax_is_trusted() -> bool {
 
 #[derive(Default)]
 pub(crate) struct AXState {
-    observer: *mut c_void,
-    app_elem: *mut c_void,
+    observer: Option<AXObserver>,
+    app_elem: Option<crate::AXElem>,
     pub(crate) have_source: bool,
     ctx_ptr: *mut c_void,
 }
@@ -43,21 +43,34 @@ pub(crate) enum Error {
     GetRunLoopSourceNull,
 }
 
+/// RAII guard for AXObserverRef.
+struct AXObserver(*mut c_void);
+impl AXObserver {
+    #[inline]
+    fn from_create(ptr: *mut c_void) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self(ptr)) }
+    }
+    #[inline]
+    fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+impl Drop for AXObserver {
+    fn drop(&mut self) {
+        unsafe { CFRelease(self.0 as CFTypeRef) }
+    }
+}
+
 impl AXState {
     pub(crate) fn detach(&mut self) {
         unsafe {
-            if !self.app_elem.is_null() {
-                CFRelease(self.app_elem as CFTypeRef);
-            }
-            if !self.observer.is_null() {
-                CFRelease(self.observer as CFTypeRef);
-            }
             if !self.ctx_ptr.is_null() {
                 let _ = Box::<AXCtx>::from_raw(self.ctx_ptr as *mut AXCtx);
             }
         }
-        self.observer = std::ptr::null_mut();
-        self.app_elem = std::ptr::null_mut();
+        // Drop RAII wrappers to release CF objects.
+        self.observer = None;
+        self.app_elem = None;
         self.have_source = false;
         self.ctx_ptr = std::ptr::null_mut();
     }
@@ -94,16 +107,18 @@ impl AXState {
         }
 
         unsafe {
-            let mut observer: *mut c_void = std::ptr::null_mut();
-            let err = AXObserverCreate(pid, ax_callback, &mut observer as *mut _);
-            if err != 0 || observer.is_null() {
+            let mut observer_ptr: *mut c_void = std::ptr::null_mut();
+            let err = AXObserverCreate(pid, ax_callback, &mut observer_ptr as *mut _);
+            if err != 0 || observer_ptr.is_null() {
                 return Err(Error::ObserverCreate(err));
             }
-            let app_elem = AXUIElementCreateApplication(pid);
-            if app_elem.is_null() {
-                CFRelease(observer as CFTypeRef);
+            let Some(app_elem) = crate::AXElem::from_create(AXUIElementCreateApplication(pid))
+            else {
                 return Err(Error::AppElementNull);
-            }
+            };
+            let Some(observer) = AXObserver::from_create(observer_ptr) else {
+                return Err(Error::ObserverCreate(err));
+            };
 
             // Create CFString constants (non-owning from 'static strs)
             let notif_focused_window_changed =
@@ -115,7 +130,7 @@ impl AXState {
             // Create context used by callback (contains tx, app element, and CFStrings)
             let ctx = Box::new(AXCtx {
                 tx,
-                app_elem,
+                app_elem: app_elem.as_ptr(),
                 notif_focused_window_changed,
                 notif_title_changed,
                 attr_focused_window,
@@ -127,10 +142,9 @@ impl AXState {
             let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
             // Observe focused window changes on the app
-            let err = AXObserverAddNotification(observer, app_elem, notif, ctx_ptr);
+            let err =
+                AXObserverAddNotification(observer.as_ptr(), app_elem.as_ptr(), notif, ctx_ptr);
             if err != 0 {
-                CFRelease(app_elem as CFTypeRef);
-                CFRelease(observer as CFTypeRef);
                 let _ = Box::<AXCtx>::from_raw(ctx_ptr as *mut AXCtx);
                 return Err(if err == AX_ERR_NOTIFICATION_ALREADY_REGISTERED {
                     Error::AddNotificationAlreadyRegistered
@@ -139,10 +153,8 @@ impl AXState {
                 });
             }
 
-            let source = AXObserverGetRunLoopSource(observer);
+            let source = AXObserverGetRunLoopSource(observer.as_ptr());
             if source.is_null() {
-                CFRelease(app_elem as CFTypeRef);
-                CFRelease(observer as CFTypeRef);
                 let _ = Box::<AXCtx>::from_raw(ctx_ptr as *mut AXCtx);
                 return Err(Error::GetRunLoopSourceNull);
             }
@@ -152,8 +164,8 @@ impl AXState {
             let source_obj = CFRunLoopSource::wrap_under_get_rule(source_ref);
             rl.add_source(&source_obj, mode);
 
-            self.observer = observer;
-            self.app_elem = app_elem;
+            self.observer = Some(observer);
+            self.app_elem = Some(app_elem);
             self.have_source = true;
             self.ctx_ptr = ctx_ptr;
         }
@@ -187,22 +199,22 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
     }
     unsafe {
-        let sys = AXUIElementCreateSystemWide();
-        if sys.is_null() {
+        let sys_ptr = AXUIElementCreateSystemWide();
+        if sys_ptr.is_null() {
             return None;
         }
+        let sys = crate::AXElem::from_create(sys_ptr).expect("non-null just checked");
         let attr_focused_app = CFString::from_static_string("AXFocusedApplication");
         let attr_focused_window = CFString::from_static_string("AXFocusedWindow");
         let attr_title = CFString::from_static_string("AXTitle");
 
         let mut app_ref: CFTypeRef = std::ptr::null_mut();
         let err = AXUIElementCopyAttributeValue(
-            sys,
+            sys.as_ptr(),
             attr_focused_app.as_concrete_TypeRef(),
             &mut app_ref,
         );
         if err != 0 || app_ref.is_null() {
-            CFRelease(sys);
             return None;
         }
         // Resolve pid
@@ -236,7 +248,6 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         if werr != 0 || win_ref.is_null() {
             // No focused window; still return app and empty title
             CFRelease(app_ref);
-            CFRelease(sys);
             return Some((app_name, String::new(), pid_out));
         }
         let mut title_ref: CFTypeRef = std::ptr::null_mut();
@@ -248,15 +259,13 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         if terr != 0 || title_ref.is_null() {
             CFRelease(win_ref);
             CFRelease(app_ref);
-            CFRelease(sys);
             return Some((app_name, String::new(), pid_out));
         }
         let cfs = core_foundation::string::CFString::wrap_under_create_rule(title_ref as _);
         let title = cfs.to_string();
-        // Release in reverse order of acquisition
+        // Release in reverse order of acquisition (sys handled by RAII)
         CFRelease(win_ref);
         CFRelease(app_ref);
-        CFRelease(sys);
         Some((app_name, title, pid_out))
     }
 }

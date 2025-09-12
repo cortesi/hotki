@@ -70,16 +70,34 @@ unsafe extern "C" {
 /// Alias for CoreGraphics CGWindowID (kCGWindowNumber).
 pub type WindowId = u32;
 
-/// RAII guard that releases a retained AX element on drop.
+/// RAII guard that releases an AX element on drop.
 pub(crate) struct AXElem(*mut c_void);
 impl AXElem {
+    /// Wrap an AX pointer we own under the Create rule. Returns None if null.
     #[inline]
-    pub(crate) fn new(ptr: *mut c_void) -> Self {
-        Self(ptr)
+    pub(crate) fn from_create(ptr: *mut c_void) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self(ptr)) }
     }
+    /// Retain a borrowed AX pointer and wrap it. Returns None if null.
+    #[inline]
+    pub(crate) fn retain_from_borrowed(ptr: *mut c_void) -> Option<Self> {
+        if ptr.is_null() {
+            None
+        } else {
+            unsafe { CFRetain(ptr as CFTypeRef) };
+            Some(Self(ptr))
+        }
+    }
+    /// Expose the raw pointer for AX calls.
     #[inline]
     pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.0
+    }
+}
+impl Clone for AXElem {
+    fn clone(&self) -> Self {
+        unsafe { CFRetain(self.0 as CFTypeRef) };
+        Self(self.0)
     }
 }
 impl Drop for AXElem {
@@ -120,14 +138,12 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
         return false;
     }
     unsafe {
-        let app = AXUIElementCreateApplication(pid);
-        if app.is_null() {
+        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
             return false;
-        }
+        };
         let mut wins_ref: CFTypeRef = ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
         if err != 0 || wins_ref.is_null() {
-            CFRelease(app as CFTypeRef);
             return false;
         }
         let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
@@ -145,11 +161,9 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
             let title = cfs.to_string();
             // CFString object from Copy is consumed by wrap_under_create_rule
             if title == expected_title {
-                CFRelease(app as CFTypeRef);
                 return true;
             }
         }
-        CFRelease(app as CFTypeRef);
     }
     false
 }
@@ -163,14 +177,12 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
         return frontmost_window_for_pid(pid).map(|w| w.id);
     }
     unsafe {
-        let app = AXUIElementCreateApplication(pid);
-        if app.is_null() {
+        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
             return frontmost_window_for_pid(pid).map(|w| w.id);
-        }
+        };
         let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
         if err != 0 || wins_ref.is_null() {
-            CFRelease(app as CFTypeRef);
             return frontmost_window_for_pid(pid).map(|w| w.id);
         }
         let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
@@ -200,18 +212,15 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
             }
         }
         if chosen.is_null() {
-            CFRelease(app as CFTypeRef);
             return frontmost_window_for_pid(pid).map(|w| w.id);
         }
         let mut num_ref: CFTypeRef = std::ptr::null_mut();
         let nerr = AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref);
         if nerr != 0 || num_ref.is_null() {
-            CFRelease(app as CFTypeRef);
             return frontmost_window_for_pid(pid).map(|w| w.id);
         }
         let cfnum = core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _);
         let wid = cfnum.to_i64().unwrap_or(0) as u32;
-        CFRelease(app as CFTypeRef);
         if wid == 0 {
             frontmost_window_for_pid(pid).map(|w| w.id)
         } else {
@@ -227,22 +236,22 @@ pub fn ax_title_for_window_id(id: WindowId) -> Option<String> {
         return None;
     }
     match ax_window_for_id(id) {
-        Ok((w, _pid)) => ax_get_string(w, cfstr("AXTitle")),
+        Ok((w, _pid)) => ax_get_string(w.as_ptr(), cfstr("AXTitle")),
         Err(_) => None,
     }
 }
 
-pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
+pub(crate) fn focused_window_for_pid(pid: i32) -> Result<AXElem> {
     debug!("focused_window_for_pid: pid={}", pid);
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = (unsafe { AXElem::from_create(AXUIElementCreateApplication(pid)) }) else {
         warn!("focused_window_for_pid: AXUIElementCreateApplication returned null");
         return Err(Error::AppElement);
-    }
+    };
 
     // Prefer scanning AXWindows for AXFocused/AXMain to avoid AXFocusedWindow crash on macOS 15.5.
     let mut wins_ref: CFTypeRef = ptr::null_mut();
-    let err_w = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    let err_w =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err_w == 0 && !wins_ref.is_null() {
         let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
         let n = unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) };
@@ -253,16 +262,12 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
             }
             // Prefer AXFocused; fall back to AXMain
             if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
-                unsafe { CFRetain(w as CFTypeRef) };
-                unsafe { CFRelease(app as CFTypeRef) };
                 debug!("focused_window_for_pid: found window via AXFocused");
-                return Ok(w);
+                return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
             }
             if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
-                unsafe { CFRetain(w as CFTypeRef) };
-                unsafe { CFRelease(app as CFTypeRef) };
                 debug!("focused_window_for_pid: found window via AXMain");
-                return Ok(w);
+                return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
             }
         }
     }
@@ -271,7 +276,6 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
     if let Some(info) = frontmost_window_for_pid(pid) {
         // Reuse existing helper to resolve AX element by CGWindowID
         if let Ok((w, _pid)) = ax_window_for_id(info.id) {
-            unsafe { CFRelease(app as CFTypeRef) };
             debug!("focused_window_for_pid: fallback via AXWindowNumber");
             return Ok(w);
         }
@@ -279,7 +283,7 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
     // Final fallback: choose the first top-level AXWindow from AXWindows list.
     unsafe {
         let mut wins_ref: CFTypeRef = ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
         if err == 0 && !wins_ref.is_null() {
             let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
             let n = CFArrayGetCount(arr.as_concrete_TypeRef());
@@ -290,15 +294,12 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
                 }
                 let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
                 if role == "AXWindow" {
-                    CFRetain(w as CFTypeRef);
-                    CFRelease(app as CFTypeRef);
                     debug!("focused_window_for_pid: fallback to first AXWindow entry");
-                    return Ok(w);
+                    return AXElem::retain_from_borrowed(w).ok_or(Error::FocusedWindow);
                 }
             }
         }
     }
-    unsafe { CFRelease(app as CFTypeRef) };
     debug!("focused_window_for_pid: no focused window");
     Err(Error::FocusedWindow)
 }

@@ -1,4 +1,3 @@
-use core_foundation::base::{CFRelease, CFTypeRef};
 use mac_keycode::{Chord, Key, Modifier};
 use objc2_foundation::MainThreadMarker;
 use relaykey::RelayKey;
@@ -29,7 +28,7 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
     ax_check()?;
     let win = focused_window_for_pid(pid)?;
     let attr_fullscreen = cfstr("AXFullScreen");
-    match ax_bool(win, attr_fullscreen) {
+    match ax_bool(win.as_ptr(), attr_fullscreen) {
         Ok(Some(cur)) => {
             let target = match desired {
                 Desired::On => true,
@@ -37,14 +36,12 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
                 Desired::Toggle => !cur,
             };
             if target != cur {
-                ax_set_bool(win, attr_fullscreen, target)?;
+                ax_set_bool(win.as_ptr(), attr_fullscreen, target)?;
             }
-            unsafe { CFRelease(win as CFTypeRef) };
             Ok(())
         }
         // If the attribute is missing/unsupported, fall back to keystroke.
         _ => {
-            unsafe { CFRelease(win as CFTypeRef) };
             let mut mods = std::collections::HashSet::new();
             mods.insert(Modifier::Control);
             mods.insert(Modifier::Command);
@@ -79,8 +76,8 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
     let attr_size = cfstr("AXSize");
 
     let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
+        let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
 
         let vf = visible_frame_containing_point(mtm, cur_p);
         tracing::debug!(
@@ -119,16 +116,16 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
                 }
                 map.entry(k).or_insert((cur_p, cur_s));
             }
-            ax_set_point(win, attr_pos, target_p)?;
-            ax_set_size(win, attr_size, target_s)?;
+            ax_set_point(win.as_ptr(), attr_pos, target_p)?;
+            ax_set_size(win.as_ptr(), attr_size, target_s)?;
         } else {
             tracing::debug!("WinOps: restoring from previous frame if any");
             let restored = if let Some(k) = prev_key {
                 let mut map = PREV_FRAMES.lock();
                 if let Some((p, s)) = map.remove(&k) {
                     if !geom::rect_eq(p, s, cur_p, cur_s) {
-                        ax_set_point(win, attr_pos, p)?;
-                        ax_set_size(win, attr_size, s)?;
+                        ax_set_point(win.as_ptr(), attr_pos, p)?;
+                        ax_set_size(win.as_ptr(), attr_size, s)?;
                     }
                     true
                 } else {
@@ -143,7 +140,6 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         }
         Ok(())
     })();
-    unsafe { CFRelease(win as CFTypeRef) };
     tracing::info!("WinOps: fullscreen_nonnative exit");
     result
 }

@@ -1,4 +1,3 @@
-use core_foundation::base::{CFRelease, CFTypeRef};
 use objc2_foundation::MainThreadMarker;
 
 use crate::{
@@ -17,8 +16,8 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
-    let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
+    (|| -> Result<()> {
+        let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
         let col = col.min(cols.saturating_sub(1));
         let row = row.min(rows.saturating_sub(1));
@@ -32,9 +31,9 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             col,
             row,
         );
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
         ax_set_size(
-            win,
+            win.as_ptr(),
             attr_size,
             CGSize {
                 width: w,
@@ -42,9 +41,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             },
         )?;
         Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    result
+    })()
 }
 
 /// Place the currently focused window of `pid` into the specified grid cell on its current screen.
@@ -55,9 +52,10 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     let win = crate::focused_window_for_pid(pid)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
-    let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
+
+    (|| -> Result<()> {
+        let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
         let col = col.min(cols.saturating_sub(1));
         let row = row.min(rows.saturating_sub(1));
@@ -82,9 +80,9 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             w,
             h
         );
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
         ax_set_size(
-            win,
+            win.as_ptr(),
             attr_size,
             CGSize {
                 width: w,
@@ -92,9 +90,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             },
         )?;
         Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    result
+    })()
 }
 
 /// Move a window (by `id`) within a grid in the given direction.
@@ -110,9 +106,9 @@ pub(crate) fn place_move_grid(
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
-    let result = (|| -> Result<()> {
-        let cur_p = ax_get_point(win, attr_pos)?;
-        let cur_s = ax_get_size(win, attr_size)?;
+    (|| -> Result<()> {
+        let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
 
         let eps = 2.0;
@@ -142,9 +138,9 @@ pub(crate) fn place_move_grid(
 
         let (x, y, w, h) =
             geom::grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
-        ax_set_point(win, attr_pos, CGPoint { x, y })?;
+        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
         ax_set_size(
-            win,
+            win.as_ptr(),
             attr_size,
             CGSize {
                 width: w,
@@ -152,7 +148,5 @@ pub(crate) fn place_move_grid(
             },
         )?;
         Ok(())
-    })();
-    unsafe { CFRelease(win as CFTypeRef) };
-    result
+    })()
 }

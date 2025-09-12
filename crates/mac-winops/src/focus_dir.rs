@@ -1,4 +1,4 @@
-use core_foundation::base::{CFRelease, CFTypeRef};
+use core_foundation::base::CFTypeRef;
 use objc2_foundation::MainThreadMarker;
 
 use crate::{
@@ -23,8 +23,8 @@ pub(crate) fn focus_dir(dir: crate::MoveDir) -> Result<()> {
 
     (|| -> Result<()> {
         let (ax_origin, _pid_for_id) = ax_window_for_id(origin.id)?;
-        let o_pos = ax_get_point(ax_origin, cfstr("AXPosition"))?;
-        let o_size = ax_get_size(ax_origin, cfstr("AXSize"))?;
+        let o_pos = ax_get_point(ax_origin.as_ptr(), cfstr("AXPosition"))?;
+        let o_size = ax_get_size(ax_origin.as_ptr(), cfstr("AXSize"))?;
         let o_rect = geom::Rect {
             x: o_pos.x,
             y: o_pos.y,
@@ -71,7 +71,7 @@ pub(crate) fn focus_dir(dir: crate::MoveDir) -> Result<()> {
                             use core_foundation::base::TCFType;
                             let mut num_ref: CFTypeRef = std::ptr::null_mut();
                             let nerr = crate::ax::AXUIElementCopyAttributeValue(
-                                cax,
+                                cax.as_ptr(),
                                 cfstr("AXWindowNumber"),
                                 &mut num_ref,
                             );
@@ -86,21 +86,18 @@ pub(crate) fn focus_dir(dir: crate::MoveDir) -> Result<()> {
                                 }
                             }
                         }
-                        let p = match ax_get_point(cax, cfstr("AXPosition")) {
+                        let p = match ax_get_point(cax.as_ptr(), cfstr("AXPosition")) {
                             Ok(v) => v,
                             Err(_) => {
-                                unsafe { CFRelease(cax as CFTypeRef) };
                                 continue;
                             }
                         };
-                        let s = match ax_get_size(cax, cfstr("AXSize")) {
+                        let s = match ax_get_size(cax.as_ptr(), cfstr("AXSize")) {
                             Ok(v) => v,
                             Err(_) => {
-                                unsafe { CFRelease(cax as CFTypeRef) };
                                 continue;
                             }
                         };
-                        unsafe { CFRelease(cax as CFTypeRef) };
                         (p.x, p.y, s.width.max(1.0), s.height.max(1.0), id_match)
                     }
                     Err(_) => continue,

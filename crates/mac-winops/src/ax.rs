@@ -7,7 +7,7 @@ use core_foundation::{
 };
 
 use crate::{
-    WindowId,
+    AXElem, WindowId,
     error::{Error, Result},
     geom::{CGPoint, CGSize},
     window,
@@ -36,7 +36,6 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFBooleanGetValue(b: CFTypeRef) -> bool;
-    fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
 }
 
 // AXValue type constants (per Apple docs)
@@ -185,21 +184,21 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
 }
 
 /// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.
-pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
+pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(AXElem, i32)> {
     // Look up pid via CG, then match AXWindowNumber.
     let info = window::list_windows()
         .into_iter()
         .find(|w| w.id == id)
         .ok_or(Error::FocusedWindow)?;
     let pid = info.pid;
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })
+    else {
         return Err(Error::AppElement);
-    }
+    };
     let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
-        unsafe { CFRelease(app as CFTypeRef) };
         return Err(Error::AxCode(err));
     }
     let arr = unsafe {
@@ -236,65 +235,60 @@ pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(*mut c_void, i32)> {
     }
     if found.is_null() {
         if !fallback_first_window.is_null() {
-            unsafe { CFRetain(fallback_first_window as CFTypeRef) };
-            unsafe { CFRelease(app as CFTypeRef) };
-            return Ok((fallback_first_window, pid));
+            let elem =
+                AXElem::retain_from_borrowed(fallback_first_window).ok_or(Error::FocusedWindow)?;
+            return Ok((elem, pid));
         }
-        unsafe { CFRelease(app as CFTypeRef) };
         return Err(Error::FocusedWindow);
     }
-    unsafe { CFRetain(found as CFTypeRef) };
-    unsafe { CFRelease(app as CFTypeRef) };
-    Ok((found, pid))
+    let elem = AXElem::retain_from_borrowed(found).ok_or(Error::FocusedWindow)?;
+    Ok((elem, pid))
 }
 /// Get the position of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_position(pid: i32, title: &str) -> Option<(f64, f64)> {
     let window = ax_find_window_by_title(pid, title)?;
-    let res = ax_get_point(window, cfstr("AXPosition"))
+
+    ax_get_point(window.as_ptr(), cfstr("AXPosition"))
         .ok()
-        .map(|pos| (pos.x, pos.y));
-    unsafe { CFRelease(window as CFTypeRef) };
-    res
+        .map(|pos| (pos.x, pos.y))
 }
 
 /// Get the size of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
     let window = ax_find_window_by_title(pid, title)?;
-    let res = ax_get_size(window, cfstr("AXSize"))
+
+    ax_get_size(window.as_ptr(), cfstr("AXSize"))
         .ok()
-        .map(|s| (s.width, s.height));
-    unsafe { CFRelease(window as CFTypeRef) };
-    res
+        .map(|s| (s.width, s.height))
 }
 
 /// Get the frame (position and size) of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))> {
     let window = ax_find_window_by_title(pid, title)?;
-    let res = match (
-        ax_get_point(window, cfstr("AXPosition")).ok(),
-        ax_get_size(window, cfstr("AXSize")).ok(),
+
+    match (
+        ax_get_point(window.as_ptr(), cfstr("AXPosition")).ok(),
+        ax_get_size(window.as_ptr(), cfstr("AXSize")).ok(),
     ) {
         (Some(pos), Some(size)) => Some(((pos.x, pos.y), (size.width, size.height))),
         _ => None,
-    };
-    unsafe { CFRelease(window as CFTypeRef) };
-    res
+    }
 }
 
 /// Find a window by title using Accessibility API.
 /// Returns the AXUIElement pointer for the window, or None if not found.
-fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut c_void> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
+    let Some(app) = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })
+    else {
         return None;
-    }
+    };
 
     let mut wins_ref: CFTypeRef = ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
-    unsafe { CFRelease(app as CFTypeRef) };
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
 
     if err != 0 || wins_ref.is_null() {
         return None;
@@ -322,8 +316,9 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut c_void> {
         let t = cfs.to_string();
         if t == title {
             // Retain the AX window element so it remains valid after `arr` is released.
-            unsafe { CFRetain(w as CFTypeRef) };
-            return Some(w);
+            if let Some(elem) = AXElem::retain_from_borrowed(w) {
+                return Some(elem);
+            }
         }
     }
     None

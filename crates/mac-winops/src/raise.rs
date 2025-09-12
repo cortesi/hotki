@@ -52,17 +52,17 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     }
 
     info!("raise_window: creating AX app element for pid={}", pid);
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })
+    else {
         return Err(Error::AppElement);
-    }
+    };
 
     let mut wins_ref: CFTypeRef = null_mut();
     info!("raise_window: copying AXWindows for pid={}", pid);
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
         warn!("AXUIElementCopyAttributeValue(AXWindows) failed: {}", err);
-        unsafe { core_foundation::base::CFRelease(app as CFTypeRef) };
         return Err(Error::AxCode(err));
     }
     info!("raise_window: AXWindows copied");
@@ -124,7 +124,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         // Try AXRaise on the app first, then on the window.
         let mut raised = false;
         let mut acts_ref: CFTypeRef = null_mut();
-        let acts_err = unsafe { AXUIElementCopyActionNames(app, &mut acts_ref) };
+        let acts_err = unsafe { AXUIElementCopyActionNames(app.as_ptr(), &mut acts_ref) };
         if acts_err == 0 && !acts_ref.is_null() {
             let arr = unsafe {
                 core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
@@ -145,7 +145,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                 }
             }
             if can_raise {
-                let app_raise = unsafe { AXUIElementPerformAction(app, cfstr("AXRaise")) };
+                let app_raise = unsafe { AXUIElementPerformAction(app.as_ptr(), cfstr("AXRaise")) };
                 if app_raise != 0 {
                     warn!(
                         "AXUIElementPerformAction(app, AXRaise) failed: {}",
@@ -198,7 +198,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         need_fallback = !raised;
     }
 
-    unsafe { core_foundation::base::CFRelease(app as CFTypeRef) };
+    // `app` released by RAII on drop
 
     if need_fallback {
         info!(

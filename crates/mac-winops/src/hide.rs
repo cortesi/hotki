@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
-    base::{CFRelease, CFTypeRef, TCFType},
+    base::{CFTypeRef, TCFType},
 };
 use tracing::debug;
 
@@ -18,10 +18,7 @@ use crate::{
     request_activate_pid,
 };
 
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
-}
+// Retain handled via crate-level AXElem; no local CFRetain binding needed.
 
 /// Hide or reveal the focused window by sliding it so only a 1‑pixel corner
 /// remains visible at the requested screen corner.
@@ -33,15 +30,13 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
     ax_check()?;
     let _ = request_activate_pid(pid);
     // Resolve a top-level AXWindow
-    let win_raw: *mut c_void = unsafe {
-        let app = AXUIElementCreateApplication(pid);
-        if app.is_null() {
+    let win: AXElem = unsafe {
+        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
             return Err(Error::AppElement);
-        }
+        };
         let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref);
+        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
         if err != 0 || wins_ref.is_null() {
-            CFRelease(app as CFTypeRef);
             return Err(Error::FocusedWindow);
         }
         let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
@@ -58,16 +53,11 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
                 break;
             }
         }
-        if !chosen.is_null() {
-            CFRetain(chosen as CFTypeRef);
-        }
-        CFRelease(app as CFTypeRef);
         if chosen.is_null() {
             return Err(Error::FocusedWindow);
         }
-        chosen
+        AXElem::retain_from_borrowed(chosen).ok_or(Error::FocusedWindow)?
     };
-    let win = AXElem::new(win_raw);
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
     let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
