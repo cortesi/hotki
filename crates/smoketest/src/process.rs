@@ -166,10 +166,13 @@ impl HelperWindowBuilder {
 pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let exe = env::current_exe()?;
     let status_path = overlay_status_path_for_current_run();
+    let info_path = overlay_info_path_for_current_run();
     let child = Command::new(exe)
         .arg("warn-overlay")
         .arg("--status-path")
         .arg(status_path)
+        .arg("--info-path")
+        .arg(info_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -196,10 +199,21 @@ pub fn overlay_status_path_for_current_run() -> PathBuf {
     std::env::temp_dir().join(format!("hotki-smoketest-status-{}.txt", std::process::id()))
 }
 
+/// Compute the overlay info file path for the current smoketest run.
+pub fn overlay_info_path_for_current_run() -> PathBuf {
+    std::env::temp_dir().join(format!("hotki-smoketest-info-{}.txt", std::process::id()))
+}
+
 /// Write the current test name to the overlay status file. Best-effort.
 pub fn write_overlay_status(name: &str) {
     let path = overlay_status_path_for_current_run();
     let _ = std::fs::write(path, name.as_bytes());
+}
+
+/// Write additional short info text for display in the overlay. Best-effort.
+pub fn write_overlay_info(info: &str) {
+    let path = overlay_info_path_for_current_run();
+    let _ = std::fs::write(path, info.as_bytes());
 }
 
 /// Build the hotki binary quietly.

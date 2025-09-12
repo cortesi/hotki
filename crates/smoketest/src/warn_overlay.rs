@@ -5,7 +5,10 @@ use crate::config;
 
 /// Run a borderless, always-on-top overlay window instructing the user to avoid typing.
 /// The window stays up until the process is killed by the parent orchestrator.
-pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(), String> {
+pub fn run_warn_overlay(
+    status_path_arg: Option<std::path::PathBuf>,
+    info_path_arg: Option<std::path::PathBuf>,
+) -> Result<(), String> {
     // Create winit event loop; do not explicitly activate the app to avoid stealing focus.
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
@@ -19,9 +22,12 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
         window: Option<winit::window::Window>,
         title_label: Option<Retained<objc2_app_kit::NSTextField>>,
         warn_label: Option<Retained<objc2_app_kit::NSTextField>>,
+        info_label: Option<Retained<objc2_app_kit::NSTextField>>,
         countdown_label: Option<Retained<objc2_app_kit::NSTextField>>,
         status_path: Option<std::path::PathBuf>,
+        info_path: Option<std::path::PathBuf>,
         last_title: String,
+        last_info: String,
         next_deadline: Option<std::time::Instant>,
         start_time: std::time::Instant,
         countdown_active: bool,
@@ -130,6 +136,24 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
                                     unsafe { countdown.setFrame(countdown_frame) };
                                     unsafe { view.addSubview(&countdown) };
 
+                                    // Info label (just below title)
+                                    let info_text = NSString::from_str("");
+                                    let info =
+                                        unsafe { NSTextField::labelWithString(&info_text, mtm) };
+                                    let info_font = unsafe { NSFont::systemFontOfSize(13.0) };
+                                    unsafe { info.setFont(Some(&info_font)) };
+                                    unsafe { info.setAlignment(NSTextAlignment::Center) };
+                                    let info_color = unsafe { NSColor::secondaryLabelColor() };
+                                    unsafe { info.setTextColor(Some(&info_color)) };
+                                    let info_h: f64 = 18.0;
+                                    let info_y = (title_y - info_h - 4.0).max(24.0);
+                                    let info_frame = NSRect::new(
+                                        NSPoint::new(margin_x, info_y),
+                                        NSSize::new(lw, info_h),
+                                    );
+                                    unsafe { info.setFrame(info_frame) };
+                                    unsafe { view.addSubview(&info) };
+
                                     // Warning text (at bottom, subtle)
                                     let warn_text =
                                         NSString::from_str("Hands off keyboard during tests");
@@ -151,6 +175,7 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
 
                                     self.warn_label = Some(warn);
                                     self.title_label = Some(title);
+                                    self.info_label = Some(info);
                                     self.countdown_label = Some(countdown);
                                 }
                                 break;
@@ -247,6 +272,22 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
                         }
                     }
                 }
+
+                // Update info text from info file
+                if let (Some(path), Some(label)) = (&self.info_path, &self.info_label)
+                    && let Ok(s) = std::fs::read_to_string(path)
+                {
+                    let text = s.trim();
+                    if let Some(_mtm) = objc2_foundation::MainThreadMarker::new() {
+                        let display = if text.is_empty() { " " } else { text };
+                        let ns = NSString::from_str(display);
+                        unsafe { label.setStringValue(&ns) };
+                        self.last_info = display.to_string();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                }
                 self.next_deadline = Some(now + Duration::from_millis(100));
             }
             let next = self
@@ -260,9 +301,12 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
         window: None,
         title_label: None,
         warn_label: None,
+        info_label: None,
         countdown_label: None,
         status_path: status_path_arg,
+        info_path: info_path_arg,
         last_title: String::from("..."),
+        last_info: String::new(),
         next_deadline: None,
         start_time: std::time::Instant::now(),
         countdown_active: true,

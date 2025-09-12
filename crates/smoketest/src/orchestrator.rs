@@ -6,8 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{cli::SeqTest, config};
 use serde::Serialize;
+
+use crate::{cli::SeqTest, config};
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {
@@ -199,6 +200,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     let run = |name: &str, dur: u64| -> bool {
         // Update overlay title to current test
         crate::process::write_overlay_status(name);
+        // Clear info by default unless a variant sets it explicitly
+        crate::process::write_overlay_info("");
         let (ok, details) = run_subtest_capture(name, dur, timeout_ms, &[]);
         if ok {
             println!("{}... OK", name);
@@ -229,6 +232,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let name = "focus-nav";
         crate::process::write_overlay_status(name);
         let extra_timeout = timeout_ms.saturating_add(10_000);
+        // Clear info for focus-nav
+        crate::process::write_overlay_info("");
         let (ok, details) = run_subtest_capture(name, duration_ms, extra_timeout, &[]);
         if ok {
             println!("{}... OK", name);
@@ -245,67 +250,109 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Stage‑3/8 variants via place-flex
     // Variant 1: force size->pos on 2x2 grid BR cell
     {
-        let cfg = PlaceFlexSettings { cols: 2, rows: 2, col: 1, row: 1, force_size_pos: true, pos_first_only: false };
+        let cfg = PlaceFlexSettings {
+            cols: 2,
+            rows: 2,
+            col: 1,
+            row: 1,
+            force_size_pos: true,
+            pos_first_only: false,
+        };
         let args = vec![
             "place-flex".to_string(),
-            "--cols".into(), cfg.cols.to_string(),
-            "--rows".into(), cfg.rows.to_string(),
-            "--col".into(), cfg.col.to_string(),
-            "--row".into(), cfg.row.to_string(),
+            "--cols".into(),
+            cfg.cols.to_string(),
+            "--rows".into(),
+            cfg.rows.to_string(),
+            "--col".into(),
+            cfg.col.to_string(),
+            "--row".into(),
+            cfg.row.to_string(),
             "--force-size-pos".into(),
         ];
         // Update overlay + print settings
         crate::process::write_overlay_status("place-flex");
         let json = serde_json::to_string(&cfg).unwrap_or_default();
+        crate::process::write_overlay_info("2x2 BR, force size->pos");
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         if ok {
             println!("place-flex... OK\n  settings: {}", json);
         } else {
             println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
         }
         all_ok &= ok;
     }
     // Variant 2: pos-first-only true on default grid TL cell
     {
-        let cfg = PlaceFlexSettings { cols: config::PLACE_COLS, rows: config::PLACE_ROWS, col: 0, row: 0, force_size_pos: false, pos_first_only: true };
+        let cfg = PlaceFlexSettings {
+            cols: config::PLACE_COLS,
+            rows: config::PLACE_ROWS,
+            col: 0,
+            row: 0,
+            force_size_pos: false,
+            pos_first_only: true,
+        };
         let args = vec![
             "place-flex".to_string(),
-            "--cols".into(), cfg.cols.to_string(),
-            "--rows".into(), cfg.rows.to_string(),
-            "--col".into(), cfg.col.to_string(),
-            "--row".into(), cfg.row.to_string(),
+            "--cols".into(),
+            cfg.cols.to_string(),
+            "--rows".into(),
+            cfg.rows.to_string(),
+            "--col".into(),
+            cfg.col.to_string(),
+            "--row".into(),
+            cfg.row.to_string(),
             "--pos-first-only".into(),
         ];
         crate::process::write_overlay_status("place-flex");
         let json = serde_json::to_string(&cfg).unwrap_or_default();
+        crate::process::write_overlay_info("TL, pos-first-only");
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         if ok {
             println!("place-flex... OK\n  settings: {}", json);
         } else {
             println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
         }
         all_ok &= ok;
     }
     // Variant 3: normal path on default grid BL cell
     {
-        let cfg = PlaceFlexSettings { cols: config::PLACE_COLS, rows: config::PLACE_ROWS, col: 0, row: 1, force_size_pos: false, pos_first_only: false };
+        let cfg = PlaceFlexSettings {
+            cols: config::PLACE_COLS,
+            rows: config::PLACE_ROWS,
+            col: 0,
+            row: 1,
+            force_size_pos: false,
+            pos_first_only: false,
+        };
         let args = vec![
             "place-flex".to_string(),
-            "--cols".into(), cfg.cols.to_string(),
-            "--rows".into(), cfg.rows.to_string(),
-            "--col".into(), cfg.col.to_string(),
-            "--row".into(), cfg.row.to_string(),
+            "--cols".into(),
+            cfg.cols.to_string(),
+            "--rows".into(),
+            cfg.rows.to_string(),
+            "--col".into(),
+            cfg.col.to_string(),
+            "--row".into(),
+            cfg.row.to_string(),
         ];
         crate::process::write_overlay_status("place-flex");
         let json = serde_json::to_string(&cfg).unwrap_or_default();
+        crate::process::write_overlay_info("BL, normal");
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         if ok {
             println!("place-flex... OK\n  settings: {}", json);
         } else {
             println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() { println!("{}", details.trim_end()); }
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
         }
         all_ok &= ok;
     }

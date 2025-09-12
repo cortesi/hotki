@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_warn: bool,
 
+    /// Optional short info text to show in the warning overlay under the test title
+    #[arg(long)]
+    pub info: Option<String>,
+
     /// Default duration for repeat tests in milliseconds
     #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
     pub duration: u64,
@@ -171,6 +175,9 @@ pub enum Commands {
         /// Optional path from which the overlay reads status text to display
         #[arg(long)]
         status_path: Option<std::path::PathBuf>,
+        /// Optional path from which the overlay reads info text to display
+        #[arg(long)]
+        info_path: Option<std::path::PathBuf>,
     },
 
     /// Launch UI with test config and drive a short HUD + theme cycle

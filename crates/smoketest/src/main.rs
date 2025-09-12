@@ -156,8 +156,12 @@ fn main() {
         }
         return;
     }
-    if let Commands::WarnOverlay { status_path } = &cli.command {
-        match warn_overlay::run_warn_overlay(status_path.clone()) {
+    if let Commands::WarnOverlay {
+        status_path,
+        info_path,
+    } = &cli.command
+    {
+        match warn_overlay::run_warn_overlay(status_path.clone(), info_path.clone()) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("warn-overlay: ERROR: {}", e);
@@ -201,6 +205,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("repeat-relay");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             // repeat‑relay opens a winit EventLoop; it must run on the main thread.
             run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
@@ -216,6 +224,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("repeat-shell");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
             if let Some(mut o) = overlay {
@@ -231,6 +243,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("repeat-volume");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             run_with_watchdog("repeat-volume", cli.timeout, move || {
                 repeat_volume(duration)
@@ -252,6 +268,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("raise");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("raise", timeout, move || {
                 raise::run_raise_test(timeout, logs)
@@ -291,6 +311,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("place-flex");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_on_main_with_watchdog("place-flex", timeout, move || {
                 if logs {
@@ -335,6 +358,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("place-fallback");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_on_main_with_watchdog("place-fallback", timeout, move || {
                 tests::place_flex::run_place_flex(
@@ -374,6 +400,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("focus-nav");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_on_main_with_watchdog("focus-nav", timeout, move || {
                 tests::focus_nav::run_focus_nav_test(timeout, logs)
@@ -406,6 +435,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("focus-tracking");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("focus-tracking", timeout, move || {
                 focus::run_focus_test(timeout, logs)
@@ -441,6 +473,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("hide");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
                 Ok(()) => {
@@ -552,6 +587,9 @@ fn main() {
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
                 crate::process::write_overlay_status("ui");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
                 Ok(sum) => {
@@ -584,6 +622,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("minui");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
                 Ok(sum) => {
@@ -621,6 +663,10 @@ fn main() {
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("fullscreen");
+                if let Some(info) = &cli.info {
+                    crate::process::write_overlay_info(info);
+                }
             }
             match run_with_watchdog("fullscreen", timeout, move || {
                 tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native)
