@@ -26,3 +26,4 @@ regex = { workspace = true }
 permissions = { version = "0.1.0", path = "../permissions" }
 thiserror = { workspace = true }
 libc = { workspace = true }
+parking_lot = "0.12.4"

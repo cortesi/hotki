@@ -28,7 +28,7 @@
 //!   1) `config: RwLock<Config>` (read guard), 2) `state: Mutex<State>`,
 //!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
 //!      guard across any call that can block or `await`.
-//! - Focus state (`focus.ctx`, `focus.last_target_pid`) uses `std::sync::Mutex`.
+//! - Focus state (`focus.ctx`, `focus.last_target_pid`) uses `parking_lot::Mutex`.
 //!   Never hold these mutex guards across an `.await`. Clone/copy values out
 //!   and drop the guard before awaiting.
 //! - Service calls (`world`, `repeater`, `relay`, `notifier`, `winops`) must
@@ -269,24 +269,21 @@ impl Engine {
         let focus_ctx = self.focus.ctx.clone();
         tokio::spawn(async move {
             let (mut rx, seed) = world.subscribe_with_context().await;
-            if let Some(ctx) = seed
-                && let Ok(mut g) = focus_ctx.lock()
-            {
+            if let Some(ctx) = seed {
+                let mut g = focus_ctx.lock();
                 *g = Some(ctx);
             }
             loop {
                 match rx.recv().await {
                     Ok(hotki_world::WorldEvent::FocusChanged(Some(key))) => {
-                        if let Some(ctx) = world.context_for_key(key).await
-                            && let Ok(mut g) = focus_ctx.lock()
-                        {
+                        if let Some(ctx) = world.context_for_key(key).await {
+                            let mut g = focus_ctx.lock();
                             *g = Some(ctx);
                         }
                     }
                     Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
-                        if let Ok(mut g) = focus_ctx.lock() {
-                            *g = None;
-                        }
+                        let mut g = focus_ctx.lock();
+                        *g = None;
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -479,12 +476,10 @@ impl Engine {
                 col,
                 row,
             }) => {
-                let raise_pid = self
-                    .focus
-                    .last_target_pid
-                    .lock()
-                    .ok()
-                    .and_then(|mut g| g.take());
+                let raise_pid = {
+                    let mut g = self.focus.last_target_pid.lock();
+                    g.take()
+                };
                 self.handle_action_place_request(cols, rows, col, row, raise_pid)
                     .await
             }
@@ -727,7 +722,8 @@ impl Engine {
                         target.app,
                         target.title
                     );
-                    if let Ok(mut g) = self.focus.last_target_pid.lock() {
+                    {
+                        let mut g = self.focus.last_target_pid.lock();
                         *g = Some(target.pid);
                     }
                     if let Err(e) = self.svc.winops.request_activate_pid(target.pid) {
@@ -755,7 +751,7 @@ impl Engine {
     ) -> Result<()> {
         let (pid, pid_src): (i32, &str) = if let Some(p) = raise_pid {
             (p, "raise")
-        } else if let Some((_, _, p)) = self.focus.ctx.lock().ok().and_then(|g| g.clone()) {
+        } else if let Some((_, _, p)) = self.focus.ctx.lock().clone() {
             (p, "world")
         } else {
             let mut snap = self.svc.world.snapshot().await;
@@ -968,18 +964,14 @@ impl Engine {
 
 impl Engine {
     fn current_pid_world_first(&self) -> i32 {
-        if let Ok(g) = self.focus.ctx.lock()
-            && let Some((_, _, p)) = &*g
-        {
+        if let Some((_, _, p)) = &*self.focus.ctx.lock() {
             return *p;
         }
         -1
     }
 
     fn current_context_tuple(&self) -> (String, String, i32) {
-        if let Ok(g) = self.focus.ctx.lock()
-            && let Some((a, t, p)) = &*g
-        {
+        if let Some((a, t, p)) = &*self.focus.ctx.lock() {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)

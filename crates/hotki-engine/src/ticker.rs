@@ -7,13 +7,14 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc,
         mpsc::{Receiver, channel},
     },
     thread,
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use tokio::time::{self, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
@@ -51,7 +52,7 @@ impl Ticker {
 
     /// Check if a ticker is active for the given id.
     pub fn is_active(&self, id: &str) -> bool {
-        self.entries.lock().unwrap().contains_key(id)
+        self.entries.lock().contains_key(id)
     }
 
     /// Start or replace a ticker for `id` with given timings and on_tick closure.
@@ -106,12 +107,12 @@ impl Ticker {
             handle,
             done_rx,
         };
-        self.entries.lock().unwrap().insert(id, entry);
+        self.entries.lock().insert(id, entry);
     }
 
     /// Stop a ticker if present (non-blocking).
     pub fn stop(&self, id: &str) {
-        if let Some(entry) = self.entries.lock().unwrap().remove(id) {
+        if let Some(entry) = self.entries.lock().remove(id) {
             entry.token.cancel();
             // Don't abort the handle, let it cancel gracefully via the token
             trace!("ticker_stop" = %id);
@@ -120,7 +121,7 @@ impl Ticker {
 
     /// Stop a ticker if present and wait briefly for completion signal (blocking).
     pub fn stop_sync(&self, id: &str) {
-        if let Some(entry) = self.entries.lock().unwrap().remove(id) {
+        if let Some(entry) = self.entries.lock().remove(id) {
             entry.token.cancel();
             // Prefer a real blocking timeout via std::sync::mpsc
             let deadline = Duration::from_millis(STOP_WAIT_TIMEOUT_MS);
@@ -140,7 +141,7 @@ impl Ticker {
     /// Cancel and wait for all tickers to finish (blocking).
     pub fn clear_sync(&self) {
         let entries: Vec<TickerEntry> = {
-            let mut map = self.entries.lock().unwrap();
+            let mut map = self.entries.lock();
             map.drain().map(|(_, e)| e).collect()
         };
 
@@ -169,7 +170,7 @@ impl Ticker {
     /// Cancel and wait for all tickers to finish (async).
     pub async fn clear_async(&self) {
         let entries: Vec<TickerEntry> = {
-            let mut map = self.entries.lock().unwrap();
+            let mut map = self.entries.lock();
             map.drain().map(|(_, e)| e).collect()
         };
 

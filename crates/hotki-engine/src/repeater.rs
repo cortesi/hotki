@@ -11,13 +11,14 @@ use std::{
     option::Option,
     process::Command,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 use keymode::{KeyResponse, NotificationType};
 use mac_keycode::Chord;
+use parking_lot::Mutex;
 use tokio::time::Duration;
 use tracing::trace;
 
@@ -141,11 +142,7 @@ struct PidFromCtxArc {
 
 impl PidProvider for PidFromCtxArc {
     fn current_pid(&self) -> i32 {
-        self.ctx
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|t| t.2))
-            .unwrap_or(-1)
+        self.ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1)
     }
 }
 
@@ -202,7 +199,7 @@ impl Repeater {
 
     /// Get or create the per-id shell run state.
     fn shell_state(&self, id: &str) -> Arc<ShellRunState> {
-        let mut map = self.shell_states.lock().unwrap();
+        let mut map = self.shell_states.lock();
         if let Some(s) = map.get(id) {
             return s.clone();
         }
@@ -239,12 +236,8 @@ impl Repeater {
 
     /// Optional: install a repeat observer used for instrumentation/testing
     pub fn set_repeat_observer(&self, obs: Arc<dyn RepeatObserver>) {
-        match self.repeat_observer.lock() {
-            Ok(mut guard) => *guard = Some(obs),
-            Err(e) => {
-                tracing::error!("Failed to set repeat observer: {}", e);
-            }
-        }
+        let mut guard = self.repeat_observer.lock();
+        *guard = Some(obs);
     }
 
     /// Convenience helper for relay repeating start (testing/tools)
@@ -348,13 +341,7 @@ impl Repeater {
                 })
                 .await;
                 // Note shell repeat for observers
-                let obs = match rep_obs2.lock() {
-                    Ok(guard) => guard.as_ref().cloned(),
-                    Err(e) => {
-                        tracing::error!("Failed to lock repeat observer: {}", e);
-                        None
-                    }
-                };
+                let obs = rep_obs2.lock().as_ref().cloned();
                 if let Some(obs) = obs {
                     obs.on_shell_repeat(&id_for_trace);
                 }
@@ -399,13 +386,7 @@ impl Repeater {
                 }
                 let _ = relay.repeat_relay(&id_for_log, pid);
                 // Note relay repeat for observers
-                let obs = match rep_obs.lock() {
-                    Ok(guard) => guard.as_ref().cloned(),
-                    Err(e) => {
-                        tracing::error!("Failed to lock repeat observer: {}", e);
-                        None
-                    }
-                };
+                let obs = rep_obs.lock().as_ref().cloned();
                 if let Some(obs) = obs {
                     obs.on_relay_repeat(&id_for_log);
                 }
@@ -423,14 +404,14 @@ impl Repeater {
     pub fn stop(&self, id: &str) {
         self.ticker.stop(id);
         // Best-effort cleanup of per-id shell state
-        let _ = self.shell_states.lock().map(|mut m| m.remove(id));
+        let _ = self.shell_states.lock().remove(id);
     }
 
     /// Stop and wait briefly for repeats for `id` to finish.
     pub fn stop_sync(&self, id: &str) {
         self.ticker.stop_sync(id);
         // Best-effort cleanup of per-id shell state
-        let _ = self.shell_states.lock().map(|mut m| m.remove(id));
+        let _ = self.shell_states.lock().remove(id);
     }
 
     /// Returns true if the ticker is currently running for `id`.

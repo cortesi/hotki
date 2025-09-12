@@ -20,11 +20,12 @@
 use std::{
     option::Option,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
+use parking_lot::Mutex;
 
 use winit::event_loop::EventLoop;
 
@@ -45,7 +46,8 @@ pub fn count_relay(ms: u64) -> usize {
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
     let repeater =
         hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
-    if let Ok(mut f) = focus_ctx.lock() {
+    {
+        let mut f = focus_ctx.lock();
         *f = Some((
             "smoketest-app".to_string(),
             crate::config::RELAY_TEST_TITLE.to_string(),

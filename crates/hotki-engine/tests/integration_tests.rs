@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -14,6 +14,7 @@ use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use keymode::Keys;
 use mac_winops::ops::MockWinOps;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 /// Ensure tests run without invoking real OS intercepts
@@ -220,7 +221,7 @@ async fn test_ticker_cancel_semantics() {
     let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
     // Test non-blocking stop
-    *focus_ctx.lock().unwrap() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
+    *focus_ctx.lock() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
     repeater.start_relay_repeat(
         "test_stop".to_string(),
         mac_keycode::Chord::parse("cmd+a").unwrap(),
@@ -336,7 +337,7 @@ async fn test_repeater_with_observer() {
     repeater.set_repeat_observer(observer.clone());
 
     // Test relay repeat observation
-    *focus_ctx.lock().unwrap() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
+    *focus_ctx.lock() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
 
     // The observer is only called during actual repeat ticks, not the initial execution
     // So we need to make sure repeats actually happen

@@ -1,9 +1,7 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use mac_keycode::Chord;
+use parking_lot::Mutex;
 use tracing::trace;
 
 #[derive(Clone)]
@@ -50,20 +48,13 @@ impl RelayHandler {
         }
         self.active
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .insert(id.clone(), ActiveRelay { chord, pid });
         trace!(pid, id = %id, "relay_start");
     }
 
     /// Repeat relay for an active id (posts a repeat KeyDown).
     pub fn repeat_relay(&self, id: &str, pid: i32) -> bool {
-        if let Some(a) = self
-            .active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(id)
-            .cloned()
-        {
+        if let Some(a) = self.active.lock().get(id).cloned() {
             if let Some(ref relay) = self.relay_key {
                 relay.key_down(pid, a.chord, true);
             }
@@ -75,12 +66,7 @@ impl RelayHandler {
 
     /// Stop relaying for id (posts KeyUp and clears state).
     pub fn stop_relay(&self, id: &str, pid: i32) -> bool {
-        if let Some(a) = self
-            .active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id)
-        {
+        if let Some(a) = self.active.lock().remove(id) {
             if let Some(ref relay) = self.relay_key {
                 // Use the original pid to ensure the key-up matches the key-down target.
                 let target_pid = if a.pid != -1 { a.pid } else { pid };
@@ -95,7 +81,7 @@ impl RelayHandler {
 
     /// Stop all relays (posts KeyUp for each active id, best-effort).
     pub fn stop_all(&self) {
-        let mut map = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.active.lock();
         if let Some(ref relay) = self.relay_key {
             for (id, a) in map.drain() {
                 relay.key_up(a.pid, a.chord);
@@ -129,13 +115,13 @@ mod tests {
         let ch = chord(Key::A);
 
         handler.start_relay(id.clone(), ch.clone(), 1234, false);
-        assert!(handler.active.lock().unwrap().contains_key(&id));
+        assert!(handler.active.lock().contains_key(&id));
 
         assert!(handler.repeat_relay(&id, 1234));
-        assert!(handler.active.lock().unwrap().contains_key(&id));
+        assert!(handler.active.lock().contains_key(&id));
 
         assert!(handler.stop_relay(&id, 1234));
-        assert!(!handler.active.lock().unwrap().contains_key(&id));
+        assert!(!handler.active.lock().contains_key(&id));
 
         // Verify stop_relay returns false for non-existent id
         assert!(!handler.stop_relay(&id, 1234));

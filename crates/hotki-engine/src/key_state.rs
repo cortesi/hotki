@@ -1,7 +1,6 @@
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashSet, sync::Arc};
+
+use parking_lot::Mutex;
 
 /// Tracks the state of keys to handle key up/down and repeat events properly
 #[derive(Clone)]
@@ -21,28 +20,28 @@ impl KeyStateTracker {
 
     /// Return true if the key is currently considered down.
     pub fn is_down(&self, identifier: &str) -> bool {
-        let held = self.held.lock().unwrap();
+        let held = self.held.lock();
         held.contains(identifier)
     }
 
     // back-compat helpers removed (not used)
     /// Record a key down; returns true for the first down, false for repeats.
     pub fn on_key_down(&self, identifier: &str) -> bool {
-        let mut held = self.held.lock().unwrap();
+        let mut held = self.held.lock();
         held.insert(identifier.to_string())
     }
 
     /// Record a key up.
     pub fn on_key_up(&self, identifier: &str) {
-        let mut held = self.held.lock().unwrap();
+        let mut held = self.held.lock();
         held.remove(identifier);
-        let mut rep = self.repeat_ok.lock().unwrap();
+        let mut rep = self.repeat_ok.lock();
         rep.remove(identifier);
     }
 
     /// Set whether OS repeat events should be acted upon for this identifier.
     pub fn set_repeat_allowed(&self, identifier: &str, allowed: bool) {
-        let mut rep = self.repeat_ok.lock().unwrap();
+        let mut rep = self.repeat_ok.lock();
         if allowed {
             rep.insert(identifier.to_string());
         } else {
@@ -52,7 +51,7 @@ impl KeyStateTracker {
 
     /// Return true if repeats are allowed for this identifier.
     pub fn is_repeat_allowed(&self, identifier: &str) -> bool {
-        let rep = self.repeat_ok.lock().unwrap();
+        let rep = self.repeat_ok.lock();
         rep.contains(identifier)
     }
 }

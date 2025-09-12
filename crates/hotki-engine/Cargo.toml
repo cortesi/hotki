@@ -25,4 +25,5 @@ io-kit-sys = "0.4.1"
 relaykey = { version = "0.0.1", path = "../relaykey" }
 regex = { workspace = true }
 lru = "0.16.1"
+parking_lot = "0.12.4"
 #[dev-dependencies]
