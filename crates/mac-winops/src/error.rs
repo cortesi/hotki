@@ -31,10 +31,6 @@ pub enum Error {
     #[error("Unsupported attribute")]
     Unsupported,
 
-    /// The main-thread operation queue is poisoned or inaccessible.
-    #[error("Main-thread queue poisoned or push failed")]
-    QueuePoisoned,
-
     /// An invalid index was provided.
     #[error("Invalid index")]
     InvalidIndex,

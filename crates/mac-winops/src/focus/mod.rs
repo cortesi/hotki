@@ -42,12 +42,8 @@ impl Default for FocusSnapshot {
 pub enum Error {
     #[error("NS main proxy not set; call set_main_proxy() on the main thread first")]
     MainProxyNotSet,
-    #[error("NS main proxy mutex poisoned")]
-    MainProxyPoisoned,
     #[error("Failed to post install request to main thread")]
     PostEventFailed,
-    #[error("NS observer state mutex poisoned")]
-    NsObserverPoisoned,
 }
 
 /// Public APIs:
