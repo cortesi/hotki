@@ -1,7 +1,8 @@
 //! Command-line interface definitions for smoketest.
 
-use crate::config;
 use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::config;
 
 #[derive(Parser, Debug)]
 #[command(name = "smoketest", about = "Hotki smoketest tool", version)]

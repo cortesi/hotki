@@ -81,11 +81,12 @@ impl WinOps for RealWinOps {
     }
 }
 
-use crate::WindowInfo as WI;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+
+use crate::WindowInfo as WI;
 
 /// Simple mock implementation for tests (enabled with `test-utils` feature).
 #[derive(Clone, Default)]

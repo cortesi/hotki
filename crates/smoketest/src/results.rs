@@ -1,7 +1,6 @@
 //! Common test result types and utilities for all smoketest modules.
 
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 /// Common test outcome data used across different test types.
 #[derive(Debug, Clone, Default)]

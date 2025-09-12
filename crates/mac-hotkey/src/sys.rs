@@ -249,9 +249,10 @@ pub fn run_event_loop(
 
 #[cfg(test)]
 mod tests {
+    use mac_keycode::Key;
+
     use super::*;
     use crate::{RegisterOptions, test_register};
-    use mac_keycode::Key;
 
     fn simulate(
         suspended: bool,

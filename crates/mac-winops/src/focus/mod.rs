@@ -9,12 +9,12 @@ mod ax;
 mod ns;
 mod watcher;
 
-pub use ns::{install_ns_workspace_observer, post_user_event, set_main_proxy};
-
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+
+pub use ns::{install_ns_workspace_observer, post_user_event, set_main_proxy};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 

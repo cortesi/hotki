@@ -3,11 +3,10 @@
 use std::{result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
+use hotki_protocol::MsgToUI;
 use mrpc::{Client as MrpcClient, Connection as MrpcConnection, RpcError, RpcSender, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
-
-use hotki_protocol::MsgToUI;
 
 use crate::{
     Error, Result,

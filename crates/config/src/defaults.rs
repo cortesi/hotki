@@ -1,7 +1,6 @@
 // Defaults and constants for UI configuration
 
-use crate::NotifyPos;
-use crate::raw::RawNotifyWindowStyle;
+use crate::{NotifyPos, raw::RawNotifyWindowStyle};
 
 pub(crate) const TAG_SUBMENU: &str = "\u{f035f}";
 pub(crate) fn default_tag_submenu() -> String {

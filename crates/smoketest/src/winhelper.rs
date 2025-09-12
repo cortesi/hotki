@@ -13,9 +13,11 @@ pub(crate) fn run_focus_winhelper(
 ) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
-    use winit::application::ApplicationHandler;
-    use winit::event::WindowEvent;
-    use winit::event_loop::{ActiveEventLoop, ControlFlow};
+    use winit::{
+        application::ApplicationHandler,
+        event::WindowEvent,
+        event_loop::{ActiveEventLoop, ControlFlow},
+    };
 
     struct HelperApp {
         window: Option<winit::window::Window>,

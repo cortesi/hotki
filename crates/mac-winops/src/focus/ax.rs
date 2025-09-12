@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 
 use core_foundation::{
     base::{CFRelease, CFTypeRef, TCFType},
@@ -6,7 +6,6 @@ use core_foundation::{
     string::{CFString, CFStringRef},
 };
 use objc2_app_kit::NSRunningApplication;
-use std::ffi::CStr;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;

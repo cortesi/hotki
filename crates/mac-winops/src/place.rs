@@ -1,13 +1,12 @@
-use crate::{
-    Error, Result, WindowId,
-    ax::{ax_check, ax_get_point, ax_get_size, ax_set_point, ax_set_size, cfstr},
-    geom::{self, CGPoint, CGSize},
-    screen_util::visible_frame_containing_point,
-};
 use core_foundation::base::{CFRelease, CFTypeRef};
 use objc2_foundation::MainThreadMarker;
 
-use crate::ax::ax_window_for_id;
+use crate::{
+    Error, Result, WindowId,
+    ax::{ax_check, ax_get_point, ax_get_size, ax_set_point, ax_set_size, ax_window_for_id, cfstr},
+    geom::{self, CGPoint, CGSize},
+    screen_util::visible_frame_containing_point,
+};
 
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).

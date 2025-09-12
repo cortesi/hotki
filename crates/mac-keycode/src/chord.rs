@@ -1,6 +1,6 @@
+use std::{collections::HashSet, fmt};
+
 use crate::{Key, Modifier};
-use std::collections::HashSet;
-use std::fmt;
 
 /// A key chord: a set of modifiers plus a single key.
 #[derive(Clone, Debug, Eq, PartialEq)]

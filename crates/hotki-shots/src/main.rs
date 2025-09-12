@@ -1,8 +1,10 @@
-use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    ffi::{OsStr, OsString},
+    fs,
+    path::{Path, PathBuf},
+    process::{Child, Command},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use clap::Parser;
 

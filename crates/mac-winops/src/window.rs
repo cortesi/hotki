@@ -9,8 +9,10 @@ use core_foundation::{
 use core_graphics::window as cgw;
 use tracing::{trace, warn};
 
-use crate::WindowId;
-use crate::cfutil::{dict_get_i32, dict_get_rect_i32, dict_get_string};
+use crate::{
+    WindowId,
+    cfutil::{dict_get_i32, dict_get_rect_i32, dict_get_string},
+};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {

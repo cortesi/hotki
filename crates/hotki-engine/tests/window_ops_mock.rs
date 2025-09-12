@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use hotki_engine::Engine;
-use hotki_engine::MockHotkeyApi;
+use hotki_engine::{Engine, MockHotkeyApi};
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use mac_winops::ops::MockWinOps;

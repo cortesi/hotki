@@ -17,14 +17,17 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use mac_winops::ops::WinOps;
-use mac_winops::{Pos, WindowId, WindowInfo};
-use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::time::{Instant as TokioInstant, sleep};
+use mac_winops::{Pos, WindowId, WindowInfo, ops::WinOps};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot},
+    time::{Instant as TokioInstant, sleep},
+};
 
 /// Unique key for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -1,20 +1,19 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use hotki_engine::MockHotkeyApi;
 use hotki_engine::{
-    Engine, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec, Repeater,
+    Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec,
+    Repeater,
 };
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use keymode::Keys;
 use mac_winops::ops::MockWinOps;
-use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 /// Ensure tests run without invoking real OS intercepts

@@ -1,8 +1,7 @@
+use hotki_protocol::MsgToUI;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
 use tracing_subscriber::prelude::*;
-
-use hotki_protocol::MsgToUI;
 
 #[test]
 fn forwards_logs_when_sink_set_and_stops_after_clear() {

@@ -1,6 +1,7 @@
-use crate::MsgToUI;
 use mrpc::Value;
 use thiserror::Error;
+
+use crate::MsgToUI;
 
 /// Errors from encoding/decoding UI messages.
 #[derive(Debug, Error)]

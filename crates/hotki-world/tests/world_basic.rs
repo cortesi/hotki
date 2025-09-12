@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use hotki_world::test_api as world_test;
-use hotki_world::{WindowKey, World, WorldCfg, WorldEvent};
-use mac_winops::ops::{MockWinOps, WinOps};
-use mac_winops::{Pos, WindowId, WindowInfo};
+use hotki_world::{WindowKey, World, WorldCfg, WorldEvent, test_api as world_test};
+use mac_winops::{
+    Pos, WindowId, WindowInfo,
+    ops::{MockWinOps, WinOps},
+};
 
 fn win(
     app: &str,

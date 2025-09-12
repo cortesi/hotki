@@ -3,9 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tracing::trace;
-
 use mac_keycode::Chord;
+use tracing::trace;
 
 #[derive(Clone)]
 struct ActiveRelay {
@@ -110,8 +109,9 @@ impl RelayHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use mac_keycode::{Chord, Key};
+
+    use super::*;
 
     fn chord(key: Key) -> Chord {
         use std::collections::HashSet;

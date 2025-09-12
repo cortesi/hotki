@@ -1,8 +1,7 @@
-use crate::KeymodeError;
 use hotki_protocol::MsgToUI;
 use mac_keycode::Chord;
 
-use crate::{Action, KeysAttrs, NotificationType};
+use crate::{Action, KeymodeError, KeysAttrs, NotificationType};
 
 /// Result of handling a key press
 #[derive(Debug)]

@@ -1,8 +1,10 @@
 //! Common test infrastructure and execution patterns for smoketests.
 
-use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use crate::{
     config,

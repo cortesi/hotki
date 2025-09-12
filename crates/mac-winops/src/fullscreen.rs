@@ -1,3 +1,10 @@
+use core_foundation::base::{CFRelease, CFTypeRef};
+use mac_keycode::{Chord, Key, Modifier};
+use objc2_foundation::MainThreadMarker;
+use relaykey::RelayKey;
+use tracing::debug;
+
+pub(crate) use crate::focused_window_for_pid;
 use crate::{
     Desired, Error, Result,
     ax::{
@@ -8,14 +15,6 @@ use crate::{
     geom::{self, CGPoint, CGSize},
     screen_util::visible_frame_containing_point,
 };
-use core_foundation::base::{CFRelease, CFTypeRef};
-use objc2_foundation::MainThreadMarker;
-use tracing::debug;
-
-use mac_keycode::{Chord, Key, Modifier};
-use relaykey::RelayKey;
-
-pub(crate) use crate::focused_window_for_pid;
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
 ///

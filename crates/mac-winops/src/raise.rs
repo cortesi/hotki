@@ -1,10 +1,9 @@
+use std::{ffi::c_void, ptr::null_mut};
+
 use core_foundation::{
     base::{CFTypeRef, TCFType},
     string::CFStringRef,
 };
-use std::ffi::c_void;
-use std::ptr::null_mut;
-
 use objc2_foundation::MainThreadMarker;
 use tracing::{info, warn};
 

@@ -1,11 +1,12 @@
 //! Test orchestration and execution logic.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
-use crate::cli::SeqTest;
-use crate::config;
+use crate::{cli::SeqTest, config};
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {

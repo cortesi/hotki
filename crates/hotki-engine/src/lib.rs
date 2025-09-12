@@ -24,8 +24,10 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -43,24 +45,22 @@ mod ticker;
 const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
 
-use hotki_protocol::MsgToUI;
-use keymode::{KeyResponse, State};
-use mac_keycode::Chord;
-use tracing::{debug, trace, warn};
-
 pub use deps::MockHotkeyApi;
-pub use error::{Error, Result};
-pub use hotki_world::{WorldEvent, WorldWindow};
-pub use notification::NotificationDispatcher;
-pub use relay::RelayHandler;
-pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
-
 use deps::RealHotkeyApi;
+pub use error::{Error, Result};
 use focus::FocusState;
+use hotki_protocol::MsgToUI;
+pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
+use keymode::{KeyResponse, State};
+use mac_keycode::Chord;
 use mac_winops::ops::{RealWinOps, WinOps};
+pub use notification::NotificationDispatcher;
+pub use relay::RelayHandler;
 use repeater::ExecSpec;
+pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
+use tracing::{debug, trace, warn};
 
 #[inline]
 fn to_desired(t: config::Toggle) -> mac_winops::Desired {

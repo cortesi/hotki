@@ -18,15 +18,14 @@
 //!   system volume), not low counts.
 //! - `repeat_volume` restores the original system volume on exit.
 use std::{
+    option::Option,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use std::option::Option;
-use std::sync::Mutex;
 use winit::event_loop::EventLoop;
 
 use crate::{config, process};
@@ -62,9 +61,11 @@ pub fn count_relay(ms: u64) -> usize {
         .or_else(|| mac_keycode::Chord::parse("a"))
         .expect("parse chord");
 
-    use winit::application::ApplicationHandler;
-    use winit::event::WindowEvent;
-    use winit::event_loop::{ActiveEventLoop, ControlFlow};
+    use winit::{
+        application::ApplicationHandler,
+        event::WindowEvent,
+        event_loop::{ActiveEventLoop, ControlFlow},
+    };
     struct RelayApp {
         repeater: hotki_engine::Repeater,
         window: Option<winit::window::Window>,

@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
-use crate::fonts;
+use config::{Notify, NotifyPos, NotifyTheme};
 use egui::{
     Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2,
 };
-
-use config::{Notify, NotifyPos, NotifyTheme};
 use hotki_protocol::NotifyKind;
+
+use crate::fonts;
 
 // Duration for easing-based adjustment movements (seconds)
 pub const ADJUST_MOVE_SECS: f32 = 0.25;

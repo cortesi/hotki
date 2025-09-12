@@ -1,13 +1,11 @@
-use tokio::sync::mpsc as tokio_mpsc;
-
+use config::Config;
 use eframe::{App, Frame};
 use egui::Context;
+use hotki_protocol::NotifyKind;
+use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
 use crate::{details::Details, hud::Hud, notification::NotificationCenter};
-
-use config::Config;
-use hotki_protocol::NotifyKind;
 
 pub enum AppEvent {
     Shutdown,

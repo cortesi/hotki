@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// Errors that can occur during smoketest execution.

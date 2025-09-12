@@ -21,9 +21,8 @@ pub use mode::{
     Action, At, AtSpec, Dir, FullscreenKind, FullscreenSpec, Grid, GridSpec, Keys, KeysAttrs,
     NotificationType, ShellModifiers, ShellSpec,
 };
-pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
-
 use raw::RawConfig;
+pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 /// Extension trait providing `Cursor::ensure_in` semantics without creating a
 /// dependency cycle with `hotki-protocol`.
@@ -787,9 +786,10 @@ pub fn default_config_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::loader;
-    use std::path::Path;
 
     #[test]
     fn test_hud_mode_default_is_hud() {

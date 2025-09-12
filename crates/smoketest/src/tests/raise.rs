@@ -34,8 +34,6 @@ use crate::{
     ui_interaction::send_key,
 };
 
-use crate::error::Error as StError;
-
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<bool> {
     use hotki_server::Client;
 

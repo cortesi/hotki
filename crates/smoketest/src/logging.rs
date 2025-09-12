@@ -1,6 +1,7 @@
 //! Logging and tracing utilities for smoketests.
 
 use std::sync::OnceLock;
+
 use tracing_subscriber::prelude::*;
 
 /// Standard RUST_LOG configuration for tests with logging enabled.

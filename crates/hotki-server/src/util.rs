@@ -1,5 +1,6 @@
-use crossbeam_channel::Receiver;
 use std::thread;
+
+use crossbeam_channel::Receiver;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 /// Bridge a crossbeam channel to a Tokio unbounded channel using a dedicated OS
@@ -32,10 +33,12 @@ pub fn bridge_crossbeam_to_tokio<T: Send + 'static>(rx: Receiver<T>) -> Unbounde
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crossbeam_channel as cb;
     use std::time::Duration;
+
+    use crossbeam_channel as cb;
     use tokio::time::timeout;
+
+    use super::*;
 
     async fn run_bridge_roundtrip(cap: usize, n: u32) {
         let (tx, rx) = cb::bounded::<u32>(cap);

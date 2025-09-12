@@ -1,15 +1,15 @@
 use std::{collections::VecDeque, path::Path, process::Command, thread};
 
 use egui::Context;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::Duration;
-use tokio::time::Instant as TokioInstant;
-use tokio::time::Sleep;
+use hotki_protocol::{MsgToUI, NotifyKind};
+use hotki_server::Client;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{Duration, Instant as TokioInstant, Sleep},
+};
 use tracing::{debug, error, info};
 
 use crate::{app::AppEvent, logs, permissions::check_permissions};
-use hotki_protocol::{MsgToUI, NotifyKind};
-use hotki_server::Client;
 
 /// Actions that adjust UI overrides on the current cursor (theme and user style).
 #[derive(Debug, Clone)]

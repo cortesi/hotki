@@ -1,3 +1,12 @@
+use std::ffi::c_void;
+
+use core_foundation::{
+    array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
+    base::{CFRelease, CFTypeRef, TCFType},
+};
+use tracing::debug;
+
+pub(crate) use crate::AXElem;
 use crate::{
     Error, Result, ScreenCorner,
     ax::{
@@ -8,14 +17,6 @@ use crate::{
     geom::{self, CGPoint},
     request_activate_pid,
 };
-use core_foundation::{
-    array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
-    base::{CFRelease, CFTypeRef, TCFType},
-};
-use std::ffi::c_void;
-use tracing::debug;
-
-pub(crate) use crate::AXElem;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {

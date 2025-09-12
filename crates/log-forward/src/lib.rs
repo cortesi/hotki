@@ -15,11 +15,11 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::sync::{Mutex, OnceLock};
+
+use hotki_protocol::MsgToUI;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
-
-use hotki_protocol::MsgToUI;
 
 // A global sink that, when present, forwards server logs to the connected client.
 static LOG_SINK: OnceLock<Mutex<Option<UnboundedSender<MsgToUI>>>> = OnceLock::new();

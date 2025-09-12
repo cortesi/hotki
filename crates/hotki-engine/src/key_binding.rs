@@ -7,8 +7,10 @@ use std::{
 use mac_keycode::Chord;
 use tracing::{debug, trace, warn};
 
-use crate::Result;
-use crate::deps::{CaptureToken, HotkeyApi};
+use crate::{
+    Result,
+    deps::{CaptureToken, HotkeyApi},
+};
 
 /// Threshold for warning about slow binding updates that may cause key drops
 const BIND_UPDATE_WARN_MS: u64 = 10;

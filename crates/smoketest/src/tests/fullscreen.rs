@@ -15,6 +15,8 @@
 //!   smoke check rather than a pixel-perfect assertion.
 use std::time::Instant;
 
+use hotki_protocol::Toggle;
+
 use super::helpers::{ensure_frontmost, spawn_helper_visible};
 use crate::{
     config,
@@ -23,7 +25,6 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
-use hotki_protocol::Toggle;
 
 /// Run a focused non-native fullscreen toggle against a helper window.
 ///

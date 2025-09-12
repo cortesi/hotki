@@ -1,6 +1,7 @@
-use crate::config;
 use objc2::rc::Retained;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+use crate::config;
 
 /// Run a borderless, always-on-top overlay window instructing the user to avoid typing.
 /// The window stays up until the process is killed by the parent orchestrator.
@@ -8,9 +9,11 @@ pub fn run_warn_overlay(status_path_arg: Option<std::path::PathBuf>) -> Result<(
     // Create winit event loop; do not explicitly activate the app to avoid stealing focus.
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
-    use winit::application::ApplicationHandler;
-    use winit::event::WindowEvent;
-    use winit::event_loop::{ActiveEventLoop, ControlFlow};
+    use winit::{
+        application::ApplicationHandler,
+        event::WindowEvent,
+        event_loop::{ActiveEventLoop, ControlFlow},
+    };
 
     struct OverlayApp {
         window: Option<winit::window::Window>,

@@ -1,18 +1,17 @@
-use std::{ffi::c_void, ptr};
+use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr, thread_local};
 
 use core_foundation::{
     base::{CFRelease, CFTypeRef, TCFType},
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
     string::{CFString, CFStringRef},
 };
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::thread_local;
 
-use crate::WindowId;
-use crate::error::{Error, Result};
-use crate::geom::{CGPoint, CGSize};
-use crate::window;
+use crate::{
+    WindowId,
+    error::{Error, Result},
+    geom::{CGPoint, CGSize},
+    window,
+};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {

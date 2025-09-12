@@ -18,12 +18,12 @@ mod util;
 mod warn_overlay;
 mod winhelper;
 
+use std::{sync::mpsc, time::Duration};
+
 use cli::{Cli, Commands, FsState};
 use error::print_hints;
 use hotki_protocol::Toggle;
 use orchestrator::{heading, run_all_tests};
-use std::sync::mpsc;
-use std::time::Duration;
 use tests::*;
 
 fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
@@ -56,10 +56,14 @@ fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
 where
     F: FnOnce() -> T,
 {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
 
     let canceled = Arc::new(AtomicBool::new(false));
     let canceled_flag = canceled.clone();

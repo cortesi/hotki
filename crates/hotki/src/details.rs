@@ -1,12 +1,11 @@
 use std::{fs, path::PathBuf};
 
+use config::NotifyTheme;
 use egui::{
     CentralPanel, Color32, Context, Layout, RichText, ScrollArea, ViewportBuilder, ViewportCommand,
     ViewportId, vec2,
 };
 use egui_extras::{Column, TableBuilder};
-
-use config::NotifyTheme;
 use hotki_protocol::NotifyKind;
 
 use crate::{notification::BacklogEntry, runtime::ControlMsg};

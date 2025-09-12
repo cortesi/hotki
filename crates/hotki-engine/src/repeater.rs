@@ -6,6 +6,7 @@
 
 use std::{
     cmp, env,
+    option::Option,
     process::Command,
     sync::{
         Arc, Mutex,
@@ -13,14 +14,12 @@ use std::{
     },
 };
 
+use keymode::{KeyResponse, NotificationType};
+use mac_keycode::Chord;
 use tokio::time::Duration;
 use tracing::trace;
 
-use keymode::{KeyResponse, NotificationType};
-use mac_keycode::Chord;
-
 use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
-use std::option::Option;
 
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.

@@ -1,10 +1,9 @@
-use tokio::sync::mpsc::UnboundedSender;
-
 use hotki_protocol::{MsgToUI, NotifyKind};
 use keymode::KeyResponse;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::info;
 
 use crate::{Error, Result};
-use tracing::info;
 
 /// Sends HUD updates and notifications to the UI layer.
 #[derive(Clone)]

@@ -1,14 +1,13 @@
+use core_foundation::base::{CFRelease, CFTypeRef};
+use objc2_foundation::MainThreadMarker;
+
 use crate::{
     Error, Result,
-    ax::{ax_check, ax_get_point, ax_get_size, cfstr},
+    ax::{ax_check, ax_get_point, ax_get_size, ax_window_for_id, cfstr},
     geom::{self},
     list_windows, request_activate_pid,
     window::frontmost_window,
 };
-use core_foundation::base::{CFRelease, CFTypeRef};
-use objc2_foundation::MainThreadMarker;
-
-use crate::ax::ax_window_for_id;
 
 /// Focus the next window in the given direction on the current screen within the
 /// current Space. Uses CG for enumeration + AppKit for screen geometry and AX for

@@ -27,13 +27,13 @@ use std::{
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
+use hotki_engine::Engine;
+use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use tokio::sync::{Mutex as AsyncMutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification, enc_world_status};
-use hotki_engine::Engine;
-use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]

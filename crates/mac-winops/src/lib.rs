@@ -35,10 +35,12 @@ mod window;
 pub mod focus;
 pub mod nswindow;
 pub mod screen;
+use ax::*;
 pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
 pub use error::{Error, Result};
 pub use fullscreen::{fullscreen_native, fullscreen_nonnative};
 pub use hide::{hide_bottom_left, hide_corner};
+use main_thread_ops::{MAIN_OPS, MainOp};
 pub use main_thread_ops::{
     MoveDir, request_activate_pid, request_focus_dir, request_fullscreen_native,
     request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
@@ -47,9 +49,6 @@ pub use main_thread_ops::{
 pub use place::place_grid_focused;
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
-
-use ax::*;
-use main_thread_ops::{MAIN_OPS, MainOp};
 
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.

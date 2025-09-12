@@ -284,10 +284,11 @@ impl Poster for MockPoster {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use mac_keycode::Key;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
 
     struct CountingPoster(AtomicUsize, AtomicUsize);
 

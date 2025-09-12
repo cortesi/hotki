@@ -13,11 +13,9 @@ use tao::{
     event_loop::{ControlFlow, EventLoop},
     platform::macos::{ActivationPolicy, EventLoopExtMacOS},
 };
-
 use tracing::{debug, error, info, trace};
 
-use crate::ipc::IPCServer;
-use crate::{Error, Result, default_socket_path};
+use crate::{Error, Result, default_socket_path, ipc::IPCServer};
 
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;

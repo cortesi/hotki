@@ -19,13 +19,14 @@ mod permissions;
 mod runtime;
 mod tray;
 
+use config::{Config, default_config_path, load_from_path};
+
 use crate::{
     app::{AppEvent, HotkiApp},
     details::Details,
     hud::Hud,
     notification::NotificationCenter,
 };
-use config::{Config, default_config_path, load_from_path};
 
 #[derive(Parser, Debug)]
 #[command(name = "hotki", about = "A macOS hotkey application", version)]

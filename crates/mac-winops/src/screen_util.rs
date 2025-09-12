@@ -1,6 +1,7 @@
-use crate::geom::{self, CGPoint};
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
+
+use crate::geom::{self, CGPoint};
 
 /// Compute the visible frame (excluding menu bar and Dock) of the screen
 /// containing `p`. Falls back to main screen when not found.

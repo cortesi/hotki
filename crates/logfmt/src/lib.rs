@@ -1,7 +1,9 @@
 use std::fmt::Write;
 
-use tracing::field::{Field, Visit};
-use tracing::{Event, Metadata};
+use tracing::{
+    Event, Metadata,
+    field::{Field, Visit},
+};
 
 /// Rendered fields extracted from a tracing Event.
 #[derive(Debug, Clone)]

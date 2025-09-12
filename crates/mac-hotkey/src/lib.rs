@@ -27,10 +27,9 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use mac_keycode::{Chord, Key as Code, Modifier};
 use thiserror::Error;
 use tracing::{debug, trace};
-
-use mac_keycode::{Chord, Key as Code, Modifier};
 mod policy;
 mod sys;
 

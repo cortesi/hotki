@@ -1,8 +1,9 @@
 //! Focus navigation smoketest using the new `focus(dir)` action.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 use super::helpers::{wait_for_frontmost_title, wait_for_windows_visible};

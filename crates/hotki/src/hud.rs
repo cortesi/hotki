@@ -1,9 +1,8 @@
+use config::{FontWeight, Mode, Pos};
 use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
-
-use config::{FontWeight, Mode, Pos};
 
 use crate::fonts;
 
