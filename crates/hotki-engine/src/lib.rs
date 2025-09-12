@@ -362,8 +362,8 @@ impl Engine {
             tracing::debug!("bindings updated, clearing repeater + relay");
             // Perform async work after dropping manager guard.
             self.svc.repeater.clear_async().await;
-            let pid = self.current_pid_world_first();
-            self.svc.relay.stop_all(pid);
+            // Stop all active relays; each relay uses its original target PID.
+            self.svc.relay.stop_all();
         }
 
         let elapsed = start.elapsed();

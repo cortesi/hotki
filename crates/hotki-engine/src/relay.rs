@@ -94,7 +94,7 @@ impl RelayHandler {
     }
 
     /// Stop all relays (posts KeyUp for each active id, best-effort).
-    pub fn stop_all(&self, _pid: i32) {
+    pub fn stop_all(&self) {
         let mut map = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref relay) = self.relay_key {
             for (id, a) in map.drain() {
