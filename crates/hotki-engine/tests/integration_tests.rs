@@ -389,6 +389,126 @@ async fn test_repeater_with_observer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
+    // Verify that when focus PID changes at the first tick, the repeater performs a
+    // stop/start handoff and does NOT emit a repeat on that tick; repeats then resume.
+    ensure_no_os_interaction();
+
+    struct Ctr {
+        relay: AtomicUsize,
+    }
+
+    impl RepeatObserver for Ctr {
+        fn on_relay_repeat(&self, _id: &str) {
+            self.relay.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
+    let relay = RelayHandler::new_with_enabled(false);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let notifier = NotificationDispatcher::new(tx);
+    let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
+
+    let obs = Arc::new(Ctr {
+        relay: AtomicUsize::new(0),
+    });
+    repeater.set_repeat_observer(obs.clone());
+
+    // Seed initial focus and start relay repeating
+    *focus_ctx.lock() = Some(("app1".into(), "win1".into(), 1111));
+    repeater.start_relay_repeat(
+        "handoff1".to_string(),
+        mac_keycode::Chord::parse("cmd+g").unwrap(),
+        Some(RepeatSpec {
+            // Values below are clamped to the repeater minimums (100ms)
+            initial_delay_ms: Some(100),
+            interval_ms: Some(100),
+        }),
+    );
+
+    // Change PID midway before the first tick to trigger the handoff path
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    *focus_ctx.lock() = Some(("app2".into(), "win2".into(), 2222));
+
+    // Wait past the first tick (hand-off should have occurred; no repeat yet)
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    let after_handoff = obs.relay.load(Ordering::SeqCst);
+    assert_eq!(after_handoff, 0, "Handoff tick should not emit a repeat");
+
+    // Wait into the next interval; repeats should now resume on the new PID
+    tokio::time::sleep(Duration::from_millis(130)).await;
+    repeater.stop_sync("handoff1");
+    let repeats_total = obs.relay.load(Ordering::SeqCst);
+    assert!(repeats_total >= 1, "Repeats should resume after handoff");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
+    // Verify multiple consecutive PID handoffs within a repeat session never emit repeats on
+    // the switch ticks and that repeats continue afterwards.
+    ensure_no_os_interaction();
+
+    struct Ctr {
+        relay: AtomicUsize,
+    }
+    impl RepeatObserver for Ctr {
+        fn on_relay_repeat(&self, _id: &str) {
+            self.relay.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
+    let relay = RelayHandler::new_with_enabled(false);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let notifier = NotificationDispatcher::new(tx);
+    let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
+
+    let obs = Arc::new(Ctr {
+        relay: AtomicUsize::new(0),
+    });
+    repeater.set_repeat_observer(obs.clone());
+
+    *focus_ctx.lock() = Some(("app1".into(), "win1".into(), 1111));
+    repeater.start_relay_repeat(
+        "handoff2".to_string(),
+        mac_keycode::Chord::parse("cmd+h").unwrap(),
+        Some(RepeatSpec {
+            initial_delay_ms: Some(100),
+            interval_ms: Some(100),
+        }),
+    );
+
+    // Switch 1 before first tick
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    *focus_ctx.lock() = Some(("app2".into(), "win2".into(), 2222));
+    tokio::time::sleep(Duration::from_millis(70)).await; // past first (handoff) tick
+    assert_eq!(
+        obs.relay.load(Ordering::SeqCst),
+        0,
+        "No repeat on first handoff tick"
+    );
+
+    // Switch 2 before second tick
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    *focus_ctx.lock() = Some(("app3".into(), "win3".into(), 3333));
+    tokio::time::sleep(Duration::from_millis(70)).await; // past second (handoff) tick
+    assert_eq!(
+        obs.relay.load(Ordering::SeqCst),
+        0,
+        "No repeat on second handoff tick"
+    );
+
+    // Allow a subsequent repeat tick to fire
+    tokio::time::sleep(Duration::from_millis(130)).await;
+    repeater.stop_sync("handoff2");
+    assert!(
+        obs.relay.load(Ordering::SeqCst) >= 1,
+        "Repeats resume after multiple handoffs"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_binding_registration_order_stability() {
     // Test that binding order remains stable across updates
     let (mut engine, _rx) = create_test_engine().await;
