@@ -106,6 +106,33 @@ pub enum Commands {
     #[command(name = "place-zoomed")]
     PlaceZoomed,
 
+    /// Flexible placement harness for Stage-8 variants (direct mac-winops calls)
+    #[command(name = "place-flex")]
+    PlaceFlex {
+        /// Grid columns
+        #[arg(long, default_value_t = config::PLACE_COLS)]
+        cols: u32,
+        /// Grid rows
+        #[arg(long, default_value_t = config::PLACE_ROWS)]
+        rows: u32,
+        /// Target column (0-based)
+        #[arg(long, default_value_t = 0)]
+        col: u32,
+        /// Target row (0-based)
+        #[arg(long, default_value_t = 0)]
+        row: u32,
+        /// Force size->pos fallback even if pos->size succeeds
+        #[arg(long, default_value_t = false)]
+        force_size_pos: bool,
+        /// Disable size->pos fallback; only attempt pos->size
+        #[arg(long, default_value_t = false)]
+        pos_first_only: bool,
+    },
+
+    /// Convenience: exercise size->pos fallback path explicitly
+    #[command(name = "place-fallback")]
+    PlaceFallback,
+
     /// Internal helper: create a foreground window with a title for focus testing
     #[command(hide = true, name = "focus-winhelper")]
     FocusWinHelper {

@@ -274,6 +274,96 @@ fn main() {
                 let _ = o.kill_and_wait();
             }
         }
+        Commands::PlaceFlex {
+            cols,
+            rows,
+            col,
+            row,
+            force_size_pos,
+            pos_first_only,
+        } => {
+            if !cli.quiet {
+                heading("Test: place-flex");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs; // logs only affect tracing env
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place-flex");
+            }
+            match run_on_main_with_watchdog("place-flex", timeout, move || {
+                if logs {
+                    // no-op: logging already initialized via RUST_LOG
+                }
+                tests::place_flex::run_place_flex(
+                    cols,
+                    rows,
+                    col,
+                    row,
+                    force_size_pos,
+                    pos_first_only,
+                )
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!(
+                            "place-flex: OK (cols={} rows={} cell=({},{}), force_size_pos={}, pos_first_only={})",
+                            cols, rows, col, row, force_size_pos, pos_first_only
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-flex: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
+        Commands::PlaceFallback => {
+            if !cli.quiet {
+                heading("Test: place-fallback");
+            }
+            let timeout = cli.timeout;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place-fallback");
+            }
+            match run_on_main_with_watchdog("place-fallback", timeout, move || {
+                tests::place_flex::run_place_flex(
+                    crate::config::PLACE_COLS,
+                    crate::config::PLACE_ROWS,
+                    0,
+                    0,
+                    true,  // force_size_pos
+                    false, // pos_first_only
+                )
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-fallback: OK (forced size->pos path)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-fallback: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
         Commands::FocusNav => {
             if !cli.quiet {
                 heading("Test: focus-nav");

@@ -314,8 +314,17 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             w,
             h
         );
-        // Stage 2: apply in pos->size order with settle/polling
-        let (got, _settle_ms) = apply_and_wait(
+        // Stage 2: apply in pos->size order with settle/polling; if that
+        // does not converge within eps, retry with size->pos (Stage 3).
+        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
+        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
+        if force_second {
+            debug!("smoketest: forcing size->pos second attempt");
+        }
+        if pos_first_only {
+            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
+        }
+        let (got1, _settle_ms1) = apply_and_wait(
             "place_grid",
             &win,
             attr_pos,
@@ -324,10 +333,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             true,
             VERIFY_EPS,
         )?;
-        let d = diffs(&got, &target);
-        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d);
-        if within_eps(d, VERIFY_EPS) {
+        let d1 = diffs(&got1, &target);
+        debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
@@ -336,28 +345,76 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 target.y,
                 target.w,
                 target.h,
-                got.x,
-                got.y,
-                got.w,
-                got.h,
-                d.0,
-                d.1,
-                d.2,
-                d.3
+                got1.x,
+                got1.y,
+                got1.w,
+                got1.h,
+                d1.0,
+                d1.1,
+                d1.2,
+                d1.3
             );
             Ok(())
         } else {
-            debug!("verified=false");
-            Err(Error::PlacementVerificationFailed {
-                op: "place_grid",
-                expected: target,
-                got,
-                epsilon: VERIFY_EPS,
-                dx: d.0,
-                dy: d.1,
-                dw: d.2,
-                dh: d.3,
-            })
+            if pos_first_only {
+                debug!("verified=false");
+                return Err(Error::PlacementVerificationFailed {
+                    op: "place_grid",
+                    expected: target,
+                    got: got1,
+                    epsilon: VERIFY_EPS,
+                    dx: d1.0,
+                    dy: d1.1,
+                    dw: d1.2,
+                    dh: d1.3,
+                });
+            }
+            // Stage 3: retry size->pos
+            let (got2, _settle_ms2) = apply_and_wait(
+                "place_grid",
+                &win,
+                attr_pos,
+                attr_size,
+                &target,
+                false,
+                VERIFY_EPS,
+            )?;
+            let d2 = diffs(&got2, &target);
+            debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
+            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            if within_eps(d2, VERIFY_EPS) {
+                debug!("verified=true");
+                debug!("order_used=size->pos, attempts=2");
+                debug!(
+                    "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    id,
+                    target.x,
+                    target.y,
+                    target.w,
+                    target.h,
+                    got2.x,
+                    got2.y,
+                    got2.w,
+                    got2.h,
+                    d2.0,
+                    d2.1,
+                    d2.2,
+                    d2.3
+                );
+                Ok(())
+            } else {
+                debug!("verified=false");
+                Err(Error::PlacementVerificationFailed {
+                    op: "place_grid",
+                    expected: target,
+                    got: got2,
+                    epsilon: VERIFY_EPS,
+                    dx: d2.0,
+                    dy: d2.1,
+                    dw: d2.2,
+                    dh: d2.3,
+                })
+            }
         }
     })()
 }
@@ -418,8 +475,17 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             w,
             h
         );
-        // Stage 2: apply in pos->size order with settle/polling
-        let (got, _settle_ms) = apply_and_wait(
+        // Stage 2: apply in pos->size order with settle/polling; if that
+        // does not converge within eps, retry with size->pos (Stage 3).
+        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
+        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
+        if force_second {
+            debug!("smoketest: forcing size->pos second attempt");
+        }
+        if pos_first_only {
+            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
+        }
+        let (got1, _settle_ms1) = apply_and_wait(
             "place_grid_focused",
             &win,
             attr_pos,
@@ -428,10 +494,10 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             true,
             VERIFY_EPS,
         )?;
-        let d = diffs(&got, &target);
-        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d);
-        if within_eps(d, VERIFY_EPS) {
+        let d1 = diffs(&got1, &target);
+        debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
@@ -440,28 +506,76 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 target.y,
                 target.w,
                 target.h,
-                got.x,
-                got.y,
-                got.w,
-                got.h,
-                d.0,
-                d.1,
-                d.2,
-                d.3
+                got1.x,
+                got1.y,
+                got1.w,
+                got1.h,
+                d1.0,
+                d1.1,
+                d1.2,
+                d1.3
             );
             Ok(())
         } else {
-            debug!("verified=false");
-            Err(Error::PlacementVerificationFailed {
-                op: "place_grid_focused",
-                expected: target,
-                got,
-                epsilon: VERIFY_EPS,
-                dx: d.0,
-                dy: d.1,
-                dw: d.2,
-                dh: d.3,
-            })
+            if pos_first_only {
+                debug!("verified=false");
+                return Err(Error::PlacementVerificationFailed {
+                    op: "place_grid_focused",
+                    expected: target,
+                    got: got1,
+                    epsilon: VERIFY_EPS,
+                    dx: d1.0,
+                    dy: d1.1,
+                    dw: d1.2,
+                    dh: d1.3,
+                });
+            }
+            // Stage 3: retry size->pos
+            let (got2, _settle_ms2) = apply_and_wait(
+                "place_grid_focused",
+                &win,
+                attr_pos,
+                attr_size,
+                &target,
+                false,
+                VERIFY_EPS,
+            )?;
+            let d2 = diffs(&got2, &target);
+            debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
+            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            if within_eps(d2, VERIFY_EPS) {
+                debug!("verified=true");
+                debug!("order_used=size->pos, attempts=2");
+                debug!(
+                    "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    pid,
+                    target.x,
+                    target.y,
+                    target.w,
+                    target.h,
+                    got2.x,
+                    got2.y,
+                    got2.w,
+                    got2.h,
+                    d2.0,
+                    d2.1,
+                    d2.2,
+                    d2.3
+                );
+                Ok(())
+            } else {
+                debug!("verified=false");
+                Err(Error::PlacementVerificationFailed {
+                    op: "place_grid_focused",
+                    expected: target,
+                    got: got2,
+                    epsilon: VERIFY_EPS,
+                    dx: d2.0,
+                    dy: d2.1,
+                    dw: d2.2,
+                    dh: d2.3,
+                })
+            }
         }
     })()
 }
@@ -546,8 +660,17 @@ pub(crate) fn place_move_grid(
             h
         );
 
-        // Stage 2: apply in pos->size order with settle/polling
-        let (got, _settle_ms) = apply_and_wait(
+        // Stage 2: apply in pos->size order with settle/polling; if that
+        // does not converge within eps, retry with size->pos (Stage 3).
+        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
+        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
+        if force_second {
+            debug!("smoketest: forcing size->pos second attempt");
+        }
+        if pos_first_only {
+            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
+        }
+        let (got1, _settle_ms1) = apply_and_wait(
             "place_move_grid",
             &win,
             attr_pos,
@@ -556,10 +679,10 @@ pub(crate) fn place_move_grid(
             true,
             VERIFY_EPS,
         )?;
-        let d = diffs(&got, &target);
-        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d);
-        if within_eps(d, VERIFY_EPS) {
+        let d1 = diffs(&got1, &target);
+        debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
@@ -568,28 +691,76 @@ pub(crate) fn place_move_grid(
                 target.y,
                 target.w,
                 target.h,
-                got.x,
-                got.y,
-                got.w,
-                got.h,
-                d.0,
-                d.1,
-                d.2,
-                d.3
+                got1.x,
+                got1.y,
+                got1.w,
+                got1.h,
+                d1.0,
+                d1.1,
+                d1.2,
+                d1.3
             );
             Ok(())
         } else {
-            debug!("verified=false");
-            Err(Error::PlacementVerificationFailed {
-                op: "place_move_grid",
-                expected: target,
-                got,
-                epsilon: VERIFY_EPS,
-                dx: d.0,
-                dy: d.1,
-                dw: d.2,
-                dh: d.3,
-            })
+            if pos_first_only {
+                debug!("verified=false");
+                return Err(Error::PlacementVerificationFailed {
+                    op: "place_move_grid",
+                    expected: target,
+                    got: got1,
+                    epsilon: VERIFY_EPS,
+                    dx: d1.0,
+                    dy: d1.1,
+                    dw: d1.2,
+                    dh: d1.3,
+                });
+            }
+            // Stage 3: retry size->pos
+            let (got2, _settle_ms2) = apply_and_wait(
+                "place_move_grid",
+                &win,
+                attr_pos,
+                attr_size,
+                &target,
+                false,
+                VERIFY_EPS,
+            )?;
+            let d2 = diffs(&got2, &target);
+            debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
+            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            if within_eps(d2, VERIFY_EPS) {
+                debug!("verified=true");
+                debug!("order_used=size->pos, attempts=2");
+                debug!(
+                    "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    id,
+                    target.x,
+                    target.y,
+                    target.w,
+                    target.h,
+                    got2.x,
+                    got2.y,
+                    got2.w,
+                    got2.h,
+                    d2.0,
+                    d2.1,
+                    d2.2,
+                    d2.3
+                );
+                Ok(())
+            } else {
+                debug!("verified=false");
+                Err(Error::PlacementVerificationFailed {
+                    op: "place_move_grid",
+                    expected: target,
+                    got: got2,
+                    epsilon: VERIFY_EPS,
+                    dx: d2.0,
+                    dy: d2.1,
+                    dw: d2.2,
+                    dh: d2.3,
+                })
+            }
         }
     })()
 }

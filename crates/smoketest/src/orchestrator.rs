@@ -218,6 +218,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place", duration_ms);
     all_ok &= run("place-minimized", duration_ms);
     all_ok &= run("place-zoomed", duration_ms);
+    // Stage‑3/8: explicitly exercise the size->pos fallback path
+    all_ok &= run("place-fallback", duration_ms);
     all_ok &= run("fullscreen", duration_ms);
 
     // UI demos
