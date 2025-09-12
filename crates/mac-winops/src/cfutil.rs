@@ -12,6 +12,17 @@ pub(crate) fn cfstring_to_string(s: CFStringRef) -> String {
     cf.to_string()
 }
 
+/// Consume an owned CFStringRef (Create rule) and convert to Rust String.
+///
+/// Use this for values returned from functions that follow the Create/Copy rule
+/// (e.g., `AXUIElementCopyAttributeValue`). Ownership is transferred to Rust
+/// and released after conversion.
+pub(crate) fn cfstring_to_string_copy(s: CFStringRef) -> String {
+    // SAFETY: CFStringRef follows Create rule; wrap takes ownership.
+    let cf = unsafe { CFString::wrap_under_create_rule(s) };
+    cf.to_string()
+}
+
 /// Get a String value for the given CFDictionary key.
 pub(crate) fn dict_get_string(dict: CFDictionaryRef, key: CFStringRef) -> Option<String> {
     unsafe extern "C" {
