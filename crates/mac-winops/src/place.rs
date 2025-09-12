@@ -33,16 +33,50 @@ fn within_eps(d: (f64, f64, f64, f64), eps: f64) -> bool {
     d.0 <= eps && d.1 <= eps && d.2 <= eps && d.3 <= eps
 }
 
+#[inline]
+fn clamp_flags(got: &Rect, vf: &Rect, eps: f64) -> String {
+    let mut flags: Vec<&str> = Vec::new();
+    if geom::approx_eq(got.left(), vf.left(), eps) {
+        flags.push("left");
+    }
+    if geom::approx_eq(got.right(), vf.right(), eps) {
+        flags.push("right");
+    }
+    if geom::approx_eq(got.bottom(), vf.bottom(), eps) {
+        flags.push("bottom");
+    }
+    if geom::approx_eq(got.top(), vf.top(), eps) {
+        flags.push("top");
+    }
+    if flags.is_empty() {
+        "none".into()
+    } else {
+        flags.join(",")
+    }
+}
+
+#[inline]
+fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
+    debug!(
+        "summary: order={} attempt={} eps={:.1} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
+        order, attempt, eps, d.0, d.1, d.2, d.3
+    );
+}
+
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).
 pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let (win, _pid_for_id) = ax_window_for_id(id)?;
+    let (win, pid_for_id) = ax_window_for_id(id)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
+        let subrole =
+            crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
+        let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -59,9 +93,14 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             row,
         );
         let target = rect_from(x, y, w, h);
+        let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
-            "WinOps: place_grid: id={} cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
+            "WinOps: place_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
             id,
+            pid_for_id,
+            role,
+            subrole,
+            title,
             cols,
             rows,
             col,
@@ -96,7 +135,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         let got_s = ax_get_size(win.as_ptr(), attr_size)?;
         let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
+        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d);
         if within_eps(d, VERIFY_EPS) {
+            debug!("verified=true");
             debug!(
                 "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
                 id,
@@ -115,6 +157,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             );
             Ok(())
         } else {
+            debug!("verified=false");
             Err(Error::PlacementVerificationFailed {
                 op: "place_grid",
                 expected: target,
@@ -139,6 +182,10 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
+        let subrole =
+            crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
+        let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -155,9 +202,13 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             row,
         );
         let target = rect_from(x, y, w, h);
+        let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
-            "WinOps: place_grid_focused: pid={} cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
+            "WinOps: place_grid_focused: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
             pid,
+            role,
+            subrole,
+            title,
             cols,
             rows,
             col,
@@ -192,7 +243,10 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         let got_s = ax_get_size(win.as_ptr(), attr_size)?;
         let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
+        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d);
         if within_eps(d, VERIFY_EPS) {
+            debug!("verified=true");
             debug!(
                 "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
                 pid,
@@ -211,6 +265,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             );
             Ok(())
         } else {
+            debug!("verified=false");
             Err(Error::PlacementVerificationFailed {
                 op: "place_grid_focused",
                 expected: target,
@@ -234,11 +289,15 @@ pub(crate) fn place_move_grid(
 ) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let (win, _pid_for_id) = ax_window_for_id(id)?;
+    let (win, pid_for_id) = ax_window_for_id(id)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
+        let subrole =
+            crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
+        let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -271,9 +330,14 @@ pub(crate) fn place_move_grid(
         let (x, y, w, h) =
             geom::grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
         let target = rect_from(x, y, w, h);
+        let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
-            "WinOps: place_move_grid: id={} cols={} rows={} dir={:?} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) cur_cell={:?} next_cell=({}, {}) target=({:.1},{:.1},{:.1},{:.1})",
+            "WinOps: place_move_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} dir={:?} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) cur_cell={:?} next_cell=({}, {}) target=({:.1},{:.1},{:.1},{:.1})",
             id,
+            pid_for_id,
+            role,
+            subrole,
+            title,
             cols,
             rows,
             dir,
@@ -311,7 +375,10 @@ pub(crate) fn place_move_grid(
         let got_s = ax_get_size(win.as_ptr(), attr_size)?;
         let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
+        debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d);
         if within_eps(d, VERIFY_EPS) {
+            debug!("verified=true");
             debug!(
                 "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
                 id,
@@ -330,6 +397,7 @@ pub(crate) fn place_move_grid(
             );
             Ok(())
         } else {
+            debug!("verified=false");
             Err(Error::PlacementVerificationFailed {
                 op: "place_move_grid",
                 expected: target,
