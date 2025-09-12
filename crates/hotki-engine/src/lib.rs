@@ -39,6 +39,7 @@ mod key_state;
 mod notification;
 mod relay;
 mod repeater;
+mod services;
 mod ticker;
 
 // Timing constants for warning thresholds
@@ -60,6 +61,7 @@ pub use notification::NotificationDispatcher;
 pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
+use services::Services;
 use tracing::{debug, trace, warn};
 
 #[inline]
@@ -93,21 +95,15 @@ pub struct Engine {
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
-    /// Relay handler
-    relay_handler: RelayHandler,
-    /// Notification dispatcher
-    notifier: NotificationDispatcher,
-    /// Repeater for shell commands and relays
-    repeater: Repeater,
+    /// Grouped long-lived services
+    svc: Services,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
     /// Focus-related state (context, pid, last-target, policy)
     focus: FocusState,
     /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
     raise_nonce: Arc<AtomicU64>,
-    winops: Arc<dyn WinOps>,
-    /// Window world service handle
-    world: hotki_world::WorldHandle,
+    // winops/world are part of `svc`
 }
 
 impl Engine {
@@ -126,8 +122,6 @@ impl Engine {
         let focus = FocusState::new(true);
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater =
-            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -136,19 +130,24 @@ impl Engine {
         // Prepare shared winops and world before constructing Self
         let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
         let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+        let repeater =
+            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
+        let svc = Services {
+            relay: relay_handler,
+            notifier,
+            repeater,
+            winops,
+            world,
+        };
 
         let eng = Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
-            relay_handler,
-            notifier,
-            repeater,
+            svc,
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
-            winops,
-            world,
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -167,27 +166,30 @@ impl Engine {
         let focus = FocusState::new(true);
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater =
-            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
         )));
 
         let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+        let repeater =
+            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
+        let svc = Services {
+            relay: relay_handler,
+            notifier,
+            repeater,
+            winops,
+            world,
+        };
 
         let eng = Self {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
-            relay_handler,
-            notifier,
-            repeater,
+            svc,
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
-            winops,
-            world,
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -210,6 +212,13 @@ impl Engine {
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater =
             Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
+        let svc = Services {
+            relay: relay_handler,
+            notifier,
+            repeater,
+            winops: winops.clone(),
+            world,
+        };
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -219,14 +228,10 @@ impl Engine {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
-            relay_handler,
-            notifier,
-            repeater,
+            svc,
             config: config_arc,
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
-            winops,
-            world,
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -234,11 +239,11 @@ impl Engine {
 
     /// Access the world service handle for event subscriptions and snapshots.
     pub fn world_handle(&self) -> hotki_world::WorldHandle {
-        self.world.clone()
+        self.svc.world.clone()
     }
 
     fn spawn_world_focus_subscription(&self) {
-        let world = self.world.clone();
+        let world = self.svc.world.clone();
         let focus_ctx = self.focus.ctx.clone();
         tokio::spawn(async move {
             let (mut rx, seed) = world.subscribe_with_context().await;
@@ -298,7 +303,7 @@ impl Engine {
                 pid: self.current_pid_world_first(),
             });
             debug!("HUD update: cursor {:?}", cursor.path());
-            self.notifier.send_hud_update_cursor(cursor)?;
+            self.svc.notifier.send_hud_update_cursor(cursor)?;
         }
 
         // Determine capture policy via Config + Location
@@ -337,9 +342,9 @@ impl Engine {
         if manager.update_bindings(key_pairs)? {
             tracing::debug!("bindings updated, clearing repeater + relay");
             // Async clear to avoid blocking the runtime thread
-            self.repeater.clear_async().await;
+            self.svc.repeater.clear_async().await;
             let pid = self.current_pid_world_first();
-            self.relay_handler.stop_all(pid);
+            self.svc.relay.stop_all(pid);
         }
 
         let elapsed = start.elapsed();
@@ -387,17 +392,17 @@ impl Engine {
 
     /// Re-export: current world snapshot of windows.
     pub async fn world_snapshot(&self) -> Vec<WorldWindow> {
-        self.world.snapshot().await
+        self.svc.world.snapshot().await
     }
 
     /// Re-export: subscribe to world events (Added/Updated/Removed/FocusChanged).
     pub fn world_events(&self) -> tokio::sync::broadcast::Receiver<WorldEvent> {
-        self.world.subscribe()
+        self.svc.world.subscribe()
     }
 
     /// Diagnostics: world status snapshot (counts, timings, permissions).
     pub async fn world_status(&self) -> hotki_world::WorldStatus {
-        self.world.status().await
+        self.svc.world.status().await
     }
 
     /// Process a key event and return whether depth changed (requiring rebind)
@@ -405,7 +410,7 @@ impl Engine {
         let start = Instant::now();
         // On dispatch, nudge world to refresh and proceed with cached context
         if self.focus.sync_on_dispatch {
-            self.world.hint_refresh();
+            self.svc.world.hint_refresh();
         }
         let (app_ctx, title_ctx, _pid) = self.current_context_tuple();
 
@@ -467,14 +472,14 @@ impl Engine {
                 match resp {
                     KeyResponse::Focus { dir } => {
                         tracing::info!("Engine: focus(dir={:?})", dir);
-                        if let Err(e) = self.winops.request_focus_dir(to_move_dir(dir)) {
+                        if let Err(e) = self.svc.winops.request_focus_dir(to_move_dir(dir)) {
                             if let mac_winops::Error::MainThread = e {
                                 tracing::warn!(
                                     "Focus requires main thread; scheduling failed: {}",
                                     e
                                 );
                             }
-                            let _ = self.notifier.send_error("Focus", format!("{}", e));
+                            let _ = self.svc.notifier.send_error("Focus", format!("{}", e));
                         }
                         self.hint_refresh();
                         Ok(())
@@ -494,12 +499,12 @@ impl Engine {
                         )
                         .await
                     }
-                    other => self.notifier.handle_key_response(other),
+                    other => self.svc.notifier.handle_key_response(other),
                 }
             }
             Err(e) => {
                 warn!("Key handler error for {}: {}", identifier, e);
-                self.notifier.send_error("Key", e.to_string())?;
+                self.svc.notifier.send_error("Key", e.to_string())?;
                 Ok(())
             }
         }?;
@@ -557,16 +562,17 @@ impl Engine {
             let allow_os_repeat = repeat.is_some() && !has_custom_timing;
             self.key_tracker
                 .set_repeat_allowed(identifier, allow_os_repeat);
-            self.repeater.start(
+            self.svc.repeater.start(
                 identifier.to_string(),
                 ExecSpec::Relay { chord: target },
                 repeat,
             );
         } else {
             self.key_tracker.set_repeat_allowed(identifier, false);
-            self.relay_handler
+            self.svc
+                .relay
                 .start_relay(identifier.to_string(), target.clone(), pid, false);
-            let _ = self.relay_handler.stop_relay(identifier, pid);
+            let _ = self.svc.relay.stop_relay(identifier, pid);
         }
         Ok(())
     }
@@ -584,11 +590,13 @@ impl Engine {
         let d = to_desired(desired);
         let pid = self.current_pid_world_first();
         let res = match kind {
-            config::FullscreenKind::Native => self.winops.request_fullscreen_native(pid, d),
-            config::FullscreenKind::Nonnative => self.winops.request_fullscreen_nonnative(pid, d),
+            config::FullscreenKind::Native => self.svc.winops.request_fullscreen_native(pid, d),
+            config::FullscreenKind::Nonnative => {
+                self.svc.winops.request_fullscreen_nonnative(pid, d)
+            }
         };
         if let Err(e) = res {
-            let _ = self.notifier.send_error("Fullscreen", format!("{}", e));
+            let _ = self.svc.notifier.send_error("Fullscreen", format!("{}", e));
         }
         self.hint_refresh();
         Ok(())
@@ -611,7 +619,7 @@ impl Engine {
             initial_delay_ms: r.initial_delay_ms,
             interval_ms: r.interval_ms,
         });
-        self.repeater.start(id.to_string(), exec, rep);
+        self.svc.repeater.start(id.to_string(), exec, rep);
         Ok(())
     }
 
@@ -624,7 +632,8 @@ impl Engine {
             match Regex::new(s) {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    self.notifier
+                    self.svc
+                        .notifier
                         .send_error("Raise", format!("Invalid app regex: {}", e))?;
                     invalid = true;
                     None
@@ -637,7 +646,8 @@ impl Engine {
             match Regex::new(s) {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    self.notifier
+                    self.svc
+                        .notifier
                         .send_error("Raise", format!("Invalid title regex: {}", e))?;
                     invalid = true;
                     None
@@ -647,12 +657,12 @@ impl Engine {
             None
         };
         if !invalid {
-            let mut wsnap = self.world.snapshot().await;
+            let mut wsnap = self.svc.world.snapshot().await;
             wsnap.sort_by_key(|w| w.z);
             if wsnap.is_empty() {
                 tracing::debug!("Raise(World): empty snapshot; no-op");
             } else {
-                let focused = self.world.focused_window().await;
+                let focused = self.svc.world.focused_window().await;
                 let matches = |w: &hotki_world::WorldWindow| -> bool {
                     let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
                     let tok = title_re
@@ -695,11 +705,11 @@ impl Engine {
                     if let Ok(mut g) = self.focus.last_target_pid.lock() {
                         *g = Some(target.pid);
                     }
-                    if let Err(e) = self.winops.request_activate_pid(target.pid) {
+                    if let Err(e) = self.svc.winops.request_activate_pid(target.pid) {
                         if let mac_winops::Error::MainThread = e {
                             tracing::warn!("Raise requires main thread; scheduling failed: {}", e);
                         }
-                        let _ = self.notifier.send_error("Raise", format!("{}", e));
+                        let _ = self.svc.notifier.send_error("Raise", format!("{}", e));
                     }
                     self.hint_refresh();
                 } else {
@@ -723,12 +733,13 @@ impl Engine {
         } else if let Some((_, _, p)) = self.focus.ctx.lock().ok().and_then(|g| g.clone()) {
             (p, "world")
         } else {
-            let mut snap = self.world.snapshot().await;
+            let mut snap = self.svc.world.snapshot().await;
             snap.sort_by_key(|w| w.z);
             if snap.is_empty() {
                 tracing::debug!("Place(World): empty snapshot; no-op");
                 return Ok(());
             } else if let Some(w) = self
+                .svc
                 .world
                 .focused_window()
                 .await
@@ -742,7 +753,7 @@ impl Engine {
         };
 
         let (wapp, wtitle, wpid) = self.current_context_tuple();
-        let mut snap = self.world.snapshot().await;
+        let mut snap = self.svc.world.snapshot().await;
         snap.sort_by_key(|w| w.z);
         if let Some(top) = snap.first() {
             tracing::debug!(
@@ -777,10 +788,11 @@ impl Engine {
         }
 
         if let Err(e) = self
+            .svc
             .winops
             .request_place_grid_focused(pid, cols, rows, col, row)
         {
-            let _ = self.notifier.send_error("Place", format!("{}", e));
+            let _ = self.svc.notifier.send_error("Place", format!("{}", e));
         }
         self.hint_refresh();
         Ok(())
@@ -789,7 +801,7 @@ impl Engine {
     async fn handle_action_place_move(&self, cols: u32, rows: u32, dir: config::Dir) -> Result<()> {
         let mdir = to_move_dir(dir);
         let pid = self.current_pid_world_first();
-        let mut snap = self.world.snapshot().await;
+        let mut snap = self.svc.world.snapshot().await;
         snap.sort_by_key(|w| w.z);
         if !snap.is_empty() {
             let candidate = snap
@@ -798,17 +810,23 @@ impl Engine {
                 .min_by_key(|w| (!w.focused, w.z))
                 .cloned();
             if let Some(w) = candidate {
-                if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir) {
-                    let _ = self.notifier.send_error("Move", format!("{}", e));
+                if let Err(e) = self
+                    .svc
+                    .winops
+                    .request_place_move_grid(w.id, cols, rows, mdir)
+                {
+                    let _ = self.svc.notifier.send_error("Move", format!("{}", e));
                 }
                 self.hint_refresh();
             } else {
                 let _ = self
+                    .svc
                     .notifier
                     .send_error("Move", "No focused window to move".to_string());
             }
         } else {
             let _ = self
+                .svc
                 .notifier
                 .send_error("Move", "No focused window to move".to_string());
         }
@@ -817,7 +835,7 @@ impl Engine {
 
     async fn handle_action_hide(&self, desired: config::Toggle) -> Result<()> {
         let (wapp, wtitle, wpid) = self.current_context_tuple();
-        let mut snap = self.world.snapshot().await;
+        let mut snap = self.svc.world.snapshot().await;
         snap.sort_by_key(|w| w.z);
         if let Some(top) = snap.first() {
             tracing::info!(
@@ -844,8 +862,8 @@ impl Engine {
         let d = to_desired(desired);
         let pid = self.current_pid_world_first();
         tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-        if let Err(e) = self.winops.hide_bottom_left(pid, d) {
-            let _ = self.notifier.send_error("Hide", format!("{}", e));
+        if let Err(e) = self.svc.winops.hide_bottom_left(pid, d) {
+            let _ = self.svc.notifier.send_error("Hide", format!("{}", e));
         }
         self.hint_refresh();
         Ok(())
@@ -854,8 +872,8 @@ impl Engine {
     /// Handle a key up event
     fn handle_key_up(&self, identifier: &str) {
         let pid = self.current_pid_world_first();
-        self.repeater.stop_sync(identifier);
-        if self.relay_handler.stop_relay(identifier, pid) {
+        self.svc.repeater.stop_sync(identifier);
+        if self.svc.relay.stop_relay(identifier, pid) {
             debug!("Stopped relay for {}", identifier);
         }
     }
@@ -864,10 +882,10 @@ impl Engine {
     fn handle_repeat(&self, identifier: &str) {
         let pid = self.current_pid_world_first();
         // Forward OS repeat to active relay target, if any
-        if self.relay_handler.repeat_relay(identifier, pid) {
+        if self.svc.relay.repeat_relay(identifier, pid) {
             // If a software ticker is active for this id, stop it to avoid double repeats.
-            if self.repeater.is_ticking(identifier) {
-                self.repeater.note_os_repeat(identifier);
+            if self.svc.repeater.is_ticking(identifier) {
+                self.svc.repeater.note_os_repeat(identifier);
             }
             debug!("Repeated relay for {}", identifier);
         }
@@ -943,6 +961,6 @@ impl Engine {
     }
 
     fn hint_refresh(&self) {
-        self.world.hint_refresh();
+        self.svc.world.hint_refresh();
     }
 }

@@ -44,7 +44,7 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
     {
         Ok(c) => c,
         Err(_) => {
-            return Err(StError::IpcDisconnected {
+            return Err(Error::IpcDisconnected {
                 during: "connecting for title events",
             });
         }
@@ -52,7 +52,7 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
     let conn = match client.connection() {
         Ok(c) => c,
         Err(_) => {
-            return Err(StError::IpcDisconnected {
+            return Err(Error::IpcDisconnected {
                 during: "waiting for title events",
             });
         }
@@ -72,7 +72,7 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
             }
             Ok(Ok(_)) => {}
             Ok(Err(_)) => {
-                return Err(StError::IpcDisconnected {
+                return Err(Error::IpcDisconnected {
                     during: "waiting for title events",
                 });
             }
