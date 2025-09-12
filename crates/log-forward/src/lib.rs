@@ -14,9 +14,10 @@
 //! The layer is lightweight and no-ops when no sink is set.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use hotki_protocol::MsgToUI;
+use parking_lot::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
@@ -30,13 +31,13 @@ fn sink() -> &'static Mutex<Option<UnboundedSender<MsgToUI>>> {
 
 /// Set the forwarding sink (called when a client connects).
 pub fn set_sink(tx: hotki_protocol::ipc::UiTx) {
-    let mut guard = sink().lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = sink().lock();
     *guard = Some(tx);
 }
 
 /// Clear the forwarding sink (called when a client disconnects).
 pub fn clear_sink() {
-    let mut guard = sink().lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = sink().lock();
     *guard = None;
 }
 
@@ -49,7 +50,7 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         // Early-exit if there is no sink set
-        let tx_opt = { sink().lock().unwrap_or_else(|e| e.into_inner()).clone() };
+        let tx_opt = { sink().lock().clone() };
         let Some(tx) = tx_opt else { return };
 
         let r = logfmt::render_event(event);

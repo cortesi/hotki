@@ -37,3 +37,49 @@ Test runner:
 - `all`: Runs repeat tests (1s each; volume 2s, expect ≥3 repeats) and UI demos (ui + miniui) that verify the HUD appears and a short theme cycle works.
   - Example: `cargo run --bin smoketest -- all`
   - Prints per-test counts, runs UI checks, and exits non‑zero on failure.
+
+## Concurrency and Locking
+
+Hotki runs an async runtime (Tokio) and several high‑frequency, synchronous hot paths. Use the following rules to choose locking primitives consistently across the workspace:
+
+- Use `parking_lot::Mutex`/`parking_lot::RwLock` for synchronous, short critical sections on hot paths. These are faster and non‑poisoning. Never hold them across an `.await`.
+- Use `tokio::sync::{Mutex,RwLock}` for state that may be mutated while awaiting or shared across async tasks. Keep hold times short; move expensive work out of the critical section.
+- Avoid mixing lock types in public APIs. If an API is async‑facing, prefer `tokio::sync` types at the boundary and keep `parking_lot` internal. For purely sync modules, keep `parking_lot` throughout.
+
+Recommended patterns
+
+- Sync hot path (e.g., key tracking, small maps):
+  ```rust
+  use std::collections::{HashMap, HashSet};
+  use std::sync::Arc;
+  use parking_lot::Mutex;
+
+  struct KeyState {
+      held: Arc<Mutex<HashSet<String>>>,
+      repeat_ok: Arc<Mutex<HashSet<String>>>,
+  }
+  ```
+
+- Async state owned by an engine or service:
+  ```rust
+  use std::sync::Arc;
+  use tokio::sync::{Mutex, RwLock};
+
+  struct Engine {
+      state: Arc<Mutex<State>>,        // mutated from async handlers
+      config: Arc<RwLock<Config>>,     // read‑mostly, async readers
+  }
+  ```
+
+Migration notes
+
+- Adding the dependency: `cargo add parking_lot`
+- Converting from `std::sync::Mutex<T>` → `parking_lot::Mutex<T>`:
+  - Update the `use` to `parking_lot::Mutex`.
+  - Replace `lock().unwrap()` with `lock()` (no poisoning in `parking_lot`).
+  - Ensure no `.await` occurs while the guard is held; if needed, clone/move data out first.
+
+Validation
+
+- For UI‑path changes, run: `cargo run --bin smoketest -- all`.
+- Always run: `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples` and `cargo +nightly fmt --all -- --config-path ./rustfmt-nightly.toml`.

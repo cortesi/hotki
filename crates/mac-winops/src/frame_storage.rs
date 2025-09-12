@@ -1,6 +1,7 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 
 use crate::{
     WindowId,

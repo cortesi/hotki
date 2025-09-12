@@ -25,8 +25,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use parking_lot::Mutex;
 
+use parking_lot::Mutex;
 use winit::event_loop::EventLoop;
 
 use crate::{config, process};

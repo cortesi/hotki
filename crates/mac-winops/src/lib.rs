@@ -309,7 +309,7 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<*mut c_void> {
 /// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
 pub fn drain_main_ops() {
     loop {
-        let op_opt = MAIN_OPS.lock().ok().and_then(|mut q| q.pop_front());
+        let op_opt = MAIN_OPS.lock().pop_front();
         let Some(op) = op_opt else { break };
         match op {
             MainOp::FullscreenNative { pid, desired } => {

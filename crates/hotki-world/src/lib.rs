@@ -765,10 +765,8 @@ fn best_display_id(pos: &Pos, displays: &[DisplayBounds]) -> Option<DisplayId> {
 }
 
 // ===== AX and permission shims (overridable for tests) =====
-use std::sync::Mutex;
-thread_local! {
-    static TEST_OVERRIDES: Mutex<TestOverrides> = Mutex::new(TestOverrides::default());
-}
+use parking_lot::Mutex;
+thread_local! { static TEST_OVERRIDES: Mutex<TestOverrides> = Mutex::new(TestOverrides::default()); }
 
 #[derive(Default, Clone)]
 struct TestOverrides {
@@ -779,14 +777,14 @@ struct TestOverrides {
 }
 
 fn acc_ok() -> bool {
-    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.acc_ok)) {
+    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().acc_ok) {
         return v;
     }
     permissions::accessibility_ok()
 }
 
 fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
-    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_focus))
+    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ax_focus)
         && p == pid
     {
         return Some(id);
@@ -795,8 +793,7 @@ fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
 }
 
 fn ax_title_for_window_id(id: u32) -> Option<String> {
-    if let Some((tid, title)) =
-        TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.ax_title.clone()))
+    if let Some((tid, title)) = TEST_OVERRIDES.with(|o| o.lock().ax_title.clone())
         && tid == id
     {
         return Some(title);
@@ -805,7 +802,7 @@ fn ax_title_for_window_id(id: u32) -> Option<String> {
 }
 
 fn list_display_bounds() -> Vec<DisplayBounds> {
-    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().ok().and_then(|s| s.displays.clone())) {
+    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().displays.clone()) {
         return v;
     }
     mac_winops::screen::list_display_bounds()
@@ -816,38 +813,33 @@ pub mod test_api {
     use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides};
     pub fn set_accessibility_ok(v: bool) {
         TEST_OVERRIDES.with(|o| {
-            if let Ok(mut s) = o.lock() {
-                s.acc_ok = Some(v);
-            }
+            let mut s = o.lock();
+            s.acc_ok = Some(v);
         });
     }
     pub fn set_ax_focus(pid: i32, id: u32) {
         TEST_OVERRIDES.with(|o| {
-            if let Ok(mut s) = o.lock() {
-                s.ax_focus = Some((pid, id));
-            }
+            let mut s = o.lock();
+            s.ax_focus = Some((pid, id));
         });
     }
     pub fn set_ax_title(id: u32, title: &str) {
         let t = title.to_string();
         TEST_OVERRIDES.with(|o| {
-            if let Ok(mut s) = o.lock() {
-                s.ax_title = Some((id, t));
-            }
+            let mut s = o.lock();
+            s.ax_title = Some((id, t));
         });
     }
     pub fn set_displays(v: Vec<DisplayBounds>) {
         TEST_OVERRIDES.with(|o| {
-            if let Ok(mut s) = o.lock() {
-                s.displays = Some(v);
-            }
+            let mut s = o.lock();
+            s.displays = Some(v);
         });
     }
     pub fn clear() {
         TEST_OVERRIDES.with(|o| {
-            if let Ok(mut s) = o.lock() {
-                *s = TestOverrides::default();
-            }
+            let mut s = o.lock();
+            *s = TestOverrides::default();
         });
     }
 }

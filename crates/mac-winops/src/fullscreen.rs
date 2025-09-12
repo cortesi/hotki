@@ -110,9 +110,8 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
         if do_set_to_full {
             tracing::debug!("WinOps: setting to non-native fullscreen frame");
-            if let Some(k) = prev_key
-                && let Ok(mut map) = PREV_FRAMES.lock()
-            {
+            if let Some(k) = prev_key {
+                let mut map = PREV_FRAMES.lock();
                 if map.len() >= PREV_FRAMES_CAP
                     && let Some(old_k) = map.keys().next().cloned()
                 {
@@ -125,16 +124,13 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         } else {
             tracing::debug!("WinOps: restoring from previous frame if any");
             let restored = if let Some(k) = prev_key {
-                if let Ok(mut map) = PREV_FRAMES.lock() {
-                    if let Some((p, s)) = map.remove(&k) {
-                        if !geom::rect_eq(p, s, cur_p, cur_s) {
-                            ax_set_point(win, attr_pos, p)?;
-                            ax_set_size(win, attr_size, s)?;
-                        }
-                        true
-                    } else {
-                        false
+                let mut map = PREV_FRAMES.lock();
+                if let Some((p, s)) = map.remove(&k) {
+                    if !geom::rect_eq(p, s, cur_p, cur_s) {
+                        ax_set_point(win, attr_pos, p)?;
+                        ax_set_size(win, attr_size, s)?;
                     }
+                    true
                 } else {
                     false
                 }

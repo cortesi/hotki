@@ -75,8 +75,7 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
 
     let key = crate::frontmost_window_for_pid(pid).map(|w| (pid, w.id));
     let is_hidden = key
-        .as_ref()
-        .and_then(|k| HIDDEN_FRAMES.lock().ok().map(|m| m.contains_key(k)))
+        .as_ref().map(|k| HIDDEN_FRAMES.lock().contains_key(k))
         .unwrap_or(false);
     let do_hide = match desired {
         crate::Desired::On => true,
@@ -85,9 +84,8 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
     };
 
     if do_hide {
-        if let Some(k) = key
-            && let Ok(mut map) = HIDDEN_FRAMES.lock()
-        {
+        if let Some(k) = key {
+            let mut map = HIDDEN_FRAMES.lock();
             if map.len() >= HIDDEN_FRAMES_CAP
                 && let Some(old_k) = map.keys().next().cloned()
             {
@@ -184,12 +182,12 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
                 step /= 2.0;
             }
         }
-    } else if let Some(k) = key
-        && let Ok(mut map) = HIDDEN_FRAMES.lock()
-        && let Some((p, s)) = map.remove(&k)
-    {
-        let _ = ax_set_size(win.as_ptr(), attr_size, s);
-        let _ = ax_set_point(win.as_ptr(), attr_pos, p);
+    } else if let Some(k) = key {
+        let mut map = HIDDEN_FRAMES.lock();
+        if let Some((p, s)) = map.remove(&k) {
+            let _ = ax_set_size(win.as_ptr(), attr_size, s);
+            let _ = ax_set_point(win.as_ptr(), attr_pos, p);
+        }
     }
 
     Ok(())

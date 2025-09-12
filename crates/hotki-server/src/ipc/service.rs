@@ -20,7 +20,7 @@ use std::{
     result::Result as StdResult,
     slice,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -30,6 +30,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use hotki_engine::Engine;
 use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
+use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, trace, warn};
 
@@ -276,13 +277,7 @@ impl MrpcConnection for HotkeyService {
         self.clients.lock().await.push(client.clone());
 
         // Start event forwarding if not already started
-        let event_rx = match self.event_rx.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(e) => {
-                error!("Failed to access event receiver: {}", e);
-                None
-            }
-        };
+        let event_rx = { self.event_rx.lock().take() };
         if let Some(event_rx) = event_rx {
             let service_clone = self.clone();
             tokio::spawn(async move {
@@ -357,7 +352,8 @@ impl MrpcConnection for HotkeyService {
                 self.clients.lock().await.clear();
 
                 // Close the UI event pipeline
-                if let Ok(mut r) = self.event_rx.lock() {
+                {
+                    let mut r = self.event_rx.lock();
                     *r = None;
                 }
 

@@ -10,11 +10,12 @@ mod ns;
 mod watcher;
 
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
 pub use ns::{install_ns_workspace_observer, post_user_event, set_main_proxy};
+use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -138,9 +139,8 @@ impl FocusWatcher {
             } else {
                 FocusSnapshot::default()
             };
-            if let Ok(mut g) = self.last.lock() {
-                *g = initial;
-            }
+            let mut g = self.last.lock();
+            *g = initial;
         }
 
         // Forwarder thread: update last + broadcast to subscribers
@@ -152,13 +152,11 @@ impl FocusWatcher {
                 let mut had = false;
                 while let Ok(snap) = rx_snap.try_recv() {
                     had = true;
-                    if let Ok(mut g) = last.lock() {
-                        *g = snap.clone();
-                    }
-                    if let Ok(mut v) = subs.lock() {
-                        // retain only live subscribers
-                        v.retain(|tx| tx.send(snap.clone()).is_ok());
-                    }
+                    let mut g = last.lock();
+                    *g = snap.clone();
+                    let mut v = subs.lock();
+                    // retain only live subscribers
+                    v.retain(|tx| tx.send(snap.clone()).is_ok());
                 }
                 if !had {
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -172,18 +170,12 @@ impl FocusWatcher {
     /// Subscribe to receive coalesced focus snapshots.
     pub fn subscribe(&self) -> UnboundedReceiver<FocusSnapshot> {
         let (tx, rx) = unbounded_channel();
-        if let Ok(v) = self.subscribers.lock() {
-            // push outside borrow to avoid holding lock long
-            drop(v);
-        }
-        if let Ok(mut v) = self.subscribers.lock() {
-            v.push(tx);
-        }
+        self.subscribers.lock().push(tx);
         rx
     }
 
     /// Return the last known snapshot.
     pub fn current(&self) -> FocusSnapshot {
-        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.last.lock().clone()
     }
 }

@@ -1,7 +1,8 @@
 //! Shared async runtime management for tests.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex;
 use tokio::runtime::Runtime;
 
 use crate::error::{Error, Result};
@@ -37,8 +38,6 @@ where
     F: std::future::Future<Output = T>,
 {
     let rt = shared_runtime()?;
-    let runtime = rt
-        .lock()
-        .map_err(|_| Error::InvalidState("Runtime lock poisoned".into()))?;
+    let runtime = rt.lock();
     Ok(runtime.block_on(fut))
 }

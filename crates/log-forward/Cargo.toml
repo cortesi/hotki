@@ -14,3 +14,4 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "registry"] }
 logfmt = { path = "../logfmt" }
+parking_lot = "0.12.4"

@@ -31,6 +31,7 @@ mrpc = "0.0.6"
 async-trait = { workspace = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }
+parking_lot = "0.12.4"
 
 [dev-dependencies]
 relaykey = { path = "../relaykey", features = ["test-utils"] }

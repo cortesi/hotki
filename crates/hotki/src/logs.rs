@@ -1,9 +1,7 @@
-use std::{
-    collections::VecDeque,
-    sync::{Mutex, OnceLock},
-};
+use std::{collections::VecDeque, sync::OnceLock};
 
 use egui::Color32;
+use parking_lot::Mutex;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
@@ -41,7 +39,7 @@ fn buffer() -> &'static Mutex<VecDeque<LogEntry>> {
 }
 
 pub fn push(entry: LogEntry) {
-    let mut buf = buffer().lock().unwrap_or_else(|e| e.into_inner());
+    let mut buf = buffer().lock();
     if buf.len() > 5000 {
         buf.pop_front();
     }
@@ -58,16 +56,11 @@ pub fn push_server(level: String, target: String, message: String) {
 }
 
 pub fn snapshot() -> Vec<LogEntry> {
-    buffer()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .cloned()
-        .collect()
+    buffer().lock().iter().cloned().collect()
 }
 
 pub fn clear() {
-    buffer().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    buffer().lock().clear();
 }
 
 /// Tracing layer that records client-side logs into the buffer.

@@ -22,12 +22,13 @@
 use std::{
     collections::{HashMap, HashSet},
     result::Result as StdResult,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread::{self, JoinHandle},
 };
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use mac_keycode::{Chord, Key as Code, Modifier};
+use parking_lot::Mutex;
 use thiserror::Error;
 use tracing::{debug, trace};
 mod policy;
@@ -257,7 +258,6 @@ impl Manager {
         let id = self
             .inner
             .lock()
-            .unwrap()
             .register(hotkey.clone(), RegisterOptions { intercept: false });
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = false, "register_watch");
         id
@@ -275,7 +275,6 @@ impl Manager {
         let id = self
             .inner
             .lock()
-            .unwrap()
             .register(hotkey.clone(), RegisterOptions { intercept: true });
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = true, "register_intercept");
         id
@@ -286,7 +285,7 @@ impl Manager {
     /// Returns an error if the id does not correspond to an active
     /// registration.
     pub fn unregister(&self, id: u32) -> Result<()> {
-        if self.inner.lock().unwrap().unregister(id) {
+        if self.inner.lock().unregister(id) {
             debug!(id, "unregister_hotkey");
             Ok(())
         } else {
@@ -298,7 +297,7 @@ impl Manager {
     ///
     /// Returns the number of registrations that were removed.
     pub fn unregister_all(&self) -> usize {
-        let n = self.inner.lock().unwrap().unregister_all();
+        let n = self.inner.lock().unregister_all();
         if n > 0 {
             debug!(removed = n, "unregister_all");
         }
@@ -311,7 +310,7 @@ impl Manager {
     /// by the system; only hotkey matching and event delivery are paused.
     pub fn suspend(&self) -> SuspendGuard {
         let inner = self.inner.clone();
-        let mut g = inner.lock().unwrap();
+        let mut g = inner.lock();
         g.suspend = g.suspend.saturating_add(1);
         trace!(count = g.suspend, "suspend");
         drop(g);
@@ -324,7 +323,7 @@ impl Manager {
     /// requests capture semantics. Nested guards are supported.
     pub fn capture_all(&self) -> CaptureGuard {
         let inner = self.inner.clone();
-        let mut g = inner.lock().unwrap();
+        let mut g = inner.lock();
         g.capture_all = g.capture_all.saturating_add(1);
         trace!(count = g.capture_all, "capture_all_on");
         drop(g);
@@ -339,9 +338,8 @@ pub struct SuspendGuard {
 
 impl Drop for SuspendGuard {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.inner.lock()
-            && g.suspend > 0
-        {
+        let mut g = self.inner.lock();
+        if g.suspend > 0 {
             g.suspend -= 1;
             trace!(count = g.suspend, "resume");
         }
@@ -355,9 +353,8 @@ pub struct CaptureGuard {
 
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.inner.lock()
-            && g.capture_all > 0
-        {
+        let mut g = self.inner.lock();
+        if g.capture_all > 0 {
             g.capture_all -= 1;
             trace!(count = g.capture_all, "capture_all_off");
         }
@@ -377,7 +374,7 @@ impl Drop for Manager {
 #[cfg(test)]
 impl Manager {
     fn suspend_count(&self) -> usize {
-        self.inner.lock().unwrap().suspend
+        self.inner.lock().suspend
     }
 }
 

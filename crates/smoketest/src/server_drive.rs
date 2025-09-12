@@ -1,4 +1,6 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 use crate::{config, runtime};
 
@@ -14,11 +16,9 @@ pub fn init(socket_path: &str) -> bool {
         runtime::block_on(async { hotki_server::Connection::connect_unix(socket_path).await });
     match res {
         Ok(Ok(c)) => {
-            if let Ok(mut g) = conn_slot().lock() {
-                *g = Some(c);
-                return true;
-            }
-            false
+            let mut g = conn_slot().lock();
+            *g = Some(c);
+            true
         }
         _ => false,
     }
@@ -26,22 +26,18 @@ pub fn init(socket_path: &str) -> bool {
 
 /// Returns true if a connection is available for RPC driving.
 pub fn is_ready() -> bool {
-    conn_slot().lock().map(|g| g.is_some()).unwrap_or(false)
+    conn_slot().lock().is_some()
 }
 
 /// Drop the shared MRPC connection so subsequent tests start clean.
 pub fn reset() {
-    if let Ok(mut g) = conn_slot().lock() {
-        *g = None;
-    }
+    let mut g = conn_slot().lock();
+    *g = None;
 }
 
 /// Inject a single key press (down + small delay + up) via MRPC.
 pub fn inject_key(seq: &str) -> bool {
-    let mut guard = match conn_slot().lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
+    let mut guard = conn_slot().lock();
     let conn = match guard.as_mut() {
         Some(c) => c,
         None => return false,
@@ -70,10 +66,7 @@ pub fn inject_sequence(sequences: &[&str]) -> bool {
 
 /// Return current bindings if connected.
 pub fn get_bindings() -> Option<Vec<String>> {
-    let mut guard = match conn_slot().lock() {
-        Ok(g) => g,
-        Err(_) => return None,
-    };
+    let mut guard = conn_slot().lock();
     let conn = guard.as_mut()?;
     match runtime::block_on(async { conn.get_bindings().await }) {
         Ok(Ok(v)) => Some(v),
@@ -98,10 +91,7 @@ pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> bool {
 /// Quick liveness probe against the backend via a lightweight RPC.
 /// Returns false if the connection is not ready or the RPC fails.
 pub fn check_alive() -> bool {
-    let mut guard = match conn_slot().lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
+    let mut guard = conn_slot().lock();
     let conn = match guard.as_mut() {
         Some(c) => c,
         None => return false,

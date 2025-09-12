@@ -14,7 +14,7 @@ use std::{
     ffi::c_void,
     process,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicPtr, Ordering},
     },
 };
@@ -26,6 +26,7 @@ use core_foundation::{
 };
 use core_graphics::event::{self as cge, CallbackResult};
 use crossbeam_channel::Sender;
+use parking_lot::Mutex;
 use tracing::{debug, trace, warn};
 
 use crate::{CallbackCtx, Event, EventKind, policy};
@@ -54,15 +55,13 @@ impl SysControl {
     }
 
     pub(crate) fn set_rl(&self, rl: CFRunLoop) {
-        if let Ok(mut g) = self.rl.lock() {
-            *g = Some(rl);
-        }
+        let mut g = self.rl.lock();
+        *g = Some(rl);
     }
 
     pub(crate) fn stop(&self) {
-        if let Ok(mut g) = self.rl.lock()
-            && let Some(rl) = g.take()
-        {
+        let mut g = self.rl.lock();
+        if let Some(rl) = g.take() {
             rl.stop();
         }
     }
@@ -101,7 +100,7 @@ pub fn run_event_loop(
             }
 
             {
-                let inner = cb_ctx_cb.inner.lock().unwrap();
+                let inner = cb_ctx_cb.inner.lock();
                 if inner.suspend > 0 {
                     trace!("tap_suspended_skipping_event");
                     return CallbackResult::Keep;
@@ -135,7 +134,7 @@ pub fn run_event_loop(
                         );
 
                         let intercept = {
-                            let mut inner = cb_ctx_cb.inner.lock().unwrap();
+                            let mut inner = cb_ctx_cb.inner.lock();
                             let matched =
                                 crate::match_event(&inner, code, &mods).map(|(id, reg)| {
                                     (

@@ -31,3 +31,4 @@ egui_extras = "0.32.2"
 directories = "6.0.0"
 once_cell = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+parking_lot = "0.12.4"

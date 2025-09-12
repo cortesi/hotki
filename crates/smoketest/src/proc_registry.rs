@@ -1,7 +1,6 @@
-use std::{
-    collections::HashSet,
-    sync::{Mutex, OnceLock},
-};
+use std::{collections::HashSet, sync::OnceLock};
+
+use parking_lot::Mutex;
 
 static REGISTRY: OnceLock<Mutex<HashSet<i32>>> = OnceLock::new();
 
@@ -10,22 +9,17 @@ fn reg() -> &'static Mutex<HashSet<i32>> {
 }
 
 pub fn register(pid: i32) {
-    if let Ok(mut g) = reg().lock() {
-        g.insert(pid);
-    }
+    let mut g = reg().lock();
+    g.insert(pid);
 }
 
 pub fn unregister(pid: i32) {
-    if let Ok(mut g) = reg().lock() {
-        g.remove(&pid);
-    }
+    let mut g = reg().lock();
+    g.remove(&pid);
 }
 
 pub fn snapshot() -> Vec<i32> {
-    reg()
-        .lock()
-        .map(|g| g.iter().copied().collect())
-        .unwrap_or_default()
+    reg().lock().iter().copied().collect()
 }
 
 pub fn kill_all() {

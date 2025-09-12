@@ -82,9 +82,11 @@ impl WinOps for RealWinOps {
 }
 
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
+
+use parking_lot::Mutex;
 
 use crate::WindowInfo as WI;
 
@@ -123,34 +125,25 @@ impl MockWinOps {
         }
     }
     pub fn set_frontmost_for_pid(&self, info: Option<WI>) {
-        if let Ok(mut g) = self.front_for_pid.lock() {
-            *g = info;
-        }
+        let mut g = self.front_for_pid.lock();
+        *g = info;
     }
     pub fn set_windows(&self, wins: Vec<WI>) {
-        if let Ok(mut g) = self.windows.lock() {
-            *g = wins;
-        }
+        let mut g = self.windows.lock();
+        *g = wins;
     }
     pub fn calls_contains(&self, s: &str) -> bool {
-        self.calls
-            .lock()
-            .map(|g| g.iter().any(|x| x == s))
-            .unwrap_or(false)
+        self.calls.lock().iter().any(|x| x == s)
     }
     pub fn set_fail_focus_dir(&self, v: bool) {
         self.fail_focus_dir.store(v, Ordering::SeqCst);
     }
     pub fn set_frontmost(&self, w: Option<WI>) {
-        if let Ok(mut g) = self.frontmost.lock() {
-            *g = w;
-        }
+        let mut g = self.frontmost.lock();
+        *g = w;
     }
     pub fn last_place_grid_pid(&self) -> Option<i32> {
-        match self.last_place_grid_pid.lock() {
-            Ok(g) => *g,
-            Err(_) => None,
-        }
+        *self.last_place_grid_pid.lock()
     }
     pub fn set_fail_fullscreen_native(&self, v: bool) {
         self.fail_fullscreen_native.store(v, Ordering::SeqCst);
@@ -171,9 +164,7 @@ impl MockWinOps {
         self.fail_hide.store(v, Ordering::SeqCst);
     }
     fn note(&self, s: &str) {
-        if let Ok(mut g) = self.calls.lock() {
-            g.push(s.to_string());
-        }
+        self.calls.lock().push(s.to_string());
     }
 }
 
@@ -201,7 +192,8 @@ impl WinOps for MockWinOps {
         _row: u32,
     ) -> WinResult<()> {
         self.note("place_grid_focused");
-        if let Ok(mut g) = self.last_place_grid_pid.lock() {
+        {
+            let mut g = self.last_place_grid_pid.lock();
             *g = Some(_pid);
         }
         if self.fail_place_grid_focused.load(Ordering::SeqCst) {
@@ -237,16 +229,13 @@ impl WinOps for MockWinOps {
         Ok(())
     }
     fn list_windows(&self) -> Vec<WindowInfo> {
-        match self.windows.lock() {
-            Ok(g) => g.clone(),
-            Err(_) => Vec::new(),
-        }
+        self.windows.lock().clone()
     }
     fn frontmost_window(&self) -> Option<WindowInfo> {
-        self.frontmost.lock().ok().and_then(|g| g.clone())
+        self.frontmost.lock().clone()
     }
     fn frontmost_window_for_pid(&self, _pid: i32) -> Option<WindowInfo> {
-        self.front_for_pid.lock().ok().and_then(|g| g.clone())
+        self.front_for_pid.lock().clone()
     }
     fn hide_bottom_left(&self, _pid: i32, _desired: crate::Desired) -> WinResult<()> {
         self.note("hide");
