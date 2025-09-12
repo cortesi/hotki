@@ -129,12 +129,42 @@ pub struct RepeatSpec {
     pub interval_ms: Option<u64>,
 }
 
+pub trait PidProvider: Send + Sync {
+    fn current_pid(&self) -> i32;
+}
+
+#[derive(Clone)]
+struct PidFromPidArc {
+    pid: Arc<Mutex<Option<i32>>>,
+}
+
+impl PidProvider for PidFromPidArc {
+    fn current_pid(&self) -> i32 {
+        self.pid.lock().ok().and_then(|g| *g).unwrap_or(-1)
+    }
+}
+
+#[derive(Clone)]
+struct PidFromCtxArc {
+    ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+}
+
+impl PidProvider for PidFromCtxArc {
+    fn current_pid(&self) -> i32 {
+        self.ctx
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|t| t.2))
+            .unwrap_or(-1)
+    }
+}
+
 /// Unified repeater that runs first-run immediately and then repeats while held
 #[derive(Clone)]
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    focus_pid: Arc<Mutex<Option<i32>>>, // read-only provider for current pid
+    pid_provider: Arc<dyn PidProvider>,
     relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
@@ -161,7 +191,26 @@ impl Repeater {
         Self {
             sys_initial,
             sys_interval,
-            focus_pid,
+            pid_provider: Arc::new(PidFromPidArc { pid: focus_pid }),
+            relay,
+            notifier,
+            ticker: Ticker::new(),
+            repeat_observer: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Create a repeater backed by a focus context (world-derived).
+    pub fn new_with_ctx(
+        focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+        relay: RelayHandler,
+        notifier: NotificationDispatcher,
+    ) -> Self {
+        let sys_initial = Duration::from_millis(SYS_INITIAL_DELAY_MS);
+        let sys_interval = Duration::from_millis(SYS_INTERVAL_MS);
+        Self {
+            sys_initial,
+            sys_interval,
+            pid_provider: Arc::new(PidFromCtxArc { ctx: focus_ctx }),
             relay,
             notifier,
             ticker: Ticker::new(),
@@ -253,7 +302,7 @@ impl Repeater {
             }
             ExecSpec::Relay { chord } => {
                 // Start relay immediately (non-repeat)
-                let pid = self.focus_pid.lock().ok().and_then(|g| *g).unwrap_or(-1);
+                let pid = self.pid_provider.current_pid();
                 self.relay
                     .start_relay(id.clone(), chord.clone(), pid, false);
 
@@ -311,7 +360,7 @@ impl Repeater {
     ) {
         let (initial_delay, interval) = self.effective_timings(repeat);
         let relay = self.relay.clone();
-        let focus_pid = self.focus_pid.clone();
+        let provider = self.pid_provider.clone();
         let id_for_log = id.clone();
         let ch = chord.clone();
 
@@ -321,7 +370,7 @@ impl Repeater {
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
         self.ticker.start(id, initial_delay, interval, move || {
-            let pid = focus_pid.lock().ok().and_then(|g| *g).unwrap_or(-1);
+            let pid = provider.current_pid();
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);

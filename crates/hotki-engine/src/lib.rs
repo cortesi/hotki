@@ -126,7 +126,8 @@ impl Engine {
         let focus = FocusState::new(true);
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater = Repeater::new(focus.pid.clone(), relay_handler.clone(), notifier.clone());
+        let repeater =
+            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -166,7 +167,8 @@ impl Engine {
         let focus = FocusState::new(true);
         let relay_handler = RelayHandler::new();
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater = Repeater::new(focus.pid.clone(), relay_handler.clone(), notifier.clone());
+        let repeater =
+            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -206,7 +208,8 @@ impl Engine {
         let focus = FocusState::new(false);
         let relay_handler = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater = Repeater::new(focus.pid.clone(), relay_handler.clone(), notifier.clone());
+        let repeater =
+            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -237,17 +240,12 @@ impl Engine {
     fn spawn_world_focus_subscription(&self) {
         let world = self.world.clone();
         let focus_ctx = self.focus.ctx.clone();
-        let focus_pid = self.focus.pid.clone();
         tokio::spawn(async move {
             let (mut rx, seed) = world.subscribe_with_context().await;
             if let Some(ctx) = seed
                 && let Ok(mut g) = focus_ctx.lock()
             {
-                let p = ctx.2;
                 *g = Some(ctx);
-                if let Ok(mut pg) = focus_pid.lock() {
-                    *pg = Some(p);
-                }
             }
             loop {
                 match rx.recv().await {
@@ -255,19 +253,12 @@ impl Engine {
                         if let Some(ctx) = world.context_for_key(key).await
                             && let Ok(mut g) = focus_ctx.lock()
                         {
-                            let p = ctx.2;
                             *g = Some(ctx);
-                            if let Ok(mut pg) = focus_pid.lock() {
-                                *pg = Some(p);
-                            }
                         }
                     }
                     Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
                         if let Ok(mut g) = focus_ctx.lock() {
                             *g = None;
-                        }
-                        if let Ok(mut pg) = focus_pid.lock() {
-                            *pg = None;
                         }
                     }
                     Ok(_) => {}
@@ -938,9 +929,6 @@ impl Engine {
             && let Some((_, _, p)) = &*g
         {
             return *p;
-        }
-        if let Ok(pg) = self.focus.pid.lock() {
-            return (*pg).unwrap_or(-1);
         }
         -1
     }
