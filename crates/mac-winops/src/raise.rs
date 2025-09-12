@@ -121,6 +121,15 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             )
         };
 
+        // Best-effort: unminimize before attempting raise to make focus effective.
+        let _ = unsafe {
+            AXUIElementSetAttributeValue(
+                found,
+                cfstr("AXMinimized"),
+                core_foundation::boolean::kCFBooleanFalse as CFTypeRef,
+            )
+        };
+
         // Try AXRaise on the app first, then on the window.
         let mut raised = false;
         let mut acts_ref: CFTypeRef = null_mut();

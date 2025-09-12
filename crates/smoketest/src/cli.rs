@@ -98,6 +98,14 @@ pub enum Commands {
     /// Verify window placement into a grid by cycling a helper window through all cells
     Place,
 
+    /// Verify placement after normalizing a minimized window
+    #[command(name = "place-minimized")]
+    PlaceMinimized,
+
+    /// Verify placement after normalizing a zoomed window
+    #[command(name = "place-zoomed")]
+    PlaceZoomed,
+
     /// Internal helper: create a foreground window with a title for focus testing
     #[command(hide = true, name = "focus-winhelper")]
     FocusWinHelper {
@@ -122,6 +130,12 @@ pub enum Commands {
         /// Optional label text to render centered inside the window
         #[arg(long)]
         label_text: Option<String>,
+        /// Start the helper window minimized (miniaturized)
+        #[arg(long, default_value_t = false)]
+        start_minimized: bool,
+        /// Start the helper window zoomed (macOS 'zoom' state)
+        #[arg(long, default_value_t = false)]
+        start_zoomed: bool,
     },
 
     /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)

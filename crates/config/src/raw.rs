@@ -362,6 +362,10 @@ pub struct RawConfig {
     // Theme configuration (grouping hud + notify)
     #[serde(default)]
     pub style: Maybe<RawStyle>,
+
+    /// Server-side tunables. Optional; primarily for tests/smoketests.
+    #[serde(default)]
+    pub server: Maybe<RawServerTunables>,
 }
 
 impl RawConfig {
@@ -382,6 +386,25 @@ impl RawConfig {
         let tag_text = self.tag_submenu.unwrap_or_else(|| TAG_SUBMENU.to_string());
         let mut style = Style { hud, notify };
         style.hud.tag_submenu = tag_text;
-        Config::from_parts(self.keys, style)
+        let mut cfg = Config::from_parts(self.keys, style);
+        if let Some(s) = self.server.into_option() {
+            cfg.server = s.into_server_tunables();
+        }
+        cfg
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RawServerTunables {
+    #[serde(default)]
+    pub exit_if_no_clients: bool,
+}
+
+impl RawServerTunables {
+    pub fn into_server_tunables(self) -> crate::ServerTunables {
+        crate::ServerTunables {
+            exit_if_no_clients: self.exit_if_no_clients,
+        }
     }
 }

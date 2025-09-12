@@ -33,6 +33,11 @@ pub enum Error {
     #[error("Unsupported attribute")]
     Unsupported,
 
+    /// The window is in macOS system Full Screen (separate Space) where
+    /// AX-driven frame changes are unsupported. Caller should bail early.
+    #[error("unsupported: fullscreen active")]
+    FullscreenActive,
+
     /// An invalid index was provided.
     #[error("Invalid index")]
     InvalidIndex,

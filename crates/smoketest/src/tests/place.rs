@@ -172,7 +172,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .as_nanos();
     let helper_title = format!("hotki smoketest: place {}-{}", std::process::id(), now_pre);
     let ron_config: String = format!(
-        "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n{}    ],\n    style: (hud: (mode: hide))\n)\n",
+        "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n{}    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
         helper_title, entries
     );
     let config = TestConfig::new(timeout_ms)

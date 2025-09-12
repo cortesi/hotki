@@ -56,6 +56,8 @@ pub struct HotkeyService {
     /// Ensure we only spawn one heartbeat loop across clones.
     hb_running: Arc<AtomicBool>,
     world_forwarder_running: Arc<AtomicBool>,
+    /// When true, auto-shutdown the server if no UI clients remain connected.
+    auto_shutdown_on_empty: Arc<AtomicBool>,
 }
 
 impl HotkeyService {
@@ -84,6 +86,7 @@ impl HotkeyService {
             per_id_capacity: None,
             hb_running: Arc::new(AtomicBool::new(false)),
             world_forwarder_running: Arc::new(AtomicBool::new(false)),
+            auto_shutdown_on_empty: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -98,6 +101,7 @@ impl HotkeyService {
             manager,
             shutdown,
             per_id_capacity: None,
+            auto_shutdown_on_empty: false,
         }
     }
 
@@ -309,6 +313,7 @@ impl MrpcConnection for HotkeyService {
             tokio::spawn(async move {
                 use std::time::SystemTime;
                 let interval = hotki_protocol::ipc::heartbeat::interval();
+                let mut empty_since: Option<std::time::Instant> = None;
                 loop {
                     if svc.shutdown.load(Ordering::SeqCst) {
                         break;
@@ -319,6 +324,27 @@ impl MrpcConnection for HotkeyService {
                         .unwrap_or(0);
                     svc.broadcast_event(hotki_protocol::MsgToUI::Heartbeat(ts))
                         .await;
+                    // If enabled via config, shut down when no clients remain for a short grace period.
+                    if svc.auto_shutdown_on_empty.load(Ordering::SeqCst) {
+                        let n = { svc.clients.lock().await.len() };
+                        if n == 0 {
+                            match empty_since {
+                                None => empty_since = Some(std::time::Instant::now()),
+                                Some(t0) => {
+                                    if t0.elapsed() >= std::time::Duration::from_millis(750) {
+                                        tracing::info!(
+                                            "No UI clients; auto-shutdown enabled — stopping server"
+                                        );
+                                        svc.shutdown.store(true, Ordering::SeqCst);
+                                        let _ = mac_winops::focus::post_user_event();
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            empty_since = None;
+                        }
+                    }
                     tokio::time::sleep(interval).await;
                 }
                 svc.hb_running.store(false, Ordering::SeqCst);
@@ -396,12 +422,16 @@ impl MrpcConnection for HotkeyService {
                         ));
                     }
                 };
-                if let Err(e) = engine.set_config(cfg).await {
+                if let Err(e) = engine.set_config(cfg.clone()).await {
                     return Err(Self::typed_err(
                         crate::error::RpcErrorCode::EngineSetConfig,
                         &[("message", Value::String(e.to_string().into()))],
                     ));
                 }
+
+                // Update auto-shutdown flag from config if present.
+                self.auto_shutdown_on_empty
+                    .store(cfg.server().exit_if_no_clients, Ordering::SeqCst);
 
                 drop(engine_guard);
 
@@ -706,6 +736,7 @@ pub struct HotkeyServiceBuilder {
     manager: Arc<mac_hotkey::Manager>,
     shutdown: Arc<AtomicBool>,
     per_id_capacity: Option<usize>,
+    auto_shutdown_on_empty: bool,
 }
 
 impl HotkeyServiceBuilder {
@@ -716,10 +747,18 @@ impl HotkeyServiceBuilder {
         self
     }
 
+    /// Enable auto-shutdown when no UI clients remain connected.
+    pub fn auto_shutdown_if_no_clients(mut self, v: bool) -> Self {
+        self.auto_shutdown_on_empty = v;
+        self
+    }
+
     /// Build the service with the configured options.
     pub fn build(self) -> HotkeyService {
         let mut svc = HotkeyService::new(self.manager, self.shutdown);
         svc.per_id_capacity = self.per_id_capacity;
+        svc.auto_shutdown_on_empty
+            .store(self.auto_shutdown_on_empty, Ordering::SeqCst);
         svc
     }
 }

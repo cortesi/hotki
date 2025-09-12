@@ -5,13 +5,98 @@ use tracing::debug;
 
 use crate::{
     Error, Result, WindowId,
-    ax::{ax_check, ax_get_point, ax_get_size, ax_set_point, ax_set_size, ax_window_for_id, cfstr},
+    ax::{
+        ax_bool, ax_check, ax_get_point, ax_get_size, ax_set_bool, ax_set_point, ax_set_size,
+        ax_window_for_id, cfstr,
+    },
     geom::{self, CGPoint, CGSize, Rect},
     screen_util::visible_frame_containing_point,
 };
 
 /// Epsilon tolerance (in points) used to verify post‑placement position and size.
 const VERIFY_EPS: f64 = 2.0;
+
+const POLL_SLEEP_MS: u64 = 25;
+const POLL_TOTAL_MS: u64 = 400;
+
+#[inline]
+fn sleep_ms(ms: u64) {
+    use std::{thread::sleep, time::Duration};
+    sleep(Duration::from_millis(ms));
+}
+
+/// Best‑effort window state normalization prior to placement:
+/// - Bail if system Full Screen is active.
+/// - If minimized/zoomed, turn off and wait briefly.
+/// - Try to raise the window (ignore unsupported/failed).
+fn normalize_before_move(win: &crate::AXElem, pid: i32, id_opt: Option<WindowId>) -> Result<()> {
+    // 1) Bail on macOS Full Screen (separate Space)
+    match ax_bool(win.as_ptr(), cfstr("AXFullScreen")) {
+        Ok(Some(true)) => {
+            debug!("normalize: fullscreen=true -> bail");
+            return Err(Error::FullscreenActive);
+        }
+        Ok(Some(false)) => {
+            debug!("normalize: fullscreen=false");
+        }
+        _ => {
+            // Attribute unsupported/missing — ignore silently.
+        }
+    }
+
+    // 2) If minimized, unminimize and wait
+    match ax_bool(win.as_ptr(), cfstr("AXMinimized")) {
+        Ok(Some(true)) => {
+            debug!("normalize: AXMinimized=true -> set false");
+            let _ = ax_set_bool(win.as_ptr(), cfstr("AXMinimized"), false);
+            let mut waited = 0u64;
+            while waited <= POLL_TOTAL_MS {
+                if let Ok(Some(false)) = ax_bool(win.as_ptr(), cfstr("AXMinimized")) {
+                    break;
+                }
+                sleep_ms(POLL_SLEEP_MS);
+                waited = waited.saturating_add(POLL_SLEEP_MS);
+            }
+        }
+        Ok(Some(false)) => {}
+        _ => {}
+    }
+
+    // 3) If zoomed, unzoom and wait briefly
+    match ax_bool(win.as_ptr(), cfstr("AXZoomed")) {
+        Ok(Some(true)) => {
+            debug!("normalize: AXZoomed=true -> set false");
+            let _ = ax_set_bool(win.as_ptr(), cfstr("AXZoomed"), false);
+            let mut waited = 0u64;
+            while waited <= POLL_TOTAL_MS {
+                if let Ok(Some(false)) = ax_bool(win.as_ptr(), cfstr("AXZoomed")) {
+                    break;
+                }
+                sleep_ms(POLL_SLEEP_MS);
+                waited = waited.saturating_add(POLL_SLEEP_MS);
+            }
+        }
+        Ok(Some(false)) => {}
+        _ => {}
+    }
+
+    // 4) Best‑effort raise: prefer our AX window; for known id, also use raise helper.
+    // Try direct AXRaise on the window first.
+    unsafe {
+        #[allow(improper_ctypes)]
+        unsafe extern "C" {
+            fn AXUIElementPerformAction(
+                element: *mut core::ffi::c_void,
+                action: core_foundation::string::CFStringRef,
+            ) -> i32;
+        }
+        let _ = AXUIElementPerformAction(win.as_ptr(), cfstr("AXRaise"));
+    }
+    if let Some(id) = id_opt {
+        let _ = crate::raise::raise_window(pid, id);
+    }
+    Ok(())
+}
 
 #[inline]
 fn rect_from(x: f64, y: f64, w: f64, h: f64) -> Rect {
@@ -73,6 +158,8 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        // Stage 1: normalize state (may bail for fullscreen).
+        normalize_before_move(&win, pid_for_id, Some(id))?;
         let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
@@ -182,6 +269,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        // Stage 1: normalize state for focused window (may bail for fullscreen).
+        normalize_before_move(&win, pid, None)?;
         let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
@@ -294,6 +383,8 @@ pub(crate) fn place_move_grid(
     let attr_size = cfstr("AXSize");
 
     (|| -> Result<()> {
+        // Stage 1: normalize state (may bail for fullscreen).
+        normalize_before_move(&win, pid_for_id, Some(id))?;
         let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();

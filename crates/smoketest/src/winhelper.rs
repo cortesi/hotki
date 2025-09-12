@@ -10,6 +10,8 @@ pub(crate) fn run_focus_winhelper(
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
     label_text: Option<String>,
+    start_minimized: bool,
+    start_zoomed: bool,
 ) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
@@ -29,6 +31,8 @@ pub(crate) fn run_focus_winhelper(
         pos: Option<(f64, f64)>,
         label_text: Option<String>,
         error: Option<String>,
+        start_minimized: bool,
+        start_zoomed: bool,
     }
 
     impl ApplicationHandler for HelperApp {
@@ -98,6 +102,29 @@ pub(crate) fn run_focus_winhelper(
                 std::thread::sleep(crate::config::ms(
                     crate::config::WINDOW_REGISTRATION_DELAY_MS,
                 ));
+
+                // Apply initial window state (minimized/zoomed) if requested.
+                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                    let windows = app.windows();
+                    for w in windows.iter() {
+                        let t = w.title();
+                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                            t.to_str(pool) == self.title
+                        });
+                        if is_match {
+                            unsafe {
+                                if self.start_zoomed && !w.isZoomed() {
+                                    w.performZoom(None);
+                                }
+                                if self.start_minimized && !w.isMiniaturized() {
+                                    w.miniaturize(None);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
 
                 // Always add a big, centered label with either explicit label text, derived TL/TR/etc., or the title
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -226,6 +253,8 @@ pub(crate) fn run_focus_winhelper(
         pos,
         label_text,
         error: None,
+        start_minimized,
+        start_zoomed,
     };
     let _ = event_loop.run_app(&mut app);
     if let Some(e) = app.error.take() {

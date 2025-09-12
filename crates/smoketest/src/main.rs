@@ -113,6 +113,8 @@ fn main() {
                 size,
                 pos,
                 label_text,
+                start_minimized,
+                start_zoomed,
             } => {
                 let grid_tuple = grid.and_then(|v| {
                     if v.len() == 4 {
@@ -136,7 +138,15 @@ fn main() {
                     }
                 });
                 if let Err(e) = winhelper::run_focus_winhelper(
-                    &title, time, slot, grid_tuple, size_tuple, pos_tuple, label_text,
+                    &title,
+                    time,
+                    slot,
+                    grid_tuple,
+                    size_tuple,
+                    pos_tuple,
+                    label_text,
+                    start_minimized,
+                    start_zoomed,
                 ) {
                     eprintln!("focus-winhelper: ERROR: {}", e);
                     std::process::exit(2);
@@ -391,6 +401,48 @@ fn main() {
             }
             if let Some(mut o) = overlay {
                 let _ = o.kill_and_wait();
+            }
+        }
+        Commands::PlaceMinimized => {
+            if !cli.quiet {
+                heading("Test: place-minimized");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_on_main_with_watchdog("place-minimized", timeout, move || {
+                tests::place_state::run_place_minimized_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-minimized: OK (normalized minimized -> placed)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-minimized: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::PlaceZoomed => {
+            if !cli.quiet {
+                heading("Test: place-zoomed");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            match run_on_main_with_watchdog("place-zoomed", timeout, move || {
+                tests::place_state::run_place_zoomed_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-zoomed: OK (normalized zoomed -> placed)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-zoomed: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
             }
         }
         Commands::FocusWinHelper { .. } => {

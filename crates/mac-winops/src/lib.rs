@@ -456,6 +456,38 @@ fn activate_pid(pid: i32) -> Result<()> {
         } else {
             debug!("Activated app via NSRunningApplication for pid={}", pid);
         }
+
+        // Best-effort: if any windows are minimized, unminimize them so subsequent
+        // raise/place operations have a visible target. Ignore AX failures.
+        if permissions::accessibility_ok() {
+            unsafe {
+                let app_ax = crate::AXElem::from_create(crate::ax::AXUIElementCreateApplication(pid));
+                if let Some(app_ax) = app_ax {
+                    let mut wins_ref: core_foundation::base::CFTypeRef = std::ptr::null_mut();
+                    let err = crate::ax::AXUIElementCopyAttributeValue(
+                        app_ax.as_ptr(),
+                        crate::ax::cfstr("AXWindows"),
+                        &mut wins_ref,
+                    );
+                    if err == 0 && !wins_ref.is_null() {
+                        let arr = core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_create_rule(wins_ref as _);
+                        let n = core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef());
+                        for i in 0..n {
+                            let w = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
+                                as *mut core::ffi::c_void;
+                            if w.is_null() {
+                                continue;
+                            }
+                            let _ = crate::ax::AXUIElementSetAttributeValue(
+                                w,
+                                crate::ax::cfstr("AXMinimized"),
+                                core_foundation::boolean::kCFBooleanFalse as core_foundation::base::CFTypeRef,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     } else {
         Err(Error::ActivationFailed)

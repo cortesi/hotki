@@ -36,6 +36,7 @@ impl IPCServer {
         {
             builder = builder.max_in_flight_per_id(n);
         }
+        // Default off; can be enabled via UI config (SetConfig).
         let service = builder.build();
 
         Self {

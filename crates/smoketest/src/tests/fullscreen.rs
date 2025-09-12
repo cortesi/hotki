@@ -47,7 +47,7 @@ pub fn run_fullscreen_test(
     };
     let kind_suffix = if native { ", native" } else { "" };
     let ron_config = format!(
-        "(\n        keys: [\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen({}{}) , (global: true)),\n        ],\n    )",
+        "(\n        keys: [\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen({}{}) , (global: true)),\n        ],\n        server: (exit_if_no_clients: true),\n    )",
         state_str, kind_suffix
     );
 

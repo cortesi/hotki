@@ -55,6 +55,8 @@ pub struct HelperWindowBuilder {
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
     label_text: Option<String>,
+    start_minimized: bool,
+    start_zoomed: bool,
 }
 
 impl HelperWindowBuilder {
@@ -67,6 +69,8 @@ impl HelperWindowBuilder {
             size: None,
             pos: None,
             label_text: None,
+            start_minimized: false,
+            start_zoomed: false,
         }
     }
 
@@ -102,6 +106,18 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Start the helper minimized (miniaturized).
+    pub fn with_start_minimized(mut self, v: bool) -> Self {
+        self.start_minimized = v;
+        self
+    }
+
+    /// Start the helper zoomed (macOS 'zoom' state).
+    pub fn with_start_zoomed(mut self, v: bool) -> Self {
+        self.start_zoomed = v;
+        self
+    }
+
     /// Spawn the helper window process.
     pub fn spawn(self) -> Result<ManagedChild> {
         let exe = env::current_exe()?;
@@ -128,6 +144,12 @@ impl HelperWindowBuilder {
         }
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
+        }
+        if self.start_minimized {
+            cmd.arg("--start-minimized");
+        }
+        if self.start_zoomed {
+            cmd.arg("--start-zoomed");
         }
         let child = cmd
             .stdin(Stdio::null())
