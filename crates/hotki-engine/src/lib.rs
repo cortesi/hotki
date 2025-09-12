@@ -399,7 +399,11 @@ impl Engine {
     /// HUD location (depth/path) remains stable across theme or config updates.
     /// Path invalidation is handled by `Config::ensure_context` during rebind.
     pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
-        *self.config.write().await = cfg;
+        {
+            let mut g = self.config.write().await;
+            *g = cfg;
+        }
+        // Write guard is dropped before we rebind to avoid nested lock access.
         self.rebind_current_context().await
     }
 
@@ -437,7 +441,7 @@ impl Engine {
         if self.sync_focus_on_dispatch {
             self.world.hint_refresh();
         }
-        let (app_ctx, title_ctx, pid) = self.current_context_tuple();
+        let (app_ctx, title_ctx, _pid) = self.current_context_tuple();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
@@ -467,329 +471,25 @@ impl Engine {
             Ok(KeyResponse::Relay {
                 chord: target,
                 attrs,
-            }) => {
-                debug!(
-                    "Relay action {} -> {} (noexit={})",
-                    identifier,
-                    target,
-                    attrs.noexit()
-                );
-                if attrs.noexit() {
-                    // Conservative default: avoid repeating Command/Option chords
-                    let mods = &target.modifiers;
-                    let cmd_like = mods.contains(&mac_keycode::Modifier::Command)
-                        || mods.contains(&mac_keycode::Modifier::RightCommand)
-                        || mods.contains(&mac_keycode::Modifier::Option)
-                        || mods.contains(&mac_keycode::Modifier::RightOption);
-
-                    let repeat = if attrs.repeat_effective() && !cmd_like {
-                        Some(RepeatSpec {
-                            initial_delay_ms: attrs.repeat_delay,
-                            interval_ms: attrs.repeat_interval,
-                        })
-                    } else {
-                        None
-                    };
-
-                    // Prefer software repeats when custom timings are provided; otherwise allow OS repeat.
-                    // This ensures `repeat_delay`/`repeat_interval` are honored for relay actions.
-                    let has_custom_timing =
-                        attrs.repeat_delay.is_some() || attrs.repeat_interval.is_some();
-                    let allow_os_repeat = repeat.is_some() && !has_custom_timing;
-                    self.key_tracker
-                        .set_repeat_allowed(&identifier, allow_os_repeat);
-
-                    self.repeater.start(
-                        identifier.clone(),
-                        ExecSpec::Relay { chord: target },
-                        repeat,
-                    );
-                } else {
-                    // Ensure repeats are not acted upon in single-shot case
-                    self.key_tracker.set_repeat_allowed(&identifier, false);
-                    // Single-shot: Down then Up
-                    self.relay_handler
-                        .start_relay(identifier.clone(), target.clone(), pid, false);
-                    let _ = self.relay_handler.stop_relay(&identifier, pid);
-                }
-                Ok(())
-            }
+            }) => self.handle_action_relay(&identifier, target, &attrs).await,
             Ok(KeyResponse::Fullscreen { desired, kind }) => {
-                tracing::debug!(
-                    "Engine: fullscreen action received: desired={:?} kind={:?}",
-                    desired,
-                    kind
-                );
-                // Map Toggle -> mac_winops::Desired
-                let d = to_desired(desired);
-                let pid = self.current_pid_world_first();
-                let res = match kind {
-                    config::FullscreenKind::Native => {
-                        tracing::debug!(
-                            "Engine: queueing fullscreen_native on main thread pid={} d={:?}",
-                            pid,
-                            d
-                        );
-                        self.winops.request_fullscreen_native(pid, d)
-                    }
-                    config::FullscreenKind::Nonnative => {
-                        tracing::debug!(
-                            "Engine: queueing fullscreen_nonnative pid={} d={:?}",
-                            pid,
-                            d
-                        );
-                        self.winops.request_fullscreen_nonnative(pid, d)
-                    }
-                };
-                if let Err(e) = res {
-                    let _ = self.notifier.send_error("Fullscreen", format!("{}", e));
-                }
-                self.hint_refresh();
-                Ok(())
+                self.handle_action_fullscreen(desired, kind)
             }
-            Ok(KeyResponse::Raise { app, title }) => {
-                use regex::Regex;
-                // Compile regexes if present; on error, notify and abort this action.
-                tracing::debug!("Raise action: app={:?} title={:?}", app, title);
-                // Invalidate any pending debounce tasks from previous raise actions
-                let _nonce = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
-                let mut invalid = false;
-                let app_re = if let Some(s) = app.as_ref() {
-                    match Regex::new(s) {
-                        Ok(r) => Some(r),
-                        Err(e) => {
-                            self.notifier
-                                .send_error("Raise", format!("Invalid app regex: {}", e))?;
-                            invalid = true;
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                let title_re = if let Some(s) = title.as_ref() {
-                    match Regex::new(s) {
-                        Ok(r) => Some(r),
-                        Err(e) => {
-                            self.notifier
-                                .send_error("Raise", format!("Invalid title regex: {}", e))?;
-                            invalid = true;
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                if !invalid {
-                    // Prefer world snapshot; fallback to WinOps only if world snapshot is empty
-                    let mut wsnap = self.world.snapshot().await;
-                    wsnap.sort_by_key(|w| w.z);
-                    if wsnap.is_empty() {
-                        tracing::debug!("Raise(World): empty snapshot; no-op");
-                    } else {
-                        // World snapshot available
-                        let focused = self.world.focused_window().await;
-                        let matches = |w: &hotki_world::WorldWindow| -> bool {
-                            let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
-                            let tok = title_re
-                                .as_ref()
-                                .map(|r| r.is_match(&w.title))
-                                .unwrap_or(true);
-                            aok && tok
-                        };
-                        let mut idx_match: Vec<usize> = Vec::new();
-                        for (i, w) in wsnap.iter().enumerate() {
-                            if matches(w) {
-                                idx_match.push(i);
-                            }
-                        }
-                        tracing::debug!("Raise(World): matched count={}", idx_match.len());
-                        if idx_match.is_empty() {
-                            tracing::debug!("Raise(World): no match in snapshot; no-op");
-                        } else {
-                            let target_idx = if let Some(c) = focused.as_ref() {
-                                if matches(c) {
-                                    let cur_index =
-                                        wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
-                                    if let Some(ci) = cur_index {
-                                        idx_match.into_iter().find(|&i| i > ci).unwrap_or(ci)
-                                    } else {
-                                        idx_match[0]
-                                    }
-                                } else {
-                                    idx_match[0]
-                                }
-                            } else {
-                                idx_match[0]
-                            };
-                            let target = &wsnap[target_idx];
-                            tracing::debug!(
-                                "Raise(World): target pid={} id={} app='{}' title='{}'",
-                                target.pid,
-                                target.id,
-                                target.app,
-                                target.title
-                            );
-                            if let Ok(mut g) = self.last_target_pid.lock() {
-                                *g = Some(target.pid);
-                            }
-                            if let Err(e) = self.winops.request_activate_pid(target.pid) {
-                                if let mac_winops::Error::MainThread = e {
-                                    tracing::warn!(
-                                        "Raise requires main thread; scheduling failed: {}",
-                                        e
-                                    );
-                                }
-                                let _ = self.notifier.send_error("Raise", format!("{}", e));
-                            }
-                            self.hint_refresh();
-                        }
-                    }
-                }
-                Ok(())
-            }
+            Ok(KeyResponse::Raise { app, title }) => self.handle_action_raise(app, title).await,
             Ok(KeyResponse::Place {
                 cols,
                 rows,
                 col,
                 row,
             }) => {
-                // Prefer last Raise pid; else world focused; fallback to CG frontmost only if world has no snapshot yet
                 let raise_pid = self.last_target_pid.lock().ok().and_then(|mut g| g.take());
-                let (pid, pid_src) = if let Some(p) = raise_pid {
-                    (p, "raise")
-                } else if let Some((_, _, p)) = self.focus_ctx.lock().ok().and_then(|g| g.clone()) {
-                    (p, "world")
-                } else {
-                    let mut snap = self.world.snapshot().await;
-                    snap.sort_by_key(|w| w.z);
-                    if snap.is_empty() {
-                        tracing::debug!("Place(World): empty snapshot; no-op");
-                        return Ok(false);
-                    } else if let Some(w) = self
-                        .world
-                        .focused_window()
-                        .await
-                        .or_else(|| snap.first().cloned())
-                    {
-                        (w.pid, "world_top")
-                    } else {
-                        tracing::debug!("Place(World): no top window; no-op");
-                        return Ok(false);
-                    }
-                };
-
-                // Log using world context + world topmost for visibility
-                let (wapp, wtitle, wpid) = self.current_context_tuple();
-                let mut snap = self.world.snapshot().await;
-                snap.sort_by_key(|w| w.z);
-                if let Some(top) = snap.first() {
-                    tracing::debug!(
-                        "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
-                        pid,
-                        pid_src,
-                        wapp,
-                        wtitle,
-                        wpid,
-                        top.pid,
-                        top.id,
-                        top.app,
-                        top.title,
-                        cols,
-                        rows,
-                        col,
-                        row
-                    );
-                } else {
-                    tracing::debug!(
-                        "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top=<none> cols={} rows={} col={} row={}",
-                        pid,
-                        pid_src,
-                        wapp,
-                        wtitle,
-                        wpid,
-                        cols,
-                        rows,
-                        col,
-                        row
-                    );
-                }
-
-                if let Err(e) = self
-                    .winops
-                    .request_place_grid_focused(pid, cols, rows, col, row)
-                {
-                    let _ = self.notifier.send_error("Place", format!("{}", e));
-                }
-                self.hint_refresh();
-                Ok(())
+                self.handle_action_place_request(cols, rows, col, row, raise_pid)
+                    .await
             }
             Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
-                let mdir = to_move_dir(dir);
-                let pid = self.current_pid_world_first();
-                let mut snap = self.world.snapshot().await;
-                snap.sort_by_key(|w| w.z);
-                if !snap.is_empty() {
-                    let candidate = snap
-                        .iter()
-                        .filter(|w| w.pid == pid)
-                        .min_by_key(|w| (!w.focused, w.z))
-                        .cloned();
-                    if let Some(w) = candidate {
-                        if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir)
-                        {
-                            let _ = self.notifier.send_error("Move", format!("{}", e));
-                        }
-                        self.hint_refresh();
-                    } else {
-                        let _ = self
-                            .notifier
-                            .send_error("Move", "No focused window to move".to_string());
-                    }
-                } else {
-                    let _ = self
-                        .notifier
-                        .send_error("Move", "No focused window to move".to_string());
-                }
-                Ok(())
+                self.handle_action_place_move(cols, rows, dir).await
             }
-            Ok(KeyResponse::Hide { desired }) => {
-                // Event log using world context + topmost-by-z
-                let (wapp, wtitle, wpid) = self.current_context_tuple();
-                let mut snap = self.world.snapshot().await;
-                snap.sort_by_key(|w| w.z);
-                if let Some(top) = snap.first() {
-                    tracing::info!(
-                        "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top pid={} id={} app='{}' title='{}'",
-                        desired,
-                        wapp,
-                        wtitle,
-                        wpid,
-                        top.pid,
-                        top.id,
-                        top.app,
-                        top.title
-                    );
-                } else {
-                    tracing::info!(
-                        "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top=<none>",
-                        desired,
-                        wapp,
-                        wtitle,
-                        wpid
-                    );
-                }
-                tracing::debug!("Hide action received: desired={:?}", desired);
-                let d = to_desired(desired);
-                // Perform inline to avoid depending on main-thread queueing for smoketest reliability.
-                let pid = self.current_pid_world_first();
-                tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-                if let Err(e) = self.winops.hide_bottom_left(pid, d) {
-                    let _ = self.notifier.send_error("Hide", format!("{}", e));
-                }
-                self.hint_refresh();
-                Ok(())
-            }
+            Ok(KeyResponse::Hide { desired }) => self.handle_action_hide(desired).await,
             Ok(resp) => {
                 trace!("Key response: {:?}", resp);
                 // Special-case ShellAsync to start shell repeater if configured
@@ -814,17 +514,14 @@ impl Engine {
                         err_notify,
                         repeat,
                     } => {
-                        let exec = ExecSpec::Shell {
+                        self.handle_action_shell(
+                            &identifier,
                             command,
                             ok_notify,
                             err_notify,
-                        };
-                        let rep = repeat.map(|r| RepeatSpec {
-                            initial_delay_ms: r.initial_delay_ms,
-                            interval_ms: r.interval_ms,
-                        });
-                        self.repeater.start(identifier.clone(), exec, rep);
-                        Ok(())
+                            repeat,
+                        )
+                        .await
                     }
                     other => self.notifier.handle_key_response(other),
                 }
@@ -854,6 +551,333 @@ impl Engine {
             location_changed
         );
         Ok(location_changed)
+    }
+
+    // Extracted action handlers for clarity and testability
+    async fn handle_action_relay(
+        &self,
+        identifier: &str,
+        target: Chord,
+        attrs: &keymode::KeysAttrs,
+    ) -> Result<()> {
+        debug!(
+            "Relay action {} -> {} (noexit={})",
+            identifier,
+            target,
+            attrs.noexit()
+        );
+        let pid = self.current_pid_world_first();
+        if attrs.noexit() {
+            let mods = &target.modifiers;
+            let cmd_like = mods.contains(&mac_keycode::Modifier::Command)
+                || mods.contains(&mac_keycode::Modifier::RightCommand)
+                || mods.contains(&mac_keycode::Modifier::Option)
+                || mods.contains(&mac_keycode::Modifier::RightOption);
+
+            let repeat = if attrs.repeat_effective() && !cmd_like {
+                Some(RepeatSpec {
+                    initial_delay_ms: attrs.repeat_delay,
+                    interval_ms: attrs.repeat_interval,
+                })
+            } else {
+                None
+            };
+            let has_custom_timing = attrs.repeat_delay.is_some() || attrs.repeat_interval.is_some();
+            let allow_os_repeat = repeat.is_some() && !has_custom_timing;
+            self.key_tracker
+                .set_repeat_allowed(identifier, allow_os_repeat);
+            self.repeater.start(
+                identifier.to_string(),
+                ExecSpec::Relay { chord: target },
+                repeat,
+            );
+        } else {
+            self.key_tracker.set_repeat_allowed(identifier, false);
+            self.relay_handler
+                .start_relay(identifier.to_string(), target.clone(), pid, false);
+            let _ = self.relay_handler.stop_relay(identifier, pid);
+        }
+        Ok(())
+    }
+
+    fn handle_action_fullscreen(
+        &self,
+        desired: config::Toggle,
+        kind: config::FullscreenKind,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Engine: fullscreen action received: desired={:?} kind={:?}",
+            desired,
+            kind
+        );
+        let d = to_desired(desired);
+        let pid = self.current_pid_world_first();
+        let res = match kind {
+            config::FullscreenKind::Native => self.winops.request_fullscreen_native(pid, d),
+            config::FullscreenKind::Nonnative => self.winops.request_fullscreen_nonnative(pid, d),
+        };
+        if let Err(e) = res {
+            let _ = self.notifier.send_error("Fullscreen", format!("{}", e));
+        }
+        self.hint_refresh();
+        Ok(())
+    }
+
+    async fn handle_action_shell(
+        &self,
+        id: &str,
+        command: String,
+        ok_notify: keymode::NotificationType,
+        err_notify: keymode::NotificationType,
+        repeat: Option<keymode::ShellRepeatConfig>,
+    ) -> Result<()> {
+        let exec = ExecSpec::Shell {
+            command,
+            ok_notify,
+            err_notify,
+        };
+        let rep = repeat.map(|r| RepeatSpec {
+            initial_delay_ms: r.initial_delay_ms,
+            interval_ms: r.interval_ms,
+        });
+        self.repeater.start(id.to_string(), exec, rep);
+        Ok(())
+    }
+
+    async fn handle_action_raise(&self, app: Option<String>, title: Option<String>) -> Result<()> {
+        use regex::Regex;
+        tracing::debug!("Raise action: app={:?} title={:?}", app, title);
+        let _ = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut invalid = false;
+        let app_re = if let Some(s) = app.as_ref() {
+            match Regex::new(s) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    self.notifier
+                        .send_error("Raise", format!("Invalid app regex: {}", e))?;
+                    invalid = true;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let title_re = if let Some(s) = title.as_ref() {
+            match Regex::new(s) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    self.notifier
+                        .send_error("Raise", format!("Invalid title regex: {}", e))?;
+                    invalid = true;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if !invalid {
+            let mut wsnap = self.world.snapshot().await;
+            wsnap.sort_by_key(|w| w.z);
+            if wsnap.is_empty() {
+                tracing::debug!("Raise(World): empty snapshot; no-op");
+            } else {
+                let focused = self.world.focused_window().await;
+                let matches = |w: &hotki_world::WorldWindow| -> bool {
+                    let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
+                    let tok = title_re
+                        .as_ref()
+                        .map(|r| r.is_match(&w.title))
+                        .unwrap_or(true);
+                    aok && tok
+                };
+                let mut idx_match: Vec<usize> = Vec::new();
+                for (i, w) in wsnap.iter().enumerate() {
+                    if matches(w) {
+                        idx_match.push(i);
+                    }
+                }
+                tracing::debug!("Raise(World): matched count={}", idx_match.len());
+                if !idx_match.is_empty() {
+                    let target_idx = if let Some(c) = focused.as_ref() {
+                        if matches(c) {
+                            let cur_index =
+                                wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
+                            if let Some(ci) = cur_index {
+                                idx_match.into_iter().find(|&i| i > ci).unwrap_or(ci)
+                            } else {
+                                idx_match[0]
+                            }
+                        } else {
+                            idx_match[0]
+                        }
+                    } else {
+                        idx_match[0]
+                    };
+                    let target = &wsnap[target_idx];
+                    tracing::debug!(
+                        "Raise(World): target pid={} id={} app='{}' title='{}'",
+                        target.pid,
+                        target.id,
+                        target.app,
+                        target.title
+                    );
+                    if let Ok(mut g) = self.last_target_pid.lock() {
+                        *g = Some(target.pid);
+                    }
+                    if let Err(e) = self.winops.request_activate_pid(target.pid) {
+                        if let mac_winops::Error::MainThread = e {
+                            tracing::warn!("Raise requires main thread; scheduling failed: {}", e);
+                        }
+                        let _ = self.notifier.send_error("Raise", format!("{}", e));
+                    }
+                    self.hint_refresh();
+                } else {
+                    tracing::debug!("Raise(World): no match in snapshot; no-op");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_action_place_request(
+        &self,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        raise_pid: Option<i32>,
+    ) -> Result<()> {
+        let (pid, pid_src): (i32, &str) = if let Some(p) = raise_pid {
+            (p, "raise")
+        } else if let Some((_, _, p)) = self.focus_ctx.lock().ok().and_then(|g| g.clone()) {
+            (p, "world")
+        } else {
+            let mut snap = self.world.snapshot().await;
+            snap.sort_by_key(|w| w.z);
+            if snap.is_empty() {
+                tracing::debug!("Place(World): empty snapshot; no-op");
+                return Ok(());
+            } else if let Some(w) = self
+                .world
+                .focused_window()
+                .await
+                .or_else(|| snap.first().cloned())
+            {
+                (w.pid, "world_top")
+            } else {
+                tracing::debug!("Place(World): no top window; no-op");
+                return Ok(());
+            }
+        };
+
+        let (wapp, wtitle, wpid) = self.current_context_tuple();
+        let mut snap = self.world.snapshot().await;
+        snap.sort_by_key(|w| w.z);
+        if let Some(top) = snap.first() {
+            tracing::debug!(
+                "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
+                pid,
+                pid_src,
+                wapp,
+                wtitle,
+                wpid,
+                top.pid,
+                top.id,
+                top.app,
+                top.title,
+                cols,
+                rows,
+                col,
+                row
+            );
+        } else {
+            tracing::debug!(
+                "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top=<none> cols={} rows={} col={} row={}",
+                pid,
+                pid_src,
+                wapp,
+                wtitle,
+                wpid,
+                cols,
+                rows,
+                col,
+                row
+            );
+        }
+
+        if let Err(e) = self
+            .winops
+            .request_place_grid_focused(pid, cols, rows, col, row)
+        {
+            let _ = self.notifier.send_error("Place", format!("{}", e));
+        }
+        self.hint_refresh();
+        Ok(())
+    }
+
+    async fn handle_action_place_move(&self, cols: u32, rows: u32, dir: config::Dir) -> Result<()> {
+        let mdir = to_move_dir(dir);
+        let pid = self.current_pid_world_first();
+        let mut snap = self.world.snapshot().await;
+        snap.sort_by_key(|w| w.z);
+        if !snap.is_empty() {
+            let candidate = snap
+                .iter()
+                .filter(|w| w.pid == pid)
+                .min_by_key(|w| (!w.focused, w.z))
+                .cloned();
+            if let Some(w) = candidate {
+                if let Err(e) = self.winops.request_place_move_grid(w.id, cols, rows, mdir) {
+                    let _ = self.notifier.send_error("Move", format!("{}", e));
+                }
+                self.hint_refresh();
+            } else {
+                let _ = self
+                    .notifier
+                    .send_error("Move", "No focused window to move".to_string());
+            }
+        } else {
+            let _ = self
+                .notifier
+                .send_error("Move", "No focused window to move".to_string());
+        }
+        Ok(())
+    }
+
+    async fn handle_action_hide(&self, desired: config::Toggle) -> Result<()> {
+        let (wapp, wtitle, wpid) = self.current_context_tuple();
+        let mut snap = self.world.snapshot().await;
+        snap.sort_by_key(|w| w.z);
+        if let Some(top) = snap.first() {
+            tracing::info!(
+                "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top pid={} id={} app='{}' title='{}'",
+                desired,
+                wapp,
+                wtitle,
+                wpid,
+                top.pid,
+                top.id,
+                top.app,
+                top.title
+            );
+        } else {
+            tracing::info!(
+                "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top=<none>",
+                desired,
+                wapp,
+                wtitle,
+                wpid
+            );
+        }
+        tracing::debug!("Hide action received: desired={:?}", desired);
+        let d = to_desired(desired);
+        let pid = self.current_pid_world_first();
+        tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
+        if let Err(e) = self.winops.hide_bottom_left(pid, d) {
+            let _ = self.notifier.send_error("Hide", format!("{}", e));
+        }
+        self.hint_refresh();
+        Ok(())
     }
 
     /// Handle a key up event
