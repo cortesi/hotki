@@ -66,6 +66,8 @@ impl Drop for AXObserver {
 
 impl AXState {
     pub(crate) fn detach(&mut self) {
+        // SAFETY: `ctx_ptr` points to a Box<AXCtx> allocated in `attach` or is null.
+        // We convert it back exactly once here to drop it.
         unsafe {
             if !self.ctx_ptr.is_null() {
                 let _ = Box::<AXCtx>::from_raw(self.ctx_ptr as *mut AXCtx);
@@ -146,6 +148,8 @@ impl AXState {
             let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
             // Observe focused window changes on the app
+            // SAFETY: `observer` and `app_elem` are valid CF objects; `ctx_ptr` points to
+            // a Box<AXCtx> kept alive by this AXState. Notification string is a CFString.
             let err =
                 AXObserverAddNotification(observer.as_ptr(), app_elem.as_ptr(), notif, ctx_ptr);
             if err != 0 {
@@ -157,6 +161,7 @@ impl AXState {
                 });
             }
 
+            // SAFETY: Observer pointer is valid. Returns a CFRunLoopSource*.
             let source = AXObserverGetRunLoopSource(observer.as_ptr());
             if source.is_null() {
                 let _ = Box::<AXCtx>::from_raw(ctx_ptr as *mut AXCtx);
@@ -180,6 +185,7 @@ impl AXState {
         if !self.have_source {
             return;
         }
+        // SAFETY: `kCFRunLoopDefaultMode` is a process-wide constant.
         let mode = unsafe { kCFRunLoopDefaultMode };
         let _ = CFRunLoop::run_in_mode(mode, std::time::Duration::from_millis(10), true);
     }
@@ -213,6 +219,7 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         let attr_title = CFString::from_static_string("AXTitle");
 
         let mut app_ref: CFTypeRef = std::ptr::null_mut();
+        // SAFETY: `sys` is valid; out‑param receives retained focused application element.
         let err = AXUIElementCopyAttributeValue(
             sys.as_ptr(),
             attr_focused_app.as_concrete_TypeRef(),
@@ -225,6 +232,7 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
         let app_elem = crate::AXElem::from_create(app_ref as *mut c_void)?;
         // Resolve pid
         let mut pid_out: i32 = -1;
+        // SAFETY: Valid app element and out‑param for pid.
         let _ = AXUIElementGetPid(app_elem.as_ptr(), &mut pid_out as *mut i32);
         // Resolve application name via NSRunningApplication
         let app_name: String = match NSRunningApplication::runningApplicationWithProcessIdentifier(
@@ -246,6 +254,7 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
 
         // Focused window and its title
         let mut win_ref: CFTypeRef = std::ptr::null_mut();
+        // SAFETY: Valid app element; out‑param receives focused window if any.
         let werr = AXUIElementCopyAttributeValue(
             app_elem.as_ptr(),
             attr_focused_window.as_concrete_TypeRef(),
@@ -261,6 +270,7 @@ pub(crate) fn system_focus_snapshot() -> Option<(String, String, i32)> {
             None => return Some((app_name, String::new(), pid_out)),
         };
         let mut title_ref: CFTypeRef = std::ptr::null_mut();
+        // SAFETY: Valid window element; out‑param receives title CFString.
         let terr = AXUIElementCopyAttributeValue(
             win_elem.as_ptr(),
             attr_title.as_concrete_TypeRef(),

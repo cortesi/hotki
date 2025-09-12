@@ -137,32 +137,39 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
     if !permissions::accessibility_ok() {
         return false;
     }
-    unsafe {
-        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
-            return false;
-        };
-        let mut wins_ref: CFTypeRef = ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
-        if err != 0 || wins_ref.is_null() {
-            return false;
+    // Create AX application element for pid
+    let Some(app) = (unsafe { AXElem::from_create(AXUIElementCreateApplication(pid)) }) else {
+        return false;
+    };
+    // Fetch AXWindows array for the app
+    let mut wins_ref: CFTypeRef = ptr::null_mut();
+    // SAFETY: `app` is a valid AXUIElement and we pass an out‑param for the copy.
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        return false;
+    }
+    // SAFETY: `wins_ref` follows the Create rule from AX; wrap to transfer ownership.
+    let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
+    // SAFETY: CFArray access functions require the concrete CFArray ref; bounds checked by loop.
+    let n = unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) };
+    for i in 0..n {
+        // SAFETY: Index < n; returns borrowed item pointer.
+        let wref = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+        if wref.is_null() {
+            continue;
         }
-        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        for i in 0..CFArrayGetCount(arr.as_concrete_TypeRef()) {
-            let wref = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
-            if wref.is_null() {
-                continue;
-            }
-            let mut title_ref: CFTypeRef = ptr::null_mut();
-            let terr = AXUIElementCopyAttributeValue(wref, cfstr("AXTitle"), &mut title_ref);
-            if terr != 0 || title_ref.is_null() {
-                continue;
-            }
-            let cfs = CFString::wrap_under_create_rule(title_ref as CFStringRef);
-            let title = cfs.to_string();
-            // CFString object from Copy is consumed by wrap_under_create_rule
-            if title == expected_title {
-                return true;
-            }
+        let mut title_ref: CFTypeRef = ptr::null_mut();
+        // SAFETY: `wref` is an AXUIElement; return copied CFString for title.
+        let terr = unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXTitle"), &mut title_ref) };
+        if terr != 0 || title_ref.is_null() {
+            continue;
+        }
+        // SAFETY: Title CFString was returned under Create rule.
+        let cfs = unsafe { CFString::wrap_under_create_rule(title_ref as CFStringRef) };
+        let title = cfs.to_string();
+        if title == expected_title {
+            return true;
         }
     }
     false
@@ -176,56 +183,65 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
     if !permissions::accessibility_ok() {
         return frontmost_window_for_pid(pid).map(|w| w.id);
     }
-    unsafe {
-        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
-            return frontmost_window_for_pid(pid).map(|w| w.id);
-        };
-        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
-        if err != 0 || wins_ref.is_null() {
-            return frontmost_window_for_pid(pid).map(|w| w.id);
+    // Create AX application element for pid
+    let Some(app) = (unsafe { AXElem::from_create(AXUIElementCreateApplication(pid)) }) else {
+        return frontmost_window_for_pid(pid).map(|w| w.id);
+    };
+    // Fetch AXWindows array for the app
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    // SAFETY: `app` is valid and we pass an out‑param to receive a copied array.
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        return frontmost_window_for_pid(pid).map(|w| w.id);
+    }
+    // SAFETY: Wrap ownership of returned CFArray.
+    let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
+    // SAFETY: CFArray access requires concrete ref; bounds enforced by loop.
+    let n = unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) };
+    // Prefer AXFocused; then AXMain
+    let mut chosen: *mut c_void = std::ptr::null_mut();
+    for i in 0..n {
+        // SAFETY: Index < n.
+        let w = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+        if w.is_null() {
+            continue;
         }
-        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
-        // Prefer AXFocused; then AXMain
-        let mut chosen: *mut c_void = std::ptr::null_mut();
+        if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
+            chosen = w;
+            break;
+        }
+    }
+    if chosen.is_null() {
         for i in 0..n {
-            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
+            // SAFETY: Index < n.
+            let w = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
             if w.is_null() {
                 continue;
             }
-            if let Ok(Some(true)) = ax_bool(w, cfstr("AXFocused")) {
+            if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
                 chosen = w;
                 break;
             }
         }
-        if chosen.is_null() {
-            for i in 0..n {
-                let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
-                if w.is_null() {
-                    continue;
-                }
-                if let Ok(Some(true)) = ax_bool(w, cfstr("AXMain")) {
-                    chosen = w;
-                    break;
-                }
-            }
-        }
-        if chosen.is_null() {
-            return frontmost_window_for_pid(pid).map(|w| w.id);
-        }
-        let mut num_ref: CFTypeRef = std::ptr::null_mut();
-        let nerr = AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref);
-        if nerr != 0 || num_ref.is_null() {
-            return frontmost_window_for_pid(pid).map(|w| w.id);
-        }
-        let cfnum = core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _);
-        let wid = cfnum.to_i64().unwrap_or(0) as u32;
-        if wid == 0 {
-            frontmost_window_for_pid(pid).map(|w| w.id)
-        } else {
-            Some(wid)
-        }
+    }
+    if chosen.is_null() {
+        return frontmost_window_for_pid(pid).map(|w| w.id);
+    }
+    let mut num_ref: CFTypeRef = std::ptr::null_mut();
+    // SAFETY: Query copied CFNumber for kCGWindowNumber.
+    let nerr =
+        unsafe { AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref) };
+    if nerr != 0 || num_ref.is_null() {
+        return frontmost_window_for_pid(pid).map(|w| w.id);
+    }
+    // SAFETY: Wrap CFNumber under create rule.
+    let cfnum = unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+    let wid = cfnum.to_i64().unwrap_or(0) as u32;
+    if wid == 0 {
+        frontmost_window_for_pid(pid).map(|w| w.id)
+    } else {
+        Some(wid)
     }
 }
 

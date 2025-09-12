@@ -30,34 +30,40 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
     ax_check()?;
     let _ = request_activate_pid(pid);
     // Resolve a top-level AXWindow
-    let win: AXElem = unsafe {
-        let Some(app) = AXElem::from_create(AXUIElementCreateApplication(pid)) else {
-            return Err(Error::AppElement);
-        };
-        let mut wins_ref: CFTypeRef = std::ptr::null_mut();
-        let err = AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref);
-        if err != 0 || wins_ref.is_null() {
-            return Err(Error::FocusedWindow);
-        }
-        let arr = CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _);
-        let n = CFArrayGetCount(arr.as_concrete_TypeRef());
-        let mut chosen: *mut c_void = std::ptr::null_mut();
-        for i in 0..n {
-            let w = CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) as *mut c_void;
-            if w.is_null() {
-                continue;
-            }
-            let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
-            if role == "AXWindow" {
-                chosen = w;
-                break;
-            }
-        }
-        if chosen.is_null() {
-            return Err(Error::FocusedWindow);
-        }
-        AXElem::retain_from_borrowed(chosen).ok_or(Error::FocusedWindow)?
+    // Create AX application element for pid
+    let raw_app = unsafe { AXUIElementCreateApplication(pid) };
+    let Some(app) = AXElem::from_create(raw_app) else {
+        return Err(Error::AppElement);
     };
+    // Fetch AXWindows array for the app
+    let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    // SAFETY: `app` is a valid AX element; we pass an out‑param for copied array.
+    let err =
+        unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
+    if err != 0 || wins_ref.is_null() {
+        return Err(Error::FocusedWindow);
+    }
+    // SAFETY: Acquire ownership of returned CFArray under Create rule.
+    let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
+    // SAFETY: CFArray access uses concrete ref; bounds enforced by loop.
+    let n = unsafe { CFArrayGetCount(arr.as_concrete_TypeRef()) };
+    let mut chosen: *mut c_void = std::ptr::null_mut();
+    for i in 0..n {
+        // SAFETY: Index < n.
+        let w = unsafe { CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) } as *mut c_void;
+        if w.is_null() {
+            continue;
+        }
+        let role = ax_get_string(w, cfstr("AXRole")).unwrap_or_default();
+        if role == "AXWindow" {
+            chosen = w;
+            break;
+        }
+    }
+    if chosen.is_null() {
+        return Err(Error::FocusedWindow);
+    }
+    let win: AXElem = AXElem::retain_from_borrowed(chosen).ok_or(Error::FocusedWindow)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
     let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;

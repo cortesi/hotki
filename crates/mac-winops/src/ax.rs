@@ -70,6 +70,8 @@ pub fn ax_check() -> Result<()> {
 
 pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
     let mut v: CFTypeRef = ptr::null_mut();
+    // SAFETY: `element` is a valid AXUIElement pointer and `&mut v` is an out‑param
+    // that will receive a retained CFTypeRef if the call succeeds.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
@@ -81,12 +83,15 @@ pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> 
     if v.is_null() {
         return Ok(None);
     }
+    // SAFETY: `v` is either kCFBooleanTrue/False or a CFBoolean* returned by AX and
+    // owned by us; we must release it after reading.
     let b = unsafe { CFBooleanGetValue(v) };
     unsafe { CFRelease(v) };
     Ok(Some(b))
 }
 
 pub fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Result<()> {
+    // SAFETY: kCFBooleanTrue/False are immortal singletons; casting to CFTypeRef is fine.
     let val = unsafe {
         (if value {
             kCFBooleanTrue
@@ -94,6 +99,7 @@ pub fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Resu
             kCFBooleanFalse
         }) as CFTypeRef
     };
+    // SAFETY: Valid AX element and attribute; CFBoolean* is non-null.
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, val) };
     if err != 0 {
         return Err(Error::AxCode(err));
@@ -103,6 +109,7 @@ pub fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Resu
 
 pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
     let mut v: CFTypeRef = ptr::null_mut();
+    // SAFETY: See note in `ax_bool` for out‑param contract.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
@@ -114,8 +121,10 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
         return Err(Error::Unsupported);
     }
     let mut p = CGPoint { x: 0.0, y: 0.0 };
+    // SAFETY: `v` is an AXValue for CGPoint; out‑ptr is properly aligned and valid.
     let ok =
         unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
+    // SAFETY: We own `v` via Create rule.
     unsafe { CFRelease(v) };
     if !ok {
         return Err(Error::Unsupported);
@@ -125,6 +134,7 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
 
 pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     let mut v: CFTypeRef = ptr::null_mut();
+    // SAFETY: See note in `ax_bool` for out‑param contract.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 {
         if err == K_AX_ERROR_INVALID_UI_ELEMENT {
@@ -139,7 +149,9 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
         width: 0.0,
         height: 0.0,
     };
+    // SAFETY: `v` is an AXValue for CGSize; out‑ptr is properly aligned and valid.
     let ok = unsafe { AXValueGetValue(v, K_AX_VALUE_CGSIZE_TYPE, &mut s as *mut _ as *mut c_void) };
+    // SAFETY: We own `v` via Create rule.
     unsafe { CFRelease(v) };
     if !ok {
         return Err(Error::Unsupported);
@@ -149,19 +161,23 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
 
 pub fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> {
     let mut v: CFTypeRef = ptr::null_mut();
+    // SAFETY: See note in `ax_bool` for out‑param contract.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
     if err != 0 || v.is_null() {
         return None;
     }
+    // SAFETY: AX returned a CFString under the Create rule; wrap to transfer ownership.
     let s = unsafe { CFString::wrap_under_create_rule(v as _) };
     Some(s.to_string())
 }
 
 pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
+    // SAFETY: `&p` points to a valid CGPoint; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
     if v.is_null() {
         return Err(Error::Unsupported);
     }
+    // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
     unsafe { CFRelease(v) };
     if err != 0 {
@@ -171,10 +187,12 @@ pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Resu
 }
 
 pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()> {
+    // SAFETY: `&s` points to a valid CGSize; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void) };
     if v.is_null() {
         return Err(Error::Unsupported);
     }
+    // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
     let err = unsafe { AXUIElementSetAttributeValue(element, attr, v) };
     unsafe { CFRelease(v) };
     if err != 0 {
@@ -196,17 +214,21 @@ pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(AXElem, i32)> {
         return Err(Error::AppElement);
     };
     let mut wins_ref: CFTypeRef = std::ptr::null_mut();
+    // SAFETY: `app` is valid; out‑param receives a retained array.
     let err =
         unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
         return Err(Error::AxCode(err));
     }
+    // SAFETY: Wrap ownership of returned CFArray.
     let arr = unsafe {
         core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
     };
     let mut found: *mut c_void = std::ptr::null_mut();
     let mut fallback_first_window: *mut c_void = std::ptr::null_mut();
+    // SAFETY: Bounds checked by loop range.
     for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        // SAFETY: Index < len; returns borrowed pointer.
         let wref =
             unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) }
                 as *mut c_void;
@@ -221,9 +243,11 @@ pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(AXElem, i32)> {
             }
         }
         let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        // SAFETY: Valid element; out‑param gets retained CFNumber for AXWindowNumber.
         let nerr =
             unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
         if nerr == 0 && !num_ref.is_null() {
+            // SAFETY: CFNumber returned under Create rule; wrap transfers ownership.
             let cfnum =
                 unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
             let wid = cfnum.to_i64().unwrap_or(0) as u32;
@@ -281,12 +305,10 @@ pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))
 /// Find a window by title using Accessibility API.
 /// Returns the AXUIElement pointer for the window, or None if not found.
 fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
-    let Some(app) = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })
-    else {
-        return None;
-    };
+    let app = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })?;
 
     let mut wins_ref: CFTypeRef = ptr::null_mut();
+    // SAFETY: `app` is valid; out‑param receives a retained array.
     let err =
         unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
 
@@ -294,11 +316,14 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
         return None;
     }
 
+    // SAFETY: Wrap ownership of returned CFArray.
     let arr = unsafe {
         core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _)
     };
 
+    // SAFETY: Bounds checked by range.
     for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
+        // SAFETY: Index < len; returns borrowed pointer.
         let wref =
             unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) };
         let w = wref as *mut c_void;
@@ -307,11 +332,13 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
         }
 
         let mut t_ref: CFTypeRef = ptr::null_mut();
+        // SAFETY: Valid element; out‑param receives retained CFString title.
         let terr = unsafe { AXUIElementCopyAttributeValue(w, cfstr("AXTitle"), &mut t_ref) };
         if terr != 0 || t_ref.is_null() {
             continue;
         }
 
+        // SAFETY: Title CFString returned under Create rule; wrap to transfer ownership.
         let cfs = unsafe { CFString::wrap_under_create_rule(t_ref as CFStringRef) };
         let t = cfs.to_string();
         if t == title {
