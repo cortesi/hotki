@@ -19,6 +19,11 @@ const VERIFY_EPS: f64 = 2.0;
 const POLL_SLEEP_MS: u64 = 25;
 const POLL_TOTAL_MS: u64 = 400;
 
+// Stage 2: settle/polling parameters for apply_and_wait
+const APPLY_STUTTER_MS: u64 = 2; // tiny delay between A and B sets
+const SETTLE_SLEEP_MS: u64 = 20; // poll cadence while waiting to settle
+const SETTLE_TOTAL_MS: u64 = 250; // max settle time per attempt
+
 #[inline]
 fn sleep_ms(ms: u64) {
     use std::{thread::sleep, time::Duration};
@@ -148,6 +153,110 @@ fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
     );
 }
 
+#[inline]
+fn now_ms(start: std::time::Instant) -> u64 {
+    start.elapsed().as_millis() as u64
+}
+
+/// Apply target position/size in a given order and poll until the window frame
+/// settles within `eps`, or until `SETTLE_TOTAL_MS` elapses. Returns the last
+/// observed rect and the measured settle time in milliseconds.
+fn apply_and_wait(
+    op_label: &str,
+    win: &crate::AXElem,
+    attr_pos: core_foundation::string::CFStringRef,
+    attr_size: core_foundation::string::CFStringRef,
+    target: &Rect,
+    pos_first: bool,
+    eps: f64,
+) -> Result<(Rect, u64)> {
+    let start = std::time::Instant::now();
+
+    // 1) Apply in requested order with a tiny stutter between A and B.
+    if pos_first {
+        debug!(
+            "WinOps: {} set pos -> ({:.1},{:.1})",
+            op_label, target.x, target.y
+        );
+        ax_set_point(
+            win.as_ptr(),
+            attr_pos,
+            CGPoint {
+                x: target.x,
+                y: target.y,
+            },
+        )?;
+        sleep_ms(APPLY_STUTTER_MS);
+        debug!(
+            "WinOps: {} set size -> ({:.1},{:.1})",
+            op_label, target.w, target.h
+        );
+        ax_set_size(
+            win.as_ptr(),
+            attr_size,
+            CGSize {
+                width: target.w,
+                height: target.h,
+            },
+        )?;
+    } else {
+        debug!(
+            "WinOps: {} set size -> ({:.1},{:.1})",
+            op_label, target.w, target.h
+        );
+        ax_set_size(
+            win.as_ptr(),
+            attr_size,
+            CGSize {
+                width: target.w,
+                height: target.h,
+            },
+        )?;
+        sleep_ms(APPLY_STUTTER_MS);
+        debug!(
+            "WinOps: {} set pos -> ({:.1},{:.1})",
+            op_label, target.x, target.y
+        );
+        ax_set_point(
+            win.as_ptr(),
+            attr_pos,
+            CGPoint {
+                x: target.x,
+                y: target.y,
+            },
+        )?;
+    }
+
+    // 2) Poll until within eps or timeout.
+    let mut last: Rect;
+    let mut waited = 0u64;
+    loop {
+        let p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let s = ax_get_size(win.as_ptr(), attr_size)?;
+        last = Rect {
+            x: p.x,
+            y: p.y,
+            w: s.width,
+            h: s.height,
+        };
+        let d = diffs(&last, target);
+        if within_eps(d, eps) {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+
+        if waited >= SETTLE_TOTAL_MS {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+
+        sleep_ms(SETTLE_SLEEP_MS);
+        waited = waited.saturating_add(SETTLE_SLEEP_MS);
+    }
+}
+
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).
 pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
@@ -205,22 +314,16 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             w,
             h
         );
-        debug!("WinOps: place_grid set pos -> ({:.1},{:.1})", x, y);
-        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
-        debug!("WinOps: place_grid set size -> ({:.1},{:.1})", w, h);
-        ax_set_size(
-            win.as_ptr(),
+        // Stage 2: apply in pos->size order with settle/polling
+        let (got, _settle_ms) = apply_and_wait(
+            "place_grid",
+            &win,
+            attr_pos,
             attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
+            &target,
+            true,
+            VERIFY_EPS,
         )?;
-
-        // Post‑placement verification
-        let got_p = ax_get_point(win.as_ptr(), attr_pos)?;
-        let got_s = ax_get_size(win.as_ptr(), attr_size)?;
-        let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
         debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
         log_summary("pos->size", 1, VERIFY_EPS, d);
@@ -315,22 +418,16 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             w,
             h
         );
-        debug!("WinOps: place_grid_focused set pos -> ({:.1},{:.1})", x, y);
-        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
-        debug!("WinOps: place_grid_focused set size -> ({:.1},{:.1})", w, h);
-        ax_set_size(
-            win.as_ptr(),
+        // Stage 2: apply in pos->size order with settle/polling
+        let (got, _settle_ms) = apply_and_wait(
+            "place_grid_focused",
+            &win,
+            attr_pos,
             attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
+            &target,
+            true,
+            VERIFY_EPS,
         )?;
-
-        // Post‑placement verification
-        let got_p = ax_get_point(win.as_ptr(), attr_pos)?;
-        let got_s = ax_get_size(win.as_ptr(), attr_size)?;
-        let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
         debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
         log_summary("pos->size", 1, VERIFY_EPS, d);
@@ -449,22 +546,16 @@ pub(crate) fn place_move_grid(
             h
         );
 
-        debug!("WinOps: place_move_grid set pos -> ({:.1},{:.1})", x, y);
-        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x, y })?;
-        debug!("WinOps: place_move_grid set size -> ({:.1},{:.1})", w, h);
-        ax_set_size(
-            win.as_ptr(),
+        // Stage 2: apply in pos->size order with settle/polling
+        let (got, _settle_ms) = apply_and_wait(
+            "place_move_grid",
+            &win,
+            attr_pos,
             attr_size,
-            CGSize {
-                width: w,
-                height: h,
-            },
+            &target,
+            true,
+            VERIFY_EPS,
         )?;
-
-        // Post‑placement verification
-        let got_p = ax_get_point(win.as_ptr(), attr_pos)?;
-        let got_s = ax_get_size(win.as_ptr(), attr_size)?;
-        let got = rect_from(got_p.x, got_p.y, got_s.width, got_s.height);
         let d = diffs(&got, &target);
         debug!("clamp={}", clamp_flags(&got, &vf_rect, VERIFY_EPS));
         log_summary("pos->size", 1, VERIFY_EPS, d);
