@@ -21,6 +21,21 @@
 //!   actions are a no-op with a debug log.
 //! - Repeat/relay targets follow the world-backed PID cache and hand off
 //!   seamlessly when focus changes.
+//!
+//! Concurrency and Lock Ordering
+//! - The engine uses a handful of locks. To avoid deadlocks and priority
+//!   inversions, follow this order when multiple guards are needed:
+//!   1) `config: RwLock<Config>` (read guard), 2) `state: Mutex<State>`,
+//!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
+//!      guard across any call that can block or `await`.
+//! - Focus state (`focus.ctx`, `focus.last_target_pid`) uses `std::sync::Mutex`.
+//!   Never hold these mutex guards across an `.await`. Clone/copy values out
+//!   and drop the guard before awaiting.
+//! - Service calls (`world`, `repeater`, `relay`, `notifier`, `winops`) must
+//!   not be awaited while any of the async engine mutexes are held. Acquire,
+//!   compute, drop guards, then perform async work.
+//! - `set_config` acquires a write guard, replaces the config, drops the guard,
+//!   then triggers a rebind. Do not re-enter config while a write guard is held.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
@@ -338,10 +353,14 @@ impl Engine {
         // Keep bind ordering stable for reduced churn and better diffs/logging
         key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let key_count = key_pairs.len();
-        let mut manager = self.binding_manager.lock().await;
-        if manager.update_bindings(key_pairs)? {
+        // Update bindings without awaiting while the manager lock is held.
+        let bindings_changed = {
+            let mut manager = self.binding_manager.lock().await;
+            manager.update_bindings(key_pairs)?
+        };
+        if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
-            // Async clear to avoid blocking the runtime thread
+            // Perform async work after dropping manager guard.
             self.svc.repeater.clear_async().await;
             let pid = self.current_pid_world_first();
             self.svc.relay.stop_all(pid);

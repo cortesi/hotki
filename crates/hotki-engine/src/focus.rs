@@ -1,6 +1,12 @@
 use std::sync::{Arc, Mutex};
 
-/// Aggregates all focus-related state used by the engine.
+/// Aggregates focus-related state used by the engine.
+///
+/// Concurrency notes:
+/// - The fields are protected by `std::sync::Mutex` because they are only
+///   accessed in short, non-`async` critical sections.
+/// - Do not hold these guards across an `.await`. Copy or clone values out
+///   and drop the guard before awaiting to avoid blocking the async runtime.
 #[derive(Clone)]
 pub struct FocusState {
     /// Cached world focus context (app, title, pid), updated by World events.

@@ -5,7 +5,9 @@
 //! Provides configurable timing and cancellation support.
 
 use std::{
-    cmp, env,
+    cmp,
+    collections::HashMap,
+    env,
     option::Option,
     process::Command,
     sync::{
@@ -147,6 +149,14 @@ impl PidProvider for PidFromCtxArc {
     }
 }
 
+/// Per-id state to serialize shell command execution and coalesce repeats.
+struct ShellRunState {
+    /// Async mutex to serialize execution across initial run and repeats.
+    gate: tokio::sync::Mutex<()>,
+    /// Fast flag used to skip scheduling a repeat while a run is in-flight.
+    running: AtomicBool,
+}
+
 /// Unified repeater that runs first-run immediately and then repeats while held
 #[derive(Clone)]
 pub struct Repeater {
@@ -157,6 +167,8 @@ pub struct Repeater {
     notifier: NotificationDispatcher,
     ticker: Ticker,
     repeat_observer: Arc<Mutex<Option<Arc<dyn RepeatObserver>>>>,
+    /// Per-id state for shell execution serialization.
+    shell_states: Arc<Mutex<HashMap<String, Arc<ShellRunState>>>>,
 }
 
 /// Observer interface for repeat ticks (used by tests/tools)
@@ -184,7 +196,22 @@ impl Repeater {
             notifier,
             ticker: Ticker::new(),
             repeat_observer: Arc::new(Mutex::new(None)),
+            shell_states: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get or create the per-id shell run state.
+    fn shell_state(&self, id: &str) -> Arc<ShellRunState> {
+        let mut map = self.shell_states.lock().unwrap();
+        if let Some(s) = map.get(id) {
+            return s.clone();
+        }
+        let state = Arc::new(ShellRunState {
+            gate: tokio::sync::Mutex::new(()),
+            running: AtomicBool::new(false),
+        });
+        map.insert(id.to_string(), state.clone());
+        state
     }
 
     fn effective_timings(&self, spec: Option<RepeatSpec>) -> (Duration, Duration) {
@@ -254,14 +281,29 @@ impl Repeater {
                 ok_notify,
                 err_notify,
             } => {
-                // First run with notifications via executor
+                // First run with notifications via executor, serialized per id.
                 let notifier = self.notifier.clone();
                 let cmd = command.clone();
-                tokio::task::spawn_blocking(move || {
-                    let resp = run_shell_blocking(&cmd, ok_notify, err_notify);
+                let state = self.shell_state(&id);
+                // Mark running to coalesce any immediate repeat tick.
+                state.running.store(true, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _guard = state.gate.lock().await;
+                    let resp = tokio::task::spawn_blocking(move || {
+                        run_shell_blocking(&cmd, ok_notify, err_notify)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Shell task join error: {}", e);
+                        keymode::KeyResponse::Warn {
+                            title: "Shell command".to_string(),
+                            text: "Execution task failed".to_string(),
+                        }
+                    });
                     if let Err(e) = notifier.handle_key_response(resp) {
                         tracing::warn!("Failed to deliver shell response: {}", e);
                     }
+                    state.running.store(false, Ordering::SeqCst);
                 });
 
                 // Schedule silent repeats if requested
@@ -285,24 +327,26 @@ impl Repeater {
     fn spawn_shell_repeater(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
         let (initial_delay, interval) = self.effective_timings(repeat);
         let id_for_log = id.clone();
-        let running = Arc::new(AtomicBool::new(false));
-        let running_task = running.clone();
+        let state = self.shell_state(&id_for_log);
 
         let rep_obs = self.repeat_observer.clone();
         self.ticker.start(id, initial_delay, interval, move || {
             // Skip if a prior run is still active
-            if running_task.swap(true, Ordering::SeqCst) {
+            if state.running.swap(true, Ordering::SeqCst) {
                 trace!("repeater_shell_tick_skip_running" = %id_for_log);
                 return;
             }
             let cmd = command.clone();
-            let running_clear = running_task.clone();
             let id_for_trace = id_for_log.clone();
-            // Spawn blocking and return immediately to allow coalescing/skip behavior
+            // Spawn async task to serialize via per-id async mutex, then run blocking
             let rep_obs2 = rep_obs.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ =
-                    run_shell_blocking(&cmd, NotificationType::Ignore, NotificationType::Ignore);
+            let state2 = state.clone();
+            tokio::spawn(async move {
+                let _guard = state2.gate.lock().await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    run_shell_blocking(&cmd, NotificationType::Ignore, NotificationType::Ignore)
+                })
+                .await;
                 // Note shell repeat for observers
                 let obs = match rep_obs2.lock() {
                     Ok(guard) => guard.as_ref().cloned(),
@@ -314,7 +358,7 @@ impl Repeater {
                 if let Some(obs) = obs {
                     obs.on_shell_repeat(&id_for_trace);
                 }
-                running_clear.store(false, Ordering::SeqCst);
+                state2.running.store(false, Ordering::SeqCst);
                 trace!("repeater_shell_run_done" = %id_for_trace);
             });
         });
@@ -378,11 +422,15 @@ impl Repeater {
     /// Stop any software repeats for `id`.
     pub fn stop(&self, id: &str) {
         self.ticker.stop(id);
+        // Best-effort cleanup of per-id shell state
+        let _ = self.shell_states.lock().map(|mut m| m.remove(id));
     }
 
     /// Stop and wait briefly for repeats for `id` to finish.
     pub fn stop_sync(&self, id: &str) {
         self.ticker.stop_sync(id);
+        // Best-effort cleanup of per-id shell state
+        let _ = self.shell_states.lock().map(|mut m| m.remove(id));
     }
 
     /// Returns true if the ticker is currently running for `id`.
