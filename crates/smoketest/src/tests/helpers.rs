@@ -2,8 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use core_foundation::base::TCFType;
-
 use crate::{
     config,
     error::{Error, Result},
@@ -125,100 +123,4 @@ pub fn spawn_helper_with_options(
         });
     }
     Ok(helper)
-}
-
-// === AX helpers (local to smoketest) ===
-
-#[allow(improper_ctypes)]
-unsafe extern "C" {
-    fn AXUIElementCreateApplication(pid: i32) -> *mut core::ffi::c_void;
-    fn AXUIElementCopyAttributeValue(
-        element: *mut core::ffi::c_void,
-        attr: core_foundation::string::CFStringRef,
-        value: *mut core_foundation::base::CFTypeRef,
-    ) -> i32;
-    fn AXUIElementSetAttributeValue(
-        element: *mut core::ffi::c_void,
-        attr: core_foundation::string::CFStringRef,
-        value: core_foundation::base::CFTypeRef,
-    ) -> i32;
-    fn CFBooleanGetValue(b: core_foundation::base::CFTypeRef) -> bool;
-    fn CFRetain(cf: core_foundation::base::CFTypeRef) -> core_foundation::base::CFTypeRef;
-}
-
-fn cfstr(name: &'static str) -> core_foundation::string::CFStringRef {
-    use core_foundation::string::CFString;
-    thread_local! {
-        static S: std::cell::RefCell<std::collections::HashMap<&'static str, CFString>> =
-            std::cell::RefCell::new(std::collections::HashMap::new());
-    }
-    S.with(|cell| {
-        let mut m = cell.borrow_mut();
-        let s = m.entry(name).or_insert_with(|| CFString::new(name));
-        s.as_concrete_TypeRef()
-    })
-}
-
-fn ax_find_window_by_title(pid: i32, title: &str) -> Option<*mut core::ffi::c_void> {
-    use core_foundation::{array::CFArray, base::TCFType};
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
-    let mut wins_ref: core_foundation::base::CFTypeRef = std::ptr::null_mut();
-    let err = unsafe { AXUIElementCopyAttributeValue(app, cfstr("AXWindows"), &mut wins_ref) };
-    if err != 0 || wins_ref.is_null() {
-        return None;
-    }
-    let arr = unsafe { CFArray::<*const core::ffi::c_void>::wrap_under_create_rule(wins_ref as _) };
-    let n = unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) };
-    for i in 0..n {
-        let w =
-            unsafe { core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i) }
-                as *mut core::ffi::c_void;
-        if w.is_null() {
-            continue;
-        }
-        let mut t_ref: core_foundation::base::CFTypeRef = std::ptr::null_mut();
-        let terr = unsafe { AXUIElementCopyAttributeValue(w, cfstr("AXTitle"), &mut t_ref) };
-        if terr != 0 || t_ref.is_null() {
-            continue;
-        }
-        let cfs = unsafe { core_foundation::string::CFString::wrap_under_create_rule(t_ref as _) };
-        if cfs == title {
-            // Retain borrowed AX element so it remains valid beyond this CFArray scope
-            unsafe { CFRetain(w as core_foundation::base::CFTypeRef) };
-            return Some(w);
-        }
-    }
-    None
-}
-
-pub fn ax_set_bool_by_title(pid: i32, title: &str, attr: &'static str, value: bool) -> bool {
-    use core_foundation::boolean::{kCFBooleanFalse, kCFBooleanTrue};
-    if let Some(w) = ax_find_window_by_title(pid, title) {
-        let val = unsafe {
-            if value {
-                kCFBooleanTrue
-            } else {
-                kCFBooleanFalse
-            }
-        } as _;
-        let err = unsafe { AXUIElementSetAttributeValue(w, cfstr(attr), val) };
-        return err == 0;
-    }
-    false
-}
-
-pub fn ax_get_bool_by_title(pid: i32, title: &str, attr: &'static str) -> Option<bool> {
-    if let Some(w) = ax_find_window_by_title(pid, title) {
-        let mut v: core_foundation::base::CFTypeRef = std::ptr::null_mut();
-        let err = unsafe { AXUIElementCopyAttributeValue(w, cfstr(attr), &mut v) };
-        if err != 0 || v.is_null() {
-            return None;
-        }
-        let b = unsafe { CFBooleanGetValue(v) };
-        return Some(b);
-    }
-    None
 }

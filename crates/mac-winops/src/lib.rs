@@ -36,7 +36,11 @@ pub mod focus;
 pub mod nswindow;
 pub mod screen;
 use ax::*;
-pub use ax::{ax_window_frame, ax_window_position, ax_window_size};
+pub use ax::{
+    ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed, ax_set_bool_by_title,
+    ax_set_window_minimized, ax_set_window_zoomed, ax_window_frame, ax_window_position,
+    ax_window_size,
+};
 pub use error::{Error, Result};
 pub use fullscreen::{fullscreen_native, fullscreen_nonnative};
 pub use hide::{hide_bottom_left, hide_corner};
@@ -461,7 +465,8 @@ fn activate_pid(pid: i32) -> Result<()> {
         // raise/place operations have a visible target. Ignore AX failures.
         if permissions::accessibility_ok() {
             unsafe {
-                let app_ax = crate::AXElem::from_create(crate::ax::AXUIElementCreateApplication(pid));
+                let app_ax =
+                    crate::AXElem::from_create(crate::ax::AXUIElementCreateApplication(pid));
                 if let Some(app_ax) = app_ax {
                     let mut wins_ref: core_foundation::base::CFTypeRef = std::ptr::null_mut();
                     let err = crate::ax::AXUIElementCopyAttributeValue(
@@ -473,15 +478,18 @@ fn activate_pid(pid: i32) -> Result<()> {
                         let arr = core_foundation::array::CFArray::<*const core::ffi::c_void>::wrap_under_create_rule(wins_ref as _);
                         let n = core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef());
                         for i in 0..n {
-                            let w = core_foundation::array::CFArrayGetValueAtIndex(arr.as_concrete_TypeRef(), i)
-                                as *mut core::ffi::c_void;
+                            let w = core_foundation::array::CFArrayGetValueAtIndex(
+                                arr.as_concrete_TypeRef(),
+                                i,
+                            ) as *mut core::ffi::c_void;
                             if w.is_null() {
                                 continue;
                             }
                             let _ = crate::ax::AXUIElementSetAttributeValue(
                                 w,
                                 crate::ax::cfstr("AXMinimized"),
-                                core_foundation::boolean::kCFBooleanFalse as core_foundation::base::CFTypeRef,
+                                core_foundation::boolean::kCFBooleanFalse
+                                    as core_foundation::base::CFTypeRef,
                             );
                         }
                     }

@@ -405,6 +405,57 @@ pub fn ax_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
         .map(|s| (s.width, s.height))
 }
 
+/// Set a boolean AX attribute on the window identified by `(pid, title)`.
+///
+/// Returns `Ok(())` if the attribute could be set, or an `Error` if the
+/// application/window could not be resolved or AX returned a failure code.
+pub fn ax_set_bool_by_title(
+    pid: i32,
+    title: &str,
+    attr_name: &'static str,
+    value: bool,
+) -> Result<()> {
+    let Some(win) = ax_find_window_by_title(pid, title) else {
+        return Err(Error::FocusedWindow);
+    };
+    ax_set_bool(win.as_ptr(), cfstr(attr_name), value)
+}
+
+/// Get a boolean AX attribute from the window identified by `(pid, title)`.
+///
+/// Returns `Ok(Some(v))` when present, `Ok(None)` when the window/attribute
+/// is not available, or an error for AX failures.
+pub fn ax_get_bool_by_title(
+    pid: i32,
+    title: &str,
+    attr_name: &'static str,
+) -> Result<Option<bool>> {
+    let Some(win) = ax_find_window_by_title(pid, title) else {
+        return Ok(None);
+    };
+    ax_bool(win.as_ptr(), cfstr(attr_name))
+}
+
+/// Convenience: set the minimized state on a window by `(pid, title)`.
+pub fn ax_set_window_minimized(pid: i32, title: &str, minimized: bool) -> Result<()> {
+    ax_set_bool_by_title(pid, title, "AXMinimized", minimized)
+}
+
+/// Convenience: query the minimized state on a window by `(pid, title)`.
+pub fn ax_is_window_minimized(pid: i32, title: &str) -> Result<Option<bool>> {
+    ax_get_bool_by_title(pid, title, "AXMinimized")
+}
+
+/// Convenience: set the zoomed state on a window by `(pid, title)`.
+pub fn ax_set_window_zoomed(pid: i32, title: &str, zoomed: bool) -> Result<()> {
+    ax_set_bool_by_title(pid, title, "AXZoomed", zoomed)
+}
+
+/// Convenience: query the zoomed state on a window by `(pid, title)`.
+pub fn ax_is_window_zoomed(pid: i32, title: &str) -> Result<Option<bool>> {
+    ax_get_bool_by_title(pid, title, "AXZoomed")
+}
+
 /// Get the frame (position and size) of a window via Accessibility API.
 /// Returns None if the window is not found or permission is denied.
 pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))> {

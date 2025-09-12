@@ -747,12 +747,6 @@ impl HotkeyServiceBuilder {
         self
     }
 
-    /// Enable auto-shutdown when no UI clients remain connected.
-    pub fn auto_shutdown_if_no_clients(mut self, v: bool) -> Self {
-        self.auto_shutdown_on_empty = v;
-        self
-    }
-
     /// Build the service with the configured options.
     pub fn build(self) -> HotkeyService {
         let mut svc = HotkeyService::new(self.manager, self.shutdown);
