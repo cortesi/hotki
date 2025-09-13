@@ -28,6 +28,31 @@ const SETTLE_TOTAL_MS: u64 = 250; // max settle time per attempt
 const FALLBACK_SAFE_MAX_W: f64 = 400.0;
 const FALLBACK_SAFE_MAX_H: f64 = 300.0;
 
+#[inline]
+fn skip_reason_for_role_subrole(role: &str, subrole: &str) -> Option<&'static str> {
+    // Conservative gating: skip common non-movable/transient window types.
+    // These are matched against AXRole/AXSubrole values observed in practice.
+    // - Sheets: AXRole == "AXSheet"
+    // - Popovers: seen as role or subrole depending on host; treat both
+    // - Dialogs and system dialogs: subrole markers
+    // - Floating tool palettes: not user-movable in the same sense
+    let r = role;
+    let s = subrole;
+    if r == "AXSheet" {
+        return Some("role=AXSheet");
+    }
+    if r == "AXPopover" || s == "AXPopover" {
+        return Some("popover");
+    }
+    if s == "AXDialog" || s == "AXSystemDialog" {
+        return Some("dialog");
+    }
+    if s == "AXFloatingWindow" {
+        return Some("floating");
+    }
+    None
+}
+
 /// Options controlling placement attempts and fallback used primarily by tests.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlaceAttemptOptions {
@@ -376,6 +401,13 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
         let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
+        if let Some(reason) = skip_reason_for_role_subrole(&role, &subrole) {
+            debug!(
+                "skipped: role/subrole reason={} role='{}' subrole='{}' title='{}'",
+                reason, role, subrole, title
+            );
+            return Ok(());
+        }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -624,6 +656,13 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
         let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
+        if let Some(reason) = skip_reason_for_role_subrole(&role, &subrole) {
+            debug!(
+                "skipped: role/subrole reason={} role='{}' subrole='{}' title='{}'",
+                reason, role, subrole, title
+            );
+            return Ok(());
+        }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -881,6 +920,13 @@ pub fn place_grid_focused_opts(
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
         let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
+        if let Some(reason) = skip_reason_for_role_subrole(&role, &subrole) {
+            debug!(
+                "skipped: role/subrole reason={} role='{}' subrole='{}' title='{}'",
+                reason, role, subrole, title
+            );
+            return Ok(());
+        }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
@@ -1119,6 +1165,13 @@ pub(crate) fn place_move_grid(
         let subrole =
             crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
         let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
+        if let Some(reason) = skip_reason_for_role_subrole(&role, &subrole) {
+            debug!(
+                "skipped: role/subrole reason={} role='{}' subrole='{}' title='{}'",
+                reason, role, subrole, title
+            );
+            return Ok(());
+        }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);

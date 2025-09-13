@@ -77,6 +77,16 @@ thread_local! {
     static ATTR_STRINGS: RefCell<HashMap<&'static str, CFString>> = RefCell::new(HashMap::new());
 }
 
+// Cache AXIsAttributeSettable results per AX window element for position/size.
+// Keyed by the AX element pointer address; values store cached booleans for
+// AXPosition and AXSize respectively. We intentionally keep this thread-local
+// because AX usage happens on the main thread in this crate.
+type SettablePair = (Option<bool>, Option<bool>); // (AXPosition, AXSize)
+thread_local! {
+    static SETTABLE_CACHE: RefCell<HashMap<usize, SettablePair>> =
+        RefCell::new(HashMap::new());
+}
+
 pub fn cfstr(name: &'static str) -> CFStringRef {
     // Return a stable CFStringRef for known attribute/action names. This avoids
     // relying on toll‑free bridging of static strings, which can trip pointer
@@ -240,16 +250,9 @@ pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Resu
     }
     // Optionally surface settable state in debug builds.
     if enabled!(Level::DEBUG) {
-        let mut settable = false;
-        let serr = unsafe { AXUIElementIsAttributeSettable(element, attr, &mut settable) };
-        if serr == 0 {
-            debug!("AXIsAttributeSettable(CGPoint) -> settable={}", settable);
-        } else {
-            debug!(
-                "AXIsAttributeSettable(CGPoint) failed: code={} ({})",
-                serr,
-                ax_error_name(serr)
-            );
+        match ax_is_attribute_settable_cached(element, attr) {
+            Some(settable) => debug!("AXIsAttributeSettable(CGPoint) -> settable={}", settable),
+            None => debug!("AXIsAttributeSettable(CGPoint) -> unknown (attr)"),
         }
     }
     // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
@@ -283,16 +286,9 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
     }
     // Optionally surface settable state in debug builds.
     if enabled!(Level::DEBUG) {
-        let mut settable = false;
-        let serr = unsafe { AXUIElementIsAttributeSettable(element, attr, &mut settable) };
-        if serr == 0 {
-            debug!("AXIsAttributeSettable(CGSize) -> settable={}", settable);
-        } else {
-            debug!(
-                "AXIsAttributeSettable(CGSize) failed: code={} ({})",
-                serr,
-                ax_error_name(serr)
-            );
+        match ax_is_attribute_settable_cached(element, attr) {
+            Some(settable) => debug!("AXIsAttributeSettable(CGSize) -> settable={}", settable),
+            None => debug!("AXIsAttributeSettable(CGSize) -> unknown (attr)"),
         }
     }
     // SAFETY: Valid element, attribute, and AXValue*; we own `v` and must release.
@@ -517,4 +513,69 @@ fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
         }
     }
     None
+}
+
+// Determine whether the given attribute is one we cache (AXPosition/AXSize).
+#[inline]
+fn cached_attr_kind(attr: CFStringRef) -> Option<usize> {
+    // Index 0 => AXPosition, 1 => AXSize
+    let pos = cfstr("AXPosition");
+    if attr == pos {
+        return Some(0);
+    }
+    let size = cfstr("AXSize");
+    if attr == size {
+        return Some(1);
+    }
+    None
+}
+
+/// Query AXIsAttributeSettable with a per-window cache for AXPosition/AXSize.
+/// Returns Some(true/false) when the attribute is one of the cached kinds and
+/// the query succeeded; returns None when the attribute is not cached or when
+/// the system query failed.
+fn ax_is_attribute_settable_cached(element: *mut c_void, attr: CFStringRef) -> Option<bool> {
+    let kind = cached_attr_kind(attr)?;
+    let key = element as usize;
+    // Fast path: return cached value if present
+    if let Some(hit) = SETTABLE_CACHE.with(|cell| {
+        let m = cell.borrow();
+        m.get(&key).and_then(|(p, s)| match kind {
+            0 => *p,
+            _ => *s,
+        })
+    }) {
+        return Some(hit);
+    }
+    // Miss: query AX and populate cache slot
+    let mut settable = false;
+    let serr = unsafe { AXUIElementIsAttributeSettable(element, attr, &mut settable) };
+    if serr != 0 {
+        // Leave as None so callers can decide behavior; we still insert an entry
+        // with the missing slot untouched so a subsequent successful query can fill it.
+        SETTABLE_CACHE.with(|cell| {
+            let mut m = cell.borrow_mut();
+            let entry = m.entry(key).or_insert((None, None));
+            match kind {
+                0 => {
+                    // leave position as None
+                    let _ = entry;
+                }
+                _ => {
+                    // leave size as None
+                    let _ = entry;
+                }
+            }
+        });
+        return None;
+    }
+    SETTABLE_CACHE.with(|cell| {
+        let mut m = cell.borrow_mut();
+        let entry = m.entry(key).or_insert((None, None));
+        match kind {
+            0 => entry.0 = Some(settable),
+            _ => entry.1 = Some(settable),
+        }
+    });
+    Some(settable)
 }
