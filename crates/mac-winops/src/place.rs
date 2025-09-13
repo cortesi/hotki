@@ -352,58 +352,82 @@ fn apply_and_wait(
     let start = std::time::Instant::now();
 
     // 1) Apply in requested order with a tiny stutter between A and B.
+    let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+    let do_pos = can_pos != Some(false);
+    let do_size = can_size != Some(false);
+
     if pos_first {
-        debug!(
-            "WinOps: {} set pos -> ({:.1},{:.1})",
-            op_label, target.x, target.y
-        );
-        ax_set_point(
-            win.as_ptr(),
-            attr_pos,
-            CGPoint {
-                x: target.x,
-                y: target.y,
-            },
-        )?;
-        sleep_ms(APPLY_STUTTER_MS);
-        debug!(
-            "WinOps: {} set size -> ({:.1},{:.1})",
-            op_label, target.w, target.h
-        );
-        ax_set_size(
-            win.as_ptr(),
-            attr_size,
-            CGSize {
-                width: target.w,
-                height: target.h,
-            },
-        )?;
+        if do_pos {
+            debug!(
+                "WinOps: {} set pos -> ({:.1},{:.1})",
+                op_label, target.x, target.y
+            );
+            ax_set_point(
+                win.as_ptr(),
+                attr_pos,
+                CGPoint {
+                    x: target.x,
+                    y: target.y,
+                },
+            )?;
+        } else {
+            debug!("skip:set pos (AXPosition not settable)");
+        }
+        if do_pos && do_size {
+            sleep_ms(APPLY_STUTTER_MS);
+        }
+        if do_size {
+            debug!(
+                "WinOps: {} set size -> ({:.1},{:.1})",
+                op_label, target.w, target.h
+            );
+            ax_set_size(
+                win.as_ptr(),
+                attr_size,
+                CGSize {
+                    width: target.w,
+                    height: target.h,
+                },
+            )?;
+        } else {
+            debug!("skip:set size (AXSize not settable)");
+        }
     } else {
-        debug!(
-            "WinOps: {} set size -> ({:.1},{:.1})",
-            op_label, target.w, target.h
-        );
-        ax_set_size(
-            win.as_ptr(),
-            attr_size,
-            CGSize {
-                width: target.w,
-                height: target.h,
-            },
-        )?;
-        sleep_ms(APPLY_STUTTER_MS);
-        debug!(
-            "WinOps: {} set pos -> ({:.1},{:.1})",
-            op_label, target.x, target.y
-        );
-        ax_set_point(
-            win.as_ptr(),
-            attr_pos,
-            CGPoint {
-                x: target.x,
-                y: target.y,
-            },
-        )?;
+        if do_size {
+            debug!(
+                "WinOps: {} set size -> ({:.1},{:.1})",
+                op_label, target.w, target.h
+            );
+            ax_set_size(
+                win.as_ptr(),
+                attr_size,
+                CGSize {
+                    width: target.w,
+                    height: target.h,
+                },
+            )?;
+        } else {
+            debug!("skip:set size (AXSize not settable)");
+        }
+        if do_pos && do_size {
+            sleep_ms(APPLY_STUTTER_MS);
+        }
+        if do_pos {
+            debug!(
+                "WinOps: {} set pos -> ({:.1},{:.1})",
+                op_label, target.x, target.y
+            );
+            ax_set_point(
+                win.as_ptr(),
+                attr_pos,
+                CGPoint {
+                    x: target.x,
+                    y: target.y,
+                },
+            )?;
+        } else {
+            debug!("skip:set pos (AXPosition not settable)");
+        }
     }
 
     // 2) Poll until within eps or timeout.
