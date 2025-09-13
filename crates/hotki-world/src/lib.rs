@@ -429,6 +429,9 @@ struct WorldState {
     current_poll_ms: u64,
     warned_ax: bool,
     warned_screen: bool,
+    /// Windows that have gone missing recently and are pending confirmation
+    /// before eviction. Value is the number of consecutive misses observed.
+    suspects: HashMap<WindowKey, u8>,
 }
 
 impl WorldState {
@@ -444,6 +447,7 @@ impl WorldState {
             current_poll_ms: 0,
             warned_ax: false,
             warned_screen: false,
+            suspects: HashMap::new(),
         }
     }
 }
@@ -746,16 +750,33 @@ fn reconcile(
         }
     }
 
-    // Removals
+    // Removals with suspect confirmation
+    const SUSPECT_MISSES: u8 = 1; // mark suspect after 1 missed pass; evict on next if still absent
     let seen: std::collections::HashSet<_> = seen_keys.iter().copied().collect();
     let existing_keys: Vec<_> = state.store.keys().copied().collect();
+    // First, clear suspect status for any windows we have seen this pass.
+    for key in seen.iter() {
+        state.suspects.remove(key);
+    }
     for key in existing_keys {
         if !seen.contains(&key) {
-            had_changes = true;
-            state.store.remove(&key);
-            state.last_emit.remove(&key);
-            state.coalesce.remove(&key);
-            let _ = events.send(WorldEvent::Removed(key));
+            let misses = state.suspects.entry(key).or_insert(0);
+            *misses = misses.saturating_add(1);
+            if *misses > SUSPECT_MISSES {
+                // Confirm absence against a fresh CGWindowList filtered by the same pid/id
+                let still_absent = {
+                    let confirm = winops.list_windows();
+                    !confirm.iter().any(|w| w.pid == key.pid && w.id == key.id)
+                };
+                if still_absent {
+                    had_changes = true;
+                    state.store.remove(&key);
+                    state.last_emit.remove(&key);
+                    state.coalesce.remove(&key);
+                    state.suspects.remove(&key);
+                    let _ = events.send(WorldEvent::Removed(key));
+                }
+            }
         }
     }
 

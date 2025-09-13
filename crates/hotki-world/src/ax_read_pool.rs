@@ -1,13 +1,16 @@
 use std::{
     collections::HashMap,
-    sync::{OnceLock, atomic::{AtomicUsize, Ordering}},
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use crossbeam_channel::{self as chan, Receiver, Sender, select};
 use mac_winops::{AxProps, WindowId};
-use parking_lot::{RwLock, Mutex};
+use parking_lot::{Mutex, RwLock};
 
 use super::TEST_OVERRIDES;
 
@@ -171,7 +174,9 @@ fn worker_loop(
         }
 
         // Ensure we release the permit even if the job path early-returns.
-        struct Permit<'a> { tx: &'a Sender<()> }
+        struct Permit<'a> {
+            tx: &'a Sender<()>,
+        }
         impl<'a> Drop for Permit<'a> {
             fn drop(&mut self) {
                 INFLIGHT.fetch_sub(1, Ordering::SeqCst);
@@ -182,8 +187,15 @@ fn worker_loop(
         let cur = INFLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
         loop {
             let prev = PEAK_INFLIGHT.load(Ordering::Relaxed);
-            if cur <= prev { break; }
-            if PEAK_INFLIGHT.compare_exchange(prev, cur, Ordering::SeqCst, Ordering::Relaxed).is_ok() { break; }
+            if cur <= prev {
+                break;
+            }
+            if PEAK_INFLIGHT
+                .compare_exchange(prev, cur, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
         }
         let _permit = Permit { tx: &sem_tx };
 
@@ -201,8 +213,16 @@ fn worker_loop(
                 // Prefer global test override (cross-thread); otherwise defer to lib shim.
                 let title_opt = {
                     let o = test_overrides().lock();
-                    if let Some(ms) = o.title_delay_ms { std::thread::sleep(Duration::from_millis(ms)); }
-                    if let Some((tid, ref t)) = o.title && tid == id { Some(t.clone()) } else { super::ax_title_for_window_id(id) }
+                    if let Some(ms) = o.title_delay_ms {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                    if let Some((tid, ref t)) = o.title
+                        && tid == id
+                    {
+                        Some(t.clone())
+                    } else {
+                        super::ax_title_for_window_id(id)
+                    }
                 };
                 if let Some(title) = title_opt {
                     if Instant::now() < tj.deadline {
@@ -265,7 +285,10 @@ pub fn focused_id(pid: i32) -> Option<WindowId> {
         let s = o.lock();
         (s.ax_focus.is_some(), s.ax_async_only.unwrap_or(false))
     });
-    if has_override && !force_async && let Some(id) = super::ax_focused_window_id_for_pid(pid) {
+    if has_override
+        && !force_async
+        && let Some(id) = super::ax_focused_window_id_for_pid(pid)
+    {
         let mut c = pool.cache.write();
         c.set_focus(pid, id);
         return Some(id);
@@ -289,7 +312,10 @@ pub fn title(pid: i32, id: WindowId) -> Option<String> {
         let s = o.lock();
         (s.ax_title.is_some(), s.ax_async_only.unwrap_or(false))
     });
-    if has_override && !force_async && let Some(t) = super::ax_title_for_window_id(id) {
+    if has_override
+        && !force_async
+        && let Some(t) = super::ax_title_for_window_id(id)
+    {
         let mut c = pool.cache.write();
         c.set_title(pid, id, t.clone());
         return Some(t);
@@ -320,7 +346,10 @@ pub fn props(pid: i32, id: WindowId) -> Option<AxProps> {
 
 /// Get current and peak in-flight counts observed since last reset.
 pub fn _test_inflight_metrics() -> (usize, usize) {
-    (INFLIGHT.load(Ordering::SeqCst), PEAK_INFLIGHT.load(Ordering::SeqCst))
+    (
+        INFLIGHT.load(Ordering::SeqCst),
+        PEAK_INFLIGHT.load(Ordering::SeqCst),
+    )
 }
 
 /// Reset in-flight metrics and clear the internal caches for deterministic tests.

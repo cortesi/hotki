@@ -6,8 +6,12 @@ use hotki_world::test_api as world_test;
 fn wait_until(mut cond: impl FnMut() -> bool, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        if cond() { return true; }
-        if Instant::now() >= deadline { return false; }
+        if cond() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
 }
