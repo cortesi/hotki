@@ -1,6 +1,52 @@
+use std::fmt::{Display, Formatter, Result as FmtResult};
+
 use thiserror::Error;
 
 use crate::geom::Rect;
+
+/// Bitflags-style struct capturing which edges were clamped to the
+/// visible frame during placement verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClampFlags {
+    /// Window's left edge equals the visible frame's left edge (≈ within eps).
+    pub left: bool,
+    /// Window's right edge equals the visible frame's right edge (≈ within eps).
+    pub right: bool,
+    /// Window's top edge equals the visible frame's top edge (≈ within eps).
+    pub top: bool,
+    /// Window's bottom edge equals the visible frame's bottom edge (≈ within eps).
+    pub bottom: bool,
+}
+
+impl ClampFlags {
+    /// Returns true if any clamp flag is set.
+    pub fn any(self) -> bool {
+        self.left || self.right || self.top || self.bottom
+    }
+}
+
+impl Display for ClampFlags {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.left {
+            parts.push("left");
+        }
+        if self.right {
+            parts.push("right");
+        }
+        if self.bottom {
+            parts.push("bottom");
+        }
+        if self.top {
+            parts.push("top");
+        }
+        if parts.is_empty() {
+            write!(f, "none")
+        } else {
+            write!(f, "{}", parts.join(","))
+        }
+    }
+}
 
 /// Errors that can occur during window operations.
 #[derive(Error, Debug)]
@@ -56,7 +102,7 @@ pub enum Error {
     /// match the requested target within `epsilon` tolerance.
     #[error(
         "post-placement verification failed in {op}: expected={expected:?} got={got:?} \
-         eps={epsilon:.2} diff=(dx={dx:.2}, dy={dy:.2}, dw={dw:.2}, dh={dh:.2})"
+         eps={epsilon:.2} diff=(dx={dx:.2}, dy={dy:.2}, dw={dw:.2}, dh={dh:.2}) clamped={clamped}"
     )]
     PlacementVerificationFailed {
         /// Logical operation name (e.g., "place_grid").
@@ -75,6 +121,8 @@ pub enum Error {
         dw: f64,
         /// Absolute delta in height between expected and actual.
         dh: f64,
+        /// Which edges appear clamped to the visible frame (≈ within eps).
+        clamped: ClampFlags,
     },
 }
 

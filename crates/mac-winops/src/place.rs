@@ -184,24 +184,12 @@ fn one_axis_off(d: (f64, f64, f64, f64), eps: f64) -> Option<Axis> {
 }
 
 #[inline]
-fn clamp_flags(got: &Rect, vf: &Rect, eps: f64) -> String {
-    let mut flags: Vec<&str> = Vec::new();
-    if geom::approx_eq(got.left(), vf.left(), eps) {
-        flags.push("left");
-    }
-    if geom::approx_eq(got.right(), vf.right(), eps) {
-        flags.push("right");
-    }
-    if geom::approx_eq(got.bottom(), vf.bottom(), eps) {
-        flags.push("bottom");
-    }
-    if geom::approx_eq(got.top(), vf.top(), eps) {
-        flags.push("top");
-    }
-    if flags.is_empty() {
-        "none".into()
-    } else {
-        flags.join(",")
+fn clamp_flags(got: &Rect, vf: &Rect, eps: f64) -> crate::error::ClampFlags {
+    crate::error::ClampFlags {
+        left: geom::approx_eq(got.left(), vf.left(), eps),
+        right: geom::approx_eq(got.right(), vf.right(), eps),
+        bottom: geom::approx_eq(got.bottom(), vf.bottom(), eps),
+        top: geom::approx_eq(got.top(), vf.top(), eps),
     }
 }
 
@@ -250,20 +238,47 @@ fn now_ms(start: std::time::Instant) -> u64 {
 }
 
 #[inline]
-fn guard_bad_coord_space(target: &Rect, vf_x: f64, vf_y: f64) -> Result<()> {
+fn needs_safe_park(target: &Rect, vf_x: f64, vf_y: f64) -> bool {
     // Trigger only when target is near global origin AND the chosen screen's
     // origin is not at the global origin (i.e., likely a non‑primary screen).
     let near_zero =
         geom::approx_eq(target.x, 0.0, VERIFY_EPS) && geom::approx_eq(target.y, 0.0, VERIFY_EPS);
     let non_primary =
         !geom::approx_eq(vf_x, 0.0, VERIFY_EPS) || !geom::approx_eq(vf_y, 0.0, VERIFY_EPS);
-    if near_zero && non_primary {
-        debug!(
-            "coordspace: guard hit — target=({:.1},{:.1},{:.1},{:.1}) vf_origin=({:.1},{:.1}); failing with BadCoordinateSpace",
-            target.x, target.y, target.w, target.h, vf_x, vf_y
-        );
-        return Err(Error::BadCoordinateSpace);
+    near_zero && non_primary
+}
+
+/// Stage 3.1: Preflight "safe‑park" to avoid BadCoordinateSpace near global (0,0)
+/// on non‑primary displays. Parks the window inside the visible frame with a
+/// small safe size, then proceeds with the normal placement.
+fn preflight_safe_park(
+    op_label: &str,
+    win: &crate::AXElem,
+    attr_pos: core_foundation::string::CFStringRef,
+    attr_size: core_foundation::string::CFStringRef,
+    vf_x: f64,
+    vf_y: f64,
+    target: &Rect,
+) -> Result<()> {
+    // Only attempt when both setters are known to be supported (or unknown).
+    let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+    if matches!(can_pos, Some(false)) || matches!(can_size, Some(false)) {
+        debug!("safe_park: skipped (setters not settable)");
+        return Ok(());
     }
+
+    // Pick a conservative in‑frame parking rect near the visible-frame origin.
+    let park = Rect {
+        x: vf_x + 32.0,
+        y: vf_y + 32.0,
+        w: target.w.min(FALLBACK_SAFE_MAX_W),
+        h: target.h.min(FALLBACK_SAFE_MAX_H),
+    };
+    debug!(
+        "safe_park: {} -> ({:.1},{:.1},{:.1},{:.1})",
+        op_label, park.x, park.y, park.w, park.h
+    );
+    let _ = apply_and_wait(op_label, win, attr_pos, attr_size, &park, true, VERIFY_EPS)?;
     Ok(())
 }
 
@@ -589,8 +604,12 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             g.h
         );
         let target = rect_from(g.x, g.y, g.w, g.h);
-        // Stage 5 guard: detect (0,0) targets on non‑primary screens
-        guard_bad_coord_space(&target, vf_x, vf_y)?;
+        // Stage 3.1: if we would trip coordinate-space issues near global (0,0)
+        // on a non-primary screen, first park the window safely inside the
+        // visible frame, then proceed with normal placement.
+        if needs_safe_park(&target, vf_x, vf_y) {
+            preflight_safe_park("place_grid", &win, attr_pos, attr_size, vf_x, vf_y, &target)?;
+        }
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -676,6 +695,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             if pos_first_only {
                 debug!("verified=false");
                 log_failure_context(&win, &role, &subrole);
+                let clamped = clamp_flags(&got1, &vf_rect, VERIFY_EPS);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid",
                     expected: target,
@@ -685,6 +705,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     dy: d1.1,
                     dw: d1.2,
                     dh: d1.3,
+                    clamped,
                 });
             }
             // Stage 7.1: If only one axis is off, try a single-axis nudge first.
@@ -771,6 +792,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid",
                         expected: target,
@@ -780,6 +802,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             } else if within_eps(d2, VERIFY_EPS) {
@@ -831,6 +854,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid",
                         expected: target,
@@ -840,6 +864,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             }
@@ -906,7 +931,17 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             g.h
         );
         let target = rect_from(g.x, g.y, g.w, g.h);
-        guard_bad_coord_space(&target, vf_x, vf_y)?;
+        if needs_safe_park(&target, vf_x, vf_y) {
+            preflight_safe_park(
+                "place_grid_focused",
+                &win,
+                attr_pos,
+                attr_size,
+                vf_x,
+                vf_y,
+                &target,
+            )?;
+        }
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_grid_focused: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -991,6 +1026,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             if pos_first_only {
                 debug!("verified=false");
                 log_failure_context(&win, &role, &subrole);
+                let clamped = clamp_flags(&got1, &vf_rect, VERIFY_EPS);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
@@ -1000,6 +1036,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     dy: d1.1,
                     dw: d1.2,
                     dh: d1.3,
+                    clamped,
                 });
             }
             // Stage 7.1: If only one axis is off, try a single-axis nudge first.
@@ -1100,6 +1137,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1109,6 +1147,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             } else if within_eps(d2, VERIFY_EPS) {
@@ -1165,6 +1204,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1174,6 +1214,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             }
@@ -1225,6 +1266,17 @@ pub fn place_grid_focused_opts(
             row,
         );
         let target = rect_from(x, y, w, h);
+        if needs_safe_park(&target, vf_x, vf_y) {
+            preflight_safe_park(
+                "place_grid_focused",
+                &win,
+                attr_pos,
+                attr_size,
+                vf_x,
+                vf_y,
+                &target,
+            )?;
+        }
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_grid_focused_opts: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -1313,6 +1365,7 @@ pub fn place_grid_focused_opts(
             if pos_first_only {
                 debug!("verified=false");
                 log_failure_context(&win, &role, &subrole);
+                let clamped = clamp_flags(&got1, &vf_rect, VERIFY_EPS);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
@@ -1322,6 +1375,7 @@ pub fn place_grid_focused_opts(
                     dy: d1.1,
                     dw: d1.2,
                     dh: d1.3,
+                    clamped,
                 });
             }
             // Stage 7.1: If only one axis is off, try a single-axis nudge first.
@@ -1422,6 +1476,7 @@ pub fn place_grid_focused_opts(
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1431,6 +1486,7 @@ pub fn place_grid_focused_opts(
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             } else if within_eps(d2, VERIFY_EPS) {
@@ -1486,6 +1542,7 @@ pub fn place_grid_focused_opts(
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1495,6 +1552,7 @@ pub fn place_grid_focused_opts(
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             }
@@ -1581,7 +1639,17 @@ pub(crate) fn place_move_grid(
             g.h
         );
         let target = rect_from(g.x, g.y, g.w, g.h);
-        guard_bad_coord_space(&target, vf_x, vf_y)?;
+        if needs_safe_park(&target, vf_x, vf_y) {
+            preflight_safe_park(
+                "place_move_grid",
+                &win,
+                attr_pos,
+                attr_size,
+                vf_x,
+                vf_y,
+                &target,
+            )?;
+        }
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_move_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} dir={:?} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) cur_cell={:?} next_cell=({}, {}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -1669,6 +1737,7 @@ pub(crate) fn place_move_grid(
         } else {
             if pos_first_only {
                 debug!("verified=false");
+                let clamped = clamp_flags(&got1, &vf_rect, VERIFY_EPS);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_move_grid",
                     expected: target,
@@ -1678,6 +1747,7 @@ pub(crate) fn place_move_grid(
                     dy: d1.1,
                     dw: d1.2,
                     dh: d1.3,
+                    clamped,
                 });
             }
             // Stage 7.1: If only one axis is off, try a single-axis nudge first.
@@ -1777,6 +1847,7 @@ pub(crate) fn place_move_grid(
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_move_grid",
                         expected: target,
@@ -1786,6 +1857,7 @@ pub(crate) fn place_move_grid(
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             } else if within_eps(d2, VERIFY_EPS) {
@@ -1842,6 +1914,7 @@ pub(crate) fn place_move_grid(
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
+                    let clamped = clamp_flags(&got3, &vf_rect, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_move_grid",
                         expected: target,
@@ -1851,6 +1924,7 @@ pub(crate) fn place_move_grid(
                         dy: d3.1,
                         dw: d3.2,
                         dh: d3.3,
+                        clamped,
                     })
                 }
             }
@@ -1860,7 +1934,8 @@ pub(crate) fn place_move_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::choose_initial_order;
+    use super::{choose_initial_order, clamp_flags};
+    use crate::geom::Rect;
 
     #[test]
     fn order_both_settable_defaults_pos_first() {
@@ -1882,5 +1957,90 @@ mod tests {
         assert!(choose_initial_order(None, None));
         assert!(choose_initial_order(Some(true), None));
         assert!(choose_initial_order(None, Some(true)));
+    }
+
+    #[test]
+    fn clamp_flags_detects_each_edge_and_none() {
+        let vf = Rect {
+            x: 100.0,
+            y: 200.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let eps = 2.0;
+
+        // Left clamp only
+        let got_left = Rect {
+            x: 100.0,
+            y: 250.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        let f = clamp_flags(&got_left, &vf, eps);
+        assert!(
+            f.left && !f.right && !f.top && !f.bottom,
+            "left only: {}",
+            f
+        );
+
+        // Right clamp only (x + w == vf.right)
+        let got_right = Rect {
+            x: 600.0,
+            y: 250.0,
+            w: 300.0,
+            h: 300.0,
+        };
+        let f = clamp_flags(&got_right, &vf, eps);
+        assert!(
+            !f.left && f.right && !f.top && !f.bottom,
+            "right only: {}",
+            f
+        );
+
+        // Bottom clamp only (y == vf.bottom)
+        let got_bottom = Rect {
+            x: 400.0,
+            y: 200.0,
+            w: 200.0,
+            h: 300.0,
+        };
+        let f = clamp_flags(&got_bottom, &vf, eps);
+        assert!(
+            !f.left && !f.right && !f.top && f.bottom,
+            "bottom only: {}",
+            f
+        );
+
+        // Top clamp only (y + h == vf.top)
+        let got_top = Rect {
+            x: 400.0,
+            y: 700.0,
+            w: 200.0,
+            h: 100.0,
+        };
+        let f = clamp_flags(&got_top, &vf, eps);
+        assert!(!f.left && !f.right && f.top && !f.bottom, "top only: {}", f);
+
+        // All edges clamped (exact match)
+        let got_all = Rect {
+            x: 100.0,
+            y: 200.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let f = clamp_flags(&got_all, &vf, eps);
+        assert!(f.left && f.right && f.top && f.bottom);
+        assert_eq!(f.to_string(), "left,right,bottom,top");
+
+        // None clamped
+        let got_none = Rect {
+            x: 150.0,
+            y: 250.0,
+            w: 500.0,
+            h: 400.0,
+        };
+        let f = clamp_flags(&got_none, &vf, eps);
+        assert!(!f.any());
+        assert_eq!(f.to_string(), "none");
     }
 }
