@@ -55,6 +55,57 @@ pub use place::{PlaceAttemptOptions, place_grid_focused, place_grid_focused_opts
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 
+// ===== Observer wiring =====
+thread_local! {
+    static OBSERVERS: std::cell::RefCell<Option<ax_observer::AxObserverRegistry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+// Re-export AX observer event types so other crates can subscribe without
+// depending on the private module path.
+pub use ax_observer::{AxEvent, AxEventKind, WindowHint};
+
+/// Ensure an AX observer exists for `pid` (idempotent).
+pub fn ensure_ax_observer(pid: i32) {
+    OBSERVERS.with(|cell| {
+        let mut o = cell.borrow_mut();
+        if o.is_none() {
+            *o = Some(ax_observer::AxObserverRegistry::default());
+        }
+        if let Some(reg) = o.as_ref() {
+            let _ = reg.ensure(pid);
+        }
+    });
+}
+
+/// Remove an AX observer for `pid` if present. Returns `true` if removed.
+pub fn remove_ax_observer(pid: i32) -> bool {
+    OBSERVERS.with(|cell| {
+        let o = cell.borrow();
+        if let Some(reg) = o.as_ref() {
+            reg.remove(pid)
+        } else {
+            false
+        }
+    })
+}
+
+/// Set a global sender to receive `AxEvent`s from all installed observers.
+///
+/// If the observer registry has not been created yet, this function will
+/// lazily initialize it.
+pub fn set_ax_observer_sender(sender: crossbeam_channel::Sender<AxEvent>) {
+    OBSERVERS.with(|cell| {
+        let mut o = cell.borrow_mut();
+        if o.is_none() {
+            *o = Some(ax_observer::AxObserverRegistry::default());
+        }
+        if let Some(reg) = o.as_ref() {
+            reg.set_sender(sender);
+        }
+    });
+}
+
 /// Applications to skip when determining focus/frontmost windows.
 /// These are system or overlay processes that shouldn't count as focus owners.
 pub const FOCUS_SKIP_APPS: &[&str] = &[
@@ -185,6 +236,8 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
 /// Tries `AXFocused` first, then `AXMain`, and falls back to CG's frontmost window for the pid.
 /// Returns `None` if nothing is found or AX is unavailable.
 pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
+    // Opportunistically install an observer for the queried PID (no-op if disabled).
+    ensure_ax_observer(pid);
     if !permissions::accessibility_ok() {
         return frontmost_window_for_pid(pid).map(|w| w.id);
     }

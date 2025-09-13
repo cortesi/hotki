@@ -12,3 +12,4 @@ permissions = { path = "../permissions" }
 tracing = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = "0.12.4"
+crossbeam-channel.workspace = true

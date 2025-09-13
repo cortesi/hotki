@@ -1,4 +1,5 @@
 //! Per‑PID Accessibility (AX) observer scaffolding.
+#![allow(clippy::arc_with_non_send_sync)]
 //!
 //! Provides a minimal, safe wrapper around `AXObserver` that:
 //! - Creates one observer per PID.
@@ -345,6 +346,26 @@ impl PerPid {
         }
     }
 
+    /// Returns true if the underlying process still appears to be the same
+    /// and the AX application element equals the stored one.
+    fn still_same_process(&self) -> bool {
+        // Check liveness: kill(pid, 0) returns Ok if process exists.
+        let alive = unsafe { libc::kill(self.pid as libc::pid_t, 0) == 0 };
+        if !alive {
+            return false;
+        }
+        // Create a fresh app element and compare equality with stored one.
+        unsafe {
+            let new_app = AXUIElementCreateApplication(self.pid);
+            if new_app.is_null() {
+                return false;
+            }
+            let equal = CFEqual(self.app.as_ptr() as CFTypeRef, new_app as CFTypeRef);
+            CFRelease(new_app as CFTypeRef);
+            equal
+        }
+    }
+
     fn subscribe_app(&mut self, name: &'static str) -> Result<(), i32> {
         if self.subs.contains(name) {
             return Ok(());
@@ -371,6 +392,39 @@ impl PerPid {
 impl Drop for PerPid {
     fn drop(&mut self) {
         unsafe {
+            // Best-effort: detach any window-specific notifications
+            if let Some(prev) = self
+                .ctx_ptr
+                .cast::<Ctx>()
+                .as_ref()
+                .and_then(|c| c.observed_window.borrow().clone())
+            {
+                let ctx = &*(self.ctx_ptr as *mut Ctx);
+                let _ = AXObserverRemoveNotification(
+                    self.observer.as_ptr(),
+                    prev.as_ptr(),
+                    ctx.notif_title_changed.as_concrete_TypeRef(),
+                );
+                let _ = AXObserverRemoveNotification(
+                    self.observer.as_ptr(),
+                    prev.as_ptr(),
+                    ctx.notif_moved.as_concrete_TypeRef(),
+                );
+                let _ = AXObserverRemoveNotification(
+                    self.observer.as_ptr(),
+                    prev.as_ptr(),
+                    ctx.notif_resized.as_concrete_TypeRef(),
+                );
+            }
+            // Best-effort: unsubscribe app-level notifications we've tracked
+            for name in self.subs.drain() {
+                let cf = CFString::from_static_string(name);
+                let _ = AXObserverRemoveNotification(
+                    self.observer.as_ptr(),
+                    self.app.as_ptr(),
+                    cf.as_concrete_TypeRef(),
+                );
+            }
             if self.source_added {
                 CFRunLoopRemoveSource(self.rl, self.source, kCFRunLoopDefaultMode);
             }
@@ -383,6 +437,7 @@ impl Drop for PerPid {
 }
 
 /// Thread-safe registry for per‑PID observers.
+#[allow(clippy::arc_with_non_send_sync)]
 pub struct AxObserverRegistry {
     inner: Arc<Mutex<HashMap<i32, PerPid>>>,
     tx: Arc<Mutex<Option<crossbeam_channel::Sender<AxEvent>>>>,
@@ -405,13 +460,16 @@ impl AxObserverRegistry {
     /// Ensure an observer exists for `pid`. Returns `true` if newly created.
     pub fn ensure(&self, pid: i32) -> Result<bool, i32> {
         let mut m = self.inner.lock();
-        if m.contains_key(&pid) {
-            return Ok(false);
+        if let Some(existing) = m.get(&pid) {
+            if existing.still_same_process() {
+                return Ok(false);
+            }
+            // Stale or reused PID; drop the existing observer.
+            m.remove(&pid);
         }
         let tx = self.tx.lock().clone();
         let mut p = PerPid::install(pid, tx)?;
-        // Stage 4.1: subscribe to a minimal set on the app element.
-        // Now expanded for Stage 4.2; we still attach moved/resized/title at window-level.
+        // Minimal app-level subscriptions; window-level added on focus change.
         for name in [
             "AXWindowCreated",
             "AXFocusedWindowChanged",
@@ -434,9 +492,11 @@ impl AxObserverRegistry {
     }
 
     /// Number of installed observers (for tests/diagnostics).
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.lock().len()
     }
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

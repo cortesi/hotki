@@ -19,7 +19,7 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -28,6 +28,11 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
     time::{Instant as TokioInstant, sleep},
 };
+
+// Test-only visibility: stash a clone of the AX bridge sender for unit tests.
+static AX_BRIDGE_SENDER: OnceLock<
+    parking_lot::Mutex<Option<crossbeam_channel::Sender<mac_winops::AxEvent>>>,
+> = OnceLock::new();
 
 /// Unique key for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -325,9 +330,45 @@ impl World {
         let (evt_tx, _evt_rx) = broadcast::channel(cfg.events_buffer.max(8));
 
         let state = WorldState::new();
-        tokio::spawn(run_actor(rx, evt_tx.clone(), state, winops, cfg));
+        tokio::spawn(run_actor(rx, evt_tx.clone(), state, winops, cfg.clone()));
 
-        WorldHandle { tx, events: evt_tx }
+        let handle = WorldHandle { tx, events: evt_tx };
+
+        // Bridge macOS AX observer events into world refresh hints with light
+        // throttling to coalesce bursts (e.g., AXTitleChanged storms).
+        // Throttle window: 16ms; send immediately if idle longer than that.
+        let (tx_ax, rx_ax) = crossbeam_channel::unbounded::<mac_winops::AxEvent>();
+        // Expose for tests (cloned)
+        AX_BRIDGE_SENDER
+            .get_or_init(|| parking_lot::Mutex::new(None))
+            .lock()
+            .replace(tx_ax.clone());
+        mac_winops::set_ax_observer_sender(tx_ax);
+        let hint_handle = handle.clone();
+        std::thread::Builder::new()
+            .name("ax-hint-bridge".to_string())
+            .spawn(move || {
+                let mut last = Instant::now() - Duration::from_millis(32);
+                let min_gap = Duration::from_millis(16);
+                while let Ok(_ev) = rx_ax.recv() {
+                    let now = Instant::now();
+                    let since = now.saturating_duration_since(last);
+                    if since >= min_gap {
+                        hint_handle.hint_refresh();
+                        last = now;
+                    } else {
+                        let wait = min_gap - since;
+                        std::thread::sleep(wait);
+                        hint_handle.hint_refresh();
+                        last = Instant::now();
+                        // Drain any burst quickly; coalesce to a single hint
+                        while rx_ax.try_recv().is_ok() {}
+                    }
+                }
+            })
+            .ok();
+
+        handle
     }
 
     /// Spawn a no-op world suitable for tests. Responds immediately with
@@ -826,6 +867,13 @@ fn list_display_bounds() -> Vec<DisplayBounds> {
 #[doc(hidden)]
 pub mod test_api {
     use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides};
+
+    /// Get a clone of the AX hint bridge sender (if initialized) for tests.
+    pub fn ax_hint_bridge_sender() -> Option<crossbeam_channel::Sender<mac_winops::AxEvent>> {
+        super::AX_BRIDGE_SENDER
+            .get()
+            .and_then(|m| m.lock().as_ref().cloned())
+    }
     pub fn set_accessibility_ok(v: bool) {
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
