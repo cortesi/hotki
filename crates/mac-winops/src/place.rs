@@ -28,6 +28,13 @@ const SETTLE_TOTAL_MS: u64 = 250; // max settle time per attempt
 const FALLBACK_SAFE_MAX_W: f64 = 400.0;
 const FALLBACK_SAFE_MAX_H: f64 = 300.0;
 
+/// Logical axis used for corrective nudges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    X,
+    Y,
+}
+
 #[inline]
 fn skip_reason_for_role_subrole(role: &str, subrole: &str) -> Option<&'static str> {
     // Conservative gating: skip common non-movable/transient window types.
@@ -161,6 +168,19 @@ fn diffs(a: &Rect, b: &Rect) -> (f64, f64, f64, f64) {
 #[inline]
 fn within_eps(d: (f64, f64, f64, f64), eps: f64) -> bool {
     d.0 <= eps && d.1 <= eps && d.2 <= eps && d.3 <= eps
+}
+
+#[inline]
+fn one_axis_off(d: (f64, f64, f64, f64), eps: f64) -> Option<Axis> {
+    let x_ok = d.0 <= eps && d.2 <= eps; // dx,dw within eps
+    let y_ok = d.1 <= eps && d.3 <= eps; // dy,dh within eps
+    if x_ok && !y_ok {
+        Some(Axis::Y)
+    } else if y_ok && !x_ok {
+        Some(Axis::X)
+    } else {
+        None
+    }
 }
 
 #[inline]
@@ -404,6 +424,72 @@ fn apply_and_wait(
     }
 }
 
+/// Stage 7.1: If only one axis is off, nudge just that axis by re‑applying
+/// position on that axis only, then poll for settle. This avoids triggering
+/// the full dual‑order or shrink→move→grow sequences when a simple edge clamp
+/// caused a coupled dy/dh (or dx/dw) difference.
+fn nudge_axis_pos_and_wait(
+    _op_label: &str,
+    win: &crate::AXElem,
+    attr_pos: core_foundation::string::CFStringRef,
+    _attr_size: core_foundation::string::CFStringRef,
+    target: &Rect,
+    axis: Axis,
+    eps: f64,
+) -> Result<(Rect, u64)> {
+    let start = std::time::Instant::now();
+    // Read current position/size to construct a single‑axis position write.
+    let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+    let _cur_s = ax_get_size(win.as_ptr(), cfstr("AXSize"))?;
+    let new_p = match axis {
+        Axis::X => geom::CGPoint {
+            x: target.x,
+            y: cur_p.y,
+        },
+        Axis::Y => geom::CGPoint {
+            x: cur_p.x,
+            y: target.y,
+        },
+    };
+    debug!(
+        "axis_nudge: {}: pos -> ({:.1},{:.1})",
+        match axis {
+            Axis::X => "x",
+            Axis::Y => "y",
+        },
+        new_p.x,
+        new_p.y
+    );
+    let _ = ax_set_point(win.as_ptr(), attr_pos, new_p);
+
+    // Poll for settle or timeout using the same cadence as apply_and_wait.
+    let mut waited = 0u64;
+    let mut last: Rect;
+    loop {
+        let p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let s = ax_get_size(win.as_ptr(), cfstr("AXSize"))?;
+        last = Rect {
+            x: p.x,
+            y: p.y,
+            w: s.width,
+            h: s.height,
+        };
+        let d = diffs(&last, target);
+        if within_eps(d, eps) {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+        if waited >= SETTLE_TOTAL_MS {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+        sleep_ms(SETTLE_SLEEP_MS);
+        waited = waited.saturating_add(SETTLE_SLEEP_MS);
+    }
+}
+
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).
 pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
@@ -544,6 +630,48 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     dh: d1.3,
                 });
             }
+            // Stage 7.1: If only one axis is off, try a single-axis nudge first.
+            let mut attempt_idx = 2u32;
+            if let Some(axis) = one_axis_off(d1, VERIFY_EPS) {
+                let (got_ax, _settle_ms_ax) = nudge_axis_pos_and_wait(
+                    "place_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    axis,
+                    VERIFY_EPS,
+                )?;
+                let dax = diffs(&got_ax, &target);
+                debug!("clamp={}", clamp_flags(&got_ax, &vf_rect, VERIFY_EPS));
+                let label = match axis {
+                    Axis::X => "axis-pos:x",
+                    Axis::Y => "axis-pos:y",
+                };
+                log_summary(label, attempt_idx, VERIFY_EPS, dax);
+                if within_eps(dax, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=axis-pos, attempts=2");
+                    debug!(
+                        "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got_ax.x,
+                        got_ax.y,
+                        got_ax.w,
+                        got_ax.h,
+                        dax.0,
+                        dax.1,
+                        dax.2,
+                        dax.3
+                    );
+                    return Ok(());
+                }
+                attempt_idx = 3;
+            }
             // Stage 3: retry size->pos
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_grid",
@@ -556,7 +684,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
@@ -599,7 +727,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 }
             } else if within_eps(d2, VERIFY_EPS) {
                 debug!("verified=true");
-                debug!("order_used=size->pos, attempts=2");
+                debug!("order_used=size->pos, attempts={}", attempt_idx);
                 debug!(
                     "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
                     id,
@@ -796,6 +924,48 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     dh: d1.3,
                 });
             }
+            // Stage 7.1: If only one axis is off, try a single-axis nudge first.
+            let mut attempt_idx = 2u32;
+            if let Some(axis) = one_axis_off(d1, VERIFY_EPS) {
+                let (got_ax, _settle_ms_ax) = nudge_axis_pos_and_wait(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    axis,
+                    VERIFY_EPS,
+                )?;
+                let dax = diffs(&got_ax, &target);
+                debug!("clamp={}", clamp_flags(&got_ax, &vf_rect, VERIFY_EPS));
+                let label = match axis {
+                    Axis::X => "axis-pos:x",
+                    Axis::Y => "axis-pos:y",
+                };
+                log_summary(label, attempt_idx, VERIFY_EPS, dax);
+                if within_eps(dax, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=axis-pos, attempts=2");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got_ax.x,
+                        got_ax.y,
+                        got_ax.w,
+                        got_ax.h,
+                        dax.0,
+                        dax.1,
+                        dax.2,
+                        dax.3
+                    );
+                    return Ok(());
+                }
+                attempt_idx = 3;
+            }
             // Stage 3: retry size->pos
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_grid_focused",
@@ -808,7 +978,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
@@ -1046,6 +1216,48 @@ pub fn place_grid_focused_opts(
                     dh: d1.3,
                 });
             }
+            // Stage 7.1: If only one axis is off, try a single-axis nudge first.
+            let mut attempt_idx = 2u32;
+            if let Some(axis) = one_axis_off(d1, VERIFY_EPS) {
+                let (got_ax, _settle_ms_ax) = nudge_axis_pos_and_wait(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    axis,
+                    VERIFY_EPS,
+                )?;
+                let dax = diffs(&got_ax, &target);
+                debug!("clamp={}", clamp_flags(&got_ax, &vf_rect, VERIFY_EPS));
+                let label = match axis {
+                    Axis::X => "axis-pos:x",
+                    Axis::Y => "axis-pos:y",
+                };
+                log_summary(label, attempt_idx, VERIFY_EPS, dax);
+                if within_eps(dax, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=axis-pos, attempts=2");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got_ax.x,
+                        got_ax.y,
+                        got_ax.w,
+                        got_ax.h,
+                        dax.0,
+                        dax.1,
+                        dax.2,
+                        dax.3
+                    );
+                    return Ok(());
+                }
+                attempt_idx = 3;
+            }
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_grid_focused",
                 &win,
@@ -1057,7 +1269,7 @@ pub fn place_grid_focused_opts(
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
             let force_smg = opts.force_shrink_move_grow;
             if force_smg {
                 debug!("opts: force_shrink_move_grow=true");
@@ -1330,6 +1542,48 @@ pub(crate) fn place_move_grid(
                     dh: d1.3,
                 });
             }
+            // Stage 7.1: If only one axis is off, try a single-axis nudge first.
+            let mut attempt_idx = 2u32;
+            if let Some(axis) = one_axis_off(d1, VERIFY_EPS) {
+                let (got_ax, _settle_ms_ax) = nudge_axis_pos_and_wait(
+                    "place_move_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    axis,
+                    VERIFY_EPS,
+                )?;
+                let dax = diffs(&got_ax, &target);
+                debug!("clamp={}", clamp_flags(&got_ax, &vf_rect, VERIFY_EPS));
+                let label = match axis {
+                    Axis::X => "axis-pos:x",
+                    Axis::Y => "axis-pos:y",
+                };
+                log_summary(label, attempt_idx, VERIFY_EPS, dax);
+                if within_eps(dax, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=axis-pos, attempts=2");
+                    debug!(
+                        "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got_ax.x,
+                        got_ax.y,
+                        got_ax.w,
+                        got_ax.h,
+                        dax.0,
+                        dax.1,
+                        dax.2,
+                        dax.3
+                    );
+                    return Ok(());
+                }
+                attempt_idx = 3;
+            }
             // Stage 3: retry size->pos
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_move_grid",
@@ -1342,7 +1596,7 @@ pub(crate) fn place_move_grid(
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");

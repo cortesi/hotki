@@ -207,7 +207,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         need_fallback = !raised;
     }
 
-    // `app` released by RAII on drop
+    // elements released by RAII on drop
 
     if need_fallback {
         info!(
