@@ -86,21 +86,34 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         if wref.is_null() {
             continue;
         }
-        // Try AXWindowNumber; if unsupported, skip.
-        let mut num_ref: CFTypeRef = null_mut();
-        let err =
-            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
-        if err != 0 || num_ref.is_null() {
-            continue;
-        }
-        let cfnum =
-            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
-        let wid = cfnum.to_i64().unwrap_or(0) as u32;
-        info!("raise_window: candidate i={} wid={}", i, wid);
-        if wid == id {
-            found = wref;
-            info!("raise_window: matched AX window at i={} wid={}", i, wid);
-            break;
+        // Prefer private id; fallback to AXWindowNumber.
+        if let Some(pid_id) = crate::ax_private::window_id_for_ax_element(wref) {
+            info!("raise_window: candidate i={} wid={} (private)", i, pid_id);
+            if pid_id == id {
+                found = wref;
+                info!(
+                    "raise_window: matched AX window at i={} wid={} (private)",
+                    i, pid_id
+                );
+                break;
+            }
+        } else {
+            let mut num_ref: CFTypeRef = null_mut();
+            let err = unsafe {
+                AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref)
+            };
+            if err != 0 || num_ref.is_null() {
+                continue;
+            }
+            let cfnum =
+                unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+            let wid = cfnum.to_i64().unwrap_or(0) as u32;
+            info!("raise_window: candidate i={} wid={}", i, wid);
+            if wid == id {
+                found = wref;
+                info!("raise_window: matched AX window at i={} wid={}", i, wid);
+                break;
+            }
         }
     }
 

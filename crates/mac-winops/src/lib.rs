@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 
 mod ax;
 mod ax_observer;
+mod ax_private;
 mod cfutil;
 mod error;
 mod focus_dir;
@@ -286,16 +287,20 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
     if chosen.is_null() {
         return frontmost_window_for_pid(pid).map(|w| w.id);
     }
-    let mut num_ref: CFTypeRef = std::ptr::null_mut();
-    // SAFETY: Query copied CFNumber for kCGWindowNumber.
-    let nerr =
-        unsafe { AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref) };
-    if nerr != 0 || num_ref.is_null() {
-        return frontmost_window_for_pid(pid).map(|w| w.id);
-    }
-    // SAFETY: Wrap CFNumber under create rule.
-    let cfnum = unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
-    let wid = cfnum.to_i64().unwrap_or(0) as u32;
+    // Prefer private API if available
+    let wid = if let Some(idp) = ax_private::window_id_for_ax_element(chosen) {
+        idp
+    } else {
+        let mut num_ref: CFTypeRef = std::ptr::null_mut();
+        let nerr =
+            unsafe { AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref) };
+        if nerr != 0 || num_ref.is_null() {
+            return frontmost_window_for_pid(pid).map(|w| w.id);
+        }
+        let cfnum =
+            unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
+        cfnum.to_i64().unwrap_or(0) as u32
+    };
     if wid == 0 {
         frontmost_window_for_pid(pid).map(|w| w.id)
     } else {

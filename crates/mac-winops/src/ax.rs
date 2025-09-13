@@ -482,25 +482,34 @@ pub(crate) fn ax_window_for_id(id: WindowId) -> Result<(AXElem, i32)> {
         if wref.is_null() {
             continue;
         }
-        // Remember the first top-level AXWindow as a fallback when AXWindowNumber is unavailable
+        // Remember the first top-level AXWindow as a fallback when id lookup fails
         if fallback_first_window.is_null() {
             let role = ax_get_string(wref, cfstr("AXRole")).unwrap_or_default();
             if role == "AXWindow" {
                 fallback_first_window = wref;
             }
         }
-        let mut num_ref: CFTypeRef = std::ptr::null_mut();
-        // SAFETY: Valid element; out‑param gets retained CFNumber for AXWindowNumber.
-        let nerr =
-            unsafe { AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref) };
-        if nerr == 0 && !num_ref.is_null() {
-            // SAFETY: CFNumber returned under Create rule; wrap transfers ownership.
-            let cfnum =
-                unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
-            let wid = cfnum.to_i64().unwrap_or(0) as u32;
-            if wid == id {
+        // Prefer private API for id resolution
+        if let Some(pid_id) = crate::ax_private::window_id_for_ax_element(wref) {
+            if pid_id == id {
                 found = wref;
                 break;
+            }
+        } else {
+            // Fallback to AXWindowNumber attribute
+            let mut num_ref: CFTypeRef = std::ptr::null_mut();
+            let nerr = unsafe {
+                AXUIElementCopyAttributeValue(wref, cfstr("AXWindowNumber"), &mut num_ref)
+            };
+            if nerr == 0 && !num_ref.is_null() {
+                let cfnum = unsafe {
+                    core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _)
+                };
+                let wid = cfnum.to_i64().unwrap_or(0) as u32;
+                if wid == id {
+                    found = wref;
+                    break;
+                }
             }
         }
     }
