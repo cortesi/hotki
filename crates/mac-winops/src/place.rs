@@ -224,6 +224,18 @@ fn log_failure_context(win: &crate::AXElem, role: &str, subrole: &str) {
     );
 }
 
+/// Decide the initial setter ordering based on cached settable flags.
+/// Returns `true` for `pos->size`, `false` for `size->pos`.
+#[inline]
+fn choose_initial_order(can_pos: Option<bool>, can_size: Option<bool>) -> bool {
+    match (can_pos, can_size) {
+        (Some(false), Some(true)) => false,
+        (Some(true), Some(false)) => true,
+        (Some(true), Some(true)) => true,
+        _ => true,
+    }
+}
+
 #[inline]
 fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
     debug!(
@@ -580,22 +592,43 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             w,
             h
         );
-        // Stage 2: apply in pos->size order with settle/polling; if that
-        // does not converge within eps, retry with size->pos (Stage 3).
+        // Stage 2: choose initial order from cached settable bits; if that
+        // does not converge within eps, retry with the opposite order (Stage 3).
         let force_second = false;
         let pos_first_only = false;
+        let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+        let initial_pos_first = choose_initial_order(can_pos, can_size);
+        debug!(
+            "order_hint: settable_pos={:?} settable_size={:?} -> initial={}",
+            can_pos,
+            can_size,
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            }
+        );
         let (got1, _settle_ms1) = apply_and_wait(
             "place_grid",
             &win,
             attr_pos,
             attr_size,
             &target,
-            true,
+            initial_pos_first,
             VERIFY_EPS,
         )?;
         let d1 = diffs(&got1, &target);
         debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        log_summary(
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            },
+            1,
+            VERIFY_EPS,
+            d1,
+        );
         if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
@@ -874,22 +907,43 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             w,
             h
         );
-        // Stage 2: apply in pos->size order with settle/polling; if that
-        // does not converge within eps, retry with size->pos (Stage 3).
+        // Stage 2: choose initial order from cached settable bits; if that
+        // does not converge within eps, retry with the opposite order (Stage 3).
         let force_second = false;
         let pos_first_only = false;
+        let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+        let initial_pos_first = choose_initial_order(can_pos, can_size);
+        debug!(
+            "order_hint: settable_pos={:?} settable_size={:?} -> initial={}",
+            can_pos,
+            can_size,
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            }
+        );
         let (got1, _settle_ms1) = apply_and_wait(
             "place_grid_focused",
             &win,
             attr_pos,
             attr_size,
             &target,
-            true,
+            initial_pos_first,
             VERIFY_EPS,
         )?;
         let d1 = diffs(&got1, &target);
         debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        log_summary(
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            },
+            1,
+            VERIFY_EPS,
+            d1,
+        );
         if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
@@ -966,19 +1020,28 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 }
                 attempt_idx = 3;
             }
-            // Stage 3: retry size->pos
+            // Stage 3: retry with the opposite order
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_grid_focused",
                 &win,
                 attr_pos,
                 attr_size,
                 &target,
-                false,
+                !initial_pos_first,
                 VERIFY_EPS,
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
+            log_summary(
+                if initial_pos_first {
+                    "size->pos"
+                } else {
+                    "pos->size"
+                },
+                attempt_idx,
+                VERIFY_EPS,
+                d2,
+            );
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
@@ -1170,18 +1233,39 @@ pub fn place_grid_focused_opts(
         if pos_first_only {
             debug!("opts: pos_first_only=true");
         }
+        let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+        let initial_pos_first = choose_initial_order(can_pos, can_size);
+        debug!(
+            "order_hint: settable_pos={:?} settable_size={:?} -> initial={}",
+            can_pos,
+            can_size,
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            }
+        );
         let (got1, _settle_ms1) = apply_and_wait(
             "place_grid_focused",
             &win,
             attr_pos,
             attr_size,
             &target,
-            true,
+            initial_pos_first,
             VERIFY_EPS,
         )?;
         let d1 = diffs(&got1, &target);
         debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        log_summary(
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            },
+            1,
+            VERIFY_EPS,
+            d1,
+        );
         if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
@@ -1264,12 +1348,21 @@ pub fn place_grid_focused_opts(
                 attr_pos,
                 attr_size,
                 &target,
-                false,
+                !initial_pos_first,
                 VERIFY_EPS,
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
+            log_summary(
+                if initial_pos_first {
+                    "size->pos"
+                } else {
+                    "pos->size"
+                },
+                attempt_idx,
+                VERIFY_EPS,
+                d2,
+            );
             let force_smg = opts.force_shrink_move_grow;
             if force_smg {
                 debug!("opts: force_shrink_move_grow=true");
@@ -1493,22 +1586,43 @@ pub(crate) fn place_move_grid(
             h
         );
 
-        // Stage 2: apply in pos->size order with settle/polling; if that
-        // does not converge within eps, retry with size->pos (Stage 3).
+        // Stage 2: choose initial order from cached settable bits; if that
+        // does not converge within eps, retry with the opposite order (Stage 3).
         let force_second = false;
         let pos_first_only = false;
+        let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+        let initial_pos_first = choose_initial_order(can_pos, can_size);
+        debug!(
+            "order_hint: settable_pos={:?} settable_size={:?} -> initial={}",
+            can_pos,
+            can_size,
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            }
+        );
         let (got1, _settle_ms1) = apply_and_wait(
             "place_move_grid",
             &win,
             attr_pos,
             attr_size,
             &target,
-            true,
+            initial_pos_first,
             VERIFY_EPS,
         )?;
         let d1 = diffs(&got1, &target);
         debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
-        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        log_summary(
+            if initial_pos_first {
+                "pos->size"
+            } else {
+                "size->pos"
+            },
+            1,
+            VERIFY_EPS,
+            d1,
+        );
         if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
@@ -1584,19 +1698,28 @@ pub(crate) fn place_move_grid(
                 }
                 attempt_idx = 3;
             }
-            // Stage 3: retry size->pos
+            // Stage 3: retry with the opposite order
             let (got2, _settle_ms2) = apply_and_wait(
                 "place_move_grid",
                 &win,
                 attr_pos,
                 attr_size,
                 &target,
-                false,
+                !initial_pos_first,
                 VERIFY_EPS,
             )?;
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
-            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
+            log_summary(
+                if initial_pos_first {
+                    "size->pos"
+                } else {
+                    "pos->size"
+                },
+                attempt_idx,
+                VERIFY_EPS,
+                d2,
+            );
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
@@ -1709,4 +1832,31 @@ pub(crate) fn place_move_grid(
             }
         }
     })()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_initial_order;
+
+    #[test]
+    fn order_both_settable_defaults_pos_first() {
+        assert!(choose_initial_order(Some(true), Some(true)));
+    }
+
+    #[test]
+    fn order_size_only_prefers_size_first() {
+        assert!(!choose_initial_order(Some(false), Some(true)));
+    }
+
+    #[test]
+    fn order_pos_only_prefers_pos_first() {
+        assert!(choose_initial_order(Some(true), Some(false)));
+    }
+
+    #[test]
+    fn order_unknown_defaults_pos_first() {
+        assert!(choose_initial_order(None, None));
+        assert!(choose_initial_order(Some(true), None));
+        assert!(choose_initial_order(None, Some(true)));
+    }
 }
