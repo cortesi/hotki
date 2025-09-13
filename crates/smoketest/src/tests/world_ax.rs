@@ -44,7 +44,7 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    let Some(key) = focused_key else {
+    let Some(_key) = focused_key else {
         return Err(Error::InvalidState(
             "world-ax: no focused window observed".into(),
         ));
