@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mac_winops::{AxProps, Pos, WindowId, WindowInfo, ax_props_for_window_id, ops::WinOps};
+use mac_winops::{AxProps, Pos, WindowId, WindowInfo, ops::WinOps};
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     time::{Instant as TokioInstant, sleep},
@@ -316,6 +316,8 @@ impl WorldHandle {
 /// subscribers and serving snapshots via the handle.
 pub struct World;
 
+mod ax_read_pool;
+
 impl World {
     #[allow(unused_variables)]
     /// Start the world service.
@@ -333,6 +335,10 @@ impl World {
         tokio::spawn(run_actor(rx, evt_tx.clone(), state, winops, cfg.clone()));
 
         let handle = WorldHandle { tx, events: evt_tx };
+
+        // Initialize the per‑PID AX read pool and give it a handle to nudge
+        // the world actor when reads complete.
+        ax_read_pool::init(handle.tx.clone());
 
         // Bridge macOS AX observer events into world refresh hints with light
         // throttling to coalesce bursts (e.g., AXTitleChanged storms).
@@ -625,7 +631,7 @@ fn reconcile(
             .find(|w| w.layer == 0)
             .map(|w| w.pid)
             .or_else(|| wins.first().map(|w| w.pid))
-        && let Some(ax_id) = ax_focused_window_id_for_pid(front_pid)
+        && let Some(ax_id) = ax_read_pool::focused_id(front_pid)
     {
         let candidate = WindowKey {
             pid: front_pid,
@@ -635,7 +641,7 @@ fn reconcile(
             .iter()
             .any(|w| w.pid == candidate.pid && w.id == candidate.id)
         {
-            ax_focus_title = ax_title_for_window_id(ax_id);
+            ax_focus_title = ax_read_pool::title(front_pid, ax_id);
             ax_focus_key = Some(candidate);
         }
     }
@@ -697,7 +703,7 @@ fn reconcile(
             }
             // Populate AX props only for the focused window; clear otherwise.
             existing.ax = if is_focus {
-                ax_props_for_window_id(w.id).ok()
+                ax_read_pool::props(w.pid, w.id)
             } else {
                 None
             };
@@ -726,7 +732,7 @@ fn reconcile(
                 display_id,
                 focused: is_focus,
                 ax: if is_focus {
-                    ax_props_for_window_id(w.id).ok()
+                    ax_read_pool::props(w.pid, w.id)
                 } else {
                     None
                 },
