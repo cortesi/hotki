@@ -50,11 +50,14 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         ));
     };
 
-    // Query ax_props via the handle (cached with TTL inside the actor).
-    let props = crate::runtime::block_on(async { world.ax_props(key).await })?;
-    let Some(p) = props else {
+    // Fetch the focused window snapshot and read statically captured props.
+    let fw = crate::runtime::block_on(async { world.focused_window().await })?;
+    let Some(w) = fw else {
+        return Err(Error::InvalidState("world-ax: no focused window".into()));
+    };
+    let Some(p) = w.ax else {
         return Err(Error::InvalidState(
-            "world-ax: ax_props unavailable for focused window".into(),
+            "world-ax: missing ax props on focused window".into(),
         ));
     };
 

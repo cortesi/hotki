@@ -301,15 +301,7 @@ impl WorldHandle {
         rx.await.unwrap_or_default()
     }
 
-    /// Fetch lightweight AX properties for a window key with a short TTL cache.
-    ///
-    /// Returns None if the window is not known to the world or AX properties
-    /// cannot be resolved.
-    pub async fn ax_props(&self, key: WindowKey) -> Option<AxProps> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(Command::AxProps { key, respond: tx });
-        rx.await.unwrap_or(None)
-    }
+    // AxProps are exposed via `WorldWindow.ax` on snapshots/focused_window.
 }
 
 /// World constructor. Spawns the background actor and returns a handle.
@@ -368,9 +360,6 @@ impl World {
                     Command::Status { respond } => {
                         let _ = respond.send(WorldStatus::default());
                     }
-                    Command::AxProps { respond, .. } => {
-                        let _ = respond.send(None);
-                    }
                 }
             }
         });
@@ -393,8 +382,6 @@ struct WorldState {
     current_poll_ms: u64,
     warned_ax: bool,
     warned_screen: bool,
-    /// Short‑TTL cache for AX props lookups via handle API.
-    ax_cache: HashMap<WindowKey, (AxProps, Instant)>,
 }
 
 impl WorldState {
@@ -410,7 +397,6 @@ impl WorldState {
             current_poll_ms: 0,
             warned_ax: false,
             warned_screen: false,
-            ax_cache: HashMap::new(),
         }
     }
 }
@@ -441,11 +427,6 @@ enum Command {
     /// Return diagnostics.
     Status {
         respond: oneshot::Sender<WorldStatus>,
-    },
-    /// Resolve AX properties for a window key (cached with short TTL).
-    AxProps {
-        key: WindowKey,
-        respond: oneshot::Sender<Option<AxProps>>,
     },
 }
 
@@ -520,25 +501,6 @@ async fn run_actor(
                             capabilities: state.capabilities.clone(),
                         };
                         let _ = respond.send(status);
-                    }
-                    Command::AxProps { key, respond } => {
-                        let ttl = Duration::from_millis(1000);
-                        let now = Instant::now();
-                        // If we don't know this key, return None immediately
-                        if !state.store.contains_key(&key) {
-                            let _ = respond.send(None);
-                        } else if let Some((cached, ts)) = state.ax_cache.get(&key)
-                            && now.duration_since(*ts) <= ttl
-                        {
-                            let _ = respond.send(Some(cached.clone()));
-                        } else {
-                            // Refresh from mac-winops
-                            let out = ax_props_for_window_id(key.id).ok();
-                            if let Some(ref props) = out {
-                                state.ax_cache.insert(key, (props.clone(), now));
-                            }
-                            let _ = respond.send(out);
-                        }
                     }
                 }
             }
@@ -694,22 +656,7 @@ fn reconcile(
             }
             // Populate AX props only for the focused window; clear otherwise.
             existing.ax = if is_focus {
-                // Try cached value first; refresh if stale.
-                let ttl = Duration::from_millis(1000);
-                let nowi = Instant::now();
-                if let Some((props, ts)) = state.ax_cache.get(&key)
-                    && nowi.duration_since(*ts) <= ttl
-                {
-                    Some(props.clone())
-                } else {
-                    match ax_props_for_window_id(w.id) {
-                        Ok(p) => {
-                            state.ax_cache.insert(key, (p.clone(), nowi));
-                            Some(p)
-                        }
-                        Err(_) => None,
-                    }
-                }
+                ax_props_for_window_id(w.id).ok()
             } else {
                 None
             };
@@ -761,7 +708,6 @@ fn reconcile(
             state.store.remove(&key);
             state.last_emit.remove(&key);
             state.coalesce.remove(&key);
-            state.ax_cache.remove(&key);
             let _ = events.send(WorldEvent::Removed(key));
         }
     }
