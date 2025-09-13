@@ -1,6 +1,7 @@
 //! Flexible placement smoketest used to exercise Stage-3/8 behaviors.
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use mac_winops::PlaceAttemptOptions;
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
@@ -117,6 +118,7 @@ pub fn run_place_flex(
     row: u32,
     force_size_pos: bool,
     pos_first_only: bool,
+    force_shrink_move_grow: bool,
 ) -> Result<()> {
     // Create unique helper title
     let now_pre = SystemTime::now()
@@ -153,16 +155,15 @@ pub fn run_place_flex(
     .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
     let (ex, ey, ew, eh) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
 
-    // Toggle Stage‑3 behavior via env vars for this process
-    if force_size_pos {
-        unsafe { std::env::set_var("HOTKI_SMOKETEST_FORCE_SIZE_POS", "1") };
-    }
-    if pos_first_only {
-        unsafe { std::env::set_var("HOTKI_SMOKETEST_POS_FIRST_ONLY", "1") };
-    }
+    // Build attempt options for placement
+    let opts = PlaceAttemptOptions {
+        force_second_attempt: force_size_pos || force_shrink_move_grow,
+        pos_first_only,
+        force_shrink_move_grow,
+    };
 
     // Call mac-winops directly to place the focused window
-    mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
+    mac_winops::place_grid_focused_opts(helper.pid, cols, rows, col, row, opts)
         .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
 
     // Verify expected frame

@@ -24,6 +24,21 @@ const APPLY_STUTTER_MS: u64 = 2; // tiny delay between A and B sets
 const SETTLE_SLEEP_MS: u64 = 20; // poll cadence while waiting to settle
 const SETTLE_TOTAL_MS: u64 = 250; // max settle time per attempt
 
+// Stage 4: shrink→move→grow fallback parameters
+const FALLBACK_SAFE_MAX_W: f64 = 400.0;
+const FALLBACK_SAFE_MAX_H: f64 = 300.0;
+
+/// Options controlling placement attempts and fallback used primarily by tests.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlaceAttemptOptions {
+    /// Force a second attempt with size->pos even if the first converged.
+    pub force_second_attempt: bool,
+    /// Disable size->pos retry; only attempt pos->size.
+    pub pos_first_only: bool,
+    /// Force shrink->move->grow fallback even if dual-order converged.
+    pub force_shrink_move_grow: bool,
+}
+
 #[inline]
 fn sleep_ms(ms: u64) {
     use std::{thread::sleep, time::Duration};
@@ -156,6 +171,76 @@ fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
 #[inline]
 fn now_ms(start: std::time::Instant) -> u64 {
     start.elapsed().as_millis() as u64
+}
+
+/// Stage 4: Fallback sequence to avoid edge clamps when growing while moving.
+/// 1) Shrink to a safe size (<= 400x300) at current position.
+/// 2) Move to the final position using pos->size ordering (position first).
+/// 3) Grow to the final size using size->pos ordering (size first).
+fn fallback_shrink_move_grow(
+    op_label: &str,
+    win: &crate::AXElem,
+    attr_pos: core_foundation::string::CFStringRef,
+    attr_size: core_foundation::string::CFStringRef,
+    target: &Rect,
+) -> Result<Rect> {
+    // Determine safe size bounded by constants and no larger than target.
+    let safe_w = target.w.min(FALLBACK_SAFE_MAX_W);
+    let safe_h = target.h.min(FALLBACK_SAFE_MAX_H);
+
+    // Read current position for initial shrink step.
+    let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+    let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
+    let _ = cur_s; // silence in case logs change
+
+    // Step 1: shrink at current position (size then pos ordering).
+    let shrink_rect = Rect {
+        x: cur_p.x,
+        y: cur_p.y,
+        w: safe_w,
+        h: safe_h,
+    };
+    debug!(
+        "fallback:shrink -> ({:.1},{:.1},{:.1},{:.1})",
+        shrink_rect.x, shrink_rect.y, shrink_rect.w, shrink_rect.h
+    );
+    let (_got_shrink, _settle_ms_shrink) = apply_and_wait(
+        op_label,
+        win,
+        attr_pos,
+        attr_size,
+        &shrink_rect,
+        false, // size then pos
+        VERIFY_EPS,
+    )?;
+
+    // Step 2: move to final position with safe size (position then size).
+    let move_rect = Rect {
+        x: target.x,
+        y: target.y,
+        w: safe_w,
+        h: safe_h,
+    };
+    debug!(
+        "fallback:move -> ({:.1},{:.1},{:.1},{:.1})",
+        move_rect.x, move_rect.y, move_rect.w, move_rect.h
+    );
+    let (_got_move, _settle_ms_move) = apply_and_wait(
+        op_label, win, attr_pos, attr_size, &move_rect, true, // pos then size
+        VERIFY_EPS,
+    )?;
+
+    // Step 3: grow to final size at final position (size then pos).
+    debug!(
+        "fallback:grow -> ({:.1},{:.1},{:.1},{:.1})",
+        target.x, target.y, target.w, target.h
+    );
+    let (got_grow, _settle_ms_grow) = apply_and_wait(
+        op_label, win, attr_pos, attr_size, target, false, // size then pos
+        VERIFY_EPS,
+    )?;
+
+    Ok(got_grow)
 }
 
 /// Apply target position/size in a given order and poll until the window frame
@@ -316,14 +401,8 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         );
         // Stage 2: apply in pos->size order with settle/polling; if that
         // does not converge within eps, retry with size->pos (Stage 3).
-        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
-        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
-        if force_second {
-            debug!("smoketest: forcing size->pos second attempt");
-        }
-        if pos_first_only {
-            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
-        }
+        let force_second = false;
+        let pos_first_only = false;
         let (got1, _settle_ms1) = apply_and_wait(
             "place_grid",
             &win,
@@ -382,7 +461,46 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
             log_summary("size->pos", 2, VERIFY_EPS, d2);
-            if within_eps(d2, VERIFY_EPS) {
+            let force_smg = false;
+            if force_smg {
+                debug!("fallback_used=true");
+                let got3 =
+                    fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
+            } else if within_eps(d2, VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
@@ -403,17 +521,44 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 );
                 Ok(())
             } else {
-                debug!("verified=false");
-                Err(Error::PlacementVerificationFailed {
-                    op: "place_grid",
-                    expected: target,
-                    got: got2,
-                    epsilon: VERIFY_EPS,
-                    dx: d2.0,
-                    dy: d2.1,
-                    dw: d2.2,
-                    dh: d2.3,
-                })
+                // Stage 4: shrink→move→grow fallback
+                debug!("fallback_used=true");
+                let got3 =
+                    fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
             }
         }
     })()
@@ -477,14 +622,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         );
         // Stage 2: apply in pos->size order with settle/polling; if that
         // does not converge within eps, retry with size->pos (Stage 3).
-        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
-        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
-        if force_second {
-            debug!("smoketest: forcing size->pos second attempt");
-        }
-        if pos_first_only {
-            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
-        }
+        let force_second = false;
+        let pos_first_only = false;
         let (got1, _settle_ms1) = apply_and_wait(
             "place_grid_focused",
             &win,
@@ -543,7 +682,51 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
             log_summary("size->pos", 2, VERIFY_EPS, d2);
-            if within_eps(d2, VERIFY_EPS) {
+            let force_smg = false;
+            if force_smg {
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid_focused",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
+            } else if within_eps(d2, VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
@@ -564,17 +747,288 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 );
                 Ok(())
             } else {
+                // Stage 4: shrink→move→grow fallback
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid_focused",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
+            }
+        }
+    })()
+}
+
+/// As `place_grid_focused` but with explicit attempt options (smoketests).
+pub fn place_grid_focused_opts(
+    pid: i32,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
+    ax_check()?;
+    let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
+    let win = crate::focused_window_for_pid(pid)?;
+    let attr_pos = cfstr("AXPosition");
+    let attr_size = cfstr("AXSize");
+
+    (|| -> Result<()> {
+        normalize_before_move(&win, pid, None)?;
+        let role = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXRole")).unwrap_or_default();
+        let subrole =
+            crate::ax::ax_get_string(win.as_ptr(), cfstr("AXSubrole")).unwrap_or_default();
+        let title = crate::ax::ax_get_string(win.as_ptr(), cfstr("AXTitle")).unwrap_or_default();
+        let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
+        let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
+        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+        let col = core::cmp::min(col, cols.saturating_sub(1));
+        let row = core::cmp::min(row, rows.saturating_sub(1));
+        let (x, y, w, h) = geom::grid_cell_rect(
+            vf_x,
+            vf_y,
+            vf_w.max(1.0),
+            vf_h.max(1.0),
+            cols,
+            rows,
+            col,
+            row,
+        );
+        let target = rect_from(x, y, w, h);
+        let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
+        debug!(
+            "WinOps: place_grid_focused_opts: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
+            pid,
+            role,
+            subrole,
+            title,
+            cols,
+            rows,
+            col,
+            row,
+            cur_p.x,
+            cur_p.y,
+            cur_s.width,
+            cur_s.height,
+            vf_x,
+            vf_y,
+            vf_w,
+            vf_h,
+            x,
+            y,
+            w,
+            h
+        );
+        let force_second = opts.force_second_attempt;
+        let pos_first_only = opts.pos_first_only;
+        if force_second {
+            debug!("opts: force_second_attempt=true");
+        }
+        if pos_first_only {
+            debug!("opts: pos_first_only=true");
+        }
+        let (got1, _settle_ms1) = apply_and_wait(
+            "place_grid_focused",
+            &win,
+            attr_pos,
+            attr_size,
+            &target,
+            true,
+            VERIFY_EPS,
+        )?;
+        let d1 = diffs(&got1, &target);
+        debug!("clamp={}", clamp_flags(&got1, &vf_rect, VERIFY_EPS));
+        log_summary("pos->size", 1, VERIFY_EPS, d1);
+        if within_eps(d1, VERIFY_EPS) && !force_second {
+            debug!("verified=true");
+            debug!(
+                "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                pid,
+                target.x,
+                target.y,
+                target.w,
+                target.h,
+                got1.x,
+                got1.y,
+                got1.w,
+                got1.h,
+                d1.0,
+                d1.1,
+                d1.2,
+                d1.3
+            );
+            Ok(())
+        } else {
+            if pos_first_only {
                 debug!("verified=false");
-                Err(Error::PlacementVerificationFailed {
+                return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
-                    got: got2,
+                    got: got1,
                     epsilon: VERIFY_EPS,
-                    dx: d2.0,
-                    dy: d2.1,
-                    dw: d2.2,
-                    dh: d2.3,
-                })
+                    dx: d1.0,
+                    dy: d1.1,
+                    dw: d1.2,
+                    dh: d1.3,
+                });
+            }
+            let (got2, _settle_ms2) = apply_and_wait(
+                "place_grid_focused",
+                &win,
+                attr_pos,
+                attr_size,
+                &target,
+                false,
+                VERIFY_EPS,
+            )?;
+            let d2 = diffs(&got2, &target);
+            debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
+            log_summary("size->pos", 2, VERIFY_EPS, d2);
+            let force_smg = opts.force_shrink_move_grow;
+            if force_smg {
+                debug!("opts: force_shrink_move_grow=true");
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid_focused",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
+            } else if within_eps(d2, VERIFY_EPS) {
+                debug!("verified=true");
+                debug!("order_used=size->pos, attempts=2");
+                debug!(
+                    "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    pid,
+                    target.x,
+                    target.y,
+                    target.w,
+                    target.h,
+                    got2.x,
+                    got2.y,
+                    got2.w,
+                    got2.h,
+                    d2.0,
+                    d2.1,
+                    d2.2,
+                    d2.3
+                );
+                Ok(())
+            } else {
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_grid_focused",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
             }
         }
     })()
@@ -662,14 +1116,8 @@ pub(crate) fn place_move_grid(
 
         // Stage 2: apply in pos->size order with settle/polling; if that
         // does not converge within eps, retry with size->pos (Stage 3).
-        let force_second = std::env::var("HOTKI_SMOKETEST_FORCE_SIZE_POS").is_ok();
-        let pos_first_only = std::env::var("HOTKI_SMOKETEST_POS_FIRST_ONLY").is_ok();
-        if force_second {
-            debug!("smoketest: forcing size->pos second attempt");
-        }
-        if pos_first_only {
-            debug!("smoketest: pos_first_only=true (no size->pos fallback)");
-        }
+        let force_second = false;
+        let pos_first_only = false;
         let (got1, _settle_ms1) = apply_and_wait(
             "place_move_grid",
             &win,
@@ -728,7 +1176,51 @@ pub(crate) fn place_move_grid(
             let d2 = diffs(&got2, &target);
             debug!("clamp={}", clamp_flags(&got2, &vf_rect, VERIFY_EPS));
             log_summary("size->pos", 2, VERIFY_EPS, d2);
-            if within_eps(d2, VERIFY_EPS) {
+            let force_smg = false;
+            if force_smg {
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_move_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_move_grid",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
+            } else if within_eps(d2, VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
@@ -749,17 +1241,49 @@ pub(crate) fn place_move_grid(
                 );
                 Ok(())
             } else {
-                debug!("verified=false");
-                Err(Error::PlacementVerificationFailed {
-                    op: "place_move_grid",
-                    expected: target,
-                    got: got2,
-                    epsilon: VERIFY_EPS,
-                    dx: d2.0,
-                    dy: d2.1,
-                    dw: d2.2,
-                    dh: d2.3,
-                })
+                // Stage 4: shrink→move→grow fallback
+                debug!("fallback_used=true");
+                let got3 = fallback_shrink_move_grow(
+                    "place_move_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                )?;
+                let d3 = diffs(&got3, &target);
+                if within_eps(d3, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=shrink->move->grow, attempts=3");
+                    debug!(
+                        "WinOps: place_move_grid verified | id={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        target.x,
+                        target.y,
+                        target.w,
+                        target.h,
+                        got3.x,
+                        got3.y,
+                        got3.w,
+                        got3.h,
+                        d3.0,
+                        d3.1,
+                        d3.2,
+                        d3.3
+                    );
+                    Ok(())
+                } else {
+                    debug!("verified=false");
+                    Err(Error::PlacementVerificationFailed {
+                        op: "place_move_grid",
+                        expected: target,
+                        got: got3,
+                        epsilon: VERIFY_EPS,
+                        dx: d3.0,
+                        dy: d3.1,
+                        dw: d3.2,
+                        dh: d3.3,
+                    })
+                }
             }
         }
     })()

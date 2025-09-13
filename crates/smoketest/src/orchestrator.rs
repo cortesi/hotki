@@ -180,6 +180,8 @@ struct PlaceFlexSettings {
     row: u32,
     force_size_pos: bool,
     pos_first_only: bool,
+    #[serde(default)]
+    force_shrink_move_grow: bool,
 }
 
 pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
@@ -257,6 +259,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             row: 1,
             force_size_pos: true,
             pos_first_only: false,
+            force_shrink_move_grow: false,
         };
         let args = vec![
             "place-flex".to_string(),
@@ -294,6 +297,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             row: 0,
             force_size_pos: false,
             pos_first_only: true,
+            force_shrink_move_grow: false,
         };
         let args = vec![
             "place-flex".to_string(),
@@ -330,6 +334,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             row: 1,
             force_size_pos: false,
             pos_first_only: false,
+            force_shrink_move_grow: false,
         };
         let args = vec![
             "place-flex".to_string(),
@@ -345,6 +350,43 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         crate::process::write_overlay_status("place-flex");
         let json = serde_json::to_string(&cfg).unwrap_or_default();
         crate::process::write_overlay_info("BL, normal");
+        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        if ok {
+            println!("place-flex... OK\n  settings: {}", json);
+        } else {
+            println!("place-flex... FAIL\n  settings: {}", json);
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
+        }
+        all_ok &= ok;
+    }
+    // Variant 4: force shrink->move->grow fallback on 2x2 BR cell
+    {
+        let cfg = PlaceFlexSettings {
+            cols: 2,
+            rows: 2,
+            col: 1,
+            row: 1,
+            force_size_pos: false,
+            pos_first_only: false,
+            force_shrink_move_grow: true,
+        };
+        let args = vec![
+            "place-flex".to_string(),
+            "--cols".into(),
+            cfg.cols.to_string(),
+            "--rows".into(),
+            cfg.rows.to_string(),
+            "--col".into(),
+            cfg.col.to_string(),
+            "--row".into(),
+            cfg.row.to_string(),
+            "--force-shrink-move-grow".into(),
+        ];
+        crate::process::write_overlay_status("place-flex");
+        let json = serde_json::to_string(&cfg).unwrap_or_default();
+        crate::process::write_overlay_info("2x2 BR, force shrink->move->grow");
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         if ok {
             println!("place-flex... OK\n  settings: {}", json);

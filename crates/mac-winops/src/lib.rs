@@ -50,7 +50,7 @@ pub use main_thread_ops::{
     request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
     request_place_move_grid, request_raise_window,
 };
-pub use place::place_grid_focused;
+pub use place::{PlaceAttemptOptions, place_grid_focused, place_grid_focused_opts};
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 

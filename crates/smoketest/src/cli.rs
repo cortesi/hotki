@@ -131,11 +131,18 @@ pub enum Commands {
         /// Disable size->pos fallback; only attempt pos->size
         #[arg(long, default_value_t = false)]
         pos_first_only: bool,
+        /// Force shrink->move->grow fallback even if dual-order attempts succeed (smoketest only)
+        #[arg(long, default_value_t = false)]
+        force_shrink_move_grow: bool,
     },
 
     /// Convenience: exercise size->pos fallback path explicitly
     #[command(name = "place-fallback")]
     PlaceFallback,
+
+    /// Focused test: exercise shrink->move->grow fallback deterministically
+    #[command(name = "place-smg")]
+    PlaceSmg,
 
     /// Internal helper: create a foreground window with a title for focus testing
     #[command(hide = true, name = "focus-winhelper")]

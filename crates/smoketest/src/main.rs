@@ -301,6 +301,7 @@ fn main() {
             row,
             force_size_pos,
             pos_first_only,
+            force_shrink_move_grow,
         } => {
             if !cli.quiet {
                 heading("Test: place-flex");
@@ -326,6 +327,7 @@ fn main() {
                     row,
                     force_size_pos,
                     pos_first_only,
+                    force_shrink_move_grow,
                 )
             }) {
                 Ok(()) => {
@@ -370,6 +372,7 @@ fn main() {
                     0,
                     true,  // force_size_pos
                     false, // pos_first_only
+                    false, // force_shrink_move_grow
                 )
             }) {
                 Ok(()) => {
@@ -379,6 +382,45 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("place-fallback: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
+        Commands::PlaceSmg => {
+            if !cli.quiet {
+                heading("Test: place-smg (shrink→move→grow)");
+            }
+            let timeout = cli.timeout;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place-smg");
+            }
+            match run_on_main_with_watchdog("place-smg", timeout, move || {
+                tests::place_flex::run_place_flex(
+                    2,     // cols
+                    2,     // rows
+                    1,     // col (BR)
+                    1,     // row (BR)
+                    false, // force_size_pos
+                    false, // pos_first_only
+                    true,  // force_shrink_move_grow
+                )
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-smg: OK (forced shrink→move→grow path)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-smg: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
                         let _ = o.kill_and_wait();
