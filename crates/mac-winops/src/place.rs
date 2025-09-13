@@ -186,6 +186,25 @@ fn clamp_flags(got: &Rect, vf: &Rect, eps: f64) -> String {
 }
 
 #[inline]
+fn log_failure_context(win: &crate::AXElem, role: &str, subrole: &str) {
+    let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+    let s_pos = match can_pos {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    };
+    let s_size = match can_size {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    };
+    debug!(
+        "failure: role='{}' subrole='{}' settable_pos={} settable_size={}",
+        role, subrole, s_pos, s_size
+    );
+}
+
+#[inline]
 fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
     debug!(
         "summary: order={} attempt={} eps={:.1} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
@@ -513,6 +532,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         } else {
             if pos_first_only {
                 debug!("verified=false");
+                log_failure_context(&win, &role, &subrole);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid",
                     expected: target,
@@ -565,6 +585,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid",
                         expected: target,
@@ -624,6 +645,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid",
                         expected: target,
@@ -762,6 +784,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         } else {
             if pos_first_only {
                 debug!("verified=false");
+                log_failure_context(&win, &role, &subrole);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
@@ -819,6 +842,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -883,6 +907,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1009,6 +1034,7 @@ pub fn place_grid_focused_opts(
         } else {
             if pos_first_only {
                 debug!("verified=false");
+                log_failure_context(&win, &role, &subrole);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
@@ -1066,6 +1092,7 @@ pub fn place_grid_focused_opts(
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1129,6 +1156,7 @@ pub fn place_grid_focused_opts(
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -1412,6 +1440,7 @@ pub(crate) fn place_move_grid(
                     Ok(())
                 } else {
                     debug!("verified=false");
+                    log_failure_context(&win, &role, &subrole);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_move_grid",
                         expected: target,

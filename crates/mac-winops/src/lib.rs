@@ -37,9 +37,9 @@ pub mod nswindow;
 pub mod screen;
 use ax::*;
 pub use ax::{
-    ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed, ax_set_bool_by_title,
-    ax_set_window_minimized, ax_set_window_zoomed, ax_window_frame, ax_window_position,
-    ax_window_size,
+    ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed, ax_props_for_window_id,
+    ax_set_bool_by_title, ax_set_window_minimized, ax_set_window_zoomed, ax_window_frame,
+    ax_window_position, ax_window_size, AxProps,
 };
 pub use error::{Error, Result};
 pub use fullscreen::{fullscreen_native, fullscreen_nonnative};

@@ -156,6 +156,29 @@ pub fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Resu
     Ok(())
 }
 
+/// A lightweight snapshot of key AX properties/capabilities for a window.
+#[derive(Debug, Clone)]
+pub struct AxProps {
+    /// Accessibility role (e.g., "AXWindow", "AXSheet").
+    pub role: Option<String>,
+    /// Accessibility subrole (e.g., "AXStandardWindow", "AXDialog").
+    pub subrole: Option<String>,
+    /// Whether `AXPosition` appears settable for this window (cached).
+    pub can_set_pos: Option<bool>,
+    /// Whether `AXSize` appears settable for this window (cached).
+    pub can_set_size: Option<bool>,
+}
+
+/// Resolve `AxProps` for a CoreGraphics `WindowId` (kCGWindowNumber).
+/// Uses the per-window AXIsAttributeSettable cache for `AXPosition`/`AXSize`.
+pub fn ax_props_for_window_id(id: WindowId) -> Result<AxProps> {
+    let (win, _pid) = ax_window_for_id(id)?;
+    let role = ax_get_string(win.as_ptr(), cfstr("AXRole"));
+    let subrole = ax_get_string(win.as_ptr(), cfstr("AXSubrole"));
+    let (can_set_pos, can_set_size) = ax_settable_pos_size(win.as_ptr());
+    Ok(AxProps { role, subrole, can_set_pos, can_set_size })
+}
+
 pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
     let mut v: CFTypeRef = ptr::null_mut();
     // SAFETY: See note in `ax_bool` for out‑param contract.
@@ -578,4 +601,14 @@ fn ax_is_attribute_settable_cached(element: *mut c_void, attr: CFStringRef) -> O
         }
     });
     Some(settable)
+}
+
+/// Return cached or freshly-queried settable flags for AXPosition and AXSize.
+/// Values are returned as `(can_set_pos, can_set_size)`, where each item is
+/// `Some(true|false)` when known, or `None` if the attribute is unsupported or
+/// the underlying query failed. Results are cached per AX element.
+pub fn ax_settable_pos_size(element: *mut c_void) -> (Option<bool>, Option<bool>) {
+    let pos = ax_is_attribute_settable_cached(element, cfstr("AXPosition"));
+    let size = ax_is_attribute_settable_cached(element, cfstr("AXSize"));
+    (pos, size)
 }
