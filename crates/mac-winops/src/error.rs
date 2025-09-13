@@ -46,6 +46,12 @@ pub enum Error {
     #[error("Activation failed")]
     ActivationFailed,
 
+    /// Target rectangle appears at global (0,0) while operating relative to a
+    /// non‑primary screen (non‑zero screen origin). This usually indicates the
+    /// caller passed screen‑local coordinates instead of global coordinates.
+    #[error("bad coord space: target (0,0) on non-primary screen")]
+    BadCoordinateSpace,
+
     /// Post‑placement verification failed: the window's actual frame did not
     /// match the requested target within `epsilon` tolerance.
     #[error(

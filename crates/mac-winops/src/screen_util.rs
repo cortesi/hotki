@@ -2,7 +2,7 @@ use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
-use crate::geom::{self, CGPoint};
+use crate::geom::{self, CGPoint, Rect};
 
 /// Compute the visible frame (excluding menu bar and Dock) of the screen
 /// containing `p`. Falls back to main screen when not found.
@@ -44,4 +44,43 @@ pub(crate) fn visible_frame_containing_point(
     // As a last resort, return a zero rect to avoid panics.
     debug!("visible_frame_containing_point: no screens available; returning zero rect");
     (0.0, 0.0, 0.0, 0.0)
+}
+
+/// Convert a rectangle expressed in screen‑local coordinates to global
+/// coordinates by adding the screen origin.
+///
+/// Parameters:
+/// - `local`: Rectangle with `x`/`y` relative to the screen/frame origin
+///   (bottom‑left origin, AppKit/AX coordinate space).
+/// - `screen_origin_x`, `screen_origin_y`: The global origin of the screen
+///   or the visible frame the `local` rect is relative to.
+///
+/// Returns a new `Rect` in global coordinates.
+pub fn globalize_rect(local: Rect, screen_origin_x: f64, screen_origin_y: f64) -> Rect {
+    Rect {
+        x: screen_origin_x + local.x,
+        y: screen_origin_y + local.y,
+        w: local.w,
+        h: local.h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn globalize_rect_adds_origin() {
+        let local = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 300.0,
+            h: 400.0,
+        };
+        let g = globalize_rect(local, 100.0, 200.0);
+        assert_eq!(g.x, 110.0);
+        assert_eq!(g.y, 220.0);
+        assert_eq!(g.w, 300.0);
+        assert_eq!(g.h, 400.0);
+    }
 }

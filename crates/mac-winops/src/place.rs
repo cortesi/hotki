@@ -173,6 +173,24 @@ fn now_ms(start: std::time::Instant) -> u64 {
     start.elapsed().as_millis() as u64
 }
 
+#[inline]
+fn guard_bad_coord_space(target: &Rect, vf_x: f64, vf_y: f64) -> Result<()> {
+    // Trigger only when target is near global origin AND the chosen screen's
+    // origin is not at the global origin (i.e., likely a non‑primary screen).
+    let near_zero =
+        geom::approx_eq(target.x, 0.0, VERIFY_EPS) && geom::approx_eq(target.y, 0.0, VERIFY_EPS);
+    let non_primary =
+        !geom::approx_eq(vf_x, 0.0, VERIFY_EPS) || !geom::approx_eq(vf_y, 0.0, VERIFY_EPS);
+    if near_zero && non_primary {
+        debug!(
+            "coordspace: guard hit — target=({:.1},{:.1},{:.1},{:.1}) vf_origin=({:.1},{:.1}); failing with BadCoordinateSpace",
+            target.x, target.y, target.w, target.h, vf_x, vf_y
+        );
+        return Err(Error::BadCoordinateSpace);
+    }
+    Ok(())
+}
+
 /// Stage 4: Fallback sequence to avoid edge clamps when growing while moving.
 /// 1) Shrink to a safe size (<= 400x300) at current position.
 /// 2) Move to the final position using pos->size ordering (position first).
@@ -373,7 +391,33 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             col,
             row,
         );
-        let target = rect_from(x, y, w, h);
+        // Stage 5: compute a local rect relative to the chosen visible frame and
+        // convert to global coordinates explicitly. This is a no‑op for our
+        // current math but guarantees correct space when future callers pass
+        // screen‑local values.
+        let target_local = Rect {
+            x: x - vf_x,
+            y: y - vf_y,
+            w,
+            h,
+        };
+        let g = crate::screen_util::globalize_rect(target_local, vf_x, vf_y);
+        debug!(
+            "coordspace: local=({:.1},{:.1},{:.1},{:.1}) + origin=({:.1},{:.1}) -> global=({:.1},{:.1},{:.1},{:.1})",
+            target_local.x,
+            target_local.y,
+            target_local.w,
+            target_local.h,
+            vf_x,
+            vf_y,
+            g.x,
+            g.y,
+            g.w,
+            g.h
+        );
+        let target = rect_from(g.x, g.y, g.w, g.h);
+        // Stage 5 guard: detect (0,0) targets on non‑primary screens
+        guard_bad_coord_space(&target, vf_x, vf_y)?;
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -595,7 +639,28 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
             col,
             row,
         );
-        let target = rect_from(x, y, w, h);
+        let target_local = Rect {
+            x: x - vf_x,
+            y: y - vf_y,
+            w,
+            h,
+        };
+        let g = crate::screen_util::globalize_rect(target_local, vf_x, vf_y);
+        debug!(
+            "coordspace: local=({:.1},{:.1},{:.1},{:.1}) + origin=({:.1},{:.1}) -> global=({:.1},{:.1},{:.1},{:.1})",
+            target_local.x,
+            target_local.y,
+            target_local.w,
+            target_local.h,
+            vf_x,
+            vf_y,
+            g.x,
+            g.y,
+            g.w,
+            g.h
+        );
+        let target = rect_from(g.x, g.y, g.w, g.h);
+        guard_bad_coord_space(&target, vf_x, vf_y)?;
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_grid_focused: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
@@ -1085,7 +1150,28 @@ pub(crate) fn place_move_grid(
 
         let (x, y, w, h) =
             geom::grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, next_col, next_row);
-        let target = rect_from(x, y, w, h);
+        let target_local = Rect {
+            x: x - vf_x,
+            y: y - vf_y,
+            w,
+            h,
+        };
+        let g = crate::screen_util::globalize_rect(target_local, vf_x, vf_y);
+        debug!(
+            "coordspace: local=({:.1},{:.1},{:.1},{:.1}) + origin=({:.1},{:.1}) -> global=({:.1},{:.1},{:.1},{:.1})",
+            target_local.x,
+            target_local.y,
+            target_local.w,
+            target_local.h,
+            vf_x,
+            vf_y,
+            g.x,
+            g.y,
+            g.w,
+            g.h
+        );
+        let target = rect_from(g.x, g.y, g.w, g.h);
+        guard_bad_coord_space(&target, vf_x, vf_y)?;
         let vf_rect = rect_from(vf_x, vf_y, vf_w, vf_h);
         debug!(
             "WinOps: place_move_grid: id={} pid={} role='{}' subrole='{}' title='{}' cols={} rows={} dir={:?} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) cur_cell={:?} next_cell=({}, {}) target=({:.1},{:.1},{:.1},{:.1})",
