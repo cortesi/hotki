@@ -24,6 +24,7 @@ tao = "0.34"
 libc = { workspace = true }
 permissions = { version = "0.1.0", path = "../permissions" }
 parking_lot = "0.12.4"
+crossbeam-channel.workspace = true
 
 [dev-dependencies]
 regex = { workspace = true }

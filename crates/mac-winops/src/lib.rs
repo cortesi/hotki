@@ -18,6 +18,7 @@ use objc2_foundation::MainThreadMarker;
 use tracing::{debug, warn};
 
 mod ax;
+mod ax_observer;
 mod cfutil;
 mod error;
 mod focus_dir;

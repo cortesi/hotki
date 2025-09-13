@@ -2849,6 +2849,7 @@ dependencies = [
  "clap",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
+ "crossbeam-channel",
  "libc",
  "mac-keycode",
  "objc2 0.6.2",
