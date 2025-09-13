@@ -4,15 +4,15 @@ use core_foundation::{
     base::{CFTypeRef, TCFType},
     string::CFStringRef,
 };
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::MainThreadMarker;
 use tracing::{info, warn};
 
 use crate::{
     WindowId,
-    ax::{ax_check, cfstr},
+    ax::{ax_check, ax_perform_action, cfstr},
     error::{Error, Result},
-    list_windows,
-    main_thread_ops::request_activate_pid,
+    frontmost_window, list_windows,
 };
 
 #[allow(clippy::missing_safety_doc)]
@@ -21,7 +21,15 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     ax_check()?;
     let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
 
-    info!("raise_window: pid={} id={} (attempt AX)", pid, id);
+    info!(
+        "raise_window: pid={} id={} (prefer window AXRaise)",
+        pid, id
+    );
+    // Detect cross-app boundary (frontmost pid differs from target)
+    let crossing_app_boundary = match frontmost_window() {
+        Some(w) => w.pid != pid,
+        None => true,
+    };
     // Validate via CG that the window exists and is on-screen before using AX.
     if !list_windows()
         .into_iter()
@@ -46,7 +54,6 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             attr: CFStringRef,
             value: CFTypeRef,
         ) -> i32;
-        fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
         fn AXUIElementCopyActionNames(element: *mut c_void, names: *mut CFTypeRef) -> i32;
         fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
     }
@@ -69,6 +76,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
 
     // Locate matching AX window by AXWindowNumber
     let mut found: *mut c_void = null_mut();
+    let mut _found_guard: Option<crate::AXElem> = None;
     let arr: core_foundation::array::CFArray<*const c_void> =
         unsafe { core_foundation::array::CFArray::wrap_under_create_rule(wins_ref as _) };
     for i in 0..unsafe { core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) } {
@@ -96,15 +104,54 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         }
     }
 
-    // Decide fallback if we cannot raise via AX
-    let need_fallback: bool;
+    // Helper to perform synchronous app activation on the main thread.
+    let activate_app = |pid: i32| unsafe {
+        if let Some(app) =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+        {
+            let ok = app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+            if !ok {
+                warn!(
+                    "NSRunningApplication.activateWithOptions(ActivateAllWindows) returned false for pid={}",
+                    pid
+                );
+            } else {
+                info!("Activated app (all windows) for pid={}", pid);
+            }
+        } else {
+            warn!("NSRunningApplication not found for pid={}", pid);
+        }
+    };
+
+    // Prefer: if we are moving across apps, bring the app forward first, then raise.
+    if crossing_app_boundary {
+        info!("raise_window: crossing app boundary → activating app first");
+        activate_app(pid);
+    }
+
+    let mut raised = false;
     if found.is_null() {
         info!(
             "raise_window: did not find AX window with id={} for pid={}",
             id, pid
         );
-        need_fallback = true;
-    } else {
+        // Fallback: try to match by title via AX if available.
+        if let Some(winfo) = list_windows()
+            .into_iter()
+            .find(|w| w.pid == pid && w.id == id)
+        {
+            if !winfo.title.is_empty() {
+                if let Some(elem) = crate::ax::ax_find_window_by_title(pid, &winfo.title) {
+                    info!("raise_window: matched by title via AX: '{}'", winfo.title);
+                    found = elem.as_ptr();
+                    _found_guard = Some(elem);
+                }
+            }
+        }
+    }
+
+    // If we now have a candidate window, apply focus hints and attempt AXRaise.
+    if !found.is_null() {
         // Best-effort hints on the window itself; avoid AXFocusedWindow entirely.
         let _ = unsafe {
             AXUIElementSetAttributeValue(
@@ -120,7 +167,6 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                 core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
             )
         };
-
         // Best-effort: unminimize before attempting raise to make focus effective.
         let _ = unsafe {
             AXUIElementSetAttributeValue(
@@ -130,17 +176,16 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             )
         };
 
-        // Try AXRaise on the app first, then on the window.
-        let mut raised = false;
-        let mut acts_ref: CFTypeRef = null_mut();
-        let acts_err = unsafe { AXUIElementCopyActionNames(app.as_ptr(), &mut acts_ref) };
-        if acts_err == 0 && !acts_ref.is_null() {
+        // Prefer window-level AXRaise if supported.
+        let mut w_acts_ref: CFTypeRef = null_mut();
+        let w_acts_err = unsafe { AXUIElementCopyActionNames(found, &mut w_acts_ref) };
+        if w_acts_err == 0 && !w_acts_ref.is_null() {
             let arr = unsafe {
                 core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
-                    acts_ref as _,
+                    w_acts_ref as _,
                 )
             };
-            let mut can_raise = false;
+            let mut w_can_raise = false;
             unsafe {
                 for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
                     let name = core_foundation::array::CFArrayGetValueAtIndex(
@@ -148,73 +193,31 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                         j,
                     ) as CFStringRef;
                     if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
-                        can_raise = true;
+                        w_can_raise = true;
                         break;
                     }
                 }
             }
-            if can_raise {
-                let app_raise = unsafe { AXUIElementPerformAction(app.as_ptr(), cfstr("AXRaise")) };
-                if app_raise != 0 {
-                    warn!(
-                        "AXUIElementPerformAction(app, AXRaise) failed: {}",
-                        app_raise
-                    );
-                } else {
+            if w_can_raise {
+                if ax_perform_action(found, cfstr("AXRaise")).is_ok() {
                     raised = true;
-                }
-            }
-        }
-
-        if !raised {
-            info!("raise_window: app does not support AXRaise or failed; checking window actions");
-            let mut w_acts_ref: CFTypeRef = null_mut();
-            let w_acts_err = unsafe { AXUIElementCopyActionNames(found, &mut w_acts_ref) };
-            if w_acts_err == 0 && !w_acts_ref.is_null() {
-                let arr = unsafe {
-                    core_foundation::array::CFArray::<*const c_void>::wrap_under_create_rule(
-                        w_acts_ref as _,
-                    )
-                };
-                let mut w_can_raise = false;
-                unsafe {
-                    for j in 0..core_foundation::array::CFArrayGetCount(arr.as_concrete_TypeRef()) {
-                        let name = core_foundation::array::CFArrayGetValueAtIndex(
-                            arr.as_concrete_TypeRef(),
-                            j,
-                        ) as CFStringRef;
-                        if CFEqual(name as CFTypeRef, cfstr("AXRaise") as CFTypeRef) {
-                            w_can_raise = true;
-                            break;
-                        }
-                    }
-                }
-                if w_can_raise {
-                    let w_raise = unsafe { AXUIElementPerformAction(found, cfstr("AXRaise")) };
-                    if w_raise != 0 {
-                        warn!(
-                            "AXUIElementPerformAction(window, AXRaise) failed: {}",
-                            w_raise
-                        );
-                    } else {
-                        raised = true;
-                    }
                 } else {
-                    info!("raise_window: window does not support AXRaise; skipping action");
+                    warn!("AXRaise on window failed");
                 }
+            } else {
+                info!("raise_window: window does not support AXRaise; skipping action");
             }
         }
-        need_fallback = !raised;
     }
 
-    // elements released by RAII on drop
-
-    if need_fallback {
+    // If not raised (no AX support or not found), fall back to app activation.
+    if !raised && !crossing_app_boundary {
         info!(
-            "raise_window: scheduling NSRunningApplication activation fallback for pid={}",
+            "raise_window: falling back to NSRunningApplication activation for pid={}",
             pid
         );
-        let _ = request_activate_pid(pid);
+        activate_app(pid);
     }
+
     Ok(())
 }

@@ -1,11 +1,18 @@
-use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr, thread_local};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::{CStr, c_void},
+    ptr, thread_local,
+};
 
 use core_foundation::{
     base::{CFRelease, CFTypeRef, TCFType},
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
     string::{CFString, CFStringRef},
 };
-use tracing::{Level, debug, enabled};
+use objc2_app_kit::NSRunningApplication;
+use objc2_foundation::MainThreadMarker;
+use tracing::{Level, debug, enabled, warn};
 
 use crate::{
     AXElem, WindowId,
@@ -27,6 +34,7 @@ unsafe extern "C" {
         attr: CFStringRef,
         value: CFTypeRef,
     ) -> i32;
+    pub fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
     pub fn AXUIElementIsAttributeSettable(
         element: *mut c_void,
         attr: CFStringRef,
@@ -107,6 +115,15 @@ pub fn ax_check() -> Result<()> {
     }
 }
 
+#[inline]
+fn assert_main_thread_debug() {
+    #[cfg(debug_assertions)]
+    {
+        let is_main = MainThreadMarker::new().is_some();
+        debug_assert!(is_main, "AX mutation must run on the AppKit main thread");
+    }
+}
+
 pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> {
     let mut v: CFTypeRef = ptr::null_mut();
     // SAFETY: `element` is a valid AXUIElement pointer and `&mut v` is an out‑param
@@ -140,6 +157,7 @@ pub fn ax_bool(element: *mut c_void, attr: CFStringRef) -> Result<Option<bool>> 
 }
 
 pub fn ax_set_bool(element: *mut c_void, attr: CFStringRef, value: bool) -> Result<()> {
+    assert_main_thread_debug();
     // SAFETY: kCFBooleanTrue/False are immortal singletons; casting to CFTypeRef is fine.
     let val = unsafe {
         (if value {
@@ -271,6 +289,7 @@ pub fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> 
 }
 
 pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
+    assert_main_thread_debug();
     // SAFETY: `&p` points to a valid CGPoint; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
     if v.is_null() {
@@ -307,6 +326,7 @@ pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Resu
 }
 
 pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()> {
+    assert_main_thread_debug();
     // SAFETY: `&s` points to a valid CGSize; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void) };
     if v.is_null() {
@@ -340,6 +360,92 @@ pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result
         return Err(Error::AxCode(err));
     }
     Ok(())
+}
+
+/// Perform an AX action on an element, with a debug-only main-thread assertion.
+pub fn ax_perform_action(element: *mut c_void, action: CFStringRef) -> Result<()> {
+    assert_main_thread_debug();
+    unsafe extern "C" {
+        fn AXUIElementPerformAction(element: *mut c_void, action: CFStringRef) -> i32;
+    }
+    let err = unsafe { AXUIElementPerformAction(element, action) };
+    if err != 0 {
+        return Err(Error::AxCode(err));
+    }
+    Ok(())
+}
+
+/// Resolve owning pid for an AX element using AXUIElementGetPid.
+pub fn ax_element_pid(element: *mut c_void) -> Option<i32> {
+    let mut pid = -1;
+    let err = unsafe { AXUIElementGetPid(element, &mut pid as *mut i32) };
+    if err == 0 && pid > 0 { Some(pid) } else { None }
+}
+
+/// Resolve bundle identifier for a pid.
+pub fn bundle_id_for_pid(pid: i32) -> Option<String> {
+    unsafe {
+        if let Some(app) =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+        {
+            if let Some(bid) = app.bundleIdentifier() {
+                let c = bid.UTF8String();
+                if !c.is_null() {
+                    return Some(CStr::from_ptr(c).to_string_lossy().into_owned());
+                }
+            }
+            if let Some(name) = app.localizedName() {
+                let c = name.UTF8String();
+                if !c.is_null() {
+                    return Some(CStr::from_ptr(c).to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+// One-shot per-bundle warnings for non-settable attributes (AXPosition/AXSize)
+thread_local! {
+    static WARNED_BUNDLES: RefCell<HashMap<String, u8>> = RefCell::new(HashMap::new());
+}
+
+/// Log a warning once per bundle for non-settable AX attributes.
+/// `can_pos`/`can_size`: Some(false) indicates the attribute is not settable; others are ignored.
+pub fn warn_once_nonsettable(pid: i32, can_pos: Option<bool>, can_size: Option<bool>) {
+    let mut bits: u8 = 0;
+    if can_pos == Some(false) {
+        bits |= 0b01;
+    }
+    if can_size == Some(false) {
+        bits |= 0b10;
+    }
+    if bits == 0 {
+        return;
+    }
+    let key = bundle_id_for_pid(pid).unwrap_or_else(|| format!("pid:{}", pid));
+    WARNED_BUNDLES.with(|cell| {
+        let mut m = cell.borrow_mut();
+        let prev = m.get(&key).copied().unwrap_or(0);
+        let new_bits = bits & !prev;
+        if new_bits != 0 {
+            let s_pos = match can_pos {
+                Some(false) => "false",
+                Some(true) => "true",
+                None => "unknown",
+            };
+            let s_size = match can_size {
+                Some(false) => "false",
+                Some(true) => "true",
+                None => "unknown",
+            };
+            warn!(
+                "AX non-settable attributes for {}: AXPosition={} AXSize={}",
+                key, s_pos, s_size
+            );
+            m.insert(key, prev | new_bits);
+        }
+    });
 }
 
 /// Resolve an AX window element for a given CG `WindowId`. Returns the AX element and owning PID.
@@ -496,7 +602,7 @@ pub fn ax_window_frame(pid: i32, title: &str) -> Option<((f64, f64), (f64, f64))
 
 /// Find a window by title using Accessibility API.
 /// Returns the AXUIElement pointer for the window, or None if not found.
-fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
+pub(crate) fn ax_find_window_by_title(pid: i32, title: &str) -> Option<AXElem> {
     let app = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })?;
 
     let mut wins_ref: CFTypeRef = ptr::null_mut();

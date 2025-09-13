@@ -6,8 +6,8 @@ use tracing::debug;
 use crate::{
     Error, Result, WindowId,
     ax::{
-        ax_bool, ax_check, ax_get_point, ax_get_size, ax_set_bool, ax_set_point, ax_set_size,
-        ax_window_for_id, cfstr,
+        ax_bool, ax_check, ax_element_pid, ax_get_point, ax_get_size, ax_perform_action,
+        ax_set_bool, ax_set_point, ax_set_size, ax_window_for_id, cfstr, warn_once_nonsettable,
     },
     geom::{self, CGPoint, CGSize, Rect},
     screen_util::visible_frame_containing_point,
@@ -134,16 +134,7 @@ fn normalize_before_move(win: &crate::AXElem, pid: i32, id_opt: Option<WindowId>
 
     // 4) Best‑effort raise: prefer our AX window; for known id, also use raise helper.
     // Try direct AXRaise on the window first.
-    unsafe {
-        #[allow(improper_ctypes)]
-        unsafe extern "C" {
-            fn AXUIElementPerformAction(
-                element: *mut core::ffi::c_void,
-                action: core_foundation::string::CFStringRef,
-            ) -> i32;
-        }
-        let _ = AXUIElementPerformAction(win.as_ptr(), cfstr("AXRaise"));
-    }
+    let _ = ax_perform_action(win.as_ptr(), cfstr("AXRaise"));
     if let Some(id) = id_opt {
         let _ = crate::raise::raise_window(pid, id);
     }
@@ -387,6 +378,9 @@ fn apply_and_wait(
             )?;
         } else {
             debug!("skip:set pos (AXPosition not settable)");
+            if let Some(pid) = ax_element_pid(win.as_ptr()) {
+                warn_once_nonsettable(pid, can_pos, can_size);
+            }
         }
         if do_pos && do_size {
             sleep_ms(APPLY_STUTTER_MS);
@@ -406,6 +400,9 @@ fn apply_and_wait(
             )?;
         } else {
             debug!("skip:set size (AXSize not settable)");
+            if let Some(pid) = ax_element_pid(win.as_ptr()) {
+                warn_once_nonsettable(pid, can_pos, can_size);
+            }
         }
     } else {
         if do_size {
@@ -423,6 +420,9 @@ fn apply_and_wait(
             )?;
         } else {
             debug!("skip:set size (AXSize not settable)");
+            if let Some(pid) = ax_element_pid(win.as_ptr()) {
+                warn_once_nonsettable(pid, can_pos, can_size);
+            }
         }
         if do_pos && do_size {
             sleep_ms(APPLY_STUTTER_MS);
@@ -442,6 +442,9 @@ fn apply_and_wait(
             )?;
         } else {
             debug!("skip:set pos (AXPosition not settable)");
+            if let Some(pid) = ax_element_pid(win.as_ptr()) {
+                warn_once_nonsettable(pid, can_pos, can_size);
+            }
         }
     }
 

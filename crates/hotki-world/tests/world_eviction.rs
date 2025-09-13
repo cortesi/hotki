@@ -73,13 +73,12 @@ fn evicts_after_two_passes_when_missing() {
         let mut gone = false;
         let deadline2 = tokio::time::Instant::now() + Duration::from_millis(1200);
         while tokio::time::Instant::now() < deadline2 {
-            if let Ok(ev) = rx.try_recv() {
-                if let WorldEvent::Removed(k) = ev
-                    && k == (WindowKey { pid: 100, id: 1 })
-                {
-                    gone = true;
-                    break;
-                }
+            if let Ok(ev) = rx.try_recv()
+                && let WorldEvent::Removed(k) = ev
+                && k == (WindowKey { pid: 100, id: 1 })
+            {
+                gone = true;
+                break;
             }
             let snap_now = world.snapshot().await;
             if !snap_now.iter().any(|w| w.pid == 100 && w.id == 1) {
@@ -117,13 +116,12 @@ fn pid_reuse_no_false_positive() {
         let mut removed_or_gone = false;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(ev) = rx.try_recv() {
-                if let WorldEvent::Removed(k) = ev
-                    && k == (WindowKey { pid: 100, id: 1 })
-                {
-                    removed_or_gone = true;
-                    break;
-                }
+            if let Ok(ev) = rx.try_recv()
+                && let WorldEvent::Removed(k) = ev
+                && k == (WindowKey { pid: 100, id: 1 })
+            {
+                removed_or_gone = true;
+                break;
             }
             let snap_now = world.snapshot().await;
             if !snap_now.iter().any(|w| w.pid == 100 && w.id == 1) {
