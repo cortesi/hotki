@@ -33,6 +33,7 @@ struct ConnectionDriver {
     // Mutable session state
     ui_config: config::Config,
     current_cursor: config::Cursor,
+    dumpworld: bool,
 }
 
 impl ConnectionDriver {
@@ -43,6 +44,7 @@ impl ConnectionDriver {
         egui_ctx: Context,
         rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
         tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+        dumpworld: bool,
     ) -> Self {
         // Load UI Config once; on Reload events the UI will refresh independently.
         let ui_config = match config::load_from_path(&config_path) {
@@ -61,6 +63,7 @@ impl ConnectionDriver {
             tx_ctrl_runtime,
             ui_config,
             current_cursor: config::Cursor::default(),
+            dumpworld,
         }
     }
 
@@ -258,6 +261,15 @@ impl ConnectionDriver {
         // Heartbeat: if we don't receive any server message within timeout, exit.
         let hb_timer: Sleep = tokio::time::sleep(hotki_protocol::ipc::heartbeat::timeout());
         tokio::pin!(hb_timer);
+        // Optional world dump timer
+        let dump_interval = std::time::Duration::from_secs(5);
+        let dump_far_future = std::time::Duration::from_secs(3600);
+        let dump_timer: Sleep = tokio::time::sleep(if self.dumpworld {
+            dump_interval
+        } else {
+            dump_far_future
+        });
+        tokio::pin!(dump_timer);
 
         loop {
             tokio::select! {
@@ -388,6 +400,29 @@ impl ConnectionDriver {
                             }
                             break;
                         }
+                    }
+                }
+                // Periodic world dump (disabled when flag not set)
+                _ = &mut dump_timer => {
+                    if self.dumpworld {
+                        if let Ok(snap) = conn.get_world_snapshot().await {
+                            // Format a compact dump
+                            use std::fmt::Write as _;
+                            let mut out = String::new();
+                            let focused_ctx = snap.focused.as_ref().map(|f| format!("{} (pid={}) — {}", f.app, f.pid, f.title)).unwrap_or_else(|| "none".to_string());
+                            let _ = writeln!(out, "World: {} window(s); focused: {}", snap.windows.len(), focused_ctx);
+                            for w in snap.windows.iter() {
+                                let mark = if w.focused { '*' } else { ' ' };
+                                let disp = w.display_id.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
+                                let title = if w.title.is_empty() { "(no title)" } else { &w.title };
+                                let _ = writeln!(out, "  {} z={:<2} pid={:<6} id={:<8} disp={:<3} app={:<16} title={}", mark, w.z, w.pid, w.id, disp, w.app, title);
+                            }
+                            tracing::info!(target: "hotki::worlddump", "\n{}", out);
+                        }
+                        // Re-arm timer
+                        dump_timer.as_mut().reset(TokioInstant::now() + dump_interval);
+                    } else {
+                        dump_timer.as_mut().reset(TokioInstant::now() + dump_far_future);
                     }
                 }
             }
@@ -539,6 +574,7 @@ pub fn spawn_key_runtime(
     tx_ctrl_runtime: &mpsc::UnboundedSender<ControlMsg>,
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
     server_log_filter: Option<String>,
+    dumpworld: bool,
 ) {
     // Take cheap clones here to own values in the thread
     let cfg = cfg.clone();
@@ -563,6 +599,7 @@ pub fn spawn_key_runtime(
                 egui_ctx,
                 rx_ctrl,
                 tx_ctrl_runtime,
+                dumpworld,
             );
             if let Some(mut client) = driver.connect(cfg).await {
                 driver.drive_events(&mut client).await;

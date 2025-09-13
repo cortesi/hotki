@@ -61,6 +61,10 @@ struct Cli {
 
     /// Optional path to the config file
     config: Option<String>,
+
+    /// Periodically dump a formatted world snapshot to logs (every ~5s)
+    #[arg(long)]
+    dumpworld: bool,
 }
 
 fn main() -> eframe::Result<()> {
@@ -185,6 +189,7 @@ fn main() -> eframe::Result<()> {
                 &tx_ctrl,
                 rx_ctrl,
                 Some(server_filter.clone()),
+                cli.dumpworld,
             );
 
             let tray_icon =

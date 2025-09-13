@@ -187,6 +187,25 @@ impl Connection {
             .map_err(|e| Error::Ipc(format!("get_world_status request failed: {}", e)))?;
         WorldStatusLite::from_value(response)
     }
+
+    /// Get a lightweight world snapshot (windows + focused context).
+    pub async fn get_world_snapshot(&mut self) -> Result<crate::ipc::rpc::WorldSnapshotLite> {
+        let response = self
+            .client
+            .send_request(HotkeyMethod::GetWorldSnapshot.as_str(), &[])
+            .await
+            .map_err(|e| Error::Ipc(format!("get_world_snapshot request failed: {}", e)))?;
+        match response {
+            Value::Binary(bytes) => {
+                rmp_serde::from_slice::<crate::ipc::rpc::WorldSnapshotLite>(&bytes)
+                    .map_err(|e| Error::Serialization(e.to_string()))
+            }
+            other => Err(Error::Ipc(format!(
+                "Unexpected get_world_snapshot response: {:?}",
+                other
+            ))),
+        }
+    }
 }
 
 /// Minimal decoded view of WorldStatus used by smoketests.

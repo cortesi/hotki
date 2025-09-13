@@ -1,5 +1,5 @@
 mod client;
-mod rpc;
+pub mod rpc;
 mod server;
 mod service;
 

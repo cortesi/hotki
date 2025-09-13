@@ -54,7 +54,7 @@ mod util;
 
 pub use client::Client;
 pub use error::{Error, Result};
-pub use ipc::Connection;
+pub use ipc::{Connection, rpc::WorldSnapshotLite};
 pub use server::Server;
 
 /// Get the default socket path for IPC communication used within this crate.
