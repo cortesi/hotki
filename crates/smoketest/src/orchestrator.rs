@@ -219,6 +219,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
 
     // Quick diagnostics: verify world status/permissions first
     all_ok &= run("world-status", duration_ms);
+    // Verify World AX props path as a quick sanity check.
+    all_ok &= run("world-ax", duration_ms);
 
     // Repeat tests
     all_ok &= run("repeat-relay", duration_ms);

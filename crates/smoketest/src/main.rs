@@ -751,5 +751,25 @@ fn main() {
                 }
             }
         }
+        Commands::WorldAx => {
+            if !cli.quiet {
+                heading("Test: world-ax");
+            }
+            let timeout = cli.timeout;
+            match run_with_watchdog("world-ax", timeout, move || {
+                tests::world_ax::run_world_ax_test(timeout, cli.logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("world-ax: OK (role/subrole present; flags resolved)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("world-ax: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }

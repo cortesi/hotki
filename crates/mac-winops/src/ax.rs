@@ -176,7 +176,12 @@ pub fn ax_props_for_window_id(id: WindowId) -> Result<AxProps> {
     let role = ax_get_string(win.as_ptr(), cfstr("AXRole"));
     let subrole = ax_get_string(win.as_ptr(), cfstr("AXSubrole"));
     let (can_set_pos, can_set_size) = ax_settable_pos_size(win.as_ptr());
-    Ok(AxProps { role, subrole, can_set_pos, can_set_size })
+    Ok(AxProps {
+        role,
+        subrole,
+        can_set_pos,
+        can_set_size,
+    })
 }
 
 pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {

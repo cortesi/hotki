@@ -208,5 +208,8 @@ pub enum Commands {
     /// Query world status via RPC and verify basic invariants
     #[command(name = "world-status")]
     WorldStatus,
+    /// Query AX props for the frontmost helper via WorldHandle
+    #[command(name = "world-ax")]
+    WorldAx,
     // Preflight smoketest removed.
 }

@@ -4603,6 +4603,7 @@ dependencies = [
  "hotki-engine",
  "hotki-protocol",
  "hotki-server",
+ "hotki-world",
  "keymode",
  "libc",
  "mac-keycode",

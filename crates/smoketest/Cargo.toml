@@ -8,6 +8,7 @@ clap = { workspace = true, features = ["derive"] }
 hotki-server = { path = "../hotki-server" }
 hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }
+hotki-world = { path = "../hotki-world" }
 mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
