@@ -152,14 +152,12 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         if let Some(winfo) = list_windows()
             .into_iter()
             .find(|w| w.pid == pid && w.id == id)
+            && !winfo.title.is_empty()
+            && let Some(elem) = crate::ax::ax_find_window_by_title(pid, &winfo.title)
         {
-            if !winfo.title.is_empty() {
-                if let Some(elem) = crate::ax::ax_find_window_by_title(pid, &winfo.title) {
-                    info!("raise_window: matched by title via AX: '{}'", winfo.title);
-                    found = elem.as_ptr();
-                    _found_guard = Some(elem);
-                }
-            }
+            info!("raise_window: matched by title via AX: '{}'", winfo.title);
+            found = elem.as_ptr();
+            _found_guard = Some(elem);
         }
     }
 

@@ -8,17 +8,15 @@ static AX_GET_WINDOW_SYM: OnceCell<Option<AxGetWindowFn>> = OnceCell::new();
 
 #[inline]
 fn resolve_sym() -> Option<AxGetWindowFn> {
-    AX_GET_WINDOW_SYM
-        .get_or_init(|| unsafe {
-            let name = b"_AXUIElementGetWindow\0";
-            let ptr = libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const _);
-            if ptr.is_null() {
-                None
-            } else {
-                Some(std::mem::transmute::<_, AxGetWindowFn>(ptr))
-            }
-        })
-        .clone()
+    *AX_GET_WINDOW_SYM.get_or_init(|| unsafe {
+        let name = b"_AXUIElementGetWindow\0";
+        let ptr = libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const _);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(std::mem::transmute::<_, AxGetWindowFn>(ptr))
+        }
+    })
 }
 
 /// Best-effort: resolve CGWindowID for an AX window element using the private

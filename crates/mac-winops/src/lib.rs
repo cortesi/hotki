@@ -6,7 +6,12 @@
 //!
 //! All operations require Accessibility permission.
 
-use std::{ffi::c_void, ptr};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::c_void,
+    ptr,
+    time::Duration,
+};
 
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
@@ -400,9 +405,12 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<AXElem> {
 /// Drain and execute any pending main-thread operations. Call from the Tao main thread
 /// (e.g., in `Event::UserEvent`), after posting a user event via `focus::post_user_event()`.
 pub fn drain_main_ops() {
-    loop {
-        let op_opt = MAIN_OPS.lock().pop_front();
-        let Some(op) = op_opt else { break };
+    // A short deadline (25–40 ms) to collect and coalesce rapid bursts of
+    // placement intents while still keeping UI latency low.
+    const BUDGET_MS: u64 = 30;
+
+    // Helper to actually apply a single op.
+    fn apply_one(op: MainOp) {
         match op {
             MainOp::FullscreenNative { pid, desired } => {
                 tracing::info!(
@@ -431,7 +439,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                if let Err(e) = crate::place::place_grid(id, cols, rows, col, row) {
+                if let Err(e) = apply_place_grid(id, cols, rows, col, row) {
                     tracing::warn!(
                         "PlaceGrid failed: id={} cols={} rows={} col={} row={} err={}",
                         id,
@@ -449,7 +457,7 @@ pub fn drain_main_ops() {
                 rows,
                 dir,
             } => {
-                if let Err(e) = crate::place::place_move_grid(id, cols, rows, dir) {
+                if let Err(e) = apply_place_move_grid(id, cols, rows, dir) {
                     tracing::warn!(
                         "PlaceMoveGrid failed: id={} cols={} rows={} dir={:?} err={}",
                         id,
@@ -467,7 +475,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                if let Err(e) = crate::place::place_grid_focused(pid, cols, rows, col, row) {
+                if let Err(e) = apply_place_grid_focused(pid, cols, rows, col, row) {
                     tracing::warn!(
                         "PlaceGridFocused failed: pid={} cols={} rows={} col={} row={} err={}",
                         pid,
@@ -496,6 +504,207 @@ pub fn drain_main_ops() {
             }
         }
     }
+
+    // Local key to preserve last-writer order across id/pid groups.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    enum Key {
+        Id(WindowId),
+        Pid(i32),
+    }
+
+    // Resolve pid for a given WindowId using best-effort strategies.
+    fn resolve_pid_for_id(id: WindowId) -> Option<i32> {
+        #[cfg(test)]
+        if let Some(pid) = tests::lookup_test_pid_for_id(id) {
+            return Some(pid);
+        }
+        if let Some(w) = crate::window::list_windows()
+            .into_iter()
+            .find(|w| w.id == id)
+        {
+            return Some(w.pid);
+        }
+        #[cfg(not(test))]
+        if let Ok((_elem, pid)) = crate::ax::ax_window_for_id(id) {
+            return Some(pid);
+        }
+        None
+    }
+
+    loop {
+        let start = std::time::Instant::now();
+        let mut any = false;
+
+        // Non-placement ops are executed in FIFO order within the batch.
+        let mut non_place: Vec<MainOp> = Vec::new();
+        // Latest placement intents during the budget window.
+        let mut latest_by_id: HashMap<WindowId, MainOp> = HashMap::new();
+        let mut latest_by_pid: HashMap<i32, MainOp> = HashMap::new();
+        let mut order: Vec<Key> = Vec::new();
+
+        let budget = Duration::from_millis(BUDGET_MS);
+
+        // Accumulate within the deadline or until the queue runs dry.
+        loop {
+            let op_opt = MAIN_OPS.lock().pop_front();
+            let Some(op) = op_opt else { break };
+            any = true;
+
+            match op {
+                MainOp::PlaceGrid {
+                    id,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                } => {
+                    latest_by_id.insert(
+                        id,
+                        MainOp::PlaceGrid {
+                            id,
+                            cols,
+                            rows,
+                            col,
+                            row,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Id(id));
+                    order.push(Key::Id(id));
+                }
+                MainOp::PlaceMoveGrid {
+                    id,
+                    cols,
+                    rows,
+                    dir,
+                } => {
+                    latest_by_id.insert(
+                        id,
+                        MainOp::PlaceMoveGrid {
+                            id,
+                            cols,
+                            rows,
+                            dir,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Id(id));
+                    order.push(Key::Id(id));
+                }
+                MainOp::PlaceGridFocused {
+                    pid,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                } => {
+                    latest_by_pid.insert(
+                        pid,
+                        MainOp::PlaceGridFocused {
+                            pid,
+                            cols,
+                            rows,
+                            col,
+                            row,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Pid(pid));
+                    order.push(Key::Pid(pid));
+                }
+                other => non_place.push(other),
+            }
+
+            if start.elapsed() >= budget {
+                break;
+            }
+        }
+
+        if !any {
+            break;
+        }
+
+        // Execute non-placement ops in-order first to preserve behavioral expectations.
+        for op in non_place.into_iter() {
+            apply_one(op);
+        }
+
+        // Cross-type stale-drop: if an id-specific placement maps to the same pid as a
+        // focused placement within this batch, drop the focused placement.
+        let mut pid_with_id: HashSet<i32> = HashSet::new();
+        for (idk, _op) in latest_by_id.iter() {
+            if let Some(pid) = resolve_pid_for_id(*idk) {
+                pid_with_id.insert(pid);
+            }
+        }
+        if !pid_with_id.is_empty() {
+            latest_by_pid.retain(|pid, _| !pid_with_id.contains(pid));
+            order.retain(|k| match k {
+                Key::Pid(p) => !pid_with_id.contains(p),
+                _ => true,
+            });
+        }
+
+        // Then execute the coalesced placement intents using last-writer ordering.
+        for k in order.into_iter() {
+            match k {
+                Key::Id(id) => {
+                    if let Some(op) = latest_by_id.remove(&id) {
+                        apply_one(op);
+                    }
+                }
+                Key::Pid(pid) => {
+                    if let Some(op) = latest_by_pid.remove(&pid) {
+                        apply_one(op);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// === Test-aware indirection for placement ops ===
+#[cfg(test)]
+fn apply_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    tests::record_place_id_call();
+    let _ = (id, cols, rows, col, row);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn apply_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    crate::place::place_grid(id, cols, rows, col, row)
+}
+
+#[cfg(test)]
+fn apply_place_move_grid(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    dir: main_thread_ops::MoveDir,
+) -> Result<()> {
+    tests::record_place_id_call();
+    let _ = (id, cols, rows, dir);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn apply_place_move_grid(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    dir: main_thread_ops::MoveDir,
+) -> Result<()> {
+    crate::place::place_move_grid(id, cols, rows, dir)
+}
+
+#[cfg(test)]
+fn apply_place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    tests::record_place_focused_call();
+    let _ = (pid, cols, rows, col, row);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn apply_place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    crate::place::place_grid_focused(pid, cols, rows, col, row)
 }
 
 //
@@ -563,7 +772,56 @@ fn activate_pid(pid: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use once_cell::sync::Lazy;
+
+    use super::*;
     use crate::geom::grid_cell_rect as cell_rect;
+
+    static PLACE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static PLACE_ID_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static PLACE_FOCUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_ID_PID: Lazy<Mutex<HashMap<WindowId, i32>>> =
+        Lazy::new(|| Mutex::new(HashMap::new()));
+
+    pub(crate) fn record_place_call() {
+        PLACE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_place_id_call() {
+        PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
+        record_place_call();
+    }
+    pub(crate) fn record_place_focused_call() {
+        PLACE_FOCUSED_CALLS.fetch_add(1, Ordering::Relaxed);
+        record_place_call();
+    }
+
+    fn take_place_calls() -> usize {
+        PLACE_CALLS.swap(0, Ordering::Relaxed)
+    }
+    fn take_split_counts() -> (usize, usize) {
+        (
+            PLACE_ID_CALLS.swap(0, Ordering::Relaxed),
+            PLACE_FOCUSED_CALLS.swap(0, Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn set_test_id_pid(id: WindowId, pid: i32) {
+        TEST_ID_PID.lock().unwrap().insert(id, pid);
+    }
+    pub(crate) fn clear_test_id_pid() {
+        TEST_ID_PID.lock().unwrap().clear();
+    }
+    pub(crate) fn lookup_test_pid_for_id(id: WindowId) -> Option<i32> {
+        TEST_ID_PID.lock().unwrap().get(&id).copied()
+    }
 
     #[test]
     fn cell_rect_corners_and_remainders() {
@@ -580,5 +838,183 @@ mod tests {
         // bottom row (row 1) starts at y=50
         let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
         assert_eq!(y2, 50.0);
+    }
+
+    #[test]
+    fn batch_planner_coalesces_latest_per_target() {
+        // Build a synthetic burst: mixed non-placement ops and multiple placements
+        // for the same id/pid. Verify we keep FIFO for non-placement and only
+        // the latest placement per target.
+        let id = 1122u32;
+        let pid = 7788i32;
+        let ops = vec![
+            MainOp::ActivatePid { pid: 1 },
+            MainOp::PlaceGrid {
+                id,
+                cols: 3,
+                rows: 2,
+                col: 0,
+                row: 0,
+            },
+            MainOp::FocusDir {
+                dir: crate::main_thread_ops::MoveDir::Left,
+            },
+            MainOp::PlaceGrid {
+                id,
+                cols: 3,
+                rows: 2,
+                col: 2,
+                row: 1,
+            }, // should win for id
+            MainOp::PlaceGridFocused {
+                pid,
+                cols: 2,
+                rows: 2,
+                col: 0,
+                row: 0,
+            },
+            MainOp::PlaceGridFocused {
+                pid,
+                cols: 2,
+                rows: 2,
+                col: 1,
+                row: 1,
+            }, // should win for pid
+        ];
+
+        // Local planner that mirrors drain_main_ops batch logic without touching the global queue.
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        enum Key {
+            Id(WindowId),
+            Pid(i32),
+        }
+        let mut non_place: Vec<MainOp> = Vec::new();
+        let mut latest_by_id: std::collections::HashMap<WindowId, MainOp> =
+            std::collections::HashMap::new();
+        let mut latest_by_pid: std::collections::HashMap<i32, MainOp> =
+            std::collections::HashMap::new();
+        let mut order: Vec<Key> = Vec::new();
+        for op in ops.into_iter() {
+            match op {
+                MainOp::PlaceGrid {
+                    id,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                } => {
+                    latest_by_id.insert(
+                        id,
+                        MainOp::PlaceGrid {
+                            id,
+                            cols,
+                            rows,
+                            col,
+                            row,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Id(id));
+                    order.push(Key::Id(id));
+                }
+                MainOp::PlaceMoveGrid {
+                    id,
+                    cols,
+                    rows,
+                    dir,
+                } => {
+                    latest_by_id.insert(
+                        id,
+                        MainOp::PlaceMoveGrid {
+                            id,
+                            cols,
+                            rows,
+                            dir,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Id(id));
+                    order.push(Key::Id(id));
+                }
+                MainOp::PlaceGridFocused {
+                    pid,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                } => {
+                    latest_by_pid.insert(
+                        pid,
+                        MainOp::PlaceGridFocused {
+                            pid,
+                            cols,
+                            rows,
+                            col,
+                            row,
+                        },
+                    );
+                    order.retain(|k| *k != Key::Pid(pid));
+                    order.push(Key::Pid(pid));
+                }
+                other => non_place.push(other),
+            }
+        }
+
+        // Execute ordering: non-placement FIFO then placements by last-writer order.
+        let mut applied: Vec<String> = Vec::new();
+        for op in non_place.into_iter() {
+            match op {
+                MainOp::ActivatePid { pid } => applied.push(format!("activate:{}", pid)),
+                MainOp::FocusDir { .. } => applied.push("focus".into()),
+                _ => unreachable!(),
+            }
+        }
+        for k in order.into_iter() {
+            match k {
+                Key::Id(idk) => match latest_by_id.remove(&idk).unwrap() {
+                    MainOp::PlaceGrid { col, row, .. } => {
+                        applied.push(format!("place:id:{}-{},{}", idk, col, row))
+                    }
+                    MainOp::PlaceMoveGrid { .. } => applied.push(format!("move:id:{}", idk)),
+                    _ => unreachable!(),
+                },
+                Key::Pid(pk) => match latest_by_pid.remove(&pk).unwrap() {
+                    MainOp::PlaceGridFocused { col, row, .. } => {
+                        applied.push(format!("place:pid:{}-{},{}", pk, col, row))
+                    }
+                    _ => unreachable!(),
+                },
+            }
+        }
+
+        // We expect: ActivatePid, FocusDir, then one id placement (2,1) and one pid placement (1,1).
+        assert_eq!(
+            applied,
+            vec![
+                "activate:1".to_string(),
+                "focus".to_string(),
+                format!("place:id:{}-2,1", id),
+                format!("place:pid:{}-1,1", pid),
+            ]
+        );
+    }
+
+    #[test]
+    fn cross_type_stale_drop_prefers_id_over_focused() {
+        // A focused placement for pid followed by an id-specific placement
+        // for a window with the same pid should drop the focused placement.
+        let id = 9001u32;
+        let pid = 1337i32;
+        clear_test_id_pid();
+        set_test_id_pid(id, pid);
+        {
+            let mut q = MAIN_OPS.lock();
+            q.clear();
+        }
+        let _ = crate::main_thread_ops::request_place_grid_focused(pid, 2, 2, 0, 0);
+        let _ = crate::main_thread_ops::request_place_grid(id, 2, 2, 1, 1);
+        drain_main_ops();
+        let (id_calls, focused_calls) = take_split_counts();
+        assert_eq!(id_calls, 1);
+        assert_eq!(focused_calls, 0);
+        clear_test_id_pid();
     }
 }
