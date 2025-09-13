@@ -836,6 +836,9 @@ struct TestOverrides {
     ax_focus: Option<(i32, u32)>,
     ax_title: Option<(u32, String)>,
     displays: Option<Vec<DisplayBounds>>,
+    ax_delay_title_ms: Option<u64>,
+    ax_delay_focus_ms: Option<u64>,
+    ax_async_only: Option<bool>,
 }
 
 fn acc_ok() -> bool {
@@ -846,6 +849,10 @@ fn acc_ok() -> bool {
 }
 
 fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
+    // Optional test delay
+    if let Some(ms) = TEST_OVERRIDES.with(|o| o.lock().ax_delay_focus_ms) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ax_focus)
         && p == pid
     {
@@ -855,6 +862,10 @@ fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
 }
 
 fn ax_title_for_window_id(id: u32) -> Option<String> {
+    // Optional test delay
+    if let Some(ms) = TEST_OVERRIDES.with(|o| o.lock().ax_delay_title_ms) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Some((tid, title)) = TEST_OVERRIDES.with(|o| o.lock().ax_title.clone())
         && tid == id
     {
@@ -892,13 +903,9 @@ pub mod test_api {
             s.ax_focus = Some((pid, id));
         });
     }
-    pub fn set_ax_title(id: u32, title: &str) {
-        let t = title.to_string();
-        TEST_OVERRIDES.with(|o| {
-            let mut s = o.lock();
-            s.ax_title = Some((id, t));
-        });
-    }
+    // set_ax_title now forwards to the AX read pool's cross-thread override so worker threads
+    // observe the value. For legacy behavior (thread-local override), prefer using the private
+    // helper inside unit tests.
     pub fn set_displays(v: Vec<DisplayBounds>) {
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
@@ -910,5 +917,55 @@ pub mod test_api {
             let mut s = o.lock();
             *s = TestOverrides::default();
         });
+    }
+
+    // ===== AX read pool test helpers =====
+    pub fn ensure_ax_pool_inited() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        super::ax_read_pool::init(tx);
+    }
+    pub fn ax_pool_reset_metrics_and_cache() {
+        super::ax_read_pool::_test_reset_metrics_and_cache();
+    }
+    pub fn ax_pool_metrics() -> (usize, usize) {
+        super::ax_read_pool::_test_inflight_metrics()
+    }
+    pub fn ax_pool_stale_drop_count() -> usize {
+        super::ax_read_pool::_test_stale_drop_count()
+    }
+    pub fn ax_pool_peek_title(pid: i32, id: u32) -> Option<String> {
+        super::ax_read_pool::_test_peek_title(pid, id)
+    }
+    pub fn ax_pool_schedule_title(pid: i32, id: u32) -> Option<String> {
+        super::ax_read_pool::title(pid, id)
+    }
+    pub fn ax_pool_schedule_focus(pid: i32) -> Option<u32> {
+        super::ax_read_pool::focused_id(pid)
+    }
+    pub fn set_ax_delay_title_ms(ms: u64) {
+        // Prefer pool-level override so worker threads see it.
+        super::ax_read_pool::_test_set_title_delay_ms(ms);
+    }
+    pub fn set_ax_delay_focus_ms(ms: u64) {
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.ax_delay_focus_ms = Some(ms);
+        });
+    }
+    pub fn set_ax_async_only(v: bool) {
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.ax_async_only = Some(v);
+        });
+    }
+    pub fn set_ax_title(id: u32, title: &str) {
+        // Set both: thread-local (for synchronous override path) and
+        // pool-level (so worker threads also observe it).
+        let t = title.to_string();
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.ax_title = Some((id, t));
+        });
+        super::ax_read_pool::_test_set_title_override(id, title);
     }
 }
