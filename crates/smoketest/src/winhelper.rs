@@ -12,6 +12,8 @@ pub(crate) fn run_focus_winhelper(
     label_text: Option<String>,
     start_minimized: bool,
     start_zoomed: bool,
+    panel_nonmovable: bool,
+    attach_sheet: bool,
 ) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
 
@@ -33,6 +35,8 @@ pub(crate) fn run_focus_winhelper(
         error: Option<String>,
         start_minimized: bool,
         start_zoomed: bool,
+        panel_nonmovable: bool,
+        attach_sheet: bool,
     }
 
     impl ApplicationHandler for HelperApp {
@@ -63,6 +67,23 @@ pub(crate) fn run_focus_winhelper(
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     unsafe { app.activate() };
+                }
+                // If requested, make the helper window non-movable (pre-gate target on some systems).
+                if self.panel_nonmovable
+                    && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
+                {
+                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                    let windows = app.windows();
+                    for w in windows.iter() {
+                        let t = w.title();
+                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                            t.to_str(pool) == self.title
+                        });
+                        if is_match {
+                            w.setMovable(false);
+                            break;
+                        }
+                    }
                 }
                 // Placement: explicit grid -> 2x2 slot -> explicit pos -> fallback
                 if let Some((cols, rows, col, row)) = self.grid {
@@ -102,6 +123,9 @@ pub(crate) fn run_focus_winhelper(
                 std::thread::sleep(crate::config::ms(
                     crate::config::WINDOW_REGISTRATION_DELAY_MS,
                 ));
+
+                // Optionally attach a simple sheet — placeholder (no-op for now).
+                let _ = self.attach_sheet;
 
                 // Apply initial window state (minimized/zoomed) if requested.
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -255,6 +279,8 @@ pub(crate) fn run_focus_winhelper(
         error: None,
         start_minimized,
         start_zoomed,
+        panel_nonmovable,
+        attach_sheet,
     };
     let _ = event_loop.run_app(&mut app);
     if let Some(e) = app.error.take() {

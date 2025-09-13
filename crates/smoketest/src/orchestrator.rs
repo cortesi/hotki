@@ -251,6 +251,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place", duration_ms);
     all_ok &= run("place-minimized", duration_ms);
     all_ok &= run("place-zoomed", duration_ms);
+    // Stage 6 advisory gating: validate skip behavior when possible
+    all_ok &= run("place-skip", duration_ms);
+    // Stage 6 advisory gating (focused): available as a separate subcommand `place-skip`.
     // Stage‑3/8 variants via place-flex
     // Variant 1: force size->pos on 2x2 grid BR cell
     {

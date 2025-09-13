@@ -7,6 +7,7 @@ pub mod helpers;
 pub mod hide;
 pub mod place;
 pub mod place_flex;
+pub mod place_skip;
 pub mod place_state;
 pub mod raise;
 pub mod repeat;

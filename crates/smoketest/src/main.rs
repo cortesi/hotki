@@ -115,6 +115,8 @@ fn main() {
                 label_text,
                 start_minimized,
                 start_zoomed,
+                panel_nonmovable,
+                attach_sheet,
             } => {
                 let grid_tuple = grid.and_then(|v| {
                     if v.len() == 4 {
@@ -147,6 +149,8 @@ fn main() {
                     label_text,
                     start_minimized,
                     start_zoomed,
+                    panel_nonmovable,
+                    attach_sheet,
                 ) {
                     eprintln!("focus-winhelper: ERROR: {}", e);
                     std::process::exit(2);
@@ -421,6 +425,38 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("place-smg: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
+        Commands::PlaceSkip => {
+            if !cli.quiet {
+                heading("Test: place-skip (non-movable)");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place-skip");
+            }
+            match run_on_main_with_watchdog("place-skip", timeout, move || {
+                tests::place_skip::run_place_skip_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-skip: OK (engine skipped non-movable)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-skip: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
                         let _ = o.kill_and_wait();

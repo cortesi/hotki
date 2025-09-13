@@ -808,6 +808,38 @@ impl Engine {
             );
         }
 
+        // Stage 6: Advisory pre-gate using World AX props for the focused window.
+        // If the currently focused window belongs to our target pid and appears
+        // unsupported (role/subrole) or not settable (AXPosition/AXSize), skip early.
+        if let Some(wf) = self.svc.world.focused_window().await
+            && wf.pid == pid
+            && let Some(ax) = wf.ax.clone()
+        {
+            let role = ax.role.unwrap_or_default();
+            let subrole = ax.subrole.unwrap_or_default();
+            let mut reason: Option<&'static str> = None;
+            if role == "AXSheet" {
+                reason = Some("role=AXSheet");
+            } else if role == "AXPopover" || subrole == "AXPopover" {
+                reason = Some("popover");
+            } else if subrole == "AXDialog" || subrole == "AXSystemDialog" {
+                reason = Some("dialog");
+            } else if subrole == "AXFloatingWindow" {
+                reason = Some("floating");
+            }
+            if reason.is_none() && (ax.can_set_pos == Some(false) || ax.can_set_size == Some(false))
+            {
+                reason = Some("not settable");
+            }
+            if let Some(r) = reason {
+                debug!(
+                    "Place(World): skipped: reason={} role='{}' subrole='{}' can_set_pos={:?} can_set_size={:?} app='{}' title='{}'",
+                    r, role, subrole, ax.can_set_pos, ax.can_set_size, wf.app, wf.title
+                );
+                return Ok(());
+            }
+        }
+
         if let Err(e) = self
             .svc
             .winops
@@ -831,6 +863,35 @@ impl Engine {
                 .min_by_key(|w| (!w.focused, w.z))
                 .cloned();
             if let Some(w) = candidate {
+                // Stage 6: Advisory pre-gate for move using AX props when the candidate is focused.
+                if w.focused
+                    && let Some(ax) = w.ax.clone()
+                {
+                    let role = ax.role.unwrap_or_default();
+                    let subrole = ax.subrole.unwrap_or_default();
+                    let mut reason: Option<&'static str> = None;
+                    if role == "AXSheet" {
+                        reason = Some("role=AXSheet");
+                    } else if role == "AXPopover" || subrole == "AXPopover" {
+                        reason = Some("popover");
+                    } else if subrole == "AXDialog" || subrole == "AXSystemDialog" {
+                        reason = Some("dialog");
+                    } else if subrole == "AXFloatingWindow" {
+                        reason = Some("floating");
+                    }
+                    if reason.is_none()
+                        && (ax.can_set_pos == Some(false) || ax.can_set_size == Some(false))
+                    {
+                        reason = Some("not settable");
+                    }
+                    if let Some(r) = reason {
+                        debug!(
+                            "Move(World): skipped: reason={} role='{}' subrole='{}' can_set_pos={:?} can_set_size={:?} app='{}' title='{}'",
+                            r, role, subrole, ax.can_set_pos, ax.can_set_size, w.app, w.title
+                        );
+                        return Ok(());
+                    }
+                }
                 if let Err(e) = self
                     .svc
                     .winops

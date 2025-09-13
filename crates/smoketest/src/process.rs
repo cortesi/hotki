@@ -57,6 +57,8 @@ pub struct HelperWindowBuilder {
     label_text: Option<String>,
     start_minimized: bool,
     start_zoomed: bool,
+    nonmovable: bool,
+    attach_sheet: bool,
 }
 
 impl HelperWindowBuilder {
@@ -71,6 +73,8 @@ impl HelperWindowBuilder {
             label_text: None,
             start_minimized: false,
             start_zoomed: false,
+            nonmovable: false,
+            attach_sheet: false,
         }
     }
 
@@ -118,6 +122,18 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Make the helper window non-movable (sets NSWindow.movable=false).
+    pub fn with_nonmovable(mut self, v: bool) -> Self {
+        self.nonmovable = v;
+        self
+    }
+
+    /// Attach a simple sheet to the helper window.
+    pub fn with_attach_sheet(mut self, v: bool) -> Self {
+        self.attach_sheet = v;
+        self
+    }
+
     /// Spawn the helper window process.
     pub fn spawn(self) -> Result<ManagedChild> {
         let exe = env::current_exe()?;
@@ -150,6 +166,12 @@ impl HelperWindowBuilder {
         }
         if self.start_zoomed {
             cmd.arg("--start-zoomed");
+        }
+        if self.nonmovable {
+            cmd.arg("--panel-nonmovable");
+        }
+        if self.attach_sheet {
+            cmd.arg("--attach-sheet");
         }
         let child = cmd
             .stdin(Stdio::null())

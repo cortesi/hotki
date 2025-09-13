@@ -174,6 +174,12 @@ pub enum Commands {
         /// Start the helper window zoomed (macOS 'zoom' state)
         #[arg(long, default_value_t = false)]
         start_zoomed: bool,
+        /// Make the helper non-movable (sets NSWindow.movable=false)
+        #[arg(long, default_value_t = false)]
+        panel_nonmovable: bool,
+        /// Attach a simple sheet to the helper window (AXRole=AXSheet)
+        #[arg(long, default_value_t = false)]
+        attach_sheet: bool,
     },
 
     /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)
@@ -212,4 +218,7 @@ pub enum Commands {
     #[command(name = "world-ax")]
     WorldAx,
     // Preflight smoketest removed.
+    /// Focused test: attempt placement on a non-movable window and assert skip
+    #[command(name = "place-skip")]
+    PlaceSkip,
 }
