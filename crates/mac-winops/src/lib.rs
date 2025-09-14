@@ -42,6 +42,8 @@ mod window;
 pub mod focus;
 pub mod nswindow;
 pub mod screen;
+use std::sync::{Arc, RwLock};
+
 use ax::*;
 pub use ax::{
     AxProps, ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed,
@@ -57,6 +59,7 @@ pub use main_thread_ops::{
     request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
     request_place_move_grid, request_raise_window,
 };
+use once_cell::sync::Lazy;
 pub use place::{PlaceAttemptOptions, place_grid_focused, place_grid_focused_opts};
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
@@ -439,7 +442,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                if let Err(e) = apply_place_grid(id, cols, rows, col, row) {
+                if let Err(e) = placement().place_grid(id, cols, rows, col, row) {
                     tracing::warn!(
                         "PlaceGrid failed: id={} cols={} rows={} col={} row={} err={}",
                         id,
@@ -457,7 +460,7 @@ pub fn drain_main_ops() {
                 rows,
                 dir,
             } => {
-                if let Err(e) = apply_place_move_grid(id, cols, rows, dir) {
+                if let Err(e) = placement().place_move_grid(id, cols, rows, dir) {
                     tracing::warn!(
                         "PlaceMoveGrid failed: id={} cols={} rows={} dir={:?} err={}",
                         id,
@@ -475,7 +478,7 @@ pub fn drain_main_ops() {
                 col,
                 row,
             } => {
-                if let Err(e) = apply_place_grid_focused(pid, cols, rows, col, row) {
+                if let Err(e) = placement().place_grid_focused(pid, cols, rows, col, row) {
                     tracing::warn!(
                         "PlaceGridFocused failed: pid={} cols={} rows={} col={} row={} err={}",
                         pid,
@@ -514,8 +517,7 @@ pub fn drain_main_ops() {
 
     // Resolve pid for a given WindowId using best-effort strategies.
     fn resolve_pid_for_id(id: WindowId) -> Option<i32> {
-        #[cfg(test)]
-        if let Some(pid) = tests::lookup_test_pid_for_id(id) {
+        if let Some(pid) = overrides::lookup(id) {
             return Some(pid);
         }
         if let Some(w) = crate::window::list_windows()
@@ -524,7 +526,6 @@ pub fn drain_main_ops() {
         {
             return Some(w.pid);
         }
-        #[cfg(not(test))]
         if let Ok((_elem, pid)) = crate::ax::ax_window_for_id(id) {
             return Some(pid);
         }
@@ -660,53 +661,6 @@ pub fn drain_main_ops() {
     }
 }
 
-// === Test-aware indirection for placement ops ===
-#[cfg(test)]
-fn apply_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    tests::record_place_id_call();
-    let _ = (id, cols, rows, col, row);
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn apply_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    crate::place::place_grid(id, cols, rows, col, row)
-}
-
-#[cfg(test)]
-fn apply_place_move_grid(
-    id: WindowId,
-    cols: u32,
-    rows: u32,
-    dir: main_thread_ops::MoveDir,
-) -> Result<()> {
-    tests::record_place_id_call();
-    let _ = (id, cols, rows, dir);
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn apply_place_move_grid(
-    id: WindowId,
-    cols: u32,
-    rows: u32,
-    dir: main_thread_ops::MoveDir,
-) -> Result<()> {
-    crate::place::place_move_grid(id, cols, rows, dir)
-}
-
-#[cfg(test)]
-fn apply_place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    tests::record_place_focused_call();
-    let _ = (pid, cols, rows, col, row);
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn apply_place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    crate::place::place_grid_focused(pid, cols, rows, col, row)
-}
-
 //
 
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.
@@ -785,17 +739,45 @@ mod tests {
     use super::*;
     use crate::geom::grid_cell_rect as cell_rect;
 
-    // Total call counter removed (unused); track split counts only.
     static PLACE_ID_CALLS: AtomicUsize = AtomicUsize::new(0);
     static PLACE_FOCUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TEST_ID_PID: Lazy<Mutex<HashMap<WindowId, i32>>> =
         Lazy::new(|| Mutex::new(HashMap::new()));
 
-    pub(crate) fn record_place_id_call() {
-        PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    pub(crate) fn record_place_focused_call() {
-        PLACE_FOCUSED_CALLS.fetch_add(1, Ordering::Relaxed);
+    struct CountingPlacement;
+    impl super::PlacementExecutor for CountingPlacement {
+        fn place_grid(
+            &self,
+            _id: WindowId,
+            _cols: u32,
+            _rows: u32,
+            _col: u32,
+            _row: u32,
+        ) -> super::Result<()> {
+            PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn place_move_grid(
+            &self,
+            _id: WindowId,
+            _cols: u32,
+            _rows: u32,
+            _dir: super::main_thread_ops::MoveDir,
+        ) -> super::Result<()> {
+            PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn place_grid_focused(
+            &self,
+            _pid: i32,
+            _cols: u32,
+            _rows: u32,
+            _col: u32,
+            _row: u32,
+        ) -> super::Result<()> {
+            PLACE_FOCUSED_CALLS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
     }
     fn take_split_counts() -> (usize, usize) {
         (
@@ -804,14 +786,13 @@ mod tests {
         )
     }
 
-    pub(crate) fn set_test_id_pid(id: WindowId, pid: i32) {
+    fn set_test_id_pid(id: WindowId, pid: i32) {
         TEST_ID_PID.lock().unwrap().insert(id, pid);
+        super::overrides::set_pid_for_id(id, pid);
     }
-    pub(crate) fn clear_test_id_pid() {
+    fn clear_test_id_pid() {
         TEST_ID_PID.lock().unwrap().clear();
-    }
-    pub(crate) fn lookup_test_pid_for_id(id: WindowId) -> Option<i32> {
-        TEST_ID_PID.lock().unwrap().get(&id).copied()
+        super::overrides::clear_pid_overrides();
     }
 
     #[test]
@@ -1002,10 +983,81 @@ mod tests {
         }
         let _ = crate::main_thread_ops::request_place_grid_focused(pid, 2, 2, 0, 0);
         let _ = crate::main_thread_ops::request_place_grid(id, 2, 2, 1, 1);
+        {
+            let mut w = super::PLACEMENT_EXECUTOR.write().unwrap();
+            *w = Arc::new(CountingPlacement);
+        }
         drain_main_ops();
         let (id_calls, focused_calls) = take_split_counts();
         assert_eq!(id_calls, 1);
         assert_eq!(focused_calls, 0);
         clear_test_id_pid();
+        {
+            let mut w = super::PLACEMENT_EXECUTOR.write().unwrap();
+            *w = Arc::new(super::RealPlacement);
+        }
+    }
+}
+// === Placement executor indirection (no cfg(test) behavior swaps) ===
+pub trait PlacementExecutor: Send + Sync {
+    fn place_grid(&self, id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()>;
+    fn place_move_grid(
+        &self,
+        id: WindowId,
+        cols: u32,
+        rows: u32,
+        dir: main_thread_ops::MoveDir,
+    ) -> Result<()>;
+    fn place_grid_focused(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()>;
+}
+
+pub(crate) struct RealPlacement;
+impl PlacementExecutor for RealPlacement {
+    fn place_grid(&self, id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+        crate::place::place_grid(id, cols, rows, col, row)
+    }
+    fn place_move_grid(
+        &self,
+        id: WindowId,
+        cols: u32,
+        rows: u32,
+        dir: main_thread_ops::MoveDir,
+    ) -> Result<()> {
+        crate::place::place_move_grid(id, cols, rows, dir)
+    }
+    fn place_grid_focused(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+        crate::place::place_grid_focused(pid, cols, rows, col, row)
+    }
+}
+
+static PLACEMENT_EXECUTOR: Lazy<RwLock<Arc<dyn PlacementExecutor>>> =
+    Lazy::new(|| RwLock::new(Arc::new(RealPlacement)));
+
+fn placement() -> Arc<dyn PlacementExecutor> {
+    PLACEMENT_EXECUTOR
+        .read()
+        .map(|g| Arc::clone(&*g))
+        .unwrap_or_else(|_| Arc::new(RealPlacement))
+}
+
+// Optional id->pid override mapping (used by tests; always compiled to avoid cfg magic).
+mod overrides {
+    use std::{collections::HashMap, sync::Mutex};
+
+    use once_cell::sync::Lazy;
+
+    use super::WindowId;
+
+    static MAP: Lazy<Mutex<HashMap<WindowId, i32>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+    #[allow(dead_code)]
+    pub(crate) fn set_pid_for_id(id: WindowId, pid: i32) {
+        MAP.lock().unwrap().insert(id, pid);
+    }
+    #[allow(dead_code)]
+    pub(crate) fn clear_pid_overrides() {
+        MAP.lock().unwrap().clear();
+    }
+    pub(crate) fn lookup(id: WindowId) -> Option<i32> {
+        MAP.lock().unwrap().get(&id).copied()
     }
 }

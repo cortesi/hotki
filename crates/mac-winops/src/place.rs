@@ -3,12 +3,11 @@ use std::cmp::min;
 use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
-use crate::ax::ax_window_for_id;
 use crate::{
     Error, Result, WindowId,
     ax::{
         ax_bool, ax_check, ax_element_pid, ax_get_point, ax_get_size, ax_perform_action,
-        ax_set_bool, ax_set_point, ax_set_size, cfstr, warn_once_nonsettable,
+        ax_set_bool, ax_set_point, ax_set_size, ax_window_for_id, cfstr, warn_once_nonsettable,
     },
     geom::{self, CGPoint, CGSize, Rect},
     screen_util::visible_frame_containing_point,
