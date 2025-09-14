@@ -224,7 +224,14 @@ pub fn request_focus_dir(dir: MoveDir) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use once_cell::sync::Lazy;
+    use parking_lot::Mutex as TestMutex;
+
     use super::*;
+
+    // Serialize tests that touch the global MAIN_OPS queue to avoid
+    // inter-test interference from parallel execution.
+    static TEST_SERIAL: Lazy<TestMutex<()>> = Lazy::new(|| TestMutex::new(()));
 
     fn clear_queue() {
         MAIN_OPS.lock().clear();
@@ -232,6 +239,7 @@ mod tests {
 
     #[test]
     fn coalesce_id_specific_latest_wins() {
+        let _g = TEST_SERIAL.lock();
         clear_queue();
         let id = 42u32;
         // enqueue several ops for same id
@@ -254,6 +262,7 @@ mod tests {
 
     #[test]
     fn coalesce_focused_by_pid() {
+        let _g = TEST_SERIAL.lock();
         clear_queue();
         let pid = 12345;
         let _ = request_place_grid_focused(pid, 2, 2, 0, 0);
@@ -274,6 +283,7 @@ mod tests {
 
     #[test]
     fn unrelated_ops_not_coalesced() {
+        let _g = TEST_SERIAL.lock();
         clear_queue();
         let _ = request_activate_pid(777);
         let _ = request_focus_dir(MoveDir::Left);
