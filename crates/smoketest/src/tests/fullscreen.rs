@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use hotki_protocol::Toggle;
 
-use super::helpers::{ensure_frontmost, spawn_helper_visible};
+use super::helpers::{HelperWindow, ensure_frontmost};
 use crate::{
     config,
     error::{Error, Result},
@@ -58,6 +58,8 @@ pub fn run_fullscreen_test(
     TestRunner::new("fullscreen_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
+            // Ensure RPC ready and the fullscreen binding is registered
+            let _ = ctx.ensure_rpc_ready(&["shift+cmd+9"]);
             Ok(())
         })
         .with_execute(|ctx| {
@@ -69,17 +71,13 @@ pub fn run_fullscreen_test(
                 let _ = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
             }
             // Spawn helper window with unique title
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let title = format!("hotki smoketest: fullscreen {}", ts);
+            let title = crate::config::test_title("fullscreen");
 
             let helper_time = ctx
                 .config
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let mut helper = spawn_helper_visible(
+            let mut helper = HelperWindow::spawn_frontmost(
                 title.clone(),
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),

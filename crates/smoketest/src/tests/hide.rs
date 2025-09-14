@@ -21,13 +21,13 @@
 //!   acting on the wrong window.
 use std::{
     cmp, thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
-use super::helpers::{approx, ensure_frontmost, spawn_helper_visible};
+use super::helpers::{HelperWindow, approx, ensure_frontmost};
 use crate::{
     config,
     error::{Error, Result},
@@ -66,16 +66,12 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         })
         .with_execute(|ctx| {
             // Spawn our own helper window (winit) and use it as the hide target.
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let title = config::hide_test_title(now);
+            let title = config::test_title("hide");
             let helper_time = ctx
                 .config
                 .timeout_ms
                 .saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
-            let helper = spawn_helper_visible(
+            let helper = HelperWindow::spawn_frontmost(
                 title.clone(),
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),

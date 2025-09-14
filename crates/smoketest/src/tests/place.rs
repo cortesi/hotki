@@ -17,13 +17,14 @@
 //! Notes
 //! - The HUD is hidden; a `g` binding raises the helper before each placement
 //!   to ensure the correct target pid.
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{geom, helpers::wait_for_frontmost_title};
+use super::{
+    geom,
+    helpers::{HelperWindow, wait_for_frontmost_title},
+};
 use crate::{
     config,
     error::{Error, Result},
-    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -57,11 +58,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         }
     }
     // Precompute helper title and embed a raise binding that targets it.
-    let now_pre = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let helper_title = format!("hotki smoketest: place {}-{}", std::process::id(), now_pre);
+    let helper_title = crate::config::test_title("place");
     let ron_config: String = format!(
         "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n{}    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
         helper_title, entries
@@ -74,14 +71,8 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Connect to backend and gate on bindings being present
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let _ = server_drive::ensure_init(&sock, 3000);
-            }
-            // Wait for a couple of identifiers we expect at top-level
-            let _ = server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
-            let _ = server_drive::wait_for_ident("1", crate::config::BINDING_GATE_DEFAULT_MS);
+            // Gate on top-level bindings being present
+            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
             Ok(())
         })
         .with_execute(move |ctx| {
@@ -91,7 +82,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .config
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let mut helper = crate::tests::helpers::spawn_helper_visible(
+            let mut helper = HelperWindow::spawn_frontmost(
                 title.clone(),
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),

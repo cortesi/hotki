@@ -23,7 +23,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use super::helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title};
@@ -112,11 +112,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
         .with_temp_config(ron_config);
 
     // Generate unique title for the test window
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let expected_title = config::focus_test_title(unique);
+    let expected_title = config::test_title("focus");
 
     // Shared state for event listener
     let found = Arc::new(AtomicBool::new(false));

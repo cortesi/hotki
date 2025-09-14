@@ -20,11 +20,11 @@
 //! - The test gates on server identifiers to avoid racing binding
 //!   registration, and retries key paths once if necessary.
 use std::{
-    cmp, process,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    cmp,
+    time::{Duration, Instant},
 };
 
-use super::helpers::{wait_for_frontmost_title, wait_for_windows_visible};
+use super::helpers::{HelperWindow, wait_for_frontmost_title, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
@@ -91,12 +91,8 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
 
 pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Two unique titles
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let title1 = format!("hotki smoketest: raise-1 {}-{}", process::id(), now);
-    let title2 = format!("hotki smoketest: raise-2 {}-{}", process::id(), now);
+    let title1 = crate::config::test_title("raise-1");
+    let title2 = crate::config::test_title("raise-2");
 
     // Build a temporary config enabling raise by title under: shift+cmd+0 -> r -> 1/2
     let ron_config = format!(
@@ -124,8 +120,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("raise_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Optionally wait for HUD so server bindings are ready
-            let _ = ctx.wait_for_hud()?;
+            // Ensure RPC ready for the root 'r' binding
+            let _ = ctx.ensure_rpc_ready(&["r"]);
             Ok(())
         })
         .with_execute(move |ctx| {
@@ -140,22 +136,30 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .config
                 .timeout_ms
                 .saturating_add(config::RAISE_HELPER_EXTRA_MS);
-            let child1 = HelperWindowBuilder::new(&title1)
-                .with_time_ms(helper_time)
-                .with_label_text("R1")
-                .with_size(800.0, 600.0)
-                .with_position(60.0, 60.0)
-                .spawn()?;
+            let child1 = HelperWindow::spawn_frontmost_with_builder(
+                HelperWindowBuilder::new(&title1)
+                    .with_time_ms(helper_time)
+                    .with_label_text("R1")
+                    .with_size(800.0, 600.0)
+                    .with_position(60.0, 60.0),
+                title1.clone(),
+                std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
+                config::WINDOW_REGISTRATION_DELAY_MS,
+            )?;
             let pid1 = child1.pid;
             // Small active wait to let the first window register before spawning the second
             let _ =
                 wait_for_windows_visible(&[(pid1, &title1)], config::WINDOW_REGISTRATION_DELAY_MS);
-            let child2 = HelperWindowBuilder::new(&title2)
-                .with_time_ms(helper_time)
-                .with_label_text("R2")
-                .with_size(800.0, 600.0)
-                .with_position(1000.0, 60.0)
-                .spawn()?;
+            let child2 = HelperWindow::spawn_frontmost_with_builder(
+                HelperWindowBuilder::new(&title2)
+                    .with_time_ms(helper_time)
+                    .with_label_text("R2")
+                    .with_size(800.0, 600.0)
+                    .with_position(1000.0, 60.0),
+                title2.clone(),
+                std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
+                config::WINDOW_REGISTRATION_DELAY_MS,
+            )?;
             let pid2 = child2.pid;
             // Keep child1/child2 alive for the duration of this execute block.
 
@@ -171,9 +175,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-            }
+            let _ = ctx.ensure_rpc_ready(&["r"]);
             // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
             send_key("r");
             // Ensure the first helper is visible (CG or AX) before issuing '1'
@@ -187,9 +189,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 });
             }
             // Wait for '1' binding to appear under 'raise' if driving via RPC
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
-            }
+            let _ = ctx.ensure_rpc_ready(&["1"]);
             send_key("1");
 
             // Wait for focus to title1 (prefer frontmost CG check; fall back to HUD)
@@ -206,9 +206,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 true
             } else {
                 // Actively wait for the '1' binding under raise, then retry
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident("1", config::RAISE_BINDING_GATE_MS);
-                }
+                let _ = ctx.ensure_rpc_ready(&["1"]);
                 send_key("1");
                 wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
                     || runtime::block_on(wait_for_title(
@@ -220,9 +218,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !ok1 {
                 // Final robust attempt: reopen HUD and try raise again
                 send_key("shift+cmd+0");
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-                }
+                let _ = ctx.ensure_rpc_ready(&["r"]);
                 send_key("r");
                 let _ =
                     wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
@@ -243,9 +239,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Reopen HUD and raise second window
             send_key("shift+cmd+0");
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-            }
+            let _ = ctx.ensure_rpc_ready(&["r"]);
             // Ensure the second helper is visible (CG or AX) before issuing '2'
             if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
@@ -254,9 +248,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 });
             }
             send_key("r");
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
-            }
+            let _ = ctx.ensure_rpc_ready(&["2"]);
             send_key("2");
             let ok2_front = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2);
             let mut ok2 = if ok2_front

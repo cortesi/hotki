@@ -146,6 +146,25 @@ impl TestContext {
         crate::server_drive::reset();
     }
 
+    /// Ensure the MRPC driver is initialized and required idents are registered.
+    /// Returns true if initialization succeeded and all idents were observed.
+    pub fn ensure_rpc_ready(&mut self, idents: &[&str]) -> bool {
+        let sock = match self.session.as_ref() {
+            Some(s) => s.socket_path().to_string(),
+            None => return false,
+        };
+        let inited = crate::server_drive::ensure_init(&sock, 3000);
+        if !inited {
+            return false;
+        }
+        for ident in idents {
+            if !crate::server_drive::wait_for_ident(ident, crate::config::BINDING_GATE_DEFAULT_MS) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Clean up all temporary files.
     fn cleanup_temp_files(&mut self) {
         for path in self.temp_files.drain(..) {

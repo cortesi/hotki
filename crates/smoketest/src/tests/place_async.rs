@@ -1,7 +1,7 @@
 //! Async placement smoketest: helper delays applying window frame changes by ~50ms.
 //! Verifies that engine polling/settle logic converges within the default budget.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+// no direct time imports needed; use config::test_title
 
 use crate::{
     config,
@@ -17,15 +17,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let rows = 2u32;
     let col = 1u32; // BR
     let row = 1u32;
-    let now_pre = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let helper_title = format!(
-        "hotki smoketest: place-async {}-{}",
-        std::process::id(),
-        now_pre
-    );
+    let helper_title = crate::config::test_title("place-async");
 
     // Build a minimal hotki config so the backend is up (but we will call
     // mac-winops directly for placement to reduce orchestration flakiness).

@@ -3,7 +3,7 @@
 //! Verifies that when the focused window is non-movable (AXPosition not settable),
 //! the engine performs an advisory pre-gate and does not attempt placement.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use super::helpers::wait_for_frontmost_title;
 use crate::{
@@ -31,11 +31,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let cols = 2u32;
     let rows = 2u32;
     let (col, row) = (0u32, 0u32);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let helper_title = format!("hotki smoketest: place-skip {}-{}", std::process::id(), now);
+    let helper_title = crate::config::test_title("place-skip");
     let ron_config: String = format!(
         "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n        (\"1\", \"(0,0)\", place(grid({}, {}), at({}, {}))),\n    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
         helper_title, cols, rows, col, row

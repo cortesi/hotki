@@ -124,3 +124,57 @@ pub fn spawn_helper_with_options(
     }
     Ok(helper)
 }
+
+/// RAII fixture for a helper window that ensures frontmost and cleans up on drop.
+pub struct HelperWindow {
+    child: ManagedChild,
+    pub pid: i32,
+}
+
+impl HelperWindow {
+    /// Spawn a helper window and ensure it becomes frontmost. Kills on drop.
+    pub fn spawn_frontmost(
+        title: String,
+        lifetime_ms: u64,
+        visible_timeout_ms: u64,
+        poll_ms: u64,
+        label_text: &str,
+    ) -> Result<Self> {
+        let child = spawn_helper_visible(
+            title.clone(),
+            lifetime_ms,
+            visible_timeout_ms,
+            poll_ms,
+            label_text,
+        )?;
+        let pid = child.pid;
+        ensure_frontmost(pid, &title, 3, config::UI_ACTION_DELAY_MS);
+        Ok(Self { child, pid })
+    }
+
+    /// Spawn using a preconfigured builder (for custom size/position), then ensure frontmost.
+    pub fn spawn_frontmost_with_builder(
+        builder: HelperWindowBuilder,
+        expected_title: String,
+        visible_timeout_ms: u64,
+        poll_ms: u64,
+    ) -> Result<Self> {
+        let child = builder.spawn()?;
+        if !wait_for_window_visible(child.pid, &expected_title, visible_timeout_ms, poll_ms) {
+            return Err(Error::FocusNotObserved {
+                timeout_ms: visible_timeout_ms,
+                expected: format!("helper window '{}' not visible", expected_title),
+            });
+        }
+        ensure_frontmost(child.pid, &expected_title, 3, config::UI_ACTION_DELAY_MS);
+        Ok(Self {
+            pid: child.pid,
+            child,
+        })
+    }
+
+    /// Explicitly kill and wait for the helper process.
+    pub fn kill_and_wait(&mut self) -> Result<()> {
+        self.child.kill_and_wait()
+    }
+}

@@ -1,6 +1,6 @@
 //! Focus navigation smoketest using the new `focus(dir)` action.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+// no direct std::time imports needed beyond internal helpers
 
 use tracing::info;
 
@@ -67,14 +67,10 @@ fn log_frontmost() {
 }
 
 pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let title_tl = format!("hotki smoketest: focus-tl {}-{}", std::process::id(), now);
-    let title_tr = format!("hotki smoketest: focus-tr {}-{}", std::process::id(), now);
-    let title_bl = format!("hotki smoketest: focus-bl {}-{}", std::process::id(), now);
-    let title_br = format!("hotki smoketest: focus-br {}-{}", std::process::id(), now);
+    let title_tl = crate::config::test_title("focus-tl");
+    let title_tr = crate::config::test_title("focus-tr");
+    let title_bl = crate::config::test_title("focus-bl");
+    let title_br = crate::config::test_title("focus-br");
 
     // Minimal config: direct global bindings for focus directions to avoid HUD submenu latency
     let ron_config = format!(
@@ -89,15 +85,8 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("focus_nav_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Initialize RPC driver and gate on one of the direct bindings to avoid HUD waits
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let _ = crate::server_drive::ensure_init(&sock, 3000);
-                let _ = crate::server_drive::wait_for_ident(
-                    "ctrl+alt+h",
-                    crate::config::BINDING_GATE_DEFAULT_MS,
-                );
-            }
+            // Gate on a representative binding
+            let _ = ctx.ensure_rpc_ready(&["ctrl+alt+h"]);
             Ok(())
         })
         .with_execute(move |_ctx| {

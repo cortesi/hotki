@@ -1,6 +1,9 @@
 //! Configuration constants and defaults for smoketests.
 
-use std::time::Duration;
+use std::{
+    process,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 // ===== Default Test Parameters =====
 
@@ -131,14 +134,13 @@ pub const DEFAULT_TEST_CONFIG_PATH: &str = "examples/test.ron";
 
 // ===== Window Title Templates =====
 
-/// Generate a unique window title for focus tests.
-pub fn focus_test_title(test_id: u128) -> String {
-    format!("hotki smoketest: focus {}-{}", std::process::id(), test_id)
-}
-
-/// Generate a unique window title for hide tests.
-pub fn hide_test_title(test_id: u128) -> String {
-    format!("hotki smoketest: hide {}-{}", std::process::id(), test_id)
+/// Generate a unique window title with a simple prefix.
+pub fn test_title(prefix: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("hotki smoketest: {} {}-{}", prefix, process::id(), now)
 }
 
 /// Base title for relay repeat test window.
