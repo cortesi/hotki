@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use parking_lot::Mutex;
 
 use crate::{config, runtime};
+use std::time::{Duration, Instant};
 
 static CONN: OnceLock<Mutex<Option<hotki_server::Connection>>> = OnceLock::new();
 
@@ -27,6 +28,18 @@ pub fn init(socket_path: &str) -> bool {
 /// Returns true if a connection is available for RPC driving.
 pub fn is_ready() -> bool {
     conn_slot().lock().is_some()
+}
+
+/// Ensure the shared MRPC connection is initialized within `timeout_ms`.
+/// Returns true on success.
+pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut inited = init(socket_path);
+    while !inited && Instant::now() < deadline {
+        std::thread::sleep(config::ms(config::FAST_RETRY_DELAY_MS));
+        inited = init(socket_path);
+    }
+    inited
 }
 
 /// Drop the shared MRPC connection so subsequent tests start clean.

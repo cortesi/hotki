@@ -2,11 +2,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use objc2_app_kit::NSScreen;
-use objc2_foundation::MainThreadMarker;
 use tracing::info;
 
-use super::helpers::{wait_for_frontmost_title, wait_for_windows_visible};
+use super::geom;
+use super::helpers::{approx, wait_for_frontmost_title, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
@@ -18,62 +17,6 @@ use crate::{
 // Placement handled via server by driving config bindings (no direct WinOps here).
 
 const EPS: f64 = 2.0;
-
-fn visible_frame_containing_point(x: f64, y: f64) -> Option<(f64, f64, f64, f64)> {
-    let mtm = MainThreadMarker::new()?;
-    for s in NSScreen::screens(mtm).iter() {
-        let fr = s.visibleFrame();
-        let sx = fr.origin.x;
-        let sy = fr.origin.y;
-        let sw = fr.size.width;
-        let sh = fr.size.height;
-        if x >= sx && x <= sx + sw && y >= sy && y <= sy + sh {
-            return Some((sx, sy, sw, sh));
-        }
-    }
-    if let Some(s) = NSScreen::screens(mtm).iter().next() {
-        let fr = s.visibleFrame();
-        return Some((fr.origin.x, fr.origin.y, fr.size.width, fr.size.height));
-    }
-    None
-}
-
-#[allow(clippy::too_many_arguments)]
-fn cell_rect(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-) -> (f64, f64, f64, f64) {
-    // Top-left origin; row 0 is top
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
-    let rem_w = vf_w - tile_w * (cols as f64);
-    let rem_h = vf_h - tile_h * (rows as f64);
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
-        tile_w + rem_w
-    } else {
-        tile_w
-    };
-    let y = vf_y + tile_h * (row as f64);
-    let h = if row == rows.saturating_sub(1) {
-        tile_h + rem_h
-    } else {
-        tile_h
-    };
-    (x, y, w, h)
-}
-
-fn approx(a: f64, b: f64) -> bool {
-    (a - b).abs() <= EPS
-}
 
 fn assert_frontmost_cell(expected_title: &str, col: u32, row: u32) -> Result<()> {
     let front = mac_winops::frontmost_window()
@@ -87,10 +30,10 @@ fn assert_frontmost_cell(expected_title: &str, col: u32, row: u32) -> Result<()>
     // Verify AX frame roughly matches the expected grid cell
     let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
         .ok_or_else(|| Error::InvalidState("AX frame for frontmost not available".into()))?;
-    let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(x, y)
+    let (vf_x, vf_y, vf_w, vf_h) = geom::visible_frame_containing_point(x, y)
         .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
-    let (ex, ey, ew, eh) = cell_rect(vf_x, vf_y, vf_w, vf_h, 2, 2, col, row);
-    if !(approx(x, ex) && approx(y, ey) && approx(w, ew) && approx(h, eh)) {
+    let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), 2, 2, col, row);
+    if !(approx(x, ex, EPS) && approx(y, ey, EPS) && approx(w, ew, EPS) && approx(h, eh, EPS)) {
         return Err(Error::InvalidState(format!(
             "frontmost not in expected cell ({},{}): got x={:.1} y={:.1} w={:.1} h={:.1} | expected x={:.1} y={:.1} w={:.1} h={:.1}",
             col, row, x, y, w, h, ex, ey, ew, eh
@@ -119,7 +62,7 @@ fn find_cell_for_frame(
 ) -> Option<(u32, u32)> {
     for row in 0..rows {
         for col in 0..cols {
-            let (ex, ey, ew, eh) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
+            let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, col, row);
             if (x - ex).abs() <= eps
                 && (y - ey).abs() <= eps
                 && (w - ew).abs() <= eps
@@ -166,12 +109,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Initialize RPC driver and gate on one of the direct bindings to avoid HUD waits
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let start = std::time::Instant::now();
-                let mut inited = crate::server_drive::init(&sock);
-                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    inited = crate::server_drive::init(&sock);
-                }
+                let _ = crate::server_drive::ensure_init(&sock, 3000);
                 let _ = crate::server_drive::wait_for_ident(
                     "ctrl+alt+h",
                     crate::config::BINDING_GATE_DEFAULT_MS,
@@ -239,7 +177,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())
                 })?;
-            let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(x, y)
+            let (vf_x, vf_y, vf_w, vf_h) = geom::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
             if let Some((cx, cy)) =
                 find_cell_for_frame(vf_x, vf_y, vf_w, vf_h, 2, 2, x, y, w, h, EPS)
@@ -324,7 +262,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())
                 })?;
-            let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(x, y)
+            let (vf_x, vf_y, vf_w, vf_h) = geom::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
             if let Some((cx, cy)) =
                 find_cell_for_frame(vf_x, vf_y, vf_w, vf_h, 2, 2, x, y, w, h, EPS)

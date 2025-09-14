@@ -64,13 +64,7 @@ pub fn run_fullscreen_test(
             // Ensure RPC driver is connected to the right backend before driving keys.
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let start = std::time::Instant::now();
-                let mut inited = crate::server_drive::init(&sock);
-                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    inited = crate::server_drive::init(&sock);
-                }
-                let _ = inited;
+                let _ = crate::server_drive::ensure_init(&sock, 3000);
                 // Wait briefly until the binding is registered so injects resolve.
                 let _ = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
             }

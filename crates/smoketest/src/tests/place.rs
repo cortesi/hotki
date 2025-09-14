@@ -17,11 +17,9 @@
 //! Notes
 //! - The HUD is hidden; a `g` binding raises the helper before each placement
 //!   to ensure the correct target pid.
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use objc2_app_kit::NSScreen;
-use objc2_foundation::MainThreadMarker;
-
+use super::geom;
 use super::helpers::wait_for_frontmost_title;
 use crate::{
     config,
@@ -31,113 +29,7 @@ use crate::{
     ui_interaction::send_key,
 };
 
-/// Find the CG `WindowId` for a window identified by `(pid, title)`.
-fn find_window_id(
-    pid: i32,
-    title: &str,
-    timeout_ms: u64,
-    poll_ms: u64,
-) -> Option<mac_winops::WindowId> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if let Some(w) = mac_winops::list_windows()
-            .into_iter()
-            .find(|w| w.pid == pid && w.title == title)
-        {
-            return Some(w.id);
-        }
-        std::thread::sleep(Duration::from_millis(poll_ms));
-    }
-    None
-}
-
-/// Compute AppKit visible frame for the screen containing point `(x,y)`.
-/// Mirrors mac-winops internal logic to pick the screen and return `visibleFrame`.
-fn visible_frame_containing_point(x: f64, y: f64) -> Option<(f64, f64, f64, f64)> {
-    let mtm = MainThreadMarker::new()?;
-    // Prefer screen whose visibleFrame contains the point
-    for s in NSScreen::screens(mtm).iter() {
-        let fr = s.visibleFrame();
-        let sx = fr.origin.x;
-        let sy = fr.origin.y;
-        let sw = fr.size.width;
-        let sh = fr.size.height;
-        if x >= sx && x <= sx + sw && y >= sy && y <= sy + sh {
-            return Some((sx, sy, sw, sh));
-        }
-    }
-    // Fallbacks to main screen, then first screen
-    if let Some(scr) = NSScreen::mainScreen(mtm) {
-        let r = scr.visibleFrame();
-        return Some((r.origin.x, r.origin.y, r.size.width, r.size.height));
-    }
-    if let Some(s) = NSScreen::screens(mtm).iter().next() {
-        let r = s.visibleFrame();
-        return Some((r.origin.x, r.origin.y, r.size.width, r.size.height));
-    }
-    None
-}
-
-#[allow(clippy::too_many_arguments)]
-fn cell_rect(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-) -> (f64, f64, f64, f64) {
-    // Match mac-winops::cell_rect (top-left origin; row 0 is top)
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
-    let rem_w = vf_w - tile_w * (cols as f64);
-    let rem_h = vf_h - tile_h * (rows as f64);
-
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
-        tile_w + rem_w
-    } else {
-        tile_w
-    };
-    let y = vf_y + tile_h * (row as f64);
-    let h = if row == rows.saturating_sub(1) {
-        tile_h + rem_h
-    } else {
-        tile_h
-    };
-    (x, y, w, h)
-}
-
-fn approx(a: f64, b: f64, eps: f64) -> bool {
-    (a - b).abs() <= eps
-}
-
-fn wait_for_expected_frame(
-    pid: i32,
-    title: &str,
-    expected: (f64, f64, f64, f64),
-    eps: f64,
-    timeout_ms: u64,
-    poll_ms: u64,
-) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if let Some(((px, py), (w, h))) = mac_winops::ax_window_frame(pid, title)
-            && approx(px, expected.0, eps)
-            && approx(py, expected.1, eps)
-            && approx(w, expected.2, eps)
-            && approx(h, expected.3, eps)
-        {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(poll_ms));
-    }
-    false
-}
+// Geometry helpers are provided by `tests::geom`.
 
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Bind all actions directly at the top level (no nested modes, HUD hidden).
@@ -186,12 +78,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Connect to backend and gate on bindings being present
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let start = std::time::Instant::now();
-                let mut inited = server_drive::init(&sock);
-                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    inited = server_drive::init(&sock);
-                }
+                let _ = server_drive::ensure_init(&sock, 3000);
             }
             // Wait for a couple of identifiers we expect at top-level
             let _ = server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
@@ -214,7 +101,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             )?;
 
             // Resolve CG window id
-            let _wid = find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
+            let _wid = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
 
             // Ensure helper is frontmost via backend raise binding; actively wait for it
@@ -227,24 +114,23 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     send_key("g");
                     let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
                     // Recompute visible frame based on current AX position (matches backend logic)
-                    let (vf_x, vf_y, vf_w, vf_h) = if let Some((px, py)) =
-                        mac_winops::ax_window_position(helper.pid, &title)
-                        && let Some(vf) = visible_frame_containing_point(px, py)
-                    {
-                        vf
-                    } else {
-                        return Err(Error::InvalidState("Failed to resolve screen visibleFrame".into()));
-                    };
+                    let vf = geom::resolve_vf_for_window(
+                        helper.pid,
+                        &title,
+                        config::DEFAULT_TIMEOUT_MS,
+                        config::PLACE_POLL_MS,
+                    )
+                    .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
 
                     // Compute expected cell rect
-                    let (ex, ey, ew, eh) = cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
+                    let (ex, ey, ew, eh) = geom::cell_rect(vf, cols, rows, col, row);
 
                     // Drive backend: send the key for this cell directly (no nested modes)
                     let key_str = key.to_string();
                     send_key(&key_str);
 
                     // Wait for expected frame within tolerance
-                    let ok = wait_for_expected_frame(
+                    let ok = geom::wait_for_expected_frame(
                         helper.pid,
                         &title,
                         (ex, ey, ew, eh),

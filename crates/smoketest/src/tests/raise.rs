@@ -132,12 +132,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Initialize RPC driver for key injects
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let start = std::time::Instant::now();
-                let mut inited = crate::server_drive::init(&sock);
-                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    inited = crate::server_drive::init(&sock);
-                }
+                let _ = crate::server_drive::ensure_init(&sock, 3000);
             }
 
             // Spawn two helper windows
