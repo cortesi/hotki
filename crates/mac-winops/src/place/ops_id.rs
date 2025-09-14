@@ -112,13 +112,12 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             },
             1,
             VERIFY_EPS,
-            d1,
         );
-        if d1.within_diff_eps(VERIFY_EPS) && !force_second {
+        if got1.approx_eq(&target, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
-                "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                id, target, got1, d1.x, d1.y, d1.w, d1.h
+                "WinOps: place_grid verified | id={} target={} got={}",
+                id, target, got1
             );
             Ok(())
         } else {
@@ -131,10 +130,6 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     expected: target,
                     got: got1,
                     epsilon: VERIFY_EPS,
-                    dx: d1.x,
-                    dy: d1.y,
-                    dw: d1.w,
-                    dh: d1.h,
                     clamped,
                 });
             }
@@ -150,7 +145,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     axis,
                     VERIFY_EPS,
                 )?;
-                let dax = got_ax.diffs(&target);
+                // no diff logging
                 let vf3 = visible_frame_containing_point(
                     mtm,
                     geom::Point {
@@ -164,13 +159,13 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     crate::geom::Axis::Horizontal => "axis-pos:x",
                     crate::geom::Axis::Vertical => "axis-pos:y",
                 };
-                log_summary(label, attempt_idx, VERIFY_EPS, dax);
-                if dax.within_diff_eps(VERIFY_EPS) {
+                log_summary(label, attempt_idx, VERIFY_EPS);
+                if got_ax.approx_eq(&target, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=axis-pos, attempts=2");
                     debug!(
-                        "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got_ax, dax.x, dax.y, dax.w, dax.h
+                        "WinOps: place_grid verified | id={} target={} got={}",
+                        id, target, got_ax
                     );
                     return Ok(());
                 }
@@ -186,7 +181,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 false,
                 VERIFY_EPS,
             )?;
-            let d2 = got2.diffs(&target);
+            // no diff logging or checks needed here beyond approx_eq/pos_latched
             let vf4 = visible_frame_containing_point(
                 mtm,
                 geom::Point {
@@ -196,19 +191,18 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             );
             debug!("vf_used:center={} -> vf={}", got2.center(), vf4);
             debug!("clamp={}", clamp_flags(&got2, &vf4, VERIFY_EPS));
-            log_summary("size->pos", attempt_idx, VERIFY_EPS, d2);
+            log_summary("size->pos", attempt_idx, VERIFY_EPS);
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
                 let got3 =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                let d3 = got3.diffs(&target);
-                if d3.within_diff_eps(VERIFY_EPS) {
+                if got3.approx_eq(&target, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.x, d3.y, d3.w, d3.h
+                        "WinOps: place_grid verified | id={} target={} got={}",
+                        id, target, got3
                     );
                     Ok(())
                 } else {
@@ -228,19 +222,15 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.x,
-                        dy: d3.y,
-                        dw: d3.w,
-                        dh: d3.h,
                         clamped,
                     })
                 }
-            } else if d2.within_diff_eps(VERIFY_EPS) {
+            } else if got2.approx_eq(&target, VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts={}", attempt_idx);
                 debug!(
-                    "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                    id, target, got2, d2.x, d2.y, d2.w, d2.h
+                    "WinOps: place_grid verified | id={} target={} got={}",
+                    id, target, got2
                 );
                 Ok(())
             } else {
@@ -248,13 +238,12 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 debug!("fallback_used=true");
                 let got3 =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                let d3 = got3.diffs(&target);
-                if d3.within_diff_eps(VERIFY_EPS) {
+                if got3.approx_eq(&target, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.x, d3.y, d3.w, d3.h
+                        "WinOps: place_grid verified | id={} target={} got={}",
+                        id, target, got3
                     );
                     Ok(())
                 } else {
@@ -279,10 +268,6 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.x,
-                        dy: d3.y,
-                        dw: d3.w,
-                        dh: d3.h,
                         clamped,
                     })
                 }

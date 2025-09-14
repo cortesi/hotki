@@ -107,26 +107,31 @@ impl Rect {
     pub fn left(&self) -> f64 {
         self.x
     }
+
     /// Right edge (`x + w`).
     #[inline]
     pub fn right(&self) -> f64 {
         self.x + self.w
     }
+
     /// Bottom edge (minimum y).
     #[inline]
     pub fn bottom(&self) -> f64 {
         self.y
     }
+
     /// Top edge (`y + h`).
     #[inline]
     pub fn top(&self) -> f64 {
         self.y + self.h
     }
+
     /// Center x coordinate.
     #[inline]
     pub fn cx(&self) -> f64 {
         self.x + self.w / 2.0
     }
+
     /// Center y coordinate.
     #[inline]
     pub fn cy(&self) -> f64 {

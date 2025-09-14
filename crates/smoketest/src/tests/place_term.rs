@@ -134,9 +134,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             })?;
             let last = &samples[last_idx];
             let left_ok = approx(last.x, tx, eps);
-            let right_ok = approx(last.x + last.w, right, eps);
             let bottom_ok = approx(last.y, ty, eps);
-            let top_ok = approx(last.y + last.h, top, eps);
 
             // Find earliest sample that matches final anchoring and assert no drift after
             let mut latch_idx: Option<usize> = None;

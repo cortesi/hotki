@@ -1,5 +1,4 @@
 //! Process management utilities for smoketests.
-
 use std::{
     env,
     path::PathBuf,
@@ -98,8 +97,6 @@ impl HelperWindowBuilder {
         self
     }
 
-    // with_slot intentionally omitted in favor of with_grid in tests.
-
     /// Place into an arbitrary grid cell (top-left origin)
     pub fn with_grid(mut self, cols: u32, rows: u32, col: u32, row: u32) -> Self {
         self.grid = Some((cols, rows, col, row));
@@ -135,12 +132,8 @@ impl HelperWindowBuilder {
         self
     }
 
-    /// Explicit delayed-apply to an absolute target `(x,y,w,h)` after `ms`.
-    pub fn with_delay_apply_target(mut self, ms: u64, x: f64, y: f64, w: f64, h: f64) -> Self {
-        self.delay_apply_ms = Some(ms);
-        self.apply_target = Some((x, y, w, h));
-        self
-    }
+    // with_delay_apply_target intentionally removed; direct absolute
+    // apply-target is set via the CLI for helper-only runs.
 
     /// Enable tweened apply: animate to the latest desired frame over `ms`.
     pub fn with_tween_ms(mut self, ms: u64) -> Self {

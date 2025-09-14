@@ -133,8 +133,7 @@ pub(super) fn apply_and_wait(
             w: s.width,
             h: s.height,
         };
-        let d = last.diffs(target);
-        if d.within_diff_eps(eps) {
+        if last.approx_eq(target, eps) {
             let settle = now_ms(start);
             debug!("settle_time_ms={}", settle);
             return Ok((last, settle));
@@ -246,8 +245,7 @@ pub(super) fn nudge_axis_pos_and_wait(
             w: s.width,
             h: s.height,
         };
-        let d = last.diffs(target);
-        if d.within_diff_eps(eps) {
+        if last.approx_eq(target, eps) {
             let settle = now_ms(start);
             debug!("settle_time_ms={}", settle);
             return Ok((last, settle));
@@ -264,6 +262,7 @@ pub(super) fn nudge_axis_pos_and_wait(
 
 /// Anchor the app's legal size by accepting rounded dimensions and aligning
 /// the visually important edges to the grid cell.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn anchor_legal_size_and_wait(
     op_label: &str,
     win: &crate::AXElem,

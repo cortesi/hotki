@@ -157,8 +157,7 @@ pub(crate) fn place_move_grid(
             initial_pos_first,
             VERIFY_EPS,
         )?;
-        let d1 = got1.diffs(&target);
-        // Stage 7.2: validate against final screen selected by window center
+        // Stage 7.2: validate against the final screen selected by window center
         let vf2 = visible_frame_containing_point(
             mtm,
             geom::Point {
@@ -176,13 +175,12 @@ pub(crate) fn place_move_grid(
             },
             1,
             VERIFY_EPS,
-            d1,
         );
-        if d1.within_diff_eps(VERIFY_EPS) && !force_second {
+        if got1.approx_eq(&target, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
-                "WinOps: place_move_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                id, target, got1, d1.x, d1.y, d1.w, d1.h
+                "WinOps: place_move_grid verified | id={} target={} got={}",
+                id, target, got1
             );
             Ok(())
         } else {
@@ -195,10 +193,6 @@ pub(crate) fn place_move_grid(
                     expected: target,
                     got: got1,
                     epsilon: VERIFY_EPS,
-                    dx: d1.x,
-                    dy: d1.y,
-                    dw: d1.w,
-                    dh: d1.h,
                     clamped,
                 });
             }
@@ -212,7 +206,7 @@ pub(crate) fn place_move_grid(
                 !initial_pos_first,
                 VERIFY_EPS,
             )?;
-            let d2 = got2.diffs(&target);
+            // keep local pos_latched logic later only uses got2; no diff needed here
             let vf4 = visible_frame_containing_point(
                 mtm,
                 geom::Point {
@@ -230,7 +224,6 @@ pub(crate) fn place_move_grid(
                 },
                 2,
                 VERIFY_EPS,
-                d2,
             );
             let force_smg = false;
             if force_smg {
@@ -242,13 +235,12 @@ pub(crate) fn place_move_grid(
                     attr_size,
                     &target,
                 )?;
-                let d3 = got3.diffs(&target);
-                if d3.within_diff_eps(VERIFY_EPS) {
+                if got3.approx_eq(&target, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_move_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.x, d3.y, d3.w, d3.h
+                        "WinOps: place_move_grid verified | id={} target={} got={}",
+                        id, target, got3
                     );
                     Ok(())
                 } else {
@@ -268,19 +260,15 @@ pub(crate) fn place_move_grid(
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.x,
-                        dy: d3.y,
-                        dw: d3.w,
-                        dh: d3.h,
                         clamped,
                     })
                 }
-            } else if d2.within_diff_eps(VERIFY_EPS) {
+            } else if got2.approx_eq(&target, VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
-                    "WinOps: place_move_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                    id, target, got2, d2.x, d2.y, d2.w, d2.h
+                    "WinOps: place_move_grid verified | id={} target={} got={}",
+                    id, target, got2
                 );
                 Ok(())
             } else {
@@ -293,13 +281,12 @@ pub(crate) fn place_move_grid(
                     attr_size,
                     &target,
                 )?;
-                let d3 = got3.diffs(&target);
-                if d3.within_diff_eps(VERIFY_EPS) {
+                if got3.approx_eq(&target, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_move_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.x, d3.y, d3.w, d3.h
+                        "WinOps: place_move_grid verified | id={} target={} got={}",
+                        id, target, got3
                     );
                     Ok(())
                 } else {
@@ -319,10 +306,6 @@ pub(crate) fn place_move_grid(
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.x,
-                        dy: d3.y,
-                        dw: d3.w,
-                        dh: d3.h,
                         clamped,
                     })
                 }

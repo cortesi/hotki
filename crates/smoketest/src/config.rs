@@ -30,9 +30,6 @@ pub const KEY_EVENT_DELAY_MS: u64 = 60;
 /// Standard delay between UI actions.
 pub const UI_ACTION_DELAY_MS: u64 = 120;
 
-// Deprecated: use per-test tunables instead.
-// pub const UI_STABILIZE_DELAY_MS: u64 = 200;
-
 /// Delay between retry attempts.
 pub const RETRY_DELAY_MS: u64 = 300;
 
@@ -124,8 +121,6 @@ pub const FOCUS_NAV_STEP_TIMEOUT_MS: u64 = 800;
 
 /// Interval to resend activation chord while waiting for HUD.
 pub const ACTIVATION_RESEND_INTERVAL_MS: u64 = 500;
-
-// ===== CoreGraphics Constants =====
 
 // ===== Test Configuration Paths =====
 

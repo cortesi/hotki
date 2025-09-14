@@ -67,10 +67,10 @@ pub(super) fn choose_initial_order(can_pos: Option<bool>, can_size: Option<bool>
 }
 
 #[inline]
-pub(super) fn log_summary(order: &str, attempt: u32, eps: f64, d: Rect) {
+pub(super) fn log_summary(order: &str, attempt: u32, eps: f64) {
     debug!(
-        "summary: order={} attempt={} eps={:.1} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
-        order, attempt, eps, d.x, d.y, d.w, d.h
+        "summary: order={} attempt={} eps={:.1}",
+        order, attempt, eps
     );
 }
 

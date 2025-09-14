@@ -61,6 +61,7 @@ pub enum FsState {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Measure relay repeats posted to the focused window
     #[command(name = "repeat-relay")]

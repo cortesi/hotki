@@ -101,8 +101,7 @@ pub enum Error {
     /// Post‑placement verification failed: the window's actual frame did not
     /// match the requested target within `epsilon` tolerance.
     #[error(
-        "post-placement verification failed in {op}: expected={expected:?} got={got:?} \
-         eps={epsilon:.2} diff=(dx={dx:.2}, dy={dy:.2}, dw={dw:.2}, dh={dh:.2}) clamped={clamped}"
+        "post-placement verification failed in {op}: expected={expected:?} got={got:?} eps={epsilon:.2} clamped={clamped}"
     )]
     PlacementVerificationFailed {
         /// Logical operation name (e.g., "place_grid").
@@ -113,14 +112,6 @@ pub enum Error {
         got: Rect,
         /// Allowed absolute tolerance for each component.
         epsilon: f64,
-        /// Absolute delta in x between expected and actual.
-        dx: f64,
-        /// Absolute delta in y between expected and actual.
-        dy: f64,
-        /// Absolute delta in width between expected and actual.
-        dw: f64,
-        /// Absolute delta in height between expected and actual.
-        dh: f64,
         /// Which edges appear clamped to the visible frame (≈ within eps).
         clamped: ClampFlags,
     },
