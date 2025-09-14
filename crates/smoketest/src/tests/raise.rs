@@ -174,9 +174,9 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 });
             }
 
-            // Ensure 'r' is bound at root (RPC path), then drive to raise menu.
-            let _ = ctx.ensure_rpc_ready(&["r"]);
-            // Navigate to raise menu: already at root after shift+cmd+0; press r then 1
+            // Ensure activation and 'r' are registered; open HUD, then enter raise menu.
+            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "r"]);
+            send_key("shift+cmd+0");
             send_key("r");
             // Ensure the first helper is visible (CG or AX) before issuing '1'
             if !wait_for_windows_visible(

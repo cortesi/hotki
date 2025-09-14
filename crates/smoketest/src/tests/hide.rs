@@ -32,7 +32,7 @@ use crate::{
     config,
     error::{Error, Result},
     test_runner::{TestConfig, TestRunner},
-    ui_interaction::{send_activation_chord, wait_for_ident_if_ready},
+    ui_interaction::send_activation_chord,
 };
 
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -62,6 +62,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ctx.launch_hotki()?;
             // Wait for HUD to ensure bindings are installed
             let _ = ctx.wait_for_hud()?;
+            // Ensure activation and hide submenu idents are registered (h, o, f).
+            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "h", "o", "f"]);
             Ok(())
         })
         .with_execute(|ctx| {
@@ -105,10 +107,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Ensure the helper window is frontmost before issuing hide commands.
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
 
-            // Drive: send 'h' then gate and send 'o' (hide on)
-            let _ = wait_for_ident_if_ready("h", crate::config::BINDING_GATE_DEFAULT_MS);
+            // Drive: send 'h' then 'o' (hide on) — idents are pre-gated in setup
             crate::ui_interaction::send_key("h");
-            let _ = wait_for_ident_if_ready("o", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("o");
 
             // Wait for position change
@@ -141,18 +141,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Drive: reopen/activate and turn hide off (reveal)
             send_activation_chord();
-            // Actively wait for the hide submenu root ('h') to be available instead of sleeping.
-            if crate::server_drive::is_ready() {
-                let _ = crate::server_drive::wait_for_ident(
-                    "h",
-                    crate::config::BINDING_GATE_DEFAULT_MS,
-                );
-            }
             // Raise helper again before revealing to avoid toggling an unrelated window.
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
-            let _ = wait_for_ident_if_ready("h", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("h");
-            let _ = wait_for_ident_if_ready("f", crate::config::BINDING_GATE_DEFAULT_MS);
             crate::ui_interaction::send_key("f");
 
             // Wait until position roughly returns to original

@@ -14,7 +14,6 @@
 use crate::{
     error::Result,
     results::Summary,
-    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key_sequence,
 };
@@ -43,15 +42,12 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
     TestRunner::new("ui_demo", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
+            // Ensure the activation chord and 't' menu binding are registered before driving.
+            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "t"]);
             Ok(())
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-
-            // If driving via RPC, wait for 't' binding before injecting
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("t", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
@@ -95,14 +91,12 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
     TestRunner::new("minui_demo", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
+            // Ensure the activation chord and 't' menu binding are registered before driving.
+            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "t"]);
             Ok(())
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-
-            if server_drive::is_ready() {
-                let _ = server_drive::wait_for_ident("t", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");

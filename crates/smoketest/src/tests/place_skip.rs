@@ -9,7 +9,6 @@ use super::helpers::wait_for_frontmost_title;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -44,17 +43,8 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_skip", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let start = Instant::now();
-                let mut inited = server_drive::init(&sock);
-                while !inited && start.elapsed() < Duration::from_millis(3000) {
-                    std::thread::sleep(Duration::from_millis(50));
-                    inited = server_drive::init(&sock);
-                }
-            }
-            let _ = server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
-            let _ = server_drive::wait_for_ident("1", crate::config::BINDING_GATE_DEFAULT_MS);
+            // Gate on the required bindings before executing.
+            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
             Ok(())
         })
         .with_execute(move |ctx| {

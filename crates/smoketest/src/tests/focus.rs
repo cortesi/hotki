@@ -134,13 +134,8 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 .socket_path()
                 .to_string();
 
-            // Initialize RPC driver before starting the listener to reduce races
-            let start = Instant::now();
-            let mut inited = server_drive::init(&socket_path);
-            while !inited && start.elapsed() < Duration::from_millis(3000) {
-                thread::sleep(Duration::from_millis(50));
-                inited = server_drive::init(&socket_path);
-            }
+            // Initialize RPC driver with a bounded wait to reduce races
+            let _ = server_drive::ensure_init(&socket_path, 3000);
 
             // Start background listener
             let expected_title_clone = expected_title.clone();
@@ -161,8 +156,8 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 ));
             });
 
-            // Initialize RPC driver so we can ping liveness during waits.
-            let _ = server_drive::init(&socket_path);
+            // Ensure RPC driver remains initialized for liveness checks.
+            let _ = server_drive::ensure_init(&socket_path, 3000);
 
             // Spawn helper window
             let helper_time = ctx

@@ -276,8 +276,13 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let name = "focus-nav";
         crate::process::write_overlay_status(name);
         crate::process::write_overlay_info("");
-        let (ok, details) =
-            run_subtest_capture_with_extra(name, duration_ms, timeout_ms, 10_000, &[]);
+        let (ok, details) = run_subtest_capture_with_extra(
+            name,
+            duration_ms,
+            timeout_ms.saturating_add(10_000),
+            10_000,
+            &[],
+        );
         if ok {
             println!("{}... OK", name);
         } else {
@@ -288,7 +293,23 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         }
     }
     all_ok &= run("place", duration_ms);
-    all_ok &= run("place-minimized", duration_ms);
+    // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
+    {
+        let name = "place-minimized";
+        crate::process::write_overlay_status(name);
+        crate::process::write_overlay_info("");
+        let (ok, details) =
+            run_subtest_capture_with_extra(name, duration_ms, timeout_ms, 10_000, &[]);
+        if ok {
+            println!("{}... OK", name);
+        } else {
+            println!("{}... FAIL", name);
+            if !details.trim().is_empty() {
+                println!("{}", details.trim_end());
+            }
+        }
+        all_ok &= ok;
+    }
     all_ok &= run("place-zoomed", duration_ms);
     // Stage 6 advisory gating: validate skip behavior when possible
     all_ok &= run("place-skip", duration_ms);

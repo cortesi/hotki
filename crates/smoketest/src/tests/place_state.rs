@@ -6,7 +6,6 @@ use super::{geom, helpers::spawn_helper_with_options};
 use crate::{
     config,
     error::{Error, Result},
-    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -43,12 +42,8 @@ fn run_place_with_state(
     TestRunner::new("place_state", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let _ = server_drive::ensure_init(&sock, 3000);
-                let _ = server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
-                let _ = server_drive::wait_for_ident("1", crate::config::BINDING_GATE_DEFAULT_MS);
-            }
+            // Ensure RPC ready and the required bindings are registered before driving.
+            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
             Ok(())
         })
         .with_execute(move |ctx| {
@@ -73,6 +68,19 @@ fn run_place_with_state(
                 if super::helpers::wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS) {
                     break;
                 }
+            }
+
+            // If the helper started minimized, AX frame can lag after de-miniaturize.
+            // Actively wait until an AX frame is available before issuing placement.
+            let ready_deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(std::cmp::min(
+                    ctx.config.timeout_ms,
+                    config::WAIT_FIRST_WINDOW_MS,
+                ));
+            while std::time::Instant::now() < ready_deadline
+                && mac_winops::ax_window_frame(helper.pid, &title).is_none()
+            {
+                std::thread::sleep(config::ms(config::PLACE_POLL_MS));
             }
 
             let (vf_x, vf_y, vf_w, vf_h) = if let Some((px, py)) =

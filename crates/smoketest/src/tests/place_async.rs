@@ -31,17 +31,8 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     crate::test_runner::TestRunner::new("place_async", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let start = std::time::Instant::now();
-                let mut inited = crate::server_drive::init(&sock);
-                while !inited && start.elapsed() < std::time::Duration::from_millis(3000) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    inited = crate::server_drive::init(&sock);
-                }
-            }
-            let _ = crate::server_drive::wait_for_ident("g", crate::config::BINDING_GATE_DEFAULT_MS);
-            let _ = crate::server_drive::wait_for_ident("b", crate::config::BINDING_GATE_DEFAULT_MS);
+            // Ensure the MRPC driver is initialized (no specific idents required here).
+            let _ = ctx.ensure_rpc_ready(&[]);
             Ok(())
         })
         .with_execute(move |ctx| {
