@@ -1,12 +1,11 @@
 use tracing::debug;
 
-use super::common::{diffs, now_ms, sleep_ms, within_eps};
-use crate::geom::Axis;
+use super::common::{now_ms, sleep_ms};
 use crate::{
     ax::{
         ax_element_pid, ax_get_point, ax_get_size, ax_set_point, ax_set_size, warn_once_nonsettable,
     },
-    geom::{self, CGPoint, CGSize, Rect},
+    geom::{self, Axis, Point, Rect, Size},
 };
 
 // Stage 2: settle/polling parameters for apply_and_wait
@@ -45,7 +44,7 @@ pub(super) fn apply_and_wait(
             ax_set_point(
                 win.as_ptr(),
                 attr_pos,
-                CGPoint {
+                Point {
                     x: target.x,
                     y: target.y,
                 },
@@ -67,7 +66,7 @@ pub(super) fn apply_and_wait(
             ax_set_size(
                 win.as_ptr(),
                 attr_size,
-                CGSize {
+                Size {
                     width: target.w,
                     height: target.h,
                 },
@@ -87,7 +86,7 @@ pub(super) fn apply_and_wait(
             ax_set_size(
                 win.as_ptr(),
                 attr_size,
-                CGSize {
+                Size {
                     width: target.w,
                     height: target.h,
                 },
@@ -109,7 +108,7 @@ pub(super) fn apply_and_wait(
             ax_set_point(
                 win.as_ptr(),
                 attr_pos,
-                CGPoint {
+                Point {
                     x: target.x,
                     y: target.y,
                 },
@@ -134,8 +133,8 @@ pub(super) fn apply_and_wait(
             w: s.width,
             h: s.height,
         };
-        let d = diffs(&last, target);
-        if within_eps(d, eps) {
+        let d = last.diffs(target);
+        if d.within_diff_eps(eps) {
             let settle = now_ms(start);
             debug!("settle_time_ms={}", settle);
             return Ok((last, settle));
@@ -166,7 +165,7 @@ pub(super) fn apply_size_only_and_wait(
     ax_set_size(
         win.as_ptr(),
         attr_size,
-        CGSize {
+        Size {
             width: w,
             height: h,
         },
@@ -215,11 +214,11 @@ pub(super) fn nudge_axis_pos_and_wait(
     let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
     let _cur_s = ax_get_size(win.as_ptr(), crate::ax::cfstr("AXSize"))?;
     let new_p = match axis {
-        Axis::Horizontal => geom::CGPoint {
+        Axis::Horizontal => geom::Point {
             x: target.x,
             y: cur_p.y,
         },
-        Axis::Vertical => geom::CGPoint {
+        Axis::Vertical => geom::Point {
             x: cur_p.x,
             y: target.y,
         },
@@ -247,8 +246,8 @@ pub(super) fn nudge_axis_pos_and_wait(
             w: s.width,
             h: s.height,
         };
-        let d = diffs(&last, target);
-        if within_eps(d, eps) {
+        let d = last.diffs(target);
+        if d.within_diff_eps(eps) {
             let settle = now_ms(start);
             debug!("settle_time_ms={}", settle);
             return Ok((last, settle));

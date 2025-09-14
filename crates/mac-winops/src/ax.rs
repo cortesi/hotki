@@ -17,7 +17,7 @@ use tracing::{Level, debug, enabled, warn};
 use crate::{
     AXElem, WindowId,
     error::{Error, Result},
-    geom::{CGPoint, CGSize},
+    geom::{Point, Size},
     window,
 };
 
@@ -202,7 +202,7 @@ pub fn ax_props_for_window_id(id: WindowId) -> Result<AxProps> {
     })
 }
 
-pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> {
+pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<Point> {
     let mut v: CFTypeRef = ptr::null_mut();
     // SAFETY: See note in `ax_bool` for out‑param contract.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
@@ -225,7 +225,7 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
     if v.is_null() {
         return Err(Error::Unsupported);
     }
-    let mut p = CGPoint { x: 0.0, y: 0.0 };
+    let mut p = Point { x: 0.0, y: 0.0 };
     // SAFETY: `v` is an AXValue for CGPoint; out‑ptr is properly aligned and valid.
     let ok =
         unsafe { AXValueGetValue(v, K_AX_VALUE_CGPOINT_TYPE, &mut p as *mut _ as *mut c_void) };
@@ -238,7 +238,7 @@ pub fn ax_get_point(element: *mut c_void, attr: CFStringRef) -> Result<CGPoint> 
     Ok(p)
 }
 
-pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
+pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<Size> {
     let mut v: CFTypeRef = ptr::null_mut();
     // SAFETY: See note in `ax_bool` for out‑param contract.
     let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
@@ -261,7 +261,7 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<CGSize> {
     if v.is_null() {
         return Err(Error::Unsupported);
     }
-    let mut s = CGSize {
+    let mut s = Size {
         width: 0.0,
         height: 0.0,
     };
@@ -288,7 +288,7 @@ pub fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> 
     Some(s.to_string())
 }
 
-pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Result<()> {
+pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: Point) -> Result<()> {
     assert_main_thread_debug();
     // SAFETY: `&p` points to a valid CGPoint; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGPOINT_TYPE, &p as *const _ as *const c_void) };
@@ -325,7 +325,7 @@ pub fn ax_set_point(element: *mut c_void, attr: CFStringRef, p: CGPoint) -> Resu
     Ok(())
 }
 
-pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: CGSize) -> Result<()> {
+pub fn ax_set_size(element: *mut c_void, attr: CFStringRef, s: Size) -> Result<()> {
     assert_main_thread_debug();
     // SAFETY: `&s` points to a valid CGSize; AXValueCreate copies the bytes.
     let v = unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &s as *const _ as *const c_void) };

@@ -29,12 +29,12 @@ pub(super) fn sleep_ms(ms: u64) {
     sleep(Duration::from_millis(ms));
 }
 
-pub(super) use crate::geom::{diffs, within_eps};
+// within_eps moved to Rect::within_eps
 
 #[inline]
-pub(super) fn one_axis_off(d: (f64, f64, f64, f64), eps: f64) -> Option<Axis> {
-    let x_ok = d.0 <= eps && d.2 <= eps; // dx,dw within eps
-    let y_ok = d.1 <= eps && d.3 <= eps; // dy,dh within eps
+pub(super) fn one_axis_off(d: Rect, eps: f64) -> Option<Axis> {
+    let x_ok = d.x <= eps && d.w <= eps; // dx,dw within eps
+    let y_ok = d.y <= eps && d.h <= eps; // dy,dh within eps
     if x_ok && !y_ok {
         Some(Axis::Vertical)
     } else if y_ok && !x_ok {
@@ -67,10 +67,10 @@ pub(super) fn choose_initial_order(can_pos: Option<bool>, can_size: Option<bool>
 }
 
 #[inline]
-pub(super) fn log_summary(order: &str, attempt: u32, eps: f64, d: (f64, f64, f64, f64)) {
+pub(super) fn log_summary(order: &str, attempt: u32, eps: f64, d: Rect) {
     debug!(
         "summary: order={} attempt={} eps={:.1} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
-        order, attempt, eps, d.0, d.1, d.2, d.3
+        order, attempt, eps, d.x, d.y, d.w, d.h
     );
 }
 

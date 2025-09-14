@@ -5,12 +5,12 @@ use parking_lot::Mutex;
 
 use crate::{
     WindowId,
-    geom::{CGPoint, CGSize},
+    geom::{Point, Size},
 };
 
 /// In-memory storage of pre-maximize frames to allow toggling back.
 pub type FrameKey = (i32, WindowId);
-pub type FrameVal = (CGPoint, CGSize);
+pub type FrameVal = (Point, Size);
 
 pub static PREV_FRAMES: Lazy<Mutex<HashMap<FrameKey, FrameVal>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));

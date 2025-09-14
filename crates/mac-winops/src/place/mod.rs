@@ -21,7 +21,7 @@ fn grid_guess_cell_by_pos(
     vf_h: f64,
     cols: u32,
     rows: u32,
-    pos: geom::CGPoint,
+    pos: geom::Point,
 ) -> (u32, u32) {
     let cols_f = cols.max(1) as f64;
     let rows_f = rows.max(1) as f64;

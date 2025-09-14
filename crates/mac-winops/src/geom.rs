@@ -1,11 +1,4 @@
 // Unified geometry primitives and helpers.
-// CGPoint/CGSize mirror CoreGraphics types (f64 fields) for AXValue interop.
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CGPoint {
-    pub x: f64,
-    pub y: f64,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
@@ -14,7 +7,7 @@ pub struct Point {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CGSize {
+pub struct Size {
     pub width: f64,
     pub height: f64,
 }
@@ -33,37 +26,154 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Construct a new rectangle from position `(x, y)` and size `(w, h)`.
+    #[inline]
+    pub fn new(x: f64, y: f64, w: f64, h: f64) -> Self {
+        Rect { x, y, w, h }
+    }
+
+    /// Find the `(col, row)` grid index inside `self` that matches a rectangle
+    /// defined by `pos` and `size` within `eps`, if any.
+    #[inline]
+    pub fn grid_find_cell(
+        &self,
+        cols: u32,
+        rows: u32,
+        pos: Point,
+        size: Size,
+        eps: f64,
+    ) -> Option<(u32, u32)> {
+        for row in 0..rows {
+            for col in 0..cols {
+                let cell = self.grid_cell(cols, rows, col, row);
+                if approx_eq(pos.x, cell.x, eps)
+                    && approx_eq(pos.y, cell.y, eps)
+                    && approx_eq(size.width, cell.w, eps)
+                    && approx_eq(size.height, cell.h, eps)
+                {
+                    return Some((col, row));
+                }
+            }
+        }
+        None
+    }
+
+    /// Return true if vertical overlap between `self` and `b` is at least
+    /// `ratio * min(h_self, h_b)`.
+    #[inline]
+    pub fn same_row_by_overlap(&self, b: &Rect, ratio: f64) -> bool {
+        let min_h = self.h.abs().min(b.h.abs());
+        overlap_1d(self.bottom(), self.top(), b.bottom(), b.top()) >= ratio * min_h
+    }
+
+    /// Return true if horizontal overlap between `self` and `b` is at least
+    /// `ratio * min(w_self, w_b)`.
+    #[inline]
+    pub fn same_col_by_overlap(&self, b: &Rect, ratio: f64) -> bool {
+        let min_w = self.w.abs().min(b.w.abs());
+        overlap_1d(self.left(), self.right(), b.left(), b.right()) >= ratio * min_w
+    }
+
+    /// Return the `col,row` grid cell inside this rectangle, split into `cols x rows` tiles.
+    /// The last column/row absorbs remainders. Dimensions are floored to whole points.
+    #[inline]
+    pub fn grid_cell(&self, cols: u32, rows: u32, col: u32, row: u32) -> Rect {
+        let c = cols.max(1) as f64;
+        let r = rows.max(1) as f64;
+        let vf_w = self.w.max(1.0);
+        let vf_h = self.h.max(1.0);
+        let tile_w = (vf_w / c).floor().max(1.0);
+        let tile_h = (vf_h / r).floor().max(1.0);
+        let rem_w = vf_w - tile_w * (cols as f64);
+        let rem_h = vf_h - tile_h * (rows as f64);
+
+        let x = self.x + tile_w * (col as f64);
+        let w = if col == cols.saturating_sub(1) {
+            tile_w + rem_w
+        } else {
+            tile_w
+        };
+        let y = self.y + tile_h * (row as f64);
+        let h = if row == rows.saturating_sub(1) {
+            tile_h + rem_h
+        } else {
+            tile_h
+        };
+        Rect { x, y, w, h }
+    }
+
+    /// Left edge (minimum x).
     #[inline]
     pub fn left(&self) -> f64 {
         self.x
     }
+    /// Right edge (`x + w`).
     #[inline]
     pub fn right(&self) -> f64 {
         self.x + self.w
     }
+    /// Bottom edge (minimum y).
     #[inline]
     pub fn bottom(&self) -> f64 {
         self.y
     }
+    /// Top edge (`y + h`).
     #[inline]
     pub fn top(&self) -> f64 {
         self.y + self.h
     }
+    /// Center x coordinate.
     #[inline]
     pub fn cx(&self) -> f64 {
         self.x + self.w / 2.0
     }
+    /// Center y coordinate.
     #[inline]
     pub fn cy(&self) -> f64 {
         self.y + self.h / 2.0
     }
 
+    /// Center point of the rectangle.
     #[inline]
     pub fn center(&self) -> Point {
         Point {
             x: self.cx(),
             y: self.cy(),
         }
+    }
+
+    /// Inclusive point containment check.
+    #[inline]
+    pub fn contains(&self, px: f64, py: f64) -> bool {
+        px >= self.left() && px <= self.right() && py >= self.bottom() && py <= self.top()
+    }
+
+    /// Absolute per‑field differences between two rects, returned as a `Rect`
+    /// with `(dx, dy, dw, dh)` mapped to `(x, y, w, h)`.
+    #[inline]
+    pub fn diffs(&self, other: &Rect) -> Rect {
+        Rect {
+            x: (self.x - other.x).abs(),
+            y: (self.y - other.y).abs(),
+            w: (self.w - other.w).abs(),
+            h: (self.h - other.h).abs(),
+        }
+    }
+
+    /// Approximate equality within `eps` per component.
+    #[inline]
+    pub fn approx_eq(&self, other: &Rect, eps: f64) -> bool {
+        approx_eq(self.x, other.x, eps)
+            && approx_eq(self.y, other.y, eps)
+            && approx_eq(self.w, other.w, eps)
+            && approx_eq(self.h, other.h, eps)
+    }
+
+    /// Check whether all components of this diff-rect are within `eps`.
+    /// Intended to be called on values produced by `Rect::diffs`.
+    #[inline]
+    pub fn within_diff_eps(&self, eps: f64) -> bool {
+        self.x <= eps && self.y <= eps && self.w <= eps && self.h <= eps
     }
 }
 
@@ -77,8 +187,8 @@ impl core::fmt::Display for Rect {
     }
 }
 
-impl From<(CGPoint, CGSize)> for Rect {
-    fn from(v: (CGPoint, CGSize)) -> Self {
+impl From<(Point, Size)> for Rect {
+    fn from(v: (Point, Size)) -> Self {
         let (p, s) = v;
         Rect {
             x: p.x,
@@ -89,27 +199,15 @@ impl From<(CGPoint, CGSize)> for Rect {
     }
 }
 
-impl From<Rect> for (CGPoint, CGSize) {
+impl From<Rect> for (Point, Size) {
     fn from(r: Rect) -> Self {
         (
-            CGPoint { x: r.x, y: r.y },
-            CGSize {
+            Point { x: r.x, y: r.y },
+            Size {
                 width: r.w,
                 height: r.h,
             },
         )
-    }
-}
-
-impl From<CGPoint> for Point {
-    fn from(p: CGPoint) -> Self {
-        Point { x: p.x, y: p.y }
-    }
-}
-
-impl From<Point> for CGPoint {
-    fn from(p: Point) -> Self {
-        CGPoint { x: p.x, y: p.y }
     }
 }
 
@@ -124,63 +222,13 @@ pub fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
     approx_eq_eps(a, b, eps)
 }
 
-#[inline]
-pub fn rect_from(x: f64, y: f64, w: f64, h: f64) -> Rect {
-    Rect { x, y, w, h }
-}
-
-#[inline]
-pub fn rect_approx_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize, eps: f64) -> bool {
-    approx_eq(p1.x, p2.x, eps)
-        && approx_eq(p1.y, p2.y, eps)
-        && approx_eq(s1.width, s2.width, eps)
-        && approx_eq(s1.height, s2.height, eps)
-}
-
-#[inline]
-pub fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
-    rect_approx_eq(p1, s1, p2, s2, 1.0)
-}
-
-#[inline]
-pub fn point_in_rect(px: f64, py: f64, r: &Rect) -> bool {
-    px >= r.left() && px <= r.right() && py >= r.bottom() && py <= r.top()
-}
-
-// Rect comparison helpers frequently used by placement logic ------------------
-
-#[inline]
-pub fn diffs(a: &Rect, b: &Rect) -> (f64, f64, f64, f64) {
-    (
-        (a.x - b.x).abs(),
-        (a.y - b.y).abs(),
-        (a.w - b.w).abs(),
-        (a.h - b.h).abs(),
-    )
-}
-
-#[inline]
-pub fn within_eps(d: (f64, f64, f64, f64), eps: f64) -> bool {
-    d.0 <= eps && d.1 <= eps && d.2 <= eps && d.3 <= eps
-}
+// within_eps moved to `Rect::within_eps`
 
 #[inline]
 pub fn overlap_1d(a1: f64, a2: f64, b1: f64, b2: f64) -> f64 {
     let l = a1.max(b1);
     let r = a2.min(b2);
     (r - l).max(0.0)
-}
-
-#[inline]
-pub fn same_row_by_overlap(a: &Rect, b: &Rect, ratio: f64) -> bool {
-    let min_h = a.h.abs().min(b.h.abs());
-    overlap_1d(a.bottom(), a.top(), b.bottom(), b.top()) >= ratio * min_h
-}
-
-#[inline]
-pub fn same_col_by_overlap(a: &Rect, b: &Rect, ratio: f64) -> bool {
-    let min_w = a.w.abs().min(b.w.abs());
-    overlap_1d(a.left(), a.right(), b.left(), b.right()) >= ratio * min_w
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,70 +245,6 @@ pub fn center_distance_bias(a: &Rect, b: &Rect, axis: Axis) -> (f64, f64) {
     }
 }
 
-// Grid helpers ----------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-pub fn grid_cell_rect(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-) -> (f64, f64, f64, f64) {
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
-    let rem_w = vf_w - tile_w * (cols as f64);
-    let rem_h = vf_h - tile_h * (rows as f64);
-
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
-        tile_w + rem_w
-    } else {
-        tile_w
-    };
-    let y = vf_y + tile_h * (row as f64);
-    let h = if row == rows.saturating_sub(1) {
-        tile_h + rem_h
-    } else {
-        tile_h
-    };
-    (x, y, w, h)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn grid_find_cell(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
-    cols: u32,
-    rows: u32,
-    pos: CGPoint,
-    size: CGSize,
-    eps: f64,
-) -> Option<(u32, u32)> {
-    for row in 0..rows {
-        for col in 0..cols {
-            let (x, y, w, h) = grid_cell_rect(vf_x, vf_y, vf_w, vf_h, cols, rows, col, row);
-            if approx_eq(pos.x, x, eps)
-                && approx_eq(pos.y, y, eps)
-                && approx_eq(size.width, w, eps)
-                && approx_eq(size.height, h, eps)
-            {
-                return Some((col, row));
-            }
-        }
-    }
-    None
-}
-
-// Corner helpers ---------------------------------------------------------------
-
 #[inline]
 pub fn corner_dir(corner: crate::ScreenCorner) -> (i32, i32) {
     match corner {
@@ -271,9 +255,9 @@ pub fn corner_dir(corner: crate::ScreenCorner) -> (i32, i32) {
 }
 
 #[inline]
-pub fn overshoot_target(p: CGPoint, corner: crate::ScreenCorner, magnitude: f64) -> CGPoint {
+pub fn overshoot_target(p: Point, corner: crate::ScreenCorner, magnitude: f64) -> Point {
     let (dx, dy) = corner_dir(corner);
-    CGPoint {
+    Point {
         x: p.x + magnitude * (dx as f64),
         y: p.y + magnitude * (dy as f64),
     }
@@ -314,11 +298,11 @@ mod tests {
             w: 10.0,
             h: 10.0,
         };
-        assert!(point_in_rect(0.0, 0.0, &r));
-        assert!(point_in_rect(10.0, 10.0, &r));
-        assert!(point_in_rect(5.0, 1.0, &r));
-        assert!(!point_in_rect(-0.1, 0.0, &r));
-        assert!(!point_in_rect(0.0, 10.1, &r));
+        assert!(r.contains(0.0, 0.0));
+        assert!(r.contains(10.0, 10.0));
+        assert!(r.contains(5.0, 1.0));
+        assert!(!r.contains(-0.1, 0.0));
+        assert!(!r.contains(0.0, 10.1));
     }
 
     #[test]
@@ -338,40 +322,50 @@ mod tests {
         // Y overlap is 40 over min height 50 => 0.8 ratio
         let ov_y = overlap_1d(a.bottom(), a.top(), b.bottom(), b.top());
         assert_eq!(ov_y, 40.0);
-        assert!(same_row_by_overlap(&a, &b, 0.8));
+        assert!(a.same_row_by_overlap(&b, 0.8));
         // X overlap is 0
         let ov_x = overlap_1d(a.left(), a.right(), b.left(), b.right());
         assert_eq!(ov_x, 0.0);
-        assert!(!same_col_by_overlap(&a, &b, 0.8));
+        assert!(!a.same_col_by_overlap(&b, 0.8));
     }
 
     #[test]
     fn grid_cell_rect_corners_and_remainders() {
-        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
-        let (x0, y0, w0, h0) = grid_cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
-        assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
-        let (x1, y1, w1, h1) = grid_cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 0);
-        assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
-        let (_x2, y2, _w2, _h2) = grid_cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
-        assert_eq!(y2, 50.0);
+        let vf = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
+        let r0 = vf.grid_cell(3, 2, 0, 0);
+        assert_eq!((r0.x, r0.y, r0.w, r0.h), (0.0, 0.0, 33.0, 50.0));
+        let r1 = vf.grid_cell(3, 2, 2, 0);
+        assert_eq!((r1.x, r1.y, r1.w, r1.h), (66.0, 0.0, 34.0, 50.0));
+        let r2 = vf.grid_cell(3, 2, 0, 1);
+        assert_eq!(r2.y, 50.0);
     }
 
     #[test]
     fn grid_find_cell_match() {
-        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 80.0);
-        let (x, y, w, h) = grid_cell_rect(vf_x, vf_y, vf_w, vf_h, 4, 2, 3, 1);
-        let pos = CGPoint { x, y };
-        let size = CGSize {
-            width: w,
-            height: h,
+        let vf = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 80.0,
         };
-        let cell = grid_find_cell(vf_x, vf_y, vf_w, vf_h, 4, 2, pos, size, 0.5);
+        let r = vf.grid_cell(4, 2, 3, 1);
+        let pos = Point { x: r.x, y: r.y };
+        let size = Size {
+            width: r.w,
+            height: r.h,
+        };
+        let cell = vf.grid_find_cell(4, 2, pos, size, 0.5);
         assert_eq!(cell, Some((3, 1)));
     }
 
     #[test]
     fn corner_helpers() {
-        let p = CGPoint { x: 10.0, y: 10.0 };
+        let p = Point { x: 10.0, y: 10.0 };
         let q = overshoot_target(p, crate::ScreenCorner::BottomLeft, 100.0);
         assert_eq!(q.x, -90.0);
         assert_eq!(q.y, 110.0);

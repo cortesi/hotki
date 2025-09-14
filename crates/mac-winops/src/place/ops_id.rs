@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Error, Result, WindowId,
     ax::{ax_check, ax_get_point, ax_get_size, ax_window_for_id, cfstr},
-    geom::{self, Rect, diffs, rect_from, within_eps},
+    geom::{self, Rect},
     screen_util::visible_frame_containing_point,
 };
 
@@ -44,16 +44,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         let vf = visible_frame_containing_point(mtm, cur_p);
         let col = min(col, cols.saturating_sub(1));
         let row = min(row, rows.saturating_sub(1));
-        let (x, y, w, h) = geom::grid_cell_rect(
-            vf.x,
-            vf.y,
-            vf.w.max(1.0),
-            vf.h.max(1.0),
-            cols,
-            rows,
-            col,
-            row,
-        );
+        let Rect { x, y, w, h } = vf.grid_cell(cols, rows, col, row);
         // Stage 5: compute a local rect relative to the chosen visible frame and
         // convert to global coordinates explicitly.
         let target_local = Rect {
@@ -67,7 +58,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             "coordspace: local={} + origin=({:.1},{:.1}) -> global={}",
             target_local, vf.x, vf.y, g
         );
-        let target = rect_from(g.x, g.y, g.w, g.h);
+        let target = Rect::new(g.x, g.y, g.w, g.h);
         // Stage 3.1: if we would trip coordinate-space issues near global (0,0)
         if needs_safe_park(&target, vf.x, vf.y) {
             preflight_safe_park("place_grid", &win, attr_pos, attr_size, vf.x, vf.y, &target)?;
@@ -102,11 +93,11 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             initial_pos_first,
             VERIFY_EPS,
         )?;
-        let d1 = diffs(&got1, &target);
+        let d1 = got1.diffs(&target);
         // Stage 7.2: validate against final screen selected by window center
         let vf2 = visible_frame_containing_point(
             mtm,
-            geom::CGPoint {
+            geom::Point {
                 x: got1.cx(),
                 y: got1.cy(),
             },
@@ -123,11 +114,11 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             VERIFY_EPS,
             d1,
         );
-        if within_eps(d1, VERIFY_EPS) && !force_second {
+        if d1.within_diff_eps(VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                id, target, got1, d1.0, d1.1, d1.2, d1.3
+                id, target, got1, d1.x, d1.y, d1.w, d1.h
             );
             Ok(())
         } else {
@@ -140,10 +131,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     expected: target,
                     got: got1,
                     epsilon: VERIFY_EPS,
-                    dx: d1.0,
-                    dy: d1.1,
-                    dw: d1.2,
-                    dh: d1.3,
+                    dx: d1.x,
+                    dy: d1.y,
+                    dw: d1.w,
+                    dh: d1.h,
                     clamped,
                 });
             }
@@ -159,10 +150,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     axis,
                     VERIFY_EPS,
                 )?;
-                let dax = diffs(&got_ax, &target);
+                let dax = got_ax.diffs(&target);
                 let vf3 = visible_frame_containing_point(
                     mtm,
-                    geom::CGPoint {
+                    geom::Point {
                         x: got_ax.cx(),
                         y: got_ax.cy(),
                     },
@@ -174,12 +165,12 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     crate::geom::Axis::Vertical => "axis-pos:y",
                 };
                 log_summary(label, attempt_idx, VERIFY_EPS, dax);
-                if within_eps(dax, VERIFY_EPS) {
+                if dax.within_diff_eps(VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=axis-pos, attempts=2");
                     debug!(
                         "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got_ax, dax.0, dax.1, dax.2, dax.3
+                        id, target, got_ax, dax.x, dax.y, dax.w, dax.h
                     );
                     return Ok(());
                 }
@@ -195,10 +186,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 false,
                 VERIFY_EPS,
             )?;
-            let d2 = diffs(&got2, &target);
+            let d2 = got2.diffs(&target);
             let vf4 = visible_frame_containing_point(
                 mtm,
-                geom::CGPoint {
+                geom::Point {
                     x: got2.cx(),
                     y: got2.cy(),
                 },
@@ -211,13 +202,13 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 debug!("fallback_used=true");
                 let got3 =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                let d3 = diffs(&got3, &target);
-                if within_eps(d3, VERIFY_EPS) {
+                let d3 = got3.diffs(&target);
+                if d3.within_diff_eps(VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
                         "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.0, d3.1, d3.2, d3.3
+                        id, target, got3, d3.x, d3.y, d3.w, d3.h
                     );
                     Ok(())
                 } else {
@@ -225,7 +216,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     log_failure_context(&win, &role, &subrole);
                     let vf = visible_frame_containing_point(
                         mtm,
-                        geom::CGPoint {
+                        geom::Point {
                             x: got3.cx(),
                             y: got3.cy(),
                         },
@@ -237,19 +228,19 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.0,
-                        dy: d3.1,
-                        dw: d3.2,
-                        dh: d3.3,
+                        dx: d3.x,
+                        dy: d3.y,
+                        dw: d3.w,
+                        dh: d3.h,
                         clamped,
                     })
                 }
-            } else if within_eps(d2, VERIFY_EPS) {
+            } else if d2.within_diff_eps(VERIFY_EPS) {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts={}", attempt_idx);
                 debug!(
                     "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                    id, target, got2, d2.0, d2.1, d2.2, d2.3
+                    id, target, got2, d2.x, d2.y, d2.w, d2.h
                 );
                 Ok(())
             } else {
@@ -257,13 +248,13 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 debug!("fallback_used=true");
                 let got3 =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                let d3 = diffs(&got3, &target);
-                if within_eps(d3, VERIFY_EPS) {
+                let d3 = got3.diffs(&target);
+                if d3.within_diff_eps(VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
                         "WinOps: place_grid verified | id={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        id, target, got3, d3.0, d3.1, d3.2, d3.3
+                        id, target, got3, d3.x, d3.y, d3.w, d3.h
                     );
                     Ok(())
                 } else {
@@ -271,7 +262,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     log_failure_context(&win, &role, &subrole);
                     let vf = visible_frame_containing_point(
                         mtm,
-                        geom::CGPoint {
+                        geom::Point {
                             x: got3.cx(),
                             y: got3.cy(),
                         },
@@ -288,10 +279,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         expected: target,
                         got: got3,
                         epsilon: VERIFY_EPS,
-                        dx: d3.0,
-                        dy: d3.1,
-                        dw: d3.2,
-                        dh: d3.3,
+                        dx: d3.x,
+                        dy: d3.y,
+                        dw: d3.w,
+                        dh: d3.h,
                         clamped,
                     })
                 }

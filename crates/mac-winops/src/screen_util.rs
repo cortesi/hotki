@@ -2,11 +2,11 @@ use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
-use crate::geom::{self, CGPoint, Rect};
+use crate::geom::{self, Point, Rect};
 
 /// Compute the visible frame (excluding menu bar and Dock) of the screen
 /// containing `p`. Falls back to main screen when not found.
-pub(crate) fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> Rect {
+pub(crate) fn visible_frame_containing_point(mtm: MainThreadMarker, p: Point) -> Rect {
     // Try to find a screen containing the point.
     let mut chosen = None;
     for s in NSScreen::screens(mtm).iter() {
@@ -17,7 +17,7 @@ pub(crate) fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) 
             w: fr.size.width,
             h: fr.size.height,
         };
-        if geom::point_in_rect(p.x, p.y, &r) {
+        if r.contains(p.x, p.y) {
             chosen = Some(s);
             break;
         }

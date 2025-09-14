@@ -14,7 +14,7 @@ use crate::{
         ax_get_size, ax_get_string, ax_set_point, ax_set_size, cfstr,
     },
     frame_storage::{HIDDEN_FRAMES, HIDDEN_FRAMES_CAP},
-    geom::{self, CGPoint},
+    geom::{self, Point},
     request_activate_pid,
 };
 
@@ -96,7 +96,7 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
         let (tx, ty) = (tgt.x, tgt.y);
 
         let _ = ax_set_size(win.as_ptr(), attr_size, cur_s);
-        ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty })?;
+        ax_set_point(win.as_ptr(), attr_pos, Point { x: tx, y: ty })?;
 
         if let Ok(p1) = ax_get_point(win.as_ptr(), attr_pos)
             && geom::approx_eq_eps(p1.x, cur_p.x, 1.0)
@@ -109,12 +109,12 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
             let _ = ax_set_point(
                 win.as_ptr(),
                 attr_pos,
-                CGPoint {
+                Point {
                     x: nudge_x,
                     y: cur_p.y,
                 },
             );
-            let _ = ax_set_point(win.as_ptr(), attr_pos, CGPoint { x: tx, y: ty });
+            let _ = ax_set_point(win.as_ptr(), attr_pos, Point { x: tx, y: ty });
         }
 
         // Tightening pass
@@ -125,11 +125,11 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
                 let mut local = step;
                 while local >= 1.0 {
                     let cand = match corner {
-                        ScreenCorner::BottomRight => CGPoint {
+                        ScreenCorner::BottomRight => Point {
                             x: best.x + local,
                             y: best.y,
                         },
-                        ScreenCorner::BottomLeft | ScreenCorner::TopLeft => CGPoint {
+                        ScreenCorner::BottomLeft | ScreenCorner::TopLeft => Point {
                             x: best.x - local,
                             y: best.y,
                         },
@@ -152,11 +152,11 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
                 let mut local = step;
                 while local >= 1.0 {
                     let cand = match corner {
-                        ScreenCorner::BottomRight | ScreenCorner::BottomLeft => CGPoint {
+                        ScreenCorner::BottomRight | ScreenCorner::BottomLeft => Point {
                             x: best.x,
                             y: best.y + local,
                         },
-                        ScreenCorner::TopLeft => CGPoint {
+                        ScreenCorner::TopLeft => Point {
                             x: best.x,
                             y: best.y - local,
                         },

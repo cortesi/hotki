@@ -737,7 +737,7 @@ mod tests {
     use once_cell::sync::Lazy;
 
     use super::*;
-    use crate::geom::grid_cell_rect as cell_rect;
+    use crate::geom::Rect;
 
     static PLACE_ID_CALLS: AtomicUsize = AtomicUsize::new(0);
     static PLACE_FOCUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -798,18 +798,23 @@ mod tests {
     #[test]
     fn cell_rect_corners_and_remainders() {
         // Visible frame 100x100, 3x2 grid -> tile 33x50 with remainders w:1, h:0
-        let (vf_x, vf_y, vf_w, vf_h) = (0.0, 0.0, 100.0, 100.0);
-        // top-left is (col 0, row 0) in top-left origin mapping
-        let (x0, y0, w0, h0) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 0);
-        assert_eq!((x0, y0, w0, h0), (0.0, 0.0, 33.0, 50.0));
+        let vf = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
+        // top-left is (col 0, row 0)
+        let r0 = vf.grid_cell(3, 2, 0, 0);
+        assert_eq!((r0.x, r0.y, r0.w, r0.h), (0.0, 0.0, 33.0, 50.0));
 
         // top-right should absorb remainder width
-        let (x1, y1, w1, h1) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 2, 0);
-        assert_eq!((x1, y1, w1, h1), (66.0, 0.0, 34.0, 50.0));
+        let r1 = vf.grid_cell(3, 2, 2, 0);
+        assert_eq!((r1.x, r1.y, r1.w, r1.h), (66.0, 0.0, 34.0, 50.0));
 
         // bottom row (row 1) starts at y=50
-        let (_x2, y2, _w2, _h2) = cell_rect(vf_x, vf_y, vf_w, vf_h, 3, 2, 0, 1);
-        assert_eq!(y2, 50.0);
+        let r2 = vf.grid_cell(3, 2, 0, 1);
+        assert_eq!(r2.y, 50.0);
     }
 
     #[test]

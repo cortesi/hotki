@@ -11,7 +11,7 @@ use crate::{
     },
     frame_storage::{PREV_FRAMES, PREV_FRAMES_CAP},
     frontmost_window_for_pid,
-    geom::{self, CGPoint, CGSize},
+    geom::{Point, Rect, Size},
     screen_util::visible_frame_containing_point,
 };
 
@@ -81,14 +81,14 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
 
         let vf = visible_frame_containing_point(mtm, cur_p);
         tracing::debug!("WinOps: visible frame {}", vf);
-        let target_p = CGPoint { x: vf.x, y: vf.y };
-        let target_s = CGSize {
+        let target_p = Point { x: vf.x, y: vf.y };
+        let target_s = Size {
             width: vf.w,
             height: vf.h,
         };
 
         let mut prev_key: Option<(i32, crate::WindowId)> = None;
-        let is_full = geom::rect_eq(cur_p, cur_s, target_p, target_s);
+        let is_full = Rect::from((cur_p, cur_s)).approx_eq(&Rect::from((target_p, target_s)), 1.0);
         let do_set_to_full = match desired {
             Desired::On => true,
             Desired::Off => false,
@@ -117,7 +117,7 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
             let restored = if let Some(k) = prev_key {
                 let mut map = PREV_FRAMES.lock();
                 if let Some((p, s)) = map.remove(&k) {
-                    if !geom::rect_eq(p, s, cur_p, cur_s) {
+                    if !Rect::from((p, s)).approx_eq(&Rect::from((cur_p, cur_s)), 1.0) {
                         ax_set_point(win.as_ptr(), attr_pos, p)?;
                         ax_set_size(win.as_ptr(), attr_size, s)?;
                     }

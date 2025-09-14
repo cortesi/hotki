@@ -112,8 +112,8 @@ pub(crate) fn focus_dir(dir: crate::MoveDir) -> Result<()> {
             let cx = c_rect.cx();
             let cy = c_rect.cy();
 
-            let same_row = geom::same_row_by_overlap(&o_rect, &c_rect, 0.8);
-            let same_col = geom::same_col_by_overlap(&o_rect, &c_rect, 0.8);
+            let same_row = o_rect.same_row_by_overlap(&c_rect, 0.8);
+            let same_col = o_rect.same_col_by_overlap(&c_rect, 0.8);
             let primary = match dir {
                 crate::MoveDir::Right => {
                     if c_rect.left() >= o_rect.right() - eps && same_row {
