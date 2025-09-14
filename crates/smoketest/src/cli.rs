@@ -47,6 +47,7 @@ pub enum SeqTest {
     Hide,
     Place,
     PlaceAsync,
+    PlaceAnimated,
     Fullscreen,
     Ui,
     Minui,
@@ -107,6 +108,10 @@ pub enum Commands {
     /// Verify placement convergence when the target app applies geometry with a small delay
     #[command(name = "place-async")]
     PlaceAsync,
+
+    /// Verify placement while the target window animates to the requested frame
+    #[command(name = "place-animated")]
+    PlaceAnimated,
 
     /// Verify placement after normalizing a minimized window
     #[command(name = "place-minimized")]
@@ -171,6 +176,12 @@ pub enum Commands {
         /// relying on event delivery for simulation.
         #[arg(long, value_name = "MS")]
         delay_apply_ms: Option<u64>,
+        /// Animate frame changes to the latest requested target over this duration
+        /// (milliseconds). When set, the helper intercepts setFrame attempts and
+        /// tweens from the last-known frame to the most recent desired frame.
+        /// Useful to simulate apps that animate their own geometry updates.
+        #[arg(long, value_name = "MS")]
+        tween_ms: Option<u64>,
         /// Target `(x y w h)` for delayed apply (AppKit logical coords)
         #[arg(long, value_names = ["X", "Y", "W", "H"])]
         apply_target: Option<Vec<f64>>,

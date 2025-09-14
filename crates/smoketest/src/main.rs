@@ -166,6 +166,7 @@ fn main() {
                 time,
                 delay_setframe_ms,
                 delay_apply_ms,
+                tween_ms,
                 apply_target,
                 apply_grid,
                 slot,
@@ -218,6 +219,7 @@ fn main() {
                     time,
                     delay_setframe_ms.unwrap_or(0),
                     delay_apply_ms.unwrap_or(0),
+                    tween_ms.unwrap_or(0),
                     apply_target_tuple,
                     apply_grid_tuple,
                     slot,
@@ -646,6 +648,31 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("place-async: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::PlaceAnimated => {
+            let timeout = cli.timeout;
+            let logs = true;
+            match run_case(
+                "place-animated",
+                "place-animated",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                None,
+                true,
+                move || tests::place_animated::run_place_animated_test(timeout, logs),
+            ) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-animated: OK (converged with tween)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-animated: ERROR: {}", e);
                     print_hints(&e);
                     std::process::exit(1);
                 }

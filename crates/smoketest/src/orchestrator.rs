@@ -297,6 +297,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // verifies the engine converges via settle polling. Keep near the other
     // placement cases so failures are easier to triage.
     all_ok &= run("place-async", duration_ms);
+    // Animated placement helper: exercises tweened setFrame behavior (~120ms).
+    all_ok &= run("place-animated", duration_ms);
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
     {
         let name = "place-minimized";
@@ -415,6 +417,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::Hide => "hide",
         SeqTest::Place => "place",
         SeqTest::PlaceAsync => "place-async",
+        SeqTest::PlaceAnimated => "place-animated",
         SeqTest::Fullscreen => "fullscreen",
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",

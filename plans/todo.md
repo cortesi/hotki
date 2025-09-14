@@ -72,9 +72,16 @@ Goal: Realistic window behaviors to exercise verification and settling.
    Touch: `crates/smoketest/src/cli.rs` (extend `SeqTest`), `crates/smoketest/src/orchestrator.rs` (`to_subcmd`).  
    Validation: `cargo run --bin smoketest -- seq place-async` completes and prints OK on host.
 
-2. [ ] Animated window: tween to target over ~120 ms; ignore mid‑animation reads.  
-   Touch: same.  
-   Tests: `place` passes with temporary eps relaxation.
+2. [x] Animated window: tween to target over ~120 ms; ignore mid‑animation reads.  
+   Change: Added helper tween mode (`--tween-ms`) that animates to a delayed explicit target (`--delay-apply-ms` + `--apply-grid/--apply-target`) or, without an explicit target, to the latest desired frame. Intercepts now defer tweening when a future explicit target is present so incidental move/resize events don’t preempt the final goal.  
+   Touch: `crates/smoketest/src/cli.rs`, `crates/smoketest/src/winhelper.rs`, `crates/smoketest/src/process.rs` (builder + optional `spawn_inherit_io()` for debug), `crates/smoketest/src/tests/place_animated.rs` (validates final CG rect equals expected grid).  
+   Validation: `cargo run --bin smoketest -- place-animated` passes locally; included in `all`.
+
+   [x] 2.1 CLI+Builder exposure for tween.  
+       `--tween-ms` on `focus-winhelper`; `HelperWindowBuilder::with_tween_ms(ms)` to script scenarios.
+
+   [x] 2.2 Orchestrate animated case.  
+       Added a `place-animated` subcommand and included it after `place-async` in the `all` sequence. The helper animates to a grid target after a short delay; the test verifies the final frame. Future work (Stage Three) will relax settle epsilon dynamically during animation to harden this case under engine-driven placement.
 
 3. [ ] Min‑size window: enforce ≥800×600 via `constrainFrameRect:`.  
    Touch: same.  

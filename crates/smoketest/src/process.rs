@@ -53,6 +53,7 @@ pub struct HelperWindowBuilder {
     time_ms: u64,
     delay_setframe_ms: Option<u64>,
     delay_apply_ms: Option<u64>,
+    tween_ms: Option<u64>,
     apply_target: Option<(f64, f64, f64, f64)>,
     apply_grid: Option<(u32, u32, u32, u32)>,
     grid: Option<(u32, u32, u32, u32)>,
@@ -73,6 +74,7 @@ impl HelperWindowBuilder {
             time_ms: 30000, // Default 30 seconds
             delay_setframe_ms: None,
             delay_apply_ms: None,
+            tween_ms: None,
             apply_target: None,
             apply_grid: None,
             grid: None,
@@ -129,6 +131,19 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Explicit delayed-apply to an absolute target `(x,y,w,h)` after `ms`.
+    pub fn with_delay_apply_target(mut self, ms: u64, x: f64, y: f64, w: f64, h: f64) -> Self {
+        self.delay_apply_ms = Some(ms);
+        self.apply_target = Some((x, y, w, h));
+        self
+    }
+
+    /// Enable tweened apply: animate to the latest desired frame over `ms`.
+    pub fn with_tween_ms(mut self, ms: u64) -> Self {
+        self.tween_ms = Some(ms);
+        self
+    }
+
     /// Set explicit label text to display
     pub fn with_label_text(mut self, text: impl Into<String>) -> Self {
         self.label_text = Some(text.into());
@@ -174,6 +189,9 @@ impl HelperWindowBuilder {
         }
         if let Some(ms) = self.delay_apply_ms {
             cmd.arg("--delay-apply-ms").arg(ms.to_string());
+        }
+        if let Some(ms) = self.tween_ms {
+            cmd.arg("--tween-ms").arg(ms.to_string());
         }
         if let Some((x, y, w, h)) = self.apply_target {
             cmd.arg("--apply-target").args([
@@ -224,6 +242,80 @@ impl HelperWindowBuilder {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| Error::SpawnFailed(e.to_string()))?;
+
+        Ok(ManagedChild::new(child))
+    }
+
+    /// Spawn the helper window process with inherited stdout/stderr for debugging.
+    pub fn spawn_inherit_io(self) -> Result<ManagedChild> {
+        let exe = env::current_exe()?;
+
+        let mut cmd = Command::new(exe);
+        cmd.arg("focus-winhelper")
+            .arg("--title")
+            .arg(&self.title)
+            .arg("--time")
+            .arg(self.time_ms.to_string());
+        if let Some(ms) = self.delay_setframe_ms {
+            cmd.arg("--delay-setframe-ms").arg(ms.to_string());
+        }
+        if let Some(ms) = self.delay_apply_ms {
+            cmd.arg("--delay-apply-ms").arg(ms.to_string());
+        }
+        if let Some(ms) = self.tween_ms {
+            cmd.arg("--tween-ms").arg(ms.to_string());
+        }
+        if let Some((x, y, w, h)) = self.apply_target {
+            cmd.arg("--apply-target").args([
+                x.to_string(),
+                y.to_string(),
+                w.to_string(),
+                h.to_string(),
+            ]);
+        }
+        if let Some((c, r, col, row)) = self.apply_grid {
+            cmd.arg("--apply-grid").args([
+                c.to_string(),
+                r.to_string(),
+                col.to_string(),
+                row.to_string(),
+            ]);
+        }
+        if let Some((c, r, col, row)) = self.grid {
+            cmd.arg("--grid").args([
+                c.to_string(),
+                r.to_string(),
+                col.to_string(),
+                row.to_string(),
+            ]);
+        }
+        if let Some((w, h)) = self.size {
+            cmd.arg("--size").args([w.to_string(), h.to_string()]);
+        }
+        if let Some((x, y)) = self.pos {
+            cmd.arg("--pos").args([x.to_string(), y.to_string()]);
+        }
+        if let Some(ref txt) = self.label_text {
+            cmd.arg("--label-text").arg(txt);
+        }
+        if self.start_minimized {
+            cmd.arg("--start-minimized");
+        }
+        if self.start_zoomed {
+            cmd.arg("--start-zoomed");
+        }
+        if self.nonmovable {
+            cmd.arg("--panel-nonmovable");
+        }
+        if self.attach_sheet {
+            cmd.arg("--attach-sheet");
+        }
+        let child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| Error::SpawnFailed(e.to_string()))?;
 
