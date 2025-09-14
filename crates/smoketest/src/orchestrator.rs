@@ -93,6 +93,18 @@ fn run_subtest_capture(
     timeout_ms: u64,
     extra_args: &[String],
 ) -> (bool, String) {
+    run_subtest_capture_with_extra(subcmd, duration_ms, timeout_ms, 0, extra_args)
+}
+
+/// Like `run_subtest_capture` but allows adding extra watchdog headroom in milliseconds
+/// for slower cases (e.g., focus-nav), without inflating the base timeout at call sites.
+fn run_subtest_capture_with_extra(
+    subcmd: &str,
+    duration_ms: u64,
+    timeout_ms: u64,
+    extra_watchdog_ms: u64,
+    extra_args: &[String],
+) -> (bool, String) {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -133,7 +145,10 @@ fn run_subtest_capture(
 
     // Watchdog: allow some overhead on top of the configured timeout.
     let overhead = Duration::from_millis(15_000);
-    let max_wait = Duration::from_millis(timeout_ms).saturating_add(overhead);
+    let extra_overhead = Duration::from_millis(extra_watchdog_ms);
+    let max_wait = Duration::from_millis(timeout_ms)
+        .saturating_add(overhead)
+        .saturating_add(extra_overhead);
     let deadline = Instant::now() + max_wait;
 
     // Poll for completion or timeout
@@ -172,7 +187,7 @@ fn run_subtest_capture(
 }
 
 /// Run all smoketests sequentially in isolated subprocesses.
-#[derive(Serialize)]
+#[derive(Serialize, Copy, Clone)]
 struct PlaceFlexSettings {
     cols: u32,
     rows: u32,
@@ -182,6 +197,31 @@ struct PlaceFlexSettings {
     pos_first_only: bool,
     #[serde(default)]
     force_shrink_move_grow: bool,
+}
+
+/// Convert a `PlaceFlexSettings` value to CLI args for the `place-flex` subcommand.
+fn place_flex_args(cfg: &PlaceFlexSettings) -> Vec<String> {
+    let mut args = vec![
+        "place-flex".to_string(),
+        "--cols".into(),
+        cfg.cols.to_string(),
+        "--rows".into(),
+        cfg.rows.to_string(),
+        "--col".into(),
+        cfg.col.to_string(),
+        "--row".into(),
+        cfg.row.to_string(),
+    ];
+    if cfg.force_size_pos {
+        args.push("--force-size-pos".into());
+    }
+    if cfg.pos_first_only {
+        args.push("--pos-first-only".into());
+    }
+    if cfg.force_shrink_move_grow {
+        args.push("--force-shrink-move-grow".into());
+    }
+    args
 }
 
 pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
@@ -231,14 +271,13 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Focus and window ops
     all_ok &= run("focus-tracking", duration_ms);
     all_ok &= run("raise", duration_ms);
-    // Focus-nav can be a bit slower due to AX+IPC; give it extra timeout headroom.
+    // Focus-nav can be a bit slower due to AX+IPC; add small extra watchdog headroom.
     {
         let name = "focus-nav";
         crate::process::write_overlay_status(name);
-        let extra_timeout = timeout_ms.saturating_add(10_000);
-        // Clear info for focus-nav
         crate::process::write_overlay_info("");
-        let (ok, details) = run_subtest_capture(name, duration_ms, extra_timeout, &[]);
+        let (ok, details) =
+            run_subtest_capture_with_extra(name, duration_ms, timeout_ms, 10_000, &[]);
         if ok {
             println!("{}... OK", name);
         } else {
@@ -255,148 +294,72 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place-skip", duration_ms);
     // Stage 6 advisory gating (focused): available as a separate subcommand `place-skip`.
     // Stage‑3/8 variants via place-flex
-    // Variant 1: force size->pos on 2x2 grid BR cell
-    {
-        let cfg = PlaceFlexSettings {
-            cols: 2,
-            rows: 2,
-            col: 1,
-            row: 1,
-            force_size_pos: true,
-            pos_first_only: false,
-            force_shrink_move_grow: false,
-        };
-        let args = vec![
-            "place-flex".to_string(),
-            "--cols".into(),
-            cfg.cols.to_string(),
-            "--rows".into(),
-            cfg.rows.to_string(),
-            "--col".into(),
-            cfg.col.to_string(),
-            "--row".into(),
-            cfg.row.to_string(),
-            "--force-size-pos".into(),
-        ];
-        // Update overlay + print settings
+    // Encode variants once and iterate to reduce repetition.
+    const PLACE_FLEX_VARIANTS: &[(PlaceFlexSettings, &str)] = &[
+        // 2x2 BR cell, force size->pos
+        (
+            PlaceFlexSettings {
+                cols: 2,
+                rows: 2,
+                col: 1,
+                row: 1,
+                force_size_pos: true,
+                pos_first_only: false,
+                force_shrink_move_grow: false,
+            },
+            "2x2 BR, force size->pos",
+        ),
+        // Default grid TL cell, pos-first-only
+        (
+            PlaceFlexSettings {
+                cols: config::PLACE_COLS,
+                rows: config::PLACE_ROWS,
+                col: 0,
+                row: 0,
+                force_size_pos: false,
+                pos_first_only: true,
+                force_shrink_move_grow: false,
+            },
+            "TL, pos-first-only",
+        ),
+        // Default grid BL cell, normal path
+        (
+            PlaceFlexSettings {
+                cols: config::PLACE_COLS,
+                rows: config::PLACE_ROWS,
+                col: 0,
+                row: 1,
+                force_size_pos: false,
+                pos_first_only: false,
+                force_shrink_move_grow: false,
+            },
+            "BL, normal",
+        ),
+        // 2x2 BR cell, force shrink->move->grow fallback
+        (
+            PlaceFlexSettings {
+                cols: 2,
+                rows: 2,
+                col: 1,
+                row: 1,
+                force_size_pos: false,
+                pos_first_only: false,
+                force_shrink_move_grow: true,
+            },
+            "2x2 BR, force shrink->move->grow",
+        ),
+    ];
+
+    for (cfg, info) in PLACE_FLEX_VARIANTS.iter().copied() {
         crate::process::write_overlay_status("place-flex");
+        crate::process::write_overlay_info(info);
+        let args = place_flex_args(&cfg);
         let json = serde_json::to_string(&cfg).unwrap_or_default();
-        crate::process::write_overlay_info("2x2 BR, force size->pos");
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         if ok {
-            println!("place-flex... OK\n  settings: {}", json);
+            println!("place-flex... OK\n  settings: {}\n  info: {}", json, info);
         } else {
-            println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
-        }
-        all_ok &= ok;
-    }
-    // Variant 2: pos-first-only true on default grid TL cell
-    {
-        let cfg = PlaceFlexSettings {
-            cols: config::PLACE_COLS,
-            rows: config::PLACE_ROWS,
-            col: 0,
-            row: 0,
-            force_size_pos: false,
-            pos_first_only: true,
-            force_shrink_move_grow: false,
-        };
-        let args = vec![
-            "place-flex".to_string(),
-            "--cols".into(),
-            cfg.cols.to_string(),
-            "--rows".into(),
-            cfg.rows.to_string(),
-            "--col".into(),
-            cfg.col.to_string(),
-            "--row".into(),
-            cfg.row.to_string(),
-            "--pos-first-only".into(),
-        ];
-        crate::process::write_overlay_status("place-flex");
-        let json = serde_json::to_string(&cfg).unwrap_or_default();
-        crate::process::write_overlay_info("TL, pos-first-only");
-        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
-        if ok {
-            println!("place-flex... OK\n  settings: {}", json);
-        } else {
-            println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
-        }
-        all_ok &= ok;
-    }
-    // Variant 3: normal path on default grid BL cell
-    {
-        let cfg = PlaceFlexSettings {
-            cols: config::PLACE_COLS,
-            rows: config::PLACE_ROWS,
-            col: 0,
-            row: 1,
-            force_size_pos: false,
-            pos_first_only: false,
-            force_shrink_move_grow: false,
-        };
-        let args = vec![
-            "place-flex".to_string(),
-            "--cols".into(),
-            cfg.cols.to_string(),
-            "--rows".into(),
-            cfg.rows.to_string(),
-            "--col".into(),
-            cfg.col.to_string(),
-            "--row".into(),
-            cfg.row.to_string(),
-        ];
-        crate::process::write_overlay_status("place-flex");
-        let json = serde_json::to_string(&cfg).unwrap_or_default();
-        crate::process::write_overlay_info("BL, normal");
-        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
-        if ok {
-            println!("place-flex... OK\n  settings: {}", json);
-        } else {
-            println!("place-flex... FAIL\n  settings: {}", json);
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
-        }
-        all_ok &= ok;
-    }
-    // Variant 4: force shrink->move->grow fallback on 2x2 BR cell
-    {
-        let cfg = PlaceFlexSettings {
-            cols: 2,
-            rows: 2,
-            col: 1,
-            row: 1,
-            force_size_pos: false,
-            pos_first_only: false,
-            force_shrink_move_grow: true,
-        };
-        let args = vec![
-            "place-flex".to_string(),
-            "--cols".into(),
-            cfg.cols.to_string(),
-            "--rows".into(),
-            cfg.rows.to_string(),
-            "--col".into(),
-            cfg.col.to_string(),
-            "--row".into(),
-            cfg.row.to_string(),
-            "--force-shrink-move-grow".into(),
-        ];
-        crate::process::write_overlay_status("place-flex");
-        let json = serde_json::to_string(&cfg).unwrap_or_default();
-        crate::process::write_overlay_info("2x2 BR, force shrink->move->grow");
-        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
-        if ok {
-            println!("place-flex... OK\n  settings: {}", json);
-        } else {
-            println!("place-flex... FAIL\n  settings: {}", json);
+            println!("place-flex... FAIL\n  settings: {}\n  info: {}", json, info);
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
