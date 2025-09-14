@@ -119,6 +119,11 @@ pub enum Commands {
     #[command(name = "place-term")]
     PlaceTerm,
 
+    /// Repro: move-within-grid when the window has a minimum height larger than the grid cell.
+    /// Ensures we still move horizontally by anchoring the legal size.
+    #[command(name = "place-move-min")]
+    PlaceMoveMin,
+
     /// Verify placement when the app enforces discrete resize increments. This
     /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and
     /// checks that anchored edges are flush to the grid.
@@ -216,6 +221,10 @@ pub enum Commands {
         /// Optional label text to render centered inside the window
         #[arg(long)]
         label_text: Option<String>,
+        /// Optional minimum content size `(W, H)` enforced by the helper window.
+        /// Simulates apps (e.g., browsers) that refuse to shrink below a floor.
+        #[arg(long, value_names = ["W", "H"])]
+        min_size: Option<Vec<f64>>,
         /// Optional step size for rounding requested window sizes to the nearest
         /// multiples `(W, H)`. Simulates terminal-style resize increments.
         #[arg(long, value_names = ["W", "H"])]

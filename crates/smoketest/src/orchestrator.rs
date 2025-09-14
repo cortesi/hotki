@@ -304,6 +304,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place-increments", duration_ms);
     // Terminal guard: ensure no position thrash after origin latch under increments.
     all_ok &= run("place-term", duration_ms);
+    all_ok &= run("place-move-min", duration_ms);
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
     {
         let name = "place-minimized";

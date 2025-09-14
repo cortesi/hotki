@@ -199,6 +199,37 @@ fn clamp_flags(got: &Rect, vf: &Rect, eps: f64) -> crate::error::ClampFlags {
 }
 
 #[inline]
+fn grid_guess_cell_by_pos(
+    vf_x: f64,
+    vf_y: f64,
+    vf_w: f64,
+    vf_h: f64,
+    cols: u32,
+    rows: u32,
+    pos: geom::CGPoint,
+) -> (u32, u32) {
+    let cols_f = cols.max(1) as f64;
+    let rows_f = rows.max(1) as f64;
+    let tile_w = (vf_w / cols_f).floor().max(1.0);
+    let tile_h = (vf_h / rows_f).floor().max(1.0);
+    let mut c = ((pos.x - vf_x) / tile_w).floor() as i64;
+    let mut r = ((pos.y - vf_y) / tile_h).floor() as i64;
+    if c < 0 {
+        c = 0;
+    }
+    if r < 0 {
+        r = 0;
+    }
+    if c as u32 >= cols {
+        c = cols.saturating_sub(1) as i64;
+    }
+    if r as u32 >= rows {
+        r = rows.saturating_sub(1) as i64;
+    }
+    (c as u32, r as u32)
+}
+
+#[inline]
 fn log_failure_context(win: &crate::AXElem, role: &str, subrole: &str) {
     let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
     let s_pos = match can_pos {
@@ -2123,7 +2154,26 @@ pub(crate) fn place_move_grid(
         let cur_cell = geom::grid_find_cell(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p, cur_s, eps);
 
         let (next_col, next_row) = match cur_cell {
-            None => (0, 0),
+            None => {
+                // Fallback: infer current cell by position only, ignoring size mismatches
+                let (mut nc, mut nr) =
+                    grid_guess_cell_by_pos(vf_x, vf_y, vf_w, vf_h, cols, rows, cur_p);
+                match dir {
+                    crate::MoveDir::Left => nc = nc.saturating_sub(1),
+                    crate::MoveDir::Right => {
+                        if nc + 1 < cols {
+                            nc += 1;
+                        }
+                    }
+                    crate::MoveDir::Up => nr = nr.saturating_sub(1),
+                    crate::MoveDir::Down => {
+                        if nr + 1 < rows {
+                            nr += 1;
+                        }
+                    }
+                }
+                (nc, nr)
+            }
             Some((c, r)) => {
                 let (mut nc, mut nr) = (c, r);
                 match dir {
@@ -2477,6 +2527,98 @@ pub(crate) fn place_move_grid(
                 );
                 Ok(())
             } else {
+                // Stage: If position is latched (x,y within eps), prefer a size-only
+                // adjustment and then anchor to the app's legal size. This allows
+                // moves within the grid to succeed even when the app enforces a
+                // minimum height/width larger than the target cell (e.g., browsers).
+                let pos_latched = d2.0 <= VERIFY_EPS && d2.1 <= VERIFY_EPS;
+                if pos_latched {
+                    debug!("pos_latched=true (x,y within eps); switching to size-only adjustments");
+                    let (got_sz, _ms) = apply_size_only_and_wait(
+                        "place_move_grid:size-only",
+                        &win,
+                        attr_size,
+                        (target.w, target.h),
+                        VERIFY_EPS,
+                    )?;
+                    let (got_anchor, anchored, _ms2) = anchor_legal_size_and_wait(
+                        "place_move_grid",
+                        &win,
+                        attr_pos,
+                        attr_size,
+                        &target,
+                        &got_sz,
+                        cols,
+                        rows,
+                        next_col,
+                        next_row,
+                        VERIFY_EPS,
+                    )?;
+                    let da = diffs(&got_anchor, &anchored);
+                    log_summary("anchor-legal:size-only", 3, VERIFY_EPS, da);
+                    if within_eps(da, VERIFY_EPS) {
+                        debug!("verified=true");
+                        debug!(
+                            "WinOps: place_move_grid verified (anchored legal) | id={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1})",
+                            id,
+                            anchored.x,
+                            anchored.y,
+                            anchored.w,
+                            anchored.h,
+                            got_anchor.x,
+                            got_anchor.y,
+                            got_anchor.w,
+                            got_anchor.h
+                        );
+                        return Ok(());
+                    }
+                }
+                // Stage: anchor the legal size even if position is not yet latched.
+                let (got_anchor, anchored, _settle_ms_anchor) = anchor_legal_size_and_wait(
+                    "place_move_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    &got2,
+                    cols,
+                    rows,
+                    next_col,
+                    next_row,
+                    VERIFY_EPS,
+                )?;
+                let da = diffs(&got_anchor, &anchored);
+                let (vf5_x, vf5_y, vf5_w, vf5_h) = visible_frame_containing_point(
+                    mtm,
+                    geom::CGPoint {
+                        x: got_anchor.cx(),
+                        y: got_anchor.cy(),
+                    },
+                );
+                let vf5_rect = rect_from(vf5_x, vf5_y, vf5_w, vf5_h);
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5_rect, VERIFY_EPS));
+                log_summary("anchor-legal", 3, VERIFY_EPS, da);
+                if within_eps(da, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=anchor-legal, attempts=3");
+                    debug!(
+                        "WinOps: place_move_grid verified | id={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        id,
+                        anchored.x,
+                        anchored.y,
+                        anchored.w,
+                        anchored.h,
+                        got_anchor.x,
+                        got_anchor.y,
+                        got_anchor.w,
+                        got_anchor.h,
+                        da.0,
+                        da.1,
+                        da.2,
+                        da.3
+                    );
+                    return Ok(());
+                }
                 // Stage 4: shrink→move→grow fallback
                 debug!("fallback_used=true");
                 let got3 = fallback_shrink_move_grow(

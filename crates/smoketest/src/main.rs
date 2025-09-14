@@ -174,6 +174,7 @@ fn main() {
                 size,
                 pos,
                 label_text,
+                min_size,
                 step_size,
                 start_minimized,
                 start_zoomed,
@@ -208,6 +209,13 @@ fn main() {
                         None
                     }
                 });
+                let min_size_tuple = min_size.and_then(|v| {
+                    if v.len() == 2 {
+                        Some((v[0], v[1]))
+                    } else {
+                        None
+                    }
+                });
                 let apply_target_tuple = apply_target.and_then(|v| {
                     if v.len() == 4 {
                         Some((v[0], v[1], v[2], v[3]))
@@ -235,6 +243,7 @@ fn main() {
                     size_tuple,
                     pos_tuple,
                     label_text,
+                    min_size_tuple,
                     step_size_tuple,
                     start_minimized,
                     start_zoomed,
@@ -731,6 +740,31 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("place-term: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::PlaceMoveMin => {
+            let timeout = cli.timeout;
+            let logs = true;
+            match run_case(
+                "place-move-min",
+                "place-move-min",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                true,
+                move || tests::place_move_min::run_place_move_min_test(timeout, logs),
+            ) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-move-min: OK (moved with min-height anchored)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-move-min: ERROR: {}", e);
                     print_hints(&e);
                     std::process::exit(1);
                 }

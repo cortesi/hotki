@@ -18,6 +18,7 @@ pub(crate) fn run_focus_winhelper(
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
     label_text: Option<String>,
+    min_size: Option<(f64, f64)>,
     step_size: Option<(f64, f64)>,
     start_minimized: bool,
     start_zoomed: bool,
@@ -61,6 +62,7 @@ pub(crate) fn run_focus_winhelper(
         size: Option<(f64, f64)>,
         pos: Option<(f64, f64)>,
         label_text: Option<String>,
+        min_size: Option<(f64, f64)>,
         error: Option<String>,
         start_minimized: bool,
         start_zoomed: bool,
@@ -99,6 +101,26 @@ pub(crate) fn run_focus_winhelper(
                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     unsafe { app.activate() };
+                }
+                // Enforce a minimum (content) size if requested.
+                if let Some((min_w, min_h)) = self.min_size
+                    && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
+                {
+                    use objc2_foundation::NSSize;
+                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                    for w in app.windows().iter() {
+                        let t = w.title();
+                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                            t.to_str(pool) == self.title
+                        });
+                        if is_match {
+                            unsafe {
+                                w.setMinSize(NSSize::new(min_w, min_h));
+                                w.setContentMinSize(NSSize::new(min_w, min_h));
+                            }
+                            break;
+                        }
+                    }
                 }
                 // If requested, make the helper window non-movable (pre-gate target on some systems).
                 if self.panel_nonmovable
@@ -789,6 +811,7 @@ pub(crate) fn run_focus_winhelper(
         size,
         pos,
         label_text,
+        min_size,
         error: None,
         start_minimized,
         start_zoomed,

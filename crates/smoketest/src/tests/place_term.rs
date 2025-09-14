@@ -66,12 +66,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
-            crate::tests::helpers::ensure_frontmost(
-                helper.pid,
-                &title,
-                5,
-                config::RETRY_DELAY_MS,
-            );
+            crate::tests::helpers::ensure_frontmost(helper.pid, &title, 5, config::RETRY_DELAY_MS);
 
             // Compute expected visibleFrame and cell target
             let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
@@ -91,16 +86,17 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             let pid_clone = helper.pid;
             std::thread::spawn(move || {
                 let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS.saturating_add(1500));
+                    + std::time::Duration::from_millis(
+                        config::PLACE_STEP_TIMEOUT_MS.saturating_add(1500),
+                    );
                 while !d_clone.load(std::sync::atomic::Ordering::SeqCst)
                     && std::time::Instant::now() < deadline
                 {
                     if let Some(((x, y), (w, h))) =
                         mac_winops::ax_window_frame(pid_clone, &title_clone)
+                        && let Ok(mut guard) = s_clone.lock()
                     {
-                        if let Ok(mut guard) = s_clone.lock() {
-                            guard.push(Sample { x, y, w, h });
-                        }
+                        guard.push(Sample { x, y, w, h });
                     }
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
@@ -114,7 +110,9 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             done.store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Analyze timeline
-            let samples = samples.lock().map_err(|_| Error::InvalidState("sampler poisoned".into()))?;
+            let samples = samples
+                .lock()
+                .map_err(|_| Error::InvalidState("sampler poisoned".into()))?;
             if samples.is_empty() {
                 return Err(Error::InvalidState("no samples collected".into()));
             }
@@ -145,8 +143,16 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             for (i, s) in samples.iter().enumerate() {
                 let htop = s.y + s.h;
                 let hright = s.x + s.w;
-                let horiz_ok = if left_ok { approx(s.x, tx, eps) } else { approx(hright, right, eps) };
-                let vert_ok = if bottom_ok { approx(s.y, ty, eps) } else { approx(htop, top, eps) };
+                let horiz_ok = if left_ok {
+                    approx(s.x, tx, eps)
+                } else {
+                    approx(hright, right, eps)
+                };
+                let vert_ok = if bottom_ok {
+                    approx(s.y, ty, eps)
+                } else {
+                    approx(htop, top, eps)
+                };
                 if horiz_ok && vert_ok {
                     latch_idx = Some(i);
                     break;
@@ -158,8 +164,16 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             for s in &samples[li..] {
                 let htop = s.y + s.h;
                 let hright = s.x + s.w;
-                let horiz_ok = if left_ok { approx(s.x, tx, eps) } else { approx(hright, right, eps) };
-                let vert_ok = if bottom_ok { approx(s.y, ty, eps) } else { approx(htop, top, eps) };
+                let horiz_ok = if left_ok {
+                    approx(s.x, tx, eps)
+                } else {
+                    approx(hright, right, eps)
+                };
+                let vert_ok = if bottom_ok {
+                    approx(s.y, ty, eps)
+                } else {
+                    approx(htop, top, eps)
+                };
                 if !(horiz_ok && vert_ok) {
                     return Err(Error::InvalidState(format!(
                         "anchoring drifted after latch: saw=({:.1},{:.1},{:.1},{:.1})",
@@ -177,4 +191,3 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
         })
         .run()
 }
-

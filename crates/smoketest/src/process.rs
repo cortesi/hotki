@@ -60,6 +60,7 @@ pub struct HelperWindowBuilder {
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
     label_text: Option<String>,
+    min_size: Option<(f64, f64)>,
     start_minimized: bool,
     start_zoomed: bool,
     nonmovable: bool,
@@ -82,6 +83,7 @@ impl HelperWindowBuilder {
             size: None,
             pos: None,
             label_text: None,
+            min_size: None,
             start_minimized: false,
             start_zoomed: false,
             nonmovable: false,
@@ -149,6 +151,12 @@ impl HelperWindowBuilder {
     /// Set explicit label text to display
     pub fn with_label_text(mut self, text: impl Into<String>) -> Self {
         self.label_text = Some(text.into());
+        self
+    }
+
+    /// Enforce a minimum content size for the helper window.
+    pub fn with_min_size(mut self, width: f64, height: f64) -> Self {
+        self.min_size = Some((width.max(1.0), height.max(1.0)));
         self
     }
 
@@ -234,6 +242,9 @@ impl HelperWindowBuilder {
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
         }
+        if let Some((w, h)) = self.min_size {
+            cmd.arg("--min-size").args([w.to_string(), h.to_string()]);
+        }
         if let Some((w, h)) = self.step_size {
             cmd.arg("--step-size").args([w.to_string(), h.to_string()]);
         }
@@ -310,6 +321,9 @@ impl HelperWindowBuilder {
         }
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
+        }
+        if let Some((w, h)) = self.min_size {
+            cmd.arg("--min-size").args([w.to_string(), h.to_string()]);
         }
         if let Some((w, h)) = self.step_size {
             cmd.arg("--step-size").args([w.to_string(), h.to_string()]);
