@@ -174,6 +174,7 @@ fn main() {
                 size,
                 pos,
                 label_text,
+                step_size,
                 start_minimized,
                 start_zoomed,
                 panel_nonmovable,
@@ -194,6 +195,13 @@ fn main() {
                     }
                 });
                 let pos_tuple = pos.and_then(|v| {
+                    if v.len() == 2 {
+                        Some((v[0], v[1]))
+                    } else {
+                        None
+                    }
+                });
+                let step_size_tuple = step_size.and_then(|v| {
                     if v.len() == 2 {
                         Some((v[0], v[1]))
                     } else {
@@ -227,6 +235,7 @@ fn main() {
                     size_tuple,
                     pos_tuple,
                     label_text,
+                    step_size_tuple,
                     start_minimized,
                     start_zoomed,
                     panel_nonmovable,
@@ -340,6 +349,31 @@ fn main() {
             }
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn),
+        Commands::PlaceIncrements => {
+            let timeout = cli.timeout;
+            let logs = true;
+            match run_case(
+                "place-increments",
+                "place-increments",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                true,
+                move || tests::place_increments::run_place_increments_test(timeout, logs),
+            ) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-increments: OK (anchored edges verified)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-increments: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Seq { tests } => {
             orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, true)
         }

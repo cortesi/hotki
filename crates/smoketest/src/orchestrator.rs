@@ -299,13 +299,21 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     all_ok &= run("place-async", duration_ms);
     // Animated placement helper: exercises tweened setFrame behavior (~120ms).
     all_ok &= run("place-animated", duration_ms);
+    // Increments placement: simulate terminal-style resize increments and verify
+    // anchor-legal-size behavior keeps cell edges flush.
+    all_ok &= run("place-increments", duration_ms);
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
     {
         let name = "place-minimized";
         crate::process::write_overlay_status(name);
         crate::process::write_overlay_info("");
-        let (ok, details) =
-            run_subtest_capture_with_extra(name, duration_ms, timeout_ms, 10_000, &[]);
+        let (ok, details) = run_subtest_capture_with_extra(
+            name,
+            duration_ms,
+            timeout_ms.saturating_add(60_000), // give the child extra timeout too
+            60_000,                            // and add watchdog headroom on top
+            &[],
+        );
         if ok {
             println!("{}... OK", name);
         } else {

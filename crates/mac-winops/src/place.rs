@@ -558,6 +558,111 @@ fn nudge_axis_pos_and_wait(
     }
 }
 
+/// Stage: Anchor the app's legal size. When an app (e.g., a terminal with resize
+/// increments) rounds the requested size, accept the observed width/height and
+/// reposition so the visually important cell edges are flush. This improves
+/// placement when exact dimensions cannot be achieved.
+fn anchor_legal_size_and_wait(
+    op_label: &str,
+    win: &crate::AXElem,
+    attr_pos: core_foundation::string::CFStringRef,
+    attr_size: core_foundation::string::CFStringRef,
+    target: &Rect,
+    observed: &Rect,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    eps: f64,
+) -> Result<(Rect, Rect, u64)> {
+    // Use the last observed legal size and compute a position so that
+    // the chosen edges are anchored to the grid cell. Tie-break for single
+    // row/col prefers left/bottom anchoring.
+    let w = observed.w.max(1.0);
+    let h = observed.h.max(1.0);
+
+    // Horizontal anchoring: default left; last column anchors right
+    let x = if col == cols.saturating_sub(1) && cols > 1 {
+        target.right() - w // right edge flush
+    } else {
+        target.x // left edge flush (including single column)
+    };
+
+    // Vertical anchoring: default bottom; last row anchors top
+    let y = if row == rows.saturating_sub(1) && rows > 1 {
+        target.top() - h // top edge flush
+    } else {
+        target.y // bottom edge flush (including single row)
+    };
+
+    let anchored = Rect { x, y, w, h };
+    debug!(
+        "anchor_legal: target=({:.1},{:.1},{:.1},{:.1}) observed=({:.1},{:.1},{:.1},{:.1}) -> anchored=({:.1},{:.1},{:.1},{:.1})",
+        target.x,
+        target.y,
+        target.w,
+        target.h,
+        observed.x,
+        observed.y,
+        observed.w,
+        observed.h,
+        anchored.x,
+        anchored.y,
+        anchored.w,
+        anchored.h
+    );
+    // Apply position-first using the anchored rect.
+    let (got, settle) = apply_and_wait(op_label, win, attr_pos, attr_size, &anchored, true, eps)?;
+    Ok((got, anchored, settle))
+}
+
+/// Apply size only (do not touch position), then poll until settle or timeout.
+fn apply_size_only_and_wait(
+    op_label: &str,
+    win: &crate::AXElem,
+    attr_size: core_foundation::string::CFStringRef,
+    target_size: (f64, f64),
+    eps: f64,
+) -> Result<(Rect, u64)> {
+    let start = std::time::Instant::now();
+    let (w, h) = target_size;
+    debug!("WinOps: {} set size-only -> ({:.1},{:.1})", op_label, w, h);
+    ax_set_size(
+        win.as_ptr(),
+        attr_size,
+        CGSize {
+            width: w,
+            height: h,
+        },
+    )?;
+    // Poll identical to apply_and_wait
+    let mut waited = 0u64;
+    let mut last: Rect;
+    loop {
+        let p = ax_get_point(win.as_ptr(), cfstr("AXPosition"))?;
+        let s = ax_get_size(win.as_ptr(), attr_size)?;
+        last = Rect {
+            x: p.x,
+            y: p.y,
+            w: s.width,
+            h: s.height,
+        };
+        let d = ((last.w - w).abs(), (last.h - h).abs());
+        if d.0 <= eps && d.1 <= eps {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+        if waited >= SETTLE_TOTAL_MS {
+            let settle = now_ms(start);
+            debug!("settle_time_ms={}", settle);
+            return Ok((last, settle));
+        }
+        sleep_ms(SETTLE_SLEEP_MS);
+        waited = waited.saturating_add(SETTLE_SLEEP_MS);
+    }
+}
+
 /// Compute the visible frame for the screen containing the given window and
 /// place the window into the specified grid cell (top-left is (0,0)).
 pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
@@ -1341,6 +1446,106 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 );
                 Ok(())
             } else {
+                // Latch if position reached the correct origin; then grow/shrink only.
+                let pos_latched = d2.0 <= VERIFY_EPS && d2.1 <= VERIFY_EPS;
+                if pos_latched {
+                    debug!("pos_latched=true (x,y within eps); switching to size-only adjustments");
+                    let (got_sz, _ms) = apply_size_only_and_wait(
+                        "place_grid_focused:size-only",
+                        &win,
+                        attr_size,
+                        (target.w, target.h),
+                        VERIFY_EPS,
+                    )?;
+                    // Accept anchored legal size: compare against an anchored target using observed size
+                    let (got_anchor, anchored, _ms2) = anchor_legal_size_and_wait(
+                        "place_grid_focused",
+                        &win,
+                        attr_pos,
+                        attr_size,
+                        &target,
+                        &got_sz,
+                        cols,
+                        rows,
+                        col,
+                        row,
+                        VERIFY_EPS,
+                    )?;
+                    let da = diffs(&got_anchor, &anchored);
+                    log_summary(
+                        "anchor-legal:size-only",
+                        attempt_idx.saturating_add(1),
+                        VERIFY_EPS,
+                        da,
+                    );
+                    if within_eps(da, VERIFY_EPS) {
+                        debug!("verified=true");
+                        debug!(
+                            "WinOps: place_grid_focused verified (anchored legal) | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1})",
+                            pid,
+                            anchored.x,
+                            anchored.y,
+                            anchored.w,
+                            anchored.h,
+                            got_anchor.x,
+                            got_anchor.y,
+                            got_anchor.w,
+                            got_anchor.h
+                        );
+                        return Ok(());
+                    }
+                }
+                // Stage: anchor the legal size (pos->size) as a fallback if not latched
+                let (got_anchor, anchored, _settle_ms_anchor) = anchor_legal_size_and_wait(
+                    "place_grid_focused",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    &got2,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                    VERIFY_EPS,
+                )?;
+                let da = diffs(&got_anchor, &anchored);
+                let (vf5_x, vf5_y, vf5_w, vf5_h) = visible_frame_containing_point(
+                    mtm,
+                    geom::CGPoint {
+                        x: got_anchor.cx(),
+                        y: got_anchor.cy(),
+                    },
+                );
+                let vf5_rect = rect_from(vf5_x, vf5_y, vf5_w, vf5_h);
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5_rect, VERIFY_EPS));
+                log_summary(
+                    "anchor-legal",
+                    attempt_idx.saturating_add(1),
+                    VERIFY_EPS,
+                    da,
+                );
+                if within_eps(da, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        anchored.x,
+                        anchored.y,
+                        anchored.w,
+                        anchored.h,
+                        got_anchor.x,
+                        got_anchor.y,
+                        got_anchor.w,
+                        got_anchor.h,
+                        da.0,
+                        da.1,
+                        da.2,
+                        da.3
+                    );
+                    return Ok(());
+                }
                 // Stage 4: shrink→move→grow fallback
                 debug!("fallback_used=true");
                 let got3 = fallback_shrink_move_grow(
@@ -1765,6 +1970,57 @@ pub fn place_grid_focused_opts(
                 );
                 Ok(())
             } else {
+                // Stage: anchor the legal size before using fallback.
+                let (got_anchor, anchored, _settle_ms_anchor) = anchor_legal_size_and_wait(
+                    "place_grid",
+                    &win,
+                    attr_pos,
+                    attr_size,
+                    &target,
+                    &got2,
+                    cols,
+                    rows,
+                    col,
+                    row,
+                    VERIFY_EPS,
+                )?;
+                let da = diffs(&got_anchor, &anchored);
+                let (vf5_x, vf5_y, vf5_w, vf5_h) = visible_frame_containing_point(
+                    mtm,
+                    geom::CGPoint {
+                        x: got_anchor.cx(),
+                        y: got_anchor.cy(),
+                    },
+                );
+                let vf5_rect = rect_from(vf5_x, vf5_y, vf5_w, vf5_h);
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5_rect, VERIFY_EPS));
+                log_summary(
+                    "anchor-legal",
+                    attempt_idx.saturating_add(1),
+                    VERIFY_EPS,
+                    da,
+                );
+                if within_eps(da, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);
+                    debug!(
+                        "WinOps: place_grid_focused verified | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid,
+                        anchored.x,
+                        anchored.y,
+                        anchored.w,
+                        anchored.h,
+                        got_anchor.x,
+                        got_anchor.y,
+                        got_anchor.w,
+                        got_anchor.h,
+                        da.0,
+                        da.1,
+                        da.2,
+                        da.3
+                    );
+                    return Ok(());
+                }
                 debug!("fallback_used=true");
                 let got3 = fallback_shrink_move_grow(
                     "place_grid_focused",

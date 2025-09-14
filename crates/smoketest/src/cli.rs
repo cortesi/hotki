@@ -113,6 +113,12 @@ pub enum Commands {
     #[command(name = "place-animated")]
     PlaceAnimated,
 
+    /// Verify placement when the app enforces discrete resize increments. This
+    /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and
+    /// checks that anchored edges are flush to the grid.
+    #[command(name = "place-increments")]
+    PlaceIncrements,
+
     /// Verify placement after normalizing a minimized window
     #[command(name = "place-minimized")]
     PlaceMinimized,
@@ -204,6 +210,10 @@ pub enum Commands {
         /// Optional label text to render centered inside the window
         #[arg(long)]
         label_text: Option<String>,
+        /// Optional step size for rounding requested window sizes to the nearest
+        /// multiples `(W, H)`. Simulates terminal-style resize increments.
+        #[arg(long, value_names = ["W", "H"])]
+        step_size: Option<Vec<f64>>,
         /// Start the helper window minimized (miniaturized)
         #[arg(long, default_value_t = false)]
         start_minimized: bool,

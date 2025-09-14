@@ -18,6 +18,7 @@ pub(crate) fn run_focus_winhelper(
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
     label_text: Option<String>,
+    step_size: Option<(f64, f64)>,
     start_minimized: bool,
     start_zoomed: bool,
     panel_nonmovable: bool,
@@ -65,6 +66,9 @@ pub(crate) fn run_focus_winhelper(
         start_zoomed: bool,
         panel_nonmovable: bool,
         attach_sheet: bool,
+        // Optional: round requested sizes to nearest multiples
+        step_w: f64,
+        step_h: f64,
     }
 
     impl ApplicationHandler for HelperApp {
@@ -600,11 +604,19 @@ pub(crate) fn run_focus_winhelper(
                                 nw = fw + (tw - fw) * t;
                                 nh = fh + (th - fh) * t;
                             }
-                            let _ = win.request_inner_size(winit::dpi::LogicalSize::new(nw, nh));
+                            let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
+                                (
+                                    (nw / self.step_w).round() * self.step_w,
+                                    (nh / self.step_h).round() * self.step_h,
+                                )
+                            } else {
+                                (nw, nh)
+                            };
+                            let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
                             win.set_outer_position(winit::dpi::LogicalPosition::new(nx, ny));
                             if (t - 1.0).abs() < f64::EPSILON {
                                 self.last_pos = self.tween_to_pos.or(self.last_pos);
-                                self.last_size = self.tween_to_size.or(self.last_size);
+                                self.last_size = Some((rw, rh));
                                 self.tween_active = false;
                                 self.tween_start = None;
                                 self.tween_end = None;
@@ -619,13 +631,22 @@ pub(crate) fn run_focus_winhelper(
                         } else {
                             // No tween: prefer explicit target; else apply desired_*
                             if let Some((x, y, w, h)) = self.apply_target {
-                                let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                                let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
+                                    (
+                                        (w / self.step_w).round() * self.step_w,
+                                        (h / self.step_h).round() * self.step_h,
+                                    )
+                                } else {
+                                    (w, h)
+                                };
+                                let _ =
+                                    win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
                                 win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
                                 self.last_pos = Some((x, y));
-                                self.last_size = Some((w, h));
+                                self.last_size = Some((rw, rh));
                                 debug!(
                                     "winhelper: explicit apply -> ({:.1},{:.1},{:.1},{:.1})",
-                                    x, y, w, h
+                                    x, y, rw, rh
                                 );
                             } else if let Some((cols, rows, col, row)) = self.apply_grid {
                                 if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -684,23 +705,39 @@ pub(crate) fn run_focus_winhelper(
                                     } else {
                                         tile_h
                                     };
+                                    let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
+                                        (
+                                            (tw / self.step_w).round() * self.step_w,
+                                            (th / self.step_h).round() * self.step_h,
+                                        )
+                                    } else {
+                                        (tw, th)
+                                    };
                                     let _ = win
-                                        .request_inner_size(winit::dpi::LogicalSize::new(tw, th));
+                                        .request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
                                     win.set_outer_position(winit::dpi::LogicalPosition::new(
                                         tx, ty,
                                     ));
                                     self.last_pos = Some((tx, ty));
-                                    self.last_size = Some((tw, th));
+                                    self.last_size = Some((rw, rh));
                                     debug!(
                                         "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
-                                        tx, ty, tw, th
+                                        tx, ty, rw, rh
                                     );
                                 }
                             } else {
                                 if let Some((w, h)) = self.desired_size.take() {
-                                    let _ =
-                                        win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
-                                    self.last_size = Some((w, h));
+                                    let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
+                                        (
+                                            (w / self.step_w).round() * self.step_w,
+                                            (h / self.step_h).round() * self.step_h,
+                                        )
+                                    } else {
+                                        (w, h)
+                                    };
+                                    let _ = win
+                                        .request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                                    self.last_size = Some((rw, rh));
                                 }
                                 if let Some((x, y)) = self.desired_pos.take() {
                                     win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
@@ -757,6 +794,8 @@ pub(crate) fn run_focus_winhelper(
         start_zoomed,
         panel_nonmovable,
         attach_sheet,
+        step_w: step_size.map(|s| s.0).unwrap_or(0.0),
+        step_h: step_size.map(|s| s.1).unwrap_or(0.0),
     };
     let _ = event_loop.run_app(&mut app);
     if let Some(e) = app.error.take() {

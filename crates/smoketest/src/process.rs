@@ -64,6 +64,7 @@ pub struct HelperWindowBuilder {
     start_zoomed: bool,
     nonmovable: bool,
     attach_sheet: bool,
+    step_size: Option<(f64, f64)>,
 }
 
 impl HelperWindowBuilder {
@@ -85,6 +86,7 @@ impl HelperWindowBuilder {
             start_zoomed: false,
             nonmovable: false,
             attach_sheet: false,
+            step_size: None,
         }
     }
 
@@ -147,6 +149,12 @@ impl HelperWindowBuilder {
     /// Set explicit label text to display
     pub fn with_label_text(mut self, text: impl Into<String>) -> Self {
         self.label_text = Some(text.into());
+        self
+    }
+
+    /// Round requested sizes to nearest multiples of `(w, h)` in the helper.
+    pub fn with_step_size(mut self, w: f64, h: f64) -> Self {
+        self.step_size = Some((w, h));
         self
     }
 
@@ -226,6 +234,9 @@ impl HelperWindowBuilder {
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
         }
+        if let Some((w, h)) = self.step_size {
+            cmd.arg("--step-size").args([w.to_string(), h.to_string()]);
+        }
         if self.start_minimized {
             cmd.arg("--start-minimized");
         }
@@ -299,6 +310,9 @@ impl HelperWindowBuilder {
         }
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
+        }
+        if let Some((w, h)) = self.step_size {
+            cmd.arg("--step-size").args([w.to_string(), h.to_string()]);
         }
         if self.start_minimized {
             cmd.arg("--start-minimized");
