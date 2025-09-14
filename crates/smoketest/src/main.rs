@@ -712,6 +712,30 @@ fn main() {
                 }
             }
         }
+        Commands::PlaceWezterm => {
+            let timeout = cli.timeout;
+            match run_case(
+                "place-wezterm",
+                "place-wezterm",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                true,
+                move || tests::place_wezterm::run_place_wezterm_test(timeout, true),
+            ) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-wezterm: OK (latched origin; no thrash)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-wezterm: ERROR: {}", e);
+                    print_hints(&e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::PlaceMinimized => {
             if !cli.quiet {
                 heading("Test: place-minimized");

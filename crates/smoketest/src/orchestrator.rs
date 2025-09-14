@@ -302,6 +302,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Increments placement: simulate terminal-style resize increments and verify
     // anchor-legal-size behavior keeps cell edges flush.
     all_ok &= run("place-increments", duration_ms);
+    // WezTerm guard: ensure no position thrash after origin latch under increments.
+    all_ok &= run("place-wezterm", duration_ms);
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
     {
         let name = "place-minimized";
