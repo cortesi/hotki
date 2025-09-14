@@ -17,7 +17,7 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     let title = format!("hotki smoketest: world-ax {}-{}", std::process::id(), now);
     let lifetime = timeout_ms.saturating_add(crate::config::HELPER_WINDOW_EXTRA_TIME_MS);
     let mut helper = crate::tests::helpers::spawn_helper_visible(
-        title.clone(),
+        &title,
         lifetime,
         crate::config::WAIT_FIRST_WINDOW_MS,
         crate::config::POLL_INTERVAL_MS,
@@ -80,6 +80,6 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         p.can_set_size.unwrap_or(false)
     );
 
-    let _ = helper.kill_and_wait();
+    if let Err(_e) = helper.kill_and_wait() {}
     Ok(())
 }

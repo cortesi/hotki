@@ -70,6 +70,7 @@ pub struct ShellRepeatConfig {
 /// Tracks only the logical cursor within the key hierarchy.
 #[derive(Debug, Default)]
 pub struct State {
+    /// Current position within the configured key hierarchy.
     cursor: config::Cursor,
 }
 
@@ -98,55 +99,9 @@ impl State {
         entered_index: Option<usize>,
     ) -> Result<KeyResponse, KeymodeError> {
         match action {
-            Action::Place(grid, at) => {
-                let (gx, gy) = match grid {
-                    config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
-                };
-                let (ix, iy) = match at {
-                    config::AtSpec::At(config::At(x, y)) => (*x, *y),
-                };
-                if ix >= gx || iy >= gy {
-                    return Err(KeymodeError::PlaceAtOutOfRange {
-                        ix,
-                        iy,
-                        gx,
-                        gy,
-                        max_x: gx.saturating_sub(1),
-                        max_y: gy.saturating_sub(1),
-                    });
-                }
-                let resp = KeyResponse::Place {
-                    cols: gx,
-                    rows: gy,
-                    col: ix,
-                    row: iy,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(resp)
-            }
-            Action::PlaceMove(grid, dir) => {
-                let (gx, gy) = match grid {
-                    config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
-                };
-                let resp = KeyResponse::PlaceMove {
-                    cols: gx,
-                    rows: gy,
-                    dir: *dir,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(resp)
-            }
-            Action::Focus(dir) => {
-                let resp = KeyResponse::Focus { dir: *dir };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(resp)
-            }
+            Action::Place(grid, at) => self.handle_place(grid, at, attrs),
+            Action::PlaceMove(grid, dir) => self.handle_place_move(grid, *dir, attrs),
+            Action::Focus(dir) => self.handle_focus(*dir, attrs),
             Action::Raise(spec) => {
                 if spec.app.is_none() && spec.title.is_none() {
                     return Err(KeymodeError::RaiseMissingAppOrTitle);
@@ -160,19 +115,7 @@ impl State {
                 }
                 Ok(resp)
             }
-            Action::Fullscreen(spec) => {
-                let (toggle, kind) = match spec {
-                    config::FullscreenSpec::One(t) => (t, config::FullscreenKind::Nonnative),
-                    config::FullscreenSpec::Two(t, k) => (t, *k),
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(KeyResponse::Fullscreen {
-                    desired: *toggle,
-                    kind,
-                })
-            }
+            Action::Fullscreen(spec) => self.handle_fullscreen(spec, attrs),
             Action::Keys(new_mode) => {
                 let _ = new_mode; // contents live in Config; we just advance cursor
                 if let Some(i) = entered_index {
@@ -180,22 +123,7 @@ impl State {
                 }
                 Ok(KeyResponse::Ok)
             }
-            Action::Relay(spec) => {
-                // Parse the provided chord specification; report error via KeyResponse
-                match Chord::parse(spec) {
-                    Some(ch) => {
-                        let response = KeyResponse::Relay {
-                            chord: ch,
-                            attrs: Box::new(attrs.clone()),
-                        };
-                        if !attrs.noexit() {
-                            self.reset();
-                        }
-                        Ok(response)
-                    }
-                    None => Err(KeymodeError::InvalidRelayKeyspec { spec: spec.clone() }),
-                }
-            }
+            Action::Relay(spec) => self.handle_relay(spec, attrs),
             Action::Pop => {
                 if self.cursor.depth() > 0 {
                     let _ = self.cursor.pop();
@@ -208,128 +136,21 @@ impl State {
                 self.reset();
                 Ok(KeyResponse::Ok)
             }
-            Action::Shell(spec) => {
-                // Store shell command info for async execution
-                let mut repeat = None;
-                if attrs.noexit() && attrs.repeat_effective() {
-                    repeat = Some(ShellRepeatConfig {
-                        initial_delay_ms: attrs.repeat_delay,
-                        interval_ms: attrs.repeat_interval,
-                    });
-                }
-                let response = KeyResponse::ShellAsync {
-                    command: spec.command().to_string(),
-                    ok_notify: spec.ok_notify(),
-                    err_notify: spec.err_notify(),
-                    repeat,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ReloadConfig => {
-                let response = KeyResponse::Ui(MsgToUI::ReloadConfig);
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ClearNotifications => {
-                let response = KeyResponse::Ui(MsgToUI::ClearNotifications);
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ShowDetails(arg) => {
-                let response = KeyResponse::Ui(MsgToUI::ShowDetails(*arg));
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ThemeNext => {
-                let response = KeyResponse::Ui(MsgToUI::ThemeNext);
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ThemePrev => {
-                let response = KeyResponse::Ui(MsgToUI::ThemePrev);
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ThemeSet(name) => {
-                let response = KeyResponse::Ui(MsgToUI::ThemeSet(name.clone()));
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
+            Action::Shell(spec) => self.handle_shell(spec, attrs),
+            Action::ReloadConfig => self.simple_ui(MsgToUI::ReloadConfig, attrs),
+            Action::ClearNotifications => self.simple_ui(MsgToUI::ClearNotifications, attrs),
+            Action::ShowDetails(arg) => self.simple_ui(MsgToUI::ShowDetails(*arg), attrs),
+            Action::ThemeNext => self.simple_ui(MsgToUI::ThemeNext, attrs),
+            Action::ThemePrev => self.simple_ui(MsgToUI::ThemePrev, attrs),
+            Action::ThemeSet(name) => self.simple_ui(MsgToUI::ThemeSet(name.clone()), attrs),
             Action::ShowHudRoot => {
                 self.reset();
                 self.cursor.viewing_root = true;
                 Ok(KeyResponse::Ok)
             }
-            Action::SetVolume(level) => {
-                let script = format!("set volume output volume {}", (*level).min(100));
-                let response = KeyResponse::ShellAsync {
-                    command: format!("osascript -e '{}'", script),
-                    ok_notify: NotificationType::Ignore,
-                    err_notify: NotificationType::Warn,
-                    repeat: None,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::ChangeVolume(delta) => {
-                let script = format!(
-                    "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
-                    delta
-                );
-                let mut repeat = None;
-                if attrs.noexit() && attrs.repeat_effective() {
-                    repeat = Some(ShellRepeatConfig {
-                        initial_delay_ms: attrs.repeat_delay,
-                        interval_ms: attrs.repeat_interval,
-                    });
-                }
-                let response = KeyResponse::ShellAsync {
-                    command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-                    ok_notify: NotificationType::Ignore,
-                    err_notify: NotificationType::Warn,
-                    repeat,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
-            Action::Mute(arg) => {
-                let script = match arg {
-                    config::Toggle::On => "set volume output muted true".to_string(),
-                    config::Toggle::Off => "set volume output muted false".to_string(),
-                    config::Toggle::Toggle => {
-                        "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
-                    }
-                };
-                let response = KeyResponse::ShellAsync {
-                    command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-                    ok_notify: NotificationType::Ignore,
-                    err_notify: NotificationType::Warn,
-                    repeat: None,
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
+            Action::SetVolume(level) => self.handle_set_volume(*level, attrs),
+            Action::ChangeVolume(delta) => self.handle_change_volume(*delta, attrs),
+            Action::Mute(arg) => self.handle_mute(*arg, attrs),
             Action::UserStyle(arg) => {
                 let response = KeyResponse::Ui(MsgToUI::UserStyle(*arg));
                 if !attrs.noexit() {
@@ -345,6 +166,228 @@ impl State {
                 Ok(response)
             }
         }
+    }
+
+    /// Build a `KeyResponse::Place` after validating indices are in range.
+    fn handle_place(
+        &mut self,
+        grid: &config::GridSpec,
+        at: &config::AtSpec,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let (gx, gy) = match grid {
+            config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
+        };
+        let (ix, iy) = match at {
+            config::AtSpec::At(config::At(x, y)) => (*x, *y),
+        };
+        if ix >= gx || iy >= gy {
+            return Err(KeymodeError::PlaceAtOutOfRange {
+                ix,
+                iy,
+                gx,
+                gy,
+                max_x: gx.saturating_sub(1),
+                max_y: gy.saturating_sub(1),
+            });
+        }
+        let resp = KeyResponse::Place {
+            cols: gx,
+            rows: gy,
+            col: ix,
+            row: iy,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(resp)
+    }
+
+    /// Build a `KeyResponse::PlaceMove` for the given grid and direction.
+    fn handle_place_move(
+        &mut self,
+        grid: &config::GridSpec,
+        dir: config::Dir,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let (gx, gy) = match grid {
+            config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
+        };
+        let resp = KeyResponse::PlaceMove {
+            cols: gx,
+            rows: gy,
+            dir,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(resp)
+    }
+
+    /// Build a `KeyResponse::Focus` for the given direction.
+    fn handle_focus(
+        &mut self,
+        dir: config::Dir,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let resp = KeyResponse::Focus { dir };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(resp)
+    }
+
+    
+
+    /// Build a `KeyResponse::Fullscreen` from a fullscreen specification.
+    fn handle_fullscreen(
+        &mut self,
+        spec: &config::FullscreenSpec,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let (toggle, kind) = match spec {
+            config::FullscreenSpec::One(t) => (t, config::FullscreenKind::Nonnative),
+            config::FullscreenSpec::Two(t, k) => (t, *k),
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(KeyResponse::Fullscreen {
+            desired: *toggle,
+            kind,
+        })
+    }
+
+    /// Parse and relay a chord string, carrying attributes through.
+    fn handle_relay(
+        &mut self,
+        spec: &str,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        match Chord::parse(spec) {
+            Some(ch) => {
+                let response = KeyResponse::Relay {
+                    chord: ch,
+                    attrs: Box::new(attrs.clone()),
+                };
+                if !attrs.noexit() {
+                    self.reset();
+                }
+                Ok(response)
+            }
+            None => Err(KeymodeError::InvalidRelayKeyspec { spec: spec.to_string() }),
+        }
+    }
+
+    /// Build a `ShellAsync` response, attaching repeat configuration if effective.
+    fn handle_shell(
+        &mut self,
+        spec: &config::ShellSpec,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let mut repeat = None;
+        if attrs.noexit() && attrs.repeat_effective() {
+            repeat = Some(ShellRepeatConfig {
+                initial_delay_ms: attrs.repeat_delay,
+                interval_ms: attrs.repeat_interval,
+            });
+        }
+        let response = KeyResponse::ShellAsync {
+            command: spec.command().to_string(),
+            ok_notify: spec.ok_notify(),
+            err_notify: spec.err_notify(),
+            repeat,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(response)
+    }
+
+    /// Convenience to wrap a UI message and reset when appropriate.
+    fn simple_ui(
+        &mut self,
+        msg: MsgToUI,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let response = KeyResponse::Ui(msg);
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(response)
+    }
+
+    /// Build a shell command to set system output volume to an absolute level.
+    fn handle_set_volume(
+        &mut self,
+        level: u8,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let script = format!("set volume output volume {}", (level).min(100));
+        let response = KeyResponse::ShellAsync {
+            command: format!("osascript -e '{}'", script),
+            ok_notify: NotificationType::Ignore,
+            err_notify: NotificationType::Warn,
+            repeat: None,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(response)
+    }
+
+    /// Build a shell command to change system output volume by a delta.
+    fn handle_change_volume(
+        &mut self,
+        delta: i8,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let script = format!(
+            "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
+            delta
+        );
+        let mut repeat = None;
+        if attrs.noexit() && attrs.repeat_effective() {
+            repeat = Some(ShellRepeatConfig {
+                initial_delay_ms: attrs.repeat_delay,
+                interval_ms: attrs.repeat_interval,
+            });
+        }
+        let response = KeyResponse::ShellAsync {
+            command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+            ok_notify: NotificationType::Ignore,
+            err_notify: NotificationType::Warn,
+            repeat,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(response)
+    }
+
+    /// Build a shell command to toggle or set system mute state.
+    fn handle_mute(
+        &mut self,
+        arg: config::Toggle,
+        attrs: &KeysAttrs,
+    ) -> Result<KeyResponse, KeymodeError> {
+        let script = match arg {
+            config::Toggle::On => "set volume output muted true".to_string(),
+            config::Toggle::Off => "set volume output muted false".to_string(),
+            config::Toggle::Toggle => {
+                "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
+            }
+        };
+        let response = KeyResponse::ShellAsync {
+            command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+            ok_notify: NotificationType::Ignore,
+            err_notify: NotificationType::Warn,
+            repeat: None,
+        };
+        if !attrs.noexit() {
+            self.reset();
+        }
+        Ok(response)
     }
 
     /// Reset to root (clear path and hide viewing_root).

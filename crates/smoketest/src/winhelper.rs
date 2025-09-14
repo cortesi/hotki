@@ -4,6 +4,8 @@ use tracing::debug;
 
 use crate::config;
 
+type TargetRect = ((f64, f64), (f64, f64), &'static str);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_focus_winhelper(
     title: &str,
@@ -71,6 +73,325 @@ pub(crate) fn run_focus_winhelper(
         // Optional: round requested sizes to nearest multiples
         step_w: f64,
         step_h: f64,
+    }
+
+    impl HelperApp {
+        fn active_visible_frame_for_window(
+            &self,
+            win: &winit::window::Window,
+        ) -> (f64, f64, f64, f64) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                use objc2_app_kit::NSScreen;
+                let scale = win.scale_factor();
+                let p = win
+                    .outer_position()
+                    .ok()
+                    .map(|p| p.to_logical::<f64>(scale))
+                    .unwrap_or(winit::dpi::LogicalPosition::new(0.0, 0.0));
+                let mut chosen: Option<(f64, f64, f64, f64)> = None;
+                for s in NSScreen::screens(mtm).iter() {
+                    let fr = s.visibleFrame();
+                    let sx = fr.origin.x;
+                    let sy = fr.origin.y;
+                    let sw = fr.size.width;
+                    let sh = fr.size.height;
+                    if p.x >= sx && p.x <= sx + sw && p.y >= sy && p.y <= sy + sh {
+                        chosen = Some((sx, sy, sw, sh));
+                        break;
+                    }
+                }
+                if let Some(v) = chosen {
+                    return v;
+                }
+                if let Some(scr) = NSScreen::mainScreen(mtm) {
+                    let r = scr.visibleFrame();
+                    return (r.origin.x, r.origin.y, r.size.width, r.size.height);
+                }
+            }
+            (0.0, 0.0, 1440.0, 900.0)
+        }
+
+        fn grid_rect(
+            &self,
+            win: &winit::window::Window,
+            cols: u32,
+            rows: u32,
+            col: u32,
+            row: u32,
+        ) -> (f64, f64, f64, f64) {
+            let (vf_x, vf_y, vf_w, vf_h) = self.active_visible_frame_for_window(win);
+            let c = cols.max(1) as f64;
+            let r = rows.max(1) as f64;
+            let tile_w = (vf_w / c).floor().max(1.0);
+            let tile_h = (vf_h / r).floor().max(1.0);
+            let rem_w = vf_w - tile_w * (cols as f64);
+            let rem_h = vf_h - tile_h * (rows as f64);
+            let tx = vf_x + tile_w * (col as f64);
+            let tw = if col == cols.saturating_sub(1) {
+                tile_w + rem_w
+            } else {
+                tile_w
+            };
+            let ty = vf_y + tile_h * (row as f64);
+            let th = if row == rows.saturating_sub(1) {
+                tile_h + rem_h
+            } else {
+                tile_h
+            };
+            (tx, ty, tw, th)
+        }
+
+        // helper selectors are inlined at call sites to avoid borrow conflicts
+        fn compute_label_text(&self) -> String {
+            if let Some(ref t) = self.label_text {
+                return t.clone();
+            }
+            if let Some((cols, rows, col, row)) = self.grid {
+                if cols == 2 && rows == 2 {
+                    return match (col, row) {
+                        (0, 0) => "TL".into(),
+                        (1, 0) => "TR".into(),
+                        (0, 1) => "BL".into(),
+                        _ => "BR".into(),
+                    };
+                }
+                return self.title.clone();
+            }
+            if let Some(slot) = self.slot {
+                return match slot {
+                    1 => "TL".into(),
+                    2 => "TR".into(),
+                    3 => "BL".into(),
+                    _ => "BR".into(),
+                };
+            }
+            self.title.clone()
+        }
+
+        fn ensure_tween_started_pos(&mut self, now: Instant) {
+            if !self.tween_active {
+                self.tween_active = true;
+                self.tween_start = Some(now);
+                self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                self.tween_from_pos = self.last_pos;
+            }
+        }
+
+        fn ensure_tween_started_size(&mut self, now: Instant) {
+            if !self.tween_active {
+                self.tween_active = true;
+                self.tween_start = Some(now);
+                self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                self.tween_from_size = self.last_size;
+            }
+        }
+
+        fn rounded_size(&self, w: f64, h: f64) -> (f64, f64) {
+            if self.step_w > 0.0 && self.step_h > 0.0 {
+                (
+                    (w / self.step_w).round() * self.step_w,
+                    (h / self.step_h).round() * self.step_h,
+                )
+            } else {
+                (w, h)
+            }
+        }
+
+        fn select_apply_target(&self, win: &winit::window::Window) -> Option<TargetRect> {
+            if let Some((x, y, w, h)) = self.apply_target {
+                return Some(((x, y), (w, h), "target"));
+            }
+            if let Some((c, r, ic, ir)) = self.apply_grid {
+                let (tx, ty, tw, th) = self.grid_rect(win, c, r, ic, ir);
+                return Some(((tx, ty), (tw, th), "grid"));
+            }
+            let pos = self.desired_pos.or(self.last_pos);
+            let size = self.desired_size.or(self.last_size);
+            match (pos, size) {
+                (Some(p), Some(s)) => Some((p, s, "desired")),
+                _ => None,
+            }
+        }
+
+        fn set_tween_target_from(&mut self, target: TargetRect) {
+            let ((x, y), (w, h), kind) = target;
+            self.tween_to_pos = Some((x, y));
+            self.tween_to_size = Some((w, h));
+            debug!(
+                "winhelper: tween-start ({}) -> ({:.1},{:.1},{:.1},{:.1})",
+                kind, x, y, w, h
+            );
+        }
+
+        // Tween helpers
+        fn tween_progress(&self, now: Instant) -> f64 {
+            let start = match self.tween_start {
+                Some(s) => s,
+                None => return 1.0,
+            };
+            let end = match self.tween_end {
+                Some(e) => e,
+                None => return 1.0,
+            };
+            let total = end.saturating_duration_since(start);
+            if total.as_millis() == 0 {
+                1.0
+            } else {
+                let elapsed = now.saturating_duration_since(start).as_secs_f64();
+                (elapsed / total.as_secs_f64()).clamp(0.0, 1.0)
+            }
+        }
+
+        fn tween_interpolate(&self, t: f64) -> (f64, f64, f64, f64) {
+            let (mut nx, mut ny) = self.last_pos.unwrap_or((0.0, 0.0));
+            let (mut nw, mut nh) = self.last_size.unwrap_or((
+                crate::config::HELPER_WIN_WIDTH,
+                crate::config::HELPER_WIN_HEIGHT,
+            ));
+            if let (Some((fx, fy)), Some((tx, ty))) = (self.tween_from_pos, self.tween_to_pos) {
+                nx = fx + (tx - fx) * t;
+                ny = fy + (ty - fy) * t;
+            }
+            if let (Some((fw, fh)), Some((tw, th))) = (self.tween_from_size, self.tween_to_size) {
+                nw = fw + (tw - fw) * t;
+                nh = fh + (th - fh) * t;
+            }
+            (nx, ny, nw, nh)
+        }
+
+        fn revert_drift_if_needed(&mut self) {
+            if let Some(win) = self.window.as_ref()
+                && let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
+            {
+                let scale = win.scale_factor();
+                let p = win
+                    .outer_position()
+                    .ok()
+                    .map(|p| p.to_logical::<f64>(scale));
+                let s = win.inner_size().to_logical::<f64>(scale);
+                if let Some(p) = p {
+                    let dx = (p.x - lx).abs();
+                    let dy = (p.y - ly).abs();
+                    let dw = (s.width - lw).abs();
+                    let dh = (s.height - lh).abs();
+                    if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
+                        debug!(
+                            "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
+                            dx, dy, dw, dh
+                        );
+                        self.suppress_events = true;
+                        let _ = win.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
+                        win.set_outer_position(winit::dpi::LogicalPosition::new(lx, ly));
+                        self.suppress_events = false;
+                    }
+                }
+            }
+        }
+
+        fn apply_tween_step(&mut self) {
+            let now = Instant::now();
+            if let Some(win) = self.window.as_ref() {
+                let target = self.select_apply_target(win);
+                if !self.tween_active {
+                    self.tween_active = true;
+                    self.tween_start = Some(now);
+                    self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                    self.tween_from_pos = self.last_pos;
+                    self.tween_from_size = self.last_size;
+                    if let Some(target) = target {
+                        self.set_tween_target_from(target);
+                    }
+                }
+            }
+            if let Some(win2) = self.window.as_ref() {
+                let t = self.tween_progress(now);
+                let (nx, ny, nw, nh) = self.tween_interpolate(t);
+                let (rw, rh) = self.rounded_size(nw, nh);
+                let _ = win2.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                win2.set_outer_position(winit::dpi::LogicalPosition::new(nx, ny));
+            }
+            if self.tween_start.is_some() && self.tween_end.is_some() {
+                let t_done = self.tween_progress(Instant::now());
+                if (t_done - 1.0).abs() < f64::EPSILON {
+                    if let Some((w, h)) = self.tween_to_size {
+                        let (_rw, _rh) = self.rounded_size(w, h);
+                        self.last_size = Some((w, h));
+                    }
+                    self.last_pos = self.tween_to_pos.or(self.last_pos);
+                    self.tween_active = false;
+                    self.tween_start = None;
+                    self.tween_end = None;
+                    self.tween_from_pos = None;
+                    self.tween_from_size = None;
+                    self.tween_to_pos = None;
+                    self.tween_to_size = None;
+                    self.apply_after = None;
+                } else {
+                    self.apply_after = Some(now + crate::config::ms(16));
+                }
+            }
+        }
+
+        fn apply_immediate(&mut self) {
+            if let Some(win) = self.window.as_ref() {
+                if let Some((x, y, w, h)) = self.apply_target {
+                    let (rw, rh) = self.rounded_size(w, h);
+                    let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                    win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                    self.last_pos = Some((x, y));
+                    self.last_size = Some((rw, rh));
+                    debug!(
+                        "winhelper: explicit apply (explicit) -> ({:.1},{:.1},{:.1},{:.1})",
+                        x, y, rw, rh
+                    );
+                } else if let Some((cols, rows, col, row)) = self.apply_grid {
+                    let (tx, ty, tw, th) = self.grid_rect(win, cols, rows, col, row);
+                    let (rw, rh) = self.rounded_size(tw, th);
+                    let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                    win.set_outer_position(winit::dpi::LogicalPosition::new(tx, ty));
+                    self.last_pos = Some((tx, ty));
+                    self.last_size = Some((rw, rh));
+                    debug!(
+                        "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
+                        tx, ty, rw, rh
+                    );
+                } else {
+                    let desired_size_val = self.desired_size;
+                    let desired_pos_val = self.desired_pos;
+                    if let Some(win2) = self.window.as_ref() {
+                        if let Some((w, h)) = desired_size_val {
+                            let (rw, rh) = self.rounded_size(w, h);
+                            let _ = win2.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                            self.last_size = Some((rw, rh));
+                            self.desired_size = None;
+                        }
+                        if let Some((x, y)) = desired_pos_val {
+                            win2.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                            self.last_pos = Some((x, y));
+                            self.desired_pos = None;
+                        }
+                        debug!("winhelper: applied desired pos/size");
+                    }
+                }
+                self.apply_after = None;
+            } else {
+                self.apply_after = None;
+            }
+        }
+
+        fn process_apply_ready(&mut self) {
+            if self.window.is_none() {
+                self.apply_after = None;
+                return;
+            }
+            self.suppress_events = true;
+            if self.tween_ms > 0 {
+                self.apply_tween_step();
+            } else {
+                self.apply_immediate();
+            }
+            self.suppress_events = false;
+        }
     }
 
     impl ApplicationHandler for HelperApp {
@@ -240,30 +561,8 @@ pub(crate) fn run_focus_winhelper(
                                     NSColor, NSFont, NSTextAlignment, NSTextField,
                                 };
                                 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-                                // Pick label: explicit, else 2x2 grid mapping, else title
-                                let label_str = if let Some(ref t) = self.label_text {
-                                    t.clone()
-                                } else if let Some((cols, rows, col, row)) = self.grid {
-                                    if cols == 2 && rows == 2 {
-                                        match (col, row) {
-                                            (0, 0) => "TL".into(),
-                                            (1, 0) => "TR".into(),
-                                            (0, 1) => "BL".into(),
-                                            _ => "BR".into(),
-                                        }
-                                    } else {
-                                        self.title.clone()
-                                    }
-                                } else if let Some(slot) = self.slot {
-                                    match slot {
-                                        1 => "TL".into(),
-                                        2 => "TR".into(),
-                                        3 => "BL".into(),
-                                        _ => "BR".into(),
-                                    }
-                                } else {
-                                    self.title.clone()
-                                };
+                                // Pick label: explicit, else 2x2 grid mapping, else title/slot
+                                let label_str = self.compute_label_text();
                                 let ns = NSString::from_str(&label_str);
                                 let label: Retained<NSTextField> =
                                     unsafe { NSTextField::labelWithString(&ns, mtm) };
@@ -339,13 +638,7 @@ pub(crate) fn run_focus_winhelper(
                                     );
                                 } else {
                                     let now = Instant::now();
-                                    if !self.tween_active {
-                                        self.tween_active = true;
-                                        self.tween_start = Some(now);
-                                        self.tween_end =
-                                            Some(now + crate::config::ms(self.tween_ms));
-                                        self.tween_from_pos = self.last_pos;
-                                    }
+                                    self.ensure_tween_started_pos(now);
                                     self.tween_to_pos = self.desired_pos;
                                     self.apply_after = Some(now);
                                 }
@@ -401,13 +694,7 @@ pub(crate) fn run_focus_winhelper(
                                     );
                                 } else {
                                     let now = Instant::now();
-                                    if !self.tween_active {
-                                        self.tween_active = true;
-                                        self.tween_start = Some(now);
-                                        self.tween_end =
-                                            Some(now + crate::config::ms(self.tween_ms));
-                                        self.tween_from_size = self.last_size;
-                                    }
+                                    self.ensure_tween_started_size(now);
                                     self.tween_to_size = self.desired_size;
                                     self.apply_after = Some(now);
                                 }
@@ -467,313 +754,9 @@ pub(crate) fn run_focus_winhelper(
                 elwt.exit();
                 return;
             }
-            if let Some(when) = self.apply_after {
-                if now < when {
-                    // Before apply: resist external changes by reverting to last
-                    if let Some(win) = self.window.as_ref()
-                        && let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
-                    {
-                        let scale = win.scale_factor();
-                        let p = win
-                            .outer_position()
-                            .ok()
-                            .map(|p| p.to_logical::<f64>(scale));
-                        let s = win.inner_size().to_logical::<f64>(scale);
-                        if let Some(p) = p {
-                            let dx = (p.x - lx).abs();
-                            let dy = (p.y - ly).abs();
-                            let dw = (s.width - lw).abs();
-                            let dh = (s.height - lh).abs();
-                            if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
-                                debug!(
-                                    "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
-                                    dx, dy, dw, dh
-                                );
-                                self.suppress_events = true;
-                                let _ =
-                                    win.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
-                                win.set_outer_position(winit::dpi::LogicalPosition::new(lx, ly));
-                                self.suppress_events = false;
-                            }
-                        }
-                    }
-                } else {
-                    // Apply time reached: either start/continue tween or apply immediately
-                    if let Some(win) = self.window.as_ref() {
-                        self.suppress_events = true;
-                        if self.tween_ms > 0 {
-                            let now = Instant::now();
-                            if !self.tween_active {
-                                self.tween_active = true;
-                                self.tween_start = Some(now);
-                                self.tween_end = Some(now + crate::config::ms(self.tween_ms));
-                                // Seed from last-known
-                                self.tween_from_pos = self.last_pos;
-                                self.tween_from_size = self.last_size;
-                                // Prefer explicit apply target (delayed)
-                                if let Some((x, y, w, h)) = self.apply_target {
-                                    self.tween_to_pos = Some((x, y));
-                                    self.tween_to_size = Some((w, h));
-                                    debug!(
-                                        "winhelper: tween-start (target) -> ({:.1},{:.1},{:.1},{:.1})",
-                                        x, y, w, h
-                                    );
-                                } else if let Some((cols, rows, col, row)) = self.apply_grid {
-                                    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                                        use objc2_app_kit::NSScreen;
-                                        // Use window center to pick screen
-                                        let scale = win.scale_factor();
-                                        let p = win
-                                            .outer_position()
-                                            .ok()
-                                            .map(|p| p.to_logical::<f64>(scale))
-                                            .unwrap_or(winit::dpi::LogicalPosition::new(0.0, 0.0));
-                                        let (vf_x, vf_y, vf_w, vf_h) = {
-                                            let mut chosen = None;
-                                            for s in NSScreen::screens(mtm).iter() {
-                                                let fr = s.visibleFrame();
-                                                let sx = fr.origin.x;
-                                                let sy = fr.origin.y;
-                                                let sw = fr.size.width;
-                                                let sh = fr.size.height;
-                                                if p.x >= sx
-                                                    && p.x <= sx + sw
-                                                    && p.y >= sy
-                                                    && p.y <= sy + sh
-                                                {
-                                                    chosen = Some((sx, sy, sw, sh));
-                                                    break;
-                                                }
-                                            }
-                                            chosen.or_else(|| {
-                                                NSScreen::mainScreen(mtm).map(|scr| {
-                                                    let r = scr.visibleFrame();
-                                                    (
-                                                        r.origin.x,
-                                                        r.origin.y,
-                                                        r.size.width,
-                                                        r.size.height,
-                                                    )
-                                                })
-                                            })
-                                        }
-                                        .unwrap_or((0.0, 0.0, 1440.0, 900.0));
-                                        let c = cols.max(1) as f64;
-                                        let r = rows.max(1) as f64;
-                                        let tile_w = (vf_w / c).floor().max(1.0);
-                                        let tile_h = (vf_h / r).floor().max(1.0);
-                                        let rem_w = vf_w - tile_w * (cols as f64);
-                                        let rem_h = vf_h - tile_h * (rows as f64);
-                                        let tx = vf_x + tile_w * (col as f64);
-                                        let tw = if col == cols.saturating_sub(1) {
-                                            tile_w + rem_w
-                                        } else {
-                                            tile_w
-                                        };
-                                        let ty = vf_y + tile_h * (row as f64);
-                                        let th = if row == rows.saturating_sub(1) {
-                                            tile_h + rem_h
-                                        } else {
-                                            tile_h
-                                        };
-                                        self.tween_to_pos = Some((tx, ty));
-                                        self.tween_to_size = Some((tw, th));
-                                        debug!(
-                                            "winhelper: tween-start (grid) -> ({:.1},{:.1},{:.1},{:.1})",
-                                            tx, ty, tw, th
-                                        );
-                                    }
-                                } else {
-                                    // Fallback: tween to desired_* if present
-                                    self.tween_to_pos = self.desired_pos.take().or(self.last_pos);
-                                    self.tween_to_size =
-                                        self.desired_size.take().or(self.last_size);
-                                    if let (Some((x, y)), Some((w, h))) =
-                                        (self.tween_to_pos, self.tween_to_size)
-                                    {
-                                        debug!(
-                                            "winhelper: tween-start (desired) -> ({:.1},{:.1},{:.1},{:.1})",
-                                            x, y, w, h
-                                        );
-                                    }
-                                }
-                            }
-                            // Perform one tween tick
-                            let start = self.tween_start.unwrap_or(now);
-                            let end = self.tween_end.unwrap_or(now);
-                            let total = end.saturating_duration_since(start);
-                            let t = if total.as_millis() == 0 {
-                                1.0
-                            } else {
-                                let elapsed = now.saturating_duration_since(start).as_secs_f64();
-                                let total_s = total.as_secs_f64();
-                                (elapsed / total_s).clamp(0.0, 1.0)
-                            };
-                            let (mut nx, mut ny) = self.last_pos.unwrap_or((0.0, 0.0));
-                            let (mut nw, mut nh) = self.last_size.unwrap_or((
-                                crate::config::HELPER_WIN_WIDTH,
-                                crate::config::HELPER_WIN_HEIGHT,
-                            ));
-                            if let (Some((fx, fy)), Some((tx, ty))) =
-                                (self.tween_from_pos, self.tween_to_pos)
-                            {
-                                nx = fx + (tx - fx) * t;
-                                ny = fy + (ty - fy) * t;
-                            }
-                            if let (Some((fw, fh)), Some((tw, th))) =
-                                (self.tween_from_size, self.tween_to_size)
-                            {
-                                nw = fw + (tw - fw) * t;
-                                nh = fh + (th - fh) * t;
-                            }
-                            let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
-                                (
-                                    (nw / self.step_w).round() * self.step_w,
-                                    (nh / self.step_h).round() * self.step_h,
-                                )
-                            } else {
-                                (nw, nh)
-                            };
-                            let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                            win.set_outer_position(winit::dpi::LogicalPosition::new(nx, ny));
-                            if (t - 1.0).abs() < f64::EPSILON {
-                                self.last_pos = self.tween_to_pos.or(self.last_pos);
-                                self.last_size = Some((rw, rh));
-                                self.tween_active = false;
-                                self.tween_start = None;
-                                self.tween_end = None;
-                                self.tween_from_pos = None;
-                                self.tween_from_size = None;
-                                self.tween_to_pos = None;
-                                self.tween_to_size = None;
-                                self.apply_after = None;
-                            } else {
-                                self.apply_after = Some(now + crate::config::ms(16));
-                            }
-                        } else {
-                            // No tween: prefer explicit target; else apply desired_*
-                            if let Some((x, y, w, h)) = self.apply_target {
-                                let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
-                                    (
-                                        (w / self.step_w).round() * self.step_w,
-                                        (h / self.step_h).round() * self.step_h,
-                                    )
-                                } else {
-                                    (w, h)
-                                };
-                                let _ =
-                                    win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                                win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
-                                self.last_pos = Some((x, y));
-                                self.last_size = Some((rw, rh));
-                                debug!(
-                                    "winhelper: explicit apply -> ({:.1},{:.1},{:.1},{:.1})",
-                                    x, y, rw, rh
-                                );
-                            } else if let Some((cols, rows, col, row)) = self.apply_grid {
-                                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                                    use objc2_app_kit::NSScreen;
-                                    let scale = win.scale_factor();
-                                    let p = win
-                                        .outer_position()
-                                        .ok()
-                                        .map(|p| p.to_logical::<f64>(scale))
-                                        .unwrap_or(winit::dpi::LogicalPosition::new(0.0, 0.0));
-                                    let (vf_x, vf_y, vf_w, vf_h) = {
-                                        let mut chosen = None;
-                                        for s in NSScreen::screens(mtm).iter() {
-                                            let fr = s.visibleFrame();
-                                            let sx = fr.origin.x;
-                                            let sy = fr.origin.y;
-                                            let sw = fr.size.width;
-                                            let sh = fr.size.height;
-                                            if p.x >= sx
-                                                && p.x <= sx + sw
-                                                && p.y >= sy
-                                                && p.y <= sy + sh
-                                            {
-                                                chosen = Some((sx, sy, sw, sh));
-                                                break;
-                                            }
-                                        }
-                                        chosen.or_else(|| {
-                                            NSScreen::mainScreen(mtm).map(|scr| {
-                                                let r = scr.visibleFrame();
-                                                (
-                                                    r.origin.x,
-                                                    r.origin.y,
-                                                    r.size.width,
-                                                    r.size.height,
-                                                )
-                                            })
-                                        })
-                                    }
-                                    .unwrap_or((0.0, 0.0, 1440.0, 900.0));
-                                    let c = cols.max(1) as f64;
-                                    let r = rows.max(1) as f64;
-                                    let tile_w = (vf_w / c).floor().max(1.0);
-                                    let tile_h = (vf_h / r).floor().max(1.0);
-                                    let rem_w = vf_w - tile_w * (cols as f64);
-                                    let rem_h = vf_h - tile_h * (rows as f64);
-                                    let tx = vf_x + tile_w * (col as f64);
-                                    let tw = if col == cols.saturating_sub(1) {
-                                        tile_w + rem_w
-                                    } else {
-                                        tile_w
-                                    };
-                                    let ty = vf_y + tile_h * (row as f64);
-                                    let th = if row == rows.saturating_sub(1) {
-                                        tile_h + rem_h
-                                    } else {
-                                        tile_h
-                                    };
-                                    let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
-                                        (
-                                            (tw / self.step_w).round() * self.step_w,
-                                            (th / self.step_h).round() * self.step_h,
-                                        )
-                                    } else {
-                                        (tw, th)
-                                    };
-                                    let _ = win
-                                        .request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                                    win.set_outer_position(winit::dpi::LogicalPosition::new(
-                                        tx, ty,
-                                    ));
-                                    self.last_pos = Some((tx, ty));
-                                    self.last_size = Some((rw, rh));
-                                    debug!(
-                                        "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
-                                        tx, ty, rw, rh
-                                    );
-                                }
-                            } else {
-                                if let Some((w, h)) = self.desired_size.take() {
-                                    let (rw, rh) = if self.step_w > 0.0 && self.step_h > 0.0 {
-                                        (
-                                            (w / self.step_w).round() * self.step_w,
-                                            (h / self.step_h).round() * self.step_h,
-                                        )
-                                    } else {
-                                        (w, h)
-                                    };
-                                    let _ = win
-                                        .request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                                    self.last_size = Some((rw, rh));
-                                }
-                                if let Some((x, y)) = self.desired_pos.take() {
-                                    win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
-                                    self.last_pos = Some((x, y));
-                                }
-                                debug!("winhelper: applied desired pos/size");
-                            }
-                            self.apply_after = None;
-                        }
-                        self.suppress_events = false;
-                    } else {
-                        self.apply_after = None;
-                    }
-                }
+            match self.apply_after {
+                Some(when) if now < when => self.revert_drift_if_needed(),
+                _ => self.process_apply_ready(),
             }
             // Wake up at the next interesting time (apply_after or final deadline)
             let next = match self.apply_after {

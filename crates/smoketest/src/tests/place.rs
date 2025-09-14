@@ -31,6 +31,7 @@ use crate::{
 
 // Geometry helpers are provided by `tests::geom`.
 
+/// Run grid placement test across all cells of the default grid.
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Bind all actions directly at the top level (no nested modes, HUD hidden).
     // Keys:
@@ -58,7 +59,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         }
     }
     // Precompute helper title and embed a raise binding that targets it.
-    let helper_title = crate::config::test_title("place");
+    let helper_title = config::test_title("place");
     let ron_config: String = format!(
         "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n{}    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
         helper_title, entries
@@ -83,7 +84,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
             let mut helper = HelperWindow::spawn_frontmost(
-                title.clone(),
+                &title,
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
@@ -145,7 +146,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 }
 
             // Kill helper explicitly to exercise teardown
-            let _ = helper.kill_and_wait();
+            if let Err(_e) = helper.kill_and_wait() {}
             Ok(())
         })
         .with_teardown(|ctx, _| {

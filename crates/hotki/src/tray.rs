@@ -1,5 +1,7 @@
+//! System tray icon and event wiring for the Hotki UI.
 use std::thread;
 
+use config::themes;
 use egui::Context;
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::{
@@ -9,7 +11,7 @@ use tray_icon::{
 
 use crate::{app::AppEvent, runtime::ControlMsg};
 
-// Embed tray icon PNG - use orange for dev builds, white for production
+/// Embed tray icon PNG: orange for dev builds, white for production.
 static TRAY_ICON_PNG: &[u8] = if cfg!(debug_assertions) {
     include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -19,6 +21,7 @@ static TRAY_ICON_PNG: &[u8] = if cfg!(debug_assertions) {
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/tray-icon.png"))
 };
 
+/// Decode the embedded tray icon image into a `tray_icon::Icon`.
 fn tray_icon_image() -> Option<Icon> {
     match image::load_from_memory(TRAY_ICON_PNG) {
         Ok(im) => {
@@ -30,10 +33,11 @@ fn tray_icon_image() -> Option<Icon> {
     }
 }
 
+/// Build the tray icon and spawn listeners for tray and menu events.
 pub fn build_tray_and_listeners(
-    tx: tokio_mpsc::UnboundedSender<AppEvent>,
-    tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
-    egui_ctx: Context,
+    tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
+    egui_ctx: &Context,
 ) -> Option<TrayIcon> {
     let (menu, reload_id, help_id, quit_id, theme_ids) = {
         let menu = Menu::new();
@@ -42,20 +46,30 @@ pub fn build_tray_and_listeners(
 
         // Create themes submenu
         let themes_menu = Submenu::new("Themes", true);
-        let theme_list = config::themes::list_themes();
+        let theme_list = themes::list_themes();
         let mut theme_menu_ids = Vec::new();
 
         for theme_name in &theme_list {
             let theme_item = MenuItem::new(*theme_name, true, None);
             theme_menu_ids.push((theme_item.id().clone(), theme_name.to_string()));
-            let _ = themes_menu.append(&theme_item);
+            if let Err(e) = themes_menu.append(&theme_item) {
+                tracing::warn!("failed to append theme item: {}", e);
+            }
         }
 
         let quit = MenuItem::new("Quit", true, None);
-        let _ = menu.append(&reload);
-        let _ = menu.append(&themes_menu);
-        let _ = menu.append(&help);
-        let _ = menu.append(&quit);
+        if let Err(e) = menu.append(&reload) {
+            tracing::warn!("failed to append reload menu item: {}", e);
+        }
+        if let Err(e) = menu.append(&themes_menu) {
+            tracing::warn!("failed to append themes submenu: {}", e);
+        }
+        if let Err(e) = menu.append(&help) {
+            tracing::warn!("failed to append help menu item: {}", e);
+        }
+        if let Err(e) = menu.append(&quit) {
+            tracing::warn!("failed to append quit menu item: {}", e);
+        }
         (
             menu,
             reload.id().clone(),
@@ -97,7 +111,9 @@ pub fn build_tray_and_listeners(
                         ..
                     } | TrayIconEvent::DoubleClick { .. }
                 ) {
-                    let _ = tx.send(AppEvent::ShowDetails);
+                    if tx.send(AppEvent::ShowDetails).is_err() {
+                        tracing::warn!("failed to send ShowDetails event: UI channel closed");
+                    }
                     egui_ctx.request_repaint();
                 }
             }
@@ -111,20 +127,34 @@ pub fn build_tray_and_listeners(
             let menu_rx = MenuEvent::receiver();
             while let Ok(ev) = menu_rx.recv() {
                 if ev.id == reload_id {
-                    let _ = tx_ctrl.send(ControlMsg::Reload);
+                    if tx_ctrl.send(ControlMsg::Reload).is_err() {
+                        tracing::warn!("failed to send Reload control message");
+                    }
                     egui_ctx.request_repaint();
                 } else if ev.id == help_id {
-                    let _ = tx_ctrl.send(ControlMsg::OpenPermissionsHelp);
+                    if tx_ctrl.send(ControlMsg::OpenPermissionsHelp).is_err() {
+                        tracing::warn!("failed to send OpenPermissionsHelp control message");
+                    }
                     egui_ctx.request_repaint();
                 } else if ev.id == quit_id {
                     // Request a graceful shutdown via the runtime control path
-                    let _ = tx_ctrl.send(ControlMsg::Shutdown);
+                    if tx_ctrl.send(ControlMsg::Shutdown).is_err() {
+                        tracing::warn!("failed to send Shutdown control message");
+                    }
                     egui_ctx.request_repaint();
                 } else {
                     // Check if it's a theme selection
                     for (theme_id, theme_name) in &theme_ids {
                         if ev.id == *theme_id {
-                            let _ = tx_ctrl.send(ControlMsg::SwitchTheme(theme_name.clone()));
+                            if tx_ctrl
+                                .send(ControlMsg::SwitchTheme(theme_name.clone()))
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    "failed to send SwitchTheme control message for {}",
+                                    theme_name
+                                );
+                            }
                             egui_ctx.request_repaint();
                             break;
                         }
@@ -133,6 +163,5 @@ pub fn build_tray_and_listeners(
             }
         });
     }
-
     tray_icon_opt
 }

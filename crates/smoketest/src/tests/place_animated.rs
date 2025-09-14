@@ -13,7 +13,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let rows = 2u32;
     let col = 1u32; // BR
     let row = 1u32;
-    let helper_title = crate::config::test_title("place-animated");
+    let helper_title = config::test_title("place-animated");
 
     // Minimal hotki config so backend is up; direct mac-winops call drives placement.
     let ron_config: String =
@@ -111,7 +111,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 )));
             }
 
-            let _ = helper.kill_and_wait();
+            if let Err(_e) = helper.kill_and_wait() {}
             Ok(())
         })
         .with_teardown(|ctx, _| {

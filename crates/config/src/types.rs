@@ -1,3 +1,5 @@
+//! Core configuration data types used in the config crate.
+
 use serde::{Deserialize, Serialize};
 
 /// Display mode for the HUD.
@@ -57,7 +59,7 @@ pub struct Offset {
 
 impl Default for Offset {
     fn default() -> Self {
-        Offset { x: 0.0, y: 0.0 }
+        Self { x: 0.0, y: 0.0 }
     }
 }
 

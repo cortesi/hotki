@@ -317,11 +317,7 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     },
                 );
                 debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
-                log_summary(
-                    "anchor-legal",
-                    attempt_idx.saturating_add(1),
-                    VERIFY_EPS,
-                );
+                log_summary("anchor-legal", attempt_idx.saturating_add(1), VERIFY_EPS);
                 if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);
@@ -678,11 +674,7 @@ pub fn place_grid_focused_opts(
                     },
                 );
                 debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
-                log_summary(
-                    "anchor-legal",
-                    attempt_idx.saturating_add(1),
-                    VERIFY_EPS,
-                );
+                log_summary("anchor-legal", attempt_idx.saturating_add(1), VERIFY_EPS);
                 if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);

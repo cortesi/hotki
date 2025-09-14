@@ -8,7 +8,7 @@
 //! `on_key_down(chord, is_repeat)` and `on_key_up(chord)` as needed.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
 
 use core_graphics::{
     event as cge,
@@ -18,26 +18,36 @@ use libc::pid_t;
 use mac_keycode::{Chord, Modifier};
 use tracing::{info, trace, warn};
 
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+/// Crate-local `Result` alias using the relay error type.
+pub(crate) type Result<T> = StdResult<T, Error>;
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+/// Errors that can occur while synthesizing or posting events.
 pub(crate) enum Error {
+    /// Failure creating a CoreGraphics event source.
     #[error("Failed to create CGEventSource")]
     EventSource,
+    /// Failure creating a CoreGraphics keyboard event.
     #[error("Failed to create CGEvent")]
     EventCreate,
+    /// Required Accessibility permission is missing.
     #[error("Permission denied: {0}")]
     PermissionDenied(&'static str),
 }
 
+/// Abstraction for posting events to the system (overridable in tests).
 pub(crate) trait Poster: Send + Sync {
+    /// Post a key down for `key` to process `pid`.
     fn post_down(&self, pid: pid_t, key: &Chord, is_repeat: bool) -> Result<()>;
+    /// Post a key up for `key` to process `pid`.
     fn post_up(&self, pid: pid_t, key: &Chord) -> Result<()>;
+    /// Post modifier changes for `mods` to process `pid`.
     fn post_modifiers(&self, _pid: pid_t, _mods: &HashSet<Modifier>, _down: bool) -> Result<()> {
         Ok(())
     }
 }
 
+/// Default system poster that uses CoreGraphics to inject events.
 struct MacPoster {
     /// When true, do not set the HOTK_TAG on injected events so upstream
     /// taps can observe them (used by tools/smoketests).
@@ -45,6 +55,7 @@ struct MacPoster {
 }
 
 impl MacPoster {
+    /// Build a raw keyboard event for a virtual keycode.
     fn build_keycode_event(&self, keycode: u16, down: bool) -> Result<cge::CGEvent> {
         let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
             Ok(s) => s,
@@ -73,6 +84,7 @@ impl MacPoster {
         }
         Ok(e)
     }
+    /// Build a keyboard event for a `Chord` including modifiers and repeat flag.
     fn build_event(&self, chord: &Chord, down: bool, is_repeat: bool) -> Result<cge::CGEvent> {
         // Create event source inline - it's lightweight
         let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -209,6 +221,7 @@ impl Poster for MacPoster {
 /// foreground application, ensuring only one relayed key is held at a time.
 #[derive(Clone)]
 pub struct RelayKey {
+    /// Backend responsible for posting events to the OS.
     poster: Arc<dyn Poster>,
 }
 
@@ -251,25 +264,34 @@ impl RelayKey {
     // No release state to manage in pass-through mode.
 
     /// Convenience for handling a key-down input.
-    pub fn key_down(&self, pid: i32, key: Chord, is_repeat: bool) {
+    pub fn key_down(&self, pid: i32, key: &Chord, is_repeat: bool) {
         trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, "on_key_down");
         let pid = pid as pid_t;
-        if !is_repeat {
-            let _ = self.poster.post_modifiers(pid, &key.modifiers, true);
+        if !is_repeat
+            && let Err(err) = self.poster.post_modifiers(pid, &key.modifiers, true)
+        {
+            warn!(?err, "post_modifiers_failed");
         }
-        let _ = self.poster.post_down(pid, &key, is_repeat);
+        if let Err(err) = self.poster.post_down(pid, key, is_repeat) {
+            warn!(?err, "post_down_failed");
+        }
     }
 
     /// Convenience for handling a key-up input.
-    pub fn key_up(&self, pid: i32, chord: Chord) {
+    pub fn key_up(&self, pid: i32, chord: &Chord) {
         trace!(code = ?chord.key, mods = ?chord.modifiers, "on_key_up");
         let pid = pid as pid_t;
-        let _ = self.poster.post_up(pid, &chord);
-        let _ = self.poster.post_modifiers(pid, &chord.modifiers, false);
+        if let Err(err) = self.poster.post_up(pid, chord) {
+            warn!(?err, "post_up_failed");
+        }
+        if let Err(err) = self.poster.post_modifiers(pid, &chord.modifiers, false) {
+            warn!(?err, "post_modifiers_failed");
+        }
     }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+/// No-op poster used in unit tests.
 struct MockPoster;
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -284,6 +306,7 @@ impl Poster for MockPoster {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use mac_keycode::Key;
@@ -316,7 +339,6 @@ mod tests {
     }
 
     fn key(code: Key) -> Chord {
-        use std::collections::HashSet;
         Chord {
             key: code,
             modifiers: HashSet::new(),
@@ -327,9 +349,9 @@ mod tests {
     fn basic_down_up_no_repeat() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(1234, key(Key::A), false);
+        rk.key_down(1234, &key(Key::A), false);
         /* removed misplaced inner doc block */
-        rk.key_up(1234, key(Key::A));
+        rk.key_up(1234, &key(Key::A));
         assert_eq!(poster.downs(), 1);
         assert_eq!(poster.ups(), 1);
     }
@@ -338,9 +360,9 @@ mod tests {
     fn switch_keys_up_then_down() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(1234, key(Key::A), false);
-        rk.key_down(1234, key(Key::B), false);
-        rk.key_up(1234, key(Key::B));
+        rk.key_down(1234, &key(Key::A), false);
+        rk.key_down(1234, &key(Key::B), false);
+        rk.key_up(1234, &key(Key::B));
         // Pass-through: we post exactly what we're asked to.
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.ups(), 1);
@@ -350,7 +372,7 @@ mod tests {
     fn keyup_without_prior_down_posts_up() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_up(1234, key(Key::A));
+        rk.key_up(1234, &key(Key::A));
         assert_eq!(poster.downs(), 0);
         assert_eq!(poster.ups(), 1);
     }
@@ -396,14 +418,13 @@ mod tests {
     fn repeats_are_forwarded() {
         let poster = Arc::new(TrackPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        use std::collections::HashSet;
         let k = Chord {
             key: Key::RightArrow,
             modifiers: HashSet::new(),
         };
-        rk.key_down(1234, k.clone(), false);
-        rk.key_down(1234, k.clone(), true);
-        rk.key_up(1234, k);
+        rk.key_down(1234, &k, false);
+        rk.key_down(1234, &k, true);
+        rk.key_up(1234, &k);
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.repeat_downs(), 1);
         assert_eq!(poster.ups(), 1);

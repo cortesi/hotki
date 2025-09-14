@@ -18,8 +18,10 @@ use crate::{
 
 // Placement handled via server by driving config bindings (no direct WinOps here).
 
+/// Tolerance when comparing expected vs observed frames.
 const EPS: f64 = 2.0;
 
+/// Resolve the visible frame for the screen containing the frontmost window.
 fn current_frontmost_vf() -> Result<geom::Rect> {
     let front = mac_winops::frontmost_window()
         .ok_or_else(|| Error::InvalidState("No frontmost CG window".into()))?;
@@ -30,6 +32,7 @@ fn current_frontmost_vf() -> Result<geom::Rect> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Find the grid cell index for a given frame within the visible frame.
 fn find_cell_for_frame(
     vf_x: f64,
     vf_y: f64,
@@ -58,6 +61,7 @@ fn find_cell_for_frame(
     None
 }
 
+/// Log the frontmost window title and pid for debugging.
 fn log_frontmost() {
     if let Some(w) = mac_winops::frontmost_window() {
         info!("focus-nav: now on window title='{}' pid={}", w.title, w.pid);
@@ -66,11 +70,12 @@ fn log_frontmost() {
     }
 }
 
+/// Run focus navigation test across a 2x2 grid of helpers.
 pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
-    let title_tl = crate::config::test_title("focus-tl");
-    let title_tr = crate::config::test_title("focus-tr");
-    let title_bl = crate::config::test_title("focus-bl");
-    let title_br = crate::config::test_title("focus-br");
+    let title_tl = config::test_title("focus-tl");
+    let title_tr = config::test_title("focus-tr");
+    let title_bl = config::test_title("focus-bl");
+    let title_br = config::test_title("focus-br");
 
     // Minimal config: direct global bindings for focus directions to avoid HUD submenu latency
     let ron_config = format!(
@@ -80,7 +85,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
     let config = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
-        .with_temp_config(ron_config.to_string());
+        .with_temp_config(ron_config);
 
     TestRunner::new("focus_nav_test", config)
         .with_setup(|ctx| {
@@ -190,7 +195,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
-                    expected: title_tr.clone(),
+                    expected: title_tr,
                 });
             }
             geom::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
@@ -201,7 +206,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
-                    expected: title_br.clone(),
+                    expected: title_br,
                 });
             }
             geom::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
@@ -212,7 +217,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
-                    expected: title_bl.clone(),
+                    expected: title_bl,
                 });
             }
             geom::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
@@ -223,7 +228,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
-                    expected: title_tl.clone(),
+                    expected: title_tl,
                 });
             }
             // Final explicit confirmation: back at TL and at (0,0)

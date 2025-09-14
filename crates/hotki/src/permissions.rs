@@ -1,16 +1,23 @@
 use egui::{
     CentralPanel, Color32, Context, RichText, ViewportBuilder, ViewportCommand, ViewportId, vec2,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::runtime::ControlMsg;
 
+/// UI component that presents instructions to grant required macOS permissions.
+/// This opens a separate viewport with current status and quick links.
 pub struct PermissionsHelp {
+    /// Whether the permissions help viewport is visible.
     visible: bool,
+    /// Stable viewport id for the help window.
     id: ViewportId,
-    tx_ctrl: Option<tokio::sync::mpsc::UnboundedSender<ControlMsg>>,
+    /// Control channel to the runtime for opening settings.
+    tx_ctrl: Option<UnboundedSender<ControlMsg>>,
 }
 
 impl PermissionsHelp {
+    /// Construct a new hidden permissions help component.
     pub fn new() -> Self {
         Self {
             visible: false,
@@ -19,18 +26,22 @@ impl PermissionsHelp {
         }
     }
 
+    /// Show the permissions help window.
     pub fn show(&mut self) {
         self.visible = true;
     }
 
+    /// Hide the permissions help window.
     pub fn hide(&mut self) {
         self.visible = false;
     }
 
-    pub fn set_control_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ControlMsg>) {
+    /// Set the runtime control sender used to trigger actions.
+    pub fn set_control_sender(&mut self, tx: UnboundedSender<ControlMsg>) {
         self.tx_ctrl = Some(tx);
     }
 
+    /// Render the permissions help viewport; manages visibility and UI content.
     pub fn render(&mut self, ctx: &Context) {
         if !self.visible {
             ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
@@ -102,8 +113,9 @@ impl PermissionsHelp {
                 ui.add_space(6.0);
                 if ui.button("Open Accessibility Settings").clicked()
                     && let Some(ref tx) = self.tx_ctrl
+                    && tx.send(ControlMsg::OpenAccessibility).is_err()
                 {
-                    let _ = tx.send(ControlMsg::OpenAccessibility);
+                    tracing::warn!("failed to request opening Accessibility settings");
                 }
                 ui.add_space(10.0);
 
@@ -142,8 +154,9 @@ impl PermissionsHelp {
                 ui.add_space(6.0);
                 if ui.button("Open Input Monitoring Settings").clicked()
                     && let Some(ref tx) = self.tx_ctrl
+                    && tx.send(ControlMsg::OpenInputMonitoring).is_err()
                 {
-                    let _ = tx.send(ControlMsg::OpenInputMonitoring);
+                    tracing::warn!("failed to request opening Input Monitoring settings");
                 }
 
                 ui.add_space(14.0);
@@ -157,12 +170,16 @@ impl PermissionsHelp {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PermissionsStatus {
+/// Snapshot of relevant macOS permissions required by Hotki.
+pub struct PermissionsStatus {
+    /// Whether Accessibility permission is granted.
     pub accessibility_ok: bool,
+    /// Whether Input Monitoring permission is granted.
     pub input_ok: bool,
 }
 
-pub(crate) fn check_permissions() -> PermissionsStatus {
+/// Query the current process permissions and convert into the UI-facing struct.
+pub fn check_permissions() -> PermissionsStatus {
     let st = ::permissions::check_permissions();
     PermissionsStatus {
         accessibility_ok: st.accessibility_ok,

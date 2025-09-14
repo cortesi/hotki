@@ -13,7 +13,7 @@
 //!   causes the test to fail with `IpcDisconnected`.
 //! - A significant area change is expected but not enforced strictly; this is a
 //!   smoke check rather than a pixel-perfect assertion.
-use std::time::Instant;
+use std::{cmp, thread, time::Instant};
 
 use hotki_protocol::Toggle;
 
@@ -42,7 +42,7 @@ pub fn run_fullscreen_test(
     // Generate a unique helper title up front so we can embed a raise binding
     // targeting it. This ensures the backend acts on the intended window and
     // avoids touching the user's windows if focus drifts.
-    let title = crate::config::test_title("fullscreen");
+    let title = config::test_title("fullscreen");
 
     // Minimal config: add a raise(title) binding and fullscreen binding.
     let state_str = match state {
@@ -71,8 +71,8 @@ pub fn run_fullscreen_test(
             // Ensure RPC driver is connected to the right backend before driving keys.
             if ctx.session.is_some() {
                 // Connection was initialized in setup; avoid reconnecting.
-                let _ = crate::server_drive::wait_for_ident("g", 2000);
-                let _ = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
+                let _ = server_drive::wait_for_ident("g", 2000);
+                let _ = server_drive::wait_for_ident("shift+cmd+9", 2000);
             }
             // Spawn helper window with the embedded title
 
@@ -81,18 +81,17 @@ pub fn run_fullscreen_test(
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
             let mut helper = HelperWindow::spawn_frontmost(
-                title.clone(),
+                &title,
                 helper_time,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
                 "FS",
             )?;
             // Gate safety: raise the helper via backend binding, then wait until
             // both CG frontmost and backend world focus agree on our helper PID.
-            crate::ui_interaction::send_key("g");
+            send_key("g");
             ensure_frontmost(helper.pid, &title, 4, config::UI_ACTION_DELAY_MS);
-            let _ =
-                crate::server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
+            let _ = server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
@@ -115,7 +114,7 @@ pub fn run_fullscreen_test(
                         during: "fullscreen toggle",
                     });
                 }
-                std::thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
+                thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
                 after = mac_winops::ax_window_frame(helper.pid, &title);
             }
             let after = after.ok_or_else(|| {
@@ -131,7 +130,7 @@ pub fn run_fullscreen_test(
             }
 
             // Immediately kill the helper window to exercise teardown path
-            let _ = helper.kill_and_wait();
+            if let Err(_e) = helper.kill_and_wait() {}
 
             Ok(())
         })

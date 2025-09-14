@@ -505,6 +505,12 @@ pub fn drain_main_ops() {
                     tracing::warn!("FocusDir failed: dir={:?} err={}", dir, e);
                 }
             }
+            // Future-proofing: if a new variant is added to `MainOp` but not yet
+            // handled here, avoid crashing in release builds. Log and drop.
+            #[allow(unreachable_patterns)]
+            _ => {
+                tracing::warn!("MainOps: unhandled operation encountered; dropping");
+            }
         }
     }
 

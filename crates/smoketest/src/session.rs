@@ -1,8 +1,11 @@
 use std::{
+    cmp,
     path::{Path, PathBuf},
     process::{Child, Command},
+    thread,
     time::{Duration, Instant},
 };
+use tokio::time::timeout;
 
 use logging as logshared;
 
@@ -16,19 +19,26 @@ use crate::{
 /// State tracking for HotkiSession
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
+    /// Process launched; waiting for readiness
     Starting,
+    /// Live connection established
     Running,
+    /// Session stopped or cleaned up
     Stopped,
 }
 
 /// Builder for HotkiSession configuration
 pub struct HotkiSessionBuilder {
+    /// Path to the hotki binary to run.
     binary_path: PathBuf,
+    /// Optional path to a config RON file to load.
     config_path: Option<PathBuf>,
+    /// Whether to enable verbose logs for the child.
     with_logs: bool,
 }
 
 impl HotkiSessionBuilder {
+    /// Create a new session builder for the given binary path.
     pub fn new(binary_path: impl Into<PathBuf>) -> Self {
         Self {
             binary_path: binary_path.into(),
@@ -37,16 +47,19 @@ impl HotkiSessionBuilder {
         }
     }
 
+    /// Provide a configuration file path to the hotki process.
     pub fn with_config(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_path = Some(path.into());
         self
     }
 
+    /// Enable or disable child process logging via `RUST_LOG`.
     pub fn with_logs(mut self, enable: bool) -> Self {
         self.with_logs = enable;
         self
     }
 
+    /// Spawn the hotki process and return a running session.
     pub fn spawn(self) -> Result<HotkiSession> {
         let mut cmd = Command::new(&self.binary_path);
 
@@ -71,34 +84,42 @@ impl HotkiSessionBuilder {
     }
 }
 
+/// Running hotki process with helpers for RPC and shutdown.
 pub struct HotkiSession {
+    /// Child process handle.
     child: Child,
+    /// Path to the server's unix socket for this process.
     socket_path: String,
+    /// Current session state.
     state: SessionState,
 }
 
 impl HotkiSession {
     /// Create a new session builder
+    /// Create a new session builder.
     pub fn builder(binary_path: impl Into<PathBuf>) -> HotkiSessionBuilder {
         HotkiSessionBuilder::new(binary_path)
     }
 
     /// Legacy constructor for compatibility
+    /// Convenience constructor that builds and launches in one call.
     pub fn launch_with_config(
         hotki_bin: &Path,
         cfg_path: &Path,
         with_logs: bool,
-    ) -> Result<HotkiSession> {
+    ) -> Result<Self> {
         Self::builder(hotki_bin)
             .with_config(cfg_path)
             .with_logs(with_logs)
             .spawn()
     }
 
+    /// Return the OS process id for the hotki child.
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
 
+    /// Return the server socket path for the session.
     pub fn socket_path(&self) -> &str {
         &self.socket_path
     }
@@ -108,7 +129,7 @@ impl HotkiSession {
     /// - Ok(elapsed_ms) when HUD becomes visible
     /// - Err(IpcDisconnected) if the MRPC event channel closes unexpectedly
     /// - Err(HudNotVisible) if the timeout elapses without visibility
-    pub fn wait_for_hud_checked(&mut self, timeout_ms: u64) -> crate::error::Result<u64> {
+    pub fn wait_for_hud_checked(&mut self, timeout_ms: u64) -> Result<u64> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let start = Instant::now();
 
@@ -125,14 +146,14 @@ impl HotkiSession {
                 Ok(Err(_)) | Err(_) => {
                     attempts += 1;
                     if Instant::now() >= deadline {
-                        return Err(crate::error::Error::HudNotVisible { timeout_ms });
+                        return Err(Error::HudNotVisible { timeout_ms });
                     }
                     let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS {
                         config::INITIAL_RETRY_DELAY_MS
                     } else {
                         config::FAST_RETRY_DELAY_MS
                     };
-                    std::thread::sleep(Duration::from_millis(delay));
+                    thread::sleep(Duration::from_millis(delay));
                     continue;
                 }
             }
@@ -149,7 +170,7 @@ impl HotkiSession {
         let conn = match client.connection() {
             Ok(c) => c,
             Err(_) => {
-                return Err(crate::error::Error::IpcDisconnected {
+                return Err(Error::IpcDisconnected {
                     during: "waiting for HUD",
                 });
             }
@@ -161,9 +182,8 @@ impl HotkiSession {
 
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
-            let chunk = std::cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
-            let res =
-                runtime::block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await });
+            let chunk = cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
+            let res = runtime::block_on(async { timeout(chunk, conn.recv_event()).await });
             match res {
                 Ok(Ok(Ok(msg))) => {
                     if let hotki_protocol::MsgToUI::HudUpdate { cursor, .. } = msg {
@@ -175,7 +195,7 @@ impl HotkiSession {
                     }
                 }
                 Ok(Ok(Err(_))) => {
-                    return Err(crate::error::Error::IpcDisconnected {
+                    return Err(Error::IpcDisconnected {
                         during: "waiting for HUD",
                     });
                 }
@@ -195,27 +215,30 @@ impl HotkiSession {
                 last_sent = Some(Instant::now());
             }
         }
-        Err(crate::error::Error::HudNotVisible { timeout_ms })
+        Err(Error::HudNotVisible { timeout_ms })
     }
 
+    /// Attempt a graceful server shutdown via RPC (best-effort).
     pub fn shutdown(&mut self) {
         let sock = self.socket_path.clone();
-        let _ = runtime::block_on(async move {
+        drop(runtime::block_on(async move {
             if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
                 .with_connect_only()
                 .connect()
                 .await
             {
-                let _ = c.shutdown_server().await;
+                drop(c.shutdown_server().await);
             }
-        });
+            Ok::<(), Error>(())
+        }));
         self.state = SessionState::Stopped;
     }
 
+    /// Forcefully kill the child process and wait for exit.
     pub fn kill_and_wait(&mut self) {
         let pid = self.child.id() as i32;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Err(_e) = self.child.kill() {}
+        if let Err(_e) = self.child.wait() {}
         proc_registry::unregister(pid);
         self.state = SessionState::Stopped;
     }

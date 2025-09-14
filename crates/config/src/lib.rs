@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use std::{collections::HashSet, convert::TryFrom};
+use std::{collections::HashSet, convert::TryFrom, env, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -82,8 +82,11 @@ impl CursorEnsureExt for Cursor {
 /// user configuration from RON without exposing raw internals.
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct ConfigInput {
+    /// User key bindings.
     pub keys: Keys,
+    /// Optional base theme name.
     pub base_theme: Option<String>,
+    /// Optional raw style overlay (applied over base theme).
     pub style: Option<raw::RawStyle>,
 }
 
@@ -93,7 +96,7 @@ impl<'de> Deserialize<'de> for ConfigInput {
         D: serde::Deserializer<'de>,
     {
         let raw = RawConfig::deserialize(deserializer)?;
-        Ok(ConfigInput {
+        Ok(Self {
             keys: raw.keys,
             base_theme: raw.base_theme.as_option().cloned(),
             style: raw.style.into_option(),
@@ -116,7 +119,7 @@ pub struct Style {
 
 impl Style {
     /// Overlay raw style overrides onto this base style using current values as defaults.
-    pub(crate) fn overlay_raw(mut self, overrides: &raw::RawStyle) -> Style {
+    pub(crate) fn overlay_raw(mut self, overrides: &raw::RawStyle) -> Self {
         if let Some(h) = &overrides.hud {
             self.hud = h.clone().into_hud_over(&self.hud);
         }
@@ -127,7 +130,7 @@ impl Style {
     }
 
     /// Apply multiple raw overlays left-to-right.
-    pub(crate) fn overlay_all_raw(mut self, overlays: &[raw::RawStyle]) -> Style {
+    pub(crate) fn overlay_all_raw(mut self, overlays: &[raw::RawStyle]) -> Self {
         for ov in overlays {
             self = self.overlay_raw(ov);
         }
@@ -295,19 +298,16 @@ impl Default for Notify {
 
 impl Notify {
     pub fn theme(&self) -> NotifyTheme {
-        // Fallback defaults from a default Notify instance
-        let d = Notify::default();
-
+        // Helper items
         fn choose<'a>(s: &'a Option<String>, d: &'a Option<String>) -> &'a str {
-            if let Some(v) = s {
-                v
-            } else {
-                d.as_deref().unwrap()
-            }
+            if let Some(v) = s { v } else { d.as_deref().unwrap() }
         }
         fn parse_or_default(val: &str, def: &str) -> (u8, u8, u8) {
             parse_rgb(val).unwrap_or_else(|| parse_rgb(def).unwrap())
         }
+
+        // Fallback defaults from a default Notify instance
+        let d = Self::default();
 
         let weight_or = |w: &Option<FontWeight>| w.unwrap_or(FontWeight::Regular);
         let size_or = |s: &Option<f32>, def: f32| s.unwrap_or(def);
@@ -573,7 +573,7 @@ impl Config {
         self.action(loc, chord, app, title)
     }
 
-    // Compute merged mode attributes along the current path.
+    /// Compute merged mode attributes along the current path.
     fn merged_mode_attrs(&self, path: &[u32]) -> KeysAttrs {
         let mut cur = &self.keys;
         let mut acc = KeysAttrs::default();
@@ -799,8 +799,8 @@ pub(crate) fn parse_rgb(s: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// Determine the default user config path (~/.hotki.ron).
-pub fn default_config_path() -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+pub fn default_config_path() -> PathBuf {
+    let mut p = PathBuf::from(env::var_os("HOME").unwrap_or_default());
     p.push(".hotki.ron");
     p
 }
@@ -811,6 +811,7 @@ mod tests {
 
     use super::*;
     use crate::loader;
+    use crate::raw::{RawHud, RawStyle};
 
     #[test]
     fn test_hud_mode_default_is_hud() {
@@ -837,8 +838,8 @@ mod tests {
     fn test_hud_mode_overlay_application() {
         // Nice overlay form
         let base: Config = loader::load_from_str("(keys: [])", None).unwrap();
-        let overlay: crate::raw::RawStyle = crate::raw::RawStyle {
-            hud: Some(crate::raw::RawHud {
+        let overlay: RawStyle = RawStyle {
+            hud: Some(RawHud {
                 mode: Some(Mode::Mini),
                 ..Default::default()
             }),
@@ -848,8 +849,8 @@ mod tests {
         assert!(matches!(themed.hud.mode, Mode::Mini));
 
         // Raw overlay form (through RawStyle path)
-        let overlay_raw: crate::raw::RawStyle = crate::raw::RawStyle {
-            hud: Some(crate::raw::RawHud {
+        let overlay_raw: RawStyle = RawStyle {
+            hud: Some(RawHud {
                 mode: Some(Mode::Hide),
                 ..Default::default()
             }),
@@ -1131,7 +1132,7 @@ mod tests {
         let root = Cursor::default();
         assert_eq!(cfg.hud(&root).font_size, 20.0);
 
-        let mut loc2 = root.clone();
+        let mut loc2 = root;
         loc2.set_user_style_enabled(false);
         // Theme default font size in theme files is 14.0
         assert_eq!(cfg.hud(&loc2).font_size, 14.0);

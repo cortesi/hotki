@@ -20,14 +20,19 @@ pub struct TestOutcome {
 pub enum TestDetails {
     /// UI test details
     Ui {
+        /// Whether the HUD overlay was observed
         hud_seen: bool,
+        /// Milliseconds from start until HUD became visible
         time_to_hud_ms: Option<u64>,
     },
     /// Focus test details
+    /// Focus test results: observed title and pid
     Focus { title: String, pid: i32 },
     /// Repeat test details
+    /// Repeat test results: number of repeats and type
     Repeat { count: usize, test_type: RepeatType },
     /// Window operation test details
+    /// Window operation performed
     Window { operation: WindowOperation },
     /// Generic test with no specific details
     #[default]
@@ -37,17 +42,20 @@ pub enum TestDetails {
 /// Types of repeat tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepeatType {
+    /// Relay repeats
     Relay,
+    /// Shell repeats
     Shell,
+    /// Volume repeats
     Volume,
 }
 
 impl fmt::Display for RepeatType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RepeatType::Relay => write!(f, "relay"),
-            RepeatType::Shell => write!(f, "shell"),
-            RepeatType::Volume => write!(f, "volume"),
+            Self::Relay => write!(f, "relay"),
+            Self::Shell => write!(f, "shell"),
+            Self::Volume => write!(f, "volume"),
         }
     }
 }
@@ -55,17 +63,20 @@ impl fmt::Display for RepeatType {
 /// Types of window operations tested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowOperation {
+    /// Raise a window
     Raise,
+    /// Focus a window
     Focus,
+    /// Hide or reveal a window
     Hide,
 }
 
 impl fmt::Display for WindowOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WindowOperation::Raise => write!(f, "raise"),
-            WindowOperation::Focus => write!(f, "focus"),
-            WindowOperation::Hide => write!(f, "hide"),
+            Self::Raise => write!(f, "raise"),
+            Self::Focus => write!(f, "focus"),
+            Self::Hide => write!(f, "hide"),
         }
     }
 }
@@ -157,7 +168,9 @@ impl TestOutcome {
 /// Will be phased out in favor of TestOutcome.
 #[derive(Debug, Clone)]
 pub struct Summary {
+    /// Whether HUD was seen during the test
     pub hud_seen: bool,
+    /// Time to HUD visibility in milliseconds
     pub time_to_hud_ms: Option<u64>,
 }
 
@@ -189,8 +202,11 @@ impl Summary {
 /// Will be phased out in favor of TestOutcome.
 #[derive(Debug, Clone)]
 pub struct FocusOutcome {
+    /// Final focused window title
     pub title: String,
+    /// Final focused window pid
     pub pid: i32,
+    /// Elapsed time in milliseconds
     pub elapsed_ms: u64,
 }
 

@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 description = "Shared event tagging utilities for hotki"
 
+[lints]
+workspace = true
+
+
 [lib]
 name = "eventtag"
 path = "src/lib.rs"

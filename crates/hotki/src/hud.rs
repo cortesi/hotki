@@ -1,36 +1,53 @@
+//! Heads-up display (HUD) rendering for key hints.
 use config::{FontWeight, Mode, Pos};
 use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
+use mac_winops::{
+    nswindow::{apply_transparent_rounded, set_on_all_spaces},
+    screen,
+};
 
 use crate::fonts;
 
-// HUD layout constants
+/// Minimum HUD width in logical pixels.
 const HUD_MIN_WIDTH: f32 = 240.0;
+/// Minimum HUD height in logical pixels.
 const HUD_MIN_HEIGHT: f32 = 80.0;
+/// Horizontal HUD padding from edges.
 const HUD_PADDING_X: f32 = 12.0;
+/// Vertical HUD padding from edges.
 const HUD_PADDING_Y: f32 = 12.0;
 
-// Vertical gap between key rows
+/// Vertical gap between key rows.
 const KEY_ROW_GAP: f32 = 10.0;
-// Gap between the last key box row and the description text
+/// Gap between the last key box row and the description text.
 const KEY_DESC_GAP: f32 = 16.0;
-// Horizontal gap (each side) around the plus separator between key boxes
+/// Horizontal gap (each side) around the plus separator between key boxes.
 const KEY_PLUS_GAP: f32 = 6.0;
+/// Gap between tag items.
 const HUD_TAG_GAP: f32 = 8.0;
 
+/// HUD state and rendering helpers.
 pub struct Hud {
+    /// Whether the HUD is currently shown.
     visible: bool,
-    // Full HUD configuration copied from config
+    /// Full HUD configuration copied from config.
     cfg: config::Hud,
+    /// Stable viewport identifier for the HUD window.
     id: ViewportId,
+    /// Keys to display as `(token, description, is_modifier)` triplets.
     keys: Vec<(String, String, bool)>,
+    /// Optional parent window title used for placement.
     parent_title: Option<String>,
+    /// Last computed position (for smooth movement).
     last_pos: Option<Pos2>,
+    /// Last applied opacity.
     last_opacity: Option<f32>,
+    /// Last applied size for the HUD.
     last_size: Option<Vec2>,
-    // Cached width of the '+' glyph for current key font (size, weight -> width)
+    /// Cached width of the '+' glyph for current key font (size, weight -> width).
     plus_w_cache: Option<(f32, FontWeight, f32)>,
 }
 
@@ -135,6 +152,75 @@ impl Hud {
         }
     }
 
+    /// Render all key rows for the HUD.
+    fn render_full_hud_rows(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, avail: Vec2) {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = KEY_ROW_GAP;
+            for (k, d, is_mode) in &self.keys {
+                self.render_key_row(ui, hud_ctx, avail, k, d, *is_mode);
+            }
+        });
+    }
+
+    /// Render a single key row with tokens, description, and optional tag.
+    fn render_key_row(
+        &self,
+        ui: &mut egui::Ui,
+        hud_ctx: &egui::Context,
+        avail: Vec2,
+        key: &str,
+        desc: &str,
+        is_mode: bool,
+    ) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.spacing_mut().item_spacing.x = 0.0;
+            self.render_key_tokens(ui, key);
+            ui.add_space(KEY_DESC_GAP);
+            ui.label(desc);
+            if is_mode {
+                let (token_boxes_w, _) = {
+                    let mut tmp = Self {
+                        plus_w_cache: None,
+                        ..self.clone_for_measure()
+                    };
+                    tmp.measure_token_boxes(hud_ctx, key)
+                };
+                let desc_w = hud_ctx.fonts(|f| {
+                    f.layout_no_wrap(desc.to_string(), self.title_font_id(), Color32::WHITE)
+                        .size()
+                        .x
+                });
+                let row_content_w = token_boxes_w + KEY_DESC_GAP + desc_w;
+                let tag_w = hud_ctx.fonts(|f| {
+                    f.layout_no_wrap(
+                        self.cfg.tag_submenu.clone(),
+                        self.tag_font_id(),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x
+                });
+
+                let available_content_width = avail.x - 2.0 * HUD_PADDING_X;
+                let spacer =
+                    (available_content_width - row_content_w - HUD_TAG_GAP - tag_w).max(0.0);
+                ui.add_space(spacer);
+                ui.add_space(HUD_TAG_GAP);
+
+                let prev_font = ui.style().override_font_id.clone();
+                ui.style_mut().override_font_id = Some(self.tag_font_id());
+                let prev_color = ui.style().visuals.override_text_color;
+                let (tag_r, tag_g, tag_b) = self.cfg.tag_fg;
+                ui.style_mut().visuals.override_text_color =
+                    Some(Color32::from_rgb(tag_r, tag_g, tag_b));
+                ui.label(self.cfg.tag_submenu.as_str());
+                ui.style_mut().override_font_id = prev_font;
+                ui.style_mut().visuals.override_text_color = prev_color;
+            }
+        });
+    }
+
     /// Update the displayed keys, externally-computed visibility, and parent title.
     pub fn set_keys(
         &mut self,
@@ -158,7 +244,7 @@ impl Hud {
 
     /// Get the active screen frame as `(x, y, w, h, global_top)`.
     fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
-        mac_winops::screen::active_frame()
+        screen::active_frame()
     }
 
     /// FontId for key tokens inside key boxes.
@@ -253,7 +339,7 @@ impl Hud {
             let (token_boxes_w, token_boxes_h) = {
                 // self is not mutable here, but plus width cache is an optimization.
                 // Use a temporary mutable borrow of a clone of self to reuse the helper.
-                let mut tmp = Hud {
+                let mut tmp = Self {
                     plus_w_cache: None,
                     ..self.clone_for_measure()
                 };
@@ -398,13 +484,11 @@ impl Hud {
 
         ctx.show_viewport_immediate(self.id, builder, |hud_ctx, _| {
             // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.
-            if let Err(e) =
-                mac_winops::nswindow::apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64)
-            {
+            if let Err(e) = apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64) {
                 tracing::error!("{}", e);
             }
             // Make HUD appear on all desktops/spaces
-            if let Err(e) = mac_winops::nswindow::set_on_all_spaces("Hotki HUD") {
+            if let Err(e) = set_on_all_spaces("Hotki HUD") {
                 tracing::error!("{}", e);
             }
 
@@ -451,70 +535,7 @@ impl Hud {
                     ui.add_space(top_margin);
                     ui.horizontal(|ui| {
                         ui.add_space(left_margin);
-                        ui.vertical(|ui| {
-                            // Ensure vertical gap matches measurement
-                            ui.spacing_mut().item_spacing.y = KEY_ROW_GAP;
-                            for (k, d, is_mode) in &self.keys {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 0.0;
-                                    // Ensure measured width matches by eliminating default gaps
-                                    ui.spacing_mut().item_spacing.x = 0.0;
-                                    self.render_key_tokens(ui, k);
-                                    ui.add_space(KEY_DESC_GAP);
-                                    ui.label(d);
-                                    if *is_mode {
-                                        // Compute spacer to push tag to the right edge of the content area
-                                        let (token_boxes_w, _) = {
-                                            let mut tmp = Hud {
-                                                plus_w_cache: None,
-                                                ..self.clone_for_measure()
-                                            };
-                                            tmp.measure_token_boxes(hud_ctx, k)
-                                        };
-                                        let desc_w = hud_ctx.fonts(|f| {
-                                            f.layout_no_wrap(
-                                                d.clone(),
-                                                self.title_font_id(),
-                                                Color32::WHITE,
-                                            )
-                                            .size()
-                                            .x
-                                        });
-                                        let row_content_w = token_boxes_w + KEY_DESC_GAP + desc_w;
-                                        let tag_w = hud_ctx.fonts(|f| {
-                                            f.layout_no_wrap(
-                                                self.cfg.tag_submenu.clone(),
-                                                self.tag_font_id(),
-                                                Color32::WHITE,
-                                            )
-                                            .size()
-                                            .x
-                                        });
-
-                                        // Calculate spacer to push tag to right edge of window
-                                        // Available width minus left margin minus what we've used so far minus tag
-                                        let available_content_width = avail.x - 2.0 * HUD_PADDING_X;
-                                        let spacer = (available_content_width
-                                            - row_content_w
-                                            - HUD_TAG_GAP
-                                            - tag_w)
-                                            .max(0.0);
-                                        ui.add_space(spacer);
-                                        ui.add_space(HUD_TAG_GAP);
-
-                                        let prev_font = ui.style().override_font_id.clone();
-                                        ui.style_mut().override_font_id = Some(self.tag_font_id());
-                                        let prev_color = ui.style().visuals.override_text_color;
-                                        let (r, g, b) = self.cfg.tag_fg;
-                                        ui.style_mut().visuals.override_text_color =
-                                            Some(Color32::from_rgb(r, g, b));
-                                        ui.label(self.cfg.tag_submenu.as_str());
-                                        ui.style_mut().override_font_id = prev_font;
-                                        ui.style_mut().visuals.override_text_color = prev_color;
-                                    }
-                                });
-                            }
-                        });
+                        self.render_full_hud_rows(ui, hud_ctx, avail);
                     });
                 }
             });

@@ -32,7 +32,7 @@ use crate::{
     config,
     error::{Error, Result},
     test_runner::{TestConfig, TestRunner},
-    ui_interaction::send_activation_chord,
+    ui_interaction::{send_activation_chord, send_key},
 };
 
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -74,9 +74,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .timeout_ms
                 .saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
             let helper = HelperWindow::spawn_frontmost(
-                title.clone(),
+                &title,
                 helper_time,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::HIDE_POLL_MS,
                 "H",
             )?;
@@ -108,8 +108,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
 
             // Drive: send 'h' then 'o' (hide on) — idents are pre-gated in setup
-            crate::ui_interaction::send_key("h");
-            crate::ui_interaction::send_key("o");
+            send_key("h");
+            send_key("o");
 
             // Wait for position change
             let mut moved = false;

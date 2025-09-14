@@ -222,6 +222,52 @@ pub struct WorldStatusLite {
 }
 
 impl WorldStatusLite {
+    fn parse_focused(map: Vec<(Value, Value)>) -> (Option<i64>, Option<i64>) {
+        let mut pid: Option<i64> = None;
+        let mut id: Option<i64> = None;
+        for (fk, fv) in map {
+            if let Value::String(fs) = fk {
+                match fs.as_str() {
+                    Some("pid") => {
+                        if let Value::Integer(i) = fv {
+                            pid = i.as_i64();
+                        }
+                    }
+                    Some("id") => {
+                        if let Value::Integer(i) = fv {
+                            id = i.as_i64();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (pid, id)
+    }
+
+    fn parse_capabilities(map: Vec<(Value, Value)>) -> (i32, i32) {
+        let mut accessibility = -1i32;
+        let mut screen_recording = -1i32;
+        for (ck, cv) in map {
+            if let Value::String(cs) = ck {
+                match cs.as_str() {
+                    Some("accessibility") => {
+                        if let Value::Integer(i) = cv {
+                            accessibility = i.as_i64().unwrap_or(-1) as i32;
+                        }
+                    }
+                    Some("screen_recording") => {
+                        if let Value::Integer(i) = cv {
+                            screen_recording = i.as_i64().unwrap_or(-1) as i32;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (accessibility, screen_recording)
+    }
+
     fn from_value(v: Value) -> Result<Self> {
         match v {
             Value::Map(entries) => {
@@ -244,23 +290,9 @@ impl WorldStatusLite {
                             }
                             Some("focused") => match val {
                                 Value::Map(f) => {
-                                    for (fk, fv) in f {
-                                        if let Value::String(fs) = fk {
-                                            match fs.as_str() {
-                                                Some("pid") => {
-                                                    if let Value::Integer(i) = fv {
-                                                        focused_pid = i.as_i64();
-                                                    }
-                                                }
-                                                Some("id") => {
-                                                    if let Value::Integer(i) = fv {
-                                                        focused_id = i.as_i64();
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
+                                    let (pid, id) = Self::parse_focused(f);
+                                    focused_pid = pid;
+                                    focused_id = id;
                                 }
                                 Value::Nil => {}
                                 _ => {}
@@ -282,25 +314,9 @@ impl WorldStatusLite {
                             }
                             Some("capabilities") => {
                                 if let Value::Map(cap) = val {
-                                    for (ck, cv) in cap {
-                                        if let Value::String(cs) = ck {
-                                            match cs.as_str() {
-                                                Some("accessibility") => {
-                                                    if let Value::Integer(i) = cv {
-                                                        accessibility =
-                                                            i.as_i64().unwrap_or(-1) as i32;
-                                                    }
-                                                }
-                                                Some("screen_recording") => {
-                                                    if let Value::Integer(i) = cv {
-                                                        screen_recording =
-                                                            i.as_i64().unwrap_or(-1) as i32;
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
+                                    let (acc, scr) = Self::parse_capabilities(cap);
+                                    accessibility = acc;
+                                    screen_recording = scr;
                                 }
                             }
                             _ => {}

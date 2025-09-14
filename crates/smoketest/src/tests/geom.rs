@@ -1,6 +1,6 @@
 //! Geometry and polling helpers shared across smoketests.
 
-use std::time::{Duration, Instant};
+use std::{thread, time::{Duration, Instant}};
 
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
@@ -47,7 +47,7 @@ pub fn resolve_vf_for_window(pid: i32, title: &str, timeout_ms: u64, poll_ms: u6
         {
             return Some(vf);
         }
-        std::thread::sleep(Duration::from_millis(poll_ms));
+        thread::sleep(Duration::from_millis(poll_ms));
     }
     None
 }
@@ -56,26 +56,26 @@ pub fn resolve_vf_for_window(pid: i32, title: &str, timeout_ms: u64, poll_ms: u6
 #[allow(clippy::too_many_arguments)]
 pub fn cell_rect(vf: Rect, cols: u32, rows: u32, col: u32, row: u32) -> Rect {
     let (vf_x, vf_y, vf_w, vf_h) = vf;
-    let c = cols.max(1) as f64;
-    let r = rows.max(1) as f64;
-    let tile_w = (vf_w / c).floor().max(1.0);
-    let tile_h = (vf_h / r).floor().max(1.0);
+    let cols_f = cols.max(1) as f64;
+    let rows_f = rows.max(1) as f64;
+    let tile_w = (vf_w / cols_f).floor().max(1.0);
+    let tile_h = (vf_h / rows_f).floor().max(1.0);
     let rem_w = vf_w - tile_w * (cols as f64);
     let rem_h = vf_h - tile_h * (rows as f64);
 
-    let x = vf_x + tile_w * (col as f64);
-    let w = if col == cols.saturating_sub(1) {
+    let x_pos = vf_x + tile_w * (col as f64);
+    let width = if col == cols.saturating_sub(1) {
         tile_w + rem_w
     } else {
         tile_w
     };
-    let y = vf_y + tile_h * (row as f64);
-    let h = if row == rows.saturating_sub(1) {
+    let y_pos = vf_y + tile_h * (row as f64);
+    let height = if row == rows.saturating_sub(1) {
         tile_h + rem_h
     } else {
         tile_h
     };
-    (x, y, w, h)
+    (x_pos, y_pos, width, height)
 }
 
 /// Wait until `(pid,title)` reports an AX frame approximately equal to
@@ -98,7 +98,7 @@ pub fn wait_for_expected_frame(
         {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(poll_ms));
+        thread::sleep(Duration::from_millis(poll_ms));
     }
     false
 }
@@ -118,7 +118,7 @@ pub fn find_window_id(
         {
             return Some(w.id);
         }
-        std::thread::sleep(Duration::from_millis(poll_ms));
+        thread::sleep(Duration::from_millis(poll_ms));
     }
     None
 }

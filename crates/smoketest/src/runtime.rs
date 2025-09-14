@@ -1,6 +1,6 @@
 //! Shared async runtime management for tests.
 
-use std::sync::{Arc, OnceLock};
+use std::{future::Future, sync::{Arc, OnceLock}};
 
 use parking_lot::Mutex;
 use tokio::runtime::Runtime;
@@ -35,7 +35,7 @@ pub fn shared_runtime() -> Result<Arc<Mutex<Runtime>>> {
 /// and blocks on the provided future.
 pub fn block_on<F, T>(fut: F) -> Result<T>
 where
-    F: std::future::Future<Output = T>,
+    F: Future<Output = T>,
 {
     let rt = shared_runtime()?;
     let runtime = rt.lock();

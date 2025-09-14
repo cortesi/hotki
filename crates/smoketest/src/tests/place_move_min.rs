@@ -28,7 +28,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
         .with_grid(4, 4, 0, 0);
     let mut helper = helpers::HelperWindow::spawn_frontmost_with_builder(
         builder,
-        title.clone(),
+        &title,
         std::cmp::min(timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
         config::PLACE_POLL_MS,
     )?;
@@ -97,6 +97,6 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
         }));
     }
 
-    let _ = helper.kill_and_wait();
+    if let Err(_e) = helper.kill_and_wait() {}
     Ok(())
 }

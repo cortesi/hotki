@@ -143,9 +143,12 @@ pub const RELAY_TEST_TITLE: &str = "hotki smoketest: relayrepeat";
 
 // ===== Fullscreen Test Tunables =====
 
+/// Delay after launching the fullscreen helper before measuring (milliseconds).
 pub const FULLSCREEN_HELPER_SHOW_DELAY_MS: u64 = 300;
 // Post-toggle delay removed in favor of actively waiting for frame changes.
+/// Maximum time to wait for fullscreen frame stabilization (milliseconds).
 pub const FULLSCREEN_WAIT_TOTAL_MS: u64 = 1000;
+/// Poll interval while waiting for fullscreen frame changes (milliseconds).
 pub const FULLSCREEN_WAIT_POLL_MS: u64 = 50;
 
 // ===== Hide Test Tunables =====
@@ -171,6 +174,7 @@ pub const FOCUS_POLL_MS: u64 = 100;
 pub const WARN_OVERLAY_INITIAL_DELAY_MS: u64 = 2000;
 /// Default size for the hands-off overlay window.
 pub const WARN_OVERLAY_WIDTH: f64 = 520.0;
+/// Default height of the warning overlay window.
 pub const WARN_OVERLAY_HEIGHT: f64 = 140.0;
 
 // ===== Helper Functions =====

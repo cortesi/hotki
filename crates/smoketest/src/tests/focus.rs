@@ -25,6 +25,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tokio::time::{sleep, timeout};
 
 use super::helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title};
 use crate::{
@@ -34,6 +35,7 @@ use crate::{
     runtime, server_drive,
     test_runner::{TestConfig, TestRunner},
 };
+use std::cmp;
 
 /// Listen for focus events on the given socket
 async fn listen_for_focus(
@@ -58,7 +60,7 @@ async fn listen_for_focus(
                     return;
                 }
                 // Short retry window
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                sleep(Duration::from_millis(50)).await;
                 continue;
             }
         }
@@ -78,7 +80,7 @@ async fn listen_for_focus(
             break;
         }
 
-        let res = tokio::time::timeout(per_wait, conn.recv_event()).await;
+        let res = timeout(per_wait, conn.recv_event()).await;
         match res {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                 if let Some(app) = cursor.app_ref()
@@ -105,6 +107,7 @@ async fn listen_for_focus(
 // relying solely on HUD updates and reduces flakiness from event timing.
 // Use helpers::wait_for_frontmost_title
 
+/// Run focus tracking test; returns observed title/pid and elapsed time.
 pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
     let ron_config = "(keys: [], style: (hud: (mode: hide)))";
     let config = TestConfig::new(timeout_ms)
@@ -146,7 +149,8 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
 
             let sock_for_listener = socket_path.clone();
             let listener = thread::spawn(move || {
-                let _ = runtime::block_on(listen_for_focus(
+                use tokio::time::{sleep, timeout};
+                let _res = runtime::block_on(listen_for_focus(
                     &sock_for_listener,
                     expected_title_clone,
                     found_clone,
@@ -165,9 +169,9 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
             let helper = spawn_helper_visible(
-                expected_title.clone(),
+                &expected_title,
                 helper_time,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::FOCUS_POLL_MS,
                 "F",
             )?;
@@ -205,7 +209,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 // If back-end died after being reachable, bail early with clear error
                 if server_drive::is_ready() && !server_drive::check_alive() {
                     done.store(true, Ordering::SeqCst);
-                    let _ = listener.join();
+                    if let Err(_e) = listener.join() {}
                     return Err(Error::IpcDisconnected {
                         during: "focus wait",
                     });
@@ -215,7 +219,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
 
             // Signal listener to stop
             done.store(true, Ordering::SeqCst);
-            let _ = listener.join();
+            if let Err(_e) = listener.join() {}
 
             // Check if we found the window
             if !found.load(Ordering::SeqCst) {
@@ -224,10 +228,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                         during: "listening for focus",
                     });
                 }
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: expected_title.clone(),
-                });
+                return Err(Error::FocusNotObserved { timeout_ms, expected: expected_title });
             }
 
             let (title, pid) = matched

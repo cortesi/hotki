@@ -44,7 +44,7 @@ impl RelayHandler {
     /// Start relaying a chord to a pid (posts an initial KeyDown).
     pub fn start_relay(&self, id: String, chord: Chord, pid: i32, is_repeat: bool) {
         if let Some(ref relay) = self.relay_key {
-            relay.key_down(pid, chord.clone(), is_repeat);
+            relay.key_down(pid, &chord, is_repeat);
         }
         self.active
             .lock()
@@ -56,7 +56,7 @@ impl RelayHandler {
     pub fn repeat_relay(&self, id: &str, pid: i32) -> bool {
         if let Some(a) = self.active.lock().get(id).cloned() {
             if let Some(ref relay) = self.relay_key {
-                relay.key_down(pid, a.chord, true);
+                relay.key_down(pid, &a.chord, true);
             }
             true
         } else {
@@ -70,7 +70,7 @@ impl RelayHandler {
             if let Some(ref relay) = self.relay_key {
                 // Use the original pid to ensure the key-up matches the key-down target.
                 let target_pid = if a.pid != -1 { a.pid } else { pid };
-                relay.key_up(target_pid, a.chord);
+                relay.key_up(target_pid, &a.chord);
             }
             trace!(pid = a.pid, id = %id, "relay_stop");
             true
@@ -84,7 +84,7 @@ impl RelayHandler {
         let mut map = self.active.lock();
         if let Some(ref relay) = self.relay_key {
             for (id, a) in map.drain() {
-                relay.key_up(a.pid, a.chord);
+                relay.key_up(a.pid, &a.chord);
                 trace!(pid = a.pid, id = %id, "relay_stop_all_up");
             }
         } else {

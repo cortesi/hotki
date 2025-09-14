@@ -1,3 +1,5 @@
+//! Parse and load configuration from RON sources.
+
 use std::{fs, path::Path};
 
 use crate::{Config, ConfigInput, Error, Keys, raw, themes};

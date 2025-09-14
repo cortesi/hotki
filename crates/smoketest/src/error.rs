@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use std::{io, result::Result as StdResult};
 use thiserror::Error;
 
 /// Errors that can occur during smoketest execution.
@@ -19,26 +20,37 @@ pub enum Error {
 
     /// HUD did not become visible within the timeout period.
     #[error("HUD did not appear within {timeout_ms} ms (no HudUpdate depth>0)")]
-    HudNotVisible { timeout_ms: u64 },
+    HudNotVisible {
+        /// Timeout in milliseconds
+        timeout_ms: u64,
+    },
 
     /// Expected focus was not observed within the timeout period.
     #[error("did not observe matching focus title within {timeout_ms} ms (expected: '{expected}')")]
-    FocusNotObserved { timeout_ms: u64, expected: String },
+    FocusNotObserved {
+        /// Timeout in milliseconds
+        timeout_ms: u64,
+        /// Expected title regex or substring
+        expected: String,
+    },
 
     /// MRPC event stream closed unexpectedly while a smoketest was running.
     #[error("IPC disconnected unexpectedly while {during}")]
-    IpcDisconnected { during: &'static str },
+    IpcDisconnected {
+        /// Context description of what was running when IPC disconnected
+        during: &'static str,
+    },
 
     /// I/O operation failed.
     #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
 
     /// Invalid test state.
     #[error("invalid test state: {0}")]
     InvalidState(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = StdResult<T, Error>;
 
 /// Print helpful hints for common errors.
 pub fn print_hints(err: &Error) {

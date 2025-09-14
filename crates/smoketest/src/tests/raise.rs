@@ -142,7 +142,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_label_text("R1")
                     .with_size(800.0, 600.0)
                     .with_position(60.0, 60.0),
-                title1.clone(),
+                &title1,
                 std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
                 config::WINDOW_REGISTRATION_DELAY_MS,
             )?;
@@ -156,7 +156,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_label_text("R2")
                     .with_size(800.0, 600.0)
                     .with_position(1000.0, 60.0),
-                title2.clone(),
+                &title2,
                 std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
                 config::WINDOW_REGISTRATION_DELAY_MS,
             )?;

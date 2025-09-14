@@ -1,3 +1,4 @@
+//! App-level state and event handling for the Hotki UI.
 use config::Config;
 use eframe::{App, Frame};
 use egui::Context;
@@ -5,39 +6,68 @@ use hotki_protocol::NotifyKind;
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
-use crate::{details::Details, hud::Hud, notification::NotificationCenter};
+use crate::{
+    details::Details, hud::Hud, notification::NotificationCenter, permissions::PermissionsHelp,
+};
 
+/// Events sent from the background runtime to the UI thread.
 pub enum AppEvent {
+    /// Request a graceful shutdown of all UI and background tasks.
     Shutdown,
+    /// Show the Details window.
     ShowDetails,
+    /// Hide the Details window.
     HideDetails,
+    /// Show the permissions helper window.
     ShowPermissionsHelp,
+    /// Update visible key hints and associated context for the HUD.
     KeyUpdate {
+        /// Keys to render: (tokens, description, is_mode).
         visible_keys: Vec<(String, String, bool)>,
+        /// Depth of the current mode stack.
         depth: usize,
+        /// Current UI location and styling context.
         cursor: config::Cursor,
+        /// Optional parent application title for mini-HUD.
         parent_title: Option<String>,
     },
+    /// Show an in-app notification.
     Notify {
+        /// Notification kind (info, warn, error, success).
         kind: NotifyKind,
+        /// Title of the notification.
         title: String,
+        /// Body text of the notification.
         text: String,
     },
+    /// Clear all on-screen notifications.
     ClearNotifications,
+    /// Toggle the Details window.
     ToggleDetails,
+    /// Replace UI configuration live.
     ReloadUI(Box<Config>),
     /// Update the current UI Location (used for theme/user-style flags now stored on Location)
+    /// Update the current UI location (cursor) for theme/style decisions.
     UpdateCursor(config::Cursor),
 }
 
+/// Top-level UI application state and channels.
 pub struct HotkiApp {
+    /// Receiver for events from the runtime thread.
     pub(crate) rx: tokio_mpsc::UnboundedReceiver<AppEvent>,
+    /// Tray icon handle, kept to maintain tray lifetime.
     pub(crate) _tray: Option<TrayIcon>,
+    /// Heads-up display for key hints.
     pub(crate) hud: Hud,
+    /// In-app notifications manager.
     pub(crate) notifications: NotificationCenter,
+    /// Details window state.
     pub(crate) details: Details,
-    pub(crate) permissions: crate::permissions::PermissionsHelp,
+    /// Permissions helper window state.
+    pub(crate) permissions: PermissionsHelp,
+    /// Active configuration snapshot.
     pub(crate) config: config::Config,
+    /// Last known cursor/location info.
     pub(crate) last_cursor: config::Cursor,
 }
 
@@ -136,12 +166,18 @@ impl App for HotkiApp {
     }
 }
 
+/// How to obtain the next HUD key state this frame.
 enum KeysState {
+    /// Use a freshly received update.
     FromUpdate {
+        /// New keys to display: (tokens, description, is_mode).
         keys: Vec<(String, String, bool)>,
+        /// Updated mode stack depth.
         depth: usize,
+        /// Optional parent title for mini-HUD.
         parent_title: Option<String>,
     },
+    /// Keep the current keys as-is.
     PreserveCurrent,
 }
 

@@ -78,108 +78,20 @@ pub fn run_warn_overlay(
                         use winit::dpi::LogicalPosition;
                         win.set_outer_position(LogicalPosition::new(x.max(0.0), y.max(0.0)));
 
-                        // Add a simple label so the user sees instructions
-                        // Lookup the NSWindow by title and attach an NSTextField
+                        // Attach overlay labels to the window's content view
                         let windows = app.windows();
                         for w in windows.iter() {
                             let title = w.title();
                             let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
                                 title.to_str(pool) == "hotki smoketest: hands-off"
                             });
-                            if is_match {
-                                if let Some(view) = w.contentView() {
-                                    use objc2_app_kit::{
-                                        NSColor, NSFont, NSTextAlignment, NSTextField,
-                                    };
-                                    let margin_x: f64 = 12.0;
-                                    let lw =
-                                        (config::WARN_OVERLAY_WIDTH - 2.0 * margin_x).max(10.0);
-
-                                    // Title label (test name) - centered, MOST VISUAL WEIGHT
-                                    let title_text = NSString::from_str("...");
-                                    let title =
-                                        unsafe { NSTextField::labelWithString(&title_text, mtm) };
-                                    let title_font = unsafe { NSFont::boldSystemFontOfSize(24.0) };
-                                    unsafe { title.setFont(Some(&title_font)) };
-                                    unsafe { title.setAlignment(NSTextAlignment::Center) };
-                                    let title_h: f64 = 32.0;
-                                    let title_y = (config::WARN_OVERLAY_HEIGHT - title_h) / 2.0;
-                                    let title_frame = NSRect::new(
-                                        NSPoint::new(margin_x, title_y),
-                                        NSSize::new(lw, title_h),
-                                    );
-                                    unsafe { title.setFrame(title_frame) };
-                                    unsafe { view.addSubview(&title) };
-
-                                    // Countdown/spinner label (above title)
-                                    let countdown_text = NSString::from_str("2");
-                                    let countdown = unsafe {
-                                        NSTextField::labelWithString(&countdown_text, mtm)
-                                    };
-                                    let countdown_font =
-                                        unsafe { NSFont::boldSystemFontOfSize(32.0) };
-                                    unsafe { countdown.setFont(Some(&countdown_font)) };
-                                    unsafe { countdown.setAlignment(NSTextAlignment::Center) };
-                                    // Bright blue countdown color
-                                    let countdown_color = unsafe {
-                                        NSColor::colorWithCalibratedRed_green_blue_alpha(
-                                            0.2, 0.6, 1.0, 1.0,
-                                        )
-                                    };
-                                    unsafe { countdown.setTextColor(Some(&countdown_color)) };
-                                    let countdown_h: f64 = 40.0;
-                                    let countdown_y = title_y + title_h + 4.0;
-                                    let countdown_frame = NSRect::new(
-                                        NSPoint::new(margin_x, countdown_y),
-                                        NSSize::new(lw, countdown_h),
-                                    );
-                                    unsafe { countdown.setFrame(countdown_frame) };
-                                    unsafe { view.addSubview(&countdown) };
-
-                                    // Info label (just below title)
-                                    let info_text = NSString::from_str("");
-                                    let info =
-                                        unsafe { NSTextField::labelWithString(&info_text, mtm) };
-                                    let info_font = unsafe { NSFont::systemFontOfSize(13.0) };
-                                    unsafe { info.setFont(Some(&info_font)) };
-                                    unsafe { info.setAlignment(NSTextAlignment::Center) };
-                                    let info_color = unsafe { NSColor::secondaryLabelColor() };
-                                    unsafe { info.setTextColor(Some(&info_color)) };
-                                    let info_h: f64 = 18.0;
-                                    let info_y = (title_y - info_h - 4.0).max(24.0);
-                                    let info_frame = NSRect::new(
-                                        NSPoint::new(margin_x, info_y),
-                                        NSSize::new(lw, info_h),
-                                    );
-                                    unsafe { info.setFrame(info_frame) };
-                                    unsafe { view.addSubview(&info) };
-
-                                    // Warning text (at bottom, subtle)
-                                    let warn_text =
-                                        NSString::from_str("Hands off keyboard during tests");
-                                    let warn =
-                                        unsafe { NSTextField::labelWithString(&warn_text, mtm) };
-                                    let warn_font = unsafe { NSFont::systemFontOfSize(12.0) };
-                                    unsafe { warn.setFont(Some(&warn_font)) };
-                                    unsafe { warn.setAlignment(NSTextAlignment::Center) };
-                                    let warn_color = unsafe { NSColor::secondaryLabelColor() };
-                                    unsafe { warn.setTextColor(Some(&warn_color)) };
-                                    let warn_h: f64 = 16.0;
-                                    let warn_y = 8.0;
-                                    let warn_frame = NSRect::new(
-                                        NSPoint::new(margin_x, warn_y),
-                                        NSSize::new(lw, warn_h),
-                                    );
-                                    unsafe { warn.setFrame(warn_frame) };
-                                    unsafe { view.addSubview(&warn) };
-
-                                    self.warn_label = Some(warn);
-                                    self.title_label = Some(title);
-                                    self.info_label = Some(info);
-                                    self.countdown_label = Some(countdown);
-                                }
-                                break;
+                            if !is_match {
+                                continue;
                             }
+                            if let Some(view) = w.contentView() {
+                                self.attach_labels(mtm, &view, vf);
+                            }
+                            break;
                         }
                     }
                 }
@@ -294,6 +206,84 @@ pub fn run_warn_overlay(
                 .next_deadline
                 .unwrap_or_else(|| now + std::time::Duration::from_millis(100));
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
+        }
+    }
+
+    impl OverlayApp {
+        fn attach_labels(
+            &mut self,
+            mtm: objc2_foundation::MainThreadMarker,
+            view: &objc2_app_kit::NSView,
+            _vf: objc2_foundation::NSRect,
+        ) {
+            use objc2_app_kit::{NSColor, NSFont, NSTextAlignment, NSTextField};
+            let margin_x: f64 = 12.0;
+            let lw = (config::WARN_OVERLAY_WIDTH - 2.0 * margin_x).max(10.0);
+
+            // Title label
+            let title_text = NSString::from_str("...");
+            let title = unsafe { NSTextField::labelWithString(&title_text, mtm) };
+            let title_font = unsafe { NSFont::boldSystemFontOfSize(24.0) };
+            unsafe { title.setFont(Some(&title_font)) };
+            unsafe { title.setAlignment(NSTextAlignment::Center) };
+            let title_h: f64 = 32.0;
+            let title_y = (config::WARN_OVERLAY_HEIGHT - title_h) / 2.0;
+            let title_frame =
+                NSRect::new(NSPoint::new(margin_x, title_y), NSSize::new(lw, title_h));
+            unsafe { title.setFrame(title_frame) };
+            unsafe { view.addSubview(&title) };
+
+            // Countdown/spinner label
+            let countdown_text = NSString::from_str("2");
+            let countdown = unsafe { NSTextField::labelWithString(&countdown_text, mtm) };
+            let countdown_font = unsafe { NSFont::boldSystemFontOfSize(32.0) };
+            unsafe { countdown.setFont(Some(&countdown_font)) };
+            unsafe { countdown.setAlignment(NSTextAlignment::Center) };
+            let countdown_color =
+                unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.2, 0.6, 1.0, 1.0) };
+            unsafe { countdown.setTextColor(Some(&countdown_color)) };
+            let countdown_h: f64 = 40.0;
+            let countdown_y = title_y + title_h + 4.0;
+            let countdown_frame = NSRect::new(
+                NSPoint::new(margin_x, countdown_y),
+                NSSize::new(lw, countdown_h),
+            );
+            unsafe { countdown.setFrame(countdown_frame) };
+            unsafe { view.addSubview(&countdown) };
+
+            // Info label
+            let info_text = NSString::from_str("");
+            let info = unsafe { NSTextField::labelWithString(&info_text, mtm) };
+            let info_font = unsafe { NSFont::systemFontOfSize(13.0) };
+            unsafe { info.setFont(Some(&info_font)) };
+            unsafe { info.setAlignment(NSTextAlignment::Center) };
+            let info_color = unsafe { NSColor::secondaryLabelColor() };
+            unsafe { info.setTextColor(Some(&info_color)) };
+            let info_h: f64 = 18.0;
+            let info_y = (title_y - info_h - 4.0).max(24.0);
+            let info_frame = NSRect::new(NSPoint::new(margin_x, info_y), NSSize::new(lw, info_h));
+            unsafe { info.setFrame(info_frame) };
+            unsafe { view.addSubview(&info) };
+
+            // Warning text
+            let warn_text = NSString::from_str("Hands off keyboard during tests");
+            let warn = unsafe { NSTextField::labelWithString(&warn_text, mtm) };
+            let warn_font = unsafe { NSFont::systemFontOfSize(12.0) };
+            unsafe { warn.setFont(Some(&warn_font)) };
+            unsafe { warn.setAlignment(NSTextAlignment::Center) };
+            let warn_color = unsafe { NSColor::secondaryLabelColor() };
+            unsafe { warn.setTextColor(Some(&warn_color)) };
+            let warn_h: f64 = 16.0;
+            let warn_y = 8.0;
+            let warn_frame = NSRect::new(NSPoint::new(margin_x, warn_y), NSSize::new(lw, warn_h));
+            unsafe { warn.setFrame(warn_frame) };
+            unsafe { view.addSubview(&warn) };
+
+            // Stash refs
+            self.warn_label = Some(warn);
+            self.title_label = Some(title);
+            self.info_label = Some(info);
+            self.countdown_label = Some(countdown);
         }
     }
 

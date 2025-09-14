@@ -1,14 +1,22 @@
 //! Test orchestration and execution logic.
 
 use std::{
+    cmp,
+    env,
     io::Read,
     process::{Command, Stdio},
+    process as std_process,
+    thread,
     time::{Duration, Instant},
 };
 
 use serde::Serialize;
 
-use crate::{cli::SeqTest, config};
+use crate::{
+    cli::SeqTest,
+    config,
+    process::{self, ManagedChild},
+};
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {
@@ -24,7 +32,7 @@ fn run_subtest_with_watchdog(
     logs: bool,
     extra_args: &[String],
 ) -> bool {
-    let exe = match std::env::current_exe() {
+    let exe = match env::current_exe() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("orchestrator: failed to resolve current_exe: {}", e);
@@ -67,15 +75,19 @@ fn run_subtest_with_watchdog(
             Ok(Some(status)) => return status.success(),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        eprintln!("orchestrator: failed to kill timed-out child: {}", e);
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("orchestrator: failed to reap timed-out child: {}", e);
+                    }
                     eprintln!(
                         "orchestrator: watchdog timeout ({} ms + overhead) for subtest '{}'",
                         timeout_ms, subcmd
                     );
                     return false;
                 }
-                std::thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
             }
             Err(e) => {
                 eprintln!("orchestrator: error waiting for '{}': {}", subcmd, e);
@@ -105,7 +117,7 @@ fn run_subtest_capture_with_extra(
     extra_watchdog_ms: u64,
     extra_args: &[String],
 ) -> (bool, String) {
-    let exe = match std::env::current_exe() {
+    let exe = match env::current_exe() {
         Ok(p) => p,
         Err(e) => {
             return (
@@ -157,11 +169,15 @@ fn run_subtest_capture_with_extra(
             Ok(Some(status)) => break status.success(),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        eprintln!("orchestrator: failed to kill timed-out child: {}", e);
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("orchestrator: failed to reap timed-out child: {}", e);
+                    }
                     break false;
                 }
-                std::thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
             }
             Err(_) => break false,
         }
@@ -170,11 +186,15 @@ fn run_subtest_capture_with_extra(
     // Gather outputs
     let mut stderr = String::new();
     let mut stdout = String::new();
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_string(&mut stderr);
+    if let Some(mut s) = child.stderr.take()
+        && let Err(e) = s.read_to_string(&mut stderr)
+    {
+        eprintln!("orchestrator: failed reading stderr: {}", e);
     }
-    if let Some(mut s) = child.stdout.take() {
-        let _ = s.read_to_string(&mut stdout);
+    if let Some(mut s) = child.stdout.take()
+        && let Err(e) = s.read_to_string(&mut stdout)
+    {
+        eprintln!("orchestrator: failed reading stdout: {}", e);
     }
     let details = if stderr.trim().is_empty() {
         stdout
@@ -189,15 +209,78 @@ fn run_subtest_capture_with_extra(
 /// Run all smoketests sequentially in isolated subprocesses.
 #[derive(Serialize, Copy, Clone)]
 struct PlaceFlexSettings {
+    /// Grid columns
     cols: u32,
+    /// Grid rows
     rows: u32,
+    /// Target column (0-based)
     col: u32,
+    /// Target row (0-based)
     row: u32,
+    /// Force size->pos fallback even if pos->size succeeds
     force_size_pos: bool,
+    /// Disable size->pos fallback; only attempt pos->size
     pos_first_only: bool,
+    /// Force shrink->move->grow fallback even if other attempts succeed
     #[serde(default)]
     force_shrink_move_grow: bool,
 }
+
+// Variants for the place-flex sweep, with a human-readable info string.
+const PLACE_FLEX_VARIANTS: &[(PlaceFlexSettings, &str)] = &[
+    // 2x2 BR cell, force size->pos
+    (
+        PlaceFlexSettings {
+            cols: 2,
+            rows: 2,
+            col: 1,
+            row: 1,
+            force_size_pos: true,
+            pos_first_only: false,
+            force_shrink_move_grow: false,
+        },
+        "2x2 BR, force size->pos",
+    ),
+    // Default grid TL cell, pos-first-only
+    (
+        PlaceFlexSettings {
+            cols: config::PLACE_COLS,
+            rows: config::PLACE_ROWS,
+            col: 0,
+            row: 0,
+            force_size_pos: false,
+            pos_first_only: true,
+            force_shrink_move_grow: false,
+        },
+        "TL, pos-first-only",
+    ),
+    // Default grid BL cell, normal path
+    (
+        PlaceFlexSettings {
+            cols: config::PLACE_COLS,
+            rows: config::PLACE_ROWS,
+            col: 0,
+            row: 1,
+            force_size_pos: false,
+            pos_first_only: false,
+            force_shrink_move_grow: false,
+        },
+        "BL, normal",
+    ),
+    // 2x2 BR cell, force shrink->move->grow fallback
+    (
+        PlaceFlexSettings {
+            cols: 2,
+            rows: 2,
+            col: 1,
+            row: 1,
+            force_size_pos: false,
+            pos_first_only: false,
+            force_shrink_move_grow: true,
+        },
+        "2x2 BR, force shrink->move->grow",
+    ),
+];
 
 /// Convert a `PlaceFlexSettings` value to CLI args for the `place-flex` subcommand.
 fn place_flex_args(cfg: &PlaceFlexSettings) -> Vec<String> {
@@ -224,26 +307,26 @@ fn place_flex_args(cfg: &PlaceFlexSettings) -> Vec<String> {
     args
 }
 
+/// Run all smoketests sequentially with basic reporting; exits with non-zero
+/// status on failure.
 pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
     let mut all_ok = true;
 
     // Optionally show the hands-off overlay for the entire run
-    let mut overlay: Option<crate::process::ManagedChild> = None;
-    if warn_overlay && let Ok(child) = crate::process::spawn_warn_overlay() {
+    let mut overlay: Option<ManagedChild> = None;
+    if warn_overlay && let Ok(child) = process::spawn_warn_overlay() {
         overlay = Some(child);
-        std::thread::sleep(std::time::Duration::from_millis(
-            crate::config::WARN_OVERLAY_INITIAL_DELAY_MS,
-        ));
+        thread::sleep(Duration::from_millis(config::WARN_OVERLAY_INITIAL_DELAY_MS));
         // Initialize overlay title
-        crate::process::write_overlay_status("Preparing tests...");
+        process::write_overlay_status("Preparing tests...");
     }
 
     // Helper to run + print one-line summary
     let run = |name: &str, dur: u64| -> bool {
         // Update overlay title to current test
-        crate::process::write_overlay_status(name);
+        process::write_overlay_status(name);
         // Clear info by default unless a variant sets it explicitly
-        crate::process::write_overlay_info("");
+        process::write_overlay_info("");
         let (ok, details) = run_subtest_capture(name, dur, timeout_ms, &[]);
         if ok {
             println!("{}... OK", name);
@@ -265,7 +348,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Repeat tests
     all_ok &= run("repeat-relay", duration_ms);
     all_ok &= run("repeat-shell", duration_ms);
-    let vol_duration = std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
+    let vol_duration = cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
     all_ok &= run("repeat-volume", vol_duration);
 
     // Focus and window ops
@@ -274,8 +357,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Focus-nav can be a bit slower due to AX+IPC; add small extra watchdog headroom.
     {
         let name = "focus-nav";
-        crate::process::write_overlay_status(name);
-        crate::process::write_overlay_info("");
+        process::write_overlay_status(name);
+        process::write_overlay_info("");
         let (ok, details) = run_subtest_capture_with_extra(
             name,
             duration_ms,
@@ -308,8 +391,8 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
     {
         let name = "place-minimized";
-        crate::process::write_overlay_status(name);
-        crate::process::write_overlay_info("");
+        process::write_overlay_status(name);
+        process::write_overlay_info("");
         let (ok, details) = run_subtest_capture_with_extra(
             name,
             duration_ms,
@@ -333,64 +416,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Stage 6 advisory gating (focused): available as a separate subcommand `place-skip`.
     // Stage‑3/8 variants via place-flex
     // Encode variants once and iterate to reduce repetition.
-    const PLACE_FLEX_VARIANTS: &[(PlaceFlexSettings, &str)] = &[
-        // 2x2 BR cell, force size->pos
-        (
-            PlaceFlexSettings {
-                cols: 2,
-                rows: 2,
-                col: 1,
-                row: 1,
-                force_size_pos: true,
-                pos_first_only: false,
-                force_shrink_move_grow: false,
-            },
-            "2x2 BR, force size->pos",
-        ),
-        // Default grid TL cell, pos-first-only
-        (
-            PlaceFlexSettings {
-                cols: config::PLACE_COLS,
-                rows: config::PLACE_ROWS,
-                col: 0,
-                row: 0,
-                force_size_pos: false,
-                pos_first_only: true,
-                force_shrink_move_grow: false,
-            },
-            "TL, pos-first-only",
-        ),
-        // Default grid BL cell, normal path
-        (
-            PlaceFlexSettings {
-                cols: config::PLACE_COLS,
-                rows: config::PLACE_ROWS,
-                col: 0,
-                row: 1,
-                force_size_pos: false,
-                pos_first_only: false,
-                force_shrink_move_grow: false,
-            },
-            "BL, normal",
-        ),
-        // 2x2 BR cell, force shrink->move->grow fallback
-        (
-            PlaceFlexSettings {
-                cols: 2,
-                rows: 2,
-                col: 1,
-                row: 1,
-                force_size_pos: false,
-                pos_first_only: false,
-                force_shrink_move_grow: true,
-            },
-            "2x2 BR, force shrink->move->grow",
-        ),
-    ];
-
     for (cfg, info) in PLACE_FLEX_VARIANTS.iter().copied() {
-        crate::process::write_overlay_status("place-flex");
-        crate::process::write_overlay_info(info);
+        process::write_overlay_status("place-flex");
+        process::write_overlay_info(info);
         let args = place_flex_args(&cfg);
         let json = serde_json::to_string(&cfg).unwrap_or_default();
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
@@ -410,14 +438,15 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     run("ui", duration_ms);
     run("minui", duration_ms);
 
-    if let Some(mut c) = overlay {
-        let _ = c.kill_and_wait();
+    if let Some(mut c) = overlay && let Err(e) = c.kill_and_wait() {
+        eprintln!("orchestrator: failed to stop overlay: {}", e);
     }
     if !all_ok {
-        std::process::exit(1);
+        std_process::exit(1);
     }
 }
 
+/// Map a `SeqTest` variant to the corresponding CLI subcommand name.
 fn to_subcmd(t: SeqTest) -> &'static str {
     match t {
         SeqTest::RepeatRelay => "repeat-relay",
@@ -439,18 +468,18 @@ fn to_subcmd(t: SeqTest) -> &'static str {
 pub fn run_sequence_tests(tests: &[SeqTest], duration_ms: u64, timeout_ms: u64, logs: bool) {
     if tests.is_empty() {
         eprintln!("no tests provided (use: smoketest seq <tests...>)");
-        std::process::exit(2);
+        std_process::exit(2);
     }
     for t in tests.iter().copied() {
         let name = to_subcmd(t);
         heading(&format!("Test: {}", name));
         let dur = if matches!(t, SeqTest::RepeatVolume) {
-            std::cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS)
+            cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS)
         } else {
             duration_ms
         };
         if !run_subtest_with_watchdog(name, dur, timeout_ms, logs, &[]) {
-            std::process::exit(1);
+            std_process::exit(1);
         }
     }
     println!("Selected smoketests passed");

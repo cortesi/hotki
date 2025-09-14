@@ -108,7 +108,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 }));
             }
 
-            let _ = helper.kill_and_wait();
+            if let Err(_e) = helper.kill_and_wait() {}
             Ok(())
         })
         .with_teardown(|ctx, _| {

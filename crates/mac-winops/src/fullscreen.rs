@@ -50,8 +50,8 @@ pub fn fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
                 modifiers: mods,
             };
             let rk = RelayKey::new();
-            rk.key_down(pid, chord.clone(), false);
-            rk.key_up(pid, chord);
+            rk.key_down(pid, &chord, false);
+            rk.key_up(pid, &chord);
             tracing::info!("WinOps: fullscreen_native fallback keystroke sent");
             Ok(())
         }

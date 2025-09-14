@@ -7,41 +7,73 @@ use egui::{
 };
 use egui_extras::{Column, TableBuilder};
 use hotki_protocol::NotifyKind;
+use mac_winops::{nswindow, screen};
+use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{notification::BacklogEntry, runtime::ControlMsg};
+use crate::{
+    logs::{self, Side},
+    notification::BacklogEntry,
+    runtime::ControlMsg,
+};
 
+/// Horizontal/vertical padding around details content.
 const DETAILS_PAD: f32 = 12.0;
+/// Table header height in logical pixels.
 const HEADER_H: f32 = 22.0;
+/// Minimum row height for notifications table.
 const ROW_HEIGHT_MIN: f32 = 20.0;
+/// Initial width for the Kind column.
 const COL_KIND_INIT: f32 = 90.0;
+/// Initial width for the Title column.
 const COL_TITLE_INIT: f32 = 180.0;
+/// Minimum width for the Kind column.
 const COL_KIND_MIN: f32 = 70.0;
+/// Minimum width for the Title column.
 const COL_TITLE_MIN: f32 = 120.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Active tab within the Details window.
 enum Tab {
+    /// Notifications list view.
     Notifications,
+    /// Configuration file view.
     Config,
+    /// About screen.
     About,
+    /// In-app log viewer.
     Logs,
 }
 
+/// State and rendering for the Details window.
 pub struct Details {
+    /// Whether the window is currently visible.
     visible: bool,
+    /// Stable viewport identifier for the window.
     id: ViewportId,
+    /// Request an initial default size on next show.
     want_initial_size: bool,
+    /// Apply previously saved geometry once after opening.
     restore_pending: bool,
+    /// Request focus on next frame.
     want_focus: bool,
+    /// Last known geometry for this session.
     last_saved: Option<WindowGeom>,
+    /// Currently active tab.
     active_tab: Tab,
+    /// Current notification theme for colors.
     theme: NotifyTheme,
+    /// Optional path to the hotki config file.
     config_path: Option<PathBuf>,
+    /// Current contents of the config file (for display).
     config_contents: String,
+    /// Last config read error (if any) for inline display.
     config_error: Option<String>,
-    tx_ctrl: Option<tokio::sync::mpsc::UnboundedSender<ControlMsg>>,
+    /// Control channel to background runtime.
+    tx_ctrl: Option<UnboundedSender<ControlMsg>>,
 }
 
 impl Details {
+    /// Construct a new Details window with the given theme.
     pub fn new(theme: NotifyTheme) -> Self {
         Self {
             visible: false,
@@ -59,6 +91,7 @@ impl Details {
         }
     }
 
+    /// Make the window visible and request initial layout and focus.
     pub fn show(&mut self) {
         self.visible = true;
         self.want_initial_size = true;
@@ -66,6 +99,7 @@ impl Details {
         self.want_focus = true;
     }
 
+    /// Toggle visibility of the window.
     pub fn toggle(&mut self) {
         if self.visible {
             self.visible = false;
@@ -74,19 +108,23 @@ impl Details {
         }
     }
 
+    /// Hide the window.
     pub fn hide(&mut self) {
         self.visible = false;
     }
 
+    /// Update the active theme used for colors.
     pub fn update_theme(&mut self, theme: NotifyTheme) {
         self.theme = theme;
     }
 
+    /// Set the config file path shown in the Config tab and load.
     pub fn set_config_path(&mut self, path: Option<PathBuf>) {
         self.config_path = path;
         self.reload_config_contents();
     }
 
+    /// Reload the config file contents into memory for display.
     pub fn reload_config_contents(&mut self) {
         // Load the config file contents if we have a path
         if let Some(ref p) = self.config_path {
@@ -100,12 +138,14 @@ impl Details {
                     self.config_contents.clear();
                     let msg = format!("Failed to read {}: {}", p.display(), e);
                     // Notify the user via notification center if available
-                    if let Some(ref tx) = self.tx_ctrl {
-                        let _ = tx.send(ControlMsg::Notice {
+                    if let Some(ref tx) = self.tx_ctrl
+                        && let Err(e2) = tx.send(ControlMsg::Notice {
                             kind: NotifyKind::Error,
                             title: "Config".to_string(),
                             text: msg.clone(),
-                        });
+                        })
+                    {
+                        tracing::warn!("failed to enqueue notice: {}", e2);
                     }
                     self.config_error = Some(msg);
                     // Also log for diagnostics
@@ -115,10 +155,12 @@ impl Details {
         }
     }
 
-    pub fn set_control_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ControlMsg>) {
+    /// Set the control channel sender to communicate with the runtime.
+    pub fn set_control_sender(&mut self, tx: UnboundedSender<ControlMsg>) {
         self.tx_ctrl = Some(tx);
     }
 
+    /// Render the window and its active tab.
     pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry]) {
         if !self.visible {
             // Ensure window is hidden if not visible
@@ -190,105 +232,19 @@ impl Details {
                     // Tab content
                     match self.active_tab {
                         Tab::Notifications => {
-                            // Unified table with resizable columns
-                            if backlog.is_empty() {
-                                ui.weak("No notifications yet");
-                            } else {
-                                TableBuilder::new(ui)
-                                    .column(
-                                        Column::initial(COL_KIND_INIT)
-                                            .at_least(COL_KIND_MIN)
-                                            .resizable(true),
-                                    )
-                                    .column(
-                                        Column::initial(COL_TITLE_INIT)
-                                            .at_least(COL_TITLE_MIN)
-                                            .resizable(true),
-                                    )
-                                    .column(Column::remainder())
-                                    .header(HEADER_H, |mut header| {
-                                        header.col(|ui| {
-                                            ui.label(RichText::new("Kind").strong());
-                                        });
-                                        header.col(|ui| {
-                                            ui.label(RichText::new("Title").strong());
-                                        });
-                                        header.col(|ui| {
-                                            ui.label(RichText::new("Text").strong());
-                                        });
-                                    })
-                                    .body(|mut body| {
-                                        for ent in backlog {
-                                            let fg = match ent.kind {
-                                                NotifyKind::Info => {
-                                                    let s = &self.theme.info;
-                                                    Color32::from_rgb(
-                                                        s.title_fg.0,
-                                                        s.title_fg.1,
-                                                        s.title_fg.2,
-                                                    )
-                                                }
-                                                NotifyKind::Warn => {
-                                                    let s = &self.theme.warn;
-                                                    Color32::from_rgb(
-                                                        s.title_fg.0,
-                                                        s.title_fg.1,
-                                                        s.title_fg.2,
-                                                    )
-                                                }
-                                                NotifyKind::Error => {
-                                                    let s = &self.theme.error;
-                                                    Color32::from_rgb(
-                                                        s.title_fg.0,
-                                                        s.title_fg.1,
-                                                        s.title_fg.2,
-                                                    )
-                                                }
-                                                NotifyKind::Success => {
-                                                    let s = &self.theme.success;
-                                                    Color32::from_rgb(
-                                                        s.title_fg.0,
-                                                        s.title_fg.1,
-                                                        s.title_fg.2,
-                                                    )
-                                                }
-                                            };
-
-                                            body.row(ROW_HEIGHT_MIN, |mut row| {
-                                                row.col(|ui| {
-                                                    let label = match ent.kind {
-                                                        NotifyKind::Info => "info",
-                                                        NotifyKind::Warn => "warn",
-                                                        NotifyKind::Error => "error",
-                                                        NotifyKind::Success => "success",
-                                                    };
-                                                    ui.colored_label(fg, label);
-                                                });
-                                                row.col(|ui| {
-                                                    ui.style_mut().wrap_mode =
-                                                        Some(egui::TextWrapMode::Wrap);
-                                                    ui.colored_label(fg, &ent.title);
-                                                });
-                                                row.col(|ui| {
-                                                    ui.style_mut().wrap_mode =
-                                                        Some(egui::TextWrapMode::Wrap);
-                                                    ui.colored_label(fg, &ent.text);
-                                                });
-                                            });
-                                        }
-                                    });
-                            }
+                            self.render_notifications(ui, backlog);
                         }
                         Tab::Config => {
                             ui.vertical(|ui| {
                                 // Show config file path
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new("Config File:").strong());
-                                    if let Some(ref path) = self.config_path {
-                                        ui.label(path.display().to_string());
-                                    } else {
-                                        ui.label("No config file loaded");
-                                    }
+                                    let path_text = self
+                                        .config_path
+                                        .as_ref()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_else(|| "No config file loaded".to_string());
+                                    ui.label(path_text);
                                 });
 
                                 ui.add_space(10.0);
@@ -300,10 +256,7 @@ impl Details {
 
                                 // Reload button
                                 if ui.button("Reload Config").clicked() {
-                                    if let Some(ref tx) = self.tx_ctrl {
-                                        let _ = tx.send(ControlMsg::Reload);
-                                    }
-                                    // Reload the file contents too
+                                    self.send_reload();
                                     self.reload_config_contents();
                                 }
 
@@ -359,34 +312,7 @@ impl Details {
                             });
                         }
                         Tab::Logs => {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    if ui.button("Clear").clicked() {
-                                        crate::logs::clear();
-                                    }
-                                });
-                                ui.add_space(8.0);
-                                ui.separator();
-                                ui.add_space(8.0);
-                                ScrollArea::vertical()
-                                    .auto_shrink([false; 2])
-                                    .stick_to_bottom(true)
-                                    .show(ui, |ui| {
-                                        ui.style_mut().override_font_id =
-                                            Some(egui::FontId::monospace(12.0));
-                                        for ent in crate::logs::snapshot() {
-                                            let prefix = match ent.side {
-                                                crate::logs::Side::Client => "client",
-                                                crate::logs::Side::Server => "server",
-                                            };
-                                            let text = format!(
-                                                "[{:<6}] {:<5} {:<} - {}",
-                                                prefix, ent.level, ent.target, ent.message
-                                            );
-                                            ui.colored_label(ent.color(), text);
-                                        }
-                                    });
-                            });
+                            self.render_logs(ui);
                         }
                     }
 
@@ -404,18 +330,131 @@ impl Details {
             }
         });
     }
+    /// Send a reload signal to the runtime, if connected.
+    fn send_reload(&self) {
+        if let Some(ref tx) = self.tx_ctrl
+            && let Err(e) = tx.send(ControlMsg::Reload)
+        {
+            tracing::warn!("failed to send reload: {}", e);
+        }
+    }
+
+    /// Render the notifications table.
+    fn render_notifications(&self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
+        if backlog.is_empty() {
+            ui.weak("No notifications yet");
+            return;
+        }
+
+        TableBuilder::new(ui)
+            .column(
+                Column::initial(COL_KIND_INIT)
+                    .at_least(COL_KIND_MIN)
+                    .resizable(true),
+            )
+            .column(
+                Column::initial(COL_TITLE_INIT)
+                    .at_least(COL_TITLE_MIN)
+                    .resizable(true),
+            )
+            .column(Column::remainder())
+            .header(HEADER_H, |mut header| {
+                header.col(|ui| {
+                    ui.label(RichText::new("Kind").strong());
+                });
+                header.col(|ui| {
+                    ui.label(RichText::new("Title").strong());
+                });
+                header.col(|ui| {
+                    ui.label(RichText::new("Text").strong());
+                });
+            })
+            .body(|mut body| {
+                for ent in backlog {
+                    let fg = kind_color(&self.theme, ent.kind);
+                    body.row(ROW_HEIGHT_MIN, |mut row| {
+                        row.col(|ui| {
+                            ui.colored_label(fg, kind_label(ent.kind));
+                        });
+                        row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                            ui.colored_label(fg, &ent.title);
+                        });
+                        row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                            ui.colored_label(fg, &ent.text);
+                        });
+                    });
+                }
+            });
+    }
+
+    /// Render the in-app logs viewer.
+    fn render_logs(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            if ui.button("Clear").clicked() {
+                logs::clear();
+            }
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
+                    for ent in logs::snapshot() {
+                        let prefix = if matches!(ent.side, Side::Client) {
+                            "client"
+                        } else {
+                            "server"
+                        };
+                        let text = format!(
+                            "[{:<6}] {:<5} {:<} - {}",
+                            prefix, ent.level, ent.target, ent.message
+                        );
+                        ui.colored_label(ent.color(), text);
+                    }
+                });
+        });
+    }
+}
+
+/// Foreground color for a notification kind using the active theme.
+fn kind_color(theme: &NotifyTheme, kind: NotifyKind) -> Color32 {
+    let (r, g, b) = match kind {
+        NotifyKind::Info => theme.info.title_fg,
+        NotifyKind::Warn => theme.warn.title_fg,
+        NotifyKind::Error => theme.error.title_fg,
+        NotifyKind::Success => theme.success.title_fg,
+    };
+    Color32::from_rgb(r, g, b)
+}
+
+/// Human-readable label for a notification kind.
+fn kind_label(kind: NotifyKind) -> &'static str {
+    match kind {
+        NotifyKind::Info => "info",
+        NotifyKind::Warn => "warn",
+        NotifyKind::Error => "error",
+        NotifyKind::Success => "success",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Simple window geometry snapshot (top-left origin).
 pub struct WindowGeom {
+    /// Top-left window position `(x, y)` in screen coordinates.
     pub pos: (f32, f32),
+    /// Inner size `(w, h)` in logical pixels.
     pub size: (f32, f32),
 }
 
+/// Query the current Details window geometry converted to a top-left origin.
 fn current_geom_top_left() -> Option<WindowGeom> {
     // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
-    let (_sx, _sy, _sw, _sh, global_top) = mac_winops::screen::active_frame();
-    let (x_b, y_b, w, h) = mac_winops::nswindow::frame_by_title("Details")?;
+    let (_sx, _sy, _sw, _sh, global_top) = screen::active_frame();
+    let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
     let x_t = x_b; // x is the same
     let y_t = global_top - (y_b + h);
     Some(WindowGeom {

@@ -1,20 +1,25 @@
 //! Process management utilities for smoketests.
 use std::{
     env,
+    fs,
     path::PathBuf,
     process::{Child, Command, Stdio},
+    process as std_process,
     thread,
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
     error::{Error, Result},
+    config,
     proc_registry,
 };
 
 /// Managed child process that cleans up on drop.
 pub struct ManagedChild {
+    /// Handle to the spawned child process.
     child: Option<Child>,
+    /// Process ID of the managed child.
     pub pid: i32,
 }
 
@@ -42,28 +47,47 @@ impl ManagedChild {
 
 impl Drop for ManagedChild {
     fn drop(&mut self) {
-        let _ = self.kill_and_wait();
+        if let Err(_e) = self.kill_and_wait() {
+            // best-effort cleanup on drop
+        }
     }
 }
 
 /// Builder for spawning helper windows with common configurations.
 pub struct HelperWindowBuilder {
+    /// Window title for the helper.
     title: String,
+    /// How long the helper runs before exiting (ms).
     time_ms: u64,
+    /// Optional delay before applying system-set frames (ms).
     delay_setframe_ms: Option<u64>,
+    /// Optional explicit delayed-apply time (ms).
     delay_apply_ms: Option<u64>,
+    /// Optional tween duration for animated frame changes (ms).
     tween_ms: Option<u64>,
+    /// Absolute frame to apply after delay `(x, y, w, h)`.
     apply_target: Option<(f64, f64, f64, f64)>,
+    /// Grid target to apply after delay `(cols, rows, col, row)`.
     apply_grid: Option<(u32, u32, u32, u32)>,
+    /// Immediate grid placement `(cols, rows, col, row)`.
     grid: Option<(u32, u32, u32, u32)>,
+    /// Requested window size `(w, h)`.
     size: Option<(f64, f64)>,
+    /// Requested window position `(x, y)`.
     pos: Option<(f64, f64)>,
+    /// Optional label text rendered in the window.
     label_text: Option<String>,
+    /// Minimum content size `(w, h)` enforced by the helper.
     min_size: Option<(f64, f64)>,
+    /// Start minimized (miniaturized) if true.
     start_minimized: bool,
+    /// Start zoomed (macOS zoom) if true.
     start_zoomed: bool,
+    /// Make the window non-movable if true.
     nonmovable: bool,
+    /// Attach a sheet (AXRole=AXSheet) if true.
     attach_sheet: bool,
+    /// Size increment rounding step `(w, h)`.
     step_size: Option<(f64, f64)>,
 }
 
@@ -367,9 +391,7 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
 pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
     match spawn_warn_overlay() {
         Ok(child) => {
-            thread::sleep(Duration::from_millis(
-                crate::config::WARN_OVERLAY_INITIAL_DELAY_MS,
-            ));
+            thread::sleep(Duration::from_millis(config::WARN_OVERLAY_INITIAL_DELAY_MS));
             Some(child)
         }
         Err(_) => None,
@@ -378,33 +400,33 @@ pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
 
 /// Compute the overlay status file path for the current smoketest run.
 pub fn overlay_status_path_for_current_run() -> PathBuf {
-    std::env::temp_dir().join(format!("hotki-smoketest-status-{}.txt", std::process::id()))
+    env::temp_dir().join(format!("hotki-smoketest-status-{}.txt", std_process::id()))
 }
 
 /// Compute the overlay info file path for the current smoketest run.
 pub fn overlay_info_path_for_current_run() -> PathBuf {
-    std::env::temp_dir().join(format!("hotki-smoketest-info-{}.txt", std::process::id()))
+    env::temp_dir().join(format!("hotki-smoketest-info-{}.txt", std_process::id()))
 }
 
 /// Write the current test name to the overlay status file. Best-effort.
 pub fn write_overlay_status(name: &str) {
     let path = overlay_status_path_for_current_run();
-    let _ = std::fs::write(path, name.as_bytes());
+    if let Err(_e) = fs::write(path, name.as_bytes()) {}
 }
 
 /// Write additional short info text for display in the overlay. Best-effort.
 pub fn write_overlay_info(info: &str) {
     let path = overlay_info_path_for_current_run();
-    let _ = std::fs::write(path, info.as_bytes());
+    if let Err(_e) = fs::write(path, info.as_bytes()) {}
 }
 
 /// Build the hotki binary quietly.
 /// Output is suppressed to avoid interleaved cargo logs.
 pub fn build_hotki_quiet() -> Result<()> {
     // First check if the binary already exists and is recent
-    if let Ok(metadata) = std::fs::metadata("target/debug/hotki")
+    if let Ok(metadata) = fs::metadata("target/debug/hotki")
         && let Ok(modified) = metadata.modified()
-        && let Ok(elapsed) = std::time::SystemTime::now().duration_since(modified)
+        && let Ok(elapsed) = SystemTime::now().duration_since(modified)
         && elapsed.as_secs() < 60
     {
         // If binary was built in the last 60 seconds, skip rebuild
@@ -420,8 +442,8 @@ pub fn build_hotki_quiet() -> Result<()> {
         .map_err(Error::Io)?;
 
     // Wait for up to 60 seconds
-    let timeout = std::time::Duration::from_secs(60);
-    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(60);
+    let start = Instant::now();
 
     loop {
         match child.try_wait().map_err(Error::Io)? {
@@ -435,14 +457,12 @@ pub fn build_hotki_quiet() -> Result<()> {
             }
             None => {
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
+                    if let Err(_e) = child.kill() {}
                     return Err(Error::SpawnFailed(
                         "Build timeout: cargo build took too long".to_string(),
                     ));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(
-                    crate::config::RETRY_DELAY_MS,
-                ));
+                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
             }
         }
     }

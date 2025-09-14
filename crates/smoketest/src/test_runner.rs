@@ -1,14 +1,17 @@
 //! Common test infrastructure and execution patterns for smoketests.
 
 use std::{
+    env,
     fs,
     path::PathBuf,
+    process,
     time::{Duration, Instant},
 };
 
 use crate::{
     config,
     error::{Error, Result},
+    server_drive,
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
@@ -102,7 +105,7 @@ impl TestContext {
             path.clone()
         } else {
             // Use default test config
-            let cwd = std::env::current_dir()?;
+            let cwd = env::current_dir()?;
             let path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
             if !path.exists() {
                 return Err(Error::MissingConfig(path));
@@ -143,7 +146,7 @@ impl TestContext {
             session.kill_and_wait();
         }
         // Ensure any shared RPC connection from a prior test is cleared.
-        crate::server_drive::reset();
+        server_drive::reset();
     }
 
     /// Ensure the MRPC driver is initialized and required idents are registered.
@@ -153,12 +156,12 @@ impl TestContext {
             Some(s) => s.socket_path().to_string(),
             None => return false,
         };
-        let inited = crate::server_drive::ensure_init(&sock, 3000);
+        let inited = server_drive::ensure_init(&sock, 3000);
         if !inited {
             return false;
         }
         for ident in idents {
-            if !crate::server_drive::wait_for_ident(ident, crate::config::BINDING_GATE_DEFAULT_MS) {
+            if !server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS) {
                 return false;
             }
         }
@@ -168,7 +171,7 @@ impl TestContext {
     /// Clean up all temporary files.
     fn cleanup_temp_files(&mut self) {
         for path in self.temp_files.drain(..) {
-            let _ = fs::remove_file(path);
+            if let Err(_e) = fs::remove_file(path) {}
         }
     }
 }
@@ -181,15 +184,22 @@ impl Drop for TestContext {
 }
 
 // Type aliases to reduce complexity
+/// Setup phase callback signature.
 type SetupFn = Box<dyn FnOnce(&mut TestContext) -> Result<()>>;
+/// Execute phase callback signature.
 type ExecuteFn<T> = Box<dyn FnOnce(&mut TestContext) -> Result<T>>;
+/// Teardown phase callback signature.
 type TeardownFn<T> = Box<dyn FnOnce(&mut TestContext, &T) -> Result<()>>;
 
 /// Builder pattern for test execution.
 pub struct TestRunner<T> {
+    /// Test configuration used by this runner.
     config: TestConfig,
+    /// Optional setup step executed before the test.
     setup: Option<SetupFn>,
+    /// Main test logic producing a value `T`.
     execute: Option<ExecuteFn<T>>,
+    /// Optional teardown step executed after success.
     teardown: Option<TeardownFn<T>>,
 }
 
@@ -265,9 +275,9 @@ pub fn create_temp_config(content: &str) -> Result<PathBuf> {
         .unwrap()
         .as_nanos();
 
-    let temp_path = std::env::temp_dir().join(format!(
+    let temp_path = env::temp_dir().join(format!(
         "hotki-smoketest-{}-{}.ron",
-        std::process::id(),
+        process::id(),
         timestamp
     ));
 

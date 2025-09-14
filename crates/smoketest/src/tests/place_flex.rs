@@ -37,7 +37,7 @@ pub fn run_place_flex(
     // Spawn helper and wait until visible
     let lifetime = config::DEFAULT_TIMEOUT_MS + config::HELPER_WINDOW_EXTRA_TIME_MS;
     let mut helper = spawn_helper_visible(
-        title.clone(),
+        &title,
         lifetime,
         std::cmp::min(config::DEFAULT_TIMEOUT_MS, config::HIDE_FIRST_WINDOW_MAX_MS),
         config::PLACE_POLL_MS,
@@ -93,6 +93,6 @@ pub fn run_place_flex(
         }));
     }
 
-    let _ = helper.kill_and_wait();
+    if let Err(_e) = helper.kill_and_wait() {}
     Ok(())
 }

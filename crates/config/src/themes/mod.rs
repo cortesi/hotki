@@ -24,7 +24,7 @@ fn themes() -> &'static HashMap<String, Style> {
         // Load each theme at compile time
         macro_rules! load_theme {
             ($name:expr, $file:expr) => {
-                let content = include_str!(concat!("../themes/", $file));
+                let content = include_str!(concat!("../../themes/", $file));
                 // Parse theme content via RawConfig to avoid re-entering theme loading.
                 // Using loader here would call load_theme() again during OnceLock init and deadlock.
                 let wrapped = format!("(style: {})", content);
@@ -115,6 +115,7 @@ pub fn load_theme(theme_name: Option<&str>) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::raw::RawStyle;
 
     #[test]
     fn test_default_theme_exists() {
@@ -203,12 +204,12 @@ mod tests {
         let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
 
         // Build base theme, then overlay user theme
-        let mut final_theme = theme_base.clone();
+        let mut final_theme = theme_base;
         if let Some(user_theme_raw) = &user_raw.style {
             final_theme = final_theme.overlay_raw(user_theme_raw);
         }
         // Use user keys since provided
-        let final_keys = user_raw.keys.clone();
+        let final_keys = user_raw.keys;
 
         // Verify user overrides are applied
         assert_eq!(final_theme.hud.font_size, 20.0);
@@ -282,7 +283,7 @@ mod tests {
         let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
 
         // Build base theme and overlay user theme
-        let mut final_theme = theme_base.clone();
+        let mut final_theme = theme_base;
         if let Some(user_theme_raw) = &user_raw.style {
             final_theme = final_theme.overlay_raw(user_theme_raw);
         }
@@ -308,19 +309,19 @@ mod tests {
         )"#;
 
         let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
-        let user_theme_raw: &crate::raw::RawStyle =
+        let user_theme_raw: &RawStyle =
             user_raw.style.as_ref().expect("user theme present");
 
         // Base: default
         let base_default = load_theme(None);
-        let merged_default = base_default.clone().overlay_raw(user_theme_raw);
+        let merged_default = base_default.overlay_raw(user_theme_raw);
         assert_eq!(merged_default.hud.font_size, 20.0);
         // Title color should come from base (not overridden by user)
         assert_eq!(merged_default.hud.title_fg, (0xd0, 0xd0, 0xd0));
 
         // Switch base: dark-blue
         let base_dark = load_theme(Some("dark-blue"));
-        let merged_dark = base_dark.clone().overlay_raw(user_theme_raw);
+        let merged_dark = base_dark.overlay_raw(user_theme_raw);
         assert_eq!(merged_dark.hud.font_size, 20.0);
         assert_eq!(merged_dark.hud.title_fg, (0xa0, 0xc4, 0xff));
     }

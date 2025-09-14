@@ -53,7 +53,7 @@ fn run_place_with_state(
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
             let mut helper = spawn_helper_with_options(
-                title.clone(),
+                &title,
                 helper_time,
                 std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
@@ -115,7 +115,7 @@ fn run_place_with_state(
             if !ok {
                 return Err(Error::InvalidState("placement verification failed".into()));
             }
-            let _ = helper.kill_and_wait();
+            if let Err(_e) = helper.kill_and_wait() {}
             Ok(())
         })
         .with_teardown(|ctx, _| {

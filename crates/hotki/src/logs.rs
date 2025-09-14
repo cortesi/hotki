@@ -1,3 +1,4 @@
+//! UI log buffer and tracing integration.
 use std::{collections::VecDeque, sync::OnceLock};
 
 use egui::Color32;
@@ -6,20 +7,29 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The origin of a log entry.
 pub enum Side {
+    /// Client-side (UI) log.
     Client,
+    /// Server-side log forwarded to the UI.
     Server,
 }
 
 #[derive(Debug, Clone)]
+/// A single structured log entry captured for display.
 pub struct LogEntry {
+    /// Which side produced the entry.
     pub side: Side,
+    /// Level rendered as a short string (ERROR/WARN/...).
     pub level: String,
+    /// Target/logger name.
     pub target: String,
+    /// Rendered message text.
     pub message: String,
 }
 
 impl LogEntry {
+    /// Choose a representative color for the entry level.
     pub fn color(&self) -> Color32 {
         match self.level.as_str() {
             "ERROR" => Color32::from_rgb(220, 50, 47),
@@ -32,12 +42,15 @@ impl LogEntry {
     }
 }
 
+/// Global buffer for recent log entries.
 static LOGS: OnceLock<Mutex<VecDeque<LogEntry>>> = OnceLock::new();
 
+/// Access the global buffer, initializing it on first use.
 fn buffer() -> &'static Mutex<VecDeque<LogEntry>> {
     LOGS.get_or_init(|| Mutex::new(VecDeque::with_capacity(2048)))
 }
 
+/// Push a new entry into the buffer, evicting from the front if oversized.
 pub fn push(entry: LogEntry) {
     let mut buf = buffer().lock();
     if buf.len() > 5000 {
@@ -46,6 +59,7 @@ pub fn push(entry: LogEntry) {
     buf.push_back(entry);
 }
 
+/// Helper to push a server-side entry.
 pub fn push_server(level: String, target: String, message: String) {
     push(LogEntry {
         side: Side::Server,
@@ -55,10 +69,12 @@ pub fn push_server(level: String, target: String, message: String) {
     });
 }
 
+/// Snapshot the current buffer contents.
 pub fn snapshot() -> Vec<LogEntry> {
     buffer().lock().iter().cloned().collect()
 }
 
+/// Clear the buffer.
 pub fn clear() {
     buffer().lock().clear();
 }
@@ -81,6 +97,7 @@ where
     }
 }
 
+/// Build a tracing layer that captures client logs into the in-memory buffer.
 pub fn client_layer() -> ClientLayer {
     ClientLayer
 }

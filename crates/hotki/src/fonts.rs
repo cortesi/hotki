@@ -1,17 +1,21 @@
-// Embedded 0xProto Nerd Font Mono
+//! Font helpers and embedded faces.
+/// Embedded 0xProto Nerd Font Mono (Regular).
 static PROTO_REGULAR_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/0xProtoNerdFontMono-Regular.ttf"
 ));
+/// Embedded 0xProto Nerd Font Mono (Bold).
 static PROTO_BOLD_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/0xProtoNerdFontMono-Bold.ttf"
 ));
+/// Embedded 0xProto Nerd Font Mono (Italic).
 static PROTO_ITALIC_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/0xProtoNerdFontMono-Italic.ttf"
 ));
 
+/// Install the embedded fonts and set family mappings in the `egui` context.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
@@ -66,6 +70,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 use config::FontWeight;
 
+/// Choose an `egui::FontFamily` name for a configuration weight.
 pub fn weight_family(w: FontWeight) -> egui::FontFamily {
     egui::FontFamily::Name(
         match w {

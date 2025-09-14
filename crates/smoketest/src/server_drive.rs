@@ -1,15 +1,20 @@
 use std::{
     sync::OnceLock,
+    thread,
     time::{Duration, Instant},
 };
 
 use parking_lot::Mutex;
+use tokio::time::timeout;
 
 use crate::{config, runtime};
 
+/// Shared connection slot to the hotki-server.
 static CONN: OnceLock<Mutex<Option<hotki_server::Connection>>> = OnceLock::new();
+/// Flag ensuring the drain loop starts only once.
 static DRAIN_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Access the global connection slot, initializing storage if needed.
 fn conn_slot() -> &'static Mutex<Option<hotki_server::Connection>> {
     CONN.get_or_init(|| Mutex::new(None))
 }
@@ -43,21 +48,21 @@ pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> bool {
     if is_ready() {
         // Start drain if required and return.
         let _ = DRAIN_STARTED.get_or_init(|| {
-            std::thread::spawn(drain_events_loop);
+            thread::spawn(drain_events_loop);
         });
         return true;
     }
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut inited = init(socket_path);
     while !inited && Instant::now() < deadline {
-        std::thread::sleep(config::ms(config::FAST_RETRY_DELAY_MS));
+        thread::sleep(config::ms(config::FAST_RETRY_DELAY_MS));
         inited = init(socket_path);
     }
     if inited {
         // Start a background drain exactly once to keep the event channel alive
         // and avoid closed‑receiver errors from the MRPC client handler.
         let _ = DRAIN_STARTED.get_or_init(|| {
-            std::thread::spawn(drain_events_loop);
+            thread::spawn(drain_events_loop);
         });
     }
     inited
@@ -77,7 +82,7 @@ pub fn reset() {
 /// otherwise log an error. The loop exits when the connection is removed via
 /// `reset()` or when the server disconnects.
 fn drain_events_loop() {
-    use std::{thread, time::Duration};
+    use std::time::Duration;
     loop {
         let maybe_ev = {
             let mut guard = conn_slot().lock();
@@ -85,7 +90,7 @@ fn drain_events_loop() {
                 Some(conn) => {
                     // Poll with a short timeout to avoid holding the lock long.
                     let res = runtime::block_on(async {
-                        tokio::time::timeout(Duration::from_millis(40), conn.recv_event()).await
+                        timeout(Duration::from_millis(40), conn.recv_event()).await
                     });
                     Some(res)
                 }
@@ -130,7 +135,7 @@ pub fn inject_key(seq: &str) -> bool {
         .unwrap_or_else(|| seq.to_string());
     // Drive down -> delay -> up
     let ok = runtime::block_on(async { conn.inject_key_down(&ident).await }).is_ok();
-    std::thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
+    thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
     let ok2 = runtime::block_on(async { conn.inject_key_up(&ident).await }).is_ok();
     ok && ok2
 }
@@ -141,7 +146,7 @@ pub fn inject_sequence(sequences: &[&str]) -> bool {
         if !inject_key(s) {
             return false;
         }
-        std::thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
+        thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
     }
     true
 }
@@ -158,14 +163,14 @@ pub fn get_bindings() -> Option<Vec<String>> {
 
 /// Wait until a specific identifier is present in the current bindings.
 pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
         if let Some(binds) = get_bindings()
             && binds.iter().any(|b| b == ident)
         {
             return true;
         }
-        std::thread::sleep(config::ms(config::RETRY_DELAY_MS));
+        thread::sleep(config::ms(config::RETRY_DELAY_MS));
     }
     false
 }
@@ -205,7 +210,7 @@ pub fn wait_for_focused_pid(expected_pid: i32, timeout_ms: u64) -> bool {
         {
             return true;
         }
-        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     false
 }

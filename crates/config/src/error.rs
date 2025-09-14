@@ -1,3 +1,5 @@
+//! Error types for configuration loading and validation.
+
 use std::{
     cmp::{max, min},
     fmt::Write as _,
@@ -5,6 +7,7 @@ use std::{
 };
 
 use thiserror::Error;
+use ron::error::SpannedError;
 
 #[derive(Debug, Error, Clone)]
 pub enum Error {
@@ -35,11 +38,11 @@ impl Error {
     /// Render a human-friendly error message including location and an excerpt when available.
     pub fn pretty(&self) -> String {
         match self {
-            Error::Read { path, message } => match path {
+            Self::Read { path, message } => match path {
                 Some(p) => format!("Read error at {}: {}", p.display(), message),
                 None => format!("Read error: {}", message),
             },
-            Error::Parse {
+            Self::Parse {
                 path,
                 line,
                 col,
@@ -59,7 +62,7 @@ impl Error {
                     line, col, message, excerpt
                 ),
             },
-            Error::Validation {
+            Self::Validation {
                 path,
                 line,
                 col,
@@ -103,14 +106,14 @@ impl Error {
     /// Access the optional path attached to this error.
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Error::Read { path, .. }
-            | Error::Parse { path, .. }
-            | Error::Validation { path, .. } => path.as_deref(),
+            Self::Read { path, .. }
+            | Self::Parse { path, .. }
+            | Self::Validation { path, .. } => path.as_deref(),
         }
     }
 
     /// Build a `Parse` error from a `ron` parse error and original source text.
-    pub fn from_ron(source: &str, err: &ron::error::SpannedError, path: Option<&Path>) -> Self {
+    pub fn from_ron(source: &str, err: &SpannedError, path: Option<&Path>) -> Self {
         let pos = err.span.start;
         let line_no = max(1usize, pos.line);
         let col_no = max(1usize, pos.col);
@@ -131,10 +134,10 @@ impl Error {
         let mut out = String::new();
         for n in start..=end {
             let text = lines.get(n - 1).copied().unwrap_or("");
-            let _ = writeln!(out, " {:>4} | {}", n, text);
+            let _ignored = writeln!(out, " {:>4} | {}", n, text);
             if n == line_no {
                 let prefix = format!(" {:>4} | ", n);
-                let _ = writeln!(
+                let _ignored = writeln!(
                     out,
                     "{}{}^",
                     " ".repeat(prefix.len()),
@@ -143,7 +146,7 @@ impl Error {
             }
         }
 
-        Error::Parse {
+        Self::Parse {
             path: path.map(|p| p.to_path_buf()),
             line: line_no,
             col: col_no,

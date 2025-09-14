@@ -1,4 +1,10 @@
-use std::fmt::Write;
+//! Utilities to render `tracing` events into concise logfmt strings.
+//!
+//! This crate provides helpers to extract level, target, and message from
+//! `tracing::Event` records and to render remaining fields in `key=value`
+//! form. It is used for structured logging throughout the application.
+
+use std::fmt::{Debug, Write};
 
 use tracing::{
     Event, Metadata,
@@ -8,8 +14,11 @@ use tracing::{
 /// Rendered fields extracted from a tracing Event.
 #[derive(Debug, Clone)]
 pub struct RenderedLog {
+    /// Severity level (e.g., INFO, WARN) for the event.
     pub level: String,
+    /// Event target (typically the module path).
     pub target: String,
+    /// Human‑readable message or rendered `key=value` pairs.
     pub message: String,
 }
 
@@ -20,7 +29,9 @@ pub struct RenderedLog {
 /// - Otherwise, concatenate `key=value` pairs from remaining fields.
 pub fn render_event(event: &Event<'_>) -> RenderedLog {
     struct MsgVisitor {
+        /// Captured `message` field, if present.
         msg: Option<String>,
+        /// Accumulated non‑message fields rendered as `key=value`.
         fields: String,
     }
     impl Visit for MsgVisitor {
@@ -28,14 +39,14 @@ pub fn render_event(event: &Event<'_>) -> RenderedLog {
             if field.name() == "message" {
                 self.msg = Some(value.to_string());
             } else {
-                let _ = write!(&mut self.fields, "{}=\"{}\" ", field.name(), value);
+                let _ignored = write!(&mut self.fields, "{}=\"{}\" ", field.name(), value);
             }
         }
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
             if field.name() == "message" {
                 self.msg = Some(format!("{:?}", value));
             } else {
-                let _ = write!(&mut self.fields, "{}={:?} ", field.name(), value);
+                let _ignored = write!(&mut self.fields, "{}={:?} ", field.name(), value);
             }
         }
     }

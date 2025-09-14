@@ -1,3 +1,5 @@
+//! Raw configuration structures mirroring the serialized user input.
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -21,36 +23,42 @@ use super::{
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Maybe<T> {
+    /// Explicit unit `()` treated as not provided.
     Unit(()),
+    /// Plain value provided.
     Value(T),
+    /// Optional value, passes through as-is.
     Opt(Option<T>),
 }
 
 impl<T> Default for Maybe<T> {
     fn default() -> Self {
-        Maybe::Unit(())
+        Self::Unit(())
     }
 }
 
 impl<T> Maybe<T> {
+    /// Convert to an owned `Option<T>` according to wrapper semantics.
     pub fn into_option(self) -> Option<T> {
         match self {
-            Maybe::Unit(()) => None,
-            Maybe::Value(v) => Some(v),
-            Maybe::Opt(o) => o,
+            Self::Unit(()) => None,
+            Self::Value(v) => Some(v),
+            Self::Opt(o) => o,
         }
     }
+    /// Borrow as `Option<&T>` according to wrapper semantics.
     pub fn as_option(&self) -> Option<&T> {
         match self {
-            Maybe::Unit(()) => None,
-            Maybe::Value(v) => Some(v),
-            Maybe::Opt(Some(v)) => Some(v),
-            Maybe::Opt(None) => None,
+            Self::Unit(()) => None,
+            Self::Value(v) => Some(v),
+            Self::Opt(Some(v)) => Some(v),
+            Self::Opt(None) => None,
         }
     }
 }
 
 // Helper: accept either a plain string or an Option<String>
+/// Helper deserializer that accepts either a plain string or `Option<String>`.
 fn de_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -58,7 +66,9 @@ where
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Helper {
+        /// Plain string value.
         S(String),
+        /// Optional string value.
         Opt(Option<String>),
     }
     match Helper::deserialize(deserializer)? {
@@ -73,20 +83,28 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RawNotifyStyle {
+    /// Background color name or hex string.
     #[serde(default)]
     pub bg: Option<String>,
+    /// Title foreground color name or hex string.
     #[serde(default)]
     pub title_fg: Option<String>,
+    /// Body foreground color name or hex string.
     #[serde(default)]
     pub body_fg: Option<String>,
+    /// Title font size in points.
     #[serde(default)]
     pub title_font_size: Option<f32>,
+    /// Title font weight.
     #[serde(default)]
     pub title_font_weight: Option<FontWeight>,
+    /// Body font size in points.
     #[serde(default)]
     pub body_font_size: Option<f32>,
+    /// Body font weight.
     #[serde(default)]
     pub body_font_weight: Option<FontWeight>,
+    /// Optional leading icon string.
     #[serde(default)]
     pub icon: Option<String>,
 }
@@ -109,21 +127,29 @@ impl RawNotifyStyle {
 
 /// Raw notification window styling read from configuration (string colors, optional sizes/weights).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub(crate) struct RawNotifyWindowStyle {
+pub struct RawNotifyWindowStyle {
+    /// Background color name or hex string.
     #[serde(default)]
     pub bg: Option<String>,
+    /// Title foreground color name or hex string.
     #[serde(default)]
     pub title_fg: Option<String>,
+    /// Body foreground color name or hex string.
     #[serde(default)]
     pub body_fg: Option<String>,
+    /// Title font size in points.
     #[serde(default)]
     pub title_font_size: Option<f32>,
+    /// Title font weight.
     #[serde(default)]
     pub title_font_weight: Option<FontWeight>,
+    /// Body font size in points.
     #[serde(default)]
     pub body_font_size: Option<f32>,
+    /// Body font weight.
     #[serde(default)]
     pub body_font_weight: Option<FontWeight>,
+    /// Optional leading icon string.
     #[serde(default)]
     pub icon: Option<String>,
 }
@@ -134,24 +160,34 @@ pub(crate) struct RawNotifyWindowStyle {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RawNotify {
+    /// Width of notification window (px).
     #[serde(default)]
     pub width: Option<f32>,
+    /// Screen side to stack notifications.
     #[serde(default)]
     pub pos: Option<NotifyPos>,
+    /// Window opacity (0.0–1.0).
     #[serde(default)]
     pub opacity: Option<f32>,
+    /// Auto-dismiss timeout in seconds.
     #[serde(default)]
     pub timeout: Option<f32>,
+    /// Ring buffer length for notifications.
     #[serde(default)]
     pub buffer: Option<usize>,
+    /// Corner radius (px).
     #[serde(default)]
     pub radius: Option<f32>,
+    /// Style overrides for info notifications.
     #[serde(default)]
     pub info: Option<RawNotifyStyle>,
+    /// Style overrides for warning notifications.
     #[serde(default)]
     pub warn: Option<RawNotifyStyle>,
+    /// Style overrides for error notifications.
     #[serde(default)]
     pub error: Option<RawNotifyStyle>,
+    /// Style overrides for success notifications.
     #[serde(default)]
     pub success: Option<RawNotifyStyle>,
 }
@@ -208,55 +244,79 @@ impl RawNotify {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RawHud {
+    /// HUD display mode.
     #[serde(default)]
     pub mode: Option<crate::Mode>,
+    /// HUD position on screen.
     #[serde(default)]
     pub pos: Option<Pos>,
+    /// HUD offset from `pos` in pixels.
     #[serde(default)]
     pub offset: Option<Offset>,
+    /// Title font size in points.
     #[serde(default)]
     pub font_size: Option<f32>,
+    /// Title font weight.
     #[serde(default)]
     pub title_font_weight: Option<FontWeight>,
+    /// Key glyph font size in points.
     #[serde(default)]
     pub key_font_size: Option<f32>,
+    /// Key glyph font weight.
     #[serde(default)]
     pub key_font_weight: Option<FontWeight>,
+    /// Tag font size in points.
     #[serde(default)]
     pub tag_font_size: Option<f32>,
+    /// Tag font weight.
     #[serde(default)]
     pub tag_font_weight: Option<FontWeight>,
+    /// Title foreground color name or hex string.
     #[serde(default)]
     pub title_fg: Option<String>,
+    /// HUD background color.
     #[serde(default)]
     pub bg: Option<String>,
+    /// Key foreground color.
     #[serde(default)]
     pub key_fg: Option<String>,
+    /// Key background color.
     #[serde(default)]
     pub key_bg: Option<String>,
+    /// Modifier key foreground color.
     #[serde(default)]
     pub mod_fg: Option<String>,
+    /// Modifier key font weight.
     #[serde(default)]
     pub mod_font_weight: Option<FontWeight>,
+    /// Modifier key background color.
     #[serde(default)]
     pub mod_bg: Option<String>,
+    /// Tag foreground color.
     #[serde(default)]
     pub tag_fg: Option<String>,
+    /// HUD opacity (0.0–1.0).
     #[serde(default)]
     pub opacity: Option<f32>,
+    /// Key corner radius (px).
     #[serde(default)]
     pub key_radius: Option<f32>,
+    /// Horizontal key padding (px).
     #[serde(default)]
     pub key_pad_x: Option<f32>,
+    /// Vertical key padding (px).
     #[serde(default)]
     pub key_pad_y: Option<f32>,
+    /// HUD corner radius (px).
     #[serde(default)]
     pub radius: Option<f32>,
+    /// Tag submenu glyph.
     #[serde(default)]
     pub tag_submenu: Option<String>,
 }
 
 // Shared color fallback for HUD
+/// Use `src` color if provided, otherwise fall back to `default`.
 fn color_or(src: &Option<String>, default: (u8, u8, u8)) -> (u8, u8, u8) {
     match src.as_deref() {
         Some(s) => match parse_rgb(s) {
@@ -337,29 +397,33 @@ impl RawHud {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+/// Raw style overlay grouping HUD and notification sections.
 pub struct RawStyle {
+    /// Optional HUD style overrides.
     #[serde(default)]
     pub hud: Option<RawHud>,
+    /// Optional notification style overrides.
     #[serde(default)]
     pub notify: Option<RawNotify>,
-}
+ }
 
 /// Raw configuration with all optional fields for conversion
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
+    /// User key bindings.
     #[serde(default)]
     pub keys: Keys,
 
-    // Base theme selection name (used by host for theming)
+    /// Base theme selection name (used by host for theming).
     #[serde(default)]
     pub base_theme: Maybe<String>,
 
-    // Submenu tag text displayed in HUD for nested modes
+    /// Submenu tag text displayed in HUD for nested modes.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub tag_submenu: Option<String>,
 
-    // Theme configuration (grouping hud + notify)
+    /// Theme configuration overlay (HUD + notify).
     #[serde(default)]
     pub style: Maybe<RawStyle>,
 
@@ -396,12 +460,15 @@ impl RawConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
+/// Test-only server tunables carried through the Config for smoketests.
 pub struct RawServerTunables {
+    /// When true, server exits if no UI clients connect for a short window.
     #[serde(default)]
     pub exit_if_no_clients: bool,
 }
 
 impl RawServerTunables {
+    /// Convert to concrete `ServerTunables` used at runtime.
     pub fn into_server_tunables(self) -> crate::ServerTunables {
         crate::ServerTunables {
             exit_if_no_clients: self.exit_if_no_clients,

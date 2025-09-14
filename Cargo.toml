@@ -27,3 +27,47 @@ async-trait = "0.1.89"
 crossbeam-channel = "0.5.15"
 futures = "0.3.31"
 clap = "4.5.47"
+
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+# Can't be used with any crate with examples or tests (!?). Best to enable this
+# briefly, run cargo clippy (without --tests and --examples), fix unused deps,
+# then disable it again.
+# unused_crate_dependencies = "warn"
+
+# unused_results = "warn"
+# unreachable_pub = "warn"
+# unqualified_local_imports = "warn"
+
+[workspace.lints.clippy]
+absolute_paths = "warn"
+branches_sharing_code = "warn"
+ignore_without_reason = "warn"
+let_underscore_must_use = "warn"
+many_single_char_names = "warn"
+missing_docs_in_private_items = "warn"
+multiple_inherent_impl = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+redundant_pub_crate = "warn"
+self_named_module_files = "warn"
+tests_outside_test_module = "warn"
+use_self = "warn"
+wildcard_dependencies = "warn"
+cfg_not_test = "warn"
+comparison_chain = "warn"
+items_after_statements = "warn"
+needless_pass_by_ref_mut = "warn"
+
+# Settings with config values in clippy.toml
+cognitive_complexity = "warn"
+excessive_nesting = "warn"
+too_many_lines = "warn"
+
+# too_many_lines = "warn"
+# multiple_crate_versions = "warn"
+# module_name_repetitions = "warn"
+# Not really usable - errors on names like min_x/min_y
+# similar_names = "warn"

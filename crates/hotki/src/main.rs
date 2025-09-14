@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+//! Binary entrypoint for the Hotki macOS app.
+use std::{path::PathBuf, process};
 
 use clap::Parser;
 use eframe::NativeOptions;
@@ -8,15 +9,21 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{debug, error};
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, prelude::*};
 
+use crate::logs::client_layer;
+
+/// Application state and event wiring.
 mod app;
+/// Details window (notifications/config/logs/about).
 mod details;
 mod fonts;
 mod hud;
 mod logs;
 mod notification;
+/// Permissions UI helpers and checks.
 mod permissions;
+/// Background UI runtime glue (server connection + event loop).
 mod runtime;
 mod tray;
 
@@ -31,6 +38,7 @@ use crate::{
 
 #[derive(Parser, Debug)]
 #[command(name = "hotki", about = "A macOS hotkey application", version)]
+/// Command-line interface for the `hotki` binary.
 struct Cli {
     /// Run as server (headless)
     #[arg(long)]
@@ -75,15 +83,16 @@ fn main() -> eframe::Result<()> {
     // - Compact fmt output (no time)
     // - Client log buffer layer (records UI-side logs)
     // - Server forward layer (no-op on client; forwards logs to UI when server is running)
-    let _ = tracing_subscriber::registry()
+    tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().without_time())
-        .with(crate::logs::client_layer())
+        .with(fmt::layer().without_time())
+        .with(client_layer())
         .with(log_forward::layer())
-        .try_init();
+        .try_init()
+        .ok();
     // Build a filter string for any auto-spawned server process so it inherits
     // the same level plus our extra directive to silence mrpc disconnect noise.
-    let server_filter: String = final_spec.clone();
+    let server_filter: String = final_spec;
 
     if cli.server {
         debug!("Starting server mode");
@@ -115,7 +124,7 @@ fn main() -> eframe::Result<()> {
             Ok(cfg) => (cfg, path),
             Err(e) => {
                 error!("{}", e.pretty());
-                std::process::exit(1);
+                process::exit(1);
             }
         }
     };
@@ -154,8 +163,7 @@ fn main() -> eframe::Result<()> {
                 cli.dumpworld,
             );
 
-            let tray_icon =
-                tray::build_tray_and_listeners(tx.clone(), tx_ctrl.clone(), cc.egui_ctx.clone());
+            let tray_icon = tray::build_tray_and_listeners(&tx, &tx_ctrl, &cc.egui_ctx);
 
             let root_cursor = config::Cursor::default();
             let n = app_cfg.notify_config(&root_cursor);
@@ -176,7 +184,7 @@ fn main() -> eframe::Result<()> {
                 notifications,
                 details,
                 permissions,
-                config: app_cfg.clone(),
+                config: app_cfg,
                 last_cursor: root_cursor,
             }))
         }),

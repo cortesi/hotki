@@ -1,5 +1,8 @@
+//! Declarative configuration types for actions, modes, and key bindings.
+
 use mac_keycode::Chord;
 use serde::{Deserialize, Serialize};
+use serde::de::Error as DeError;
 
 use crate::{Toggle, raw};
 
@@ -102,8 +105,8 @@ impl KeysAttrs {
 
     /// Merge another (child) attribute set on top of `self` (parent), obeying
     /// inheritance semantics for options: child's `Some` overrides; otherwise parent is kept.
-    pub(crate) fn merged_with(&self, child: &KeysAttrs) -> KeysAttrs {
-        KeysAttrs {
+    pub(crate) fn merged_with(&self, child: &Self) -> Self {
+        Self {
             noexit: child.noexit.or(self.noexit),
             global: child.global.or(self.global),
             hide: child.hide.or(self.hide),
@@ -206,7 +209,7 @@ pub enum Action {
 impl Action {
     /// Create a Shell action
     pub fn shell(cmd: impl Into<String>) -> Self {
-        Action::Shell(ShellSpec::Cmd(cmd.into()))
+        Self::Shell(ShellSpec::Cmd(cmd.into()))
     }
 }
 
@@ -214,8 +217,10 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RaiseSpec {
+    /// Regex that must match the application name.
     #[serde(default)]
     pub app: Option<String>,
+    /// Regex that must match the window title.
     #[serde(default)]
     pub title: Option<String>,
 }
@@ -265,12 +270,12 @@ impl<'de> Deserialize<'de> for Grid {
     {
         let (x, y) = <(u32, u32)>::deserialize(deserializer)?;
         if x == 0 || y == 0 {
-            return Err(serde::de::Error::custom(format!(
+            return Err(DeError::custom(format!(
                 "grid() divisions must be > 0; got (x={}, y={})",
                 x, y
             )));
         }
-        Ok(Grid(x, y))
+        Ok(Self(x, y))
     }
 }
 
@@ -299,10 +304,12 @@ pub struct ShellModifiers {
     pub err_notify: NotificationType,
 }
 
+/// Serde default: successful shell command produces no notification.
 fn default_ok_notify() -> NotificationType {
     NotificationType::Ignore
 }
 
+/// Serde default: shell command errors produce a warning notification.
 fn default_err_notify() -> NotificationType {
     NotificationType::Warn
 }
@@ -328,24 +335,24 @@ pub enum ShellSpec {
 impl ShellSpec {
     pub fn command(&self) -> &str {
         match self {
-            ShellSpec::Cmd(c) => c,
-            ShellSpec::WithMods(c, _) => c,
+            Self::Cmd(c) => c,
+            Self::WithMods(c, _) => c,
         }
     }
 
     /// Get notification type for successful exit
     pub fn ok_notify(&self) -> NotificationType {
         match self {
-            ShellSpec::Cmd(_) => NotificationType::Ignore,
-            ShellSpec::WithMods(_, m) => m.ok_notify,
+            Self::Cmd(_) => NotificationType::Ignore,
+            Self::WithMods(_, m) => m.ok_notify,
         }
     }
 
     /// Get notification type for error exit
     pub fn err_notify(&self) -> NotificationType {
         match self {
-            ShellSpec::Cmd(_) => NotificationType::Warn,
-            ShellSpec::WithMods(_, m) => m.err_notify,
+            Self::Cmd(_) => NotificationType::Warn,
+            Self::WithMods(_, m) => m.err_notify,
         }
     }
 }
@@ -353,6 +360,7 @@ impl ShellSpec {
 /// A collection of key bindings with their associated actions and descriptions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Keys {
+    /// The list of key bindings: `(chord, description, action, attributes)`.
     pub(crate) keys: Vec<(Chord, String, Action, KeysAttrs)>,
 }
 
@@ -385,7 +393,9 @@ impl<'de> Deserialize<'de> for Keys {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Entry {
+            /// Tuple form: `(key, description, action)`.
             Simple(String, String, Action),
+            /// Tuple form with attributes: `(key, description, action, attrs)`.
             WithAttrs(String, String, Action, Box<KeysAttrs>),
         }
 
@@ -396,7 +406,7 @@ impl<'de> Deserialize<'de> for Keys {
                 Entry::Simple(k, n, a) => match Chord::parse(&k) {
                     Some(ch) => keys.push((ch, n, a, KeysAttrs::default())),
                     None => {
-                        return Err(serde::de::Error::custom(format!(
+                        return Err(DeError::custom(format!(
                             "Failed to parse chord: {}",
                             k
                         )));
@@ -405,7 +415,7 @@ impl<'de> Deserialize<'de> for Keys {
                 Entry::WithAttrs(k, n, a, attrs) => match Chord::parse(&k) {
                     Some(ch) => keys.push((ch, n, a, *attrs)),
                     None => {
-                        return Err(serde::de::Error::custom(format!(
+                        return Err(DeError::custom(format!(
                             "Failed to parse chord: {}",
                             k
                         )));
@@ -413,21 +423,19 @@ impl<'de> Deserialize<'de> for Keys {
                 },
             }
         }
-        Ok(Keys { keys })
+        Ok(Self { keys })
     }
 }
 
 impl Keys {
     /// Create a `Keys` from a RON string.
     pub fn from_ron(ron_str: &str) -> Result<Self, crate::Error> {
-        match ron::from_str::<Keys>(ron_str) {
+        match ron::from_str::<Self>(ron_str) {
             Ok(mode) => Ok(mode),
             Err(e) => Err(crate::Error::from_ron(ron_str, &e, None)),
         }
     }
-}
 
-impl Keys {
     /// Get the action and attributes associated with a key.
     pub(crate) fn get_with_attrs(&self, key: &Chord) -> Option<(&Action, &KeysAttrs)> {
         self.keys

@@ -3,6 +3,7 @@
 //! Shared logging helpers and CLI argument definitions for the hotki workspace.
 
 use clap::Args;
+use std::env;
 use tracing_subscriber::EnvFilter;
 
 /// Logging controls for CLI apps.
@@ -88,7 +89,7 @@ pub fn compute_spec(
     if let Some(lvl) = log_level {
         return level_spec_for(lvl);
     }
-    if let Ok(spec) = std::env::var("RUST_LOG") {
+    if let Ok(spec) = env::var("RUST_LOG") {
         if spec.contains("mrpc::connection") {
             spec
         } else {
@@ -109,5 +110,5 @@ pub fn env_filter_from_spec(spec: &str) -> EnvFilter {
 /// If the environment already specifies `RUST_LOG`, return that; otherwise return
 /// a default crate-scoped `info` configuration (with mrpc suppression).
 pub fn log_config_for_child() -> String {
-    std::env::var("RUST_LOG").unwrap_or_else(|_| level_spec_for("info"))
+    env::var("RUST_LOG").unwrap_or_else(|_| level_spec_for("info"))
 }

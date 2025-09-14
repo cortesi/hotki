@@ -1,17 +1,22 @@
+//! Smoketest binary for Hotki. Provides repeat and UI validation helpers.
 use clap::Parser;
 use logging as logshared;
 use tracing_subscriber::prelude::*;
 
 mod cli;
 mod config;
+/// Error definitions and hint helpers used by smoketest.
 mod error;
 // no local logging module; use shared crate
 mod orchestrator;
+/// Registry of helper process IDs for cleanup.
 mod proc_registry;
 mod process;
 mod results;
 mod runtime;
+/// RPC driving helpers against the running server.
 mod server_drive;
+/// Session management for launching and controlling hotki.
 mod session;
 mod test_runner;
 mod tests;
@@ -133,7 +138,9 @@ where
     };
 
     if let Some(mut o) = overlay {
-        let _ = o.kill_and_wait();
+        if let Err(e) = o.kill_and_wait() {
+            eprintln!("smoketest: failed to stop overlay: {}", e);
+        }
     }
     out
 }
@@ -315,7 +322,9 @@ fn main() {
             // repeat‑relay opens a winit EventLoop; it must run on the main thread.
             run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::Shell => {
@@ -333,7 +342,9 @@ fn main() {
             }
             run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::Volume => {
@@ -354,7 +365,9 @@ fn main() {
                 repeat_volume(duration)
             });
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn),
@@ -459,13 +472,17 @@ fn main() {
                     eprintln!("place-flex: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
+                        if let Err(e) = o.kill_and_wait() {
+                            eprintln!("smoketest: failed to stop overlay: {}", e);
+                        }
                     }
                     std::process::exit(1);
                 }
             }
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::PlaceFallback => {
@@ -559,13 +576,17 @@ fn main() {
                     eprintln!("place-skip: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
+                        if let Err(e) = o.kill_and_wait() {
+                            eprintln!("smoketest: failed to stop overlay: {}", e);
+                        }
                     }
                     std::process::exit(1);
                 }
             }
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::FocusNav => {
@@ -846,13 +867,17 @@ fn main() {
                     eprintln!("ui: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
+                        if let Err(e) = o.kill_and_wait() {
+                            eprintln!("smoketest: failed to stop overlay: {}", e);
+                        }
                     }
                     std::process::exit(1);
                 }
             }
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         // Screenshots extracted to separate tool: hotki-shots
@@ -882,13 +907,17 @@ fn main() {
                     eprintln!("minui: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
+                        if let Err(e) = o.kill_and_wait() {
+                            eprintln!("smoketest: failed to stop overlay: {}", e);
+                        }
                     }
                     std::process::exit(1);
                 }
             }
             if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
+                if let Err(e) = o.kill_and_wait() {
+                    eprintln!("smoketest: failed to stop overlay: {}", e);
+                }
             }
         }
         Commands::Fullscreen { state, native } => {

@@ -1,10 +1,12 @@
 //! Command-line interface definitions for smoketest.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 use logging::LogArgs;
 
 use crate::config;
 
+/// Command-line interface arguments for the smoketest binary.
 #[derive(Parser, Debug)]
 #[command(name = "smoketest", about = "Hotki smoketest tool", version)]
 pub struct Cli {
@@ -32,31 +34,49 @@ pub struct Cli {
     #[arg(long, default_value_t = config::DEFAULT_TIMEOUT_MS)]
     pub timeout: u64,
 
+    /// Which subcommand to run
     #[command(subcommand)]
     pub command: Commands,
 }
 
+/// Named tests that can be run in sequence via `seq`.
 #[derive(Copy, Clone, Debug, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum SeqTest {
+    /// Relay repeat performance
     RepeatRelay,
+    /// Shell repeat performance
     RepeatShell,
+    /// Volume repeat performance
     RepeatVolume,
+    /// Focus handling
     Focus,
+    /// Raise operation
     Raise,
+    /// Hide operation
     Hide,
+    /// Grid placement
     Place,
+    /// Async placement behavior
     PlaceAsync,
+    /// Animated placement behavior
     PlaceAnimated,
+    /// Fullscreen behavior
     Fullscreen,
+    /// Full UI smoke
     Ui,
+    /// Mini UI smoke
     Minui,
 }
 
+/// Desired fullscreen state for tests.
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum FsState {
+    /// Toggle fullscreen
     Toggle,
+    /// Force fullscreen on
     On,
+    /// Force fullscreen off
     Off,
 }
 
@@ -249,10 +269,10 @@ pub enum Commands {
     WarnOverlay {
         /// Optional path from which the overlay reads status text to display
         #[arg(long)]
-        status_path: Option<std::path::PathBuf>,
+        status_path: Option<PathBuf>,
         /// Optional path from which the overlay reads info text to display
         #[arg(long)]
-        info_path: Option<std::path::PathBuf>,
+        info_path: Option<PathBuf>,
     },
 
     /// Launch UI with test config and drive a short HUD + theme cycle

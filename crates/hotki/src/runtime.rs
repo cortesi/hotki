@@ -1,11 +1,20 @@
-use std::{collections::VecDeque, path::Path, process::Command, thread};
+//! UI runtime: connects to the server, forwards events to the UI, and applies
+//! configuration/overrides. This module also handles permissions helpers and
+//! convenience actions for opening macOS settings.
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    process::{self, Command},
+    thread,
+};
 
+use config::themes;
 use egui::Context;
-use hotki_protocol::{MsgToUI, NotifyKind};
+use hotki_protocol::{NotifyKind, ipc::heartbeat};
 use hotki_server::Client;
 use tokio::{
     sync::{mpsc, oneshot},
-    time::{Duration, Instant as TokioInstant, Sleep},
+    time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
 use tracing::{debug, error, info};
 
@@ -14,31 +23,43 @@ use crate::{app::AppEvent, logs, permissions::check_permissions};
 /// Actions that adjust UI overrides on the current cursor (theme and user style).
 #[derive(Debug, Clone)]
 enum UiOverride {
+    /// Switch to the next theme.
     ThemeNext,
+    /// Switch to the previous theme.
     ThemePrev,
+    /// Set the theme to the given name.
     ThemeSet(String),
+    /// Toggle or set the user style state.
     UserStyle(config::Toggle),
 }
 
 /// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
 struct ConnectionDriver {
-    // Static inputs
-    config_path: std::path::PathBuf,
+    /// Path to the config file used for reloads.
+    config_path: PathBuf,
+    /// Optional server log filter passed to the child server process.
     server_log_filter: Option<String>,
+    /// Channel to send UI app events.
     tx_keys: mpsc::UnboundedSender<AppEvent>,
+    /// egui context used to request repaints.
     egui_ctx: Context,
+    /// Control channel from UI widgets and tray.
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
+    /// Control channel back into the runtime (self-directed messages).
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
 
-    // Mutable session state
+    /// Current UI configuration.
     ui_config: config::Config,
+    /// Current cursor context used to evaluate UI state.
     current_cursor: config::Cursor,
+    /// When true, periodically dump the world snapshot to logs.
     dumpworld: bool,
 }
 
 impl ConnectionDriver {
+    /// Construct a new driver instance with initial configuration and channels.
     fn new(
-        config_path: std::path::PathBuf,
+        config_path: PathBuf,
         server_log_filter: Option<String>,
         tx_keys: mpsc::UnboundedSender<AppEvent>,
         egui_ctx: Context,
@@ -67,13 +88,74 @@ impl ConnectionDriver {
         }
     }
 
+    /// Handle control messages received before the server connection is ready.
+    /// Returns true if a Shutdown was requested (caller should exit).
+    async fn handle_preconnect_control(
+        &self,
+        msg: ControlMsg,
+        preconnect_queue: &mut VecDeque<ControlMsg>,
+    ) -> bool {
+        match msg.clone() {
+            ControlMsg::Shutdown => {
+                if self.tx_keys.send(AppEvent::Shutdown).is_err() {
+                    tracing::warn!("failed to send Shutdown UI event");
+                }
+                self.egui_ctx.request_repaint();
+                sleep(Duration::from_millis(250)).await;
+                return true;
+            }
+            ControlMsg::Reload | ControlMsg::SwitchTheme(_) => {
+                preconnect_queue.push_back(msg);
+            }
+            ControlMsg::OpenAccessibility => {
+                open_accessibility_settings();
+                self.notify(
+                    NotifyKind::Info,
+                    "Accessibility",
+                    "Opening Accessibility settings...",
+                );
+            }
+            ControlMsg::OpenInputMonitoring => {
+                open_input_monitoring_settings();
+                self.notify(
+                    NotifyKind::Info,
+                    "Input Monitoring",
+                    "Opening Input Monitoring settings...",
+                );
+            }
+            ControlMsg::OpenPermissionsHelp => {
+                if self.tx_keys.send(AppEvent::ShowPermissionsHelp).is_err() {
+                    tracing::warn!("failed to send permissions help event");
+                }
+                self.egui_ctx.request_repaint();
+            }
+            ControlMsg::Notice { kind, title, text } => {
+                if self
+                    .tx_keys
+                    .send(AppEvent::Notify { kind, title, text })
+                    .is_err()
+                {
+                    tracing::warn!("failed to send Notify");
+                }
+                self.egui_ctx.request_repaint();
+            }
+        }
+        false
+    }
+
     /// Helper to send a UI notification.
     fn notify(&self, kind: NotifyKind, title: &str, text: &str) {
-        let _ = self.tx_keys.send(AppEvent::Notify {
-            kind,
-            title: title.to_string(),
-            text: text.to_string(),
-        });
+        if self
+            .tx_keys
+            .send(AppEvent::Notify {
+                kind,
+                title: title.to_string(),
+                text: text.to_string(),
+            })
+            .is_err()
+        {
+            tracing::warn!("failed to send Notify");
+        }
         self.egui_ctx.request_repaint();
     }
 
@@ -86,11 +168,15 @@ impl ConnectionDriver {
                     .override_theme
                     .as_deref()
                     .unwrap_or("default");
-                let next = config::themes::get_next_theme(cur);
+                let next = themes::get_next_theme(cur);
                 self.current_cursor.set_theme(Some(next));
-                let _ = self
+                if self
                     .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()));
+                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
+                    .is_err()
+                {
+                    tracing::warn!("failed to send UpdateCursor (next theme)");
+                }
             }
             UiOverride::ThemePrev => {
                 let cur = self
@@ -98,68 +184,197 @@ impl ConnectionDriver {
                     .override_theme
                     .as_deref()
                     .unwrap_or("default");
-                let prev = config::themes::get_prev_theme(cur);
+                let prev = themes::get_prev_theme(cur);
                 self.current_cursor.set_theme(Some(prev));
-                let _ = self
+                if self
                     .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()));
+                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
+                    .is_err()
+                {
+                    tracing::warn!("failed to send UpdateCursor (prev theme)");
+                }
             }
             UiOverride::ThemeSet(name) => {
-                if config::themes::theme_exists(&name) {
+                if themes::theme_exists(&name) {
                     self.current_cursor.set_theme(Some(&name));
-                    let _ = self
+                    if self
                         .tx_keys
-                        .send(AppEvent::UpdateCursor(self.current_cursor.clone()));
+                        .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
+                        .is_err()
+                    {
+                        tracing::warn!("failed to send UpdateCursor (set theme)");
+                    }
                 } else {
                     self.notify(NotifyKind::Error, "Theme", "Theme not found");
                 }
             }
             UiOverride::UserStyle(tg) => {
-                use config::Toggle as Tg;
                 match tg {
-                    Tg::On => self.current_cursor.set_user_style_enabled(true),
-                    Tg::Off => self.current_cursor.set_user_style_enabled(false),
-                    Tg::Toggle => self
+                    config::Toggle::On => self.current_cursor.set_user_style_enabled(true),
+                    config::Toggle::Off => self.current_cursor.set_user_style_enabled(false),
+                    config::Toggle::Toggle => self
                         .current_cursor
                         .set_user_style_enabled(!self.current_cursor.user_ui_disabled),
                 }
-                let _ = self
+                if self
                     .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()));
+                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
+                    .is_err()
+                {
+                    tracing::warn!("failed to send UpdateCursor (user style)");
+                }
             }
         }
         self.egui_ctx.request_repaint();
     }
 
+    // Handle a control message while connected; may exit the process on Shutdown.
+    /// Handle a control message while connected; may exit the process on Shutdown.
+    async fn handle_runtime_control(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+        msg: ControlMsg,
+    ) {
+        match msg {
+            ControlMsg::Shutdown => {
+                if self.tx_keys.send(AppEvent::Shutdown).is_err() {
+                    tracing::warn!("failed to send Shutdown UI event");
+                }
+                self.egui_ctx.request_repaint();
+                sleep(Duration::from_millis(250)).await;
+                process::exit(0);
+            }
+            ControlMsg::SwitchTheme(name) => {
+                self.apply_ui_override(UiOverride::ThemeSet(name));
+            }
+            other => {
+                handle_control_msg(
+                    conn,
+                    other,
+                    &mut self.ui_config,
+                    &self.config_path,
+                    &self.tx_keys,
+                    &self.egui_ctx,
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Handle a single server-to-UI event received from the engine.
+    async fn handle_server_msg(&mut self, msg: hotki_protocol::MsgToUI) {
+        match msg {
+            hotki_protocol::MsgToUI::HudUpdate { cursor } => {
+                self.current_cursor = cursor;
+                let vks = self.ui_config.hud_keys_ctx(&self.current_cursor);
+                let visible_keys: Vec<(String, String, bool)> = vks
+                    .into_iter()
+                    .filter(|(_, _, attrs, _)| !attrs.hide())
+                    .map(|(k, desc, _attrs, is_mode)| (k.to_string(), desc, is_mode))
+                    .collect();
+                let depth = self.ui_config.depth(&self.current_cursor);
+                let parent_title = self
+                    .ui_config
+                    .parent_title(&self.current_cursor)
+                    .map(|s| s.to_string());
+                if self
+                    .tx_keys
+                    .send(AppEvent::KeyUpdate {
+                        visible_keys,
+                        depth,
+                        cursor: self.current_cursor.clone(),
+                        parent_title,
+                    })
+                    .is_err()
+                {
+                    tracing::warn!("failed to send KeyUpdate");
+                }
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::Notify { kind, title, text } => {
+                if self
+                    .tx_keys
+                    .send(AppEvent::Notify { kind, title, text })
+                    .is_err()
+                {
+                    tracing::warn!("failed to send Notify");
+                }
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::ReloadConfig => {
+                if self.tx_ctrl_runtime.send(ControlMsg::Reload).is_err() {
+                    tracing::warn!("failed to send Reload control");
+                }
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::ClearNotifications => {
+                if self.tx_keys.send(AppEvent::ClearNotifications).is_err() {
+                    tracing::warn!("failed to send ClearNotifications");
+                }
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::ShowDetails(arg) => {
+                match arg {
+                    config::Toggle::On => {
+                        if self.tx_keys.send(AppEvent::ShowDetails).is_err() {
+                            tracing::warn!("failed to send ShowDetails");
+                        }
+                    }
+                    config::Toggle::Off => {
+                        if self.tx_keys.send(AppEvent::HideDetails).is_err() {
+                            tracing::warn!("failed to send HideDetails");
+                        }
+                    }
+                    config::Toggle::Toggle => {
+                        if self.tx_keys.send(AppEvent::ToggleDetails).is_err() {
+                            tracing::warn!("failed to send ToggleDetails");
+                        }
+                    }
+                }
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::ThemeNext => {
+                self.apply_ui_override(UiOverride::ThemeNext);
+            }
+            hotki_protocol::MsgToUI::ThemePrev => {
+                self.apply_ui_override(UiOverride::ThemePrev);
+            }
+            hotki_protocol::MsgToUI::ThemeSet(name) => {
+                self.apply_ui_override(UiOverride::ThemeSet(name));
+            }
+            hotki_protocol::MsgToUI::UserStyle(arg) => {
+                self.apply_ui_override(UiOverride::UserStyle(arg));
+            }
+            hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
+            hotki_protocol::MsgToUI::Log {
+                level,
+                target,
+                message,
+            } => {
+                logs::push_server(level, target, message);
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::Heartbeat(_) => {
+                // No-op beyond heartbeat timer reset in the caller
+            }
+            hotki_protocol::MsgToUI::World(msg) => {
+                if self.dumpworld {
+                    debug!("World event: {:?}", msg);
+                }
+            }
+        }
+    }
+
     /// Background connect with a preconnect control-message queue. Returns an open connection.
     async fn connect(&mut self, initial_cfg: config::Config) -> Option<hotki_server::Client> {
         // Kick off server connect in background, but keep servicing control messages
-        fn spawn_connect(log_filter: Option<String>) -> oneshot::Receiver<hotki_server::Client> {
-            let (tx_conn_ready, rx) = oneshot::channel::<hotki_server::Client>();
-            tokio::spawn(async move {
-                let client = if let Some(f) = log_filter.clone() {
-                    Client::new()
-                        .with_auto_spawn_server()
-                        .with_server_log_filter(f)
-                } else {
-                    Client::new().with_auto_spawn_server()
-                };
-                match client.connect().await {
-                    Ok(c) => {
-                        let _ = tx_conn_ready.send(c);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to connect to hotkey server: {}", e);
-                    }
-                }
-            });
-            rx
-        }
 
         // Show permissions help if either permission is missing
         let perms = check_permissions();
         if !perms.accessibility_ok || !perms.input_ok {
-            let _ = self.tx_keys.send(AppEvent::ShowPermissionsHelp);
+            if self.tx_keys.send(AppEvent::ShowPermissionsHelp).is_err() {
+                tracing::warn!("failed to send permissions help event");
+            }
             self.egui_ctx.request_repaint();
         }
 
@@ -173,39 +388,15 @@ impl ConnectionDriver {
                         Ok(c) => break c,
                         Err(_) => {
                             error!("Connect task canceled");
-                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            sleep(Duration::from_millis(300)).await;
                             rx_conn_ready = spawn_connect(self.server_log_filter.clone());
                         }
                     }
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    match msg.clone() {
-                        ControlMsg::Shutdown => {
-                            // Ask UI to hide everything, allow a brief window to process, then exit
-                            let _ = self.tx_keys.send(AppEvent::Shutdown);
-                            self.egui_ctx.request_repaint();
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                            std::process::exit(0);
-                        }
-                        ControlMsg::Reload | ControlMsg::SwitchTheme(_) => {
-                            preconnect_queue.push_back(msg);
-                        }
-                        ControlMsg::OpenAccessibility => {
-                            open_accessibility_settings();
-                            self.notify(NotifyKind::Info, "Accessibility", "Opening Accessibility settings...");
-                        }
-                        ControlMsg::OpenInputMonitoring => {
-                            open_input_monitoring_settings();
-                            self.notify(NotifyKind::Info, "Input Monitoring", "Opening Input Monitoring settings...");
-                        }
-                        ControlMsg::OpenPermissionsHelp => {
-                            let _ = self.tx_keys.send(AppEvent::ShowPermissionsHelp);
-                            self.egui_ctx.request_repaint();
-                        }
-                        ControlMsg::Notice { kind, title, text } => {
-                            let _ = self.tx_keys.send(AppEvent::Notify { kind, title, text });
-                            self.egui_ctx.request_repaint();
-                        }
+                    if self.handle_preconnect_control(msg, &mut preconnect_queue).await {
+                        // Shutdown requested; exit early
+                        process::exit(0);
                     }
                 }
             }
@@ -259,12 +450,12 @@ impl ConnectionDriver {
             }
         };
         // Heartbeat: if we don't receive any server message within timeout, exit.
-        let hb_timer: Sleep = tokio::time::sleep(hotki_protocol::ipc::heartbeat::timeout());
+        let hb_timer: Sleep = sleep(heartbeat::timeout());
         tokio::pin!(hb_timer);
         // Optional world dump timer
-        let dump_interval = std::time::Duration::from_secs(5);
-        let dump_far_future = std::time::Duration::from_secs(3600);
-        let dump_timer: Sleep = tokio::time::sleep(if self.dumpworld {
+        let dump_interval = Duration::from_secs(5);
+        let dump_far_future = Duration::from_secs(3600);
+        let dump_timer: Sleep = sleep(if self.dumpworld {
             dump_interval
         } else {
             dump_far_future
@@ -280,113 +471,14 @@ impl ConnectionDriver {
                     break;
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    match msg {
-                        ControlMsg::Shutdown => {
-                            let _ = self.tx_keys.send(AppEvent::Shutdown);
-                            self.egui_ctx.request_repaint();
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                            std::process::exit(0);
-                        }
-                        ControlMsg::SwitchTheme(name) => {
-                            // Theme override now lives on Location; update and refresh UI
-                            self.apply_ui_override(UiOverride::ThemeSet(name));
-                        }
-                        other => {
-                            handle_control_msg(
-                                conn,
-                                other,
-                                &mut self.ui_config,
-                                &self.config_path,
-                                &self.tx_keys,
-                                &self.egui_ctx,
-                            ).await;
-                        }
-                    }
+                    self.handle_runtime_control(conn, msg).await;
                 }
                 resp = conn.recv_event() => {
                     match resp {
-                        Ok(MsgToUI::HudUpdate { cursor }) => {
+                        Ok(msg) => {
                             // Any message indicates liveness; reset the heartbeat timer
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            self.current_cursor = cursor.clone();
-                            // Compute UI-facing fields from our Config using cursor context
-                            let vks = self.ui_config.hud_keys_ctx(&self.current_cursor);
-                            let visible_keys: Vec<(String, String, bool)> = vks
-                                .into_iter()
-                                .filter(|(_, _, attrs, _)| !attrs.hide())
-                                .map(|(k, desc, _attrs, is_mode)| (k.to_string(), desc, is_mode))
-                                .collect();
-                            let depth = self.ui_config.depth(&self.current_cursor);
-                            let parent_title = self.ui_config.parent_title(&self.current_cursor).map(|s| s.to_string());
-                            let _ = self.tx_keys.send(AppEvent::KeyUpdate { visible_keys, depth, cursor: self.current_cursor.clone(), parent_title });
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::Notify { kind, title, text }) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            let _ = self.tx_keys.send(AppEvent::Notify { kind, title, text });
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::ReloadConfig) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            let _ = self.tx_ctrl_runtime.send(ControlMsg::Reload);
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::ClearNotifications) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            let _ = self.tx_keys.send(AppEvent::ClearNotifications);
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::ShowDetails(arg)) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            use config::Toggle as Tg;
-                            match arg {
-                                Tg::On => { let _ = self.tx_keys.send(AppEvent::ShowDetails); }
-                                Tg::Off => { let _ = self.tx_keys.send(AppEvent::HideDetails); }
-                                Tg::Toggle => { let _ = self.tx_keys.send(AppEvent::ToggleDetails); }
-                            }
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::ThemeNext) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            self.apply_ui_override(UiOverride::ThemeNext);
-                        }
-                        Ok(MsgToUI::ThemePrev) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            self.apply_ui_override(UiOverride::ThemePrev);
-                        }
-                        Ok(MsgToUI::ThemeSet(name)) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            self.apply_ui_override(UiOverride::ThemeSet(name));
-                        }
-                        Ok(MsgToUI::UserStyle(arg)) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            self.apply_ui_override(UiOverride::UserStyle(arg));
-                        }
-                        Ok(MsgToUI::HotkeyTriggered(_)) => {}
-                        Ok(MsgToUI::Log { level, target, message }) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            logs::push_server(level, target, message);
-                            self.egui_ctx.request_repaint();
-                        }
-                        Ok(MsgToUI::Heartbeat(_)) => {
-                            // Liveness tick; reset timer and do nothing else.
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                        }
-                        Ok(MsgToUI::World(msg)) => {
-                            // World event stream; record liveness and log.
-                            hb_timer.as_mut().reset(TokioInstant::now() + hotki_protocol::ipc::heartbeat::timeout());
-                            match msg {
-                                hotki_protocol::WorldStreamMsg::FocusChanged(Some(app)) => {
-                                    debug!("World FocusChanged: app={} pid={} title={}", app.app, app.pid, app.title);
-                                }
-                                hotki_protocol::WorldStreamMsg::FocusChanged(None) => {
-                                    debug!("World FocusChanged: none");
-                                }
-                                hotki_protocol::WorldStreamMsg::ResyncRecommended => {
-                                    debug!("World ResyncRecommended: UI may request snapshot later");
-                                }
-                                _ => {}
-                            }
+                            hb_timer.as_mut().reset(TokioInstant::now() + heartbeat::timeout());
+                            self.handle_server_msg(msg).await;
                         }
                         Err(e) => {
                             match e {
@@ -404,33 +496,70 @@ impl ConnectionDriver {
                 }
                 // Periodic world dump (disabled when flag not set)
                 _ = &mut dump_timer => {
-                    if self.dumpworld {
-                        if let Ok(snap) = conn.get_world_snapshot().await {
-                            // Format a compact dump
-                            use std::fmt::Write as _;
-                            let mut out = String::new();
-                            let focused_ctx = snap.focused.as_ref().map(|f| format!("{} (pid={}) — {}", f.app, f.pid, f.title)).unwrap_or_else(|| "none".to_string());
-                            let _ = writeln!(out, "World: {} window(s); focused: {}", snap.windows.len(), focused_ctx);
-                            for w in snap.windows.iter() {
-                                let mark = if w.focused { '*' } else { ' ' };
-                                let disp = w.display_id.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-                                let title = if w.title.is_empty() { "(no title)" } else { &w.title };
-                                let _ = writeln!(out, "  {} z={:<2} pid={:<6} id={:<8} disp={:<3} app={:<16} title={}", mark, w.z, w.pid, w.id, disp, w.app, title);
-                            }
-                            tracing::info!(target: "hotki::worlddump", "\n{}", out);
-                        }
-                        // Re-arm timer
-                        dump_timer.as_mut().reset(TokioInstant::now() + dump_interval);
-                    } else {
-                        dump_timer.as_mut().reset(TokioInstant::now() + dump_far_future);
-                    }
+                    let next = self.compute_dump_reset(conn, dump_interval, dump_far_future).await;
+                    dump_timer.as_mut().reset(TokioInstant::now() + next);
                 }
             }
         }
         info!("Exiting key loop");
         // Terminate the process so any HUD windows are closed immediately.
         // Relying on UI message processing can stall if the UI isn't repainting.
-        std::process::exit(0);
+        process::exit(0);
+    }
+
+    /// Compute the next dump timer reset duration and optionally log a snapshot.
+    async fn compute_dump_reset(
+        &self,
+        conn: &mut hotki_server::Connection,
+        dump_interval: Duration,
+        dump_far_future: Duration,
+    ) -> Duration {
+        if self.dumpworld {
+            if let Ok(snap) = conn.get_world_snapshot().await {
+                use std::fmt::Write as _;
+                let mut out = String::new();
+                let focused_ctx = snap
+                    .focused
+                    .as_ref()
+                    .map(|f| format!("{} (pid={}) — {}", f.app, f.pid, f.title))
+                    .unwrap_or_else(|| "none".to_string());
+                if writeln!(
+                    out,
+                    "World: {} window(s); focused: {}",
+                    snap.windows.len(),
+                    focused_ctx
+                )
+                .is_err()
+                {
+                    tracing::debug!("failed to write world header line");
+                }
+                for w in snap.windows.iter() {
+                    let mark = if w.focused { '*' } else { ' ' };
+                    let disp = w
+                        .display_id
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    let title = if w.title.is_empty() {
+                        "(no title)"
+                    } else {
+                        &w.title
+                    };
+                    if writeln!(
+                        out,
+                        "  {} z={:<2} pid={:<6} id={:<8} disp={:<3} app={:<16} title={}",
+                        mark, w.z, w.pid, w.id, disp, w.app, title
+                    )
+                    .is_err()
+                    {
+                        tracing::debug!("failed to write world window line");
+                    }
+                }
+                tracing::info!(target: "hotki::worlddump", "\n{}", out);
+            }
+            dump_interval
+        } else {
+            dump_far_future
+        }
     }
 }
 
@@ -438,45 +567,65 @@ impl ConnectionDriver {
 pub enum ControlMsg {
     /// Reload from disk using `config_path`
     Reload,
+    /// Open macOS Accessibility privacy settings.
     OpenAccessibility,
+    /// Open macOS Input Monitoring privacy settings.
     OpenInputMonitoring,
     /// Gracefully shut down the UI and exit the process
     Shutdown,
     /// Request a theme switch by name (handled here on the live Config)
     SwitchTheme(String),
+    /// Open the in-app permissions help view.
     OpenPermissionsHelp,
     /// Forward a user-facing notice into the app UI
     Notice {
+        /// Notice severity kind.
         kind: NotifyKind,
+        /// Notice title text.
         title: String,
+        /// Notice body text.
         text: String,
     },
 }
 
-pub(crate) fn open_accessibility_settings() {
-    let _ = Command::new("open")
+fn open_accessibility_settings() {
+    if Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        .spawn();
+        .spawn()
+        .is_err()
+    {
+        tracing::warn!("failed to open Accessibility settings");
+    }
 }
 
-pub(crate) fn open_input_monitoring_settings() {
-    let _ = Command::new("open")
+/// Open the system preferences pane for Input Monitoring.
+fn open_input_monitoring_settings() {
+    if Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
-        .spawn();
+        .spawn()
+        .is_err()
+    {
+        tracing::warn!("failed to open Input Monitoring settings");
+    }
 }
 
-// Apply the current UI config: notify UI to reload and send config to server, then repaint
+/// Apply the current UI config: notify UI to reload and send config to server, then repaint.
 async fn apply_ui_config(
     ui_config: &config::Config,
     tx_keys: &mpsc::UnboundedSender<AppEvent>,
     egui_ctx: &Context,
 ) {
     // UI refresh request; sending config to server only necessary when config changed.
-    let _ = tx_keys.send(AppEvent::ReloadUI(Box::new(ui_config.clone())));
+    if tx_keys
+        .send(AppEvent::ReloadUI(Box::new(ui_config.clone())))
+        .is_err()
+    {
+        tracing::warn!("failed to send ReloadUI to app channel");
+    }
     egui_ctx.request_repaint();
 }
 
-// Single-source reload: load from disk, apply to UI + server, and notify success or error.
+/// Single-source reload: load from disk, apply to UI + server, and notify success or error.
 async fn reload_and_broadcast(
     conn: &mut hotki_server::Connection,
     ui_config: &mut config::Config,
@@ -487,27 +636,67 @@ async fn reload_and_broadcast(
     match config::load_from_path(config_path) {
         Ok(new_cfg) => {
             *ui_config = new_cfg.clone();
-            let _ = tx_keys.send(AppEvent::Notify {
-                kind: NotifyKind::Success,
-                title: "Config".to_string(),
-                text: "Reloaded successfully".to_string(),
-            });
+            if tx_keys
+                .send(AppEvent::Notify {
+                    kind: NotifyKind::Success,
+                    title: "Config".to_string(),
+                    text: "Reloaded successfully".to_string(),
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to send reload success notification");
+            }
             // For reload, push the new config to the server engine, then refresh UI
-            let _ = conn.set_config(ui_config.clone()).await;
+            if conn.set_config(ui_config.clone()).await.is_err() {
+                tracing::warn!("failed to push config to server on reload");
+            }
             apply_ui_config(ui_config, tx_keys, egui_ctx).await;
         }
         Err(e) => {
-            let _ = tx_keys.send(AppEvent::Notify {
-                kind: NotifyKind::Error,
-                title: "Config".to_string(),
-                text: e.pretty(),
-            });
+            if tx_keys
+                .send(AppEvent::Notify {
+                    kind: NotifyKind::Error,
+                    title: "Config".to_string(),
+                    text: e.pretty(),
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to send reload error notification");
+            }
             egui_ctx.request_repaint();
         }
     }
 }
 
-// Unified handler for all ControlMsg variants once a connection exists.
+// Spawn a background task to establish a server connection and return a oneshot
+// which resolves when the connection is ready.
+/// Spawn background task to establish a server connection and return a oneshot
+/// which resolves when the connection is ready.
+fn spawn_connect(log_filter: Option<String>) -> oneshot::Receiver<hotki_server::Client> {
+    let (tx_conn_ready, rx) = oneshot::channel::<hotki_server::Client>();
+    tokio::spawn(async move {
+        let client = if let Some(f) = log_filter.clone() {
+            Client::new()
+                .with_auto_spawn_server()
+                .with_server_log_filter(f)
+        } else {
+            Client::new().with_auto_spawn_server()
+        };
+        match client.connect().await {
+            Ok(c) => {
+                if tx_conn_ready.send(c).is_err() {
+                    tracing::warn!("connect-ready channel closed before send");
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect to hotkey server: {}", e);
+            }
+        }
+    });
+    rx
+}
+
+/// Unified handler for all `ControlMsg` variants once a connection exists.
 async fn handle_control_msg(
     conn: &mut hotki_server::Connection,
     msg: ControlMsg,
@@ -524,48 +713,72 @@ async fn handle_control_msg(
             // Handled in the event loop branches; no action here.
         }
         ControlMsg::SwitchTheme(name) => {
-            if config::themes::theme_exists(&name) {
+            if themes::theme_exists(&name) {
                 // Theme override now lives on Location; the live location is updated
                 // inside the event loop when HudUpdate arrives. Here we just request UI refresh.
                 apply_ui_config(ui_config, tx_keys, egui_ctx).await;
             } else {
-                let _ = tx_keys.send(AppEvent::Notify {
-                    kind: NotifyKind::Error,
-                    title: "Theme".to_string(),
-                    text: format!("Theme '{}' not found", name),
-                });
+                if tx_keys
+                    .send(AppEvent::Notify {
+                        kind: NotifyKind::Error,
+                        title: "Theme".to_string(),
+                        text: format!("Theme '{}' not found", name),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!("failed to send theme-not-found notification");
+                }
                 egui_ctx.request_repaint();
             }
         }
         ControlMsg::Notice { kind, title, text } => {
-            let _ = tx_keys.send(AppEvent::Notify { kind, title, text });
+            if tx_keys
+                .send(AppEvent::Notify { kind, title, text })
+                .is_err()
+            {
+                tracing::warn!("failed to send notification");
+            }
             egui_ctx.request_repaint();
         }
         ControlMsg::OpenAccessibility => {
             open_accessibility_settings();
-            let _ = tx_keys.send(AppEvent::Notify {
-                kind: NotifyKind::Info,
-                title: "Accessibility".to_string(),
-                text: "Opening Accessibility settings...".to_string(),
-            });
+            if tx_keys
+                .send(AppEvent::Notify {
+                    kind: NotifyKind::Info,
+                    title: "Accessibility".to_string(),
+                    text: "Opening Accessibility settings...".to_string(),
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to send accessibility notice");
+            }
             egui_ctx.request_repaint();
         }
         ControlMsg::OpenInputMonitoring => {
             open_input_monitoring_settings();
-            let _ = tx_keys.send(AppEvent::Notify {
-                kind: NotifyKind::Info,
-                title: "Input Monitoring".to_string(),
-                text: "Opening Input Monitoring settings...".to_string(),
-            });
+            if tx_keys
+                .send(AppEvent::Notify {
+                    kind: NotifyKind::Info,
+                    title: "Input Monitoring".to_string(),
+                    text: "Opening Input Monitoring settings...".to_string(),
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to send input monitoring notice");
+            }
             egui_ctx.request_repaint();
         }
         ControlMsg::OpenPermissionsHelp => {
-            let _ = tx_keys.send(AppEvent::ShowPermissionsHelp);
+            if tx_keys.send(AppEvent::ShowPermissionsHelp).is_err() {
+                tracing::warn!("failed to send permissions help event");
+            }
             egui_ctx.request_repaint();
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+/// Start background key runtime and server connection driver on a dedicated thread.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_key_runtime(
     cfg: &config::Config,
@@ -584,7 +797,8 @@ pub fn spawn_key_runtime(
     let egui_ctx = egui_ctx.clone();
     let tx_ctrl_runtime = tx_ctrl_runtime.clone();
     thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
+        use tokio::runtime::Runtime;
+        let rt = match Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!("Failed to create Tokio runtime: {}", e);

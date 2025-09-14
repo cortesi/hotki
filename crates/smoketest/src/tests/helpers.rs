@@ -1,6 +1,6 @@
 //! Shared helpers for smoketests to keep tests concise.
 
-use std::time::{Duration, Instant};
+use std::{thread, time::{Duration, Instant}};
 
 use crate::{
     config,
@@ -22,7 +22,7 @@ pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
         {
             return true;
         }
-        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     false
 }
@@ -37,7 +37,7 @@ pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: 
         if cg_ok || ax_ok {
             return true;
         }
-        std::thread::sleep(config::ms(poll_ms));
+        thread::sleep(config::ms(poll_ms));
     }
     false
 }
@@ -55,7 +55,7 @@ pub fn wait_for_windows_visible(entries: &[(i32, &str)], timeout_ms: u64) -> boo
         if all_found {
             return true;
         }
-        std::thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     false
 }
@@ -67,11 +67,11 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
             .into_iter()
             .find(|w| w.pid == pid && w.title == title)
         {
-            let _ = mac_winops::request_raise_window(pid, w.id);
+            drop(mac_winops::request_raise_window(pid, w.id));
         } else {
-            let _ = mac_winops::request_activate_pid(pid);
+            drop(mac_winops::request_activate_pid(pid));
         }
-        std::thread::sleep(config::ms(delay_ms));
+        thread::sleep(config::ms(delay_ms));
         if wait_for_frontmost_title(title, delay_ms) {
             break;
         }
@@ -81,17 +81,17 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
 /// Spawn a helper window with `title`, keep it alive for `lifetime_ms`, and
 /// block until it’s visible (or return an error).
 pub fn spawn_helper_visible(
-    title: String,
+    title: &str,
     lifetime_ms: u64,
     visible_timeout_ms: u64,
     poll_ms: u64,
     label_text: &str,
 ) -> Result<ManagedChild> {
-    let helper = HelperWindowBuilder::new(title.clone())
+    let helper = HelperWindowBuilder::new(title.to_string())
         .with_time_ms(lifetime_ms)
         .with_label_text(label_text)
         .spawn()?;
-    if !wait_for_window_visible(helper.pid, &title, visible_timeout_ms, poll_ms) {
+    if !wait_for_window_visible(helper.pid, title, visible_timeout_ms, poll_ms) {
         return Err(Error::FocusNotObserved {
             timeout_ms: visible_timeout_ms,
             expected: format!("helper window '{}' not visible", title),
@@ -102,7 +102,7 @@ pub fn spawn_helper_visible(
 
 /// Variant allowing initial window state options.
 pub fn spawn_helper_with_options(
-    title: String,
+    title: &str,
     lifetime_ms: u64,
     visible_timeout_ms: u64,
     poll_ms: u64,
@@ -110,13 +110,13 @@ pub fn spawn_helper_with_options(
     start_minimized: bool,
     start_zoomed: bool,
 ) -> Result<ManagedChild> {
-    let helper = HelperWindowBuilder::new(title.clone())
+    let helper = HelperWindowBuilder::new(title.to_string())
         .with_time_ms(lifetime_ms)
         .with_label_text(label_text)
         .with_start_minimized(start_minimized)
         .with_start_zoomed(start_zoomed)
         .spawn()?;
-    if !wait_for_window_visible(helper.pid, &title, visible_timeout_ms, poll_ms) {
+    if !wait_for_window_visible(helper.pid, title, visible_timeout_ms, poll_ms) {
         return Err(Error::FocusNotObserved {
             timeout_ms: visible_timeout_ms,
             expected: format!("helper window '{}' not visible", title),
@@ -134,39 +134,39 @@ pub struct HelperWindow {
 impl HelperWindow {
     /// Spawn a helper window and ensure it becomes frontmost. Kills on drop.
     pub fn spawn_frontmost(
-        title: String,
+        title: &str,
         lifetime_ms: u64,
         visible_timeout_ms: u64,
         poll_ms: u64,
         label_text: &str,
     ) -> Result<Self> {
         let child = spawn_helper_visible(
-            title.clone(),
+            title,
             lifetime_ms,
             visible_timeout_ms,
             poll_ms,
             label_text,
         )?;
         let pid = child.pid;
-        ensure_frontmost(pid, &title, 3, config::UI_ACTION_DELAY_MS);
+        ensure_frontmost(pid, title, 3, config::UI_ACTION_DELAY_MS);
         Ok(Self { child, pid })
     }
 
     /// Spawn using a preconfigured builder (for custom size/position), then ensure frontmost.
     pub fn spawn_frontmost_with_builder(
         builder: HelperWindowBuilder,
-        expected_title: String,
+        expected_title: &str,
         visible_timeout_ms: u64,
         poll_ms: u64,
     ) -> Result<Self> {
         let child = builder.spawn()?;
-        if !wait_for_window_visible(child.pid, &expected_title, visible_timeout_ms, poll_ms) {
+        if !wait_for_window_visible(child.pid, expected_title, visible_timeout_ms, poll_ms) {
             return Err(Error::FocusNotObserved {
                 timeout_ms: visible_timeout_ms,
                 expected: format!("helper window '{}' not visible", expected_title),
             });
         }
-        ensure_frontmost(child.pid, &expected_title, 3, config::UI_ACTION_DELAY_MS);
+        ensure_frontmost(child.pid, expected_title, 3, config::UI_ACTION_DELAY_MS);
         Ok(Self {
             pid: child.pid,
             child,

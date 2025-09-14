@@ -1,60 +1,83 @@
+//! Transient in-app notifications with stacking, animation, and theming.
 use std::time::{Duration, Instant};
 
 use config::{Notify, NotifyPos, NotifyTheme};
 use egui::{
     Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2,
+    text::LayoutJob,
 };
 use hotki_protocol::NotifyKind;
+use mac_winops::{nswindow, screen};
 
 use crate::fonts;
 
-// Duration for easing-based adjustment movements (seconds)
+/// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
 
 #[derive(Debug, Clone)]
+/// A single notification retained in the backlog list.
 pub struct BacklogEntry {
+    /// Notification kind.
     pub kind: NotifyKind,
+    /// Notification title.
     pub title: String,
+    /// Notification body text.
     pub text: String,
 }
 
 struct NotificationItem {
+    /// Stable viewport id for this notification window.
     id: ViewportId,
+    /// Title text.
     title: String,
+    /// Body text.
     text: String,
+    /// Kind/level (affects style and color).
     kind: NotifyKind,
+    /// Creation time used for expiry.
     created: Instant,
+    /// Remaining time-to-live.
     timeout: Duration,
-    // Computed each frame from stack order
+    /// Computed each frame from stack order.
     target_pos: Pos2,
-    // Current animated position
+    /// Current animated position.
     current_pos: Pos2,
-    // Animation state for position transitions
+    /// Animation state for position transitions.
     anim_start_pos: Pos2,
+    /// Animation start timestamp.
     anim_start_time: Instant,
-    // If true, snap to target (used for newly inserted items so only existing ones animate)
+    /// If true, snap to target (used for newly inserted items so only existing ones animate).
     snap_to_target: bool,
+    /// Cached window size used to build the viewport.
     size: Vec2,
 }
 
+/// Manages transient in-app notifications and their windows.
 pub struct NotificationCenter {
-    // Ephemeral, on-screen notification windows
+    /// Ephemeral, on-screen notification windows.
     items: Vec<NotificationItem>,
-    // Backlog of all notifications (most-recent first)
+    /// Backlog of all notifications (most-recent first).
     backlog: Vec<BacklogEntry>,
-    // Maximum backlog size
+    /// Maximum backlog size.
     max_items: usize,
+    /// Notification card width in logical pixels.
     width: f32,
+    /// Screen side to anchor notifications (left or right).
     side: NotifyPos,
+    /// Opacity of notification background [0..1].
     opacity: f32,
+    /// Default on-screen lifetime for notifications.
     timeout: Duration,
+    /// Monotonic counter for generating unique viewport ids.
     counter: u64,
-    // Per-kind concrete styling (fg, bg, weight) from config
+    /// Per-kind concrete styling (fg, bg, weight) from config.
     theme: NotifyTheme,
+    /// Window corner radius for notifications.
     radius: f32,
 }
 
 impl NotificationCenter {
+    /// Initialize a new notification center with defaults from `cfg`.
     pub fn new(cfg: &Notify) -> Self {
         Self {
             items: Vec::new(),
@@ -70,6 +93,7 @@ impl NotificationCenter {
         }
     }
 
+    /// Pick the appropriate window style for a given kind.
     fn style_for(kind: NotifyKind, theme: &NotifyTheme) -> &config::NotifyWindowStyle {
         match kind {
             NotifyKind::Info => &theme.info,
@@ -79,15 +103,77 @@ impl NotificationCenter {
         }
     }
 
+    /// Generate the next unique viewport id for a notification.
     fn next_id(&mut self) -> ViewportId {
         self.counter += 1;
         ViewportId::from_hash_of(format!("hotki_notify_{}", self.counter))
     }
 
-    fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
-        mac_winops::screen::active_frame()
+    /// Render the title row with optional icon.
+    fn render_title_row(
+        ui: &mut egui::Ui,
+        nctx: &Context,
+        title: &str,
+        icon: Option<&String>,
+        title_size: f32,
+        title_weight: config::FontWeight,
+        title_fg: Color32,
+    ) {
+        let title_fmt = egui::TextFormat {
+            color: title_fg,
+            font_id: egui::FontId::new(title_size, fonts::weight_family(title_weight)),
+            ..Default::default()
+        };
+        if let Some(ic) = icon
+            && !ic.is_empty()
+        {
+            let icon_text = egui::RichText::new(ic.clone()).font(egui::FontId::new(
+                title_size * 2.0,
+                egui::FontFamily::Proportional,
+            ));
+            ui.label(icon_text.color(title_fg));
+            let (icon_h, title_h) = nctx.fonts(|f| {
+                let ih = f
+                    .layout_no_wrap(
+                        ic.clone(),
+                        egui::FontId::new(title_size * 2.0, egui::FontFamily::Proportional),
+                        title_fg,
+                    )
+                    .size()
+                    .y;
+                let th = f
+                    .layout_no_wrap(
+                        title.to_string(),
+                        egui::FontId::new(title_size, fonts::weight_family(title_weight)),
+                        title_fg,
+                    )
+                    .size()
+                    .y;
+                (ih, th)
+            });
+            let vpad = ((icon_h - title_h) / 2.0).max(0.0);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                if vpad > 0.0 {
+                    ui.add_space(vpad);
+                }
+                let mut title_job = LayoutJob::default();
+                title_job.append(title, 0.0, title_fmt);
+                ui.label(title_job);
+            });
+            return;
+        }
+        let mut title_job = LayoutJob::default();
+        title_job.append(title, 0.0, title_fmt);
+        ui.label(title_job);
     }
 
+    /// Get the active screen frame and global top coordinate.
+    fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
+        screen::active_frame()
+    }
+
+    /// Queue a new notification to be displayed.
     pub fn push(&mut self, kind: NotifyKind, title: String, text: String) {
         let created = Instant::now();
         // Record in backlog first
@@ -122,6 +208,7 @@ impl NotificationCenter {
         self.items.insert(0, item);
     }
 
+    /// Compute layout positions for notification windows and update animations.
     fn layout(&mut self, ctx: &Context) {
         let m = 12.0; // screen margin
         let gap = 8.0; // vertical gap between notifications
@@ -207,6 +294,7 @@ impl NotificationCenter {
         }
     }
 
+    /// Render notification windows and advance animations.
     pub fn render(&mut self, ctx: &Context) {
         // Remove expired
         let now = Instant::now();
@@ -259,7 +347,7 @@ impl NotificationCenter {
             ctx.send_viewport_cmd_to(it.id, ViewportCommand::OuterPosition(it.current_pos));
 
             ctx.show_viewport_immediate(it.id, builder, |nctx, _| {
-                if let Err(e) = mac_winops::nswindow::apply_transparent_rounded(
+                if let Err(e) = nswindow::apply_transparent_rounded(
                     "Hotki Notification",
                     self.radius as f64,
                 ) {
@@ -334,67 +422,18 @@ impl NotificationCenter {
                 egui::CentralPanel::default().frame(frame).show(nctx, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
                     ui.horizontal(|ui| {
-                        let title_fmt = egui::TextFormat {
-                            color: title_fg,
-                            font_id: egui::FontId::new(title_size, fonts::weight_family(title_weight)),
-                            ..Default::default()
-                        };
-                        if let Some(ic) = icon.as_ref() {
-                            if !ic.is_empty() {
-                                // Draw icon first at 2x size
-                                // Render the icon using the proportional family to keep emoji/symbol fallback.
-                                let icon_text = egui::RichText::new(ic.clone())
-                                    .font(egui::FontId::new(title_size * 2.0, egui::FontFamily::Proportional));
-                                ui.label(icon_text.color(title_fg));
-
-                                // Vertically center the title relative to the taller icon
-                                let (icon_h, title_h) = nctx.fonts(|f| {
-                                    let ih = f
-                                        .layout_no_wrap(
-                                            ic.clone(),
-                                            egui::FontId::new(title_size * 2.0, egui::FontFamily::Proportional),
-                                            title_fg,
-                                        )
-                                        .size()
-                                        .y;
-                                    let th = f
-                                        .layout_no_wrap(
-                                            it.title.clone(),
-                                            egui::FontId::new(
-                                                title_size,
-                                                fonts::weight_family(title_weight),
-                                            ),
-                                            title_fg,
-                                        )
-                                        .size()
-                                        .y;
-                                    (ih, th)
-                                });
-                                let vpad = ((icon_h - title_h) / 2.0).max(0.0);
-                                ui.add_space(8.0);
-                                ui.vertical(|ui| {
-                                    if vpad > 0.0 {
-                                        ui.add_space(vpad);
-                                    }
-                                    let mut title_job = egui::text::LayoutJob::default();
-                                    title_job.append(&it.title, 0.0, title_fmt);
-                                    ui.label(title_job);
-                                });
-                            } else {
-                                // No icon content, just title
-                                let mut title_job = egui::text::LayoutJob::default();
-                                title_job.append(&it.title, 0.0, title_fmt);
-                                ui.label(title_job);
-                            }
-                        } else {
-                            // No icon configured
-                            let mut title_job = egui::text::LayoutJob::default();
-                            title_job.append(&it.title, 0.0, title_fmt);
-                            ui.label(title_job);
-                        }
+                        Self::render_title_row(
+                            ui,
+                            nctx,
+                            &it.title,
+                            icon.as_ref(),
+                            title_size,
+                            title_weight,
+                            title_fg,
+                        );
                     });
                     ui.horizontal_wrapped(|ui| {
-                        let mut text_job = egui::text::LayoutJob::default();
+                        let mut text_job = LayoutJob::default();
                         text_job.append(
                             &it.text,
                             0.0,

@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 ron = { workspace = true }
