@@ -99,6 +99,9 @@ fn normalize_before_move(win: &crate::AXElem, pid: i32, id_opt: Option<WindowId>
         }
     }
 
+    // Track if we changed window state that can affect AX settable bits.
+    let mut changed_state = false;
+
     // 2) If minimized, unminimize and wait
     match ax_bool(win.as_ptr(), cfstr("AXMinimized")) {
         Ok(Some(true)) => {
@@ -112,6 +115,7 @@ fn normalize_before_move(win: &crate::AXElem, pid: i32, id_opt: Option<WindowId>
                 sleep_ms(POLL_SLEEP_MS);
                 waited = waited.saturating_add(POLL_SLEEP_MS);
             }
+            changed_state = true;
         }
         Ok(Some(false)) => {}
         _ => {}
@@ -130,9 +134,16 @@ fn normalize_before_move(win: &crate::AXElem, pid: i32, id_opt: Option<WindowId>
                 sleep_ms(POLL_SLEEP_MS);
                 waited = waited.saturating_add(POLL_SLEEP_MS);
             }
+            changed_state = true;
         }
         Ok(Some(false)) => {}
         _ => {}
+    }
+
+    // If we toggled minimized/zoomed, clear cached settable flags so subsequent
+    // placement re-queries AXIsAttributeSettable with the updated window state.
+    if changed_state {
+        crate::ax::ax_clear_settable_cache(win.as_ptr());
     }
 
     // 4) Best‑effort raise: prefer our AX window; for known id, also use raise helper.

@@ -732,3 +732,13 @@ pub fn ax_settable_pos_size(element: *mut c_void) -> (Option<bool>, Option<bool>
     let size = ax_is_attribute_settable_cached(element, cfstr("AXSize"));
     (pos, size)
 }
+
+/// Clear cached AXIsAttributeSettable results for a given AX window element.
+/// This should be called after state changes like toggling `AXZoomed`/`AXMinimized`
+/// that can affect whether `AXPosition`/`AXSize` are settable.
+pub fn ax_clear_settable_cache(element: *mut c_void) {
+    let key = element as usize;
+    SETTABLE_CACHE.with(|cell| {
+        cell.borrow_mut().remove(&key);
+    });
+}

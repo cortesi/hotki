@@ -810,7 +810,9 @@ impl Engine {
 
         // Stage 6: Advisory pre-gate using World AX props for the focused window.
         // If the currently focused window belongs to our target pid and appears
-        // unsupported (role/subrole) or not settable (AXPosition/AXSize), skip early.
+        // unsupported (role/subrole) skip early. Only treat AXPosition=false as
+        // non-movable; allow proceeding when only AXSize is false so we can still
+        // attempt a position-only placement.
         if let Some(wf) = self.svc.world.focused_window().await
             && wf.pid == pid
             && let Some(ax) = wf.ax.clone()
@@ -827,8 +829,9 @@ impl Engine {
             } else if subrole == "AXFloatingWindow" {
                 reason = Some("floating");
             }
-            if reason.is_none() && (ax.can_set_pos == Some(false) || ax.can_set_size == Some(false))
-            {
+            // Only skip if position is explicitly non-settable. Size-only false
+            // should not block a move; winops will degrade to position-only.
+            if reason.is_none() && ax.can_set_pos == Some(false) {
                 reason = Some("not settable");
             }
             if let Some(r) = reason {
@@ -879,9 +882,9 @@ impl Engine {
                     } else if subrole == "AXFloatingWindow" {
                         reason = Some("floating");
                     }
-                    if reason.is_none()
-                        && (ax.can_set_pos == Some(false) || ax.can_set_size == Some(false))
-                    {
+                    // Only skip if position is explicitly non-settable. Size-only false
+                    // should not block a move; winops will degrade to position-only.
+                    if reason.is_none() && ax.can_set_pos == Some(false) {
                         reason = Some("not settable");
                     }
                     if let Some(r) = reason {
