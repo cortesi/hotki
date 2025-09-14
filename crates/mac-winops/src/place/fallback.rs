@@ -115,3 +115,4 @@ pub(super) fn fallback_shrink_move_grow(
 
     Ok(got)
 }
+// Safe‑park and shrink→move→grow fallback strategies.

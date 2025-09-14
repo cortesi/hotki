@@ -1,6 +1,7 @@
 use tracing::debug;
 
-use super::common::{Axis, diffs, now_ms, sleep_ms, within_eps};
+use super::common::{diffs, now_ms, sleep_ms, within_eps};
+use crate::geom::Axis;
 use crate::{
     ax::{
         ax_element_pid, ax_get_point, ax_get_size, ax_set_point, ax_set_size, warn_once_nonsettable,
@@ -214,11 +215,11 @@ pub(super) fn nudge_axis_pos_and_wait(
     let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
     let _cur_s = ax_get_size(win.as_ptr(), crate::ax::cfstr("AXSize"))?;
     let new_p = match axis {
-        Axis::X => geom::CGPoint {
+        Axis::Horizontal => geom::CGPoint {
             x: target.x,
             y: cur_p.y,
         },
-        Axis::Y => geom::CGPoint {
+        Axis::Vertical => geom::CGPoint {
             x: cur_p.x,
             y: target.y,
         },
@@ -226,8 +227,8 @@ pub(super) fn nudge_axis_pos_and_wait(
     debug!(
         "axis_nudge: {}: pos -> ({:.1},{:.1})",
         match axis {
-            Axis::X => "x",
-            Axis::Y => "y",
+            Axis::Horizontal => "x",
+            Axis::Vertical => "y",
         },
         new_p.x,
         new_p.y
@@ -298,21 +299,11 @@ pub(super) fn anchor_legal_size_and_wait(
 
     let anchored = Rect { x, y, w, h };
     debug!(
-        "anchor_legal: target=({:.1},{:.1},{:.1},{:.1}) observed=({:.1},{:.1},{:.1},{:.1}) -> anchored=({:.1},{:.1},{:.1},{:.1})",
-        target.x,
-        target.y,
-        target.w,
-        target.h,
-        observed.x,
-        observed.y,
-        observed.w,
-        observed.h,
-        anchored.x,
-        anchored.y,
-        anchored.w,
-        anchored.h
+        "anchor_legal: target={} observed={} -> anchored={}",
+        target, observed, anchored
     );
     // Apply position-first using the anchored rect.
     let (got, settle) = apply_and_wait(op_label, win, attr_pos, attr_size, &anchored, true, eps)?;
     Ok((got, anchored, settle))
 }
+// AX setters + settle/polling helpers used by placement ops.

@@ -109,3 +109,4 @@ pub(super) fn normalize_before_move(
     }
     Ok(())
 }
+// Pre‑placement normalization and role/subrole skip logic.

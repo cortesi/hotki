@@ -1,5 +1,6 @@
 use tracing::debug;
 
+// Shared placement utilities: constants, small helpers, and attempt options.
 use crate::geom::{self, Rect};
 
 /// Epsilon tolerance (in points) used to verify post‑placement position and size.
@@ -8,12 +9,8 @@ pub(super) const VERIFY_EPS: f64 = 2.0;
 pub(super) const POLL_SLEEP_MS: u64 = 25;
 pub(super) const POLL_TOTAL_MS: u64 = 400;
 
-/// Logical axis used for corrective nudges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Axis {
-    X,
-    Y,
-}
+// Use the unified geometry axis everywhere in placement modules.
+pub(super) use crate::geom::Axis;
 
 /// Options controlling placement attempts and fallback used primarily by tests.
 #[derive(Debug, Clone, Copy, Default)]
@@ -32,34 +29,16 @@ pub(super) fn sleep_ms(ms: u64) {
     sleep(Duration::from_millis(ms));
 }
 
-#[inline]
-pub(super) fn rect_from(x: f64, y: f64, w: f64, h: f64) -> Rect {
-    Rect { x, y, w, h }
-}
-
-#[inline]
-pub(super) fn diffs(a: &Rect, b: &Rect) -> (f64, f64, f64, f64) {
-    (
-        (a.x - b.x).abs(),
-        (a.y - b.y).abs(),
-        (a.w - b.w).abs(),
-        (a.h - b.h).abs(),
-    )
-}
-
-#[inline]
-pub(super) fn within_eps(d: (f64, f64, f64, f64), eps: f64) -> bool {
-    d.0 <= eps && d.1 <= eps && d.2 <= eps && d.3 <= eps
-}
+pub(super) use crate::geom::{diffs, within_eps};
 
 #[inline]
 pub(super) fn one_axis_off(d: (f64, f64, f64, f64), eps: f64) -> Option<Axis> {
     let x_ok = d.0 <= eps && d.2 <= eps; // dx,dw within eps
     let y_ok = d.1 <= eps && d.3 <= eps; // dy,dh within eps
     if x_ok && !y_ok {
-        Some(Axis::Y)
+        Some(Axis::Vertical)
     } else if y_ok && !x_ok {
-        Some(Axis::X)
+        Some(Axis::Horizontal)
     } else {
         None
     }

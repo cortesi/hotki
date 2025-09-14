@@ -80,17 +80,11 @@ pub fn fullscreen_nonnative(pid: i32, desired: Desired) -> Result<()> {
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
 
         let vf = visible_frame_containing_point(mtm, cur_p);
-        tracing::debug!(
-            "WinOps: visible frame x={} y={} w={} h={}",
-            vf.0,
-            vf.1,
-            vf.2,
-            vf.3
-        );
-        let target_p = CGPoint { x: vf.0, y: vf.1 };
+        tracing::debug!("WinOps: visible frame {}", vf);
+        let target_p = CGPoint { x: vf.x, y: vf.y };
         let target_s = CGSize {
-            width: vf.2,
-            height: vf.3,
+            width: vf.w,
+            height: vf.h,
         };
 
         let mut prev_key: Option<(i32, crate::WindowId)> = None;

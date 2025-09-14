@@ -6,10 +6,7 @@ use crate::geom::{self, CGPoint, Rect};
 
 /// Compute the visible frame (excluding menu bar and Dock) of the screen
 /// containing `p`. Falls back to main screen when not found.
-pub(crate) fn visible_frame_containing_point(
-    mtm: MainThreadMarker,
-    p: CGPoint,
-) -> (f64, f64, f64, f64) {
+pub(crate) fn visible_frame_containing_point(mtm: MainThreadMarker, p: CGPoint) -> Rect {
     // Try to find a screen containing the point.
     let mut chosen = None;
     for s in NSScreen::screens(mtm).iter() {
@@ -34,16 +31,31 @@ pub(crate) fn visible_frame_containing_point(
         NSScreen::mainScreen(mtm)
     }) {
         let r = scr.visibleFrame();
-        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
+        return Rect {
+            x: r.origin.x,
+            y: r.origin.y,
+            w: r.size.width,
+            h: r.size.height,
+        };
     }
     if let Some(s) = NSScreen::screens(mtm).iter().next() {
         debug!("visible_frame_containing_point: main screen unavailable; using first screen");
         let r = s.visibleFrame();
-        return (r.origin.x, r.origin.y, r.size.width, r.size.height);
+        return Rect {
+            x: r.origin.x,
+            y: r.origin.y,
+            w: r.size.width,
+            h: r.size.height,
+        };
     }
     // As a last resort, return a zero rect to avoid panics.
     debug!("visible_frame_containing_point: no screens available; returning zero rect");
-    (0.0, 0.0, 0.0, 0.0)
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+    }
 }
 
 /// Convert a rectangle expressed in screen‑local coordinates to global

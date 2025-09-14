@@ -8,6 +8,12 @@ pub struct CGPoint {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CGSize {
     pub width: f64,
     pub height: f64,
@@ -51,6 +57,24 @@ impl Rect {
     pub fn cy(&self) -> f64 {
         self.y + self.h / 2.0
     }
+
+    #[inline]
+    pub fn center(&self) -> Point {
+        Point {
+            x: self.cx(),
+            y: self.cy(),
+        }
+    }
+}
+
+impl core::fmt::Display for Rect {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "({:.1},{:.1},{:.1},{:.1})",
+            self.x, self.y, self.w, self.h
+        )
+    }
 }
 
 impl From<(CGPoint, CGSize)> for Rect {
@@ -77,9 +101,32 @@ impl From<Rect> for (CGPoint, CGSize) {
     }
 }
 
+impl From<CGPoint> for Point {
+    fn from(p: CGPoint) -> Self {
+        Point { x: p.x, y: p.y }
+    }
+}
+
+impl From<Point> for CGPoint {
+    fn from(p: Point) -> Self {
+        CGPoint { x: p.x, y: p.y }
+    }
+}
+
+impl core::fmt::Display for Point {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "({:.1},{:.1})", self.x, self.y)
+    }
+}
+
 #[inline]
 pub fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
     approx_eq_eps(a, b, eps)
+}
+
+#[inline]
+pub fn rect_from(x: f64, y: f64, w: f64, h: f64) -> Rect {
+    Rect { x, y, w, h }
 }
 
 #[inline]
@@ -98,6 +145,23 @@ pub fn rect_eq(p1: CGPoint, s1: CGSize, p2: CGPoint, s2: CGSize) -> bool {
 #[inline]
 pub fn point_in_rect(px: f64, py: f64, r: &Rect) -> bool {
     px >= r.left() && px <= r.right() && py >= r.bottom() && py <= r.top()
+}
+
+// Rect comparison helpers frequently used by placement logic ------------------
+
+#[inline]
+pub fn diffs(a: &Rect, b: &Rect) -> (f64, f64, f64, f64) {
+    (
+        (a.x - b.x).abs(),
+        (a.y - b.y).abs(),
+        (a.w - b.w).abs(),
+        (a.h - b.h).abs(),
+    )
+}
+
+#[inline]
+pub fn within_eps(d: (f64, f64, f64, f64), eps: f64) -> bool {
+    d.0 <= eps && d.1 <= eps && d.2 <= eps && d.3 <= eps
 }
 
 #[inline]

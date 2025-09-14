@@ -8,17 +8,14 @@ use super::{
         anchor_legal_size_and_wait, apply_and_wait, apply_size_only_and_wait,
         nudge_axis_pos_and_wait,
     },
-    common::{
-        Axis, PlaceAttemptOptions, VERIFY_EPS, clamp_flags, diffs, log_failure_context,
-        log_summary, rect_from, within_eps,
-    },
+    common::{PlaceAttemptOptions, VERIFY_EPS, clamp_flags, log_failure_context, log_summary},
     fallback::{fallback_shrink_move_grow, needs_safe_park, preflight_safe_park},
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
     Error, Result,
     ax::{ax_check, ax_get_point, ax_get_size, cfstr},
-    geom::{self, Rect},
+    geom::{self, Rect, diffs, rect_from, within_eps, Axis},
     screen_util::visible_frame_containing_point,
 };
 
@@ -47,73 +44,46 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
-        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+        let vf = visible_frame_containing_point(mtm, cur_p);
         let col = min(col, cols.saturating_sub(1));
         let row = min(row, rows.saturating_sub(1));
         let (x, y, w, h) = geom::grid_cell_rect(
-            vf_x,
-            vf_y,
-            vf_w.max(1.0),
-            vf_h.max(1.0),
+            vf.x,
+            vf.y,
+            vf.w.max(1.0),
+            vf.h.max(1.0),
             cols,
             rows,
             col,
             row,
         );
         let target_local = Rect {
-            x: x - vf_x,
-            y: y - vf_y,
+            x: x - vf.x,
+            y: y - vf.y,
             w,
             h,
         };
-        let g = crate::screen_util::globalize_rect(target_local, vf_x, vf_y);
+        let g = crate::screen_util::globalize_rect(target_local, vf.x, vf.y);
         debug!(
-            "coordspace: local=({:.1},{:.1},{:.1},{:.1}) + origin=({:.1},{:.1}) -> global=({:.1},{:.1},{:.1},{:.1})",
-            target_local.x,
-            target_local.y,
-            target_local.w,
-            target_local.h,
-            vf_x,
-            vf_y,
-            g.x,
-            g.y,
-            g.w,
-            g.h
+            "coordspace: local={} + origin=({:.1},{:.1}) -> global={}",
+            target_local, vf.x, vf.y, g
         );
         let target = rect_from(g.x, g.y, g.w, g.h);
-        if needs_safe_park(&target, vf_x, vf_y) {
+        if needs_safe_park(&target, vf.x, vf.y) {
             preflight_safe_park(
                 "place_grid_focused",
                 &win,
                 attr_pos,
                 attr_size,
-                vf_x,
-                vf_y,
+                vf.x,
+                vf.y,
                 &target,
             )?;
         }
+        let cur = Rect::from((cur_p, cur_s));
         debug!(
-            "WinOps: place_grid_focused: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
-            pid,
-            role,
-            subrole,
-            title,
-            cols,
-            rows,
-            col,
-            row,
-            cur_p.x,
-            cur_p.y,
-            cur_s.width,
-            cur_s.height,
-            vf_x,
-            vf_y,
-            vf_w,
-            vf_h,
-            x,
-            y,
-            w,
-            h
+            "WinOps: place_grid_focused: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur={} vf={} target={}",
+            pid, role, subrole, title, cols, rows, col, row, cur, vf, target
         );
         // Stage 2: choose initial order from cached settable bits; if that
         // does not converge within eps, retry with the opposite order (Stage 3).
@@ -140,24 +110,15 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         )?;
         let d1 = diffs(&got1, &target);
         // Stage 7.2: validate against the final screen selected by window center
-        let (vf2_x, vf2_y, vf2_w, vf2_h) = visible_frame_containing_point(
+        let vf2 = visible_frame_containing_point(
             mtm,
             geom::CGPoint {
                 x: got1.cx(),
                 y: got1.cy(),
             },
         );
-        let vf2_rect = rect_from(vf2_x, vf2_y, vf2_w, vf2_h);
-        debug!(
-            "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
-            got1.cx(),
-            got1.cy(),
-            vf2_x,
-            vf2_y,
-            vf2_w,
-            vf2_h
-        );
-        debug!("clamp={}", clamp_flags(&got1, &vf2_rect, VERIFY_EPS));
+        debug!("vf_used:center={} -> vf={}", got1.center(), vf2);
+        debug!("clamp={}", clamp_flags(&got1, &vf2, VERIFY_EPS));
         log_summary(
             if initial_pos_first {
                 "pos->size"
@@ -171,20 +132,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
         if within_eps(d1, VERIFY_EPS) {
             debug!("verified=true");
             debug!(
-                "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                pid,
-                target.x,
-                target.y,
-                target.w,
-                target.h,
-                got1.x,
-                got1.y,
-                got1.w,
-                got1.h,
-                d1.0,
-                d1.1,
-                d1.2,
-                d1.3
+                "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                pid, target, got1, d1.0, d1.1, d1.2, d1.3
             );
             Ok(())
         } else {
@@ -201,47 +150,31 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     VERIFY_EPS,
                 )?;
                 let dax = diffs(&got_ax, &target);
-                let (vf3_x, vf3_y, vf3_w, vf3_h) = visible_frame_containing_point(
+                let vf3 = visible_frame_containing_point(
                     mtm,
                     geom::CGPoint {
                         x: got_ax.cx(),
                         y: got_ax.cy(),
                     },
                 );
-                let vf3_rect = rect_from(vf3_x, vf3_y, vf3_w, vf3_h);
                 debug!(
-                    "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+                    "vf_used:center=({:.1},{:.1}) -> vf={}",
                     got_ax.cx(),
                     got_ax.cy(),
-                    vf3_x,
-                    vf3_y,
-                    vf3_w,
-                    vf3_h
+                    vf3
                 );
-                debug!("clamp={}", clamp_flags(&got_ax, &vf3_rect, VERIFY_EPS));
+                debug!("clamp={}", clamp_flags(&got_ax, &vf3, VERIFY_EPS));
                 let label = match axis {
-                    Axis::X => "axis-pos:x",
-                    Axis::Y => "axis-pos:y",
+                    Axis::Horizontal => "axis-pos:x",
+                    Axis::Vertical => "axis-pos:y",
                 };
                 log_summary(label, attempt_idx, VERIFY_EPS, dax);
                 if within_eps(dax, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=axis-pos, attempts=2");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got_ax.x,
-                        got_ax.y,
-                        got_ax.w,
-                        got_ax.h,
-                        dax.0,
-                        dax.1,
-                        dax.2,
-                        dax.3
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, target, got_ax, dax.0, dax.1, dax.2, dax.3
                     );
                     return Ok(());
                 }
@@ -258,24 +191,20 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 VERIFY_EPS,
             )?;
             let d2 = diffs(&got2, &target);
-            let (vf4_x, vf4_y, vf4_w, vf4_h) = visible_frame_containing_point(
+            let vf4 = visible_frame_containing_point(
                 mtm,
                 geom::CGPoint {
                     x: got2.cx(),
                     y: got2.cy(),
                 },
             );
-            let vf4_rect = rect_from(vf4_x, vf4_y, vf4_w, vf4_h);
             debug!(
-                "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+                "vf_used:center=({:.1},{:.1}) -> vf={}",
                 got2.cx(),
                 got2.cy(),
-                vf4_x,
-                vf4_y,
-                vf4_w,
-                vf4_h
+                vf4
             );
-            debug!("clamp={}", clamp_flags(&got2, &vf4_rect, VERIFY_EPS));
+            debug!("clamp={}", clamp_flags(&got2, &vf4, VERIFY_EPS));
             log_summary(
                 if initial_pos_first {
                     "size->pos"
@@ -301,26 +230,14 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got3.x,
-                        got3.y,
-                        got3.w,
-                        got3.h,
-                        d3.0,
-                        d3.1,
-                        d3.2,
-                        d3.3
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, target, got3, d3.0, d3.1, d3.2, d3.3
                     );
                     Ok(())
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
-                    let (vfx, vfy, vfw, vfh) = visible_frame_containing_point(
+                    let vf = visible_frame_containing_point(
                         mtm,
                         geom::CGPoint {
                             x: got3.cx(),
@@ -328,16 +245,12 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                         },
                     );
                     debug!(
-                        "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+                        "vf_used:center=({:.1},{:.1}) -> vf={}",
                         got3.cx(),
                         got3.cy(),
-                        vfx,
-                        vfy,
-                        vfw,
-                        vfh
+                        vf
                     );
-                    let vf_final = rect_from(vfx, vfy, vfw, vfh);
-                    let clamped = clamp_flags(&got3, &vf_final, VERIFY_EPS);
+                    let clamped = clamp_flags(&got3, &vf, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -354,20 +267,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
-                    "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                    pid,
-                    target.x,
-                    target.y,
-                    target.w,
-                    target.h,
-                    got2.x,
-                    got2.y,
-                    got2.w,
-                    got2.h,
-                    d2.0,
-                    d2.1,
-                    d2.2,
-                    d2.3
+                    "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    pid, target, got2, d2.0, d2.1, d2.2, d2.3
                 );
                 Ok(())
             } else {
@@ -406,16 +307,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     if within_eps(da, VERIFY_EPS) {
                         debug!("verified=true");
                         debug!(
-                            "WinOps: place_grid_focused verified (anchored legal) | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1})",
-                            pid,
-                            anchored.x,
-                            anchored.y,
-                            anchored.w,
-                            anchored.h,
-                            got_anchor.x,
-                            got_anchor.y,
-                            got_anchor.w,
-                            got_anchor.h
+                            "WinOps: place_grid_focused verified (anchored legal) | pid={} anchored={} got={}",
+                            pid, anchored, got_anchor
                         );
                         return Ok(());
                     }
@@ -435,15 +328,14 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     VERIFY_EPS,
                 )?;
                 let da = diffs(&got_anchor, &anchored);
-                let (vf5_x, vf5_y, vf5_w, vf5_h) = visible_frame_containing_point(
+                let vf5 = visible_frame_containing_point(
                     mtm,
                     geom::CGPoint {
                         x: got_anchor.cx(),
                         y: got_anchor.cy(),
                     },
                 );
-                let vf5_rect = rect_from(vf5_x, vf5_y, vf5_w, vf5_h);
-                debug!("clamp={}", clamp_flags(&got_anchor, &vf5_rect, VERIFY_EPS));
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
                 log_summary(
                     "anchor-legal",
                     attempt_idx.saturating_add(1),
@@ -454,20 +346,8 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     debug!("verified=true");
                     debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        anchored.x,
-                        anchored.y,
-                        anchored.w,
-                        anchored.h,
-                        got_anchor.x,
-                        got_anchor.y,
-                        got_anchor.w,
-                        got_anchor.h,
-                        da.0,
-                        da.1,
-                        da.2,
-                        da.3
+                        "WinOps: place_grid_focused verified | pid={} anchored={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, anchored, got_anchor, da.0, da.1, da.2, da.3
                     );
                     return Ok(());
                 }
@@ -485,26 +365,14 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got3.x,
-                        got3.y,
-                        got3.w,
-                        got3.h,
-                        d3.0,
-                        d3.1,
-                        d3.2,
-                        d3.3
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, target, got3, d3.0, d3.1, d3.2, d3.3
                     );
                     Ok(())
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
-                    let (vfx, vfy, vfw, vfh) = visible_frame_containing_point(
+                    let vf = visible_frame_containing_point(
                         mtm,
                         geom::CGPoint {
                             x: got3.cx(),
@@ -512,16 +380,12 @@ pub fn place_grid_focused(pid: i32, cols: u32, rows: u32, col: u32, row: u32) ->
                         },
                     );
                     debug!(
-                        "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+                        "vf_used:center=({:.1},{:.1}) -> vf={}",
                         got3.cx(),
                         got3.cy(),
-                        vfx,
-                        vfy,
-                        vfw,
-                        vfh
+                        vf
                     );
-                    let vf_final = rect_from(vfx, vfy, vfw, vfh);
-                    let clamped = clamp_flags(&got3, &vf_final, VERIFY_EPS);
+                    let clamped = clamp_flags(&got3, &vf, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -569,53 +433,35 @@ pub fn place_grid_focused_opts(
         }
         let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
-        let (vf_x, vf_y, vf_w, vf_h) = visible_frame_containing_point(mtm, cur_p);
+        let vf = visible_frame_containing_point(mtm, cur_p);
         let col = core::cmp::min(col, cols.saturating_sub(1));
         let row = core::cmp::min(row, rows.saturating_sub(1));
         let (x, y, w, h) = geom::grid_cell_rect(
-            vf_x,
-            vf_y,
-            vf_w.max(1.0),
-            vf_h.max(1.0),
+            vf.x,
+            vf.y,
+            vf.w.max(1.0),
+            vf.h.max(1.0),
             cols,
             rows,
             col,
             row,
         );
         let target = rect_from(x, y, w, h);
-        if needs_safe_park(&target, vf_x, vf_y) {
+        if needs_safe_park(&target, vf.x, vf.y) {
             preflight_safe_park(
                 "place_grid_focused",
                 &win,
                 attr_pos,
                 attr_size,
-                vf_x,
-                vf_y,
+                vf.x,
+                vf.y,
                 &target,
             )?;
         }
+        let cur = Rect::from((cur_p, cur_s));
         debug!(
-            "WinOps: place_grid_focused_opts: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur=({:.1},{:.1},{:.1},{:.1}) vf=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1})",
-            pid,
-            role,
-            subrole,
-            title,
-            cols,
-            rows,
-            col,
-            row,
-            cur_p.x,
-            cur_p.y,
-            cur_s.width,
-            cur_s.height,
-            vf_x,
-            vf_y,
-            vf_w,
-            vf_h,
-            x,
-            y,
-            w,
-            h
+            "WinOps: place_grid_focused_opts: pid={} role='{}' subrole='{}' title='{}' cols={} rows={} col={} row={} | cur={} vf={} target={}",
+            pid, role, subrole, title, cols, rows, col, row, cur, vf, target
         );
         let force_second = opts.force_second_attempt;
         let pos_first_only = opts.pos_first_only;
@@ -648,24 +494,20 @@ pub fn place_grid_focused_opts(
         )?;
         let d1 = diffs(&got1, &target);
         // Stage 7.2: validate against the final screen selected by window center
-        let (vf2_x, vf2_y, vf2_w, vf2_h) = visible_frame_containing_point(
+        let vf2 = visible_frame_containing_point(
             mtm,
             geom::CGPoint {
                 x: got1.cx(),
                 y: got1.cy(),
             },
         );
-        let vf2_rect = rect_from(vf2_x, vf2_y, vf2_w, vf2_h);
         debug!(
-            "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+            "vf_used:center=({:.1},{:.1}) -> vf={}",
             got1.cx(),
             got1.cy(),
-            vf2_x,
-            vf2_y,
-            vf2_w,
-            vf2_h
+            vf2
         );
-        debug!("clamp={}", clamp_flags(&got1, &vf2_rect, VERIFY_EPS));
+        debug!("clamp={}", clamp_flags(&got1, &vf2, VERIFY_EPS));
         log_summary(
             if initial_pos_first {
                 "pos->size"
@@ -679,27 +521,15 @@ pub fn place_grid_focused_opts(
         if within_eps(d1, VERIFY_EPS) && !force_second {
             debug!("verified=true");
             debug!(
-                "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                pid,
-                target.x,
-                target.y,
-                target.w,
-                target.h,
-                got1.x,
-                got1.y,
-                got1.w,
-                got1.h,
-                d1.0,
-                d1.1,
-                d1.2,
-                d1.3
+                "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                pid, target, got1, d1.0, d1.1, d1.2, d1.3
             );
             Ok(())
         } else {
             if pos_first_only {
                 debug!("verified=false");
                 log_failure_context(&win, &role, &subrole);
-                let clamped = clamp_flags(&got1, &vf2_rect, VERIFY_EPS);
+                let clamped = clamp_flags(&got1, &vf2, VERIFY_EPS);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
                     expected: target,
@@ -725,47 +555,26 @@ pub fn place_grid_focused_opts(
                     VERIFY_EPS,
                 )?;
                 let dax = diffs(&got_ax, &target);
-                let (vf3_x, vf3_y, vf3_w, vf3_h) = visible_frame_containing_point(
+                let vf3 = visible_frame_containing_point(
                     mtm,
                     geom::CGPoint {
                         x: got_ax.cx(),
                         y: got_ax.cy(),
                     },
                 );
-                let vf3_rect = rect_from(vf3_x, vf3_y, vf3_w, vf3_h);
-                debug!(
-                    "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
-                    got_ax.cx(),
-                    got_ax.cy(),
-                    vf3_x,
-                    vf3_y,
-                    vf3_w,
-                    vf3_h
-                );
-                debug!("clamp={}", clamp_flags(&got_ax, &vf3_rect, VERIFY_EPS));
+                debug!("vf_used:center={} -> vf={}", got_ax.center(), vf3);
+                debug!("clamp={}", clamp_flags(&got_ax, &vf3, VERIFY_EPS));
                 let label = match axis {
-                    Axis::X => "axis-pos:x",
-                    Axis::Y => "axis-pos:y",
+                    Axis::Horizontal => "axis-pos:x",
+                    Axis::Vertical => "axis-pos:y",
                 };
                 log_summary(label, attempt_idx, VERIFY_EPS, dax);
                 if within_eps(dax, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=axis-pos, attempts=2");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got_ax.x,
-                        got_ax.y,
-                        got_ax.w,
-                        got_ax.h,
-                        dax.0,
-                        dax.1,
-                        dax.2,
-                        dax.3
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, target, got_ax, dax.0, dax.1, dax.2, dax.3
                     );
                     return Ok(());
                 }
@@ -782,24 +591,15 @@ pub fn place_grid_focused_opts(
                 VERIFY_EPS,
             )?;
             let d2 = diffs(&got2, &target);
-            let (vf4_x, vf4_y, vf4_w, vf4_h) = visible_frame_containing_point(
+            let vf4 = visible_frame_containing_point(
                 mtm,
                 geom::CGPoint {
                     x: got2.cx(),
                     y: got2.cy(),
                 },
             );
-            let vf4_rect = rect_from(vf4_x, vf4_y, vf4_w, vf4_h);
-            debug!(
-                "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
-                got2.cx(),
-                got2.cy(),
-                vf4_x,
-                vf4_y,
-                vf4_w,
-                vf4_h
-            );
-            debug!("clamp={}", clamp_flags(&got2, &vf4_rect, VERIFY_EPS));
+            debug!("vf_used:center={} -> vf={}", got2.center(), vf4);
+            debug!("clamp={}", clamp_flags(&got2, &vf4, VERIFY_EPS));
             log_summary(
                 if initial_pos_first {
                     "size->pos"
@@ -825,16 +625,10 @@ pub fn place_grid_focused_opts(
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
                         pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got3.x,
-                        got3.y,
-                        got3.w,
-                        got3.h,
+                        target,
+                        got3,
                         d3.0,
                         d3.1,
                         d3.2,
@@ -844,24 +638,15 @@ pub fn place_grid_focused_opts(
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
-                    let (vfx, vfy, vfw, vfh) = visible_frame_containing_point(
+                    let vf = visible_frame_containing_point(
                         mtm,
                         geom::CGPoint {
                             x: got3.cx(),
                             y: got3.cy(),
                         },
                     );
-                    debug!(
-                        "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
-                        got3.cx(),
-                        got3.cy(),
-                        vfx,
-                        vfy,
-                        vfw,
-                        vfh
-                    );
-                    let vf_final = rect_from(vfx, vfy, vfw, vfh);
-                    let clamped = clamp_flags(&got3, &vf_final, VERIFY_EPS);
+                    debug!("vf_used:center={} -> vf={}", got3.center(), vf);
+                    let clamped = clamp_flags(&got3, &vf, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
@@ -878,20 +663,8 @@ pub fn place_grid_focused_opts(
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
-                    "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                    pid,
-                    target.x,
-                    target.y,
-                    target.w,
-                    target.h,
-                    got2.x,
-                    got2.y,
-                    got2.w,
-                    got2.h,
-                    d2.0,
-                    d2.1,
-                    d2.2,
-                    d2.3
+                    "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    pid, target, got2, d2.0, d2.1, d2.2, d2.3
                 );
                 Ok(())
             } else {
@@ -930,16 +703,10 @@ pub fn place_grid_focused_opts(
                     if within_eps(da, VERIFY_EPS) {
                         debug!("verified=true");
                         debug!(
-                            "WinOps: place_grid_focused verified (anchored legal) | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1})",
+                        "WinOps: place_grid_focused verified (anchored legal) | pid={} anchored={} got={}",
                             pid,
-                            anchored.x,
-                            anchored.y,
-                            anchored.w,
-                            anchored.h,
-                            got_anchor.x,
-                            got_anchor.y,
-                            got_anchor.w,
-                            got_anchor.h
+                            anchored,
+                            got_anchor
                         );
                         return Ok(());
                     }
@@ -959,15 +726,14 @@ pub fn place_grid_focused_opts(
                     VERIFY_EPS,
                 )?;
                 let da = diffs(&got_anchor, &anchored);
-                let (vf5_x, vf5_y, vf5_w, vf5_h) = visible_frame_containing_point(
+                let vf5 = visible_frame_containing_point(
                     mtm,
                     geom::CGPoint {
                         x: got_anchor.cx(),
                         y: got_anchor.cy(),
                     },
                 );
-                let vf5_rect = rect_from(vf5_x, vf5_y, vf5_w, vf5_h);
-                debug!("clamp={}", clamp_flags(&got_anchor, &vf5_rect, VERIFY_EPS));
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
                 log_summary(
                     "anchor-legal",
                     attempt_idx.saturating_add(1),
@@ -977,22 +743,10 @@ pub fn place_grid_focused_opts(
                 if within_eps(da, VERIFY_EPS) {
                     debug!("verified=true");
                     debug!("order_used=anchor-legal, attempts={}", attempt_idx + 1);
-                    debug!(
-                        "WinOps: place_grid_focused verified | pid={} anchored=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        anchored.x,
-                        anchored.y,
-                        anchored.w,
-                        anchored.h,
-                        got_anchor.x,
-                        got_anchor.y,
-                        got_anchor.w,
-                        got_anchor.h,
-                        da.0,
-                        da.1,
-                        da.2,
-                        da.3
-                    );
+                debug!(
+                    "WinOps: place_grid_focused verified | pid={} anchored={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                    pid, anchored, got_anchor, da.0, da.1, da.2, da.3
+                );
                     return Ok(());
                 }
                 // Stage 4: shrink→move→grow fallback
@@ -1009,26 +763,14 @@ pub fn place_grid_focused_opts(
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
-                        "WinOps: place_grid_focused verified | pid={} target=({:.1},{:.1},{:.1},{:.1}) got=({:.1},{:.1},{:.1},{:.1}) diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
-                        pid,
-                        target.x,
-                        target.y,
-                        target.w,
-                        target.h,
-                        got3.x,
-                        got3.y,
-                        got3.w,
-                        got3.h,
-                        d3.0,
-                        d3.1,
-                        d3.2,
-                        d3.3
+                        "WinOps: place_grid_focused verified | pid={} target={} got={} diff=(dx={:.2},dy={:.2},dw={:.2},dh={:.2})",
+                        pid, target, got3, d3.0, d3.1, d3.2, d3.3
                     );
                     Ok(())
                 } else {
                     debug!("verified=false");
                     log_failure_context(&win, &role, &subrole);
-                    let (vfx, vfy, vfw, vfh) = visible_frame_containing_point(
+                    let vf = visible_frame_containing_point(
                         mtm,
                         geom::CGPoint {
                             x: got3.cx(),
@@ -1036,16 +778,12 @@ pub fn place_grid_focused_opts(
                         },
                     );
                     debug!(
-                        "vf_used:center=({:.1},{:.1}) -> vf=({:.1},{:.1},{:.1},{:.1})",
+                        "vf_used:center=({:.1},{:.1}) -> vf={}",
                         got3.cx(),
                         got3.cy(),
-                        vfx,
-                        vfy,
-                        vfw,
-                        vfh
+                        vf
                     );
-                    let vf_final = rect_from(vfx, vfy, vfw, vfh);
-                    let clamped = clamp_flags(&got3, &vf_final, VERIFY_EPS);
+                    let clamped = clamp_flags(&got3, &vf, VERIFY_EPS);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_grid_focused",
                         expected: target,
