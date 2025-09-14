@@ -108,6 +108,7 @@ fn main() {
             Commands::FocusWinHelper {
                 title,
                 time,
+                delay_setframe_ms,
                 slot,
                 grid,
                 size,
@@ -142,6 +143,7 @@ fn main() {
                 if let Err(e) = winhelper::run_focus_winhelper(
                     &title,
                     time,
+                    delay_setframe_ms.unwrap_or(0),
                     slot,
                     grid_tuple,
                     size_tuple,
@@ -595,6 +597,38 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("place: ERROR: {}", e);
+                    print_hints(&e);
+                    if let Some(mut o) = overlay {
+                        let _ = o.kill_and_wait();
+                    }
+                    std::process::exit(1);
+                }
+            }
+            if let Some(mut o) = overlay {
+                let _ = o.kill_and_wait();
+            }
+        }
+        Commands::PlaceAsync => {
+            if !cli.quiet {
+                heading("Test: place-async");
+            }
+            let timeout = cli.timeout;
+            let logs = cli.logs;
+            let mut overlay = None;
+            if !cli.no_warn {
+                overlay = crate::process::start_warn_overlay_with_delay();
+                crate::process::write_overlay_status("place-async");
+            }
+            match run_on_main_with_watchdog("place-async", timeout, move || {
+                tests::place_async::run_place_async_test(timeout, logs)
+            }) {
+                Ok(()) => {
+                    if !cli.quiet {
+                        println!("place-async: OK (converged within default budget)")
+                    }
+                }
+                Err(e) => {
+                    eprintln!("place-async: ERROR: {}", e);
                     print_hints(&e);
                     if let Some(mut o) = overlay {
                         let _ = o.kill_and_wait();

@@ -5,6 +5,7 @@ use crate::config;
 pub(crate) fn run_focus_winhelper(
     title: &str,
     time_ms: u64,
+    delay_setframe_ms: u64,
     slot: Option<u8>,
     grid: Option<(u32, u32, u32, u32)>,
     size: Option<(f64, f64)>,
@@ -27,6 +28,14 @@ pub(crate) fn run_focus_winhelper(
         window: Option<winit::window::Window>,
         title: String,
         deadline: Instant,
+        delay_setframe_ms: u64,
+        // Async-frame state
+        last_pos: Option<(f64, f64)>,
+        last_size: Option<(f64, f64)>,
+        desired_pos: Option<(f64, f64)>,
+        desired_size: Option<(f64, f64)>,
+        apply_after: Option<Instant>,
+        suppress_events: bool,
         slot: Option<u8>,
         grid: Option<(u32, u32, u32, u32)>,
         size: Option<(f64, f64)>,
@@ -123,6 +132,16 @@ pub(crate) fn run_focus_winhelper(
                 std::thread::sleep(crate::config::ms(
                     crate::config::WINDOW_REGISTRATION_DELAY_MS,
                 ));
+
+                // Capture initial pos/size as our last-known geometry for async delay logic
+                let scale = win.scale_factor();
+                if let Ok(p) = win.outer_position() {
+                    let lp = p.to_logical::<f64>(scale);
+                    self.last_pos = Some((lp.x, lp.y));
+                }
+                let isz = win.inner_size();
+                let lsz = isz.to_logical::<f64>(scale);
+                self.last_size = Some((lsz.width, lsz.height));
 
                 // Optionally attach a simple sheet — placeholder (no-op for now).
                 let _ = self.attach_sheet;
@@ -231,6 +250,63 @@ pub(crate) fn run_focus_winhelper(
                 WindowEvent::CloseRequested => {
                     elwt.exit();
                 }
+                WindowEvent::Moved(new_pos) => {
+                    if self.delay_setframe_ms > 0 && !self.suppress_events {
+                        if let Some(win) = self.window.as_ref() {
+                            let scale = win.scale_factor();
+                            let lp = new_pos.to_logical::<f64>(scale);
+                            // Initialize last_pos if missing
+                            if self.last_pos.is_none()
+                                && let Ok(p0) = win.outer_position()
+                            {
+                                let p0l = p0.to_logical::<f64>(scale);
+                                self.last_pos = Some((p0l.x, p0l.y));
+                            }
+                            self.desired_pos = Some((lp.x, lp.y));
+                            if let Some((x, y)) = self.last_pos {
+                                self.suppress_events = true;
+                                win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                                self.suppress_events = false;
+                            }
+                            self.apply_after =
+                                Some(Instant::now() + crate::config::ms(self.delay_setframe_ms));
+                        }
+                    } else if !self.suppress_events {
+                        // Track last position when not delaying
+                        if let Some(win) = self.window.as_ref() {
+                            let scale = win.scale_factor();
+                            let lp = new_pos.to_logical::<f64>(scale);
+                            self.last_pos = Some((lp.x, lp.y));
+                        }
+                    }
+                }
+                WindowEvent::Resized(new_size) => {
+                    if self.delay_setframe_ms > 0 && !self.suppress_events {
+                        if let Some(win) = self.window.as_ref() {
+                            let scale = win.scale_factor();
+                            let lsz = new_size.to_logical::<f64>(scale);
+                            if self.last_size.is_none() {
+                                let s0 = win.inner_size().to_logical::<f64>(scale);
+                                self.last_size = Some((s0.width, s0.height));
+                            }
+                            self.desired_size = Some((lsz.width, lsz.height));
+                            if let Some((w, h)) = self.last_size {
+                                self.suppress_events = true;
+                                let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                                self.suppress_events = false;
+                            }
+                            self.apply_after =
+                                Some(Instant::now() + crate::config::ms(self.delay_setframe_ms));
+                        }
+                    } else if !self.suppress_events {
+                        // Track last size when not delaying
+                        if let Some(win) = self.window.as_ref() {
+                            let scale = win.scale_factor();
+                            let lsz = new_size.to_logical::<f64>(scale);
+                            self.last_size = Some((lsz.width, lsz.height));
+                        }
+                    }
+                }
                 WindowEvent::Focused(focused) => {
                     // Update window background color on focus changes
                     if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -259,11 +335,35 @@ pub(crate) fn run_focus_winhelper(
             }
         }
         fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
-            if Instant::now() >= self.deadline {
+            let now = Instant::now();
+            if now >= self.deadline {
                 elwt.exit();
                 return;
             }
-            elwt.set_control_flow(ControlFlow::WaitUntil(self.deadline));
+            // Apply any delayed frame changes when the timer elapses
+            if let Some(when) = self.apply_after
+                && now >= when
+            {
+                if let Some(win) = self.window.as_ref() {
+                    self.suppress_events = true;
+                    if let Some((w, h)) = self.desired_size.take() {
+                        let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                        self.last_size = Some((w, h));
+                    }
+                    if let Some((x, y)) = self.desired_pos.take() {
+                        win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                        self.last_pos = Some((x, y));
+                    }
+                    self.suppress_events = false;
+                }
+                self.apply_after = None;
+            }
+            // Wake up at the next interesting time (apply_after or final deadline)
+            let next = match self.apply_after {
+                Some(t) => std::cmp::min(t, self.deadline),
+                None => self.deadline,
+            };
+            elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 
@@ -271,6 +371,13 @@ pub(crate) fn run_focus_winhelper(
         window: None,
         title: title.to_string(),
         deadline: Instant::now() + config::ms(time_ms.max(1000)),
+        delay_setframe_ms,
+        last_pos: None,
+        last_size: None,
+        desired_pos: None,
+        desired_size: None,
+        apply_after: None,
+        suppress_events: false,
         slot,
         grid,
         size,

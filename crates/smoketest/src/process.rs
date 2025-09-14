@@ -51,6 +51,7 @@ impl Drop for ManagedChild {
 pub struct HelperWindowBuilder {
     title: String,
     time_ms: u64,
+    delay_setframe_ms: Option<u64>,
     grid: Option<(u32, u32, u32, u32)>,
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
@@ -67,6 +68,7 @@ impl HelperWindowBuilder {
         Self {
             title: title.into(),
             time_ms: 30000, // Default 30 seconds
+            delay_setframe_ms: None,
             grid: None,
             size: None,
             pos: None,
@@ -101,6 +103,14 @@ impl HelperWindowBuilder {
     /// Set requested window position (x, y)
     pub fn with_position(mut self, x: f64, y: f64) -> Self {
         self.pos = Some((x, y));
+        self
+    }
+
+    /// Apply an artificial delay to setFrame (position/size) changes.
+    /// When set, the helper will briefly revert OS-initiated frame changes and
+    /// only apply them after the given delay, simulating async geometry apps.
+    pub fn with_delay_setframe_ms(mut self, ms: u64) -> Self {
+        self.delay_setframe_ms = Some(ms);
         self
     }
 
@@ -144,6 +154,9 @@ impl HelperWindowBuilder {
             .arg(&self.title)
             .arg("--time")
             .arg(self.time_ms.to_string());
+        if let Some(ms) = self.delay_setframe_ms {
+            cmd.arg("--delay-setframe-ms").arg(ms.to_string());
+        }
         if let Some((c, r, col, row)) = self.grid {
             cmd.arg("--grid").args([
                 c.to_string(),

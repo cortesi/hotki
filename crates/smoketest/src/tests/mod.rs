@@ -6,6 +6,7 @@ pub mod fullscreen;
 pub mod helpers;
 pub mod hide;
 pub mod place;
+pub mod place_async;
 pub mod place_flex;
 pub mod place_skip;
 pub mod place_state;

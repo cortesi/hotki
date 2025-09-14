@@ -102,6 +102,10 @@ pub enum Commands {
     /// Verify window placement into a grid by cycling a helper window through all cells
     Place,
 
+    /// Verify placement convergence when the target app applies geometry with a small delay
+    #[command(name = "place-async")]
+    PlaceAsync,
+
     /// Verify placement after normalizing a minimized window
     #[command(name = "place-minimized")]
     PlaceMinimized,
@@ -153,6 +157,13 @@ pub enum Commands {
         /// How long to keep the window alive (ms)
         #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
         time: u64,
+        /// Optional delay to apply when the system attempts to change the
+        /// window frame (position/size). When set, the helper will briefly
+        /// revert to the previous frame and only apply the new frame after
+        /// `delay-setframe-ms` has elapsed. This simulates apps that apply
+        /// geometry asynchronously.
+        #[arg(long, value_name = "MS")]
+        delay_setframe_ms: Option<u64>,
         /// Optional 2x2 grid slot: 1=tl, 2=tr, 3=bl, 4=br
         #[arg(long)]
         slot: Option<u8>,
