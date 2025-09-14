@@ -99,6 +99,7 @@ where
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 
 // Unified case runner: heading + optional overlay + watchdog.
+#[allow(clippy::too_many_arguments)]
 fn run_case<F, T>(
     heading_title: &str,
     name: &str,

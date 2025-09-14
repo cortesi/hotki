@@ -39,7 +39,12 @@ pub fn run_fullscreen_test(
     state: Toggle,
     native: bool,
 ) -> Result<()> {
-    // Minimal config: bind activation and fullscreen(toggle, nonnative)
+    // Generate a unique helper title up front so we can embed a raise binding
+    // targeting it. This ensures the backend acts on the intended window and
+    // avoids touching the user's windows if focus drifts.
+    let title = crate::config::test_title("fullscreen");
+
+    // Minimal config: add a raise(title) binding and fullscreen binding.
     let state_str = match state {
         Toggle::Toggle => "toggle",
         Toggle::On => "on",
@@ -47,8 +52,8 @@ pub fn run_fullscreen_test(
     };
     let kind_suffix = if native { ", native" } else { "" };
     let ron_config = format!(
-        "(\n        keys: [\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen({}{}) , (global: true)),\n        ],\n        server: (exit_if_no_clients: true),\n    )",
-        state_str, kind_suffix
+        "(\n        keys: [\n            (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen({}{}) , (global: true)),\n        ],\n        style: (hud: (mode: hide)),\n        server: (exit_if_no_clients: true),\n    )",
+        title, state_str, kind_suffix
     );
 
     let config = TestConfig::new(timeout_ms)
@@ -58,20 +63,18 @@ pub fn run_fullscreen_test(
     TestRunner::new("fullscreen_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Ensure RPC ready and the fullscreen binding is registered
-            let _ = ctx.ensure_rpc_ready(&["shift+cmd+9"]);
+            // Ensure RPC ready and both bindings are registered
+            let _ = ctx.ensure_rpc_ready(&["g", "shift+cmd+9"]);
             Ok(())
         })
-        .with_execute(|ctx| {
+        .with_execute(move |ctx| {
             // Ensure RPC driver is connected to the right backend before driving keys.
-            if let Some(sess) = ctx.session.as_ref() {
-                let sock = sess.socket_path().to_string();
-                let _ = crate::server_drive::ensure_init(&sock, 3000);
-                // Wait briefly until the binding is registered so injects resolve.
+            if ctx.session.is_some() {
+                // Connection was initialized in setup; avoid reconnecting.
+                let _ = crate::server_drive::wait_for_ident("g", 2000);
                 let _ = crate::server_drive::wait_for_ident("shift+cmd+9", 2000);
             }
-            // Spawn helper window with unique title
-            let title = crate::config::test_title("fullscreen");
+            // Spawn helper window with the embedded title
 
             let helper_time = ctx
                 .config
@@ -84,13 +87,12 @@ pub fn run_fullscreen_test(
                 config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
                 "FS",
             )?;
-            // Make sure the helper is the focused window before toggling fullscreen.
-            ensure_frontmost(
-                helper.pid,
-                &title,
-                4,
-                config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
-            );
+            // Gate safety: raise the helper via backend binding, then wait until
+            // both CG frontmost and backend world focus agree on our helper PID.
+            crate::ui_interaction::send_key("g");
+            ensure_frontmost(helper.pid, &title, 4, config::UI_ACTION_DELAY_MS);
+            let _ =
+                crate::server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
