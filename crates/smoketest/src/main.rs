@@ -98,6 +98,45 @@ where
 // Re-export common result types
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 
+// Unified case runner: heading + optional overlay + watchdog.
+fn run_case<F, T>(
+    heading_title: &str,
+    name: &str,
+    timeout_ms: u64,
+    quiet: bool,
+    warn_overlay: bool,
+    info: Option<&str>,
+    main_thread: bool,
+    f: F,
+) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    if !quiet {
+        heading(&format!("Test: {}", heading_title));
+    }
+    let mut overlay = None;
+    if warn_overlay {
+        overlay = crate::process::start_warn_overlay_with_delay();
+        crate::process::write_overlay_status(name);
+        if let Some(i) = info {
+            crate::process::write_overlay_info(i);
+        }
+    }
+
+    let out = if main_thread {
+        run_on_main_with_watchdog(name, timeout_ms, f)
+    } else {
+        run_with_watchdog(name, timeout_ms, f)
+    };
+
+    if let Some(mut o) = overlay {
+        let _ = o.kill_and_wait();
+    }
+    out
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -302,22 +341,18 @@ fn main() {
             orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, true)
         }
         Commands::Raise => {
-            if !cli.quiet {
-                heading("Test: raise");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("raise");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("raise", timeout, move || {
-                raise::run_raise_test(timeout, logs)
-            }) {
+            match run_case(
+                "raise",
+                "raise",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                false,
+                move || raise::run_raise_test(timeout, logs),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("raise: OK (raised by title twice)")
@@ -326,14 +361,8 @@ fn main() {
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
-            }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
             }
         }
         Commands::PlaceFlex {
@@ -394,29 +423,27 @@ fn main() {
             }
         }
         Commands::PlaceFallback => {
-            if !cli.quiet {
-                heading("Test: place-fallback");
-            }
             let timeout = cli.timeout;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place-fallback");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_on_main_with_watchdog("place-fallback", timeout, move || {
-                tests::place_flex::run_place_flex(
-                    crate::config::PLACE_COLS,
-                    crate::config::PLACE_ROWS,
-                    0,
-                    0,
-                    true,  // force_size_pos
-                    false, // pos_first_only
-                    false, // force_shrink_move_grow
-                )
-            }) {
+            match run_case(
+                "place-fallback",
+                "place-fallback",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                true,
+                move || {
+                    tests::place_flex::run_place_flex(
+                        crate::config::PLACE_COLS,
+                        crate::config::PLACE_ROWS,
+                        0,
+                        0,
+                        true,  // force_size_pos
+                        false, // pos_first_only
+                        false, // force_shrink_move_grow
+                    )
+                },
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("place-fallback: OK (forced size->pos path)")
@@ -425,37 +452,32 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-fallback: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
             }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
-            }
         }
         Commands::PlaceSmg => {
-            if !cli.quiet {
-                heading("Test: place-smg (shrink→move→grow)");
-            }
             let timeout = cli.timeout;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place-smg");
-            }
-            match run_on_main_with_watchdog("place-smg", timeout, move || {
-                tests::place_flex::run_place_flex(
-                    2,     // cols
-                    2,     // rows
-                    1,     // col (BR)
-                    1,     // row (BR)
-                    false, // force_size_pos
-                    false, // pos_first_only
-                    true,  // force_shrink_move_grow
-                )
-            }) {
+            match run_case(
+                "place-smg (shrink→move→grow)",
+                "place-smg",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                None,
+                true,
+                move || {
+                    tests::place_flex::run_place_flex(
+                        2,     // cols
+                        2,     // rows
+                        1,     // col (BR)
+                        1,     // row (BR)
+                        false, // force_size_pos
+                        false, // pos_first_only
+                        true,  // force_shrink_move_grow
+                    )
+                },
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("place-smg: OK (forced shrink→move→grow path)")
@@ -464,14 +486,8 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-smg: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
-            }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
             }
         }
         Commands::PlaceSkip => {
@@ -507,22 +523,18 @@ fn main() {
             }
         }
         Commands::FocusNav => {
-            if !cli.quiet {
-                heading("Test: focus-nav");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("focus-nav");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_on_main_with_watchdog("focus-nav", timeout, move || {
-                tests::focus_nav::run_focus_nav_test(timeout, logs)
-            }) {
+            match run_case(
+                "focus-nav",
+                "focus-nav",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                true,
+                move || tests::focus_nav::run_focus_nav_test(timeout, logs),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("focus-nav: OK (navigated right, down, left, up)")
@@ -531,33 +543,23 @@ fn main() {
                 Err(e) => {
                     eprintln!("focus-nav: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
             }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
-            }
         }
         Commands::Focus => {
-            if !cli.quiet {
-                heading("Test: focus-tracking");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("focus-tracking");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("focus-tracking", timeout, move || {
-                focus::run_focus_test(timeout, logs)
-            }) {
+            match run_case(
+                "focus-tracking",
+                "focus-tracking",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                false,
+                move || focus::run_focus_test(timeout, logs),
+            ) {
                 Ok(out) => {
                     if !cli.quiet {
                         println!(
@@ -569,31 +571,23 @@ fn main() {
                 Err(e) => {
                     eprintln!("focus-tracking: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
             }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
-            }
         }
         Commands::Hide => {
-            if !cli.quiet {
-                heading("Test: hide");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("hide");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("hide", timeout, move || hide::run_hide_test(timeout, logs)) {
+            match run_case(
+                "hide",
+                "hide",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                false,
+                move || hide::run_hide_test(timeout, logs),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("hide: OK (toggle on/off roundtrip)")
@@ -602,30 +596,23 @@ fn main() {
                 Err(e) => {
                     eprintln!("hide: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
             }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
-            }
         }
         Commands::Place => {
-            if !cli.quiet {
-                heading("Test: place");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place");
-            }
-            match run_on_main_with_watchdog("place", timeout, move || {
-                tests::place::run_place_test(timeout, logs)
-            }) {
+            match run_case(
+                "place",
+                "place",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                None,
+                true,
+                move || tests::place::run_place_test(timeout, logs),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("place: OK (cycled all grid cells)")
@@ -634,30 +621,23 @@ fn main() {
                 Err(e) => {
                     eprintln!("place: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
             }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
-            }
         }
         Commands::PlaceAsync => {
-            if !cli.quiet {
-                heading("Test: place-async");
-            }
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place-async");
-            }
-            match run_on_main_with_watchdog("place-async", timeout, move || {
-                tests::place_async::run_place_async_test(timeout, logs)
-            }) {
+            match run_case(
+                "place-async",
+                "place-async",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                None,
+                true,
+                move || tests::place_async::run_place_async_test(timeout, logs),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("place-async: OK (converged within default budget)")
@@ -666,14 +646,8 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-async: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
-            }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
             }
         }
         Commands::PlaceMinimized => {
@@ -798,9 +772,6 @@ fn main() {
             }
         }
         Commands::Fullscreen { state, native } => {
-            if !cli.quiet {
-                heading("Test: fullscreen");
-            }
             let toggle = match state {
                 FsState::Toggle => Toggle::Toggle,
                 FsState::On => Toggle::On,
@@ -808,17 +779,16 @@ fn main() {
             };
             let timeout = cli.timeout;
             let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("fullscreen");
-                if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("fullscreen", timeout, move || {
-                tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native)
-            }) {
+            match run_case(
+                "fullscreen",
+                "fullscreen",
+                timeout,
+                cli.quiet,
+                !cli.no_warn,
+                cli.info.as_deref(),
+                false,
+                move || tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native),
+            ) {
                 Ok(()) => {
                     if !cli.quiet {
                         println!("fullscreen: OK (toggled non-native fullscreen)")
@@ -827,14 +797,8 @@ fn main() {
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);
                     print_hints(&e);
-                    if let Some(mut o) = overlay {
-                        let _ = o.kill_and_wait();
-                    }
                     std::process::exit(1);
                 }
-            }
-            if let Some(mut o) = overlay {
-                let _ = o.kill_and_wait();
             }
         } // Preflight smoketest removed.
         Commands::WorldStatus => {
