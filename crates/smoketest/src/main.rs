@@ -712,25 +712,25 @@ fn main() {
                 }
             }
         }
-        Commands::PlaceWezterm => {
+        Commands::PlaceTerm => {
             let timeout = cli.timeout;
             match run_case(
-                "place-wezterm",
-                "place-wezterm",
+                "place-term",
+                "place-term",
                 timeout,
                 cli.quiet,
                 !cli.no_warn,
                 cli.info.as_deref(),
                 true,
-                move || tests::place_wezterm::run_place_wezterm_test(timeout, true),
+                move || tests::place_term::run_place_term_test(timeout, true),
             ) {
                 Ok(()) => {
                     if !cli.quiet {
-                        println!("place-wezterm: OK (latched origin; no thrash)")
+                        println!("place-term: OK (latched origin; no thrash)")
                     }
                 }
                 Err(e) => {
-                    eprintln!("place-wezterm: ERROR: {}", e);
+                    eprintln!("place-term: ERROR: {}", e);
                     print_hints(&e);
                     std::process::exit(1);
                 }

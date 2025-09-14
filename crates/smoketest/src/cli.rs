@@ -113,11 +113,11 @@ pub enum Commands {
     #[command(name = "place-animated")]
     PlaceAnimated,
 
-    /// Thoroughly exercise placement under terminal-style resize increments with
-    /// a timeline check that ensures we never thrash position after origin is
-    /// correct (WezTerm guard).
-    #[command(name = "place-wezterm")]
-    PlaceWezterm,
+    /// Exercise placement under terminal-style resize increments with a
+    /// timeline check that ensures we never thrash position after origin is
+    /// correct (terminal guard).
+    #[command(name = "place-term")]
+    PlaceTerm,
 
     /// Verify placement when the app enforces discrete resize increments. This
     /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and

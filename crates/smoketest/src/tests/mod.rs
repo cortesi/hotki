@@ -13,7 +13,7 @@ pub mod place_flex;
 pub mod place_increments;
 pub mod place_skip;
 pub mod place_state;
-pub mod place_wezterm;
+pub mod place_term;
 pub mod raise;
 pub mod repeat;
 pub mod ui;
