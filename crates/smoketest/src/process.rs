@@ -112,20 +112,8 @@ impl HelperWindowBuilder {
         self
     }
 
-    /// Apply an artificial delay to setFrame (position/size) changes.
-    /// When set, the helper will briefly revert OS-initiated frame changes and
-    /// only apply them after the given delay, simulating async geometry apps.
-    pub fn with_delay_setframe_ms(mut self, ms: u64) -> Self {
-        self.delay_setframe_ms = Some(ms);
-        self
-    }
-
-    /// Explicit delayed-apply to a target frame `(x,y,w,h)` after `ms`.
-    pub fn with_delay_apply(mut self, ms: u64, x: f64, y: f64, w: f64, h: f64) -> Self {
-        self.delay_apply_ms = Some(ms);
-        self.apply_target = Some((x, y, w, h));
-        self
-    }
+    // Note: delay_setframe_ms and apply_target are set via other helpers;
+    // the legacy direct setters were removed to eliminate unused warnings.
 
     /// Explicit delayed-apply to a grid target `(cols,rows,col,row)` after `ms`.
     pub fn with_delay_apply_grid(

@@ -566,6 +566,7 @@ async fn handle_control_msg(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_key_runtime(
     cfg: &config::Config,
     config_path: &Path,

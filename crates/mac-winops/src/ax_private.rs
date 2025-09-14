@@ -14,7 +14,8 @@ fn resolve_sym() -> Option<AxGetWindowFn> {
         if ptr.is_null() {
             None
         } else {
-            Some(std::mem::transmute::<_, AxGetWindowFn>(ptr))
+            // dlsym returns a `*mut c_void`; transmute explicitly to the function type.
+            Some(std::mem::transmute::<*mut libc::c_void, AxGetWindowFn>(ptr))
         }
     })
 }

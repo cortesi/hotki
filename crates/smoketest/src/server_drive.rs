@@ -1,9 +1,11 @@
-use std::sync::OnceLock;
+use std::{
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use parking_lot::Mutex;
 
 use crate::{config, runtime};
-use std::time::{Duration, Instant};
 
 static CONN: OnceLock<Mutex<Option<hotki_server::Connection>>> = OnceLock::new();
 

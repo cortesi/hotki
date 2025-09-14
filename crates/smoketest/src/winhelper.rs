@@ -4,6 +4,7 @@ use tracing::debug;
 
 use crate::config;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_focus_winhelper(
     title: &str,
     time_ms: u64,

@@ -34,31 +34,21 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         hotki_world::World::spawn(winops, hotki_world::WorldCfg::default())
     })?;
 
-    // Wait briefly for world to tick and observe focus.
+    // Wait for world to report a focused window with AX props populated.
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let mut focused_key = None;
-    while std::time::Instant::now() < deadline {
-        focused_key = crate::runtime::block_on(async { world.focused().await })?;
-        if focused_key.is_some() {
-            break;
+    let p = loop {
+        let fw = crate::runtime::block_on(async { world.focused_window().await })?;
+        if let Some(w) = fw
+            && let Some(props) = w.ax
+        {
+            break props;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::InvalidState(
+                "world-ax: missing ax props on focused window".into(),
+            ));
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
-    let Some(_key) = focused_key else {
-        return Err(Error::InvalidState(
-            "world-ax: no focused window observed".into(),
-        ));
-    };
-
-    // Fetch the focused window snapshot and read statically captured props.
-    let fw = crate::runtime::block_on(async { world.focused_window().await })?;
-    let Some(w) = fw else {
-        return Err(Error::InvalidState("world-ax: no focused window".into()));
-    };
-    let Some(p) = w.ax else {
-        return Err(Error::InvalidState(
-            "world-ax: missing ax props on focused window".into(),
-        ));
     };
 
     // Basic verification: role/subrole present and settable flags resolved (Some(_)).

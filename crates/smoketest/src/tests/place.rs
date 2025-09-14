@@ -19,8 +19,7 @@
 //!   to ensure the correct target pid.
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::geom;
-use super::helpers::wait_for_frontmost_title;
+use super::{geom, helpers::wait_for_frontmost_title};
 use crate::{
     config,
     error::{Error, Result},

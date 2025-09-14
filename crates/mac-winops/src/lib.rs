@@ -785,26 +785,17 @@ mod tests {
     use super::*;
     use crate::geom::grid_cell_rect as cell_rect;
 
-    static PLACE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    // Total call counter removed (unused); track split counts only.
     static PLACE_ID_CALLS: AtomicUsize = AtomicUsize::new(0);
     static PLACE_FOCUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TEST_ID_PID: Lazy<Mutex<HashMap<WindowId, i32>>> =
         Lazy::new(|| Mutex::new(HashMap::new()));
 
-    pub(crate) fn record_place_call() {
-        PLACE_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
     pub(crate) fn record_place_id_call() {
         PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
-        record_place_call();
     }
     pub(crate) fn record_place_focused_call() {
         PLACE_FOCUSED_CALLS.fetch_add(1, Ordering::Relaxed);
-        record_place_call();
-    }
-
-    fn take_place_calls() -> usize {
-        PLACE_CALLS.swap(0, Ordering::Relaxed)
     }
     fn take_split_counts() -> (usize, usize) {
         (
