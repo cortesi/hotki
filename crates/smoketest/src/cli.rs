@@ -46,6 +46,7 @@ pub enum SeqTest {
     Raise,
     Hide,
     Place,
+    PlaceAsync,
     Fullscreen,
     Ui,
     Minui,

@@ -56,13 +56,21 @@ Goal: Realistic window behaviors to exercise verification and settling.
    - Unit tests: `timeout 100s cargo test --all --all-features` OK aside from a pre-existing coalescing test flake in `mac-winops` (queue length assertion; unrelated).
    - Smoketest (targeted): `RUST_LOG=mac_winops=debug cargo run --bin smoketest -- --logs --quiet --no-warn place-async` → PASS.
 
-7. [ ] Orchestrate async helper in “all”.  
-   Change: Add `place-async` to the default `all` sequence once broader readiness gating (Stage Two/2.1) stabilizes.  
-   Touch: `crates/smoketest/src/orchestrator.rs`.  
-   Tests: `smoketest -- all` remains green locally with async case included.
+7. [x] Orchestrate async helper in “all”.  
+   Change: Added `place-async` to the default `all` sequence, positioned immediately after `place` to group related placement checks. This exercises delayed‑apply (~50 ms) convergence during the main run.  
+   Touch: `crates/smoketest/src/orchestrator.rs` (inserted `run("place-async", duration_ms)`).  
+   Validation: 
+   - Lint/format: `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples 2>&1` then `cargo +nightly fmt --all`.  
+   - Tests: `timeout 100s cargo test --all --all-features` (clean on host).  
+   - Smoketest: `cargo run --bin smoketest -- all` (completed without failures on host).
 
 8. [x] Async helper v2: explicit delayed apply.  
    Implemented as per 1 above using `--delay-apply-ms` with either `--apply-target` or `--apply-grid`. `place-async` now green.
+
+9. [x] Seq exposure for async case.  
+   Change: Added `place-async` to the `seq` command’s enum so callers can run `smoketest seq place-async`.  
+   Touch: `crates/smoketest/src/cli.rs` (extend `SeqTest`), `crates/smoketest/src/orchestrator.rs` (`to_subcmd`).  
+   Validation: `cargo run --bin smoketest -- seq place-async` completes and prints OK on host.
 
 2. [ ] Animated window: tween to target over ~120 ms; ignore mid‑animation reads.  
    Touch: same.  
