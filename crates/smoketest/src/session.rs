@@ -4,10 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use logging as logshared;
+
 use crate::{
     config,
     error::{Error, Result},
-    logging, proc_registry, runtime, server_drive,
+    proc_registry, runtime, server_drive,
     ui_interaction::send_activation_chord,
 };
 
@@ -49,7 +51,7 @@ impl HotkiSessionBuilder {
         let mut cmd = Command::new(&self.binary_path);
 
         if self.with_logs {
-            cmd.env("RUST_LOG", logging::log_config_for_child());
+            cmd.env("RUST_LOG", logshared::log_config_for_child());
         }
 
         if let Some(cfg) = &self.config_path {

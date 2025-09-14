@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use eframe::NativeOptions;
 use hotki_server::Server;
+use logging::{self as logshared};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -43,21 +44,9 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     server_idle_timeout: Option<u64>,
 
-    /// Set global log level to trace
-    #[arg(long, conflicts_with_all = ["debug", "log_level", "log_filter"])]
-    trace: bool,
-
-    /// Set global log level to debug
-    #[arg(long, conflicts_with_all = ["trace", "log_level", "log_filter"])]
-    debug: bool,
-
-    /// Set a single global log level (error|warn|info|debug|trace)
-    #[arg(long)]
-    log_level: Option<String>,
-
-    /// Set a tracing filter directive (e.g. "hotkey_manager=trace,mac_hotkey=trace,info")
-    #[arg(long)]
-    log_filter: Option<String>,
+    /// Logging controls
+    #[command(flatten)]
+    log: logshared::LogArgs,
 
     /// Optional path to the config file
     config: Option<String>,
@@ -70,33 +59,16 @@ struct Cli {
 fn main() -> eframe::Result<()> {
     let cli = Cli::parse();
 
-    // Determine filter precedence: log_filter > trace/debug/log_level > env > info
-    let chosen_filter = if let Some(spec) = &cli.log_filter {
-        Some(spec.clone())
-    } else if cli.trace {
-        Some("trace".to_string())
-    } else if cli.debug {
-        Some("debug".to_string())
-    } else {
-        cli.log_level.clone()
-    };
+    // Compute final filter spec via shared helpers
+    let final_spec: String = logshared::compute_spec(
+        cli.log.trace,
+        cli.log.debug,
+        cli.log.log_level.as_deref(),
+        cli.log.log_filter.as_deref(),
+    );
 
-    // Base filter from CLI/env (default to info)
-    let mut env_filter =
-        match &chosen_filter {
-            Some(spec) => tracing_subscriber::EnvFilter::try_new(spec.as_str())
-                .unwrap_or_else(|_| "info".into()),
-            None => tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        };
-
-    // Suppress expected disconnect noise from mrpc when clients exit cleanly.
-    // These appear as errors from target "mrpc::connection" on shutdown.
-    // We disable that specific target to keep exits clean while preserving
-    // all other logs and user-provided filtering.
-    if let Ok(d) = "mrpc::connection=off".parse() {
-        env_filter = env_filter.add_directive(d);
-    }
+    // Create EnvFilter from final spec
+    let env_filter = logshared::env_filter_from_spec(&final_spec);
 
     // Install a single subscriber for both client and server modes, combining:
     // - Env filter (from CLI or env)
@@ -111,17 +83,7 @@ fn main() -> eframe::Result<()> {
         .try_init();
     // Build a filter string for any auto-spawned server process so it inherits
     // the same level plus our extra directive to silence mrpc disconnect noise.
-    let server_filter: String = {
-        let base = chosen_filter
-            .clone()
-            .or_else(|| std::env::var("RUST_LOG").ok())
-            .unwrap_or_else(|| "info".to_string());
-        if base.contains("mrpc::connection") {
-            base
-        } else {
-            format!("{},mrpc::connection=off", base)
-        }
-    };
+    let server_filter: String = final_spec.clone();
 
     if cli.server {
         debug!("Starting server mode");

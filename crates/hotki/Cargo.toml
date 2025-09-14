@@ -13,6 +13,7 @@ hotki-protocol = { path = "../hotki-protocol" }
 log-forward = { path = "../log-forward" }
 logfmt = { path = "../logfmt" }
 mac-winops = { path = "../mac-winops" }
+logging = { path = "../logging" }
 
 eframe = "0.32.2"
 egui = "0.32.2"

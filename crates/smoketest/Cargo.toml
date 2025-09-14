@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+logging = { path = "../logging" }
 hotki-server = { path = "../hotki-server" }
 hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }

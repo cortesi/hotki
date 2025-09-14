@@ -1,15 +1,16 @@
 //! Command-line interface definitions for smoketest.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use logging::LogArgs;
 
 use crate::config;
 
 #[derive(Parser, Debug)]
 #[command(name = "smoketest", about = "Hotki smoketest tool", version)]
 pub struct Cli {
-    /// Enable logging to stdout/stderr at info level (respect RUST_LOG)
-    #[arg(long)]
-    pub logs: bool,
+    /// Logging controls
+    #[command(flatten)]
+    pub log: LogArgs,
 
     /// Suppress headings and non-error output (used by orchestrated runs)
     #[arg(long)]

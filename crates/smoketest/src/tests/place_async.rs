@@ -216,7 +216,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Trigger placement directly via mac-winops (focused-for-pid)
             // This exercises the exact placement code-path while avoiding
             // orchestrator races.
-            let _ = mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
+            mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
                 .map_err(|e| Error::SpawnFailed(format!("place_grid_focused failed: {}", e)))?;
             let ok = wait_for_expected_frame(
                 helper.pid,

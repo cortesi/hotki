@@ -1,4 +1,5 @@
 use std::time::Instant;
+
 use tracing::debug;
 
 use crate::config;
@@ -386,32 +387,30 @@ pub(crate) fn run_focus_winhelper(
             if let Some(when) = self.apply_after {
                 if now < when {
                     // Before apply: resist external changes by reverting to last
-                    if let Some(win) = self.window.as_ref() {
-                        if let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size) {
-                            let scale = win.scale_factor();
-                            let p = win
-                                .outer_position()
-                                .ok()
-                                .map(|p| p.to_logical::<f64>(scale));
-                            let s = win.inner_size().to_logical::<f64>(scale);
-                            if let Some(p) = p {
-                                let dx = (p.x - lx).abs();
-                                let dy = (p.y - ly).abs();
-                                let dw = (s.width - lw).abs();
-                                let dh = (s.height - lh).abs();
-                                if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
-                                    debug!(
-                                        "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
-                                        dx, dy, dw, dh
-                                    );
-                                    self.suppress_events = true;
-                                    let _ = win
-                                        .request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
-                                    win.set_outer_position(winit::dpi::LogicalPosition::new(
-                                        lx, ly,
-                                    ));
-                                    self.suppress_events = false;
-                                }
+                    if let Some(win) = self.window.as_ref()
+                        && let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
+                    {
+                        let scale = win.scale_factor();
+                        let p = win
+                            .outer_position()
+                            .ok()
+                            .map(|p| p.to_logical::<f64>(scale));
+                        let s = win.inner_size().to_logical::<f64>(scale);
+                        if let Some(p) = p {
+                            let dx = (p.x - lx).abs();
+                            let dy = (p.y - ly).abs();
+                            let dw = (s.width - lw).abs();
+                            let dh = (s.height - lh).abs();
+                            if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
+                                debug!(
+                                    "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
+                                    dx, dy, dw, dh
+                                );
+                                self.suppress_events = true;
+                                let _ =
+                                    win.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
+                                win.set_outer_position(winit::dpi::LogicalPosition::new(lx, ly));
+                                self.suppress_events = false;
                             }
                         }
                     }

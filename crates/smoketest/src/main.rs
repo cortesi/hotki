@@ -1,9 +1,11 @@
 use clap::Parser;
+use logging as logshared;
+use tracing_subscriber::prelude::*;
 
 mod cli;
 mod config;
 mod error;
-mod logging;
+// no local logging module; use shared crate
 mod orchestrator;
 mod proc_registry;
 mod process;
@@ -99,8 +101,22 @@ pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize logging according to flags
-    logging::init_for(cli.logs, cli.quiet);
+    // Compose spec: quiet forces warn for our crates; otherwise use shared precedence
+    let spec = if cli.quiet {
+        logshared::level_spec_for("warn")
+    } else {
+        logshared::compute_spec(
+            cli.log.trace,
+            cli.log.debug,
+            cli.log.log_level.as_deref(),
+            cli.log.log_filter.as_deref(),
+        )
+    };
+    let env_filter = logshared::env_filter_from_spec(&spec);
+    let _ = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().without_time())
+        .try_init();
 
     // For helper commands, skip permission/build checks and heading
     if matches!(cli.command, Commands::FocusWinHelper { .. }) {
@@ -281,16 +297,16 @@ fn main() {
                 let _ = o.kill_and_wait();
             }
         }
-        Commands::All => run_all_tests(cli.duration, cli.timeout, cli.logs, !cli.no_warn),
+        Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn),
         Commands::Seq { tests } => {
-            orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, cli.logs)
+            orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, true)
         }
         Commands::Raise => {
             if !cli.quiet {
                 heading("Test: raise");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -333,7 +349,7 @@ fn main() {
                 heading("Test: place-flex");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs; // logs only affect tracing env
+            let logs = true; // logs only affect tracing env
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -463,7 +479,7 @@ fn main() {
                 heading("Test: place-skip (non-movable)");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -495,7 +511,7 @@ fn main() {
                 heading("Test: focus-nav");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -530,7 +546,7 @@ fn main() {
                 heading("Test: focus-tracking");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -568,7 +584,7 @@ fn main() {
                 heading("Test: hide");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -601,7 +617,7 @@ fn main() {
                 heading("Test: place");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -633,7 +649,7 @@ fn main() {
                 heading("Test: place-async");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -665,7 +681,7 @@ fn main() {
                 heading("Test: place-minimized");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             match run_on_main_with_watchdog("place-minimized", timeout, move || {
                 tests::place_state::run_place_minimized_test(timeout, logs)
             }) {
@@ -686,7 +702,7 @@ fn main() {
                 heading("Test: place-zoomed");
             }
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             match run_on_main_with_watchdog("place-zoomed", timeout, move || {
                 tests::place_state::run_place_zoomed_test(timeout, logs)
             }) {
@@ -791,7 +807,7 @@ fn main() {
                 FsState::Off => Toggle::Off,
             };
             let timeout = cli.timeout;
-            let logs = cli.logs;
+            let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
                 overlay = crate::process::start_warn_overlay_with_delay();
@@ -827,7 +843,7 @@ fn main() {
             }
             let timeout = cli.timeout;
             match run_with_watchdog("world-status", timeout, move || {
-                tests::world_status::run_world_status_test(timeout, cli.logs)
+                tests::world_status::run_world_status_test(timeout, true)
             }) {
                 Ok(()) => {
                     if !cli.quiet {
@@ -847,7 +863,7 @@ fn main() {
             }
             let timeout = cli.timeout;
             match run_with_watchdog("world-ax", timeout, move || {
-                tests::world_ax::run_world_ax_test(timeout, cli.logs)
+                tests::world_ax::run_world_ax_test(timeout, true)
             }) {
                 Ok(()) => {
                     if !cli.quiet {
