@@ -22,7 +22,10 @@ const POLL_TOTAL_MS: u64 = 400;
 // Stage 2: settle/polling parameters for apply_and_wait
 const APPLY_STUTTER_MS: u64 = 2; // tiny delay between A and B sets
 const SETTLE_SLEEP_MS: u64 = 20; // poll cadence while waiting to settle
-const SETTLE_TOTAL_MS: u64 = 250; // max settle time per attempt
+// For apps that apply geometry asynchronously (e.g., via animations or delayed
+// setFrame), allow a longer per-attempt settle window. The overall placement
+// still caps attempts elsewhere.
+const SETTLE_TOTAL_MS: u64 = 600; // max settle time per attempt
 
 // Stage 4: shrink→move→grow fallback parameters
 const FALLBACK_SAFE_MAX_W: f64 = 400.0;

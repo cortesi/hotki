@@ -164,6 +164,18 @@ pub enum Commands {
         /// geometry asynchronously.
         #[arg(long, value_name = "MS")]
         delay_setframe_ms: Option<u64>,
+        /// Explicit delayed-apply: after `delay-apply-ms`, set the window
+        /// frame to `apply-target` regardless of prior changes. This avoids
+        /// relying on event delivery for simulation.
+        #[arg(long, value_name = "MS")]
+        delay_apply_ms: Option<u64>,
+        /// Target `(x y w h)` for delayed apply (AppKit logical coords)
+        #[arg(long, value_names = ["X", "Y", "W", "H"])]
+        apply_target: Option<Vec<f64>>,
+        /// Grid `(cols rows col row)` for delayed apply; helper computes
+        /// target rect on its current screen's visible frame
+        #[arg(long, value_names = ["COLS", "ROWS", "COL", "ROW"])]
+        apply_grid: Option<Vec<u32>>,
         /// Optional 2x2 grid slot: 1=tl, 2=tr, 3=bl, 4=br
         #[arg(long)]
         slot: Option<u8>,

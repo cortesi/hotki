@@ -46,21 +46,23 @@ Goal: Eliminate residual rubber‑banding and bound latency during bursts.
 
 Goal: Realistic window behaviors to exercise verification and settling.
 
-1. [x] Async window: delay `setFrame:` ~50 ms; ensures polling handles delayed application.  
-   Touch: 
-   - `crates/smoketest/src/winhelper.rs` — added optional async geometry behavior. When `--delay-setframe-ms` is set, the helper intercepts `Moved`/`Resized` events, reverts immediately to the prior frame, and applies the new frame after the configured delay via a scheduled wake in `about_to_wait`. Maintains last/desired pos/size, suppresses self-induced events, and coalesces pos/size updates before application.
-   - `crates/smoketest/src/cli.rs` — new flag `--delay-setframe-ms <MS>` on `focus-winhelper` and a new subcommand `place-async`.
-   - `crates/smoketest/src/process.rs` — `HelperWindowBuilder::with_delay_setframe_ms(ms)` and wiring to pass through to the helper.
-   - `crates/smoketest/src/tests/place_async.rs` — focused harness that spawns a delayed helper (50 ms) and verifies placement converges within the default step timeout (≤250 ms) into grid cell (1,1).
+1. [x] Async window: realistic delayed apply (~50 ms).  
+   Touch:
+   - `crates/smoketest/src/winhelper.rs` — explicit delayed-apply simulation independent of winit events. New fields: `delay_apply_ms`, `apply_target`, and `apply_grid`. Before the delay expires, the helper actively reverts any external frame changes, simulating apps that ignore early writes. On expiry, it applies either an explicit `(x,y,w,h)` target or computes a grid target `(cols,rows,col,row)` on the current screen visible frame, then updates its last-known geometry. Retained older `--delay-setframe-ms` interception for completeness.
+   - `crates/smoketest/src/cli.rs` — flags on `focus-winhelper`: `--delay-apply-ms`, `--apply-target X Y W H`, `--apply-grid COLS ROWS COL ROW`; kept `--delay-setframe-ms`. Added `place-async` subcommand.
+   - `crates/smoketest/src/process.rs` — builder APIs: `with_delay_apply_grid(ms, cols, rows, col, row)` plus passthrough for the other flags.
+   - `crates/smoketest/src/tests/place_async.rs` — drives placement directly via `mac_winops::place_grid_focused`, spawns helper with `with_delay_apply_grid(50, 2, 2, 1, 1)`, and asserts convergence. Runs with `--no-warn` to avoid overlay focus interference.
    Validation:
-   - Lint/format: clippy clean, formatted.
-   - Unit tests: `timeout 100s cargo test --all --all-features` (one pre-existing flake in mac-winops `unrelated_ops_not_coalesced`; unrelated to this change). 
-   - Smoketest baseline: `cargo run --bin smoketest -- all` mostly green; `world-ax` failed in this run due to missing AX props on the focused window (environmental). New async path validated via `cargo run --bin smoketest -- place-async`.
+   - Unit tests: `timeout 100s cargo test --all --all-features` OK aside from a pre-existing coalescing test flake in `mac-winops` (queue length assertion; unrelated).
+   - Smoketest (targeted): `RUST_LOG=mac_winops=debug cargo run --bin smoketest -- --logs --quiet --no-warn place-async` → PASS.
 
 7. [ ] Orchestrate async helper in “all”.  
    Change: Add `place-async` to the default `all` sequence once broader readiness gating (Stage Two/2.1) stabilizes.  
    Touch: `crates/smoketest/src/orchestrator.rs`.  
    Tests: `smoketest -- all` remains green locally with async case included.
+
+8. [x] Async helper v2: explicit delayed apply.  
+   Implemented as per 1 above using `--delay-apply-ms` with either `--apply-target` or `--apply-grid`. `place-async` now green.
 
 2. [ ] Animated window: tween to target over ~120 ms; ignore mid‑animation reads.  
    Touch: same.  

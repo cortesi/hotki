@@ -109,6 +109,9 @@ fn main() {
                 title,
                 time,
                 delay_setframe_ms,
+                delay_apply_ms,
+                apply_target,
+                apply_grid,
                 slot,
                 grid,
                 size,
@@ -140,10 +143,27 @@ fn main() {
                         None
                     }
                 });
+                let apply_target_tuple = apply_target.and_then(|v| {
+                    if v.len() == 4 {
+                        Some((v[0], v[1], v[2], v[3]))
+                    } else {
+                        None
+                    }
+                });
+                let apply_grid_tuple = apply_grid.and_then(|v| {
+                    if v.len() == 4 {
+                        Some((v[0], v[1], v[2], v[3]))
+                    } else {
+                        None
+                    }
+                });
                 if let Err(e) = winhelper::run_focus_winhelper(
                     &title,
                     time,
                     delay_setframe_ms.unwrap_or(0),
+                    delay_apply_ms.unwrap_or(0),
+                    apply_target_tuple,
+                    apply_grid_tuple,
                     slot,
                     grid_tuple,
                     size_tuple,

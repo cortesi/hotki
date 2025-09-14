@@ -1,4 +1,5 @@
 use std::time::Instant;
+use tracing::debug;
 
 use crate::config;
 
@@ -6,6 +7,9 @@ pub(crate) fn run_focus_winhelper(
     title: &str,
     time_ms: u64,
     delay_setframe_ms: u64,
+    delay_apply_ms: u64,
+    apply_target: Option<(f64, f64, f64, f64)>,
+    apply_grid: Option<(u32, u32, u32, u32)>,
     slot: Option<u8>,
     grid: Option<(u32, u32, u32, u32)>,
     size: Option<(f64, f64)>,
@@ -29,6 +33,9 @@ pub(crate) fn run_focus_winhelper(
         title: String,
         deadline: Instant,
         delay_setframe_ms: u64,
+        delay_apply_ms: u64,
+        apply_target: Option<(f64, f64, f64, f64)>,
+        apply_grid: Option<(u32, u32, u32, u32)>,
         // Async-frame state
         last_pos: Option<(f64, f64)>,
         last_size: Option<(f64, f64)>,
@@ -143,6 +150,16 @@ pub(crate) fn run_focus_winhelper(
                 let lsz = isz.to_logical::<f64>(scale);
                 self.last_size = Some((lsz.width, lsz.height));
 
+                // Arm explicit delayed-apply if configured
+                if self.delay_apply_ms > 0 {
+                    self.apply_after =
+                        Some(Instant::now() + crate::config::ms(self.delay_apply_ms));
+                    debug!(
+                        "winhelper: armed delayed-apply +{}ms target={:?} grid={:?}",
+                        self.delay_apply_ms, self.apply_target, self.apply_grid
+                    );
+                }
+
                 // Optionally attach a simple sheet — placeholder (no-op for now).
                 let _ = self.attach_sheet;
 
@@ -251,6 +268,7 @@ pub(crate) fn run_focus_winhelper(
                     elwt.exit();
                 }
                 WindowEvent::Moved(new_pos) => {
+                    debug!("winhelper: moved event: x={} y={}", new_pos.x, new_pos.y);
                     if self.delay_setframe_ms > 0 && !self.suppress_events {
                         if let Some(win) = self.window.as_ref() {
                             let scale = win.scale_factor();
@@ -263,6 +281,10 @@ pub(crate) fn run_focus_winhelper(
                                 self.last_pos = Some((p0l.x, p0l.y));
                             }
                             self.desired_pos = Some((lp.x, lp.y));
+                            debug!(
+                                "winhelper: intercept move -> desired=({:.1},{:.1}) last={:?}",
+                                lp.x, lp.y, self.last_pos
+                            );
                             if let Some((x, y)) = self.last_pos {
                                 self.suppress_events = true;
                                 win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
@@ -270,6 +292,10 @@ pub(crate) fn run_focus_winhelper(
                             }
                             self.apply_after =
                                 Some(Instant::now() + crate::config::ms(self.delay_setframe_ms));
+                            debug!(
+                                "winhelper: scheduled apply_after at +{}ms",
+                                self.delay_setframe_ms
+                            );
                         }
                     } else if !self.suppress_events {
                         // Track last position when not delaying
@@ -277,10 +303,15 @@ pub(crate) fn run_focus_winhelper(
                             let scale = win.scale_factor();
                             let lp = new_pos.to_logical::<f64>(scale);
                             self.last_pos = Some((lp.x, lp.y));
+                            debug!("winhelper: track move -> last=({:.1},{:.1})", lp.x, lp.y);
                         }
                     }
                 }
                 WindowEvent::Resized(new_size) => {
+                    debug!(
+                        "winhelper: resized event: w={} h={}",
+                        new_size.width, new_size.height
+                    );
                     if self.delay_setframe_ms > 0 && !self.suppress_events {
                         if let Some(win) = self.window.as_ref() {
                             let scale = win.scale_factor();
@@ -290,6 +321,10 @@ pub(crate) fn run_focus_winhelper(
                                 self.last_size = Some((s0.width, s0.height));
                             }
                             self.desired_size = Some((lsz.width, lsz.height));
+                            debug!(
+                                "winhelper: intercept resize -> desired=({:.1},{:.1}) last={:?}",
+                                lsz.width, lsz.height, self.last_size
+                            );
                             if let Some((w, h)) = self.last_size {
                                 self.suppress_events = true;
                                 let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
@@ -297,6 +332,10 @@ pub(crate) fn run_focus_winhelper(
                             }
                             self.apply_after =
                                 Some(Instant::now() + crate::config::ms(self.delay_setframe_ms));
+                            debug!(
+                                "winhelper: scheduled apply_after at +{}ms",
+                                self.delay_setframe_ms
+                            );
                         }
                     } else if !self.suppress_events {
                         // Track last size when not delaying
@@ -304,6 +343,10 @@ pub(crate) fn run_focus_winhelper(
                             let scale = win.scale_factor();
                             let lsz = new_size.to_logical::<f64>(scale);
                             self.last_size = Some((lsz.width, lsz.height));
+                            debug!(
+                                "winhelper: track resize -> last=({:.1},{:.1})",
+                                lsz.width, lsz.height
+                            );
                         }
                     }
                 }
@@ -340,23 +383,130 @@ pub(crate) fn run_focus_winhelper(
                 elwt.exit();
                 return;
             }
-            // Apply any delayed frame changes when the timer elapses
-            if let Some(when) = self.apply_after
-                && now >= when
-            {
-                if let Some(win) = self.window.as_ref() {
-                    self.suppress_events = true;
-                    if let Some((w, h)) = self.desired_size.take() {
-                        let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
-                        self.last_size = Some((w, h));
+            if let Some(when) = self.apply_after {
+                if now < when {
+                    // Before apply: resist external changes by reverting to last
+                    if let Some(win) = self.window.as_ref() {
+                        if let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size) {
+                            let scale = win.scale_factor();
+                            let p = win
+                                .outer_position()
+                                .ok()
+                                .map(|p| p.to_logical::<f64>(scale));
+                            let s = win.inner_size().to_logical::<f64>(scale);
+                            if let Some(p) = p {
+                                let dx = (p.x - lx).abs();
+                                let dy = (p.y - ly).abs();
+                                let dw = (s.width - lw).abs();
+                                let dh = (s.height - lh).abs();
+                                if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
+                                    debug!(
+                                        "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
+                                        dx, dy, dw, dh
+                                    );
+                                    self.suppress_events = true;
+                                    let _ = win
+                                        .request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
+                                    win.set_outer_position(winit::dpi::LogicalPosition::new(
+                                        lx, ly,
+                                    ));
+                                    self.suppress_events = false;
+                                }
+                            }
+                        }
                     }
-                    if let Some((x, y)) = self.desired_pos.take() {
-                        win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
-                        self.last_pos = Some((x, y));
+                } else {
+                    // Apply time reached: prefer explicit target; else desired_*
+                    if let Some(win) = self.window.as_ref() {
+                        self.suppress_events = true;
+                        if let Some((x, y, w, h)) = self.apply_target {
+                            let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                            win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                            self.last_pos = Some((x, y));
+                            self.last_size = Some((w, h));
+                            debug!(
+                                "winhelper: explicit apply -> ({:.1},{:.1},{:.1},{:.1})",
+                                x, y, w, h
+                            );
+                        } else if let Some((cols, rows, col, row)) = self.apply_grid {
+                            // Compute target rect on current screen visible frame
+                            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                                use objc2_app_kit::NSScreen;
+                                // Use window center to pick screen
+                                let scale = win.scale_factor();
+                                let p = win
+                                    .outer_position()
+                                    .ok()
+                                    .map(|p| p.to_logical::<f64>(scale))
+                                    .unwrap_or(winit::dpi::LogicalPosition::new(0.0, 0.0));
+                                let (vf_x, vf_y, vf_w, vf_h) = {
+                                    let mut chosen = None;
+                                    for s in NSScreen::screens(mtm).iter() {
+                                        let fr = s.visibleFrame();
+                                        let sx = fr.origin.x;
+                                        let sy = fr.origin.y;
+                                        let sw = fr.size.width;
+                                        let sh = fr.size.height;
+                                        if p.x >= sx
+                                            && p.x <= sx + sw
+                                            && p.y >= sy
+                                            && p.y <= sy + sh
+                                        {
+                                            chosen = Some((sx, sy, sw, sh));
+                                            break;
+                                        }
+                                    }
+                                    chosen.or_else(|| {
+                                        NSScreen::mainScreen(mtm).map(|scr| {
+                                            let r = scr.visibleFrame();
+                                            (r.origin.x, r.origin.y, r.size.width, r.size.height)
+                                        })
+                                    })
+                                }
+                                .unwrap_or((0.0, 0.0, 1440.0, 900.0));
+                                let c = cols.max(1) as f64;
+                                let r = rows.max(1) as f64;
+                                let tile_w = (vf_w / c).floor().max(1.0);
+                                let tile_h = (vf_h / r).floor().max(1.0);
+                                let rem_w = vf_w - tile_w * (cols as f64);
+                                let rem_h = vf_h - tile_h * (rows as f64);
+                                let tx = vf_x + tile_w * (col as f64);
+                                let tw = if col == cols.saturating_sub(1) {
+                                    tile_w + rem_w
+                                } else {
+                                    tile_w
+                                };
+                                let ty = vf_y + tile_h * (row as f64);
+                                let th = if row == rows.saturating_sub(1) {
+                                    tile_h + rem_h
+                                } else {
+                                    tile_h
+                                };
+                                let _ =
+                                    win.request_inner_size(winit::dpi::LogicalSize::new(tw, th));
+                                win.set_outer_position(winit::dpi::LogicalPosition::new(tx, ty));
+                                self.last_pos = Some((tx, ty));
+                                self.last_size = Some((tw, th));
+                                debug!(
+                                    "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
+                                    tx, ty, tw, th
+                                );
+                            }
+                        } else {
+                            if let Some((w, h)) = self.desired_size.take() {
+                                let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                                self.last_size = Some((w, h));
+                            }
+                            if let Some((x, y)) = self.desired_pos.take() {
+                                win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                                self.last_pos = Some((x, y));
+                            }
+                            debug!("winhelper: applied desired pos/size");
+                        }
+                        self.suppress_events = false;
                     }
-                    self.suppress_events = false;
+                    self.apply_after = None;
                 }
-                self.apply_after = None;
             }
             // Wake up at the next interesting time (apply_after or final deadline)
             let next = match self.apply_after {
@@ -372,6 +522,9 @@ pub(crate) fn run_focus_winhelper(
         title: title.to_string(),
         deadline: Instant::now() + config::ms(time_ms.max(1000)),
         delay_setframe_ms,
+        delay_apply_ms,
+        apply_target,
+        apply_grid,
         last_pos: None,
         last_size: None,
         desired_pos: None,

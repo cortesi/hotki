@@ -52,6 +52,9 @@ pub struct HelperWindowBuilder {
     title: String,
     time_ms: u64,
     delay_setframe_ms: Option<u64>,
+    delay_apply_ms: Option<u64>,
+    apply_target: Option<(f64, f64, f64, f64)>,
+    apply_grid: Option<(u32, u32, u32, u32)>,
     grid: Option<(u32, u32, u32, u32)>,
     size: Option<(f64, f64)>,
     pos: Option<(f64, f64)>,
@@ -69,6 +72,9 @@ impl HelperWindowBuilder {
             title: title.into(),
             time_ms: 30000, // Default 30 seconds
             delay_setframe_ms: None,
+            delay_apply_ms: None,
+            apply_target: None,
+            apply_grid: None,
             grid: None,
             size: None,
             pos: None,
@@ -114,6 +120,27 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Explicit delayed-apply to a target frame `(x,y,w,h)` after `ms`.
+    pub fn with_delay_apply(mut self, ms: u64, x: f64, y: f64, w: f64, h: f64) -> Self {
+        self.delay_apply_ms = Some(ms);
+        self.apply_target = Some((x, y, w, h));
+        self
+    }
+
+    /// Explicit delayed-apply to a grid target `(cols,rows,col,row)` after `ms`.
+    pub fn with_delay_apply_grid(
+        mut self,
+        ms: u64,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+    ) -> Self {
+        self.delay_apply_ms = Some(ms);
+        self.apply_grid = Some((cols, rows, col, row));
+        self
+    }
+
     /// Set explicit label text to display
     pub fn with_label_text(mut self, text: impl Into<String>) -> Self {
         self.label_text = Some(text.into());
@@ -156,6 +183,25 @@ impl HelperWindowBuilder {
             .arg(self.time_ms.to_string());
         if let Some(ms) = self.delay_setframe_ms {
             cmd.arg("--delay-setframe-ms").arg(ms.to_string());
+        }
+        if let Some(ms) = self.delay_apply_ms {
+            cmd.arg("--delay-apply-ms").arg(ms.to_string());
+        }
+        if let Some((x, y, w, h)) = self.apply_target {
+            cmd.arg("--apply-target").args([
+                x.to_string(),
+                y.to_string(),
+                w.to_string(),
+                h.to_string(),
+            ]);
+        }
+        if let Some((c, r, col, row)) = self.apply_grid {
+            cmd.arg("--apply-grid").args([
+                c.to_string(),
+                r.to_string(),
+                col.to_string(),
+                row.to_string(),
+            ]);
         }
         if let Some((c, r, col, row)) = self.grid {
             cmd.arg("--grid").args([
