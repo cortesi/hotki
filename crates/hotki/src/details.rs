@@ -191,16 +191,17 @@ impl Details {
                 }
                 return;
             }
-            // Apply saved geometry once after opening
+            // Apply saved geometry once after opening (clamped to active screen)
             if self.restore_pending {
                 if let Some(stored) = self.last_saved {
+                    let clamped = clamp_to_active_frame(stored);
                     wctx.send_viewport_cmd_to(
                         self.id,
-                        ViewportCommand::InnerSize(vec2(stored.size.0, stored.size.1)),
+                        ViewportCommand::InnerSize(vec2(clamped.size.0, clamped.size.1)),
                     );
                     wctx.send_viewport_cmd_to(
                         self.id,
-                        ViewportCommand::OuterPosition(egui::pos2(stored.pos.0, stored.pos.1)),
+                        ViewportCommand::OuterPosition(egui::pos2(clamped.pos.0, clamped.pos.1)),
                     );
                 }
                 self.restore_pending = false;
@@ -461,4 +462,38 @@ fn current_geom_top_left() -> Option<WindowGeom> {
         pos: (x_t, y_t),
         size: (w, h),
     })
+}
+
+/// Clamp a window geometry to the current active screen's visible frame.
+///
+/// Coordinates use a global top-left origin. If the saved size exceeds the screen,
+/// it is reduced to fit; placement collapses to the screen's top-left in degenerate cases.
+fn clamp_to_active_frame(g: WindowGeom) -> WindowGeom {
+    let (sx_b, sy_b, sw, sh, global_top) = screen::active_frame();
+
+    // Convert active screen rect to top-left origin
+    let screen_left = sx_b;
+    let screen_right = sx_b + sw;
+    let screen_top_tl = global_top - (sy_b + sh);
+    let screen_bottom_tl = global_top - sy_b;
+
+    // Ensure minimally positive size and at most screen size
+    let min_w = 100.0_f32;
+    let min_h = 80.0_f32;
+    let clamped_w = g.size.0.max(min_w).min(sw);
+    let clamped_h = g.size.1.max(min_h).min(sh);
+
+    // Compute clamped position ranges; collapse if window is larger than screen
+    let x_min = screen_left;
+    let x_max = (screen_right - clamped_w).max(x_min);
+    let y_min = screen_top_tl;
+    let y_max = (screen_bottom_tl - clamped_h).max(y_min);
+
+    let x = g.pos.0.clamp(x_min, x_max);
+    let y = g.pos.1.clamp(y_min, y_max);
+
+    WindowGeom {
+        pos: (x, y),
+        size: (clamped_w, clamped_h),
+    }
 }
