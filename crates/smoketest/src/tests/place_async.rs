@@ -8,12 +8,9 @@ use std::cmp;
 use crate::{
     config,
     error::{Error, Result},
-    process::{HelperWindowBuilder, ManagedChild},
+    helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::{
-        geom,
-        helpers::{ensure_frontmost, wait_for_window_visible},
-    },
+    tests::geom,
 };
 
 // Geometry helpers moved to `tests::geom`.

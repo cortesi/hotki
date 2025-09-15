@@ -17,10 +17,10 @@ use std::{cmp, thread, time::Instant};
 
 use hotki_protocol::Toggle;
 
-use super::helpers::{HelperWindow, ensure_frontmost};
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{HelperWindow, ensure_frontmost},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,

@@ -11,11 +11,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{
-    cli::SeqTest,
-    config,
-    process::{self, ManagedChild},
-};
+use crate::{cli::SeqTest, config, helper_window::ManagedChild, process};
 
 /// Print a test heading to stdout.
 pub fn heading(title: &str) {

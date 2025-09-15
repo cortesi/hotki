@@ -5,13 +5,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use super::{
-    geom,
-    helpers::{ensure_frontmost, spawn_helper_with_options},
-};
+use super::geom;
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{ensure_frontmost, spawn_helper_with_options},
     test_runner::{TestConfig, TestRunner},
 };
 

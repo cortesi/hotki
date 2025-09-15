@@ -8,6 +8,7 @@ mod cli;
 mod config;
 /// Error definitions and hint helpers used by smoketest.
 mod error;
+mod helper_window;
 // no local logging module; use shared crate
 mod orchestrator;
 /// Registry of helper process IDs for cleanup.

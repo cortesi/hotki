@@ -8,11 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::helpers::{wait_for_frontmost_title, wait_for_window_visible};
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
+    helper_window::{HelperWindowBuilder, wait_for_frontmost_title, wait_for_window_visible},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,

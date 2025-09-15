@@ -20,13 +20,11 @@
 
 use std::cmp;
 
-use super::{
-    geom,
-    helpers::{HelperWindow, wait_for_frontmost_title},
-};
+use super::geom;
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{HelperWindow, wait_for_frontmost_title},
     test_runner::{TestConfig, TestRunner},
 };
 

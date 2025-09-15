@@ -18,14 +18,11 @@
 //!   step timeout; after the second raise, it equals `title2`.
 use std::cmp;
 
-use super::helpers::{
-    HelperWindow, wait_for_backend_focused_title, wait_for_frontmost_title,
-    wait_for_windows_visible,
-};
+use super::helpers::{wait_for_backend_focused_title, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
+    helper_window::{HelperWindow, HelperWindowBuilder, wait_for_frontmost_title},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,

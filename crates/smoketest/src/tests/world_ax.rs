@@ -16,8 +16,8 @@ use mac_winops::ops::{RealWinOps, WinOps};
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{ensure_frontmost, spawn_helper_visible},
     runtime,
-    tests::helpers::{ensure_frontmost, spawn_helper_visible},
 };
 
 /// Verify AX properties of the focused window via `WorldHandle::ax_props`.

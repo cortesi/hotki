@@ -13,7 +13,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
+    helper_window::{HelperWindow, HelperWindowBuilder},
     tests::{geom, helpers},
 };
 
@@ -28,7 +28,7 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
         .with_grid(4, 4, 0, 0)
         .with_size(1000.0, 700.0)
         .with_nonresizable(true);
-    let mut helper = helpers::HelperWindow::spawn_frontmost_with_builder(
+    let mut helper = HelperWindow::spawn_frontmost_with_builder(
         builder,
         &title,
         timeout_ms,

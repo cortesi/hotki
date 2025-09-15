@@ -27,10 +27,11 @@ use std::{
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 
-use super::helpers::{HelperWindow, approx, ensure_frontmost};
+use super::helpers::approx;
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{HelperWindow, ensure_frontmost},
     test_runner::{TestConfig, TestRunner},
     ui_interaction::{send_activation_chord, send_key},
 };

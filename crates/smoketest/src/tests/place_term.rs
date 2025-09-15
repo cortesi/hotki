@@ -14,12 +14,9 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    process::{HelperWindowBuilder, ManagedChild},
+    helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::{
-        geom,
-        helpers::{ensure_frontmost, wait_for_window_visible},
-    },
+    tests::geom,
 };
 
 /// Lightweight sample of a window frame at a point in time.

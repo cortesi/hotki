@@ -4,14 +4,11 @@
 
 use tracing::info;
 
-use super::{
-    geom,
-    helpers::{wait_for_frontmost_title, wait_for_windows_visible},
-};
+use super::{geom, helpers::wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
-    process::HelperWindowBuilder,
+    helper_window::{HelperWindowBuilder, wait_for_frontmost_title},
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };

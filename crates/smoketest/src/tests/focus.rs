@@ -29,10 +29,10 @@ use std::{
 
 use tokio::time::{sleep, timeout};
 
-use super::helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title};
 use crate::{
     config,
     error::{Error, Result},
+    helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
     results::FocusOutcome,
     runtime, server_drive,
     test_runner::{TestConfig, TestRunner},

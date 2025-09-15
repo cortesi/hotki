@@ -9,10 +9,8 @@ use mac_winops::PlaceAttemptOptions;
 use crate::{
     config,
     error::{Error, Result},
-    tests::{
-        geom,
-        helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
-    },
+    helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
+    tests::geom,
 };
 
 // Geometry helpers moved to `tests::geom`.
