@@ -69,6 +69,8 @@ pub struct HotkiApp {
     pub(crate) config: config::Config,
     /// Last known cursor/location info.
     pub(crate) last_cursor: config::Cursor,
+    /// True when a graceful shutdown is in progress; allows window close.
+    pub(crate) shutdown_in_progress: bool,
 }
 
 impl App for HotkiApp {
@@ -78,13 +80,20 @@ impl App for HotkiApp {
 
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.shutdown_in_progress {
+                // Allow close to proceed during graceful shutdown.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                // Default behavior: hide instead of closing the app window.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         }
 
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 AppEvent::Shutdown => {
+                    self.shutdown_in_progress = true;
                     // Hide all viewports and remove tray icon to allow a graceful exit
                     let (keys, _visible, parent_title) = self.hud.get_state();
                     // Ensure HUD viewport is hidden and stop rendering
@@ -99,6 +108,8 @@ impl App for HotkiApp {
                     // Preserve last cursor and config, but request a repaint to flush hides
                     // Optionally keep keys invisible
                     self.hud.set_keys(keys, false, parent_title);
+                    // Ask the native window to close; runtime has a fallback timer.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     ctx.request_repaint();
                 }
                 AppEvent::ShowDetails => {

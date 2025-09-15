@@ -88,6 +88,21 @@ impl ConnectionDriver {
         }
     }
 
+    /// Request a graceful app shutdown: notify UI, ask the native
+    /// window to close, and arm a short fast-exit fallback.
+    fn trigger_graceful_shutdown(&self, fallback_ms: u64) {
+        if self.tx_keys.send(AppEvent::Shutdown).is_err() {
+            tracing::warn!("failed to send Shutdown UI event");
+        }
+        self.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::Close);
+        self.egui_ctx.request_repaint();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(fallback_ms)).await;
+            process::exit(0);
+        });
+    }
+
     /// Handle control messages received before the server connection is ready.
     /// Returns true if a Shutdown was requested (caller should exit).
     async fn handle_preconnect_control(
@@ -97,11 +112,7 @@ impl ConnectionDriver {
     ) -> bool {
         match msg.clone() {
             ControlMsg::Shutdown => {
-                if self.tx_keys.send(AppEvent::Shutdown).is_err() {
-                    tracing::warn!("failed to send Shutdown UI event");
-                }
-                self.egui_ctx.request_repaint();
-                sleep(Duration::from_millis(250)).await;
+                self.trigger_graceful_shutdown(750);
                 return true;
             }
             ControlMsg::Reload | ControlMsg::SwitchTheme(_) => {
@@ -228,21 +239,18 @@ impl ConnectionDriver {
         self.egui_ctx.request_repaint();
     }
 
-    // Handle a control message while connected; may exit the process on Shutdown.
-    /// Handle a control message while connected; may exit the process on Shutdown.
+    // Handle a control message while connected; returns true if we should exit.
+    /// Handle a control message while connected; returns true if we should exit.
     async fn handle_runtime_control(
         &mut self,
         conn: &mut hotki_server::Connection,
         msg: ControlMsg,
-    ) {
+    ) -> bool {
         match msg {
             ControlMsg::Shutdown => {
-                if self.tx_keys.send(AppEvent::Shutdown).is_err() {
-                    tracing::warn!("failed to send Shutdown UI event");
-                }
-                self.egui_ctx.request_repaint();
-                sleep(Duration::from_millis(250)).await;
-                process::exit(0);
+                self.trigger_graceful_shutdown(750);
+                let _ = conn.shutdown().await;
+                return true;
             }
             ControlMsg::SwitchTheme(name) => {
                 self.apply_ui_override(UiOverride::ThemeSet(name));
@@ -259,6 +267,7 @@ impl ConnectionDriver {
                 .await;
             }
         }
+        false
     }
 
     /// Handle a single server-to-UI event received from the engine.
@@ -395,8 +404,8 @@ impl ConnectionDriver {
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
                     if self.handle_preconnect_control(msg, &mut preconnect_queue).await {
-                        // Shutdown requested; exit early
-                        process::exit(0);
+                        // Shutdown requested; exit early (graceful close in progress)
+                        return None;
                     }
                 }
             }
@@ -471,7 +480,7 @@ impl ConnectionDriver {
                     break;
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    self.handle_runtime_control(conn, msg).await;
+                    if self.handle_runtime_control(conn, msg).await { break; }
                 }
                 resp = conn.recv_event() => {
                     match resp {
@@ -541,9 +550,8 @@ impl ConnectionDriver {
             }
         }
         info!("Exiting key loop");
-        // Terminate the process so any HUD windows are closed immediately.
-        // Relying on UI message processing can stall if the UI isn't repainting.
-        process::exit(0);
+        // Ask the app to close and rely on fallback if needed.
+        self.trigger_graceful_shutdown(750);
     }
 
     /// Compute the next dump timer reset duration and optionally log a snapshot.

@@ -186,6 +186,7 @@ fn main() -> eframe::Result<()> {
                 permissions,
                 config: app_cfg,
                 last_cursor: root_cursor,
+                shutdown_in_progress: false,
             }))
         }),
     )
