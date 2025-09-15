@@ -8,7 +8,7 @@
 //! `on_key_down(chord, is_repeat)` and `on_key_up(chord)` as needed.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use core_graphics::{
     event as cge,
@@ -17,23 +17,8 @@ use core_graphics::{
 use libc::pid_t;
 use mac_keycode::{Chord, Modifier};
 use tracing::{info, trace, warn};
-
-/// Crate-local `Result` alias using the relay error type.
-pub(crate) type Result<T> = StdResult<T, Error>;
-
-#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
-/// Errors that can occur while synthesizing or posting events.
-pub(crate) enum Error {
-    /// Failure creating a CoreGraphics event source.
-    #[error("Failed to create CGEventSource")]
-    EventSource,
-    /// Failure creating a CoreGraphics keyboard event.
-    #[error("Failed to create CGEvent")]
-    EventCreate,
-    /// Required Accessibility permission is missing.
-    #[error("Permission denied: {0}")]
-    PermissionDenied(&'static str),
-}
+mod error;
+pub(crate) use error::{Error, Result};
 
 /// Abstraction for posting events to the system (overridable in tests).
 pub(crate) trait Poster: Send + Sync {

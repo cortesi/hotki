@@ -21,7 +21,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
     collections::{HashMap, HashSet},
-    result::Result as StdResult,
     sync::Arc,
     thread::{self, JoinHandle},
 };
@@ -29,30 +28,14 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use mac_keycode::{Chord, Key as Code, Modifier};
 use parking_lot::Mutex;
-use thiserror::Error;
 use tracing::{debug, trace};
+mod error;
 mod policy;
 mod sys;
 
-/// Convenient result type used throughout this crate.
-pub type Result<T> = StdResult<T, Error>;
+pub use error::{Error, Result};
 
-/// Error variants produced by this crate.
-#[derive(Error, Debug)]
-pub enum Error {
-    /// Underlying OS provided an error.
-    #[error("OS error: {0}")]
-    OsError(String),
-    /// Event tap could not be created or initialized.
-    #[error("Event tap failed to start")]
-    EventTapStart,
-    /// Missing or denied system permission
-    #[error("Permission denied: {0}")]
-    PermissionDenied(&'static str),
-    /// No active registration exists for the provided id.
-    #[error("Invalid registration id")]
-    InvalidId,
-}
+// Error and Result are re-exported from the `error` module.
 
 // Use mac_keycode::Chord directly throughout this crate.
 
