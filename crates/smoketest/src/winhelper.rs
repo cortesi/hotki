@@ -1,11 +1,14 @@
+//! Helper window (winit) used by smoketests to verify placement behaviors.
 use std::time::Instant;
 
 use tracing::debug;
 
 use crate::config;
 
+/// Target rect as ((x,y), (w,h), name) used for tween targets.
 type TargetRect = ((f64, f64), (f64, f64), &'static str);
 
+/// Run the helper window configured by the provided parameters.
 #[allow(clippy::too_many_arguments)]
 pub fn run_focus_winhelper(
     title: &str,
@@ -27,7 +30,7 @@ pub fn run_focus_winhelper(
     panel_nonmovable: bool,
     attach_sheet: bool,
 ) -> Result<(), String> {
-    let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
+    // Create event loop after items below to satisfy clippy's items-after-statements lint.
 
     use winit::{
         application::ApplicationHandler,
@@ -767,6 +770,7 @@ pub fn run_focus_winhelper(
         }
     }
 
+    let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = HelperApp {
         window: None,
         title: title.to_string(),

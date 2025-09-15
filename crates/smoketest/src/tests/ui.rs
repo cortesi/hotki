@@ -11,6 +11,8 @@
 //!   returned with `hud_seen = true` and `time_to_hud_ms` set.
 //! - The driving sequence completes without backend errors, and the session is
 //!   cleanly torn down.
+use std::iter::repeat_n;
+
 use crate::{
     error::Result,
     results::Summary,
@@ -51,7 +53,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
-            seq.extend(std::iter::repeat_n("l", 5));
+            seq.extend(repeat_n("l", 5));
             seq.push("esc");
             seq.push("shift+cmd+0");
             send_key_sequence(&seq);
@@ -100,7 +102,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
-            seq.extend(std::iter::repeat_n("l", 5));
+            seq.extend(repeat_n("l", 5));
             seq.push("esc");
             seq.push("shift+cmd+0");
             send_key_sequence(&seq);

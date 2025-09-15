@@ -27,13 +27,26 @@ pub enum TestDetails {
     },
     /// Focus test details
     /// Focus test results: observed title and pid
-    Focus { title: String, pid: i32 },
+    Focus {
+        /// Final focused window title
+        title: String,
+        /// Final focused window pid
+        pid: i32,
+    },
     /// Repeat test details
     /// Repeat test results: number of repeats and type
-    Repeat { count: usize, test_type: RepeatType },
+    Repeat {
+        /// Number of times the action repeated
+        count: usize,
+        /// Repeat test type (relay/shell/volume)
+        test_type: RepeatType,
+    },
     /// Window operation test details
     /// Window operation performed
-    Window { operation: WindowOperation },
+    Window {
+        /// Operation performed on the window
+        operation: WindowOperation,
+    },
     /// Generic test with no specific details
     #[default]
     Generic,
@@ -181,6 +194,7 @@ impl Default for Summary {
 }
 
 impl Summary {
+    /// Create a default empty summary.
     pub fn new() -> Self {
         Self {
             hud_seen: false,

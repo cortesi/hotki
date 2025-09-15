@@ -3,34 +3,42 @@
 //! Verifies that when the focused window is non-movable (AXPosition not settable),
 //! the engine performs an advisory pre-gate and does not attempt placement.
 
-use std::time::{Duration, Instant};
+use std::{
+    cmp, thread,
+    time::{Duration, Instant},
+};
 
-use super::helpers::wait_for_frontmost_title;
+use super::helpers::{wait_for_frontmost_title, wait_for_window_visible};
 use crate::{
     config,
     error::{Error, Result},
+    process::HelperWindowBuilder,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
 
+/// Fetch the AX frame for `(pid,title)` as `(x,y,w,h)`.
 fn ax_frame(pid: i32, title: &str) -> Option<(f64, f64, f64, f64)> {
     mac_winops::ax_window_frame(pid, title).map(|((x, y), (w, h))| (x, y, w, h))
 }
 
+/// Approximate float equality within `eps`.
 fn approx(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
 }
 
+/// Compare two frames for approximate equality.
 fn same_frame(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64), eps: f64) -> bool {
     approx(a.0, b.0, eps) && approx(a.1, b.1, eps) && approx(a.2, b.2, eps) && approx(a.3, b.3, eps)
 }
 
+/// Run the placement skip smoketest for non-movable windows.
 pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Minimal bindings: raise by title, then attempt place(grid(2,2), at(0,0)) on key '1'.
     let cols = 2u32;
     let rows = 2u32;
     let (col, row) = (0u32, 0u32);
-    let helper_title = crate::config::test_title("place-skip");
+    let helper_title = config::test_title("place-skip");
     let ron_config: String = format!(
         "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n        (\"1\", \"(0,0)\", place(grid({}, {}), at({}, {}))),\n    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
         helper_title, cols, rows, col, row
@@ -54,17 +62,17 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .config
                 .timeout_ms
                 .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
-            let helper = crate::process::HelperWindowBuilder::new(title.clone())
+            let helper = HelperWindowBuilder::new(title.clone())
                 .with_time_ms(helper_time)
                 .with_label_text("NM")
                 .with_nonmovable(true)
                 .with_attach_sheet(true)
                 .spawn()
                 .map_err(|e| Error::SpawnFailed(e.to_string()))?;
-            if !super::helpers::wait_for_window_visible(
+            if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
             ) {
                 return Err(Error::FocusNotObserved {
@@ -115,7 +123,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     unchanged = true;
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+                thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
             }
             if expect_skip {
                 if !unchanged {

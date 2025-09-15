@@ -1,5 +1,8 @@
 //! Flexible placement smoketest used to exercise Stage-3/8 behaviors.
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    cmp, process,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use mac_winops::PlaceAttemptOptions;
 
@@ -8,12 +11,13 @@ use crate::{
     error::{Error, Result},
     tests::{
         geom,
-        helpers::{spawn_helper_visible, wait_for_frontmost_title},
+        helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
     },
 };
 
 // Geometry helpers moved to `tests::geom`.
 
+/// Run the flexible placement smoketest with configurable grid/cell and options.
 pub fn run_place_flex(
     cols: u32,
     rows: u32,
@@ -28,24 +32,20 @@ pub fn run_place_flex(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let title = format!(
-        "hotki smoketest: place-flex {}-{}",
-        std::process::id(),
-        now_pre
-    );
+    let title = format!("hotki smoketest: place-flex {}-{}", process::id(), now_pre);
 
     // Spawn helper and wait until visible
     let lifetime = config::DEFAULT_TIMEOUT_MS + config::HELPER_WINDOW_EXTRA_TIME_MS;
     let mut helper = spawn_helper_visible(
         &title,
         lifetime,
-        std::cmp::min(config::DEFAULT_TIMEOUT_MS, config::HIDE_FIRST_WINDOW_MAX_MS),
+        cmp::min(config::DEFAULT_TIMEOUT_MS, config::HIDE_FIRST_WINDOW_MAX_MS),
         config::PLACE_POLL_MS,
         "FLEX",
     )?;
 
     // Bring to front to ensure mac-winops targets the correct focused window
-    crate::tests::helpers::ensure_frontmost(helper.pid, &title, 3, 50);
+    ensure_frontmost(helper.pid, &title, 3, 50);
     let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
 
     // Compute expected rect from screen VF containing current AX position

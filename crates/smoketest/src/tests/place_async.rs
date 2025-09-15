@@ -3,32 +3,39 @@
 
 // no direct time imports needed; use config::test_title
 
+use std::cmp;
+
 use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
-    tests::geom,
+    test_runner::{TestConfig, TestRunner},
+    tests::{
+        geom,
+        helpers::{ensure_frontmost, wait_for_window_visible},
+    },
 };
 
 // Geometry helpers moved to `tests::geom`.
 
+/// Run the async placement smoketest with a small 2×2 grid.
 pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let cols = 2u32;
     let rows = 2u32;
     let col = 1u32; // BR
     let row = 1u32;
-    let helper_title = crate::config::test_title("place-async");
+    let helper_title = config::test_title("place-async");
 
     // Build a minimal hotki config so the backend is up (but we will call
     // mac-winops directly for placement to reduce orchestration flakiness).
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
-    let cfg = crate::test_runner::TestConfig::new(timeout_ms)
+    let cfg = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
         .with_temp_config(ron_config);
 
-    crate::test_runner::TestRunner::new("place_async", cfg)
+    TestRunner::new("place_async", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Ensure the MRPC driver is initialized (no specific idents required here).
@@ -51,10 +58,10 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .spawn()?;
 
             // Wait for visibility
-            if !crate::tests::helpers::wait_for_window_visible(
+            if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
@@ -63,7 +70,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Resolve window id and ensure frontmost by best-effort activation
             let _ = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
-            crate::tests::helpers::ensure_frontmost(
+            ensure_frontmost(
                 helper.pid,
                 &title,
                 5,

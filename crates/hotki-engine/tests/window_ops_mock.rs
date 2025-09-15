@@ -28,10 +28,7 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
 #[tokio::test(flavor = "current_thread")]
 async fn engine_uses_window_ops_for_focus() {
     ensure_no_os_interaction();
-    let (tx, mut _rx): (
-        mpsc::UnboundedSender<MsgToUI>,
-        mpsc::UnboundedReceiver<MsgToUI>,
-    ) = mpsc::unbounded_channel();
+    let (tx, mut _rx): (mpsc::Sender<MsgToUI>, mpsc::Receiver<MsgToUI>) = mpsc::channel(32);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
     let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
@@ -59,7 +56,7 @@ async fn engine_uses_window_ops_for_focus() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_hide_uses_winops() {
     ensure_no_os_interaction();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
     let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
@@ -79,7 +76,7 @@ async fn engine_hide_uses_winops() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_fullscreen_routes_native_and_nonnative() {
     ensure_no_os_interaction();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
     let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
@@ -107,7 +104,7 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_raise_activates_on_match() {
     ensure_no_os_interaction();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     // Provide a matching window so the immediate path (no debounce) is taken
     mock.set_windows(vec![mac_winops::WindowInfo {
@@ -165,7 +162,7 @@ async fn engine_raise_activates_on_match() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_place_prefers_last_raise_pid_then_clears() {
     ensure_no_os_interaction();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     // Frontmost is A
     let frontmost = mac_winops::WindowInfo {
@@ -252,7 +249,7 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_fullscreen_error_notifies() {
     ensure_no_os_interaction();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_fullscreen_nonnative(true);
     let api = Arc::new(MockHotkeyApi::new());
@@ -288,7 +285,7 @@ async fn engine_fullscreen_error_notifies() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_hide_error_notifies() {
     ensure_no_os_interaction();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_hide(true);
     let api = Arc::new(MockHotkeyApi::new());
@@ -323,7 +320,7 @@ async fn engine_hide_error_notifies() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_raise_invalid_regex_notifies() {
     ensure_no_os_interaction();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
     let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
@@ -358,7 +355,7 @@ async fn engine_raise_invalid_regex_notifies() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_focus_error_propagates_notification() {
     ensure_no_os_interaction();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_focus_dir(true);
     let api = Arc::new(MockHotkeyApi::new());
@@ -397,10 +394,7 @@ async fn engine_focus_error_propagates_notification() {
 #[tokio::test(flavor = "current_thread")]
 async fn engine_place_move_uses_winops() {
     ensure_no_os_interaction();
-    let (tx, _rx): (
-        mpsc::UnboundedSender<MsgToUI>,
-        mpsc::UnboundedReceiver<MsgToUI>,
-    ) = mpsc::unbounded_channel();
+    let (tx, _rx): (mpsc::Sender<MsgToUI>, mpsc::Receiver<MsgToUI>) = mpsc::channel(32);
     let mock = Arc::new(MockWinOps::new());
     // Ensure the world snapshot has a window for the current pid
     mock.set_windows(vec![mac_winops::WindowInfo {

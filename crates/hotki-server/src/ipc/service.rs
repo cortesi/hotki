@@ -21,7 +21,7 @@ use std::{
     slice,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -31,7 +31,10 @@ use hotki_engine::Engine;
 use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, mpsc::UnboundedSender};
+use tokio::sync::{
+    Mutex as AsyncMutex,
+    mpsc::{Receiver, Sender},
+};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification, enc_world_status};
@@ -43,10 +46,10 @@ pub struct HotkeyService {
     engine: Arc<tokio::sync::Mutex<Option<Engine>>>,
     /// Mac hotkey manager
     manager: Arc<mac_hotkey::Manager>,
-    /// Event sender for UI messages
-    event_tx: UnboundedSender<MsgToUI>,
+    /// Event sender for UI messages (bounded)
+    event_tx: Sender<MsgToUI>,
     /// Event receiver (taken when starting forwarder)
-    event_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<MsgToUI>>>>,
+    event_rx: Arc<Mutex<Option<Receiver<MsgToUI>>>>,
     /// Connected clients; use Tokio mutex to reduce sync/async mixing.
     clients: Arc<AsyncMutex<Vec<RpcSender>>>,
     /// When set to true, the outer server event loop should exit.
@@ -58,6 +61,10 @@ pub struct HotkeyService {
     world_forwarder_running: Arc<AtomicBool>,
     /// When true, auto-shutdown the server if no UI clients remain connected.
     auto_shutdown_on_empty: Arc<AtomicBool>,
+    /// Count of world event drops specifically.
+    world_event_drops: Arc<AtomicU64>,
+    /// One-shot guard to emit ResyncRecommended after a world drop.
+    world_resync_pending: Arc<AtomicUsize>,
 }
 
 impl HotkeyService {
@@ -73,8 +80,8 @@ impl HotkeyService {
         })
     }
     pub fn new(manager: Arc<mac_hotkey::Manager>, shutdown: Arc<AtomicBool>) -> Self {
-        // Create event channel
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Create bounded event channel
+        let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
 
         Self {
             engine: Arc::new(tokio::sync::Mutex::new(None)),
@@ -87,6 +94,8 @@ impl HotkeyService {
             hb_running: Arc::new(AtomicBool::new(false)),
             world_forwarder_running: Arc::new(AtomicBool::new(false)),
             auto_shutdown_on_empty: Arc::new(AtomicBool::new(false)),
+            world_event_drops: Arc::new(AtomicU64::new(0)),
+            world_resync_pending: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -138,7 +147,7 @@ impl HotkeyService {
     /// event channel (`log_forward::set_sink(tx)`). Events are broadcast to all
     /// connected clients via `broadcast_event`; multi-client is supported, and
     /// logs are delivered through the same event pipeline as other messages.
-    async fn forward_events(&self, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<MsgToUI>) {
+    async fn forward_events(&self, mut event_rx: Receiver<MsgToUI>) {
         while let Some(event) = event_rx.recv().await {
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
@@ -154,6 +163,8 @@ impl HotkeyService {
         }
         let shutdown = self.shutdown.clone();
         let event_tx = self.event_tx.clone();
+        let drops = self.world_event_drops.clone();
+        let resync_pending = self.world_resync_pending.clone();
         let engine = self.engine.clone();
         tokio::spawn(async move {
             // Ensure engine exists and get world handle
@@ -209,12 +220,46 @@ impl HotkeyService {
                                 Some(WorldStreamMsg::FocusChanged(app))
                             }
                         };
-                        if let Some(msg) = msg_opt {
-                            let _ = event_tx.send(MsgToUI::World(msg));
+                        // Nothing to send? Move on quickly.
+                        let Some(msg) = msg_opt else { continue };
+
+                        // If a resync has been scheduled due to prior drops, attempt to send it
+                        // first (one-shot) before normal events.
+                        if resync_pending.load(Ordering::SeqCst) > 0 {
+                            match event_tx
+                                .try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended))
+                            {
+                                Ok(()) => {
+                                    resync_pending.store(0, Ordering::SeqCst);
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    // Still full; keep pending and drop this event as well.
+                                    let _ = drops.fetch_add(1, Ordering::SeqCst);
+                                    continue;
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    return;
+                                }
+                            }
+                        }
+
+                        match event_tx.try_send(MsgToUI::World(msg)) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                let n = drops.fetch_add(1, Ordering::SeqCst) + 1;
+                                if n == 1 || n.is_multiple_of(1000) {
+                                    tracing::debug!(count = n, "ui_world_drop");
+                                }
+                                // Schedule a single ResyncRecommended for when space frees.
+                                resync_pending.store(1, Ordering::SeqCst);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let _ = event_tx.send(MsgToUI::World(WorldStreamMsg::ResyncRecommended));
+                        // Upstream lag in world feed: recommend a resync (best-effort).
+                        let _ =
+                            event_tx.try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

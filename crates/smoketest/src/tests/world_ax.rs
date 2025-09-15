@@ -4,51 +4,64 @@
 //! instance, and queries `WorldHandle::ax_props` for the focused window.
 //! Verifies that role/subrole are non-empty and settable flags are resolved.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    process as std_process,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
-use crate::error::{Error, Result};
+use mac_winops::ops::{RealWinOps, WinOps};
 
+use crate::{
+    config,
+    error::{Error, Result},
+    runtime,
+    tests::helpers::{ensure_frontmost, spawn_helper_visible},
+};
+
+/// Verify AX properties of the focused window via `WorldHandle::ax_props`.
 pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     // Spawn a visible helper and keep it alive longer than our timeout.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let title = format!("hotki smoketest: world-ax {}-{}", std::process::id(), now);
-    let lifetime = timeout_ms.saturating_add(crate::config::HELPER_WINDOW_EXTRA_TIME_MS);
-    let mut helper = crate::tests::helpers::spawn_helper_visible(
+    let title = format!("hotki smoketest: world-ax {}-{}", std_process::id(), now);
+    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+    let mut helper = spawn_helper_visible(
         &title,
         lifetime,
-        crate::config::WAIT_FIRST_WINDOW_MS,
-        crate::config::POLL_INTERVAL_MS,
+        config::WAIT_FIRST_WINDOW_MS,
+        config::POLL_INTERVAL_MS,
         "AX",
     )?;
 
     // Bring helper frontmost best-effort.
-    crate::tests::helpers::ensure_frontmost(helper.pid, &title, 3, 100);
+    ensure_frontmost(helper.pid, &title, 3, 100);
 
     // Start a local world with real winops.
-    let winops: Arc<dyn mac_winops::ops::WinOps> = Arc::new(mac_winops::ops::RealWinOps);
+    let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
     // Ensure a Tokio runtime context exists when spawning the world actor.
-    let world = crate::runtime::block_on(async move {
+    let world = runtime::block_on(async move {
         hotki_world::World::spawn(winops, hotki_world::WorldCfg::default())
     })?;
 
     // Wait for world to report a focused window with AX props populated.
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let p = loop {
-        let fw = crate::runtime::block_on(async { world.focused_window().await })?;
+        let fw = runtime::block_on(async { world.focused_window().await })?;
         if let Some(w) = fw
             && let Some(props) = w.ax
         {
             break props;
         }
-        if std::time::Instant::now() >= deadline {
+        if Instant::now() >= deadline {
             return Err(Error::InvalidState(
                 "world-ax: missing ax props on focused window".into(),
             ));
         }
-        std::thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(25));
     };
 
     // Basic verification: role/subrole present and settable flags resolved (Some(_)).

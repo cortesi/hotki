@@ -1,14 +1,23 @@
+//! World status smoketest.
+
+use std::{
+    env, thread,
+    time::{Duration, Instant},
+};
+
 use crate::{
     config,
     error::{Error, Result},
+    runtime,
     session::HotkiSession,
     util::resolve_hotki_bin,
 };
 
+/// Verify that world status reports healthy permissions and polling parameters.
 pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     let bin = resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
     // Use default test config for server
-    let cwd = std::env::current_dir()?;
+    let cwd = env::current_dir()?;
     let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
     if !cfg_path.exists() {
         return Err(Error::MissingConfig(cfg_path));
@@ -17,9 +26,9 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     let mut session = HotkiSession::launch_with_config(&bin, &cfg_path, _logs)?;
 
     // Connect client with retries until timeout
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut client = loop {
-        match crate::runtime::block_on(async {
+        match runtime::block_on(async {
             hotki_server::Client::new_with_socket(session.socket_path())
                 .with_connect_only()
                 .connect()
@@ -27,14 +36,12 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         }) {
             Ok(Ok(c)) => break c,
             _ => {
-                if std::time::Instant::now() >= deadline {
+                if Instant::now() >= deadline {
                     return Err(Error::IpcDisconnected {
                         during: "world-status connect",
                     });
                 }
-                std::thread::sleep(std::time::Duration::from_millis(
-                    config::FAST_RETRY_DELAY_MS,
-                ));
+                thread::sleep(Duration::from_millis(config::FAST_RETRY_DELAY_MS));
             }
         }
     };
@@ -45,7 +52,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     // Poll world status a few times to let world tick at least once
     let mut ok = false;
     for _ in 0..10 {
-        match crate::runtime::block_on(async { conn.get_world_status().await }) {
+        match runtime::block_on(async { conn.get_world_status().await }) {
             Ok(Ok(ws)) => {
                 if ws.accessibility == 1
                     && ws.screen_recording == 1
@@ -59,7 +66,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
             Ok(Err(e)) => return Err(Error::InvalidState(e.to_string())),
             Err(e) => return Err(e),
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
     }
     if !ok {
         return Err(Error::InvalidState(
@@ -68,7 +75,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     }
 
     // Cleanly shutdown server
-    let _ = crate::runtime::block_on(async { client.shutdown_server().await });
+    let _res = runtime::block_on(async { client.shutdown_server().await });
     session.kill_and_wait();
     Ok(())
 }

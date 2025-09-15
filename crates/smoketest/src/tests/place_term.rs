@@ -1,44 +1,63 @@
 //! Terminal-style placement guard: simulate resize increments and ensure that once
 //! the origin reaches the correct cell corner, subsequent frames never move it.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    cmp,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
-    tests::geom,
+    test_runner::{TestConfig, TestRunner},
+    tests::{
+        geom,
+        helpers::{ensure_frontmost, wait_for_window_visible},
+    },
 };
 
+/// Lightweight sample of a window frame at a point in time.
 #[derive(Clone, Copy)]
 struct Sample {
+    /// X origin in screen coordinates.
     x: f64,
+    /// Y origin in screen coordinates.
     y: f64,
+    /// Width in points.
     w: f64,
+    /// Height in points.
     h: f64,
 }
 
+/// Approximate float equality within `eps` absolute tolerance.
 fn approx(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() <= eps
 }
 
+/// Run terminal-style placement guard smoketest with step size rounding.
 pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
     // Case: 3x1, left cell (0,0) — representative of terminal placement.
     let cols = 3u32;
     let rows = 1u32;
     let col = 0u32;
     let row = 0u32;
-    let helper_title = crate::config::test_title("place-term");
+    let helper_title = config::test_title("place-term");
 
     // Minimal hotki config (server up; we drive mac-winops directly here).
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
-    let cfg = crate::test_runner::TestConfig::new(timeout_ms)
+    let cfg = TestConfig::new(timeout_ms)
         .with_logs(true)
         .with_temp_config(ron_config);
 
-    crate::test_runner::TestRunner::new("place_term", cfg)
+    TestRunner::new("place_term", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             let _ = ctx.ensure_rpc_ready(&[]);
@@ -58,20 +77,20 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
                 .spawn_inherit_io()?;
 
             // Wait until visible and make sure it's frontmost
-            if !crate::tests::helpers::wait_for_window_visible(
+            if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
-            crate::tests::helpers::ensure_frontmost(helper.pid, &title, 5, config::RETRY_DELAY_MS);
+            ensure_frontmost(helper.pid, &title, 5, config::RETRY_DELAY_MS);
 
             // Compute expected visibleFrame and cell target
             let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-            let vf = crate::tests::geom::visible_frame_containing_point(ax, ay)
+            let vf = geom::visible_frame_containing_point(ax, ay)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
             let (tx, ty, tw, th) = geom::cell_rect(vf, cols, rows, col, row);
             let right = tx + tw;
@@ -79,26 +98,22 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
 
             // Sampler: collect AX frame timeline in the background
             let samples: Arc<Mutex<Vec<Sample>>> = Arc::new(Mutex::new(Vec::new()));
-            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let done = Arc::new(AtomicBool::new(false));
             let s_clone = samples.clone();
             let d_clone = done.clone();
             let title_clone = title;
             let pid_clone = helper.pid;
-            std::thread::spawn(move || {
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(
-                        config::PLACE_STEP_TIMEOUT_MS.saturating_add(1500),
-                    );
-                while !d_clone.load(std::sync::atomic::Ordering::SeqCst)
-                    && std::time::Instant::now() < deadline
-                {
+            thread::spawn(move || {
+                let deadline = Instant::now()
+                    + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS.saturating_add(1500));
+                while !d_clone.load(Ordering::SeqCst) && Instant::now() < deadline {
                     if let Some(((x, y), (w, h))) =
                         mac_winops::ax_window_frame(pid_clone, &title_clone)
                         && let Ok(mut guard) = s_clone.lock()
                     {
                         guard.push(Sample { x, y, w, h });
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    thread::sleep(Duration::from_millis(25));
                 }
             });
 
@@ -106,8 +121,8 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
                 .map_err(|e| Error::SpawnFailed(format!("place_grid_focused failed: {}", e)))?;
             // Allow tail to capture final state, then stop sampler
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(300));
+            done.store(true, Ordering::SeqCst);
 
             // Analyze timeline
             let samples = samples

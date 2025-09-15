@@ -130,7 +130,9 @@ pub fn spawn_helper_with_options(
 
 /// RAII fixture for a helper window that ensures frontmost and cleans up on drop.
 pub struct HelperWindow {
+    /// Child process handle for the helper window.
     child: ManagedChild,
+    /// Process identifier of the helper window.
     pub pid: i32,
 }
 

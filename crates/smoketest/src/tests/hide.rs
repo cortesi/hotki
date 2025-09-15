@@ -35,6 +35,7 @@ use crate::{
     ui_interaction::{send_activation_chord, send_key},
 };
 
+/// Run the hide on/off smoketest with a temporary keybinding config.
 pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Temporary config: shift+cmd+0 -> h -> (t/on/off); hide HUD to reduce intrusiveness
     let ron_config = r#"(
@@ -143,8 +144,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             send_activation_chord();
             // Raise helper again before revealing to avoid toggling an unrelated window.
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
-            crate::ui_interaction::send_key("h");
-            crate::ui_interaction::send_key("f");
+            send_key("h");
+            send_key("f");
 
             // Wait until position roughly returns to original
             let mut restored = false;

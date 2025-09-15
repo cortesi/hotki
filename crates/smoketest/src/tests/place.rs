@@ -18,6 +18,8 @@
 //! - The HUD is hidden; a `g` binding raises the helper before each placement
 //!   to ensure the correct target pid.
 
+use std::cmp;
+
 use super::{
     geom,
     helpers::{HelperWindow, wait_for_frontmost_title},
@@ -86,7 +88,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let mut helper = HelperWindow::spawn_frontmost(
                 &title,
                 helper_time,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
                 "P",
             )?;

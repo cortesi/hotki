@@ -1,6 +1,9 @@
 //! Placement normalization smoketests: exercise minimized/zoomed pre-states.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    cmp, process, thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use super::{geom, helpers::spawn_helper_with_options};
 use crate::{
@@ -12,6 +15,7 @@ use crate::{
 
 // Geometry and polling helpers are provided by `tests::geom`.
 
+/// Drive a placement with initial minimized/zoomed state and verify normalization.
 fn run_place_with_state(
     timeout_ms: u64,
     with_logs: bool,
@@ -19,17 +23,13 @@ fn run_place_with_state(
     start_zoomed: bool,
     label: String,
 ) -> Result<()> {
-    let cols = crate::config::PLACE_COLS;
-    let rows = crate::config::PLACE_ROWS;
+    let cols = config::PLACE_COLS;
+    let rows = config::PLACE_ROWS;
     let now_pre = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let helper_title = format!(
-        "hotki smoketest: place-state {}-{}",
-        std::process::id(),
-        now_pre
-    );
+    let helper_title = format!("hotki smoketest: place-state {}-{}", process::id(), now_pre);
     // Minimal config: raise + place (0,0) on key '1'
     let ron_config = format!(
         "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n        (\"1\", \"(0,0)\", place(grid({}, {}), at(0, 0))),\n    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
@@ -55,7 +55,7 @@ fn run_place_with_state(
             let mut helper = spawn_helper_with_options(
                 &title,
                 helper_time,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
                 &label,
                 start_minimized,
@@ -72,15 +72,15 @@ fn run_place_with_state(
 
             // If the helper started minimized, AX frame can lag after de-miniaturize.
             // Actively wait until an AX frame is available before issuing placement.
-            let ready_deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(std::cmp::min(
+            let ready_deadline = Instant::now()
+                + Duration::from_millis(cmp::min(
                     ctx.config.timeout_ms,
                     config::WAIT_FIRST_WINDOW_MS,
                 ));
-            while std::time::Instant::now() < ready_deadline
+            while Instant::now() < ready_deadline
                 && mac_winops::ax_window_frame(helper.pid, &title).is_none()
             {
-                std::thread::sleep(config::ms(config::PLACE_POLL_MS));
+                thread::sleep(config::ms(config::PLACE_POLL_MS));
             }
 
             let (vf_x, vf_y, vf_w, vf_h) = if let Some((px, py)) =
@@ -91,8 +91,8 @@ fn run_place_with_state(
             } else if let Some(vf) = geom::resolve_vf_for_window(
                 helper.pid,
                 &title,
-                crate::config::DEFAULT_TIMEOUT_MS,
-                crate::config::PLACE_POLL_MS,
+                config::DEFAULT_TIMEOUT_MS,
+                config::PLACE_POLL_MS,
             ) {
                 vf
             } else {
@@ -125,10 +125,12 @@ fn run_place_with_state(
         .run()
 }
 
+/// Run placement normalization with an initially minimized window.
 pub fn run_place_minimized_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     run_place_with_state(timeout_ms, with_logs, true, false, "M".to_string())
 }
 
+/// Run placement normalization with an initially zoomed (maximized) window.
 pub fn run_place_zoomed_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     run_place_with_state(timeout_ms, with_logs, false, true, "Z".to_string())
 }

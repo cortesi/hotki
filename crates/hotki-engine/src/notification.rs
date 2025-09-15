@@ -1,6 +1,6 @@
 use hotki_protocol::{MsgToUI, NotifyKind};
 use keymode::KeyResponse;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tracing::info;
 
 use crate::{Error, Result};
@@ -8,19 +8,19 @@ use crate::{Error, Result};
 /// Sends HUD updates and notifications to the UI layer.
 #[derive(Clone)]
 pub struct NotificationDispatcher {
-    tx: UnboundedSender<MsgToUI>,
+    tx: Sender<MsgToUI>,
 }
 
 impl NotificationDispatcher {
     /// Create a new dispatcher from a UI message channel.
-    pub fn new(tx: UnboundedSender<MsgToUI>) -> Self {
+    pub fn new(tx: Sender<MsgToUI>) -> Self {
         Self { tx }
     }
 
     /// Send a HUD update with the current cursor and focus snapshot.
     pub fn send_hud_update_cursor(&self, cursor: config::Cursor) -> Result<()> {
         self.tx
-            .send(MsgToUI::HudUpdate { cursor })
+            .try_send(MsgToUI::HudUpdate { cursor })
             .map_err(|_| Error::ChannelClosed)
     }
 
@@ -30,7 +30,7 @@ impl NotificationDispatcher {
         // Include kind, title and full text for traceability.
         info!(kind = ?kind, title = %title, text = %text, "notification_display");
         self.tx
-            .send(MsgToUI::Notify { kind, title, text })
+            .try_send(MsgToUI::Notify { kind, title, text })
             .map_err(|_| Error::ChannelClosed)
     }
 
@@ -54,7 +54,7 @@ impl NotificationDispatcher {
                 // Engine repeater is responsible for execution.
                 Ok(())
             }
-            KeyResponse::Ui(msg) => self.tx.send(msg).map_err(|_| Error::ChannelClosed),
+            KeyResponse::Ui(msg) => self.tx.try_send(msg).map_err(|_| Error::ChannelClosed),
             KeyResponse::Relay { .. } => {
                 // Relay is handled elsewhere (event handler / repeater).
                 Ok(())

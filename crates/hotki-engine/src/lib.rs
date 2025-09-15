@@ -132,7 +132,7 @@ impl Engine {
     /// - `event_tx`: channel for sending UI messages (`MsgToUI`)
     pub fn new(
         manager: Arc<mac_hotkey::Manager>,
-        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
     ) -> Self {
         let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
             KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
@@ -176,7 +176,7 @@ impl Engine {
     /// Create a new engine with a custom window-ops implementation (useful for tests).
     pub fn new_with_ops(
         manager: Arc<mac_hotkey::Manager>,
-        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
         winops: Arc<dyn WinOps>,
     ) -> Self {
         let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
@@ -220,7 +220,7 @@ impl Engine {
     /// Allows injecting a `HotkeyApi`, `WinOps`, relay enable flag, and an explicit World handle.
     pub fn new_with_api_and_ops(
         api: Arc<dyn deps::HotkeyApi>,
-        event_tx: tokio::sync::mpsc::UnboundedSender<MsgToUI>,
+        event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
         winops: Arc<dyn WinOps>,
         relay_enabled: bool,
         world: hotki_world::WorldHandle,

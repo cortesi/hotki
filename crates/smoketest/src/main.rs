@@ -21,8 +21,11 @@ mod session;
 mod test_runner;
 mod tests;
 mod ui_interaction;
+/// Utility helpers for path resolution and minor tasks.
 mod util;
+/// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
+/// Helper window for UI-driven tests and animations.
 mod winhelper;
 
 use std::{sync::mpsc, time::Duration};

@@ -7,6 +7,11 @@
 //! size: left/right movement changes X while keeping the bottom edge flush,
 //! even if H > cell height.
 
+use std::{
+    cmp, thread,
+    time::{Duration, Instant},
+};
+
 use crate::{
     config,
     error::{Error, Result},
@@ -14,11 +19,12 @@ use crate::{
     tests::{geom, helpers},
 };
 
+/// Run the move-with-min-size smoketest to verify anchoring with height limits.
 pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
     // Create a helper with a minimum height strictly larger than a 4x4 cell
     // on typical 1440p/2x screens. We pick 380 to exceed ~337px cell height
     // at 1350 VF height.
-    let title = crate::config::test_title("place-move-min");
+    let title = config::test_title("place-move-min");
     let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
     let builder = HelperWindowBuilder::new(title.clone())
         .with_time_ms(lifetime)
@@ -29,7 +35,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     let mut helper = helpers::HelperWindow::spawn_frontmost_with_builder(
         builder,
         &title,
-        std::cmp::min(timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+        cmp::min(timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
         config::PLACE_POLL_MS,
     )?;
     let pid = helper.pid;
@@ -42,9 +48,9 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     let (ex0, ey0, ew0, eh0) = geom::cell_rect(vf, 4, 4, 0, 0);
     if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title) {
         let eps = config::PLACE_EPS;
-        if !(crate::tests::helpers::approx(x, ex0, eps)
-            && crate::tests::helpers::approx(y, ey0, eps)
-            && crate::tests::helpers::approx(w, ew0, eps)
+        if !(helpers::approx(x, ex0, eps)
+            && helpers::approx(y, ey0, eps)
+            && helpers::approx(w, ew0, eps)
             && h >= eh0 - eps)
         {
             return Err(Error::InvalidState(format!(
@@ -70,20 +76,19 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     // Expected anchors after moving right: x changes to col=1; bottom flush; width equals cell width; height >= cell height.
     let (ex1, ey1, ew1, eh1) = geom::cell_rect(vf, 4, 4, 1, 0);
     let eps = config::PLACE_EPS;
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
+    let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
     let mut ok = false;
-    while std::time::Instant::now() < deadline {
+    while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title)
-            && crate::tests::helpers::approx(x, ex1, eps)
-            && crate::tests::helpers::approx(y, ey1, eps)
-            && crate::tests::helpers::approx(w, ew1, eps)
+            && helpers::approx(x, ex1, eps)
+            && helpers::approx(y, ey1, eps)
+            && helpers::approx(w, ew1, eps)
             && h >= eh1 - eps
         {
             ok = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(config::PLACE_POLL_MS));
+        thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
     }
     if !ok {
         let actual =

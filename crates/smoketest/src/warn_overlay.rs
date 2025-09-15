@@ -1,44 +1,34 @@
-use objc2::rc::Retained;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+
+use objc2::rc::{Retained, autoreleasepool};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    window::{Window, WindowId, WindowLevel},
+};
 
 use crate::config;
 
-/// Run a borderless, always-on-top overlay window instructing the user to avoid typing.
+/// Borderless, always-on-top overlay window instructing the user to avoid typing.
 /// The window stays up until the process is killed by the parent orchestrator.
 pub fn run_warn_overlay(
-    status_path_arg: Option<std::path::PathBuf>,
-    info_path_arg: Option<std::path::PathBuf>,
+    status_path_arg: Option<PathBuf>,
+    info_path_arg: Option<PathBuf>,
 ) -> Result<(), String> {
     // Create winit event loop; do not explicitly activate the app to avoid stealing focus.
-    let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
-
-    use winit::{
-        application::ApplicationHandler,
-        event::WindowEvent,
-        event_loop::{ActiveEventLoop, ControlFlow},
-    };
-
-    struct OverlayApp {
-        window: Option<winit::window::Window>,
-        title_label: Option<Retained<objc2_app_kit::NSTextField>>,
-        warn_label: Option<Retained<objc2_app_kit::NSTextField>>,
-        info_label: Option<Retained<objc2_app_kit::NSTextField>>,
-        countdown_label: Option<Retained<objc2_app_kit::NSTextField>>,
-        status_path: Option<std::path::PathBuf>,
-        info_path: Option<std::path::PathBuf>,
-        last_title: String,
-        last_info: String,
-        next_deadline: Option<std::time::Instant>,
-        start_time: std::time::Instant,
-        countdown_active: bool,
-        error: Option<String>,
-    }
+    // Moved after type impls to keep items-before-statements for clippy.
 
     impl ApplicationHandler for OverlayApp {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
             if self.window.is_none() {
                 use winit::dpi::LogicalSize;
-                let attrs = winit::window::Window::default_attributes()
+                let attrs = Window::default_attributes()
                     .with_title("hotki smoketest: hands-off")
                     .with_visible(true)
                     .with_decorations(false)
@@ -56,8 +46,6 @@ pub fn run_warn_overlay(
                     }
                 };
                 // Ensure always-on-top using runtime API if available
-                #[allow(unused_imports)]
-                use winit::window::WindowLevel;
                 #[allow(unused_must_use)]
                 {
                     // Not all platforms/versions support this; ignore if missing at runtime.
@@ -75,14 +63,16 @@ pub fn run_warn_overlay(
                         let vf = scr.visibleFrame();
                         let x = vf.origin.x + (vf.size.width - config::WARN_OVERLAY_WIDTH) / 2.0;
                         let y = vf.origin.y + (vf.size.height - config::WARN_OVERLAY_HEIGHT) / 2.0;
-                        use winit::dpi::LogicalPosition;
-                        win.set_outer_position(LogicalPosition::new(x.max(0.0), y.max(0.0)));
+                        win.set_outer_position(winit::dpi::LogicalPosition::new(
+                            x.max(0.0),
+                            y.max(0.0),
+                        ));
 
                         // Attach overlay labels to the window's content view
                         let windows = app.windows();
                         for w in windows.iter() {
                             let title = w.title();
-                            let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                            let is_match = autoreleasepool(|pool| unsafe {
                                 title.to_str(pool) == "hotki smoketest: hands-off"
                             });
                             if !is_match {
@@ -102,12 +92,7 @@ pub fn run_warn_overlay(
             }
         }
 
-        fn window_event(
-            &mut self,
-            elwt: &ActiveEventLoop,
-            _id: winit::window::WindowId,
-            event: WindowEvent,
-        ) {
+        fn window_event(&mut self, elwt: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
             if let WindowEvent::CloseRequested = event {
                 // Allow closing if user insists; otherwise parent will kill us when done.
                 elwt.exit();
@@ -154,7 +139,7 @@ pub fn run_warn_overlay(
 
                 // Update test name from status file
                 if let (Some(path), Some(label)) = (&self.status_path, &self.title_label)
-                    && let Ok(s) = std::fs::read_to_string(path)
+                    && let Ok(s) = fs::read_to_string(path)
                 {
                     let name = s.trim();
                     if !name.is_empty()
@@ -187,7 +172,7 @@ pub fn run_warn_overlay(
 
                 // Update info text from info file
                 if let (Some(path), Some(label)) = (&self.info_path, &self.info_label)
-                    && let Ok(s) = std::fs::read_to_string(path)
+                    && let Ok(s) = fs::read_to_string(path)
                 {
                     let text = s.trim();
                     if let Some(_mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -204,12 +189,13 @@ pub fn run_warn_overlay(
             }
             let next = self
                 .next_deadline
-                .unwrap_or_else(|| now + std::time::Duration::from_millis(100));
+                .unwrap_or_else(|| now + Duration::from_millis(100));
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 
     impl OverlayApp {
+        /// Attach overlay labels to the new window and configure fonts/positions.
         fn attach_labels(
             &mut self,
             mtm: objc2_foundation::MainThreadMarker,
@@ -287,6 +273,7 @@ pub fn run_warn_overlay(
         }
     }
 
+    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = OverlayApp {
         window: None,
         title_label: None,
@@ -298,14 +285,31 @@ pub fn run_warn_overlay(
         last_title: String::from("..."),
         last_info: String::new(),
         next_deadline: None,
-        start_time: std::time::Instant::now(),
+        start_time: Instant::now(),
         countdown_active: true,
         error: None,
     };
-    let _ = event_loop.run_app(&mut app);
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     if let Some(e) = app.error.take() {
         Err(e)
     } else {
         Ok(())
     }
+}
+
+/// Internal app container for the warn overlay window and labels.
+struct OverlayApp {
+    window: Option<Window>,
+    title_label: Option<Retained<objc2_app_kit::NSTextField>>,
+    warn_label: Option<Retained<objc2_app_kit::NSTextField>>,
+    info_label: Option<Retained<objc2_app_kit::NSTextField>>,
+    countdown_label: Option<Retained<objc2_app_kit::NSTextField>>,
+    status_path: Option<PathBuf>,
+    info_path: Option<PathBuf>,
+    last_title: String,
+    last_info: String,
+    next_deadline: Option<Instant>,
+    start_time: Instant,
+    countdown_active: bool,
+    error: Option<String>,
 }

@@ -1,12 +1,11 @@
-use hotki_protocol::MsgToUI;
-use tokio::sync::mpsc::unbounded_channel;
+use hotki_protocol::{MsgToUI, ipc};
 use tracing::info;
 use tracing_subscriber::prelude::*;
 
 #[test]
 fn forwards_logs_when_sink_set_and_stops_after_clear() {
     // Set up a channel to receive forwarded logs
-    let (tx, mut rx) = unbounded_channel::<MsgToUI>();
+    let (tx, mut rx) = ipc::ui_channel();
     log_forward::set_sink(tx);
 
     // Build a subscriber with the forwarding layer only

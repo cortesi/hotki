@@ -1,13 +1,23 @@
 //! Animated placement smoketest: helper tweens to the requested frame over ~120ms.
 //! Verifies that engine polling/settle logic converges within the default budget.
 
+use std::{
+    cmp, thread,
+    time::{Duration, Instant},
+};
+
 use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
-    tests::geom,
+    test_runner::{TestConfig, TestRunner},
+    tests::{
+        geom,
+        helpers::{approx, ensure_frontmost, wait_for_window_visible},
+    },
 };
 
+/// Run the animated placement smoketest with a small 2×2 grid.
 pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let cols = 2u32;
     let rows = 2u32;
@@ -19,11 +29,11 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
-    let cfg = crate::test_runner::TestConfig::new(timeout_ms)
+    let cfg = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
         .with_temp_config(ron_config);
 
-    crate::test_runner::TestRunner::new("place_animated", cfg)
+    TestRunner::new("place_animated", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             let _ = ctx.ensure_rpc_ready(&[]);
@@ -43,10 +53,10 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .spawn_inherit_io()?;
 
             // Wait for visibility
-            if !crate::tests::helpers::wait_for_window_visible(
+            if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                std::cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
                 config::PLACE_POLL_MS,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
@@ -55,7 +65,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Resolve window id and ensure frontmost
             let _ = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
-            crate::tests::helpers::ensure_frontmost(
+            ensure_frontmost(
                 helper.pid,
                 &title,
                 5,
@@ -70,20 +80,19 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .find(|w| w.pid == helper.pid && w.title == title)
                     .and_then(|w| w.pos)
                     .ok_or_else(|| Error::InvalidState("No CG bounds for helper".into()))?;
-                let vf = crate::tests::geom::visible_frame_containing_point(
+                let vf = geom::visible_frame_containing_point(
                     start.x as f64,
                     start.y as f64,
                 )
                 .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
-                let (ex, ey, ew, eh) = crate::tests::geom::cell_rect(vf, cols, rows, col, row);
+                let (ex, ey, ew, eh) = geom::cell_rect(vf, cols, rows, col, row);
                 (ex, ey, ew, eh)
             };
             let cg_ok = {
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
+                let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
                 let eps = 2.0_f64;
                 let mut ok = false;
-                while std::time::Instant::now() < deadline {
+                while Instant::now() < deadline {
                     if let Some(pos) = mac_winops::list_windows()
                         .into_iter()
                         .find(|w| w.pid == helper.pid && w.title == title)
@@ -91,16 +100,16 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     {
                         let (x, y, w, h) =
                             (pos.x as f64, pos.y as f64, pos.width as f64, pos.height as f64);
-                        if crate::tests::helpers::approx(x, expected_x, eps)
-                            && crate::tests::helpers::approx(y, expected_y, eps)
-                            && crate::tests::helpers::approx(w, expected_w, eps)
-                            && crate::tests::helpers::approx(h, expected_h, eps)
+                        if approx(x, expected_x, eps)
+                            && approx(y, expected_y, eps)
+                            && approx(w, expected_w, eps)
+                            && approx(h, expected_h, eps)
                         {
                             ok = true;
                             break;
                         }
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(config::PLACE_POLL_MS));
+                    thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
                 }
                 ok
             };

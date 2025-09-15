@@ -177,14 +177,23 @@ pub enum WorldStreamMsg {
 pub mod ipc {
     use super::MsgToUI;
 
-    /// Tokio unbounded sender for UI messages.
-    pub type UiTx = tokio::sync::mpsc::UnboundedSender<MsgToUI>;
-    /// Tokio unbounded receiver for UI messages.
-    pub type UiRx = tokio::sync::mpsc::UnboundedReceiver<MsgToUI>;
+    /// Default capacity for the bounded UI event pipeline.
+    /// Large enough to absorb short spikes without unbounded growth.
+    pub const DEFAULT_UI_CHANNEL_CAPACITY: usize = 10_000;
 
-    /// Create a standard unbounded UI channel (sender, receiver).
+    /// Tokio bounded sender for UI messages.
+    pub type UiTx = tokio::sync::mpsc::Sender<MsgToUI>;
+    /// Tokio bounded receiver for UI messages.
+    pub type UiRx = tokio::sync::mpsc::Receiver<MsgToUI>;
+
+    /// Create the standard bounded UI channel (sender, receiver).
     pub fn ui_channel() -> (UiTx, UiRx) {
-        tokio::sync::mpsc::unbounded_channel::<MsgToUI>()
+        tokio::sync::mpsc::channel::<MsgToUI>(DEFAULT_UI_CHANNEL_CAPACITY)
+    }
+
+    /// Create a bounded UI channel with a custom capacity.
+    pub fn ui_channel_with_capacity(cap: usize) -> (UiTx, UiRx) {
+        tokio::sync::mpsc::channel::<MsgToUI>(cap)
     }
 
     /// Codec for encoding/decoding UI messages used by the IPC layer.

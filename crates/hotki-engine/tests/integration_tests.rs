@@ -21,9 +21,9 @@ use tokio::sync::mpsc;
 fn ensure_no_os_interaction() {}
 
 /// Test helper to create a test engine with mock components
-async fn create_test_engine() -> (Engine, mpsc::UnboundedReceiver<MsgToUI>) {
+async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>) {
     ensure_no_os_interaction();
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
     // Use noop world for tests that don't need focus
     let world = World::spawn_noop();
@@ -34,9 +34,9 @@ async fn create_test_engine() -> (Engine, mpsc::UnboundedReceiver<MsgToUI>) {
 
 async fn create_test_engine_with_mock(
     relay_enabled: bool,
-) -> (Engine, mpsc::UnboundedReceiver<MsgToUI>, Arc<MockWinOps>) {
+) -> (Engine, mpsc::Receiver<MsgToUI>, Arc<MockWinOps>) {
     ensure_no_os_interaction();
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
     let mock = Arc::new(MockWinOps::new());
     let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
@@ -216,7 +216,7 @@ async fn test_ticker_cancel_semantics() {
     // since ticker module is private
     let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = RelayHandler::new_with_enabled(false);
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
@@ -325,7 +325,7 @@ async fn test_repeater_with_observer() {
     let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     // Disable real key posting while exercising repeat observer behavior
     let relay = RelayHandler::new_with_enabled(false);
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
@@ -406,7 +406,7 @@ async fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
 
     let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = RelayHandler::new_with_enabled(false);
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
@@ -460,7 +460,7 @@ async fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
 
     let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
     let relay = RelayHandler::new_with_enabled(false);
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let notifier = NotificationDispatcher::new(tx);
     let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 

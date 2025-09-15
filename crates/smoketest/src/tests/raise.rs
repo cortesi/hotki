@@ -34,8 +34,10 @@ use crate::{
     ui_interaction::send_key,
 };
 
+/// Wait for a HUD update with `expected` title within `timeout_ms`.
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<bool> {
     use hotki_server::Client;
+    use tokio::time::timeout;
 
     let mut client = match Client::new_with_socket(sock)
         .with_connect_only()
@@ -62,7 +64,7 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
         let chunk = cmp::min(left, config::ms(config::RETRY_DELAY_MS));
-        match tokio::time::timeout(chunk, conn.recv_event()).await {
+        match timeout(chunk, conn.recv_event()).await {
             Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
                 if let Some(app) = cursor.app_ref()
                     && app.title == expected
@@ -89,10 +91,11 @@ async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<b
 // Wait until all given (pid,title) pairs are present in the on-screen CG list.
 // Use helpers::wait_for_windows_visible
 
+/// Run the raise-by-title smoketest using a temporary activation menu.
 pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Two unique titles
-    let title1 = crate::config::test_title("raise-1");
-    let title2 = crate::config::test_title("raise-2");
+    let title1 = config::test_title("raise-1");
+    let title2 = config::test_title("raise-2");
 
     // Build a temporary config enabling raise by title under: shift+cmd+0 -> r -> 1/2
     let ron_config = format!(
@@ -128,7 +131,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Initialize RPC driver for key injects
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let _ = crate::server_drive::ensure_init(&sock, 3000);
+                let _ = server_drive::ensure_init(&sock, 3000);
             }
 
             // Spawn two helper windows
@@ -143,7 +146,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_size(800.0, 600.0)
                     .with_position(60.0, 60.0),
                 &title1,
-                std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
                 config::WINDOW_REGISTRATION_DELAY_MS,
             )?;
             let pid1 = child1.pid;
@@ -157,7 +160,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_size(800.0, 600.0)
                     .with_position(1000.0, 60.0),
                 &title2,
-                std::cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
+                cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
                 config::WINDOW_REGISTRATION_DELAY_MS,
             )?;
             let pid2 = child2.pid;

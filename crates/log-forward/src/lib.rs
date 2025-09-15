@@ -14,18 +14,24 @@
 //! The layer is lightweight and no-ops when no sink is set.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 use hotki_protocol::MsgToUI;
 use parking_lot::Mutex;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 // A global sink that, when present, forwards server logs to the connected client.
-static LOG_SINK: OnceLock<Mutex<Option<UnboundedSender<MsgToUI>>>> = OnceLock::new();
+static LOG_SINK: OnceLock<Mutex<Option<Sender<MsgToUI>>>> = OnceLock::new();
 
-fn sink() -> &'static Mutex<Option<UnboundedSender<MsgToUI>>> {
+// Count of log events dropped due to a full UI pipeline.
+static LOG_DROPS: OnceLock<AtomicU64> = OnceLock::new();
+
+fn sink() -> &'static Mutex<Option<Sender<MsgToUI>>> {
     LOG_SINK.get_or_init(|| Mutex::new(None))
 }
 
@@ -54,15 +60,36 @@ where
         let Some(tx) = tx_opt else { return };
 
         let r = logfmt::render_event(event);
-        let _ = tx.send(MsgToUI::Log {
+        match tx.try_send(MsgToUI::Log {
             level: r.level,
             target: r.target,
             message: r.message,
-        });
+        }) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                // Sink disappeared; clear to avoid repeated work.
+                clear_sink();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let ctr = LOG_DROPS.get_or_init(|| AtomicU64::new(0));
+                let n = ctr.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 || n.is_multiple_of(1000) {
+                    // Throttled debug to avoid log storms; still visible in Details logs.
+                    tracing::debug!(count = n, "ui_log_drop");
+                }
+            }
+        }
     }
 }
 
 /// Create the forwarding layer instance to add to your subscriber.
 pub fn layer() -> ForwardLayer {
     ForwardLayer
+}
+
+/// Fetch how many log events have been dropped since the last sink was set.
+pub fn dropped_logs() -> u64 {
+    LOG_DROPS
+        .get_or_init(|| AtomicU64::new(0))
+        .load(Ordering::SeqCst)
 }
