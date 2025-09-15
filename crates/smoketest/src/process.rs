@@ -84,6 +84,8 @@ pub struct HelperWindowBuilder {
     start_zoomed: bool,
     /// Make the window non-movable if true.
     nonmovable: bool,
+    /// Make the window non-resizable if true.
+    nonresizable: bool,
     /// Attach a sheet (AXRole=AXSheet) if true.
     attach_sheet: bool,
     /// Size increment rounding step `(w, h)`.
@@ -109,6 +111,7 @@ impl HelperWindowBuilder {
             start_minimized: false,
             start_zoomed: false,
             nonmovable: false,
+            nonresizable: false,
             attach_sheet: false,
             step_size: None,
         }
@@ -200,6 +203,12 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Make the helper window non-resizable.
+    pub fn with_nonresizable(mut self, v: bool) -> Self {
+        self.nonresizable = v;
+        self
+    }
+
     /// Attach a simple sheet to the helper window.
     pub fn with_attach_sheet(mut self, v: bool) -> Self {
         self.attach_sheet = v;
@@ -272,6 +281,9 @@ impl HelperWindowBuilder {
         }
         if self.nonmovable {
             cmd.arg("--panel-nonmovable");
+        }
+        if self.nonresizable {
+            cmd.arg("--non-resizable");
         }
         if self.attach_sheet {
             cmd.arg("--attach-sheet");
@@ -352,6 +364,9 @@ impl HelperWindowBuilder {
         }
         if self.nonmovable {
             cmd.arg("--panel-nonmovable");
+        }
+        if self.nonresizable {
+            cmd.arg("--non-resizable");
         }
         if self.attach_sheet {
             cmd.arg("--attach-sheet");

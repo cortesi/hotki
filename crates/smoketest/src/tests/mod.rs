@@ -12,6 +12,7 @@ pub mod place_async;
 pub mod place_flex;
 pub mod place_increments;
 pub mod place_move_min;
+pub mod place_move_nonresizable;
 pub mod place_skip;
 pub mod place_state;
 pub mod place_term;

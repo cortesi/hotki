@@ -260,6 +260,9 @@ pub enum Commands {
         /// Make the helper non-movable (sets NSWindow.movable=false)
         #[arg(long, default_value_t = false)]
         panel_nonmovable: bool,
+        /// Make the helper non-resizable (removes NSWindowStyleMask::Resizable)
+        #[arg(long, default_value_t = false)]
+        non_resizable: bool,
         /// Attach a simple sheet to the helper window (AXRole=AXSheet)
         #[arg(long, default_value_t = false)]
         attach_sheet: bool,
@@ -304,4 +307,7 @@ pub enum Commands {
     /// Focused test: attempt placement on a non-movable window and assert skip
     #[command(name = "place-skip")]
     PlaceSkip,
+    /// Repro: move within grid when window is non-resizable; expect anchored fallback
+    #[command(name = "place-move-nonresizable")]
+    PlaceMoveNonresizable,
 }

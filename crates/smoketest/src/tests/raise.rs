@@ -19,7 +19,8 @@
 use std::cmp;
 
 use super::helpers::{
-    HelperWindow, wait_for_backend_focused_title, wait_for_frontmost_title, wait_for_windows_visible,
+    HelperWindow, wait_for_backend_focused_title, wait_for_frontmost_title,
+    wait_for_windows_visible,
 };
 use crate::{
     config,

@@ -28,6 +28,7 @@ pub fn run_focus_winhelper(
     start_minimized: bool,
     start_zoomed: bool,
     panel_nonmovable: bool,
+    panel_nonresizable: bool,
     attach_sheet: bool,
 ) -> Result<(), String> {
     // Create event loop after items below to satisfy clippy's items-after-statements lint.
@@ -108,6 +109,8 @@ pub fn run_focus_winhelper(
         start_zoomed: bool,
         /// Make the panel non-movable if requested.
         panel_nonmovable: bool,
+        /// Make the panel non-resizable if requested.
+        panel_nonresizable: bool,
         /// Attach a modal sheet to the helper window if requested.
         attach_sheet: bool,
         // Optional: round requested sizes to nearest multiples
@@ -179,6 +182,27 @@ pub fn run_focus_winhelper(
             }
         }
 
+        /// Make the panel non-resizable if configured.
+        fn apply_nonresizable_if_requested(&self) {
+            if self.panel_nonresizable
+                && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
+            {
+                use objc2_app_kit::NSWindowStyleMask;
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let t = w.title();
+                    let is_match = autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
+                    if is_match {
+                        let mut mask = w.styleMask();
+                        mask.remove(NSWindowStyleMask::Resizable);
+                        w.setStyleMask(mask);
+                        break;
+                    }
+                }
+            }
+        }
+
         /// Perform the initial placement of the window.
         fn initial_placement(&self, win: &Window) {
             use winit::dpi::LogicalPosition;
@@ -210,6 +234,9 @@ pub fn run_focus_winhelper(
                     win.set_outer_position(LogicalPosition::new(x, y));
                 }
             }
+            // Apply style tweaks after initial placement to avoid interfering with it.
+            self.apply_nonresizable_if_requested();
+            self.apply_nonmovable_if_requested();
         }
 
         /// Capture the starting geometry used by delayed/tweened placement logic.
@@ -852,6 +879,7 @@ pub fn run_focus_winhelper(
         start_minimized,
         start_zoomed,
         panel_nonmovable,
+        panel_nonresizable,
         attach_sheet,
         step_w: step_size.map(|s| s.0).unwrap_or(0.0),
         step_h: step_size.map(|s| s.1).unwrap_or(0.0),

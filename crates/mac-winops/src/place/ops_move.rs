@@ -1,5 +1,5 @@
 use objc2_foundation::MainThreadMarker;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{
     apply::apply_and_wait,
@@ -157,6 +157,7 @@ pub(crate) fn place_move_grid(
             initial_pos_first,
             VERIFY_EPS,
         )?;
+        let _d1 = got1.diffs(&target);
         // Stage 7.2: validate against the final screen selected by window center
         let vf2 = visible_frame_containing_point(
             mtm,
@@ -188,6 +189,11 @@ pub(crate) fn place_move_grid(
                 debug!("verified=false");
                 log_failure_context(&win, &role, &subrole);
                 let clamped = clamp_flags(&got1, &vf2, VERIFY_EPS);
+                warn!(
+                    "PlaceMoveGrid failed (pos-first-only): id={} expected={} got={} clamp={}",
+                    id, target, got1, clamped
+                );
+                let _ = crate::raise::raise_window(pid_for_id, id);
                 return Err(Error::PlacementVerificationFailed {
                     op: "place_move_grid",
                     expected: target,
@@ -206,6 +212,7 @@ pub(crate) fn place_move_grid(
                 !initial_pos_first,
                 VERIFY_EPS,
             )?;
+            let d2 = got2.diffs(&target);
             // keep local pos_latched logic later only uses got2; no diff needed here
             let vf4 = visible_frame_containing_point(
                 mtm,
@@ -272,6 +279,139 @@ pub(crate) fn place_move_grid(
                 );
                 Ok(())
             } else {
+                // Stage: if only position is latched, try size-only then anchor legal size
+                let pos_latched = d2.x <= VERIFY_EPS && d2.y <= VERIFY_EPS;
+                if pos_latched {
+                    debug!("pos_latched=true (x,y within eps)");
+                    // If size is known not settable, skip size-only and anchor immediately.
+                    if can_size == Some(false) {
+                        debug!(
+                            "size_not_settable=true; skipping size-only and anchoring legal size"
+                        );
+                        let (got_anchor, anchored, _ms2) =
+                            super::apply::anchor_legal_size_and_wait(
+                                "place_move_grid",
+                                &win,
+                                attr_pos,
+                                attr_size,
+                                &target,
+                                &got2,
+                                cols,
+                                rows,
+                                next_col,
+                                next_row,
+                                VERIFY_EPS,
+                            )?;
+                        log_summary("anchor-legal", 2, VERIFY_EPS);
+                        if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                            debug!("verified=true");
+                            debug!(
+                                "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
+                                id, anchored, got_anchor
+                            );
+                            return Ok(());
+                        }
+                    } else {
+                        debug!("switching to size-only adjustments");
+                        match super::apply::apply_size_only_and_wait(
+                            "place_move_grid:size-only",
+                            &win,
+                            attr_size,
+                            (target.w, target.h),
+                            VERIFY_EPS,
+                        ) {
+                            Ok((got_sz, _ms)) => {
+                                let (got_anchor, anchored, _ms2) =
+                                    super::apply::anchor_legal_size_and_wait(
+                                        "place_move_grid",
+                                        &win,
+                                        attr_pos,
+                                        attr_size,
+                                        &target,
+                                        &got_sz,
+                                        cols,
+                                        rows,
+                                        next_col,
+                                        next_row,
+                                        VERIFY_EPS,
+                                    )?;
+                                log_summary("anchor-legal:size-only", 2, VERIFY_EPS);
+                                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                                    debug!("verified=true");
+                                    debug!(
+                                        "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
+                                        id, anchored, got_anchor
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "size-only failed ({}); anchoring legal size using observed got2",
+                                    e
+                                );
+                                let (got_anchor, anchored, _ms2) =
+                                    super::apply::anchor_legal_size_and_wait(
+                                        "place_move_grid",
+                                        &win,
+                                        attr_pos,
+                                        attr_size,
+                                        &target,
+                                        &got2,
+                                        cols,
+                                        rows,
+                                        next_col,
+                                        next_row,
+                                        VERIFY_EPS,
+                                    )?;
+                                log_summary("anchor-legal", 2, VERIFY_EPS);
+                                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                                    debug!("verified=true");
+                                    debug!(
+                                        "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
+                                        id, anchored, got_anchor
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Stage: anchor legal size using observed rect if not latched
+                let (got_anchor, anchored, _settle_ms_anchor) =
+                    super::apply::anchor_legal_size_and_wait(
+                        "place_move_grid",
+                        &win,
+                        attr_pos,
+                        attr_size,
+                        &target,
+                        &got2,
+                        cols,
+                        rows,
+                        next_col,
+                        next_row,
+                        VERIFY_EPS,
+                    )?;
+                let vf5 = visible_frame_containing_point(
+                    mtm,
+                    geom::Point {
+                        x: got_anchor.cx(),
+                        y: got_anchor.cy(),
+                    },
+                );
+                debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
+                log_summary("anchor-legal", 2, VERIFY_EPS);
+                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                    debug!("verified=true");
+                    debug!("order_used=anchor-legal, attempts=2");
+                    debug!(
+                        "WinOps: place_move_grid verified | id={} anchored={} got={}",
+                        id, anchored, got_anchor
+                    );
+                    return Ok(());
+                }
+
                 // Stage 4: shrink→move→grow fallback
                 debug!("fallback_used=true");
                 let got3 = fallback_shrink_move_grow(
@@ -301,6 +441,11 @@ pub(crate) fn place_move_grid(
                     );
                     debug!("vf_used:center={} -> vf={}", got3.center(), vf);
                     let clamped = clamp_flags(&got3, &vf, VERIFY_EPS);
+                    warn!(
+                        "PlaceMoveGrid failed: id={} expected={} got={} clamp={}",
+                        id, target, got3, clamped
+                    );
+                    let _ = crate::raise::raise_window(pid_for_id, id);
                     Err(Error::PlacementVerificationFailed {
                         op: "place_move_grid",
                         expected: target,

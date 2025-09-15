@@ -214,6 +214,7 @@ fn handle_helper_commands_early(cli: &Cli) -> bool {
         start_minimized,
         start_zoomed,
         panel_nonmovable,
+        non_resizable,
         attach_sheet,
     } = &cli.command
     {
@@ -257,6 +258,7 @@ fn handle_helper_commands_early(cli: &Cli) -> bool {
             *start_minimized,
             *start_zoomed,
             *panel_nonmovable,
+            *non_resizable,
             *attach_sheet,
         ) {
             eprintln!("focus-winhelper: ERROR: {}", e);
@@ -352,6 +354,7 @@ fn dispatch_command(cli: &Cli) {
         Commands::PlaceAnimated => handle_place_animated(cli),
         Commands::PlaceTerm => handle_place_term(cli),
         Commands::PlaceMoveMin => handle_place_move_min(cli),
+        Commands::PlaceMoveNonresizable => handle_place_move_nonresizable(cli),
         Commands::PlaceMinimized => handle_place_minimized(cli),
         Commands::PlaceZoomed => handle_place_zoomed(cli),
         Commands::FocusWinHelper { .. } => unreachable!(),
@@ -878,6 +881,33 @@ fn handle_place_move_min(cli: &Cli) {
         }
         Err(e) => {
             eprintln!("place-move-min: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-move-nonresizable` test case.
+fn handle_place_move_nonresizable(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-move-nonresizable",
+        "place-move-nonresizable",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || tests::place_move_nonresizable::run_place_move_nonresizable_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-move-nonresizable: OK (moved with anchored fallback)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-move-nonresizable: ERROR: {}", e);
             print_hints(&e);
             exit(1);
         }

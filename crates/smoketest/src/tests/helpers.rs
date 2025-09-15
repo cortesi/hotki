@@ -9,8 +9,8 @@ use crate::{
     config,
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
+    server_drive,
 };
-use crate::server_drive;
 
 /// Approximate float equality within `eps`.
 pub fn approx(a: f64, b: f64, eps: f64) -> bool {
