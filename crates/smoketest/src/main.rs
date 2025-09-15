@@ -108,7 +108,7 @@ where
 // Re-export common result types
 pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
 
-// Unified case runner: heading + optional overlay + watchdog.
+/// Unified case runner: heading + optional overlay + watchdog.
 #[allow(clippy::too_many_arguments)]
 fn run_case<F, T>(
     heading_title: &str,
@@ -153,7 +153,20 @@ where
 fn main() {
     let cli = Cli::parse();
 
-    // Compose spec: quiet forces warn for our crates; otherwise use shared precedence
+    init_tracing_from_cli(&cli);
+
+    if handle_helper_commands_early(&cli) {
+        return;
+    }
+
+    enforce_permissions_or_exit();
+    build_hotki_or_exit(&cli);
+
+    dispatch_command(&cli);
+}
+
+/// Initialize tracing/logging according to CLI flags and defaults.
+fn init_tracing_from_cli(cli: &Cli) {
     let spec = if cli.quiet {
         logshared::level_spec_for("warn")
     } else {
@@ -169,107 +182,79 @@ fn main() {
         .with(env_filter)
         .with(fmt::layer().without_time())
         .try_init();
+}
 
-    // For helper commands, skip permission/build checks and heading
-    if matches!(cli.command, Commands::FocusWinHelper { .. }) {
-        match cli.command {
-            Commands::FocusWinHelper {
-                title,
-                time,
-                delay_setframe_ms,
-                delay_apply_ms,
-                tween_ms,
-                apply_target,
-                apply_grid,
-                slot,
-                grid,
-                size,
-                pos,
-                label_text,
-                min_size,
-                step_size,
-                start_minimized,
-                start_zoomed,
-                panel_nonmovable,
-                attach_sheet,
-            } => {
-                let grid_tuple = grid.and_then(|v| {
-                    if v.len() == 4 {
-                        Some((v[0], v[1], v[2], v[3]))
-                    } else {
-                        None
-                    }
-                });
-                let size_tuple = size.and_then(|v| {
-                    if v.len() == 2 {
-                        Some((v[0], v[1]))
-                    } else {
-                        None
-                    }
-                });
-                let pos_tuple = pos.and_then(|v| {
-                    if v.len() == 2 {
-                        Some((v[0], v[1]))
-                    } else {
-                        None
-                    }
-                });
-                let step_size_tuple = step_size.and_then(|v| {
-                    if v.len() == 2 {
-                        Some((v[0], v[1]))
-                    } else {
-                        None
-                    }
-                });
-                let min_size_tuple = min_size.and_then(|v| {
-                    if v.len() == 2 {
-                        Some((v[0], v[1]))
-                    } else {
-                        None
-                    }
-                });
-                let apply_target_tuple = apply_target.and_then(|v| {
-                    if v.len() == 4 {
-                        Some((v[0], v[1], v[2], v[3]))
-                    } else {
-                        None
-                    }
-                });
-                let apply_grid_tuple = apply_grid.and_then(|v| {
-                    if v.len() == 4 {
-                        Some((v[0], v[1], v[2], v[3]))
-                    } else {
-                        None
-                    }
-                });
-                if let Err(e) = winhelper::run_focus_winhelper(
-                    &title,
-                    time,
-                    delay_setframe_ms.unwrap_or(0),
-                    delay_apply_ms.unwrap_or(0),
-                    tween_ms.unwrap_or(0),
-                    apply_target_tuple,
-                    apply_grid_tuple,
-                    slot,
-                    grid_tuple,
-                    size_tuple,
-                    pos_tuple,
-                    label_text,
-                    min_size_tuple,
-                    step_size_tuple,
-                    start_minimized,
-                    start_zoomed,
-                    panel_nonmovable,
-                    attach_sheet,
-                ) {
-                    eprintln!("focus-winhelper: ERROR: {}", e);
-                    exit(2);
-                }
-            }
-            _ => unreachable!(),
+/// Handle helper subcommands that bypass standard checks. Returns true if handled.
+fn handle_helper_commands_early(cli: &Cli) -> bool {
+    if let Commands::FocusWinHelper {
+        title,
+        time,
+        delay_setframe_ms,
+        delay_apply_ms,
+        tween_ms,
+        apply_target,
+        apply_grid,
+        slot,
+        grid,
+        size,
+        pos,
+        label_text,
+        min_size,
+        step_size,
+        start_minimized,
+        start_zoomed,
+        panel_nonmovable,
+        attach_sheet,
+    } = &cli.command
+    {
+        let grid_tuple = grid
+            .as_ref()
+            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
+        let size_tuple = size
+            .as_ref()
+            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
+        let pos_tuple = pos
+            .as_ref()
+            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
+        let step_size_tuple = step_size
+            .as_ref()
+            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
+        let min_size_tuple = min_size
+            .as_ref()
+            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
+        let apply_target_tuple = apply_target
+            .as_ref()
+            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
+        let apply_grid_tuple = apply_grid
+            .as_ref()
+            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
+
+        if let Err(e) = winhelper::run_focus_winhelper(
+            title,
+            *time,
+            delay_setframe_ms.unwrap_or(0),
+            delay_apply_ms.unwrap_or(0),
+            tween_ms.unwrap_or(0),
+            apply_target_tuple,
+            apply_grid_tuple,
+            *slot,
+            grid_tuple,
+            size_tuple,
+            pos_tuple,
+            label_text.clone(),
+            min_size_tuple,
+            step_size_tuple,
+            *start_minimized,
+            *start_zoomed,
+            *panel_nonmovable,
+            *attach_sheet,
+        ) {
+            eprintln!("focus-winhelper: ERROR: {}", e);
+            exit(2);
         }
-        return;
+        return true;
     }
+
     if let Commands::WarnOverlay {
         status_path,
         info_path,
@@ -282,10 +267,13 @@ fn main() {
                 exit(2);
             }
         }
-        return;
+        return true;
     }
+    false
+}
 
-    // Enforce required permissions for all smoketests.
+/// Ensure required macOS permissions are granted; exit with a helpful message if not.
+fn enforce_permissions_or_exit() {
     let p = permissions::check_permissions();
     if !p.accessibility_ok || !p.input_ok {
         eprintln!(
@@ -297,10 +285,10 @@ fn main() {
         );
         exit(1);
     }
+}
 
-    // Screenshots extracted to separate tool: hotki-shots
-
-    // Build the hotki binary once at startup to avoid running against a stale build.
+/// Build the hotki binary once up-front to avoid stale binaries.
+fn build_hotki_or_exit(cli: &Cli) {
     if !cli.quiet {
         heading("Building hotki");
     }
@@ -309,126 +297,20 @@ fn main() {
         eprintln!("Try: cargo build -p hotki");
         exit(1);
     }
+}
 
-    match cli.command {
-        Commands::Relay => {
-            if !cli.quiet {
-                heading("Test: repeat-relay");
-            }
-            let duration = cli.duration;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("repeat-relay");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            // repeat‑relay opens a winit EventLoop; it must run on the main thread.
-            run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        Commands::Shell => {
-            if !cli.quiet {
-                heading("Test: repeat-shell");
-            }
-            let duration = cli.duration;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("repeat-shell");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        Commands::Volume => {
-            if !cli.quiet {
-                heading("Test: repeat-volume");
-            }
-            // Volume can be slightly slower; keep a floor to reduce flakiness
-            let duration = max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("repeat-volume");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            run_with_watchdog("repeat-volume", cli.timeout, move || {
-                repeat_volume(duration)
-            });
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
+/// Dispatch to the concrete smoketest command handlers.
+fn dispatch_command(cli: &Cli) {
+    match &cli.command {
+        Commands::Relay => handle_relay(cli),
+        Commands::Shell => handle_shell(cli),
+        Commands::Volume => handle_volume(cli),
         Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn),
-        Commands::PlaceIncrements => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "place-increments",
-                "place-increments",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                true,
-                move || tests::place_increments::run_place_increments_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-increments: OK (anchored edges verified)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-increments: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
+        Commands::PlaceIncrements => handle_place_increments(cli),
         Commands::Seq { tests } => {
-            orchestrator::run_sequence_tests(&tests, cli.duration, cli.timeout, true)
+            orchestrator::run_sequence_tests(tests, cli.duration, cli.timeout, true)
         }
-        Commands::Raise => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "raise",
-                "raise",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                false,
-                move || raise::run_raise_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("raise: OK (raised by title twice)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("raise: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
+        Commands::Raise => handle_raise(cli),
         Commands::PlaceFlex {
             cols,
             rows,
@@ -438,562 +320,760 @@ fn main() {
             pos_first_only,
             force_shrink_move_grow,
         } => {
-            if !cli.quiet {
-                heading("Test: place-flex");
-            }
-            let timeout = cli.timeout;
-            let logs = true; // logs only affect tracing env
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("place-flex");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            match run_on_main_with_watchdog("place-flex", timeout, move || {
-                if logs {
-                    // no-op: logging already initialized via RUST_LOG
-                }
-                tests::place_flex::run_place_flex(
-                    cols,
-                    rows,
-                    col,
-                    row,
-                    force_size_pos,
-                    pos_first_only,
-                    force_shrink_move_grow,
-                )
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!(
-                            "place-flex: OK (cols={} rows={} cell=({},{}), force_size_pos={}, pos_first_only={})",
-                            cols, rows, col, row, force_size_pos, pos_first_only
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-flex: ERROR: {}", e);
-                    print_hints(&e);
-                    if let Some(mut o) = overlay
-                        && let Err(e) = o.kill_and_wait()
-                    {
-                        eprintln!("smoketest: failed to stop overlay: {}", e);
-                    }
-                    exit(1);
-                }
-            }
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        Commands::PlaceFallback => {
-            let timeout = cli.timeout;
-            match run_case(
-                "place-fallback",
-                "place-fallback",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                true,
-                move || {
-                    tests::place_flex::run_place_flex(
-                        config::PLACE_COLS,
-                        config::PLACE_ROWS,
-                        0,
-                        0,
-                        true,  // force_size_pos
-                        false, // pos_first_only
-                        false, // force_shrink_move_grow
-                    )
-                },
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-fallback: OK (forced size->pos path)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-fallback: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceSmg => {
-            let timeout = cli.timeout;
-            match run_case(
-                "place-smg (shrink→move→grow)",
-                "place-smg",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                None,
-                true,
-                move || {
-                    tests::place_flex::run_place_flex(
-                        2,     // cols
-                        2,     // rows
-                        1,     // col (BR)
-                        1,     // row (BR)
-                        false, // force_size_pos
-                        false, // pos_first_only
-                        true,  // force_shrink_move_grow
-                    )
-                },
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-smg: OK (forced shrink→move→grow path)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-smg: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceSkip => {
-            if !cli.quiet {
-                heading("Test: place-skip (non-movable)");
-            }
-            let timeout = cli.timeout;
-            let logs = true;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("place-skip");
-            }
-            match run_on_main_with_watchdog("place-skip", timeout, move || {
-                tests::place_skip::run_place_skip_test(timeout, logs)
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-skip: OK (engine skipped non-movable)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-skip: ERROR: {}", e);
-                    print_hints(&e);
-                    if let Some(mut o) = overlay
-                        && let Err(e) = o.kill_and_wait()
-                    {
-                        eprintln!("smoketest: failed to stop overlay: {}", e);
-                    }
-                    exit(1);
-                }
-            }
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        Commands::FocusNav => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "focus-nav",
-                "focus-nav",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                true,
-                move || tests::focus_nav::run_focus_nav_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("focus-nav: OK (navigated right, down, left, up)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("focus-nav: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::Focus => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "focus-tracking",
-                "focus-tracking",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                false,
-                move || focus::run_focus_test(timeout, logs),
-            ) {
-                Ok(out) => {
-                    if !cli.quiet {
-                        println!(
-                            "focus-tracking: OK (title='{}', pid={}, time_to_match_ms={})",
-                            out.title, out.pid, out.elapsed_ms
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("focus-tracking: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::Hide => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "hide",
-                "hide",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                false,
-                move || hide::run_hide_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("hide: OK (toggle on/off roundtrip)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("hide: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::Place => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "place",
-                "place",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                None,
-                true,
-                move || tests::place::run_place_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place: OK (cycled all grid cells)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceAsync => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "place-async",
-                "place-async",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                None,
-                true,
-                move || tests::place_async::run_place_async_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-async: OK (converged within default budget)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-async: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceAnimated => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "place-animated",
-                "place-animated",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                None,
-                true,
-                move || tests::place_animated::run_place_animated_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-animated: OK (converged with tween)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-animated: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceTerm => {
-            let timeout = cli.timeout;
-            match run_case(
-                "place-term",
-                "place-term",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                true,
-                move || tests::place_term::run_place_term_test(timeout, true),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-term: OK (latched origin; no thrash)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-term: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceMoveMin => {
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "place-move-min",
-                "place-move-min",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                true,
-                move || tests::place_move_min::run_place_move_min_test(timeout, logs),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-move-min: OK (moved with min-height anchored)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-move-min: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceMinimized => {
-            if !cli.quiet {
-                heading("Test: place-minimized");
-            }
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_on_main_with_watchdog("place-minimized", timeout, move || {
-                tests::place_state::run_place_minimized_test(timeout, logs)
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-minimized: OK (normalized minimized -> placed)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-minimized: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::PlaceZoomed => {
-            if !cli.quiet {
-                heading("Test: place-zoomed");
-            }
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_on_main_with_watchdog("place-zoomed", timeout, move || {
-                tests::place_state::run_place_zoomed_test(timeout, logs)
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("place-zoomed: OK (normalized zoomed -> placed)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("place-zoomed: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        }
-        Commands::FocusWinHelper { .. } => {
-            // Already handled above
-            unreachable!()
-        }
-        Commands::WarnOverlay { .. } => {
-            // Already handled above
-            unreachable!()
-        }
-        Commands::Ui => {
-            if !cli.quiet {
-                heading("Test: ui");
-            }
-            let timeout = cli.timeout;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("ui");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
-                Ok(sum) => {
-                    if !cli.quiet {
-                        println!(
-                            "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                            sum.hud_seen, sum.time_to_hud_ms
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("ui: ERROR: {}", e);
-                    print_hints(&e);
-                    if let Some(mut o) = overlay
-                        && let Err(e) = o.kill_and_wait()
-                    {
-                        eprintln!("smoketest: failed to stop overlay: {}", e);
-                    }
-                    exit(1);
-                }
-            }
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        // Screenshots extracted to separate tool: hotki-shots
-        Commands::Minui => {
-            if !cli.quiet {
-                heading("Test: minui");
-            }
-            let timeout = cli.timeout;
-            let mut overlay = None;
-            if !cli.no_warn {
-                overlay = process::start_warn_overlay_with_delay();
-                process::write_overlay_status("minui");
-                if let Some(info) = &cli.info {
-                    process::write_overlay_info(info);
-                }
-            }
-            match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
-                Ok(sum) => {
-                    if !cli.quiet {
-                        println!(
-                            "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                            sum.hud_seen, sum.time_to_hud_ms
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("minui: ERROR: {}", e);
-                    print_hints(&e);
-                    if let Some(mut o) = overlay
-                        && let Err(e) = o.kill_and_wait()
-                    {
-                        eprintln!("smoketest: failed to stop overlay: {}", e);
-                    }
-                    exit(1);
-                }
-            }
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-        }
-        Commands::Fullscreen { state, native } => {
-            let toggle = match state {
-                FsState::Toggle => Toggle::Toggle,
-                FsState::On => Toggle::On,
-                FsState::Off => Toggle::Off,
+            let args = PlaceFlexArgs {
+                cols: *cols,
+                rows: *rows,
+                col: *col,
+                row: *row,
+                force_size_pos: *force_size_pos,
+                pos_first_only: *pos_first_only,
+                force_shrink_move_grow: *force_shrink_move_grow,
             };
-            let timeout = cli.timeout;
-            let logs = true;
-            match run_case(
-                "fullscreen",
-                "fullscreen",
-                timeout,
-                cli.quiet,
-                !cli.no_warn,
-                cli.info.as_deref(),
-                false,
-                move || tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native),
-            ) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("fullscreen: OK (toggled non-native fullscreen)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("fullscreen: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
-            }
-        } // Preflight smoketest removed.
-        Commands::WorldStatus => {
+            handle_place_flex(cli, &args)
+        }
+        Commands::PlaceFallback => handle_place_fallback(cli),
+        Commands::PlaceSmg => handle_place_smg(cli),
+        Commands::PlaceSkip => handle_place_skip(cli),
+        Commands::FocusNav => handle_focus_nav(cli),
+        Commands::Focus => handle_focus(cli),
+        Commands::Hide => handle_hide(cli),
+        Commands::Place => handle_place(cli),
+        Commands::PlaceAsync => handle_place_async(cli),
+        Commands::PlaceAnimated => handle_place_animated(cli),
+        Commands::PlaceTerm => handle_place_term(cli),
+        Commands::PlaceMoveMin => handle_place_move_min(cli),
+        Commands::PlaceMinimized => handle_place_minimized(cli),
+        Commands::PlaceZoomed => handle_place_zoomed(cli),
+        Commands::FocusWinHelper { .. } => unreachable!(),
+        Commands::WarnOverlay { .. } => unreachable!(),
+        Commands::Ui => handle_ui(cli),
+        // Screenshots extracted to separate tool: hotki-shots
+        Commands::Minui => handle_minui(cli),
+        Commands::Fullscreen { state, native } => handle_fullscreen(cli, *state, *native),
+        Commands::WorldStatus => handle_world_status(cli),
+        Commands::WorldAx => handle_world_ax(cli),
+    }
+}
+
+/// Handle the `repeat-relay` test case.
+fn handle_relay(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: repeat-relay");
+    }
+    let duration = cli.duration;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("repeat-relay");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    run_on_main_with_watchdog("repeat-relay", cli.timeout, move || repeat_relay(duration));
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle the `repeat-shell` test case.
+fn handle_shell(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: repeat-shell");
+    }
+    let duration = cli.duration;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("repeat-shell");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle the `repeat-volume` test case.
+fn handle_volume(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: repeat-volume");
+    }
+    let duration = max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("repeat-volume");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    run_with_watchdog("repeat-volume", cli.timeout, move || {
+        repeat_volume(duration)
+    });
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle `place-increments` test case.
+fn handle_place_increments(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-increments",
+        "place-increments",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || tests::place_increments::run_place_increments_test(timeout, logs),
+    ) {
+        Ok(()) => {
             if !cli.quiet {
-                heading("Test: world-status");
-            }
-            let timeout = cli.timeout;
-            match run_with_watchdog("world-status", timeout, move || {
-                tests::world_status::run_world_status_test(timeout, true)
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("world-status: OK (permissions granted; status sane)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("world-status: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
+                println!("place-increments: OK (anchored edges verified)");
             }
         }
-        Commands::WorldAx => {
+        Err(e) => {
+            eprintln!("place-increments: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `raise` test case.
+fn handle_raise(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "raise",
+        "raise",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        false,
+        move || raise::run_raise_test(timeout, logs),
+    ) {
+        Ok(()) => {
             if !cli.quiet {
-                heading("Test: world-ax");
+                println!("raise: OK (raised by title twice)");
             }
-            let timeout = cli.timeout;
-            match run_with_watchdog("world-ax", timeout, move || {
-                tests::world_ax::run_world_ax_test(timeout, true)
-            }) {
-                Ok(()) => {
-                    if !cli.quiet {
-                        println!("world-ax: OK (role/subrole present; flags resolved)")
-                    }
-                }
-                Err(e) => {
-                    eprintln!("world-ax: ERROR: {}", e);
-                    print_hints(&e);
-                    exit(1);
-                }
+        }
+        Err(e) => {
+            eprintln!("raise: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-flex` test case.
+/// Arguments for the `place-flex` test case.
+struct PlaceFlexArgs {
+    /// Number of columns in the grid.
+    cols: u32,
+    /// Number of rows in the grid.
+    rows: u32,
+    /// Column index.
+    col: u32,
+    /// Row index.
+    row: u32,
+    /// Whether to force size before position.
+    force_size_pos: bool,
+    /// Whether to set the position first only.
+    pos_first_only: bool,
+    /// Whether to force the shrink→move→grow path.
+    force_shrink_move_grow: bool,
+}
+
+/// Handle the `place-flex` test case.
+fn handle_place_flex(cli: &Cli, args: &PlaceFlexArgs) {
+    if !cli.quiet {
+        heading("Test: place-flex");
+    }
+    let timeout = cli.timeout;
+    let logs = true;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("place-flex");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    match run_on_main_with_watchdog("place-flex", timeout, move || {
+        if logs {
+            // logging already configured
+        }
+        tests::place_flex::run_place_flex(
+            args.cols,
+            args.rows,
+            args.col,
+            args.row,
+            args.force_size_pos,
+            args.pos_first_only,
+            args.force_shrink_move_grow,
+        )
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!(
+                    "place-flex: OK (cols={} rows={} cell=({},{}), force_size_pos={}, pos_first_only={})",
+                    args.cols,
+                    args.rows,
+                    args.col,
+                    args.row,
+                    args.force_size_pos,
+                    args.pos_first_only
+                );
             }
+        }
+        Err(e) => {
+            eprintln!("place-flex: ERROR: {}", e);
+            print_hints(&e);
+            if let Some(mut o) = overlay
+                && let Err(e) = o.kill_and_wait()
+            {
+                eprintln!("smoketest: failed to stop overlay: {}", e);
+            }
+            exit(1);
+        }
+    }
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle `place-fallback` test case.
+fn handle_place_fallback(cli: &Cli) {
+    let timeout = cli.timeout;
+    match run_case(
+        "place-fallback",
+        "place-fallback",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || {
+            tests::place_flex::run_place_flex(
+                config::PLACE_COLS,
+                config::PLACE_ROWS,
+                0,
+                0,
+                true,
+                false,
+                false,
+            )
+        },
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-fallback: OK (forced size->pos path)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-fallback: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-smg` test case.
+fn handle_place_smg(cli: &Cli) {
+    let timeout = cli.timeout;
+    match run_case(
+        "place-smg (shrink→move→grow)",
+        "place-smg",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        None,
+        true,
+        move || tests::place_flex::run_place_flex(2, 2, 1, 1, false, false, true),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-smg: OK (forced shrink→move→grow path)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-smg: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-skip` test case.
+fn handle_place_skip(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: place-skip (non-movable)");
+    }
+    let timeout = cli.timeout;
+    let logs = true;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("place-skip");
+    }
+    match run_on_main_with_watchdog("place-skip", timeout, move || {
+        tests::place_skip::run_place_skip_test(timeout, logs)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-skip: OK (engine skipped non-movable)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-skip: ERROR: {}", e);
+            print_hints(&e);
+            if let Some(mut o) = overlay
+                && let Err(e) = o.kill_and_wait()
+            {
+                eprintln!("smoketest: failed to stop overlay: {}", e);
+            }
+            exit(1);
+        }
+    }
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle `focus-nav` test case.
+fn handle_focus_nav(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "focus-nav",
+        "focus-nav",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || tests::focus_nav::run_focus_nav_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("focus-nav: OK (navigated right, down, left, up)");
+            }
+        }
+        Err(e) => {
+            eprintln!("focus-nav: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `focus-tracking` test case.
+fn handle_focus(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "focus-tracking",
+        "focus-tracking",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        false,
+        move || focus::run_focus_test(timeout, logs),
+    ) {
+        Ok(out) => {
+            if !cli.quiet {
+                println!(
+                    "focus-tracking: OK (title='{}', pid={}, time_to_match_ms={})",
+                    out.title, out.pid, out.elapsed_ms
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("focus-tracking: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `hide` test case.
+fn handle_hide(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "hide",
+        "hide",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        false,
+        move || hide::run_hide_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("hide: OK (toggle on/off roundtrip)");
+            }
+        }
+        Err(e) => {
+            eprintln!("hide: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place` test case.
+fn handle_place(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place",
+        "place",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        None,
+        true,
+        move || tests::place::run_place_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place: OK (cycled all grid cells)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-async` test case.
+fn handle_place_async(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-async",
+        "place-async",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        None,
+        true,
+        move || tests::place_async::run_place_async_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-async: OK (converged within default budget)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-async: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-animated` test case.
+fn handle_place_animated(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-animated",
+        "place-animated",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        None,
+        true,
+        move || tests::place_animated::run_place_animated_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-animated: OK (converged with tween)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-animated: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-term` test case.
+fn handle_place_term(cli: &Cli) {
+    let timeout = cli.timeout;
+    match run_case(
+        "place-term",
+        "place-term",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || tests::place_term::run_place_term_test(timeout, true),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-term: OK (latched origin; no thrash)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-term: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-move-min` test case.
+fn handle_place_move_min(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-move-min",
+        "place-move-min",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        true,
+        move || tests::place_move_min::run_place_move_min_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-move-min: OK (moved with min-height anchored)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-move-min: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-minimized` test case.
+fn handle_place_minimized(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: place-minimized");
+    }
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_on_main_with_watchdog("place-minimized", timeout, move || {
+        tests::place_state::run_place_minimized_test(timeout, logs)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-minimized: OK (normalized minimized -> placed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-minimized: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `place-zoomed` test case.
+fn handle_place_zoomed(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: place-zoomed");
+    }
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_on_main_with_watchdog("place-zoomed", timeout, move || {
+        tests::place_state::run_place_zoomed_test(timeout, logs)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-zoomed: OK (normalized zoomed -> placed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-zoomed: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `ui` test case.
+fn handle_ui(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: ui");
+    }
+    let timeout = cli.timeout;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("ui");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
+        Ok(sum) => {
+            if !cli.quiet {
+                println!(
+                    "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                    sum.hud_seen, sum.time_to_hud_ms
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("ui: ERROR: {}", e);
+            print_hints(&e);
+            if let Some(mut o) = overlay
+                && let Err(e) = o.kill_and_wait()
+            {
+                eprintln!("smoketest: failed to stop overlay: {}", e);
+            }
+            exit(1);
+        }
+    }
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle `minui` demo.
+fn handle_minui(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: minui");
+    }
+    let timeout = cli.timeout;
+    let mut overlay = None;
+    if !cli.no_warn {
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status("minui");
+        if let Some(info) = &cli.info {
+            process::write_overlay_info(info);
+        }
+    }
+    match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
+        Ok(sum) => {
+            if !cli.quiet {
+                println!(
+                    "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
+                    sum.hud_seen, sum.time_to_hud_ms
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("minui: ERROR: {}", e);
+            print_hints(&e);
+            if let Some(mut o) = overlay
+                && let Err(e) = o.kill_and_wait()
+            {
+                eprintln!("smoketest: failed to stop overlay: {}", e);
+            }
+            exit(1);
+        }
+    }
+    if let Some(mut o) = overlay
+        && let Err(e) = o.kill_and_wait()
+    {
+        eprintln!("smoketest: failed to stop overlay: {}", e);
+    }
+}
+
+/// Handle `fullscreen` test case.
+fn handle_fullscreen(cli: &Cli, state: FsState, native: bool) {
+    let toggle = match state {
+        FsState::Toggle => Toggle::Toggle,
+        FsState::On => Toggle::On,
+        FsState::Off => Toggle::Off,
+    };
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "fullscreen",
+        "fullscreen",
+        timeout,
+        cli.quiet,
+        !cli.no_warn,
+        cli.info.as_deref(),
+        false,
+        move || tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("fullscreen: OK (toggled non-native fullscreen)");
+            }
+        }
+        Err(e) => {
+            eprintln!("fullscreen: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `world-status` test case.
+fn handle_world_status(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: world-status");
+    }
+    let timeout = cli.timeout;
+    match run_with_watchdog("world-status", timeout, move || {
+        tests::world_status::run_world_status_test(timeout, true)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("world-status: OK (permissions granted; status sane)");
+            }
+        }
+        Err(e) => {
+            eprintln!("world-status: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `world-ax` test case.
+fn handle_world_ax(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: world-ax");
+    }
+    let timeout = cli.timeout;
+    match run_with_watchdog("world-ax", timeout, move || {
+        tests::world_ax::run_world_ax_test(timeout, true)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("world-ax: OK (role/subrole present; flags resolved)");
+            }
+        }
+        Err(e) => {
+            eprintln!("world-ax: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
         }
     }
 }

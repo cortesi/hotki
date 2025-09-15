@@ -38,7 +38,7 @@ pub fn run_focus_winhelper(
     use std::cmp::min;
     use winit::{
         application::ApplicationHandler,
-        dpi::{LogicalPosition, LogicalSize},
+        dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::WindowEvent,
         event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
         window::{Window, WindowId},
@@ -119,6 +119,326 @@ pub fn run_focus_winhelper(
     }
 
     impl HelperApp {
+        /// Create the helper window with initial attributes.
+        fn try_create_window(&self, elwt: &ActiveEventLoop) -> Result<Window, String> {
+            use winit::dpi::LogicalSize;
+            let attrs = Window::default_attributes()
+                .with_title(self.title.clone())
+                .with_visible(true)
+                .with_decorations(false)
+                .with_inner_size(LogicalSize::new(
+                    self.size.map(|s| s.0).unwrap_or(config::HELPER_WIN_WIDTH),
+                    self.size.map(|s| s.1).unwrap_or(config::HELPER_WIN_HEIGHT),
+                ));
+            elwt.create_window(attrs).map_err(|e| e.to_string())
+        }
+
+        /// Bring the application to the foreground on resume.
+        fn activate_app(&self) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                unsafe { app.activate() };
+            }
+        }
+
+        /// Enforce the configured minimum content size, if any.
+        fn apply_min_size_if_requested(&self) {
+            if let Some((min_w, min_h)) = self.min_size
+                && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
+            {
+                use objc2_foundation::NSSize;
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                for w in app.windows().iter() {
+                    let t = w.title();
+                    let is_match = autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
+                    if is_match {
+                        unsafe {
+                            w.setMinSize(NSSize::new(min_w, min_h));
+                            w.setContentMinSize(NSSize::new(min_w, min_h));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        /// Make the panel non-movable if configured.
+        fn apply_nonmovable_if_requested(&self) {
+            if self.panel_nonmovable
+                && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
+            {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let t = w.title();
+                    let is_match = autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
+                    if is_match {
+                        w.setMovable(false);
+                        break;
+                    }
+                }
+            }
+        }
+
+        /// Perform the initial placement of the window.
+        fn initial_placement(&self, win: &Window) {
+            use winit::dpi::LogicalPosition;
+            if let Some((cols, rows, col, row)) = self.grid {
+                if let Err(e) = mac_winops::place_grid_focused(id() as i32, cols, rows, col, row) {
+                    debug!("winhelper: place_grid_focused error: {}", e);
+                }
+            } else if let Some(slot) = self.slot {
+                let (col, row) = match slot {
+                    1 => (0, 0),
+                    2 => (1, 0),
+                    3 => (0, 1),
+                    _ => (1, 1),
+                };
+                if let Err(e) = mac_winops::place_grid_focused(id() as i32, 2, 2, col, row) {
+                    debug!("winhelper: place_grid_focused error: {}", e);
+                }
+            } else if let Some((x, y)) = self.pos {
+                win.set_outer_position(LogicalPosition::new(x, y));
+            } else if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                // Fallback: bottom-right corner at a fixed small size on main screen.
+                use objc2_app_kit::NSScreen;
+                let margin: f64 = config::HELPER_WIN_MARGIN;
+                if let Some(scr) = NSScreen::mainScreen(mtm) {
+                    let vf = scr.visibleFrame();
+                    let w = config::HELPER_WIN_WIDTH;
+                    let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
+                    let y = (vf.origin.y + margin).max(0.0);
+                    win.set_outer_position(LogicalPosition::new(x, y));
+                }
+            }
+        }
+
+        /// Capture the starting geometry used by delayed/tweened placement logic.
+        fn capture_initial_geometry(&mut self, win: &Window) {
+            let scale = win.scale_factor();
+            if let Ok(p) = win.outer_position() {
+                let lp = p.to_logical::<f64>(scale);
+                self.last_pos = Some((lp.x, lp.y));
+            }
+            let isz = win.inner_size();
+            let lsz = isz.to_logical::<f64>(scale);
+            self.last_size = Some((lsz.width, lsz.height));
+        }
+
+        /// Arm delayed application if explicitly configured.
+        fn arm_delayed_apply_if_configured(&mut self) {
+            if self.delay_apply_ms > 0 {
+                self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
+                debug!(
+                    "winhelper: armed delayed-apply +{}ms target={:?} grid={:?}",
+                    self.delay_apply_ms, self.apply_target, self.apply_grid
+                );
+            }
+        }
+
+        /// Apply initial zoom/minimize state if requested.
+        fn apply_initial_state_options(&self) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let t = w.title();
+                    let is_match = autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
+                    if is_match {
+                        unsafe {
+                            if self.start_zoomed && !w.isZoomed() {
+                                w.performZoom(None);
+                            }
+                            if self.start_minimized && !w.isMiniaturized() {
+                                w.miniaturize(None);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        /// Add a large centered label to the content view.
+        fn add_centered_label(&self) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let title = w.title();
+                    let is_match =
+                        autoreleasepool(|pool| unsafe { title.to_str(pool) == self.title });
+                    if is_match {
+                        if let Some(view) = w.contentView() {
+                            use objc2::rc::Retained;
+                            use objc2_app_kit::{NSColor, NSFont, NSTextAlignment, NSTextField};
+                            use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+                            let label_str = self.compute_label_text();
+                            let ns = NSString::from_str(&label_str);
+                            let label: Retained<NSTextField> =
+                                unsafe { NSTextField::labelWithString(&ns, mtm) };
+                            let vframe = view.frame();
+                            let vw = vframe.size.width;
+                            let vh = vframe.size.height;
+                            let base = vw.min(vh) * 0.35;
+                            let font = unsafe { NSFont::boldSystemFontOfSize(base) };
+                            unsafe { label.setFont(Some(&font)) };
+                            unsafe { label.setAlignment(NSTextAlignment::Center) };
+                            let color = unsafe { NSColor::whiteColor() };
+                            unsafe { label.setTextColor(Some(&color)) };
+                            let margin_x = 8.0;
+                            let margin_y = 8.0;
+                            let lw = (vw - 2.0 * margin_x).max(10.0);
+                            let lh = (vh - 2.0 * margin_y).max(20.0);
+                            let lx = vframe.origin.x + margin_x;
+                            let ly = vframe.origin.y + margin_y;
+                            let frame = NSRect::new(NSPoint::new(lx, ly), NSSize::new(lw, lh));
+                            unsafe { label.setFrame(frame) };
+                            unsafe { view.addSubview(&label) };
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        /// Handle a `WindowEvent::Moved`.
+        fn on_moved(&mut self, new_pos: PhysicalPosition<i32>) {
+            use winit::dpi::LogicalPosition;
+            debug!("winhelper: moved event: x={} y={}", new_pos.x, new_pos.y);
+            if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
+                if let Some(win) = self.window.as_ref() {
+                    let scale = win.scale_factor();
+                    let lp = new_pos.to_logical::<f64>(scale);
+                    if self.last_pos.is_none()
+                        && let Ok(p0) = win.outer_position()
+                    {
+                        let p0l = p0.to_logical::<f64>(scale);
+                        self.last_pos = Some((p0l.x, p0l.y));
+                    }
+                    self.desired_pos = Some((lp.x, lp.y));
+                    debug!(
+                        "winhelper: intercept move -> desired=({:.1},{:.1}) last={:?}",
+                        lp.x, lp.y, self.last_pos
+                    );
+                    if let Some((x, y)) = self.last_pos {
+                        self.suppress_events = true;
+                        win.set_outer_position(LogicalPosition::new(x, y));
+                        self.suppress_events = false;
+                    }
+                    if self.tween_ms > 0 {
+                        if self.delay_apply_ms > 0
+                            && (self.apply_target.is_some() || self.apply_grid.is_some())
+                        {
+                            self.apply_after =
+                                Some(Instant::now() + config::ms(self.delay_apply_ms));
+                        } else {
+                            let now = Instant::now();
+                            self.ensure_tween_started_pos(now);
+                            self.tween_to_pos = self.desired_pos;
+                            self.apply_after = Some(now);
+                        }
+                    } else {
+                        self.apply_after =
+                            Some(Instant::now() + config::ms(self.delay_setframe_ms));
+                        debug!(
+                            "winhelper: scheduled apply_after at +{}ms",
+                            self.delay_setframe_ms
+                        );
+                    }
+                }
+            } else if !self.suppress_events
+                && let Some(win) = self.window.as_ref()
+            {
+                let scale = win.scale_factor();
+                let lp = new_pos.to_logical::<f64>(scale);
+                self.last_pos = Some((lp.x, lp.y));
+                debug!("winhelper: track move -> last=({:.1},{:.1})", lp.x, lp.y);
+            }
+        }
+
+        /// Handle a `WindowEvent::Resized`.
+        fn on_resized(&mut self, new_size: PhysicalSize<u32>) {
+            use winit::dpi::LogicalSize;
+            debug!(
+                "winhelper: resized event: w={} h={}",
+                new_size.width, new_size.height
+            );
+            if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
+                if let Some(win) = self.window.as_ref() {
+                    let scale = win.scale_factor();
+                    let lsz = new_size.to_logical::<f64>(scale);
+                    if self.last_size.is_none() {
+                        let s0 = win.inner_size().to_logical::<f64>(scale);
+                        self.last_size = Some((s0.width, s0.height));
+                    }
+                    self.desired_size = Some((lsz.width, lsz.height));
+                    debug!(
+                        "winhelper: intercept resize -> desired=({:.1},{:.1}) last={:?}",
+                        lsz.width, lsz.height, self.last_size
+                    );
+                    if let Some((w, h)) = self.last_size {
+                        self.suppress_events = true;
+                        let _maybe_size = win.request_inner_size(LogicalSize::new(w, h));
+                        self.suppress_events = false;
+                    }
+                    if self.tween_ms > 0 {
+                        if self.delay_apply_ms > 0
+                            && (self.apply_target.is_some() || self.apply_grid.is_some())
+                        {
+                            self.apply_after =
+                                Some(Instant::now() + config::ms(self.delay_apply_ms));
+                        } else {
+                            let now = Instant::now();
+                            self.ensure_tween_started_size(now);
+                            self.tween_to_size = self.desired_size;
+                            self.apply_after = Some(now);
+                        }
+                    } else {
+                        self.apply_after =
+                            Some(Instant::now() + config::ms(self.delay_setframe_ms));
+                        debug!(
+                            "winhelper: scheduled apply_after at +{}ms",
+                            self.delay_setframe_ms
+                        );
+                    }
+                }
+            } else if !self.suppress_events
+                && let Some(win) = self.window.as_ref()
+            {
+                let scale = win.scale_factor();
+                let lsz = new_size.to_logical::<f64>(scale);
+                self.last_size = Some((lsz.width, lsz.height));
+                debug!(
+                    "winhelper: track resize -> last=({:.1},{:.1})",
+                    lsz.width, lsz.height
+                );
+            }
+        }
+
+        /// Handle a `WindowEvent::Focused`.
+        fn on_focused(&self, focused: bool) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let title = w.title();
+                    let is_match =
+                        autoreleasepool(|pool| unsafe { title.to_str(pool) == self.title });
+                    if is_match {
+                        let color = unsafe {
+                            if focused {
+                                objc2_app_kit::NSColor::systemBlueColor()
+                            } else {
+                                objc2_app_kit::NSColor::controlBackgroundColor()
+                            }
+                        };
+                        w.setBackgroundColor(Some(&color));
+                        break;
+                    }
+                }
+            }
+        }
         /// Return the visible frame of the screen containing the given window.
         fn active_visible_frame_for_window(&self, win: &Window) -> (f64, f64, f64, f64) {
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -448,334 +768,36 @@ pub fn run_focus_winhelper(
 
     impl ApplicationHandler for HelperApp {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
-            if self.window.is_none() {
-                use winit::dpi::{LogicalPosition, LogicalSize};
-                let attrs = Window::default_attributes()
-                    .with_title(self.title.clone())
-                    .with_visible(true)
-                    .with_decorations(false)
-                    // Small helper window; reduce visual intrusion.
-                    .with_inner_size(LogicalSize::new(
-                        self.size.map(|s| s.0).unwrap_or(config::HELPER_WIN_WIDTH),
-                        self.size.map(|s| s.1).unwrap_or(config::HELPER_WIN_HEIGHT),
-                    ));
-                let win = match elwt.create_window(attrs) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        self.error = Some(format!("winhelper: failed to create window: {}", e));
-                        elwt.exit();
-                        return;
-                    }
-                };
-                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    unsafe { app.activate() };
-                }
-                // Enforce a minimum (content) size if requested.
-                if let Some((min_w, min_h)) = self.min_size
-                    && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
-                {
-                    use objc2_foundation::NSSize;
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    for w in app.windows().iter() {
-                        let t = w.title();
-                        let is_match =
-                            autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
-                        if is_match {
-                            unsafe {
-                                w.setMinSize(NSSize::new(min_w, min_h));
-                                w.setContentMinSize(NSSize::new(min_w, min_h));
-                            }
-                            break;
-                        }
-                    }
-                }
-                // If requested, make the helper window non-movable (pre-gate target on some systems).
-                if self.panel_nonmovable
-                    && let Some(mtm) = objc2_foundation::MainThreadMarker::new()
-                {
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    let windows = app.windows();
-                    for w in windows.iter() {
-                        let t = w.title();
-                        let is_match =
-                            autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
-                        if is_match {
-                            w.setMovable(false);
-                            break;
-                        }
-                    }
-                }
-                // Placement: explicit grid -> 2x2 slot -> explicit pos -> fallback
-                if let Some((cols, rows, col, row)) = self.grid {
-                    let _placed = mac_winops::place_grid_focused(id() as i32, cols, rows, col, row);
-                } else if let Some(slot) = self.slot {
-                    let (col, row) = match slot {
-                        1 => (0, 0),
-                        2 => (1, 0),
-                        3 => (0, 1),
-                        _ => (1, 1),
-                    };
-                    let _placed = mac_winops::place_grid_focused(id() as i32, 2, 2, col, row);
-                } else if let Some((x, y)) = self.pos {
-                    win.set_outer_position(LogicalPosition::new(x, y));
-                } else {
-                    // Fallback: bottom-right corner at a fixed small size
-                    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                        use objc2_app_kit::NSScreen;
-                        let margin: f64 = config::HELPER_WIN_MARGIN;
-                        if let Some(scr) = NSScreen::mainScreen(mtm) {
-                            let vf = scr.visibleFrame();
-                            let w = config::HELPER_WIN_WIDTH;
-                            let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
-                            let y = (vf.origin.y + margin).max(0.0);
-                            win.set_outer_position(LogicalPosition::new(x, y));
-                        }
-                    }
-                }
-                // Give the system a brief moment to settle placement before labeling
-                thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
-
-                // Capture initial pos/size as our last-known geometry for async delay logic
-                let scale = win.scale_factor();
-                if let Ok(p) = win.outer_position() {
-                    let lp = p.to_logical::<f64>(scale);
-                    self.last_pos = Some((lp.x, lp.y));
-                }
-                let isz = win.inner_size();
-                let lsz = isz.to_logical::<f64>(scale);
-                self.last_size = Some((lsz.width, lsz.height));
-
-                // Arm explicit delayed-apply if configured
-                if self.delay_apply_ms > 0 {
-                    self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
-                    debug!(
-                        "winhelper: armed delayed-apply +{}ms target={:?} grid={:?}",
-                        self.delay_apply_ms, self.apply_target, self.apply_grid
-                    );
-                }
-
-                // Optionally attach a simple sheet — placeholder (no-op for now).
-                let _ = self.attach_sheet;
-
-                // Apply initial window state (minimized/zoomed) if requested.
-                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    let windows = app.windows();
-                    for w in windows.iter() {
-                        let t = w.title();
-                        let is_match = autoreleasepool(|pool| unsafe {
-                            t.to_str(pool) == self.title
-                        });
-                        if is_match {
-                            unsafe {
-                                if self.start_zoomed && !w.isZoomed() {
-                                    w.performZoom(None);
-                                }
-                                if self.start_minimized && !w.isMiniaturized() {
-                                    w.miniaturize(None);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                // Always add a big, centered label with either explicit label text, derived TL/TR/etc., or the title
-                if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                    let windows = app.windows();
-                    for w in windows.iter() {
-                        let title = w.title();
-                        let is_match = autoreleasepool(|pool| unsafe {
-                            title.to_str(pool) == self.title
-                        });
-                        if is_match {
-                            if let Some(view) = w.contentView() {
-                                use objc2::rc::Retained;
-                                use objc2_app_kit::{
-                                    NSColor, NSFont, NSTextAlignment, NSTextField,
-                                };
-                                use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-                                // Pick label: explicit, else 2x2 grid mapping, else title/slot
-                                let label_str = self.compute_label_text();
-                                let ns = NSString::from_str(&label_str);
-                                let label: Retained<NSTextField> =
-                                    unsafe { NSTextField::labelWithString(&ns, mtm) };
-                                // Size font relative to content view size so letters are large and visible
-                                let vframe = view.frame();
-                                let vw = vframe.size.width;
-                                let vh = vframe.size.height;
-                                let base = vw.min(vh) * 0.35; // 35% of min dimension
-                                let font = unsafe { NSFont::boldSystemFontOfSize(base) };
-                                unsafe { label.setFont(Some(&font)) };
-                                unsafe { label.setAlignment(NSTextAlignment::Center) };
-                                let color = unsafe { NSColor::whiteColor() };
-                                unsafe { label.setTextColor(Some(&color)) };
-                                // Center the label within the content view with small margins
-                                let margin_x = 8.0;
-                                let margin_y = 8.0;
-                                let lw = (vw - 2.0 * margin_x).max(10.0);
-                                let lh = (vh - 2.0 * margin_y).max(20.0);
-                                let lx = vframe.origin.x + margin_x;
-                                let ly = vframe.origin.y + margin_y;
-                                let frame = NSRect::new(NSPoint::new(lx, ly), NSSize::new(lw, lh));
-                                unsafe { label.setFrame(frame) };
-                                unsafe { view.addSubview(&label) };
-                            }
-                            break;
-                        }
-                    }
-                }
-                self.window = Some(win);
+            if self.window.is_some() {
+                return;
             }
-        }
-        fn window_event(
-            &mut self,
-            elwt: &ActiveEventLoop,
-            _id: WindowId,
-            event: WindowEvent,
-        ) {
-            match event {
-                WindowEvent::CloseRequested => {
+            let win = match self.try_create_window(elwt) {
+                Ok(w) => w,
+                Err(e) => {
+                    self.error = Some(format!("winhelper: failed to create window: {}", e));
                     elwt.exit();
+                    return;
                 }
-                WindowEvent::Moved(new_pos) => {
-                    debug!("winhelper: moved event: x={} y={}", new_pos.x, new_pos.y);
-                    if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
-                        if let Some(win) = self.window.as_ref() {
-                            let scale = win.scale_factor();
-                            let lp = new_pos.to_logical::<f64>(scale);
-                            // Initialize last_pos if missing
-                            if self.last_pos.is_none()
-                                && let Ok(p0) = win.outer_position()
-                            {
-                                let p0l = p0.to_logical::<f64>(scale);
-                                self.last_pos = Some((p0l.x, p0l.y));
-                            }
-                            self.desired_pos = Some((lp.x, lp.y));
-                            debug!(
-                                "winhelper: intercept move -> desired=({:.1},{:.1}) last={:?}",
-                                lp.x, lp.y, self.last_pos
-                            );
-                            if let Some((x, y)) = self.last_pos {
-                                self.suppress_events = true;
-                            win.set_outer_position(LogicalPosition::new(x, y));
-                                self.suppress_events = false;
-                            }
-                            if self.tween_ms > 0 {
-                                if self.delay_apply_ms > 0
-                                    && (self.apply_target.is_some() || self.apply_grid.is_some())
-                                {
-                                    // Defer tween start to the delayed-apply moment targeting the
-                                    // explicit grid/target, not the intercepted desired pos.
-                                    self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
-                                } else {
-                                    let now = Instant::now();
-                                    self.ensure_tween_started_pos(now);
-                                    self.tween_to_pos = self.desired_pos;
-                                    self.apply_after = Some(now);
-                                }
-                            } else {
-                                self.apply_after =
-                                    Some(Instant::now() + config::ms(self.delay_setframe_ms));
-                                debug!(
-                                    "winhelper: scheduled apply_after at +{}ms",
-                                    self.delay_setframe_ms
-                                );
-                            }
-                        }
-                    } else if !self.suppress_events {
-                        // Track last position when not delaying
-                        if let Some(win) = self.window.as_ref() {
-                            let scale = win.scale_factor();
-                            let lp = new_pos.to_logical::<f64>(scale);
-                            self.last_pos = Some((lp.x, lp.y));
-                            debug!("winhelper: track move -> last=({:.1},{:.1})", lp.x, lp.y);
-                        }
-                    }
-                }
-                WindowEvent::Resized(new_size) => {
-                    debug!(
-                        "winhelper: resized event: w={} h={}",
-                        new_size.width, new_size.height
-                    );
-                    if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
-                        if let Some(win) = self.window.as_ref() {
-                            let scale = win.scale_factor();
-                            let lsz = new_size.to_logical::<f64>(scale);
-                            if self.last_size.is_none() {
-                                let s0 = win.inner_size().to_logical::<f64>(scale);
-                                self.last_size = Some((s0.width, s0.height));
-                            }
-                            self.desired_size = Some((lsz.width, lsz.height));
-                            debug!(
-                                "winhelper: intercept resize -> desired=({:.1},{:.1}) last={:?}",
-                                lsz.width, lsz.height, self.last_size
-                            );
-                            if let Some((w, h)) = self.last_size {
-                                self.suppress_events = true;
-                                let _maybe_size = win.request_inner_size(LogicalSize::new(w, h));
-                                self.suppress_events = false;
-                            }
-                            if self.tween_ms > 0 {
-                                if self.delay_apply_ms > 0
-                                    && (self.apply_target.is_some() || self.apply_grid.is_some())
-                                {
-                                    self.apply_after =
-                                        Some(Instant::now() + config::ms(self.delay_apply_ms));
-                                } else {
-                                    let now = Instant::now();
-                                    self.ensure_tween_started_size(now);
-                                    self.tween_to_size = self.desired_size;
-                                    self.apply_after = Some(now);
-                                }
-                            } else {
-                                self.apply_after =
-                                    Some(Instant::now() + config::ms(self.delay_setframe_ms));
-                                debug!(
-                                    "winhelper: scheduled apply_after at +{}ms",
-                                    self.delay_setframe_ms
-                                );
-                            }
-                        }
-                    } else if !self.suppress_events {
-                        // Track last size when not delaying
-                        if let Some(win) = self.window.as_ref() {
-                            let scale = win.scale_factor();
-                            let lsz = new_size.to_logical::<f64>(scale);
-                            self.last_size = Some((lsz.width, lsz.height));
-                            debug!(
-                                "winhelper: track resize -> last=({:.1},{:.1})",
-                                lsz.width, lsz.height
-                            );
-                        }
-                    }
-                }
-                WindowEvent::Focused(focused) => {
-                    // Update window background color on focus changes
-                    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                        let windows = app.windows();
-                        for w in windows.iter() {
-                            let title = w.title();
-                            let is_match = autoreleasepool(|pool| unsafe {
-                                title.to_str(pool) == self.title
-                            });
-                            if is_match {
-                                let color = unsafe {
-                                    if focused {
-                                        objc2_app_kit::NSColor::systemBlueColor()
-                                    } else {
-                                        objc2_app_kit::NSColor::controlBackgroundColor()
-                                    }
-                                };
-                                w.setBackgroundColor(Some(&color));
-                                break;
-                            }
-                        }
-                    }
-                }
+            };
+            self.activate_app();
+            self.apply_min_size_if_requested();
+            self.apply_nonmovable_if_requested();
+            self.initial_placement(&win);
+            // Allow registration to settle before adding label.
+            thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
+            self.capture_initial_geometry(&win);
+            self.arm_delayed_apply_if_configured();
+            let _ = self.attach_sheet; // placeholder hook
+            self.apply_initial_state_options();
+            self.add_centered_label();
+            self.window = Some(win);
+        }
+        fn window_event(&mut self, elwt: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+            match event {
+                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::Moved(pos) => self.on_moved(pos),
+                WindowEvent::Resized(sz) => self.on_resized(sz),
+                WindowEvent::Focused(f) => self.on_focused(f),
                 _ => {}
             }
         }
