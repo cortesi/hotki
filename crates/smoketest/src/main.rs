@@ -138,7 +138,7 @@ where
         heading(&format!("Test: {}", heading_title));
     }
     let mut overlay = None;
-    if warn_overlay {
+    if warn_overlay && !quiet {
         overlay = process::start_warn_overlay_with_delay();
         process::write_overlay_status(name);
         if let Some(i) = info {

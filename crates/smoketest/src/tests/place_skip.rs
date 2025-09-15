@@ -13,6 +13,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::HelperWindowBuilder,
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -113,8 +114,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // resize a non-test window even if world focus lags.
             send_key("g");
             let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
-            let _ =
-                crate::server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
+            let _ = server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
             send_key("1");
             // Wait for a short settle period and compare
             let settle_ms = 350; // generous but bounded

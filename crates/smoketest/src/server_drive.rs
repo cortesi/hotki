@@ -214,3 +214,20 @@ pub fn wait_for_focused_pid(expected_pid: i32, timeout_ms: u64) -> bool {
     }
     false
 }
+
+/// Wait until the backend reports the focused title equals `expected_title`.
+/// Returns true on success within `timeout_ms`.
+pub fn wait_for_focused_title(expected_title: &str, timeout_ms: u64) -> bool {
+    let want = expected_title;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if let Some(snap) = get_world_snapshot()
+            && let Some(app) = snap.focused
+            && app.title == want
+        {
+            return true;
+        }
+        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+    }
+    false
+}

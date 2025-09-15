@@ -38,6 +38,9 @@
 //!   then triggers a rebind. Do not re-enter config while a write guard is held.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
+
+/// Test support utilities exported for the test suite.
+pub mod test_support;
 use std::{
     sync::{
         Arc,

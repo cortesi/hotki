@@ -24,6 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_server::Client;
+use tokio::time::timeout;
+
 use super::helpers::{HelperWindow, wait_for_frontmost_title, wait_for_windows_visible};
 use crate::{
     config,
@@ -35,9 +38,14 @@ use crate::{
 };
 
 /// Wait for a HUD update with `expected` title within `timeout_ms`.
+/// Prefer a lightweight RPC snapshot via the shared driver; fall back to
+/// event stream only if the driver is not initialized.
 async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<bool> {
-    use hotki_server::Client;
-    use tokio::time::timeout;
+    // Fast path: use shared RPC snapshot polling
+    if server_drive::is_ready() {
+        return Ok(server_drive::wait_for_focused_title(expected, timeout_ms));
+    }
+    // Fallback: transient client and HudUpdate stream
 
     let mut client = match Client::new_with_socket(sock)
         .with_connect_only()
@@ -143,7 +151,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 HelperWindowBuilder::new(&title1)
                     .with_time_ms(helper_time)
                     .with_label_text("R1")
-                    .with_size(800.0, 600.0)
+                    .with_size(600.0, 420.0)
                     .with_position(60.0, 60.0),
                 &title1,
                 cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
@@ -157,7 +165,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 HelperWindowBuilder::new(&title2)
                     .with_time_ms(helper_time)
                     .with_label_text("R2")
-                    .with_size(800.0, 600.0)
+                    .with_size(600.0, 420.0)
                     .with_position(1000.0, 60.0),
                 &title2,
                 cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),

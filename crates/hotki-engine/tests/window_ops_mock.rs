@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use hotki_engine::{Engine, MockHotkeyApi};
+use hotki_engine::{Engine, MockHotkeyApi, test_support as testutil};
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use mac_winops::ops::MockWinOps;
+use testutil::{fast_world_cfg, recv_error_with_title, wait_snapshot_until};
 use tokio::sync::mpsc;
 
 // Using mac_winops::ops::MockWinOps provided under the `test-utils` feature.
@@ -22,7 +23,10 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         focused: true,
     }]);
     engine.world_handle().hint_refresh();
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let _ = wait_snapshot_until(&engine.world_handle(), 50, |snap| {
+        snap.iter().any(|w| w.pid == pid && w.focused)
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -31,7 +35,7 @@ async fn engine_uses_window_ops_for_focus() {
     let (tx, mut _rx): (mpsc::Sender<MsgToUI>, mpsc::Receiver<MsgToUI>) = mpsc::channel(32);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
 
     // Simple config: single binding that triggers focus(left)
@@ -59,7 +63,7 @@ async fn engine_hide_uses_winops() {
     let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"a\", \"hide\", hide(on))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -79,7 +83,7 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
     let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"n\", \"fs native\", fullscreen(on, native)), (\"f\", \"fs nonnative\", fullscreen(on, nonnative))]",
@@ -151,7 +155,11 @@ async fn engine_raise_activates_on_match() {
         },
     ]);
     engine.world_handle().hint_refresh();
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+        snap.iter().any(|w| w.pid == 1 && w.focused)
+            && snap.iter().any(|w| w.pid == 888 && !w.focused)
+    })
+    .await;
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
@@ -202,7 +210,10 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
     engine.set_config(cfg).await.unwrap();
     // World already has A focused and B present via set_windows above.
     engine.world_handle().hint_refresh();
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+        snap.iter().any(|w| w.pid == 200 && w.focused)
+    })
+    .await;
     // Raise to B
     let id_r = engine.resolve_id_for_ident("r").await.unwrap();
     engine
@@ -238,7 +249,10 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         },
     ]);
     engine.world_handle().hint_refresh();
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+        snap.iter().any(|w| w.pid == 200 && w.focused)
+    })
+    .await;
     // Next place should use world-focused (cleared hint)
     engine
         .dispatch(id_p, mac_hotkey::EventKind::KeyDown, false)
@@ -265,20 +279,7 @@ async fn engine_fullscreen_error_notifies() {
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await;
     // expect an error Notify with title "Fullscreen"
-    let mut saw = false;
-    for _ in 0..10 {
-        if let Ok(msg) = rx.try_recv() {
-            if let hotki_protocol::MsgToUI::Notify { kind, title, .. } = msg
-                && matches!(kind, hotki_protocol::NotifyKind::Error)
-                && title == "Fullscreen"
-            {
-                saw = true;
-                break;
-            }
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
+    let saw = recv_error_with_title(&mut rx, "Fullscreen", 80).await;
     assert!(saw, "expected Fullscreen error notification");
 }
 
@@ -300,20 +301,7 @@ async fn engine_hide_error_notifies() {
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await;
-    let mut saw = false;
-    for _ in 0..10 {
-        if let Ok(msg) = rx.try_recv() {
-            if let hotki_protocol::MsgToUI::Notify { kind, title, .. } = msg
-                && matches!(kind, hotki_protocol::NotifyKind::Error)
-                && title == "Hide"
-            {
-                saw = true;
-                break;
-            }
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
+    let saw = recv_error_with_title(&mut rx, "Hide", 80).await;
     assert!(saw, "expected Hide error notification");
 }
 
@@ -335,20 +323,7 @@ async fn engine_raise_invalid_regex_notifies() {
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await;
-    let mut saw = false;
-    for _ in 0..10 {
-        if let Ok(msg) = rx.try_recv() {
-            if let hotki_protocol::MsgToUI::Notify { kind, title, .. } = msg
-                && matches!(kind, hotki_protocol::NotifyKind::Error)
-                && title == "Raise"
-            {
-                saw = true;
-                break;
-            }
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
+    let saw = recv_error_with_title(&mut rx, "Raise", 80).await;
     assert!(saw, "expected Raise error notification for invalid regex");
 }
 
@@ -372,20 +347,7 @@ async fn engine_focus_error_propagates_notification() {
         .await;
 
     // Drain messages until we see an error notification about Focus
-    let mut saw_error = false;
-    for _ in 0..10 {
-        if let Ok(msg) = rx.try_recv() {
-            if let hotki_protocol::MsgToUI::Notify { kind, title, .. } = msg
-                && matches!(kind, hotki_protocol::NotifyKind::Error)
-                && title == "Focus"
-            {
-                saw_error = true;
-                break;
-            }
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
+    let saw_error = recv_error_with_title(&mut rx, "Focus", 80).await;
     assert!(saw_error, "expected Focus error notification");
 }
 

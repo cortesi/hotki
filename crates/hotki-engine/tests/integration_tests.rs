@@ -9,6 +9,7 @@ use std::{
 use hotki_engine::{
     Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec,
     Repeater,
+    test_support::{fast_world_cfg, recv_until, wait_snapshot_until},
 };
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
@@ -39,7 +40,7 @@ async fn create_test_engine_with_mock(
     let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
     let mock = Arc::new(MockWinOps::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), relay_enabled, world);
     (engine, rx, mock)
 }
@@ -56,7 +57,10 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         focused: true,
     }]);
     engine.world_handle().hint_refresh();
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let _ = wait_snapshot_until(&engine.world_handle(), 50, |snap| {
+        snap.iter().any(|w| w.pid == pid && w.focused)
+    })
+    .await;
 }
 
 /// Test helper to create a minimal Keys configuration
@@ -107,8 +111,8 @@ async fn test_rebind_on_depth_change() {
         .dispatch(cmd_k_id, mac_hotkey::EventKind::KeyDown, false)
         .await;
 
-    // Allow async operations to complete
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Await a HUD update to ensure rebind completed
+    let got_hud_update = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
 
     // Check that depth increased
     let new_depth = engine.get_depth().await;
@@ -123,13 +127,7 @@ async fn test_rebind_on_depth_change() {
     );
 
     // Verify we got HUD update message
-    let mut got_hud_update = false;
-    while let Ok(msg) = rx.try_recv() {
-        if matches!(msg, MsgToUI::HudUpdate { .. }) {
-            got_hud_update = true;
-            break;
-        }
-    }
+    // Verify we saw a HUD update during rebind
     assert!(
         got_hud_update,
         "Should receive HUD update when depth changes"

@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_world::{World, WorldCfg, test_api as world_test};
+use hotki_world::{World, WorldCfg, test_api as world_test, test_support::wait_snapshot_until};
 use mac_winops::{
     AxEvent, AxEventKind, Pos, WindowHint, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
@@ -66,15 +66,7 @@ fn ax_event_created_triggers_fast_refresh() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_slow_min());
 
         // Wait for initial reconcile (1 window)
-        let mut tries = 0;
-        loop {
-            if world.snapshot().await.len() == 1 {
-                break;
-            }
-            tries += 1;
-            assert!(tries < 100, "timeout waiting for initial snapshot");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(wait_snapshot_until(&world, 500, |s| s.len() == 1).await);
 
         // Change underlying windows to add one more; without a hint this would
         // only be observed after ~poll_ms_min (500 ms).
@@ -121,18 +113,10 @@ fn ax_event_created_triggers_fast_refresh() {
         // Expect the world to observe the new window well before poll_ms_min.
         let t0 = Instant::now();
         let timeout = Duration::from_millis(200); // generous bound < 500ms
-        loop {
-            let snap = world.snapshot().await;
-            if snap.len() == 2 {
-                break;
-            }
-            if t0.elapsed() > timeout {
-                panic!(
-                    "world did not refresh promptly after AX event (elapsed = {:?})",
-                    t0.elapsed()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_snapshot_until(&world, timeout.as_millis() as u64, |s| s.len() == 2).await,
+            "world did not refresh promptly after AX event (elapsed = {:?})",
+            t0.elapsed()
+        );
     });
 }

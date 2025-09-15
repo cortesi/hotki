@@ -904,7 +904,11 @@ fn list_display_bounds() -> Vec<DisplayBounds> {
 
 #[doc(hidden)]
 pub mod test_api {
-    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides};
+    use std::time::Duration;
+
+    use tokio::time::{Instant, sleep};
+
+    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides, WorldHandle, WorldWindow};
 
     /// Get a clone of the AX hint bridge sender (if initialized) for tests.
     pub fn ax_hint_bridge_sender() -> Option<crossbeam_channel::Sender<mac_winops::AxEvent>> {
@@ -989,4 +993,26 @@ pub mod test_api {
         });
         super::ax_read_pool::_test_set_title_override(id, title);
     }
+
+    /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.
+    /// Returns true if the predicate matched in time.
+    pub async fn wait_snapshot_until<F>(world: &WorldHandle, timeout_ms: u64, mut pred: F) -> bool
+    where
+        F: FnMut(&[WorldWindow]) -> bool,
+    {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let snap = world.snapshot().await;
+            if pred(&snap) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            sleep(Duration::from_millis(2)).await;
+        }
+    }
 }
+
+/// Test support utilities exported for the test suite.
+pub mod test_support;

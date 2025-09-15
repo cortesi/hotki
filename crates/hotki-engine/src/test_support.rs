@@ -1,0 +1,62 @@
+//! Test support utilities for hotki-engine integration/unit tests.
+//! These helpers are public to avoid dead_code warnings and are lightweight.
+//! They are intended for use by the test suite only.
+
+use std::time::Duration;
+
+use hotki_protocol::MsgToUI;
+
+/// Create a low-latency `hotki_world` configuration suitable for tests.
+pub fn fast_world_cfg() -> hotki_world::WorldCfg {
+    hotki_world::WorldCfg {
+        poll_ms_min: 1,
+        poll_ms_max: 10,
+        ..hotki_world::WorldCfg::default()
+    }
+}
+
+/// Re-export the canonical world snapshot wait helper from `hotki_world`.
+pub use hotki_world::test_api::wait_snapshot_until;
+
+/// Receive an error notification with a specific `title` within `timeout_ms`.
+pub async fn recv_error_with_title(
+    rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>,
+    title: &str,
+    timeout_ms: u64,
+) -> bool {
+    let want = title.to_string();
+    tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(msg) = rx.recv().await {
+            if let MsgToUI::Notify { kind, title, .. } = msg
+                && matches!(kind, hotki_protocol::NotifyKind::Error)
+                && title == want
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Receive UI messages until `pred` matches or `timeout_ms` elapses.
+pub async fn recv_until<F>(
+    rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>,
+    timeout_ms: u64,
+    mut pred: F,
+) -> bool
+where
+    F: FnMut(&MsgToUI) -> bool,
+{
+    tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(msg) = rx.recv().await {
+            if pred(&msg) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
+}

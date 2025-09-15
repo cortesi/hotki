@@ -22,19 +22,19 @@ pub const MIN_VOLUME_TEST_DURATION_MS: u64 = 2000;
 // ===== Timing Constants for UI Interactions =====
 
 /// Polling interval for checking conditions.
-pub const POLL_INTERVAL_MS: u64 = 50;
+pub const POLL_INTERVAL_MS: u64 = 10;
 
 /// Short delay between key events.
-pub const KEY_EVENT_DELAY_MS: u64 = 60;
+pub const KEY_EVENT_DELAY_MS: u64 = 25;
 
 /// Standard delay between UI actions.
-pub const UI_ACTION_DELAY_MS: u64 = 120;
+pub const UI_ACTION_DELAY_MS: u64 = 50;
 
 /// Delay between retry attempts.
-pub const RETRY_DELAY_MS: u64 = 300;
+pub const RETRY_DELAY_MS: u64 = 80;
 
 /// Delay for window registration.
-pub const WINDOW_REGISTRATION_DELAY_MS: u64 = 200;
+pub const WINDOW_REGISTRATION_DELAY_MS: u64 = 80;
 
 // ===== Wait Timeouts =====
 
@@ -65,7 +65,7 @@ pub const FAST_RETRY_DELAY_MS: u64 = 50;
 pub const INITIAL_RETRY_ATTEMPTS: u32 = 3;
 
 /// Delay for waiting between event checks.
-pub const EVENT_CHECK_INTERVAL_MS: u64 = 300;
+pub const EVENT_CHECK_INTERVAL_MS: u64 = 80;
 
 // ===== Window and UI Constants =====
 
@@ -111,7 +111,7 @@ pub const RAISE_FIRST_WINDOW_MAX_MS: u64 = 2000;
 /// Short recheck timeout for window presence.
 pub const RAISE_WINDOW_RECHECK_MS: u64 = 800;
 /// Binding gate timeout for RPC identifier readiness.
-pub const RAISE_BINDING_GATE_MS: u64 = 700;
+pub const RAISE_BINDING_GATE_MS: u64 = 300;
 
 // ===== Focus-Nav Test Tunables =====
 /// Per-step wait for focus-nav frontmost checks and transitions.

@@ -80,12 +80,10 @@ impl App for HotkiApp {
 
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.shutdown_in_progress {
-                // Allow close to proceed during graceful shutdown.
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            } else {
+            // Always request hide; optionally cancel the close below.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if !self.shutdown_in_progress {
                 // Default behavior: hide instead of closing the app window.
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }

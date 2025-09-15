@@ -1,6 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use hotki_world::{WindowKey, World, WorldCfg, WorldEvent};
+use hotki_world::{
+    WindowKey, World, WorldCfg, WorldEvent,
+    test_support::{drain_events, recv_event_until, wait_snapshot_until},
+};
 use mac_winops::{
     Pos, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
@@ -46,35 +49,22 @@ fn evicts_after_two_passes_when_missing() {
         mock.set_windows(vec![win("AppA", "A1", 100, 1)]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
 
-        // Wait for initial presence
-        let mut present = false;
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
-        while tokio::time::Instant::now() < deadline {
-            if world
-                .snapshot()
-                .await
-                .iter()
-                .any(|w| w.pid == 100 && w.id == 1)
-            {
-                present = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(present, "window should be present initially");
+        assert!(
+            wait_snapshot_until(&world, 500, |s| s.iter().any(|w| w.pid == 100 && w.id == 1)).await,
+            "window should be present initially"
+        );
 
         // Remove from CG; first pass marks suspect, second confirms and removes
         mock.set_windows(vec![]);
 
         // Request fast reconcile; consider removal successful on event or when snapshot no longer contains it
         let mut rx = world.subscribe();
-        while let Ok(_e) = rx.try_recv() {}
+        drain_events(&mut rx);
         world.hint_refresh();
         let mut gone = false;
         let deadline2 = tokio::time::Instant::now() + Duration::from_millis(1200);
         while tokio::time::Instant::now() < deadline2 {
-            if let Ok(ev) = rx.try_recv()
-                && let WorldEvent::Removed(k) = ev
+            if let Some(WorldEvent::Removed(k)) = recv_event_until(&mut rx, 150, |_| true).await
                 && k == (WindowKey { pid: 100, id: 1 })
             {
                 gone = true;
@@ -85,7 +75,6 @@ fn evicts_after_two_passes_when_missing() {
                 gone = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(gone, "window should be evicted within two passes");
     });
@@ -102,7 +91,8 @@ fn pid_reuse_no_false_positive() {
         // Start with pid=100, id=1
         mock.set_windows(vec![win("OldApp", "Old", 100, 1)]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ =
+            wait_snapshot_until(&world, 600, |s| s.iter().any(|w| w.pid == 100 && w.id == 1)).await;
 
         // First pass: old window disappears, new pid reuses same CG id (1)
         mock.set_windows(vec![win("NewApp", "New", 101, 1)]);
@@ -111,13 +101,12 @@ fn pid_reuse_no_false_positive() {
 
         // Second pass: confirm removal of old (100,1); new (101,1) stays
         let mut rx = world.subscribe();
-        while let Ok(_e) = rx.try_recv() {}
+        drain_events(&mut rx);
         world.hint_refresh();
         let mut removed_or_gone = false;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(ev) = rx.try_recv()
-                && let WorldEvent::Removed(k) = ev
+            if let Some(WorldEvent::Removed(k)) = recv_event_until(&mut rx, 150, |_| true).await
                 && k == (WindowKey { pid: 100, id: 1 })
             {
                 removed_or_gone = true;
@@ -128,7 +117,6 @@ fn pid_reuse_no_false_positive() {
                 removed_or_gone = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(removed_or_gone, "expected old (pid=100,id=1) to be removed");
 
