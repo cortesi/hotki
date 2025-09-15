@@ -1,6 +1,7 @@
 //! Smoketest binary for Hotki. Provides repeat and UI validation helpers.
 use clap::Parser;
 use logging as logshared;
+use tracing::info;
 use tracing_subscriber::{fmt, prelude::*};
 
 mod cli;
@@ -42,13 +43,19 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    use std::time::Instant;
+    let start = Instant::now();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let out = f();
         let _send_res = tx.send(out);
     });
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        Ok(v) => v,
+        Ok(v) => {
+            let elapsed = start.elapsed();
+            info!("{}: completed in {:.3}s", name, elapsed.as_secs_f64());
+            v
+        }
         Err(_) => {
             eprintln!(
                 "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
@@ -80,6 +87,7 @@ where
     let canceled = Arc::new(AtomicBool::new(false));
     let canceled_flag = canceled.clone();
     let name_owned = name.to_string();
+    let start = Instant::now();
     let watchdog = thread::spawn(move || {
         let start = Instant::now();
         loop {
@@ -102,6 +110,8 @@ where
     let out = f();
     canceled.store(true, Ordering::SeqCst);
     let _join_res = watchdog.join();
+    let elapsed = start.elapsed();
+    info!("{}: completed in {:.3}s", name, elapsed.as_secs_f64());
     out
 }
 

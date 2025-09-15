@@ -320,18 +320,20 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         process::write_overlay_status("Preparing tests...");
     }
 
-    // Helper to run + print one-line summary
+    // Helper to run + print one-line summary (with elapsed duration)
     let run = |name: &str, dur: u64| -> bool {
         // Update overlay title to current test
         process::write_overlay_status(name);
         // Clear info by default unless a variant sets it explicitly
         process::write_overlay_info("");
+        let start = Instant::now();
         let (ok, details) = run_subtest_capture(name, dur, timeout_ms, &[]);
+        let elapsed = start.elapsed();
         if ok {
-            println!("{}... OK", name);
+            println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
             true
         } else {
-            println!("{}... FAIL", name);
+            println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
@@ -358,6 +360,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let name = "focus-nav";
         process::write_overlay_status(name);
         process::write_overlay_info("");
+        let start = Instant::now();
         let (ok, details) = run_subtest_capture_with_extra(
             name,
             duration_ms,
@@ -365,10 +368,11 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             10_000,
             &[],
         );
+        let elapsed = start.elapsed();
         if ok {
-            println!("{}... OK", name);
+            println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
         } else {
-            println!("{}... FAIL", name);
+            println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
@@ -392,6 +396,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let name = "place-minimized";
         process::write_overlay_status(name);
         process::write_overlay_info("");
+        let start = Instant::now();
         let (ok, details) = run_subtest_capture_with_extra(
             name,
             duration_ms,
@@ -399,10 +404,11 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             60_000,                            // and add watchdog headroom on top
             &[],
         );
+        let elapsed = start.elapsed();
         if ok {
-            println!("{}... OK", name);
+            println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
         } else {
-            println!("{}... FAIL", name);
+            println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
@@ -420,11 +426,23 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         process::write_overlay_info(info);
         let args = place_flex_args(&cfg);
         let json = serde_json::to_string(&cfg).unwrap_or_default();
+        let start = Instant::now();
         let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        let elapsed = start.elapsed();
         if ok {
-            println!("place-flex... OK\n  settings: {}\n  info: {}", json, info);
+            println!(
+                "place-flex... OK ({:.3}s)\n  settings: {}\n  info: {}",
+                elapsed.as_secs_f64(),
+                json,
+                info
+            );
         } else {
-            println!("place-flex... FAIL\n  settings: {}\n  info: {}", json, info);
+            println!(
+                "place-flex... FAIL ({:.3}s)\n  settings: {}\n  info: {}",
+                elapsed.as_secs_f64(),
+                json,
+                info
+            );
             if !details.trim().is_empty() {
                 println!("{}", details.trim_end());
             }
