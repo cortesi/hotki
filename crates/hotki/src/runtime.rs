@@ -478,6 +478,45 @@ impl ConnectionDriver {
                         Ok(msg) => {
                             // Any message indicates liveness; reset the heartbeat timer
                             hb_timer.as_mut().reset(TokioInstant::now() + heartbeat::timeout());
+                            // Handle explicit backpressure recovery: request a world snapshot
+                            // when the server signals that a resync is recommended.
+                            if let hotki_protocol::MsgToUI::World(hotki_protocol::WorldStreamMsg::ResyncRecommended) = &msg {
+                                // Briefly notify the user in Details → Notifications
+                                if self.tx_keys.send(AppEvent::Notify {
+                                    kind: NotifyKind::Info,
+                                    title: "World".to_string(),
+                                    text: "Syncing…".to_string(),
+                                }).is_err() {
+                                    tracing::warn!("failed to send world-sync start notification");
+                                }
+                                self.egui_ctx.request_repaint();
+
+                                // Fetch a fresh snapshot from the server to realign state.
+                                match conn.get_world_snapshot().await {
+                                    Ok(_snap) => {
+                                        // Snapshot fetched successfully; acknowledge with a subtle success.
+                                        if self.tx_keys.send(AppEvent::Notify {
+                                            kind: NotifyKind::Success,
+                                            title: "World".to_string(),
+                                            text: "Synced".to_string(),
+                                        }).is_err() {
+                                            tracing::warn!("failed to send world-sync success notification");
+                                        }
+                                        self.egui_ctx.request_repaint();
+                                    }
+                                    Err(e) => {
+                                        // Surface the error so users have a clue if something goes wrong.
+                                        if self.tx_keys.send(AppEvent::Notify {
+                                            kind: NotifyKind::Error,
+                                            title: "World".to_string(),
+                                            text: format!("Sync failed: {}", e),
+                                        }).is_err() {
+                                            tracing::warn!("failed to send world-sync error notification");
+                                        }
+                                        self.egui_ctx.request_repaint();
+                                    }
+                                }
+                            }
                             self.handle_server_msg(msg).await;
                         }
                         Err(e) => {

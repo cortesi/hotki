@@ -446,11 +446,10 @@ impl Repeater {
 mod tests {
     use tokio::{
         sync::mpsc,
-        time::{Duration, sleep},
+        time::{Duration, Instant, sleep},
     };
 
     use super::*;
-    use tokio::time::Instant;
 
     struct Ctr {
         shell: std::sync::atomic::AtomicUsize,
@@ -503,8 +502,7 @@ mod tests {
         // Wait until at least one repeat completes, with a generous deadline to
         // avoid flakiness on slow runners. Check every 50ms up to 1.5s total.
         let deadline = Instant::now() + Duration::from_millis(1500);
-        while Instant::now() < deadline
-            && obs.shell.load(std::sync::atomic::Ordering::SeqCst) == 0
+        while Instant::now() < deadline && obs.shell.load(std::sync::atomic::Ordering::SeqCst) == 0
         {
             sleep(Duration::from_millis(50)).await;
         }
