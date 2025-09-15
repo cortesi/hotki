@@ -150,7 +150,7 @@ impl TestContext {
 
     /// Ensure the MRPC driver is initialized and required idents are registered.
     /// Returns true if initialization succeeded and all idents were observed.
-    pub fn ensure_rpc_ready(&mut self, idents: &[&str]) -> bool {
+    pub fn ensure_rpc_ready(&self, idents: &[&str]) -> bool {
         let sock = match self.session.as_ref() {
             Some(s) => s.socket_path().to_string(),
             None => return false,

@@ -1,7 +1,7 @@
 //! Smoketest binary for Hotki. Provides repeat and UI validation helpers.
 use clap::Parser;
 use logging as logshared;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, prelude::*};
 
 mod cli;
 mod config;
@@ -28,7 +28,7 @@ mod warn_overlay;
 /// Helper window for UI-driven tests and animations.
 mod winhelper;
 
-use std::{sync::mpsc, time::Duration};
+use std::{cmp::max, process::exit, sync::mpsc, thread, time::Duration};
 
 use cli::{Cli, Commands, FsState};
 use error::print_hints;
@@ -36,15 +36,16 @@ use hotki_protocol::Toggle;
 use orchestrator::{heading, run_all_tests};
 use tests::*;
 
+/// Run `f` on a background thread and enforce a timeout via watchdog.
 fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let out = f();
-        let _ = tx.send(out);
+        let _send_res = tx.send(out);
     });
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
         Ok(v) => v,
@@ -53,8 +54,8 @@ where
                 "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
                 timeout_ms, name
             );
-            crate::proc_registry::kill_all();
-            std::process::exit(2);
+            proc_registry::kill_all();
+            exit(2);
         }
     }
 }
@@ -62,6 +63,7 @@ where
 // Some tests (e.g., those that create a winit/Tao EventLoop) must run on the
 // main thread on macOS. This variant keeps the test on the main thread and
 // enforces a timeout via a background watchdog.
+/// Run `f` on the main thread with a watchdog that force-exits on timeout.
 fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
 where
     F: FnOnce() -> T,
@@ -89,8 +91,8 @@ where
                     "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
                     timeout_ms, name_owned
                 );
-                crate::proc_registry::kill_all();
-                std::process::exit(2);
+                proc_registry::kill_all();
+                exit(2);
             }
             thread::sleep(Duration::from_millis(25));
         }
@@ -99,7 +101,7 @@ where
     // Run the test body on the main thread
     let out = f();
     canceled.store(true, Ordering::SeqCst);
-    let _ = watchdog.join();
+    let _join_res = watchdog.join();
     out
 }
 
@@ -127,10 +129,10 @@ where
     }
     let mut overlay = None;
     if warn_overlay {
-        overlay = crate::process::start_warn_overlay_with_delay();
-        crate::process::write_overlay_status(name);
+        overlay = process::start_warn_overlay_with_delay();
+        process::write_overlay_status(name);
         if let Some(i) = info {
-            crate::process::write_overlay_info(i);
+            process::write_overlay_info(i);
         }
     }
 
@@ -163,9 +165,9 @@ fn main() {
         )
     };
     let env_filter = logshared::env_filter_from_spec(&spec);
-    let _ = tracing_subscriber::registry()
+    let _init_res = tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().without_time())
+        .with(fmt::layer().without_time())
         .try_init();
 
     // For helper commands, skip permission/build checks and heading
@@ -261,7 +263,7 @@ fn main() {
                     attach_sheet,
                 ) {
                     eprintln!("focus-winhelper: ERROR: {}", e);
-                    std::process::exit(2);
+                    exit(2);
                 }
             }
             _ => unreachable!(),
@@ -277,7 +279,7 @@ fn main() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("warn-overlay: ERROR: {}", e);
-                std::process::exit(2);
+                exit(2);
             }
         }
         return;
@@ -293,7 +295,7 @@ fn main() {
         eprintln!(
             "Grant Accessibility and Input Monitoring to your terminal under System Settings → Privacy & Security."
         );
-        std::process::exit(1);
+        exit(1);
     }
 
     // Screenshots extracted to separate tool: hotki-shots
@@ -305,7 +307,7 @@ fn main() {
     if let Err(e) = process::build_hotki_quiet() {
         eprintln!("Failed to build 'hotki' binary: {}", e);
         eprintln!("Try: cargo build -p hotki");
-        std::process::exit(1);
+        exit(1);
     }
 
     match cli.command {
@@ -316,10 +318,10 @@ fn main() {
             let duration = cli.duration;
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("repeat-relay");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("repeat-relay");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             // repeat‑relay opens a winit EventLoop; it must run on the main thread.
@@ -337,10 +339,10 @@ fn main() {
             let duration = cli.duration;
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("repeat-shell");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("repeat-shell");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             run_with_watchdog("repeat-shell", cli.timeout, move || repeat_shell(duration));
@@ -355,13 +357,13 @@ fn main() {
                 heading("Test: repeat-volume");
             }
             // Volume can be slightly slower; keep a floor to reduce flakiness
-            let duration = std::cmp::max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
+            let duration = max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("repeat-volume");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("repeat-volume");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             run_with_watchdog("repeat-volume", cli.timeout, move || {
@@ -395,7 +397,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-increments: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -423,7 +425,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("raise: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -443,10 +445,10 @@ fn main() {
             let logs = true; // logs only affect tracing env
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place-flex");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("place-flex");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             match run_on_main_with_watchdog("place-flex", timeout, move || {
@@ -479,7 +481,7 @@ fn main() {
                     {
                         eprintln!("smoketest: failed to stop overlay: {}", e);
                     }
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
             if let Some(mut o) = overlay
@@ -500,8 +502,8 @@ fn main() {
                 true,
                 move || {
                     tests::place_flex::run_place_flex(
-                        crate::config::PLACE_COLS,
-                        crate::config::PLACE_ROWS,
+                        config::PLACE_COLS,
+                        config::PLACE_ROWS,
                         0,
                         0,
                         true,  // force_size_pos
@@ -518,7 +520,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-fallback: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -552,7 +554,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-smg: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -564,8 +566,8 @@ fn main() {
             let logs = true;
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("place-skip");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("place-skip");
             }
             match run_on_main_with_watchdog("place-skip", timeout, move || {
                 tests::place_skip::run_place_skip_test(timeout, logs)
@@ -583,7 +585,7 @@ fn main() {
                     {
                         eprintln!("smoketest: failed to stop overlay: {}", e);
                     }
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
             if let Some(mut o) = overlay
@@ -613,7 +615,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("focus-nav: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -641,7 +643,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("focus-tracking: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -666,7 +668,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("hide: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -691,7 +693,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -716,7 +718,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-async: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -741,7 +743,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-animated: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -765,7 +767,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-term: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -790,7 +792,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-move-min: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -811,7 +813,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-minimized: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -832,7 +834,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("place-zoomed: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -851,10 +853,10 @@ fn main() {
             let timeout = cli.timeout;
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("ui");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("ui");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
@@ -874,7 +876,7 @@ fn main() {
                     {
                         eprintln!("smoketest: failed to stop overlay: {}", e);
                     }
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
             if let Some(mut o) = overlay
@@ -891,10 +893,10 @@ fn main() {
             let timeout = cli.timeout;
             let mut overlay = None;
             if !cli.no_warn {
-                overlay = crate::process::start_warn_overlay_with_delay();
-                crate::process::write_overlay_status("minui");
+                overlay = process::start_warn_overlay_with_delay();
+                process::write_overlay_status("minui");
                 if let Some(info) = &cli.info {
-                    crate::process::write_overlay_info(info);
+                    process::write_overlay_info(info);
                 }
             }
             match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
@@ -914,7 +916,7 @@ fn main() {
                     {
                         eprintln!("smoketest: failed to stop overlay: {}", e);
                     }
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
             if let Some(mut o) = overlay
@@ -949,7 +951,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("fullscreen: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         } // Preflight smoketest removed.
@@ -969,7 +971,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("world-status: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -989,7 +991,7 @@ fn main() {
                 Err(e) => {
                     eprintln!("world-ax: ERROR: {}", e);
                     print_hints(&e);
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }

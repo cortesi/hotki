@@ -32,57 +32,95 @@ pub fn run_focus_winhelper(
 ) -> Result<(), String> {
     // Create event loop after items below to satisfy clippy's items-after-statements lint.
 
+    use std::{process::id, thread};
+
+    use objc2::rc::autoreleasepool;
+    use std::cmp::min;
     use winit::{
         application::ApplicationHandler,
+        dpi::{LogicalPosition, LogicalSize},
         event::WindowEvent,
-        event_loop::{ActiveEventLoop, ControlFlow},
+        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+        window::{Window, WindowId},
     };
 
     struct HelperApp {
-        window: Option<winit::window::Window>,
+        /// Handle to the helper window, if created.
+        window: Option<Window>,
+        /// Window title used to locate the NSWindow for tweaks.
         title: String,
+        /// Time at which the helper should terminate.
         deadline: Instant,
+        /// Delay before applying a set_frame operation (ms).
         delay_setframe_ms: u64,
+        /// Delay before applying the main placement (ms).
         delay_apply_ms: u64,
+        /// Tween duration for animated moves (ms).
         tween_ms: u64,
+        /// Explicit target rect to apply, if present.
         apply_target: Option<(f64, f64, f64, f64)>,
+        /// Grid parameters to compute target rect, if present.
         apply_grid: Option<(u32, u32, u32, u32)>,
         // Async-frame state
+        /// Last observed window position.
         last_pos: Option<(f64, f64)>,
+        /// Last observed window size.
         last_size: Option<(f64, f64)>,
+        /// Desired position requested by the test.
         desired_pos: Option<(f64, f64)>,
+        /// Desired size requested by the test.
         desired_size: Option<(f64, f64)>,
+        /// Time at which to apply pending placement.
         apply_after: Option<Instant>,
         // Tween state
+        /// Whether a tween animation is currently active.
         tween_active: bool,
+        /// Tween start time.
         tween_start: Option<Instant>,
+        /// Tween end time.
         tween_end: Option<Instant>,
+        /// Starting position for tween.
         tween_from_pos: Option<(f64, f64)>,
+        /// Starting size for tween.
         tween_from_size: Option<(f64, f64)>,
+        /// Target position for tween.
         tween_to_pos: Option<(f64, f64)>,
+        /// Target size for tween.
         tween_to_size: Option<(f64, f64)>,
+        /// Suppress processing of window events while applying changes.
         suppress_events: bool,
+        /// Optional 2x2 slot for placement.
         slot: Option<u8>,
+        /// Optional grid spec for placement.
         grid: Option<(u32, u32, u32, u32)>,
+        /// Optional explicit initial size.
         size: Option<(f64, f64)>,
+        /// Optional explicit initial position.
         pos: Option<(f64, f64)>,
+        /// Optional label text to display.
         label_text: Option<String>,
+        /// Optional minimum content size.
         min_size: Option<(f64, f64)>,
+        /// Fatal error encountered during setup.
         error: Option<String>,
+        /// Start minimized if requested.
         start_minimized: bool,
+        /// Start zoomed (macOS “zoomed”) if requested.
         start_zoomed: bool,
+        /// Make the panel non-movable if requested.
         panel_nonmovable: bool,
+        /// Attach a modal sheet to the helper window if requested.
         attach_sheet: bool,
         // Optional: round requested sizes to nearest multiples
+        /// Width rounding step for requested sizes.
         step_w: f64,
+        /// Height rounding step for requested sizes.
         step_h: f64,
     }
 
     impl HelperApp {
-        fn active_visible_frame_for_window(
-            &self,
-            win: &winit::window::Window,
-        ) -> (f64, f64, f64, f64) {
+        /// Return the visible frame of the screen containing the given window.
+        fn active_visible_frame_for_window(&self, win: &Window) -> (f64, f64, f64, f64) {
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 use objc2_app_kit::NSScreen;
                 let scale = win.scale_factor();
@@ -90,7 +128,7 @@ pub fn run_focus_winhelper(
                     .outer_position()
                     .ok()
                     .map(|p| p.to_logical::<f64>(scale))
-                    .unwrap_or(winit::dpi::LogicalPosition::new(0.0, 0.0));
+                    .unwrap_or(LogicalPosition::new(0.0, 0.0));
                 let mut chosen: Option<(f64, f64, f64, f64)> = None;
                 for s in NSScreen::screens(mtm).iter() {
                     let fr = s.visibleFrame();
@@ -114,9 +152,10 @@ pub fn run_focus_winhelper(
             (0.0, 0.0, 1440.0, 900.0)
         }
 
+        /// Compute the rectangle for a tile within a grid on the active screen.
         fn grid_rect(
             &self,
-            win: &winit::window::Window,
+            win: &Window,
             cols: u32,
             rows: u32,
             col: u32,
@@ -144,7 +183,8 @@ pub fn run_focus_winhelper(
             (tx, ty, tw, th)
         }
 
-        // helper selectors are inlined at call sites to avoid borrow conflicts
+        /// Compute the label text to display in the helper window.
+        /// Helper selectors are inlined at call sites to avoid borrow conflicts.
         fn compute_label_text(&self) -> String {
             if let Some(ref t) = self.label_text {
                 return t.clone();
@@ -171,24 +211,27 @@ pub fn run_focus_winhelper(
             self.title.clone()
         }
 
+        /// Ensure tween state is initialized for position changes.
         fn ensure_tween_started_pos(&mut self, now: Instant) {
             if !self.tween_active {
                 self.tween_active = true;
                 self.tween_start = Some(now);
-                self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                self.tween_end = Some(now + config::ms(self.tween_ms));
                 self.tween_from_pos = self.last_pos;
             }
         }
 
+        /// Ensure tween state is initialized for size changes.
         fn ensure_tween_started_size(&mut self, now: Instant) {
             if !self.tween_active {
                 self.tween_active = true;
                 self.tween_start = Some(now);
-                self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                self.tween_end = Some(now + config::ms(self.tween_ms));
                 self.tween_from_size = self.last_size;
             }
         }
 
+        /// Optionally round a size to the configured step.
         fn rounded_size(&self, w: f64, h: f64) -> (f64, f64) {
             if self.step_w > 0.0 && self.step_h > 0.0 {
                 (
@@ -200,7 +243,8 @@ pub fn run_focus_winhelper(
             }
         }
 
-        fn select_apply_target(&self, win: &winit::window::Window) -> Option<TargetRect> {
+        /// Select the target rectangle to apply (explicit target, grid, or desired geometry).
+        fn select_apply_target(&self, win: &Window) -> Option<TargetRect> {
             if let Some((x, y, w, h)) = self.apply_target {
                 return Some(((x, y), (w, h), "target"));
             }
@@ -216,6 +260,7 @@ pub fn run_focus_winhelper(
             }
         }
 
+        /// Initialize tween destination from a target rectangle.
         fn set_tween_target_from(&mut self, target: TargetRect) {
             let ((x, y), (w, h), kind) = target;
             self.tween_to_pos = Some((x, y));
@@ -226,7 +271,7 @@ pub fn run_focus_winhelper(
             );
         }
 
-        // Tween helpers
+        /// Compute tween progress in the range [0.0, 1.0].
         fn tween_progress(&self, now: Instant) -> f64 {
             let start = match self.tween_start {
                 Some(s) => s,
@@ -245,12 +290,12 @@ pub fn run_focus_winhelper(
             }
         }
 
+        /// Interpolate position and size based on tween progress `t`.
         fn tween_interpolate(&self, t: f64) -> (f64, f64, f64, f64) {
             let (mut nx, mut ny) = self.last_pos.unwrap_or((0.0, 0.0));
-            let (mut nw, mut nh) = self.last_size.unwrap_or((
-                crate::config::HELPER_WIN_WIDTH,
-                crate::config::HELPER_WIN_HEIGHT,
-            ));
+            let (mut nw, mut nh) = self
+                .last_size
+                .unwrap_or((config::HELPER_WIN_WIDTH, config::HELPER_WIN_HEIGHT));
             if let (Some((fx, fy)), Some((tx, ty))) = (self.tween_from_pos, self.tween_to_pos) {
                 nx = fx + (tx - fx) * t;
                 ny = fy + (ty - fy) * t;
@@ -262,6 +307,7 @@ pub fn run_focus_winhelper(
             (nx, ny, nw, nh)
         }
 
+        /// Revert minor drift that may occur while testing async placement.
         fn revert_drift_if_needed(&mut self) {
             if let Some(win) = self.window.as_ref()
                 && let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
@@ -283,14 +329,15 @@ pub fn run_focus_winhelper(
                             dx, dy, dw, dh
                         );
                         self.suppress_events = true;
-                        let _ = win.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
-                        win.set_outer_position(winit::dpi::LogicalPosition::new(lx, ly));
+                        let _maybe_size = win.request_inner_size(LogicalSize::new(lw, lh));
+                        win.set_outer_position(LogicalPosition::new(lx, ly));
                         self.suppress_events = false;
                     }
                 }
             }
         }
 
+        /// Apply a single tween step, updating window position/size.
         fn apply_tween_step(&mut self) {
             let now = Instant::now();
             if let Some(win) = self.window.as_ref() {
@@ -298,7 +345,7 @@ pub fn run_focus_winhelper(
                 if !self.tween_active {
                     self.tween_active = true;
                     self.tween_start = Some(now);
-                    self.tween_end = Some(now + crate::config::ms(self.tween_ms));
+                    self.tween_end = Some(now + config::ms(self.tween_ms));
                     self.tween_from_pos = self.last_pos;
                     self.tween_from_size = self.last_size;
                     if let Some(target) = target {
@@ -310,8 +357,8 @@ pub fn run_focus_winhelper(
                 let t = self.tween_progress(now);
                 let (nx, ny, nw, nh) = self.tween_interpolate(t);
                 let (rw, rh) = self.rounded_size(nw, nh);
-                let _ = win2.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                win2.set_outer_position(winit::dpi::LogicalPosition::new(nx, ny));
+                let _maybe_size = win2.request_inner_size(LogicalSize::new(rw, rh));
+                win2.set_outer_position(LogicalPosition::new(nx, ny));
             }
             if self.tween_start.is_some() && self.tween_end.is_some() {
                 let t_done = self.tween_progress(Instant::now());
@@ -330,17 +377,19 @@ pub fn run_focus_winhelper(
                     self.tween_to_size = None;
                     self.apply_after = None;
                 } else {
-                    self.apply_after = Some(now + crate::config::ms(16));
+                    self.apply_after = Some(now + config::ms(16));
                 }
             }
         }
 
+        /// Apply target geometry immediately without tweening.
         fn apply_immediate(&mut self) {
             if let Some(win) = self.window.as_ref() {
                 if let Some((x, y, w, h)) = self.apply_target {
                     let (rw, rh) = self.rounded_size(w, h);
-                    let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                    win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                    // Ignore the returned size; it is advisory for winit.
+                    let _maybe_size = win.request_inner_size(LogicalSize::new(rw, rh));
+                    win.set_outer_position(LogicalPosition::new(x, y));
                     self.last_pos = Some((x, y));
                     self.last_size = Some((rw, rh));
                     debug!(
@@ -350,8 +399,8 @@ pub fn run_focus_winhelper(
                 } else if let Some((cols, rows, col, row)) = self.apply_grid {
                     let (tx, ty, tw, th) = self.grid_rect(win, cols, rows, col, row);
                     let (rw, rh) = self.rounded_size(tw, th);
-                    let _ = win.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
-                    win.set_outer_position(winit::dpi::LogicalPosition::new(tx, ty));
+                    let _maybe_size = win.request_inner_size(LogicalSize::new(rw, rh));
+                    win.set_outer_position(LogicalPosition::new(tx, ty));
                     self.last_pos = Some((tx, ty));
                     self.last_size = Some((rw, rh));
                     debug!(
@@ -364,24 +413,24 @@ pub fn run_focus_winhelper(
                     if let Some(win2) = self.window.as_ref() {
                         if let Some((w, h)) = desired_size_val {
                             let (rw, rh) = self.rounded_size(w, h);
-                            let _ = win2.request_inner_size(winit::dpi::LogicalSize::new(rw, rh));
+                            let _maybe_size = win2.request_inner_size(LogicalSize::new(rw, rh));
                             self.last_size = Some((rw, rh));
                             self.desired_size = None;
                         }
                         if let Some((x, y)) = desired_pos_val {
-                            win2.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                            win2.set_outer_position(LogicalPosition::new(x, y));
                             self.last_pos = Some((x, y));
                             self.desired_pos = None;
                         }
                         debug!("winhelper: applied desired pos/size");
                     }
                 }
-                self.apply_after = None;
-            } else {
-                self.apply_after = None;
             }
+            // Ensure we clear any pending apply-after state after applying.
+            self.apply_after = None;
         }
 
+        /// Apply placement when the apply deadline has been reached.
         fn process_apply_ready(&mut self) {
             if self.window.is_none() {
                 self.apply_after = None;
@@ -401,18 +450,14 @@ pub fn run_focus_winhelper(
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
             if self.window.is_none() {
                 use winit::dpi::{LogicalPosition, LogicalSize};
-                let attrs = winit::window::Window::default_attributes()
+                let attrs = Window::default_attributes()
                     .with_title(self.title.clone())
                     .with_visible(true)
                     .with_decorations(false)
                     // Small helper window; reduce visual intrusion.
                     .with_inner_size(LogicalSize::new(
-                        self.size
-                            .map(|s| s.0)
-                            .unwrap_or(crate::config::HELPER_WIN_WIDTH),
-                        self.size
-                            .map(|s| s.1)
-                            .unwrap_or(crate::config::HELPER_WIN_HEIGHT),
+                        self.size.map(|s| s.0).unwrap_or(config::HELPER_WIN_WIDTH),
+                        self.size.map(|s| s.1).unwrap_or(config::HELPER_WIN_HEIGHT),
                     ));
                 let win = match elwt.create_window(attrs) {
                     Ok(w) => w,
@@ -434,9 +479,8 @@ pub fn run_focus_winhelper(
                     let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                     for w in app.windows().iter() {
                         let t = w.title();
-                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
-                            t.to_str(pool) == self.title
-                        });
+                        let is_match =
+                            autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
                         if is_match {
                             unsafe {
                                 w.setMinSize(NSSize::new(min_w, min_h));
@@ -454,9 +498,8 @@ pub fn run_focus_winhelper(
                     let windows = app.windows();
                     for w in windows.iter() {
                         let t = w.title();
-                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
-                            t.to_str(pool) == self.title
-                        });
+                        let is_match =
+                            autoreleasepool(|pool| unsafe { t.to_str(pool) == self.title });
                         if is_match {
                             w.setMovable(false);
                             break;
@@ -465,13 +508,7 @@ pub fn run_focus_winhelper(
                 }
                 // Placement: explicit grid -> 2x2 slot -> explicit pos -> fallback
                 if let Some((cols, rows, col, row)) = self.grid {
-                    let _ = mac_winops::place_grid_focused(
-                        std::process::id() as i32,
-                        cols,
-                        rows,
-                        col,
-                        row,
-                    );
+                    let _placed = mac_winops::place_grid_focused(id() as i32, cols, rows, col, row);
                 } else if let Some(slot) = self.slot {
                     let (col, row) = match slot {
                         1 => (0, 0),
@@ -479,18 +516,17 @@ pub fn run_focus_winhelper(
                         3 => (0, 1),
                         _ => (1, 1),
                     };
-                    let _ =
-                        mac_winops::place_grid_focused(std::process::id() as i32, 2, 2, col, row);
+                    let _placed = mac_winops::place_grid_focused(id() as i32, 2, 2, col, row);
                 } else if let Some((x, y)) = self.pos {
                     win.set_outer_position(LogicalPosition::new(x, y));
                 } else {
                     // Fallback: bottom-right corner at a fixed small size
                     if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                         use objc2_app_kit::NSScreen;
-                        let margin: f64 = crate::config::HELPER_WIN_MARGIN;
+                        let margin: f64 = config::HELPER_WIN_MARGIN;
                         if let Some(scr) = NSScreen::mainScreen(mtm) {
                             let vf = scr.visibleFrame();
-                            let w = crate::config::HELPER_WIN_WIDTH;
+                            let w = config::HELPER_WIN_WIDTH;
                             let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
                             let y = (vf.origin.y + margin).max(0.0);
                             win.set_outer_position(LogicalPosition::new(x, y));
@@ -498,9 +534,7 @@ pub fn run_focus_winhelper(
                     }
                 }
                 // Give the system a brief moment to settle placement before labeling
-                std::thread::sleep(crate::config::ms(
-                    crate::config::WINDOW_REGISTRATION_DELAY_MS,
-                ));
+                thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
 
                 // Capture initial pos/size as our last-known geometry for async delay logic
                 let scale = win.scale_factor();
@@ -514,8 +548,7 @@ pub fn run_focus_winhelper(
 
                 // Arm explicit delayed-apply if configured
                 if self.delay_apply_ms > 0 {
-                    self.apply_after =
-                        Some(Instant::now() + crate::config::ms(self.delay_apply_ms));
+                    self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
                     debug!(
                         "winhelper: armed delayed-apply +{}ms target={:?} grid={:?}",
                         self.delay_apply_ms, self.apply_target, self.apply_grid
@@ -531,7 +564,7 @@ pub fn run_focus_winhelper(
                     let windows = app.windows();
                     for w in windows.iter() {
                         let t = w.title();
-                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                        let is_match = autoreleasepool(|pool| unsafe {
                             t.to_str(pool) == self.title
                         });
                         if is_match {
@@ -554,7 +587,7 @@ pub fn run_focus_winhelper(
                     let windows = app.windows();
                     for w in windows.iter() {
                         let title = w.title();
-                        let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                        let is_match = autoreleasepool(|pool| unsafe {
                             title.to_str(pool) == self.title
                         });
                         if is_match {
@@ -600,7 +633,7 @@ pub fn run_focus_winhelper(
         fn window_event(
             &mut self,
             elwt: &ActiveEventLoop,
-            _id: winit::window::WindowId,
+            _id: WindowId,
             event: WindowEvent,
         ) {
             match event {
@@ -627,7 +660,7 @@ pub fn run_focus_winhelper(
                             );
                             if let Some((x, y)) = self.last_pos {
                                 self.suppress_events = true;
-                                win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                            win.set_outer_position(LogicalPosition::new(x, y));
                                 self.suppress_events = false;
                             }
                             if self.tween_ms > 0 {
@@ -636,9 +669,7 @@ pub fn run_focus_winhelper(
                                 {
                                     // Defer tween start to the delayed-apply moment targeting the
                                     // explicit grid/target, not the intercepted desired pos.
-                                    self.apply_after = Some(
-                                        Instant::now() + crate::config::ms(self.delay_apply_ms),
-                                    );
+                                    self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
                                 } else {
                                     let now = Instant::now();
                                     self.ensure_tween_started_pos(now);
@@ -646,9 +677,8 @@ pub fn run_focus_winhelper(
                                     self.apply_after = Some(now);
                                 }
                             } else {
-                                self.apply_after = Some(
-                                    Instant::now() + crate::config::ms(self.delay_setframe_ms),
-                                );
+                                self.apply_after =
+                                    Some(Instant::now() + config::ms(self.delay_setframe_ms));
                                 debug!(
                                     "winhelper: scheduled apply_after at +{}ms",
                                     self.delay_setframe_ms
@@ -685,16 +715,15 @@ pub fn run_focus_winhelper(
                             );
                             if let Some((w, h)) = self.last_size {
                                 self.suppress_events = true;
-                                let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                                let _maybe_size = win.request_inner_size(LogicalSize::new(w, h));
                                 self.suppress_events = false;
                             }
                             if self.tween_ms > 0 {
                                 if self.delay_apply_ms > 0
                                     && (self.apply_target.is_some() || self.apply_grid.is_some())
                                 {
-                                    self.apply_after = Some(
-                                        Instant::now() + crate::config::ms(self.delay_apply_ms),
-                                    );
+                                    self.apply_after =
+                                        Some(Instant::now() + config::ms(self.delay_apply_ms));
                                 } else {
                                     let now = Instant::now();
                                     self.ensure_tween_started_size(now);
@@ -702,9 +731,8 @@ pub fn run_focus_winhelper(
                                     self.apply_after = Some(now);
                                 }
                             } else {
-                                self.apply_after = Some(
-                                    Instant::now() + crate::config::ms(self.delay_setframe_ms),
-                                );
+                                self.apply_after =
+                                    Some(Instant::now() + config::ms(self.delay_setframe_ms));
                                 debug!(
                                     "winhelper: scheduled apply_after at +{}ms",
                                     self.delay_setframe_ms
@@ -731,7 +759,7 @@ pub fn run_focus_winhelper(
                         let windows = app.windows();
                         for w in windows.iter() {
                             let title = w.title();
-                            let is_match = objc2::rc::autoreleasepool(|pool| unsafe {
+                            let is_match = autoreleasepool(|pool| unsafe {
                                 title.to_str(pool) == self.title
                             });
                             if is_match {
@@ -763,14 +791,14 @@ pub fn run_focus_winhelper(
             }
             // Wake up at the next interesting time (apply_after or final deadline)
             let next = match self.apply_after {
-                Some(t) => std::cmp::min(t, self.deadline),
+                Some(t) => min(t, self.deadline),
                 None => self.deadline,
             };
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 
-    let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
+    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = HelperApp {
         window: None,
         title: title.to_string(),
@@ -807,7 +835,7 @@ pub fn run_focus_winhelper(
         step_w: step_size.map(|s| s.0).unwrap_or(0.0),
         step_h: step_size.map(|s| s.1).unwrap_or(0.0),
     };
-    let _ = event_loop.run_app(&mut app);
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     if let Some(e) = app.error.take() {
         Err(e)
     } else {
