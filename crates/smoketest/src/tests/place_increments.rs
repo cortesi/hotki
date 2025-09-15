@@ -68,7 +68,7 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
         })
         .with_execute(move |ctx| {
             // Spawn helper with step-size rounding (approx 9x18 typical terminal cell size)
-            let title = helper_title.clone();
+            let title = helper_title;
             let helper_time = ctx
                 .config
                 .timeout_ms

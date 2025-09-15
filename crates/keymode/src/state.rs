@@ -237,8 +237,6 @@ impl State {
         Ok(resp)
     }
 
-    
-
     /// Build a `KeyResponse::Fullscreen` from a fullscreen specification.
     fn handle_fullscreen(
         &mut self,
@@ -259,11 +257,7 @@ impl State {
     }
 
     /// Parse and relay a chord string, carrying attributes through.
-    fn handle_relay(
-        &mut self,
-        spec: &str,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
+    fn handle_relay(&mut self, spec: &str, attrs: &KeysAttrs) -> Result<KeyResponse, KeymodeError> {
         match Chord::parse(spec) {
             Some(ch) => {
                 let response = KeyResponse::Relay {
@@ -275,7 +269,9 @@ impl State {
                 }
                 Ok(response)
             }
-            None => Err(KeymodeError::InvalidRelayKeyspec { spec: spec.to_string() }),
+            None => Err(KeymodeError::InvalidRelayKeyspec {
+                spec: spec.to_string(),
+            }),
         }
     }
 
@@ -305,11 +301,7 @@ impl State {
     }
 
     /// Convenience to wrap a UI message and reset when appropriate.
-    fn simple_ui(
-        &mut self,
-        msg: MsgToUI,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
+    fn simple_ui(&mut self, msg: MsgToUI, attrs: &KeysAttrs) -> Result<KeyResponse, KeymodeError> {
         let response = KeyResponse::Ui(msg);
         if !attrs.noexit() {
             self.reset();

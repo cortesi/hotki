@@ -405,7 +405,7 @@ pub struct RawStyle {
     /// Optional notification style overrides.
     #[serde(default)]
     pub notify: Option<RawNotify>,
- }
+}
 
 /// Raw configuration with all optional fields for conversion
 #[derive(Debug, Clone, Deserialize)]

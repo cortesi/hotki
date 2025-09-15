@@ -1,6 +1,9 @@
 //! Geometry and polling helpers shared across smoketests.
 
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;

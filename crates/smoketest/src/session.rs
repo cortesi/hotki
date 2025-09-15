@@ -5,9 +5,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio::time::timeout;
 
 use logging as logshared;
+use tokio::time::timeout;
 
 use crate::{
     config,
@@ -103,11 +103,7 @@ impl HotkiSession {
 
     /// Legacy constructor for compatibility
     /// Convenience constructor that builds and launches in one call.
-    pub fn launch_with_config(
-        hotki_bin: &Path,
-        cfg_path: &Path,
-        with_logs: bool,
-    ) -> Result<Self> {
+    pub fn launch_with_config(hotki_bin: &Path, cfg_path: &Path, with_logs: bool) -> Result<Self> {
         Self::builder(hotki_bin)
             .with_config(cfg_path)
             .with_logs(with_logs)

@@ -4,7 +4,7 @@
 //! configuration module. Items are `pub` within this private module so that
 //! sibling modules in the crate can use them without leaking outside the crate.
 
-use crate::{raw::RawNotifyWindowStyle, NotifyPos};
+use crate::{NotifyPos, raw::RawNotifyWindowStyle};
 
 /// Default tag‑submenu glyph (SF Symbols codepoint).
 pub const TAG_SUBMENU: &str = "\u{f035f}";

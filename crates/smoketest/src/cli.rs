@@ -1,7 +1,8 @@
 //! Command-line interface definitions for smoketest.
 
-use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
 use logging::LogArgs;
 
 use crate::config;

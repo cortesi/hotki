@@ -141,7 +141,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
-                    expected: title_tl.clone(),
+                    expected: title_tl,
                 });
             }
             // Confirm explicitly: TL has focus at start

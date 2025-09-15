@@ -1,6 +1,9 @@
 //! Shared helpers for smoketests to keep tests concise.
 
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     config,
@@ -140,13 +143,8 @@ impl HelperWindow {
         poll_ms: u64,
         label_text: &str,
     ) -> Result<Self> {
-        let child = spawn_helper_visible(
-            title,
-            lifetime_ms,
-            visible_timeout_ms,
-            poll_ms,
-            label_text,
-        )?;
+        let child =
+            spawn_helper_visible(title, lifetime_ms, visible_timeout_ms, poll_ms, label_text)?;
         let pid = child.pid;
         ensure_frontmost(pid, title, 3, config::UI_ACTION_DELAY_MS);
         Ok(Self { child, pid })

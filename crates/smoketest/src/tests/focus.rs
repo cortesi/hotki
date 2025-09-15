@@ -18,6 +18,7 @@
 //! - The HUD is hidden for this test; we avoid depending on HUD visuals and
 //!   keep the helper window frontmost proactively to reduce flakiness.
 use std::{
+    cmp,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -25,6 +26,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
 use tokio::time::{sleep, timeout};
 
 use super::helpers::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title};
@@ -35,7 +37,6 @@ use crate::{
     runtime, server_drive,
     test_runner::{TestConfig, TestRunner},
 };
-use std::cmp;
 
 /// Listen for focus events on the given socket
 async fn listen_for_focus(
@@ -149,7 +150,6 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
 
             let sock_for_listener = socket_path.clone();
             let listener = thread::spawn(move || {
-                use tokio::time::{sleep, timeout};
                 let _res = runtime::block_on(listen_for_focus(
                     &sock_for_listener,
                     expected_title_clone,
@@ -228,7 +228,10 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                         during: "listening for focus",
                     });
                 }
-                return Err(Error::FocusNotObserved { timeout_ms, expected: expected_title });
+                return Err(Error::FocusNotObserved {
+                    timeout_ms,
+                    expected: expected_title,
+                });
             }
 
             let (title, pid) = matched

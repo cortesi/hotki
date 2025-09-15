@@ -267,9 +267,7 @@ impl RelayKey {
     pub fn key_down(&self, pid: i32, key: &Chord, is_repeat: bool) {
         trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, "on_key_down");
         let pid = pid as pid_t;
-        if !is_repeat
-            && let Err(err) = self.poster.post_modifiers(pid, &key.modifiers, true)
-        {
+        if !is_repeat && let Err(err) = self.poster.post_modifiers(pid, &key.modifiers, true) {
             warn!(?err, "post_modifiers_failed");
         }
         if let Err(err) = self.poster.post_down(pid, key, is_repeat) {
@@ -306,8 +304,10 @@ impl Poster for MockPoster {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        collections::HashSet,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use mac_keycode::Key;
 

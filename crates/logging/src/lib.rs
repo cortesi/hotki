@@ -2,8 +2,9 @@
 
 //! Shared logging helpers and CLI argument definitions for the hotki workspace.
 
-use clap::Args;
 use std::env;
+
+use clap::Args;
 use tracing_subscriber::EnvFilter;
 
 /// Logging controls for CLI apps.

@@ -1,11 +1,10 @@
 //! Test orchestration and execution logic.
 
 use std::{
-    cmp,
-    env,
+    cmp, env,
     io::Read,
-    process::{Command, Stdio},
     process as std_process,
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -438,7 +437,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     run("ui", duration_ms);
     run("minui", duration_ms);
 
-    if let Some(mut c) = overlay && let Err(e) = c.kill_and_wait() {
+    if let Some(mut c) = overlay
+        && let Err(e) = c.kill_and_wait()
+    {
         eprintln!("orchestrator: failed to stop overlay: {}", e);
     }
     if !all_ok {

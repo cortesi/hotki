@@ -6,8 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use thiserror::Error;
 use ron::error::SpannedError;
+use thiserror::Error;
 
 #[derive(Debug, Error, Clone)]
 pub enum Error {
@@ -106,9 +106,9 @@ impl Error {
     /// Access the optional path attached to this error.
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Read { path, .. }
-            | Self::Parse { path, .. }
-            | Self::Validation { path, .. } => path.as_deref(),
+            Self::Read { path, .. } | Self::Parse { path, .. } | Self::Validation { path, .. } => {
+                path.as_deref()
+            }
         }
     }
 

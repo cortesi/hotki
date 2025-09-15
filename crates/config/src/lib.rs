@@ -300,7 +300,11 @@ impl Notify {
     pub fn theme(&self) -> NotifyTheme {
         // Helper items
         fn choose<'a>(s: &'a Option<String>, d: &'a Option<String>) -> &'a str {
-            if let Some(v) = s { v } else { d.as_deref().unwrap() }
+            if let Some(v) = s {
+                v
+            } else {
+                d.as_deref().unwrap()
+            }
         }
         fn parse_or_default(val: &str, def: &str) -> (u8, u8, u8) {
             parse_rgb(val).unwrap_or_else(|| parse_rgb(def).unwrap())
@@ -810,8 +814,10 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::loader;
-    use crate::raw::{RawHud, RawStyle};
+    use crate::{
+        loader,
+        raw::{RawHud, RawStyle},
+    };
 
     #[test]
     fn test_hud_mode_default_is_hud() {

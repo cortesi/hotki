@@ -1,6 +1,5 @@
-use std::path::PathBuf;
+use std::{io, path::PathBuf, result::Result as StdResult};
 
-use std::{io, result::Result as StdResult};
 use thiserror::Error;
 
 /// Errors that can occur during smoketest execution.

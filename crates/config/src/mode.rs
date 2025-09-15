@@ -1,8 +1,7 @@
 //! Declarative configuration types for actions, modes, and key bindings.
 
 use mac_keycode::Chord;
-use serde::{Deserialize, Serialize};
-use serde::de::Error as DeError;
+use serde::{Deserialize, Serialize, de::Error as DeError};
 
 use crate::{Toggle, raw};
 
@@ -406,19 +405,13 @@ impl<'de> Deserialize<'de> for Keys {
                 Entry::Simple(k, n, a) => match Chord::parse(&k) {
                     Some(ch) => keys.push((ch, n, a, KeysAttrs::default())),
                     None => {
-                        return Err(DeError::custom(format!(
-                            "Failed to parse chord: {}",
-                            k
-                        )));
+                        return Err(DeError::custom(format!("Failed to parse chord: {}", k)));
                     }
                 },
                 Entry::WithAttrs(k, n, a, attrs) => match Chord::parse(&k) {
                     Some(ch) => keys.push((ch, n, a, *attrs)),
                     None => {
-                        return Err(DeError::custom(format!(
-                            "Failed to parse chord: {}",
-                            k
-                        )));
+                        return Err(DeError::custom(format!("Failed to parse chord: {}", k)));
                     }
                 },
             }

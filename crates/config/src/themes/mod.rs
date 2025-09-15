@@ -309,8 +309,7 @@ mod tests {
         )"#;
 
         let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
-        let user_theme_raw: &RawStyle =
-            user_raw.style.as_ref().expect("user theme present");
+        let user_theme_raw: &RawStyle = user_raw.style.as_ref().expect("user theme present");
 
         // Base: default
         let base_default = load_theme(None);

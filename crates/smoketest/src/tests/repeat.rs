@@ -44,8 +44,7 @@ pub fn count_relay(ms: u64) -> usize {
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater =
-        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+    let repeater = hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay, notifier);
     {
         let mut f = focus_ctx.lock();
         *f = Some((
@@ -189,8 +188,7 @@ pub fn count_shell(ms: u64) -> usize {
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater =
-        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+    let repeater = hotki_engine::Repeater::new_with_ctx(focus_ctx, relay, notifier);
 
     let path = std::env::temp_dir().join(format!(
         "hotki-smoketest-shell-{}-{}.log",
@@ -246,8 +244,7 @@ pub fn count_volume(ms: u64) -> usize {
     let relay = hotki_engine::RelayHandler::new();
     let (tx, _rx) = hotki_protocol::ipc::ui_channel();
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
-    let repeater =
-        hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+    let repeater = hotki_engine::Repeater::new_with_ctx(focus_ctx, relay, notifier);
 
     let id = "smoketest-volume".to_string();
     repeater.start_shell_repeat(id.clone(), cmd, Some(hotki_engine::RepeatSpec::default()));

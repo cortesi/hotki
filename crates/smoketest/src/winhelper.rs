@@ -7,7 +7,7 @@ use crate::config;
 type TargetRect = ((f64, f64), (f64, f64), &'static str);
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_focus_winhelper(
+pub fn run_focus_winhelper(
     title: &str,
     time_ms: u64,
     delay_setframe_ms: u64,

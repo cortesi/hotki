@@ -1,8 +1,7 @@
 //! Common test infrastructure and execution patterns for smoketests.
 
 use std::{
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
     process,
     time::{Duration, Instant},

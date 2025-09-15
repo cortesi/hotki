@@ -82,7 +82,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let s_clone = samples.clone();
             let d_clone = done.clone();
-            let title_clone = title.clone();
+            let title_clone = title;
             let pid_clone = helper.pid;
             std::thread::spawn(move || {
                 let deadline = std::time::Instant::now()

@@ -1,17 +1,16 @@
 //! Process management utilities for smoketests.
 use std::{
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
-    process::{Child, Command, Stdio},
     process as std_process,
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
-    error::{Error, Result},
     config,
+    error::{Error, Result},
     proc_registry,
 };
 

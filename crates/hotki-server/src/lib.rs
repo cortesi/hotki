@@ -42,7 +42,7 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use std::{process::id, sync::OnceLock};
+use std::{env, path::PathBuf, process::id, sync::OnceLock};
 
 mod client;
 mod error;
@@ -57,6 +57,22 @@ pub use error::{Error, Result};
 pub use ipc::{Connection, rpc::WorldSnapshotLite};
 pub use server::Server;
 
+/// Return the per-user runtime directory used for IPC socket files.
+///
+/// Preference order:
+/// - `$XDG_RUNTIME_DIR/hotki`
+/// - `~/Library/Caches/hotki/run` (macOS user cache)
+fn socket_runtime_dir() -> PathBuf {
+    if let Ok(xdg) = env::var("XDG_RUNTIME_DIR")
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join("hotki");
+    }
+    // Fallback: ~/Library/Caches/hotki/run
+    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join("Library/Caches/hotki/run")
+}
+
 /// Get the default socket path for IPC communication used within this crate.
 ///
 /// Note: This path is per-process. It includes the current UID and PID so that
@@ -67,7 +83,10 @@ pub(crate) fn default_socket_path() -> &'static str {
         let uid = unsafe { libc::getuid() };
         let pid = id();
         // Always use a unique socket path per process
-        format!("/tmp/hotki-server-{}-{}.sock", uid, pid)
+        socket_runtime_dir()
+            .join(format!("hotki-server-{}-{}.sock", uid, pid))
+            .to_string_lossy()
+            .to_string()
     })
 }
 
@@ -76,5 +95,8 @@ pub(crate) fn default_socket_path() -> &'static str {
 /// smoketests when connecting to a managed server.
 pub fn socket_path_for_pid(pid: u32) -> String {
     let uid = unsafe { libc::getuid() };
-    format!("/tmp/hotki-server-{}-{}.sock", uid, pid)
+    socket_runtime_dir()
+        .join(format!("hotki-server-{}-{}.sock", uid, pid))
+        .to_string_lossy()
+        .to_string()
 }

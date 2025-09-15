@@ -1,6 +1,9 @@
 //! Shared async runtime management for tests.
 
-use std::{future::Future, sync::{Arc, OnceLock}};
+use std::{
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 
 use parking_lot::Mutex;
 use tokio::runtime::Runtime;
