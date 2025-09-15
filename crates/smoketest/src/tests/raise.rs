@@ -1,103 +1,41 @@
 //! Raise-by-title smoketest.
 //!
-//! What this verifies
-//! - The `raise(title: ...)`` action brings the targeted window to the front.
-//! - Two helper windows with unique titles are spawned; we drive `r → 1` to
-//!   raise the first, then `r → 2` to raise the second.
-//! - Focus detection is cross-checked via two mechanisms: the system’s
-//!   frontmost window title (CG) and HUDUpdate events from the backend.
+//! Goal
+//! - Verify that the `raise(title: ...)` action brings the requested window to
+//!   the front based on its title.
 //!
-//! Acceptance criteria
-//! - Both helper windows become visible (CG or AX) before attempting to raise.
-//! - After `r → 1`, the frontmost window matches `title1` within the per-step
-//!   timeout; after `r → 2`, it matches `title2` within the per-step timeout.
-//! - If the backend IPC disconnects while waiting for events, the test fails
-//!   with `IpcDisconnected`.
-//! - If the expected focus is not observed in time, the test fails with
-//!   `FocusNotObserved { expected, timeout_ms }`.
+//! How
+//! - Spawn two helper windows with unique titles.
+//! - Open the temporary raise menu (`shift+cmd+0 → r`) and raise the first
+//!   window with `1`, then reopen and raise the second with `2`.
+//! - Acceptance is based on the actual frontmost CG window title. The backend
+//!   focus title (via RPC) is optionally checked for additional signal but does
+//!   not drive pass/fail.
 //!
-//! Notes
-//! - The test gates on server identifiers to avoid racing binding
-//!   registration, and retries key paths once if necessary.
-use std::{
-    cmp,
-    time::{Duration, Instant},
+//! Acceptance
+//! - Both helpers are visible (CG or AX) before attempting to raise.
+//! - After the first raise, the CG frontmost title equals `title1` within the
+//!   step timeout; after the second raise, it equals `title2`.
+use std::cmp;
+
+use super::helpers::{
+    HelperWindow, wait_for_backend_focused_title, wait_for_frontmost_title, wait_for_windows_visible,
 };
-
-use hotki_server::Client;
-use tokio::time::timeout;
-
-use super::helpers::{HelperWindow, wait_for_frontmost_title, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
     process::HelperWindowBuilder,
-    runtime, server_drive,
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
 
-/// Wait for a HUD update with `expected` title within `timeout_ms`.
-/// Prefer a lightweight RPC snapshot via the shared driver; fall back to
-/// event stream only if the driver is not initialized.
-async fn wait_for_title(sock: &str, expected: &str, timeout_ms: u64) -> Result<bool> {
-    // Fast path: use shared RPC snapshot polling
+/// Gate a menu identifier via RPC when available.
+fn gate_ident_when_ready(ident: &str, timeout_ms: u64) {
     if server_drive::is_ready() {
-        return Ok(server_drive::wait_for_focused_title(expected, timeout_ms));
+        let _ = server_drive::wait_for_ident(ident, timeout_ms);
     }
-    // Fallback: transient client and HudUpdate stream
-
-    let mut client = match Client::new_with_socket(sock)
-        .with_connect_only()
-        .connect()
-        .await
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return Err(Error::IpcDisconnected {
-                during: "connecting for title events",
-            });
-        }
-    };
-    let conn = match client.connection() {
-        Ok(c) => c,
-        Err(_) => {
-            return Err(Error::IpcDisconnected {
-                during: "waiting for title events",
-            });
-        }
-    };
-
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let chunk = cmp::min(left, config::ms(config::RETRY_DELAY_MS));
-        match timeout(chunk, conn.recv_event()).await {
-            Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
-                if let Some(app) = cursor.app_ref()
-                    && app.title == expected
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) => {
-                return Err(Error::IpcDisconnected {
-                    during: "waiting for title events",
-                });
-            }
-            Err(_) => {}
-        }
-    }
-    Ok(false)
 }
-
-// Prefer checking the actual frontmost CG window title; this validates raise
-// independent of our HUD event flow and avoids races.
-// Use helpers::wait_for_frontmost_title
-
-// Wait until all given (pid,title) pairs are present in the on-screen CG list.
-// Use helpers::wait_for_windows_visible
 
 /// Run the raise-by-title smoketest using a temporary activation menu.
 pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -174,7 +112,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let pid2 = child2.pid;
             // Keep child1/child2 alive for the duration of this execute block.
 
-            // Ensure both helper windows are actually present before proceeding
+            // Ensure both helper windows are present before proceeding.
             if !wait_for_windows_visible(
                 &[(pid1, &title1), (pid2, &title2)],
                 config::WAIT_BOTH_WINDOWS_MS,
@@ -185,124 +123,46 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 });
             }
 
-            // Ensure activation and 'r' are registered; open HUD, then enter raise menu.
+            // Phase 1: raise first window (shift+cmd+0 → r → 1), then assert CG frontmost.
             let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "r"]);
             send_key("shift+cmd+0");
+            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS);
             send_key("r");
-            // Ensure the first helper is visible (CG or AX) before issuing '1'
-            if !wait_for_windows_visible(
-                &[(pid1, &title1)],
-                config::WAIT_FIRST_WINDOW_MS.min(config::RAISE_FIRST_WINDOW_MAX_MS),
-            ) {
+            if !wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("first window not visible before menu: '{}'", title1),
                 });
             }
-            // Wait for '1' binding to appear under 'raise' if driving via RPC
-            let _ = ctx.ensure_rpc_ready(&["1"]);
+            gate_ident_when_ready("1", config::RAISE_BINDING_GATE_MS);
             send_key("1");
-
-            // Wait for focus to title1 (prefer frontmost CG check; fall back to HUD)
-            let sock = ctx
-                .session
-                .as_ref()
-                .ok_or_else(|| Error::InvalidState("No session".into()))?
-                .socket_path()
-                .to_string();
-            let ok1_front = wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2);
-            let ok1 = if ok1_front
-                || runtime::block_on(wait_for_title(&sock, &title1, ctx.config.timeout_ms / 2))??
-            {
-                true
-            } else {
-                // Actively wait for the '1' binding under raise, then retry
-                let _ = ctx.ensure_rpc_ready(&["1"]);
-                send_key("1");
-                wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
-                    || runtime::block_on(wait_for_title(
-                        &sock,
-                        &title1,
-                        ctx.config.timeout_ms / 2,
-                    ))??
-            };
-            if !ok1 {
-                // Final robust attempt: reopen HUD and try raise again
-                send_key("shift+cmd+0");
-                let _ = ctx.ensure_rpc_ready(&["r"]);
-                send_key("r");
-                let _ =
-                    wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_WINDOW_RECHECK_MS);
-                send_key("1");
-                let ok1_retry = wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2)
-                    || runtime::block_on(wait_for_title(
-                        &sock,
-                        &title1,
-                        ctx.config.timeout_ms / 2,
-                    ))??;
-                if !ok1_retry {
-                    return Err(Error::FocusNotObserved {
-                        timeout_ms: ctx.config.timeout_ms,
-                        expected: title1,
-                    });
-                }
+            if !wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2) {
+                return Err(Error::FocusNotObserved {
+                    timeout_ms: ctx.config.timeout_ms,
+                    expected: title1,
+                });
             }
+            let _ = wait_for_backend_focused_title(&title1, ctx.config.timeout_ms / 3);
 
-            // Reopen HUD and raise second window
+            // Phase 2: raise second window (shift+cmd+0 → r → 2), then assert CG frontmost.
             send_key("shift+cmd+0");
-            let _ = ctx.ensure_rpc_ready(&["r"]);
-            // Ensure the second helper is visible (CG or AX) before issuing '2'
+            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS);
+            send_key("r");
             if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("second window not visible before menu: '{}'", title2),
                 });
             }
-            send_key("r");
-            let _ = ctx.ensure_rpc_ready(&["2"]);
+            gate_ident_when_ready("2", config::RAISE_BINDING_GATE_MS);
             send_key("2");
-            let ok2_front = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2);
-            let mut ok2 = if ok2_front
-                || runtime::block_on(wait_for_title(&sock, &title2, ctx.config.timeout_ms / 2))??
-            {
-                true
-            } else {
-                // Actively wait for the '2' binding again, then retry immediately
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident("2", config::RAISE_BINDING_GATE_MS);
-                }
-                send_key("2");
-                wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
-                    || runtime::block_on(wait_for_title(
-                        &sock,
-                        &title2,
-                        ctx.config.timeout_ms / 2,
-                    ))??
-            };
-            if !ok2 {
-                // Final robust attempt for the second window as well
-                send_key("shift+cmd+0");
-                if server_drive::is_ready() {
-                    let _ = server_drive::wait_for_ident("r", config::RAISE_BINDING_GATE_MS);
-                }
-                send_key("r");
-                let _ =
-                    wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_WINDOW_RECHECK_MS);
-                send_key("2");
-                ok2 = wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2)
-                    || runtime::block_on(wait_for_title(
-                        &sock,
-                        &title2,
-                        ctx.config.timeout_ms / 2,
-                    ))??;
-            }
-
-            if !ok2 {
+            if !wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: ctx.config.timeout_ms,
                     expected: title2,
                 });
             }
+            let _ = wait_for_backend_focused_title(&title2, ctx.config.timeout_ms / 3);
             Ok(())
         })
         .with_teardown(|ctx, _| {

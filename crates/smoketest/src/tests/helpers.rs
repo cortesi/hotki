@@ -10,6 +10,7 @@ use crate::{
     error::{Error, Result},
     process::{HelperWindowBuilder, ManagedChild},
 };
+use crate::server_drive;
 
 /// Approximate float equality within `eps`.
 pub fn approx(a: f64, b: f64, eps: f64) -> bool {
@@ -61,6 +62,19 @@ pub fn wait_for_windows_visible(entries: &[(i32, &str)], timeout_ms: u64) -> boo
         thread::sleep(config::ms(config::POLL_INTERVAL_MS));
     }
     false
+}
+
+/// Wait until the backend-reported focused window title equals `expected_title`.
+///
+/// This uses the lightweight shared RPC driver if available; otherwise, it
+/// returns `false` without side effects. Prefer `wait_for_frontmost_title`
+/// for acceptance checks that must reflect the actual CG frontmost window.
+pub fn wait_for_backend_focused_title(expected_title: &str, timeout_ms: u64) -> bool {
+    if server_drive::is_ready() {
+        server_drive::wait_for_focused_title(expected_title, timeout_ms)
+    } else {
+        false
+    }
 }
 
 /// Best-effort: bring the given window to the front by raising it or activating its PID.

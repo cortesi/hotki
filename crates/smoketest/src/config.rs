@@ -108,8 +108,6 @@ pub const RAISE_HELPER_EXTRA_MS: u64 = 2500;
 /// Max wait for the first helper window to appear.
 pub const RAISE_FIRST_WINDOW_MAX_MS: u64 = 2000;
 // (legacy per-step delays for raise have been removed; active gating is used instead.)
-/// Short recheck timeout for window presence.
-pub const RAISE_WINDOW_RECHECK_MS: u64 = 800;
 /// Binding gate timeout for RPC identifier readiness.
 pub const RAISE_BINDING_GATE_MS: u64 = 300;
 
