@@ -5,12 +5,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use super::{geom, helpers::spawn_helper_with_options};
+use super::{
+    geom,
+    helpers::{ensure_frontmost, spawn_helper_with_options},
+};
 use crate::{
     config,
     error::{Error, Result},
     test_runner::{TestConfig, TestRunner},
-    ui_interaction::send_key,
 };
 
 // Geometry and polling helpers are provided by `tests::geom`.
@@ -30,11 +32,9 @@ fn run_place_with_state(
         .unwrap()
         .as_nanos();
     let helper_title = format!("hotki smoketest: place-state {}-{}", process::id(), now_pre);
-    // Minimal config: raise + place (0,0) on key '1'
-    let ron_config = format!(
-        "(\n    keys: [\n        (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n        (\"1\", \"(0,0)\", place(grid({}, {}), at(0, 0))),\n    ],\n    style: (hud: (mode: hide)),\n    server: (exit_if_no_clients: true),\n)\n",
-        helper_title, cols, rows
-    );
+    // Minimal backend; direct placement is driven via mac-winops and the helper PID.
+    let ron_config: String =
+        "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
     let config = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
         .with_temp_config(ron_config);
@@ -62,13 +62,8 @@ fn run_place_with_state(
                 start_zoomed,
             )?;
 
-            // Ensure frontmost by driving the raise binding a few times and waiting
-            for _ in 0..3 {
-                send_key("g");
-                if super::helpers::wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS) {
-                    break;
-                }
-            }
+            // Best-effort: bring the helper frontmost for deterministic AXFocused/AXMain resolution
+            ensure_frontmost(helper.pid, &title, 3, config::UI_ACTION_DELAY_MS);
 
             // If the helper started minimized, AX frame can lag after de-miniaturize.
             // Actively wait until an AX frame is available before issuing placement.
@@ -83,27 +78,29 @@ fn run_place_with_state(
                 thread::sleep(config::ms(config::PLACE_POLL_MS));
             }
 
-            let (vf_x, vf_y, vf_w, vf_h) = if let Some((px, py)) =
-                mac_winops::ax_window_position(helper.pid, &title)
-                && let Some(vf) = geom::visible_frame_containing_point(px, py)
-            {
-                vf
-            } else if let Some(vf) = geom::resolve_vf_for_window(
-                helper.pid,
-                &title,
-                config::DEFAULT_TIMEOUT_MS,
-                config::PLACE_POLL_MS,
-            ) {
-                vf
-            } else {
-                return Err(Error::InvalidState(
-                    "Failed to resolve screen visibleFrame".into(),
-                ));
-            };
+            let (vf_x, vf_y, vf_w, vf_h) =
+                if let Some(((ax, ay), _)) = mac_winops::ax_window_frame(helper.pid, &title) {
+                    geom::visible_frame_containing_point(ax, ay).ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve screen visibleFrame".into())
+                    })?
+                } else if let Some(vf) = geom::resolve_vf_for_window(
+                    helper.pid,
+                    &title,
+                    config::DEFAULT_TIMEOUT_MS,
+                    config::PLACE_POLL_MS,
+                ) {
+                    vf
+                } else {
+                    return Err(Error::InvalidState(
+                        "Failed to resolve screen visibleFrame".into(),
+                    ));
+                };
 
             // Expected cell rect for (0,0)
             let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, 0, 0);
-            send_key("1");
+            // Enforce constraint: place only the focused window for the helper's PID
+            mac_winops::place_grid_focused(helper.pid, cols, rows, 0, 0)
+                .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
             let ok = geom::wait_for_expected_frame(
                 helper.pid,
                 &title,

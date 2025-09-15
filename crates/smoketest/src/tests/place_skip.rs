@@ -108,9 +108,13 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Capture initial frame, attempt placement, and assert unchanged
             let before = ax_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("AX frame unavailable".into()))?;
-            // Ensure helper is frontmost then request placement
+            // Ensure helper is frontmost and that the backend reports the helper PID focused,
+            // then request placement via the key binding. This tightens targeting so we never
+            // resize a non-test window even if world focus lags.
             send_key("g");
             let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
+            let _ =
+                crate::server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
             send_key("1");
             // Wait for a short settle period and compare
             let settle_ms = 350; // generous but bounded
