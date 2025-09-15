@@ -243,6 +243,13 @@ impl Hud {
     }
 
     /// Get the active screen frame as `(x, y, w, h, global_top)`.
+    ///
+    /// Notes on coordinates:
+    /// - `x, y, w, h` are in AppKit's bottom-left origin space for the chosen screen.
+    /// - `global_top` is the maximum top Y across all displays and is used to convert
+    ///   bottom-left coordinates into top-left values expected by winit/egui window APIs.
+    /// - Callers should clamp positions against the chosen screen's bounds and guard for
+    ///   degenerate ranges when the desired window size exceeds the screen size.
     fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
         screen::active_frame()
     }
@@ -408,6 +415,8 @@ impl Hud {
     fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
         let (sx, sy, sw, sh, global_top) = Self::active_screen_frame();
         let m = 12.0;
+        // Guard against invalid or negative sizes; ensure a minimal positive window size.
+        let size = vec2(size.x.max(1.0), size.y.max(1.0));
         // Compute bottom-left origin x_b,y_b for the window's bottom-left
         let (x_b, y_b) = match self.cfg.pos {
             Pos::N => (sx + (sw - size.x) / 2.0, sy + sh - size.y - m),
@@ -426,9 +435,17 @@ impl Hud {
         // Clamp within the chosen screen bounds in top-left coordinates
         let screen_top_y = global_top - (sy + sh);
         let min_x = sx;
-        let max_x = sx + sw - size.x;
+        let mut max_x = sx + sw - size.x;
         let min_y = screen_top_y;
-        let max_y = screen_top_y + (sh - size.y);
+        let mut max_y = screen_top_y + (sh - size.y);
+        // If the desired window is larger than the screen in any dimension, collapse
+        // the clamp range to a single point to avoid inverting the bounds.
+        if max_x < min_x {
+            max_x = min_x;
+        }
+        if max_y < min_y {
+            max_y = min_y;
+        }
         if x_top < min_x {
             x_top = min_x;
         }

@@ -169,6 +169,14 @@ impl NotificationCenter {
     }
 
     /// Get the active screen frame and global top coordinate.
+    ///
+    /// Coordinates follow AppKit semantics:
+    /// - `(x, y, w, h)` are in bottom-left origin space for the active screen.
+    /// - `global_top` is the maximum top Y across all screens, used to convert to
+    ///   top-left coordinates expected by winit/egui.
+    ///
+    /// Callers should clamp results against the selected screen bounds and handle
+    /// degenerate ranges when the notification width exceeds the screen width.
     fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
         screen::active_frame()
     }
@@ -214,8 +222,15 @@ impl NotificationCenter {
         let gap = 8.0; // vertical gap between notifications
         let (sx, sy, sw, sh, global_top) = Self::active_screen_frame();
         let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
+        // Guard against invalid/negative configured width.
+        let width = self.width.max(1.0);
         let x_left = sx + m;
-        let x_right = sx + sw - self.width - m;
+        let mut x_right = sx + sw - width - m;
+        // If the width exceeds the screen width (minus margins), collapse the
+        // clamp range so both left and right placements resolve to the same safe x.
+        if x_right < x_left {
+            x_right = x_left;
+        }
 
         // Measure each notification to compute height using the same fonts and paddings as render
         for item in &mut self.items {
@@ -263,19 +278,32 @@ impl NotificationCenter {
             };
             // Vertical spacing between title and body is 6.0 in render
             let content_h = title_gal.size().y.max(icon_h) + 6.0 + text_gal.size().y;
-            let total_h = content_h + 2.0 * 12.0; // padding
+            // Guard for negative/degenerate heights and ensure a minimal positive size.
+            let total_h = (content_h + 2.0 * 12.0).max(1.0); // padding
             let pos_b = y_cursor - total_h; // bottom-left y for this window
             let x_b = match self.side {
                 NotifyPos::Left => x_left,
                 NotifyPos::Right => x_right,
             };
             // Convert to top-left coordinates for egui
-            let x_top = x_b;
+            let mut x_top = x_b;
             let y_top = global_top - (pos_b + total_h);
+            // Clamp top-left x into the screen bounds.
+            let min_x = sx + m;
+            let mut max_x = sx + sw - width - m;
+            if max_x < min_x {
+                max_x = min_x;
+            }
+            if x_top < min_x {
+                x_top = min_x;
+            }
+            if x_top > max_x {
+                x_top = max_x;
+            }
             let new_target = pos2(x_top, y_top);
             let old_target = item.target_pos;
             item.target_pos = new_target;
-            item.size = Vec2::new(self.width, total_h);
+            item.size = Vec2::new(width, total_h);
             y_cursor = pos_b - gap; // move down for next
 
             // Decide whether to animate or snap to target
