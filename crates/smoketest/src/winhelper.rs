@@ -32,10 +32,9 @@ pub fn run_focus_winhelper(
 ) -> Result<(), String> {
     // Create event loop after items below to satisfy clippy's items-after-statements lint.
 
-    use std::{process::id, thread};
+    use std::{cmp::min, process::id, thread};
 
     use objc2::rc::autoreleasepool;
-    use std::cmp::min;
     use winit::{
         application::ApplicationHandler,
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},

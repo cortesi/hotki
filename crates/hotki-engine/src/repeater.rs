@@ -147,6 +147,14 @@ impl PidProvider for PidFromCtxArc {
 }
 
 /// Per-id state to serialize shell command execution and coalesce repeats.
+///
+/// Semantics:
+/// - The first shell run for an id starts immediately and sets `running = true`.
+/// - While `running` is true, any scheduled repeat ticks are skipped (coalesced).
+/// - When the first run (or any repeat run) completes, `running` is set back to false,
+///   allowing the next tick to execute. This guarantees that at most one shell
+///   command is in-flight per id, and that the first blocking run effectively
+///   defers the start of repeating until it finishes.
 struct ShellRunState {
     /// Async mutex to serialize execution across initial run and repeats.
     gate: tokio::sync::Mutex<()>,
@@ -196,6 +204,8 @@ impl Repeater {
             shell_states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
+
+    /* tests moved to end of module */
 
     /// Get or create the per-id shell run state.
     fn shell_state(&self, id: &str) -> Arc<ShellRunState> {
@@ -429,5 +439,80 @@ impl Repeater {
     /// Stop all tickers asynchronously and wait briefly for completion.
     pub async fn clear_async(&self) {
         self.ticker.clear_async().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, sleep},
+    };
+
+    use super::*;
+    use tokio::time::Instant;
+
+    struct Ctr {
+        shell: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RepeatObserver for Ctr {
+        fn on_shell_repeat(&self, _id: &str) {
+            self.shell.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_first_run_coalesces_then_unblocks_repeats() {
+        let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
+        let relay = crate::RelayHandler::new_with_enabled(false);
+        let (tx, _rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+
+        let obs = Arc::new(Ctr {
+            shell: std::sync::atomic::AtomicUsize::new(0),
+        });
+        repeater.set_repeat_observer(obs.clone());
+
+        // Command blocks briefly so the initial run overlaps the first repeat tick
+        // but finishes quickly afterwards.
+        let cmd = "sleep 0.15".to_string();
+
+        repeater.start(
+            "shell-coalesce".to_string(),
+            ExecSpec::Shell {
+                command: cmd,
+                ok_notify: keymode::NotificationType::Ignore,
+                err_notify: keymode::NotificationType::Ignore,
+            },
+            Some(RepeatSpec {
+                initial_delay_ms: Some(100),
+                interval_ms: Some(100),
+            }),
+        );
+
+        // After ~150ms the first repeat tick would have fired; ensure it was coalesced
+        sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            obs.shell.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "No shell repeats during the first blocking run",
+        );
+
+        // Wait until at least one repeat completes, with a generous deadline to
+        // avoid flakiness on slow runners. Check every 50ms up to 1.5s total.
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline
+            && obs.shell.load(std::sync::atomic::Ordering::SeqCst) == 0
+        {
+            sleep(Duration::from_millis(50)).await;
+        }
+        let repeats = obs.shell.load(std::sync::atomic::Ordering::SeqCst);
+        repeater.stop_sync("shell-coalesce");
+        assert!(
+            repeats >= 1,
+            "At least one shell repeat should run after the first run completes",
+        );
     }
 }
