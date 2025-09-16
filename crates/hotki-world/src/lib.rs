@@ -317,6 +317,11 @@ impl WorldHandle {
 pub struct World;
 
 mod ax_read_pool;
+mod view;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use view::TestWorld;
+pub use view::WorldView;
 
 impl World {
     #[allow(unused_variables)]
@@ -377,6 +382,11 @@ impl World {
         handle
     }
 
+    /// Spawn the world service and return it as a trait object.
+    pub fn spawn_view(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> Arc<dyn WorldView> {
+        Arc::new(Self::spawn(winops, cfg))
+    }
+
     /// Spawn a no-op world suitable for tests. Responds immediately with
     /// default/empty data and emits no events. No polling or background work.
     pub fn spawn_noop() -> WorldHandle {
@@ -411,6 +421,11 @@ impl World {
             }
         });
         WorldHandle { tx, events: evt_tx }
+    }
+
+    /// Spawn the no-op world as a trait object for dependency injection in tests.
+    pub fn spawn_noop_view() -> Arc<dyn WorldView> {
+        Arc::new(Self::spawn_noop())
     }
 }
 

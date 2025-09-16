@@ -5,6 +5,9 @@ edition = "2024"
 description = "World service: window state snapshot + events for Hotki"
 license = "MIT"
 
+[features]
+test-utils = []
+
 [dependencies]
 tokio = { workspace = true }
 mac-winops = { path = "../mac-winops" }
@@ -13,3 +16,4 @@ tracing = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = "0.12.4"
 crossbeam-channel.workspace = true
+async-trait.workspace = true
