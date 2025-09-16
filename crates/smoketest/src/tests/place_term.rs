@@ -57,7 +57,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
     TestRunner::new("place_term", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            let _ = ctx.ensure_rpc_ready(&[]);
+            ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
         .with_execute(move |ctx| {

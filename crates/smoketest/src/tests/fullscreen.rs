@@ -64,15 +64,14 @@ pub fn run_fullscreen_test(
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Ensure RPC ready and both bindings are registered
-            let _ = ctx.ensure_rpc_ready(&["g", "shift+cmd+9"]);
+            ctx.ensure_rpc_ready(&["g", "shift+cmd+9"])?;
             Ok(())
         })
         .with_execute(move |ctx| {
             // Ensure RPC driver is connected to the right backend before driving keys.
             if ctx.session.is_some() {
-                // Connection was initialized in setup; avoid reconnecting.
-                let _ = server_drive::wait_for_ident("g", 2000);
-                let _ = server_drive::wait_for_ident("shift+cmd+9", 2000);
+                server_drive::wait_for_ident("g", 2000)?;
+                server_drive::wait_for_ident("shift+cmd+9", 2000)?;
             }
             // Spawn helper window with the embedded title
 
@@ -89,9 +88,9 @@ pub fn run_fullscreen_test(
             )?;
             // Gate safety: raise the helper via backend binding, then wait until
             // both CG frontmost and backend world focus agree on our helper PID.
-            send_key("g");
+            send_key("g")?;
             ensure_frontmost(helper.pid, &title, 4, config::UI_ACTION_DELAY_MS);
-            let _ = server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
+            server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS)?;
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
@@ -99,7 +98,7 @@ pub fn run_fullscreen_test(
             let _ = &before;
 
             // Trigger fullscreen toggle via global chord, then actively wait for a frame update
-            send_key("shift+cmd+9");
+            send_key("shift+cmd+9")?;
 
             // Read new frame; tolerate AX timing
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
@@ -108,8 +107,8 @@ pub fn run_fullscreen_test(
                 && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS)
             {
                 // Bail early if backend died
-                if !server_drive::check_alive() {
-                    eprintln!("[fullscreen] backend not alive during toggle wait");
+                if let Err(err) = server_drive::check_alive() {
+                    eprintln!("[fullscreen] backend not alive during toggle wait: {}", err);
                     return Err(Error::IpcDisconnected {
                         during: "fullscreen toggle",
                     });

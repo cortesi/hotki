@@ -51,8 +51,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_skip", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Gate on the required bindings before executing.
-            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
+            ctx.ensure_rpc_ready(&["g", "1"])?;
             Ok(())
         })
         .with_execute(move |ctx| {
@@ -111,10 +110,12 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Ensure helper is frontmost and that the backend reports the helper PID focused,
             // then request placement via the key binding. This tightens targeting so we never
             // resize a non-test window even if world focus lags.
-            send_key("g");
+            server_drive::wait_for_ident("g", config::BINDING_GATE_DEFAULT_MS * 2)?;
+            server_drive::wait_for_ident("1", config::BINDING_GATE_DEFAULT_MS * 2)?;
+            send_key("g")?;
             let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
-            let _ = server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS);
-            send_key("1");
+            server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS)?;
+            send_key("1")?;
             // Wait for a short settle period and compare
             let settle_ms = 350; // generous but bounded
             let deadline = Instant::now() + Duration::from_millis(settle_ms);

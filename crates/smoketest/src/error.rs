@@ -2,6 +2,8 @@ use std::{io, path::PathBuf, result::Result as StdResult};
 
 use thiserror::Error;
 
+use crate::server_drive::DriverError;
+
 /// Errors that can occur during smoketest execution.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -39,6 +41,10 @@ pub enum Error {
         /// Context description of what was running when IPC disconnected
         during: &'static str,
     },
+
+    /// MRPC driver operations failed while interacting with hotki-server.
+    #[error("RPC driver failure: {0}")]
+    RpcDriver(#[from] DriverError),
 
     /// I/O operation failed.
     #[error("I/O error: {0}")]
@@ -83,6 +89,55 @@ pub fn print_hints(err: &Error) {
             eprintln!(
                 "      if this happened during fullscreen, check macOS accessibility issues and AXFullScreen support"
             );
+        }
+        Error::RpcDriver(inner) => {
+            eprintln!("hint: RPC driver failed: {inner}");
+            match inner {
+                DriverError::Connect { socket_path, .. } => {
+                    eprintln!(
+                        "      ensure the hotki-server is running and listening on '{}'.",
+                        socket_path
+                    );
+                    eprintln!(
+                        "      check permissions and rebuild the smoketest harness if needed."
+                    );
+                }
+                DriverError::InitTimeout { socket_path, .. } => {
+                    eprintln!(
+                        "      MRPC connection did not initialize in time (socket: '{}').",
+                        socket_path
+                    );
+                    eprintln!("      verify the backend launched and the socket path is correct.");
+                }
+                DriverError::NotInitialized => {
+                    eprintln!(
+                        "      the driver was used before calling TestContext::ensure_rpc_ready()."
+                    );
+                }
+                DriverError::BindingTimeout { ident, .. } => {
+                    eprintln!(
+                        "      binding '{}' was never observed; confirm config matches the test.",
+                        ident
+                    );
+                }
+                DriverError::FocusPidTimeout { expected_pid, .. } => {
+                    eprintln!(
+                        "      backend never focused pid {}; confirm helper spawned and titles match.",
+                        expected_pid
+                    );
+                }
+                DriverError::FocusTitleTimeout { expected_title, .. } => {
+                    eprintln!(
+                        "      backend never reported title '{}'; verify config and helper visibility.",
+                        expected_title
+                    );
+                }
+                DriverError::RuntimeFailure { .. } | DriverError::RpcFailure { .. } => {
+                    eprintln!(
+                        "      see logs above for runtime or RPC errors returned by hotki-server."
+                    );
+                }
+            }
         }
     }
 }

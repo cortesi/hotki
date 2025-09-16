@@ -9,6 +9,7 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, wait_for_frontmost_title},
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
@@ -87,8 +88,16 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("focus_nav_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Gate on a representative binding
-            let _ = ctx.ensure_rpc_ready(&["ctrl+alt+h"]);
+            ctx.ensure_rpc_ready(&[
+                "ctrl+alt+1",
+                "ctrl+alt+2",
+                "ctrl+alt+3",
+                "ctrl+alt+4",
+                "ctrl+alt+h",
+                "ctrl+alt+l",
+                "ctrl+alt+k",
+                "ctrl+alt+j",
+            ])?;
             Ok(())
         })
         .with_execute(move |_ctx| {
@@ -131,10 +140,20 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 });
             }
 
+            for ident in [
+                "ctrl+alt+1",
+                "ctrl+alt+h",
+                "ctrl+alt+l",
+                "ctrl+alt+k",
+                "ctrl+alt+j",
+            ] {
+                server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS * 2)?;
+            }
+
             // Helpers self-place into 2x2 via mac-winops; no server placement required
 
             // Establish initial focus quickly via direct raise binding
-            send_key("ctrl+alt+1");
+            send_key("ctrl+alt+1")?;
             if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
@@ -174,21 +193,22 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             geom::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
 
             // Helper to drive focus(dir) via direct global bindings
-            let drive = |dir: &str| {
+            let drive = |dir: &str| -> Result<()> {
                 match dir {
-                    "h" => send_key("ctrl+alt+h"),
-                    "l" => send_key("ctrl+alt+l"),
-                    "k" => send_key("ctrl+alt+k"),
-                    "j" => send_key("ctrl+alt+j"),
+                    "h" => send_key("ctrl+alt+h")?,
+                    "l" => send_key("ctrl+alt+l")?,
+                    "k" => send_key("ctrl+alt+k")?,
+                    "j" => send_key("ctrl+alt+j")?,
                     _ => {}
                 }
                 log_frontmost();
+                Ok(())
             };
 
             // TL -> TR
             // Verify source before move
             geom::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
-            drive("l"); // RIGHT
+            drive("l")?; // RIGHT
             if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
@@ -199,7 +219,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // TR -> BR
             // Verify source before move
             geom::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
-            drive("j"); // DOWN
+            drive("j")?; // DOWN
             if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
@@ -210,7 +230,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // BR -> BL
             // Verify source before move
             geom::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
-            drive("h"); // LEFT
+            drive("h")?; // LEFT
             if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
@@ -221,7 +241,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // BL -> TL
             // Verify source before move
             geom::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
-            drive("k"); // UP
+            drive("k")?; // UP
             if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,

@@ -33,7 +33,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_animated", cfg)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            let _ = ctx.ensure_rpc_ready(&[]);
+            ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
         .with_execute(move |ctx| {

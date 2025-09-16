@@ -63,9 +63,9 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Wait for HUD to ensure bindings are installed
-            let _ = ctx.wait_for_hud()?;
+            ctx.wait_for_hud()?;
             // Ensure activation and hide submenu idents are registered (h, o, f).
-            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "h", "o", "f"]);
+            ctx.ensure_rpc_ready(&["shift+cmd+0", "h", "o", "f"])?;
             Ok(())
         })
         .with_execute(|ctx| {
@@ -110,8 +110,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
 
             // Drive: send 'h' then 'o' (hide on) — idents are pre-gated in setup
-            send_key("h");
-            send_key("o");
+            send_key("h")?;
+            send_key("o")?;
 
             // Wait for position change
             let mut moved = false;
@@ -142,11 +142,11 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Drive: reopen/activate and turn hide off (reveal)
-            send_activation_chord();
+            send_activation_chord()?;
             // Raise helper again before revealing to avoid toggling an unrelated window.
             ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
-            send_key("h");
-            send_key("f");
+            send_key("h")?;
+            send_key("f")?;
 
             // Wait until position roughly returns to original
             let mut restored = false;

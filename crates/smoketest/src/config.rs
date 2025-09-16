@@ -79,7 +79,7 @@ pub const HIDE_MIN_TIMEOUT_MS: u64 = 800;
 pub const HIDE_SECONDARY_MIN_TIMEOUT_MS: u64 = 1000;
 
 /// Default binding readiness gate for non-raise tests (RPC mode).
-pub const BINDING_GATE_DEFAULT_MS: u64 = 700;
+pub const BINDING_GATE_DEFAULT_MS: u64 = 2000;
 
 // ===== Helper Window Defaults =====
 
@@ -109,11 +109,11 @@ pub const RAISE_HELPER_EXTRA_MS: u64 = 2500;
 pub const RAISE_FIRST_WINDOW_MAX_MS: u64 = 2000;
 // (legacy per-step delays for raise have been removed; active gating is used instead.)
 /// Binding gate timeout for RPC identifier readiness.
-pub const RAISE_BINDING_GATE_MS: u64 = 300;
+pub const RAISE_BINDING_GATE_MS: u64 = 1200;
 
 // ===== Focus-Nav Test Tunables =====
 /// Per-step wait for focus-nav frontmost checks and transitions.
-pub const FOCUS_NAV_STEP_TIMEOUT_MS: u64 = 800;
+pub const FOCUS_NAV_STEP_TIMEOUT_MS: u64 = 2000;
 
 // ===== Session Tunables =====
 

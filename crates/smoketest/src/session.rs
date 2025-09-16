@@ -159,7 +159,7 @@ impl HotkiSession {
         self.state = SessionState::Running;
 
         if !server_drive::is_ready() {
-            let _ = server_drive::init(self.socket_path());
+            server_drive::init(self.socket_path())?;
         }
 
         // Borrow connection
@@ -173,7 +173,7 @@ impl HotkiSession {
         };
 
         // Send activation chord periodically until HUD visible
-        send_activation_chord();
+        send_activation_chord()?;
         let mut last_sent = Some(Instant::now());
 
         while Instant::now() < deadline {
@@ -207,7 +207,7 @@ impl HotkiSession {
             if let Some(last) = last_sent
                 && last.elapsed() >= Duration::from_millis(config::ACTIVATION_RESEND_INTERVAL_MS)
             {
-                send_activation_chord();
+                send_activation_chord()?;
                 last_sent = Some(Instant::now());
             }
         }

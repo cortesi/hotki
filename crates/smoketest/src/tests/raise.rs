@@ -29,10 +29,11 @@ use crate::{
 };
 
 /// Gate a menu identifier via RPC when available.
-fn gate_ident_when_ready(ident: &str, timeout_ms: u64) {
+fn gate_ident_when_ready(ident: &str, timeout_ms: u64) -> Result<()> {
     if server_drive::is_ready() {
-        let _ = server_drive::wait_for_ident(ident, timeout_ms);
+        server_drive::wait_for_ident(ident, timeout_ms)?;
     }
+    Ok(())
 }
 
 /// Run the raise-by-title smoketest using a temporary activation menu.
@@ -67,15 +68,15 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("raise_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Ensure RPC ready for the root 'r' binding
-            let _ = ctx.ensure_rpc_ready(&["r"]);
+            // Ensure the activation chord binding is registered before driving.
+            ctx.ensure_rpc_ready(&["shift+cmd+0"])?;
             Ok(())
         })
         .with_execute(move |ctx| {
             // Initialize RPC driver for key injects
             if let Some(sess) = ctx.session.as_ref() {
                 let sock = sess.socket_path().to_string();
-                let _ = server_drive::ensure_init(&sock, 3000);
+                server_drive::ensure_init(&sock, 3000)?;
             }
 
             // Spawn two helper windows
@@ -122,45 +123,51 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Phase 1: raise first window (shift+cmd+0 → r → 1), then assert CG frontmost.
-            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "r"]);
-            send_key("shift+cmd+0");
-            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS);
-            send_key("r");
+            ctx.ensure_rpc_ready(&[])?;
+            gate_ident_when_ready("shift+cmd+0", config::RAISE_BINDING_GATE_MS)?;
+            send_key("shift+cmd+0")?;
+            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS)?;
+            send_key("r")?;
             if !wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("first window not visible before menu: '{}'", title1),
                 });
             }
-            gate_ident_when_ready("1", config::RAISE_BINDING_GATE_MS);
-            send_key("1");
+            gate_ident_when_ready("1", config::RAISE_BINDING_GATE_MS)?;
+            send_key("1")?;
             if !wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: ctx.config.timeout_ms,
                     expected: title1,
                 });
             }
-            let _ = wait_for_backend_focused_title(&title1, ctx.config.timeout_ms / 3);
+            if let Err(err) = wait_for_backend_focused_title(&title1, ctx.config.timeout_ms / 3) {
+                eprintln!("raise: backend focus check (phase 1) failed: {}", err);
+            }
 
             // Phase 2: raise second window (shift+cmd+0 → r → 2), then assert CG frontmost.
-            send_key("shift+cmd+0");
-            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS);
-            send_key("r");
+            gate_ident_when_ready("shift+cmd+0", config::RAISE_BINDING_GATE_MS)?;
+            send_key("shift+cmd+0")?;
+            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS)?;
+            send_key("r")?;
             if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("second window not visible before menu: '{}'", title2),
                 });
             }
-            gate_ident_when_ready("2", config::RAISE_BINDING_GATE_MS);
-            send_key("2");
+            gate_ident_when_ready("2", config::RAISE_BINDING_GATE_MS)?;
+            send_key("2")?;
             if !wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: ctx.config.timeout_ms,
                     expected: title2,
                 });
             }
-            let _ = wait_for_backend_focused_title(&title2, ctx.config.timeout_ms / 3);
+            if let Err(err) = wait_for_backend_focused_title(&title2, ctx.config.timeout_ms / 3) {
+                eprintln!("raise: backend focus check (phase 2) failed: {}", err);
+            }
             Ok(())
         })
         .with_teardown(|ctx, _| {

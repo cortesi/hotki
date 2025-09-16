@@ -139,7 +139,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 .to_string();
 
             // Initialize RPC driver with a bounded wait to reduce races
-            let _ = server_drive::ensure_init(&socket_path, 3000);
+            server_drive::ensure_init(&socket_path, 3000)?;
 
             // Start background listener
             let expected_title_clone = expected_title.clone();
@@ -161,7 +161,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             });
 
             // Ensure RPC driver remains initialized for liveness checks.
-            let _ = server_drive::ensure_init(&socket_path, 3000);
+            server_drive::ensure_init(&socket_path, 3000)?;
 
             // Spawn helper window
             let helper_time = ctx
@@ -203,11 +203,17 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                     break;
                 }
                 // Attempt lazy init of RPC driver until connected
-                if !server_drive::is_ready() {
-                    let _ = server_drive::init(&socket_path);
+                if !server_drive::is_ready()
+                    && let Err(err) =
+                        server_drive::ensure_init(&socket_path, config::FAST_RETRY_DELAY_MS)
+                {
+                    eprintln!("focus: failed to reinitialize RPC driver: {}", err);
                 }
                 // If back-end died after being reachable, bail early with clear error
-                if server_drive::is_ready() && !server_drive::check_alive() {
+                if server_drive::is_ready()
+                    && let Err(err) = server_drive::check_alive()
+                {
+                    eprintln!("focus: backend liveness check failed: {}", err);
                     done.store(true, Ordering::SeqCst);
                     if let Err(_e) = listener.join() {}
                     return Err(Error::IpcDisconnected {

@@ -4,7 +4,7 @@ use std::{
     env,
     process::{Child, Command, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -208,6 +208,7 @@ impl HelperWindowBuilder {
         self
     }
 
+    /// Configure the helper window invocation command with the requested options.
     fn configure_command(&self) -> Result<Command> {
         let exe = env::current_exe()?;
         let mut cmd = Command::new(exe);
@@ -301,6 +302,7 @@ impl HelperWindowBuilder {
     }
 }
 
+/// Spawn a managed helper child using the provided command.
 fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     let child = cmd.spawn().map_err(|e| Error::SpawnFailed(e.to_string()))?;
     Ok(ManagedChild::new(child))
@@ -308,8 +310,8 @@ fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
 
 /// Wait until the frontmost CG window has the given title.
 pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
         if let Some(win) = mac_winops::frontmost_window()
             && win.title == expected
         {
@@ -322,8 +324,8 @@ pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
 
 /// Wait until a window with `(pid,title)` is visible via CG or AX.
 pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
         let wins = mac_winops::list_windows();
         let cg_ok = wins.iter().any(|w| w.pid == pid && w.title == title);
         let ax_ok = mac_winops::ax_has_window_title(pid, title);

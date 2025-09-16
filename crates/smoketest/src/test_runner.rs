@@ -149,22 +149,19 @@ impl TestContext {
     }
 
     /// Ensure the MRPC driver is initialized and required idents are registered.
-    /// Returns true if initialization succeeded and all idents were observed.
-    pub fn ensure_rpc_ready(&self, idents: &[&str]) -> bool {
-        let sock = match self.session.as_ref() {
-            Some(s) => s.socket_path().to_string(),
-            None => return false,
-        };
-        let inited = server_drive::ensure_init(&sock, 3000);
-        if !inited {
-            return false;
-        }
+    pub fn ensure_rpc_ready(&self, idents: &[&str]) -> Result<()> {
+        let sock = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::InvalidState("session not launched".into()))?
+            .socket_path()
+            .to_string();
+
+        server_drive::ensure_init(&sock, 3000)?;
         for ident in idents {
-            if !server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS) {
-                return false;
-            }
+            server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS)?;
         }
-        true
+        Ok(())
     }
 
     /// Clean up all temporary files.
@@ -282,4 +279,17 @@ pub fn create_temp_config(content: &str) -> Result<PathBuf> {
 
     fs::write(&temp_path, content)?;
     Ok(temp_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_rpc_ready_without_session_errors() {
+        let config = TestConfig::new(1000);
+        let ctx = TestContext::new(config);
+        let err = ctx.ensure_rpc_ready(&["shift+cmd+0"]).unwrap_err();
+        assert!(matches!(err, Error::InvalidState(_)));
+    }
 }

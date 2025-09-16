@@ -47,8 +47,8 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Gate on top-level bindings being present
-            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
+            // No MRPC bindings needed; placement driven via mac-winops.
+            ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
         .with_execute(move |ctx| {

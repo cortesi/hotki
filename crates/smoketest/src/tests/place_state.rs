@@ -40,8 +40,8 @@ fn run_place_with_state(
     TestRunner::new("place_state", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // Ensure RPC ready and the required bindings are registered before driving.
-            let _ = ctx.ensure_rpc_ready(&["g", "1"]);
+            // No MRPC bindings are required; placement is driven via mac-winops APIs.
+            ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
         .with_execute(move |ctx| {

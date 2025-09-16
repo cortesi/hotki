@@ -14,8 +14,10 @@
 use std::iter::repeat_n;
 
 use crate::{
+    config,
     error::Result,
     results::Summary,
+    server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key_sequence,
 };
@@ -45,18 +47,19 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Ensure the activation chord and 't' menu binding are registered before driving.
-            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "t"]);
+            ctx.ensure_rpc_ready(&["shift+cmd+0"])?;
             Ok(())
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
+            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATE_DEFAULT_MS * 2)?;
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
             seq.extend(repeat_n("l", 5));
             seq.push("esc");
             seq.push("shift+cmd+0");
-            send_key_sequence(&seq);
+            send_key_sequence(&seq)?;
 
             let mut sum = Summary::new();
             sum.hud_seen = true;
@@ -94,18 +97,19 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Ensure the activation chord and 't' menu binding are registered before driving.
-            let _ = ctx.ensure_rpc_ready(&["shift+cmd+0", "t"]);
+            ctx.ensure_rpc_ready(&["shift+cmd+0"])?;
             Ok(())
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
+            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATE_DEFAULT_MS * 2)?;
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
             seq.extend(repeat_n("l", 5));
             seq.push("esc");
             seq.push("shift+cmd+0");
-            send_key_sequence(&seq);
+            send_key_sequence(&seq)?;
 
             let mut sum = Summary::new();
             sum.hud_seen = true;

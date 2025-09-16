@@ -36,7 +36,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
             // Ensure the MRPC driver is initialized (no specific idents required here).
-            let _ = ctx.ensure_rpc_ready(&[]);
+            ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
         .with_execute(move |ctx| {
