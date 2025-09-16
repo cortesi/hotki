@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[inline]
-pub(super) fn skip_reason_for_role_subrole(role: &str, subrole: &str) -> Option<&'static str> {
+pub(crate) fn skip_reason_for_role_subrole(role: &str, subrole: &str) -> Option<&'static str> {
     // Conservative gating: skip common non-movable/transient window types.
     // These are matched against AXRole/AXSubrole values observed in practice.
     // - Sheets: AXRole == "AXSheet"
@@ -35,7 +35,7 @@ pub(super) fn skip_reason_for_role_subrole(role: &str, subrole: &str) -> Option<
 /// - Bail if system Full Screen is active.
 /// - If minimized/zoomed, turn off and wait briefly.
 /// - Try to raise the window (ignore unsupported/failed).
-pub(super) fn normalize_before_move(
+pub(crate) fn normalize_before_move(
     win: &crate::AXElem,
     pid: i32,
     id_opt: Option<WindowId>,

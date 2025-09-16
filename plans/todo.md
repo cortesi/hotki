@@ -54,9 +54,9 @@ integrating the improvements across the crate.
 
 5. Stage Five: Share Components and Update Integrations
 
-1. [ ] Audit `fullscreen`, `raise`, and other window ops for opportunities to
+1. [x] Audit `fullscreen`, `raise`, and other window ops for opportunities to
        reuse the new adapter, normalization, and fallback utilities.
-2. [ ] Expose explicit placement APIs in `main_thread_ops`/`ops.rs` that accept
+2. [x] Expose explicit placement APIs in `main_thread_ops`/`ops.rs` that accept
        the new options surface so callers outside Hotki can opt in incrementally.
-3. [ ] Update crate-level documentation and DEV.md to describe the placement
+3. [x] Update crate-level documentation and DEV.md to describe the placement
        engine, adapter pattern, and new testing strategy.

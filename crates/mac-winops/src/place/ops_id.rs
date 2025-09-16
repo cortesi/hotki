@@ -17,9 +17,26 @@ use crate::{
     screen_util::visible_frame_containing_point,
 };
 
-/// Compute the visible frame for the screen containing the given window and
-/// place the window into the specified grid cell (top-left is (0,0)).
-pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+/// Place the window into the specified grid cell using the supplied options.
+pub(crate) fn place_grid_opts(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
+    place_grid_inner(id, cols, rows, col, row, opts)
+}
+
+fn place_grid_inner(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
     let (win, pid_for_id) = ax_window_for_id(id)?;
@@ -60,7 +77,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             target_local, vf.x, vf.y, g
         );
         let target = Rect::new(g.x, g.y, g.w, g.h);
-        let ctx = PlacementContext::new(win.clone(), target, vf, PlaceAttemptOptions::default());
+        let ctx = PlacementContext::new(win.clone(), target, vf, opts);
         let vf = *ctx.visible_frame();
         let target = *ctx.target();
         let opts = ctx.attempt_options();

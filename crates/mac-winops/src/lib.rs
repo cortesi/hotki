@@ -5,6 +5,21 @@
 //! currently focused window of a given PID.
 //!
 //! All operations require Accessibility permission.
+//!
+//! Window placement now flows through a shared `PlacementEngine` that accepts a
+//! `PlacementContext` and yields verified outcomes with attempt timelines and
+//! clamp diagnostics. Callers can fine-tune epsilon tolerances, retry budgets,
+//! and safe-park hooks via `PlaceAttemptOptions`, supplied either directly to
+//! placement functions (e.g., `place_grid_focused_opts`) or through the new
+//! main-thread request APIs (`request_place_grid_opts`,
+//! `request_place_grid_focused_opts`, `request_place_move_grid_opts`).
+//!
+//! All Accessibility setters are routed through the `AxAdapter` trait so that
+//! production code uses the system adapter while deterministic tests install
+//! an in-memory fake. The adapter exposes explicit entry points for
+//! shrink→move→grow fallbacks, axis nudges, and safe parking, enabling the
+//! smoketest harness and property tests to exercise the placement pipeline
+//! without real windows.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -59,7 +74,8 @@ use main_thread_ops::{MAIN_OPS, MainOp};
 pub use main_thread_ops::{
     MoveDir, request_activate_pid, request_focus_dir, request_fullscreen_native,
     request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
-    request_place_move_grid, request_raise_window,
+    request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
+    request_place_move_grid_opts, request_raise_window,
 };
 use once_cell::sync::Lazy;
 pub use place::{
@@ -449,8 +465,9 @@ pub fn drain_main_ops() {
                 rows,
                 col,
                 row,
+                opts,
             } => {
-                if let Err(e) = placement().place_grid(id, cols, rows, col, row) {
+                if let Err(e) = placement().place_grid(id, cols, rows, col, row, opts) {
                     tracing::warn!(
                         "PlaceGrid failed: id={} cols={} rows={} col={} row={} err={}",
                         id,
@@ -467,8 +484,9 @@ pub fn drain_main_ops() {
                 cols,
                 rows,
                 dir,
+                opts,
             } => {
-                if let Err(e) = placement().place_move_grid(id, cols, rows, dir) {
+                if let Err(e) = placement().place_move_grid(id, cols, rows, dir, opts) {
                     tracing::warn!(
                         "PlaceMoveGrid failed: id={} cols={} rows={} dir={:?} err={}",
                         id,
@@ -485,8 +503,9 @@ pub fn drain_main_ops() {
                 rows,
                 col,
                 row,
+                opts,
             } => {
-                if let Err(e) = placement().place_grid_focused(pid, cols, rows, col, row) {
+                if let Err(e) = placement().place_grid_focused(pid, cols, rows, col, row, opts) {
                     tracing::warn!(
                         "PlaceGridFocused failed: pid={} cols={} rows={} col={} row={} err={}",
                         pid,
@@ -572,6 +591,7 @@ pub fn drain_main_ops() {
                     rows,
                     col,
                     row,
+                    opts,
                 } => {
                     latest_by_id.insert(
                         id,
@@ -581,6 +601,7 @@ pub fn drain_main_ops() {
                             rows,
                             col,
                             row,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Id(id));
@@ -591,6 +612,7 @@ pub fn drain_main_ops() {
                     cols,
                     rows,
                     dir,
+                    opts,
                 } => {
                     latest_by_id.insert(
                         id,
@@ -599,6 +621,7 @@ pub fn drain_main_ops() {
                             cols,
                             rows,
                             dir,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Id(id));
@@ -610,6 +633,7 @@ pub fn drain_main_ops() {
                     rows,
                     col,
                     row,
+                    opts,
                 } => {
                     latest_by_pid.insert(
                         pid,
@@ -619,6 +643,7 @@ pub fn drain_main_ops() {
                             rows,
                             col,
                             row,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Pid(pid));
@@ -767,6 +792,7 @@ mod tests {
             _rows: u32,
             _col: u32,
             _row: u32,
+            _opts: PlaceAttemptOptions,
         ) -> super::Result<()> {
             PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -777,6 +803,7 @@ mod tests {
             _cols: u32,
             _rows: u32,
             _dir: super::main_thread_ops::MoveDir,
+            _opts: PlaceAttemptOptions,
         ) -> super::Result<()> {
             PLACE_ID_CALLS.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -788,6 +815,7 @@ mod tests {
             _rows: u32,
             _col: u32,
             _row: u32,
+            _opts: PlaceAttemptOptions,
         ) -> super::Result<()> {
             PLACE_FOCUSED_CALLS.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -846,6 +874,7 @@ mod tests {
                 rows: 2,
                 col: 0,
                 row: 0,
+                opts: PlaceAttemptOptions::default(),
             },
             MainOp::FocusDir {
                 dir: crate::main_thread_ops::MoveDir::Left,
@@ -856,6 +885,7 @@ mod tests {
                 rows: 2,
                 col: 2,
                 row: 1,
+                opts: PlaceAttemptOptions::default(),
             }, // should win for id
             MainOp::PlaceGridFocused {
                 pid,
@@ -863,6 +893,7 @@ mod tests {
                 rows: 2,
                 col: 0,
                 row: 0,
+                opts: PlaceAttemptOptions::default(),
             },
             MainOp::PlaceGridFocused {
                 pid,
@@ -870,6 +901,7 @@ mod tests {
                 rows: 2,
                 col: 1,
                 row: 1,
+                opts: PlaceAttemptOptions::default(),
             }, // should win for pid
         ];
 
@@ -893,6 +925,7 @@ mod tests {
                     rows,
                     col,
                     row,
+                    opts,
                 } => {
                     latest_by_id.insert(
                         id,
@@ -902,6 +935,7 @@ mod tests {
                             rows,
                             col,
                             row,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Id(id));
@@ -912,6 +946,7 @@ mod tests {
                     cols,
                     rows,
                     dir,
+                    opts,
                 } => {
                     latest_by_id.insert(
                         id,
@@ -920,6 +955,7 @@ mod tests {
                             cols,
                             rows,
                             dir,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Id(id));
@@ -931,6 +967,7 @@ mod tests {
                     rows,
                     col,
                     row,
+                    opts,
                 } => {
                     latest_by_pid.insert(
                         pid,
@@ -940,6 +977,7 @@ mod tests {
                             rows,
                             col,
                             row,
+                            opts,
                         },
                     );
                     order.retain(|k| *k != Key::Pid(pid));
@@ -1019,21 +1057,46 @@ mod tests {
 }
 // === Placement executor indirection (no cfg(test) behavior swaps) ===
 pub trait PlacementExecutor: Send + Sync {
-    fn place_grid(&self, id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()>;
+    fn place_grid(
+        &self,
+        id: WindowId,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        opts: PlaceAttemptOptions,
+    ) -> Result<()>;
     fn place_move_grid(
         &self,
         id: WindowId,
         cols: u32,
         rows: u32,
         dir: main_thread_ops::MoveDir,
+        opts: PlaceAttemptOptions,
     ) -> Result<()>;
-    fn place_grid_focused(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()>;
+    fn place_grid_focused(
+        &self,
+        pid: i32,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        opts: PlaceAttemptOptions,
+    ) -> Result<()>;
 }
 
 pub(crate) struct RealPlacement;
 impl PlacementExecutor for RealPlacement {
-    fn place_grid(&self, id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-        crate::place::place_grid(id, cols, rows, col, row)
+    fn place_grid(
+        &self,
+        id: WindowId,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        opts: PlaceAttemptOptions,
+    ) -> Result<()> {
+        crate::place::place_grid_opts(id, cols, rows, col, row, opts)
     }
     fn place_move_grid(
         &self,
@@ -1041,11 +1104,20 @@ impl PlacementExecutor for RealPlacement {
         cols: u32,
         rows: u32,
         dir: main_thread_ops::MoveDir,
+        opts: PlaceAttemptOptions,
     ) -> Result<()> {
-        crate::place::place_move_grid(id, cols, rows, dir)
+        crate::place::place_move_grid_opts(id, cols, rows, dir, opts)
     }
-    fn place_grid_focused(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-        crate::place::place_grid_focused(pid, cols, rows, col, row)
+    fn place_grid_focused(
+        &self,
+        pid: i32,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        opts: PlaceAttemptOptions,
+    ) -> Result<()> {
+        crate::place::place_grid_focused_opts(pid, cols, rows, col, row, opts)
     }
 }
 

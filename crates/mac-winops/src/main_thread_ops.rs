@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 
 use crate::{
-    Desired, WindowId,
+    Desired, PlaceAttemptOptions, WindowId,
     error::{Error, Result},
 };
 
@@ -37,12 +37,14 @@ pub enum MainOp {
         rows: u32,
         col: u32,
         row: u32,
+        opts: PlaceAttemptOptions,
     },
     PlaceMoveGrid {
         id: WindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
+        opts: PlaceAttemptOptions,
     },
     PlaceGridFocused {
         pid: i32,
@@ -50,6 +52,7 @@ pub enum MainOp {
         rows: u32,
         col: u32,
         row: u32,
+        opts: PlaceAttemptOptions,
     },
     /// Best-effort app activation for a pid (fallback for raise).
     ActivatePid {
@@ -148,6 +151,18 @@ pub fn request_fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
 /// its current screen's visible frame. Runs on the AppKit main thread and
 /// wakes the Tao event loop.
 pub fn request_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
+    request_place_grid_opts(id, cols, rows, col, row, PlaceAttemptOptions::default())
+}
+
+/// Schedule an id-specific placement with explicit attempt options.
+pub fn request_place_grid_opts(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
     }
@@ -157,6 +172,7 @@ pub fn request_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32
         rows,
         col,
         row,
+        opts,
     });
     let _ = crate::focus::post_user_event();
     Ok(())
@@ -165,6 +181,17 @@ pub fn request_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32
 /// Schedule movement of a specific window (by `WindowId`) within a grid on the
 /// AppKit main thread.
 pub fn request_place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
+    request_place_move_grid_opts(id, cols, rows, dir, PlaceAttemptOptions::default())
+}
+
+/// Schedule a grid move with explicit attempt options.
+pub fn request_place_move_grid_opts(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    dir: MoveDir,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
     }
@@ -173,6 +200,7 @@ pub fn request_place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir)
         cols,
         rows,
         dir,
+        opts,
     });
     let _ = crate::focus::post_user_event();
     Ok(())
@@ -186,6 +214,18 @@ pub fn request_place_grid_focused(
     col: u32,
     row: u32,
 ) -> Result<()> {
+    request_place_grid_focused_opts(pid, cols, rows, col, row, PlaceAttemptOptions::default())
+}
+
+/// Schedule a focused placement with explicit attempt options.
+pub fn request_place_grid_focused_opts(
+    pid: i32,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
     }
@@ -195,6 +235,7 @@ pub fn request_place_grid_focused(
         rows,
         col,
         row,
+        opts,
     });
     let _ = crate::focus::post_user_event();
     Ok(())

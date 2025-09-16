@@ -15,12 +15,23 @@ use crate::{
     screen_util::visible_frame_containing_point,
 };
 
-/// Move a window (by `id`) within a grid in the given direction.
-pub(crate) fn place_move_grid(
+/// Move a window (by `id`) within a grid in the given direction with explicit options.
+pub(crate) fn place_move_grid_opts(
     id: WindowId,
     cols: u32,
     rows: u32,
     dir: crate::MoveDir,
+    opts: PlaceAttemptOptions,
+) -> Result<()> {
+    place_move_grid_inner(id, cols, rows, dir, opts)
+}
+
+fn place_move_grid_inner(
+    id: WindowId,
+    cols: u32,
+    rows: u32,
+    dir: crate::MoveDir,
+    opts: PlaceAttemptOptions,
 ) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
@@ -46,8 +57,7 @@ pub(crate) fn place_move_grid(
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let vf = visible_frame_containing_point(mtm, cur_p);
 
-        let base_opts = PlaceAttemptOptions::default();
-        let eps = base_opts.tuning().epsilon();
+        let eps = opts.tuning().epsilon();
         let cur_cell = vf.grid_find_cell(cols, rows, cur_p, cur_s, eps);
 
         let (next_col, next_row) = match cur_cell {
@@ -104,7 +114,7 @@ pub(crate) fn place_move_grid(
             target_local, vf.x, vf.y, g
         );
         let target = Rect::new(g.x, g.y, g.w, g.h);
-        let ctx = PlacementContext::new(win.clone(), target, vf, base_opts);
+        let ctx = PlacementContext::new(win.clone(), target, vf, opts);
         let vf = *ctx.visible_frame();
         let target = *ctx.target();
         let opts = ctx.attempt_options();

@@ -38,6 +38,25 @@ Test runner:
   - Example: `cargo run --bin smoketest -- all`
   - Prints per-test counts, runs UI checks, and exits non‑zero on failure.
 
+## Placement Engine
+
+- Window moves now go through the shared `PlacementEngine`, which records every
+  attempt and verifies the resulting rect against the target. Use
+  `PlaceAttemptOptions` to tune epsilon, retry budgets, and safe-park hooks for
+  difficult windows or experiments.
+- Main-thread entry points accept explicit options via
+  `request_place_grid_opts`, `request_place_grid_focused_opts`, and
+  `request_place_move_grid_opts`. Passing `PlaceAttemptOptions::default()`
+  preserves the legacy behaviour.
+- All Accessibility setters are wrapped by the `AxAdapter` trait. Production
+  code uses the system adapter; tests and smoketests inject
+  `FakeAxAdapter` to drive deterministic outcomes without live windows.
+- Persistent counters (see `placement_counters_snapshot`) help validate fallbacks
+  and timing. Reset them between deterministic tests with
+  `placement_counters_reset`.
+- After modifying placement or UI flows, run `cargo run --bin smoketest -- all`
+  to exercise focused, id-based, and move placements through the fake adapter.
+
 ## Concurrency and Locking
 
 Hotki runs an async runtime (Tokio) and several high‑frequency, synchronous hot paths. Use the following rules to choose locking primitives consistently across the workspace:
