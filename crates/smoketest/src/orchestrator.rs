@@ -18,6 +18,169 @@ pub fn heading(title: &str) {
     println!("\n==> {}", title);
 }
 
+/// How the orchestrator should manage stdio for a subtest process.
+#[derive(Copy, Clone)]
+enum SubtestIo {
+    /// Leave stdout/stderr attached to the parent and optionally enable log streaming.
+    Inherit {
+        /// Whether to append `--logs` to the child invocation.
+        logs: bool,
+    },
+    /// Capture stdout/stderr while forcing the child into quiet/no-warn mode.
+    CaptureQuiet,
+}
+
+impl SubtestIo {
+    /// Returns true when the child should inherit stdio handles from the parent.
+    fn inherits_stdio(&self) -> bool {
+        matches!(self, Self::Inherit { .. })
+    }
+
+    /// Returns true when output should be captured instead of inherited.
+    fn quiet_capture(&self) -> bool {
+        matches!(self, Self::CaptureQuiet)
+    }
+
+    /// Returns true when the `--logs` flag should be supplied.
+    fn logs_enabled(&self) -> bool {
+        matches!(self, Self::Inherit { logs: true })
+    }
+}
+
+/// Result from running a subtest under the watchdog.
+struct SubtestOutcome {
+    /// Whether the child exited successfully.
+    success: bool,
+    /// Combined stderr/stdout payload for captured runs; empty when inheriting stdio.
+    details: String,
+}
+
+/// Launch and supervise a smoketest child process with the requested stdio policy.
+fn run_subtest(
+    subcmd: &str,
+    duration_ms: u64,
+    timeout_ms: u64,
+    extra_watchdog_ms: u64,
+    extra_args: &[String],
+    io: SubtestIo,
+) -> SubtestOutcome {
+    let exe = match env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("orchestrator: failed to resolve current_exe: {}", e);
+            if io.inherits_stdio() {
+                eprintln!("{}", msg);
+            }
+            return SubtestOutcome {
+                success: false,
+                details: msg,
+            };
+        }
+    };
+
+    let mut args: Vec<String> = Vec::new();
+    if io.quiet_capture() {
+        args.push("--quiet".into());
+        args.push("--no-warn".into());
+    }
+    args.push("--duration".into());
+    args.push(duration_ms.to_string());
+    args.push("--timeout".into());
+    args.push(timeout_ms.to_string());
+    if io.logs_enabled() {
+        args.push("--logs".into());
+    }
+    args.push(subcmd.into());
+    args.extend(extra_args.iter().cloned());
+
+    let mut command = Command::new(exe);
+    command.args(&args).stdin(Stdio::null());
+    if io.inherits_stdio() {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("orchestrator: failed to spawn subtest '{}': {}", subcmd, e);
+            if io.inherits_stdio() {
+                eprintln!("{}", msg);
+            }
+            return SubtestOutcome {
+                success: false,
+                details: msg,
+            };
+        }
+    };
+
+    let overhead = Duration::from_millis(15_000);
+    let extra_overhead = Duration::from_millis(extra_watchdog_ms);
+    let max_wait = Duration::from_millis(timeout_ms)
+        .saturating_add(overhead)
+        .saturating_add(extra_overhead);
+    let deadline = Instant::now() + max_wait;
+
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    if let Err(e) = child.kill() {
+                        eprintln!("orchestrator: failed to kill timed-out child: {}", e);
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("orchestrator: failed to reap timed-out child: {}", e);
+                    }
+                    if io.inherits_stdio() {
+                        eprintln!(
+                            "orchestrator: watchdog timeout ({} ms + overhead) for subtest '{}'",
+                            timeout_ms, subcmd
+                        );
+                    }
+                    break false;
+                }
+                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+            }
+            Err(e) => {
+                if io.inherits_stdio() {
+                    eprintln!("orchestrator: error waiting for '{}': {}", subcmd, e);
+                }
+                break false;
+            }
+        }
+    };
+
+    if io.quiet_capture() {
+        let mut stderr = String::new();
+        let mut stdout = String::new();
+        if let Some(mut s) = child.stderr.take()
+            && let Err(e) = s.read_to_string(&mut stderr)
+        {
+            eprintln!("orchestrator: failed reading stderr: {}", e);
+        }
+        if let Some(mut s) = child.stdout.take()
+            && let Err(e) = s.read_to_string(&mut stdout)
+        {
+            eprintln!("orchestrator: failed reading stdout: {}", e);
+        }
+        let details = if stderr.trim().is_empty() {
+            stdout
+        } else if stdout.trim().is_empty() {
+            stderr
+        } else {
+            format!("{}\n{}", stderr, stdout)
+        };
+        SubtestOutcome { success, details }
+    } else {
+        SubtestOutcome {
+            success,
+            details: String::new(),
+        }
+    }
+}
+
 /// Run a child `smoketest` subcommand with a watchdog.
 /// Returns true on success, false on failure/timeout.
 fn run_subtest_with_watchdog(
@@ -27,69 +190,15 @@ fn run_subtest_with_watchdog(
     logs: bool,
     extra_args: &[String],
 ) -> bool {
-    let exe = match env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("orchestrator: failed to resolve current_exe: {}", e);
-            return false;
-        }
-    };
-    let mut args: Vec<String> = vec![
-        "--duration".into(),
-        duration_ms.to_string(),
-        "--timeout".into(),
-        timeout_ms.to_string(),
-    ];
-    if logs {
-        args.push("--logs".into());
-    }
-    args.push(subcmd.into());
-    args.extend(extra_args.iter().cloned());
-
-    let mut child = match Command::new(exe)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("orchestrator: failed to spawn subtest '{}': {}", subcmd, e);
-            return false;
-        }
-    };
-
-    // Watchdog: allow some overhead on top of the configured timeout.
-    let overhead = Duration::from_millis(15_000);
-    let max_wait = Duration::from_millis(timeout_ms).saturating_add(overhead);
-    let deadline = Instant::now() + max_wait;
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    if let Err(e) = child.kill() {
-                        eprintln!("orchestrator: failed to kill timed-out child: {}", e);
-                    }
-                    if let Err(e) = child.wait() {
-                        eprintln!("orchestrator: failed to reap timed-out child: {}", e);
-                    }
-                    eprintln!(
-                        "orchestrator: watchdog timeout ({} ms + overhead) for subtest '{}'",
-                        timeout_ms, subcmd
-                    );
-                    return false;
-                }
-                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
-            }
-            Err(e) => {
-                eprintln!("orchestrator: error waiting for '{}': {}", subcmd, e);
-                return false;
-            }
-        }
-    }
+    run_subtest(
+        subcmd,
+        duration_ms,
+        timeout_ms,
+        0,
+        extra_args,
+        SubtestIo::Inherit { logs },
+    )
+    .success
 }
 
 /// Run a child `smoketest` subcommand with a watchdog, capturing output and forcing quiet mode.
@@ -112,93 +221,15 @@ fn run_subtest_capture_with_extra(
     extra_watchdog_ms: u64,
     extra_args: &[String],
 ) -> (bool, String) {
-    let exe = match env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                false,
-                format!("orchestrator: failed to resolve current_exe: {}", e),
-            );
-        }
-    };
-    // In orchestrated runs, a single overlay is spawned by the parent.
-    // Disable overlays in subtests to avoid multiple top-most windows.
-    let mut args: Vec<String> = vec![
-        "--quiet".into(),
-        "--no-warn".into(),
-        "--duration".into(),
-        duration_ms.to_string(),
-        "--timeout".into(),
-        timeout_ms.to_string(),
-    ];
-    args.push(subcmd.into());
-    args.extend(extra_args.iter().cloned());
-
-    let mut child = match Command::new(exe)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                false,
-                format!("orchestrator: failed to spawn subtest '{}': {}", subcmd, e),
-            );
-        }
-    };
-
-    // Watchdog: allow some overhead on top of the configured timeout.
-    let overhead = Duration::from_millis(15_000);
-    let extra_overhead = Duration::from_millis(extra_watchdog_ms);
-    let max_wait = Duration::from_millis(timeout_ms)
-        .saturating_add(overhead)
-        .saturating_add(extra_overhead);
-    let deadline = Instant::now() + max_wait;
-
-    // Poll for completion or timeout
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    if let Err(e) = child.kill() {
-                        eprintln!("orchestrator: failed to kill timed-out child: {}", e);
-                    }
-                    if let Err(e) = child.wait() {
-                        eprintln!("orchestrator: failed to reap timed-out child: {}", e);
-                    }
-                    break false;
-                }
-                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
-            }
-            Err(_) => break false,
-        }
-    };
-
-    // Gather outputs
-    let mut stderr = String::new();
-    let mut stdout = String::new();
-    if let Some(mut s) = child.stderr.take()
-        && let Err(e) = s.read_to_string(&mut stderr)
-    {
-        eprintln!("orchestrator: failed reading stderr: {}", e);
-    }
-    if let Some(mut s) = child.stdout.take()
-        && let Err(e) = s.read_to_string(&mut stdout)
-    {
-        eprintln!("orchestrator: failed reading stdout: {}", e);
-    }
-    let details = if stderr.trim().is_empty() {
-        stdout
-    } else if stdout.trim().is_empty() {
-        stderr
-    } else {
-        format!("{}\n{}", stderr, stdout)
-    };
-    (success, details)
+    let outcome = run_subtest(
+        subcmd,
+        duration_ms,
+        timeout_ms,
+        extra_watchdog_ms,
+        extra_args,
+        SubtestIo::CaptureQuiet,
+    );
+    (outcome.success, outcome.details)
 }
 
 /// Run all smoketests sequentially in isolated subprocesses.
