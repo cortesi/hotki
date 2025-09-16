@@ -1,17 +1,56 @@
+//! Grid placement for macOS windows runs through this module.
+//!
+//! `main_thread_ops` enqueues `MainOp::Place*` requests on the AppKit main
+//! thread. Once drained, those requests resolve Accessibility windows and call
+//! the functions re-exported from this module to perform the actual move. The
+//! pipeline is shared by focused, id-based, and directional placements and
+//! keeps the following flow:
+//!
+//! * Normalize window state and skip unsupported roles/subroles.
+//! * Resolve the target grid cell within the screen's visible frame and
+//!   translate it into global coordinates.
+//! * Optionally "safe-park" windows near the global origin on secondary
+//!   displays so subsequent moves happen in a stable coordinate space.
+//! * Attempt placement using Accessibility setters via `apply`, choosing
+//!   position-first or size-first order from cached hints and settling within
+//!   `VERIFY_EPS`.
+//! * Validate the resulting rect; nudge a single axis, retry with the opposite
+//!   order, or fall back to shrink→move→grow when still clamped.
+//!
+//! Callers rely on several invariants: placement runs on the main thread with
+//! Accessibility trust already granted, grid dimensions are non-zero, the
+//! target rect remains inside the chosen visible frame, and success is only
+//! reported when the final rect matches the requested cell within
+//! `VERIFY_EPS`. The helper functions in this module remain side-effect free
+//! so unit tests can lock down the geometry math while smoketests exercise the
+//! full pipeline through `main_thread_ops` entry points.
+
 use crate::geom;
 
 mod apply;
 mod common;
 mod fallback;
+mod metrics;
 mod normalize;
 mod ops_focused;
 mod ops_id;
 mod ops_move;
 
 pub use common::PlaceAttemptOptions;
+pub use metrics::PlacementCountersSnapshot;
 pub use ops_focused::{place_grid_focused, place_grid_focused_opts};
 pub(crate) use ops_id::place_grid;
 pub(crate) use ops_move::place_move_grid;
+
+/// Capture a snapshot of placement attempt counters for diagnostics.
+pub fn placement_counters_snapshot() -> PlacementCountersSnapshot {
+    metrics::PLACEMENT_COUNTERS.snapshot()
+}
+
+/// Reset placement counters back to zero. Intended for deterministic tests.
+pub fn placement_counters_reset() {
+    metrics::PLACEMENT_COUNTERS.reset();
+}
 
 #[inline]
 fn grid_guess_cell_by_pos(
@@ -42,4 +81,57 @@ fn grid_guess_cell_by_pos(
         r = rows.saturating_sub(1) as i64;
     }
     (c as u32, r as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::Point;
+
+    #[test]
+    fn guesses_cell_in_middle_of_grid() {
+        let (col, row) =
+            grid_guess_cell_by_pos(0.0, 0.0, 1200.0, 900.0, 4, 3, Point { x: 650.0, y: 620.0 });
+        assert_eq!((col, row), (2, 2));
+    }
+
+    #[test]
+    fn clamps_negative_coordinates_to_zero() {
+        let (col, row) = grid_guess_cell_by_pos(
+            200.0,
+            100.0,
+            800.0,
+            600.0,
+            3,
+            2,
+            Point { x: 120.0, y: 80.0 },
+        );
+        assert_eq!((col, row), (0, 0));
+    }
+
+    #[test]
+    fn clamps_out_of_range_to_last_cell() {
+        let (col, row) =
+            grid_guess_cell_by_pos(50.0, 50.0, 500.0, 400.0, 5, 4, Point { x: 900.0, y: 600.0 });
+        assert_eq!((col, row), (4, 3));
+    }
+
+    #[test]
+    fn placement_counters_snapshot_and_reset() {
+        super::metrics::PLACEMENT_COUNTERS.reset();
+        super::metrics::PLACEMENT_COUNTERS.record_attempt(
+            super::metrics::AttemptKind::Primary,
+            12,
+            true,
+        );
+        let snapshot = super::placement_counters_snapshot();
+        assert_eq!(snapshot.primary.attempts, 1);
+        assert_eq!(snapshot.primary.verified, 1);
+        assert_eq!(snapshot.primary.settle_ms_total, 12);
+        super::placement_counters_reset();
+        let reset_snapshot = super::placement_counters_snapshot();
+        assert_eq!(reset_snapshot.primary.attempts, 0);
+        assert_eq!(reset_snapshot.primary.verified, 0);
+        assert_eq!(reset_snapshot.primary.settle_ms_total, 0);
+    }
 }

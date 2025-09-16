@@ -62,7 +62,10 @@ pub use main_thread_ops::{
     request_place_move_grid, request_raise_window,
 };
 use once_cell::sync::Lazy;
-pub use place::{PlaceAttemptOptions, place_grid_focused, place_grid_focused_opts};
+pub use place::{
+    PlaceAttemptOptions, PlacementCountersSnapshot, place_grid_focused, place_grid_focused_opts,
+    placement_counters_reset, placement_counters_snapshot,
+};
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
 

@@ -65,7 +65,7 @@ pub(super) fn fallback_shrink_move_grow(
     attr_pos: core_foundation::string::CFStringRef,
     attr_size: core_foundation::string::CFStringRef,
     target: &Rect,
-) -> crate::Result<Rect> {
+) -> crate::Result<(Rect, u64)> {
     // Determine safe size bounded by constants and no larger than target.
     let safe_w = target.w.min(FALLBACK_SAFE_MAX_W);
     let safe_h = target.h.min(FALLBACK_SAFE_MAX_H);
@@ -81,7 +81,7 @@ pub(super) fn fallback_shrink_move_grow(
         w: safe_w,
         h: safe_h,
     };
-    let (_shrink_got, _ms) = apply_and_wait(
+    let (_shrink_got, settle_shrink) = apply_and_wait(
         op_label,
         win,
         attr_pos,
@@ -98,7 +98,7 @@ pub(super) fn fallback_shrink_move_grow(
         w: safe_w,
         h: safe_h,
     };
-    let (_move_got, _ms2) = apply_and_wait(
+    let (_move_got, settle_move) = apply_and_wait(
         op_label, win, attr_pos, attr_size, &move_rect, true, VERIFY_EPS,
     )?;
 
@@ -109,10 +109,40 @@ pub(super) fn fallback_shrink_move_grow(
         w: target.w,
         h: target.h,
     };
-    let (got, _ms3) = apply_and_wait(
+    let (got, settle_grow) = apply_and_wait(
         op_label, win, attr_pos, attr_size, &grow_rect, false, VERIFY_EPS,
     )?;
 
-    Ok(got)
+    let total_settle = settle_shrink + settle_move + settle_grow;
+    Ok((got, total_settle))
 }
 // Safe‑park and shrink→move→grow fallback strategies.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64, y: f64) -> Rect {
+        Rect {
+            x,
+            y,
+            w: 640.0,
+            h: 480.0,
+        }
+    }
+
+    #[test]
+    fn safe_park_triggers_on_secondary_origin_near_global_zero() {
+        assert!(needs_safe_park(&rect(0.0, 0.0), 2560.0, 0.0));
+    }
+
+    #[test]
+    fn safe_park_skips_on_primary_origin_even_at_zero_target() {
+        assert!(!needs_safe_park(&rect(0.0, 0.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn safe_park_skips_when_target_far_from_origin() {
+        assert!(!needs_safe_park(&rect(400.0, 300.0), 2560.0, -1080.0));
+    }
+}

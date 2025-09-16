@@ -110,3 +110,56 @@ pub(super) fn normalize_before_move(
     Ok(())
 }
 // Pre‑placement normalization and role/subrole skip logic.
+
+#[cfg(test)]
+mod tests {
+    use super::skip_reason_for_role_subrole;
+
+    #[test]
+    fn skips_sheet_by_role() {
+        assert_eq!(
+            skip_reason_for_role_subrole("AXSheet", "AXStandardWindow"),
+            Some("role=AXSheet")
+        );
+    }
+
+    #[test]
+    fn skips_popover_when_marked_in_role_or_subrole() {
+        assert_eq!(
+            skip_reason_for_role_subrole("AXPopover", "AXStandardWindow"),
+            Some("popover")
+        );
+        assert_eq!(
+            skip_reason_for_role_subrole("AXWindow", "AXPopover"),
+            Some("popover")
+        );
+    }
+
+    #[test]
+    fn skips_dialog_variants() {
+        assert_eq!(
+            skip_reason_for_role_subrole("AXWindow", "AXDialog"),
+            Some("dialog")
+        );
+        assert_eq!(
+            skip_reason_for_role_subrole("AXWindow", "AXSystemDialog"),
+            Some("dialog")
+        );
+    }
+
+    #[test]
+    fn skips_floating_palettes() {
+        assert_eq!(
+            skip_reason_for_role_subrole("AXWindow", "AXFloatingWindow"),
+            Some("floating")
+        );
+    }
+
+    #[test]
+    fn allows_standard_windows() {
+        assert_eq!(
+            skip_reason_for_role_subrole("AXWindow", "AXStandardWindow"),
+            None
+        );
+    }
+}

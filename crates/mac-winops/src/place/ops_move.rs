@@ -3,7 +3,10 @@ use tracing::{debug, warn};
 
 use super::{
     apply::apply_and_wait,
-    common::{VERIFY_EPS, clamp_flags, log_failure_context, log_summary},
+    common::{
+        AttemptKind, AttemptOrder, VERIFY_EPS, clamp_flags, log_failure_context, log_summary,
+        trace_safe_park,
+    },
     fallback::{fallback_shrink_move_grow, needs_safe_park, preflight_safe_park},
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
@@ -103,6 +106,7 @@ pub(crate) fn place_move_grid(
         );
         let target = Rect::new(g.x, g.y, g.w, g.h);
         if needs_safe_park(&target, vf.x, vf.y) {
+            trace_safe_park("place_move_grid");
             preflight_safe_park(
                 "place_move_grid",
                 &win,
@@ -148,7 +152,7 @@ pub(crate) fn place_move_grid(
                 "size->pos"
             }
         );
-        let (got1, _settle_ms1) = apply_and_wait(
+        let (got1, settle_ms1) = apply_and_wait(
             "place_move_grid",
             &win,
             attr_pos,
@@ -168,16 +172,20 @@ pub(crate) fn place_move_grid(
         );
         debug!("vf_used:center={} -> vf={}", got1.center(), vf2);
         debug!("clamp={}", clamp_flags(&got1, &vf2, VERIFY_EPS));
+        let first_verified = got1.approx_eq(&target, VERIFY_EPS);
         log_summary(
+            "place_move_grid",
+            AttemptKind::Primary,
             if initial_pos_first {
-                "pos->size"
+                AttemptOrder::PosThenSize
             } else {
-                "size->pos"
+                AttemptOrder::SizeThenPos
             },
             1,
-            VERIFY_EPS,
+            settle_ms1,
+            first_verified,
         );
-        if got1.approx_eq(&target, VERIFY_EPS) && !force_second {
+        if first_verified && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_move_grid verified | id={} target={} got={}",
@@ -203,7 +211,7 @@ pub(crate) fn place_move_grid(
                 });
             }
             // Stage 3: retry with the opposite order
-            let (got2, _settle_ms2) = apply_and_wait(
+            let (got2, settle_ms2) = apply_and_wait(
                 "place_move_grid",
                 &win,
                 attr_pos,
@@ -223,26 +231,40 @@ pub(crate) fn place_move_grid(
             );
             debug!("vf_used:center={} -> vf={}", got2.center(), vf4);
             debug!("clamp={}", clamp_flags(&got2, &vf4, VERIFY_EPS));
+            let retry_order = if initial_pos_first {
+                AttemptOrder::SizeThenPos
+            } else {
+                AttemptOrder::PosThenSize
+            };
+            let retry_verified = got2.approx_eq(&target, VERIFY_EPS);
             log_summary(
-                if initial_pos_first {
-                    "size->pos"
-                } else {
-                    "pos->size"
-                },
+                "place_move_grid",
+                AttemptKind::RetryOpposite,
+                retry_order,
                 2,
-                VERIFY_EPS,
+                settle_ms2,
+                retry_verified,
             );
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
-                let got3 = fallback_shrink_move_grow(
+                let (got3, settle_smg) = fallback_shrink_move_grow(
                     "place_move_grid",
                     &win,
                     attr_pos,
                     attr_size,
                     &target,
                 )?;
-                if got3.approx_eq(&target, VERIFY_EPS) {
+                let smg_verified = got3.approx_eq(&target, VERIFY_EPS);
+                log_summary(
+                    "place_move_grid",
+                    AttemptKind::FallbackShrinkMoveGrow,
+                    AttemptOrder::Fallback,
+                    3,
+                    settle_smg,
+                    smg_verified,
+                );
+                if smg_verified {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
@@ -270,7 +292,7 @@ pub(crate) fn place_move_grid(
                         clamped,
                     })
                 }
-            } else if got2.approx_eq(&target, VERIFY_EPS) {
+            } else if retry_verified {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts=2");
                 debug!(
@@ -288,7 +310,7 @@ pub(crate) fn place_move_grid(
                         debug!(
                             "size_not_settable=true; skipping size-only and anchoring legal size"
                         );
-                        let (got_anchor, anchored, _ms2) =
+                        let (got_anchor, anchored, settle_ms_anchor_skip) =
                             super::apply::anchor_legal_size_and_wait(
                                 "place_move_grid",
                                 &win,
@@ -302,8 +324,16 @@ pub(crate) fn place_move_grid(
                                 next_row,
                                 VERIFY_EPS,
                             )?;
-                        log_summary("anchor-legal", 2, VERIFY_EPS);
-                        if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                        let anchor_verified = got_anchor.approx_eq(&anchored, VERIFY_EPS);
+                        log_summary(
+                            "place_move_grid",
+                            AttemptKind::AnchorLegal,
+                            AttemptOrder::Anchor,
+                            2,
+                            settle_ms_anchor_skip,
+                            anchor_verified,
+                        );
+                        if anchor_verified {
                             debug!("verified=true");
                             debug!(
                                 "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
@@ -320,8 +350,17 @@ pub(crate) fn place_move_grid(
                             (target.w, target.h),
                             VERIFY_EPS,
                         ) {
-                            Ok((got_sz, _ms)) => {
-                                let (got_anchor, anchored, _ms2) =
+                            Ok((got_sz, settle_ms_sz)) => {
+                                let size_only_verified = got_sz.approx_eq(&target, VERIFY_EPS);
+                                log_summary(
+                                    "place_move_grid",
+                                    AttemptKind::SizeOnly,
+                                    AttemptOrder::SizeOnly,
+                                    2,
+                                    settle_ms_sz,
+                                    size_only_verified,
+                                );
+                                let (got_anchor, anchored, settle_ms_anchor_sz) =
                                     super::apply::anchor_legal_size_and_wait(
                                         "place_move_grid",
                                         &win,
@@ -335,8 +374,16 @@ pub(crate) fn place_move_grid(
                                         next_row,
                                         VERIFY_EPS,
                                     )?;
-                                log_summary("anchor-legal:size-only", 2, VERIFY_EPS);
-                                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                                let anchor_verified = got_anchor.approx_eq(&anchored, VERIFY_EPS);
+                                log_summary(
+                                    "place_move_grid",
+                                    AttemptKind::AnchorSizeOnly,
+                                    AttemptOrder::Anchor,
+                                    2,
+                                    settle_ms_anchor_sz,
+                                    anchor_verified,
+                                );
+                                if anchor_verified {
                                     debug!("verified=true");
                                     debug!(
                                         "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
@@ -350,7 +397,7 @@ pub(crate) fn place_move_grid(
                                     "size-only failed ({}); anchoring legal size using observed got2",
                                     e
                                 );
-                                let (got_anchor, anchored, _ms2) =
+                                let (got_anchor, anchored, settle_ms_anchor_fallback) =
                                     super::apply::anchor_legal_size_and_wait(
                                         "place_move_grid",
                                         &win,
@@ -364,8 +411,16 @@ pub(crate) fn place_move_grid(
                                         next_row,
                                         VERIFY_EPS,
                                     )?;
-                                log_summary("anchor-legal", 2, VERIFY_EPS);
-                                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                                let anchor_verified = got_anchor.approx_eq(&anchored, VERIFY_EPS);
+                                log_summary(
+                                    "place_move_grid",
+                                    AttemptKind::AnchorLegal,
+                                    AttemptOrder::Anchor,
+                                    2,
+                                    settle_ms_anchor_fallback,
+                                    anchor_verified,
+                                );
+                                if anchor_verified {
                                     debug!("verified=true");
                                     debug!(
                                         "WinOps: place_move_grid verified (anchored legal) | id={} anchored={} got={}",
@@ -379,7 +434,7 @@ pub(crate) fn place_move_grid(
                 }
 
                 // Stage: anchor legal size using observed rect if not latched
-                let (got_anchor, anchored, _settle_ms_anchor) =
+                let (got_anchor, anchored, settle_ms_anchor) =
                     super::apply::anchor_legal_size_and_wait(
                         "place_move_grid",
                         &win,
@@ -401,8 +456,16 @@ pub(crate) fn place_move_grid(
                     },
                 );
                 debug!("clamp={}", clamp_flags(&got_anchor, &vf5, VERIFY_EPS));
-                log_summary("anchor-legal", 2, VERIFY_EPS);
-                if got_anchor.approx_eq(&anchored, VERIFY_EPS) {
+                let anchor_verified = got_anchor.approx_eq(&anchored, VERIFY_EPS);
+                log_summary(
+                    "place_move_grid",
+                    AttemptKind::AnchorLegal,
+                    AttemptOrder::Anchor,
+                    2,
+                    settle_ms_anchor,
+                    anchor_verified,
+                );
+                if anchor_verified {
                     debug!("verified=true");
                     debug!("order_used=anchor-legal, attempts=2");
                     debug!(
@@ -414,14 +477,23 @@ pub(crate) fn place_move_grid(
 
                 // Stage 4: shrink→move→grow fallback
                 debug!("fallback_used=true");
-                let got3 = fallback_shrink_move_grow(
+                let (got3, settle_smg) = fallback_shrink_move_grow(
                     "place_move_grid",
                     &win,
                     attr_pos,
                     attr_size,
                     &target,
                 )?;
-                if got3.approx_eq(&target, VERIFY_EPS) {
+                let smg_verified = got3.approx_eq(&target, VERIFY_EPS);
+                log_summary(
+                    "place_move_grid",
+                    AttemptKind::FallbackShrinkMoveGrow,
+                    AttemptOrder::Fallback,
+                    3,
+                    settle_smg,
+                    smg_verified,
+                );
+                if smg_verified {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(

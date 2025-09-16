@@ -1,6 +1,8 @@
 use tracing::debug;
 
 // Shared placement utilities: constants, small helpers, and attempt options.
+use super::metrics::PLACEMENT_COUNTERS;
+pub(super) use super::metrics::{AttemptKind, AttemptOrder};
 use crate::geom::{self, Rect};
 
 /// Epsilon tolerance (in points) used to verify post‑placement position and size.
@@ -67,11 +69,31 @@ pub(super) fn choose_initial_order(can_pos: Option<bool>, can_size: Option<bool>
 }
 
 #[inline]
-pub(super) fn log_summary(order: &str, attempt: u32, eps: f64) {
+pub(super) fn log_summary(
+    op: &str,
+    kind: AttemptKind,
+    order: AttemptOrder,
+    attempt: u32,
+    settle_ms: u64,
+    verified: bool,
+) {
     debug!(
-        "summary: order={} attempt={} eps={:.1}",
-        order, attempt, eps
+        target: "mac_winops::place",
+        op = %op,
+        attempt_idx = attempt,
+        kind = ?kind,
+        order = ?order,
+        settle_ms,
+        verified,
+        "placement_attempt"
     );
+    PLACEMENT_COUNTERS.record_attempt(kind, settle_ms, verified);
+}
+
+#[inline]
+pub(super) fn trace_safe_park(op: &str) {
+    debug!(target: "mac_winops::place", op = %op, "safe_park_preflight");
+    PLACEMENT_COUNTERS.record_safe_park();
 }
 
 #[inline]
@@ -93,9 +115,14 @@ pub(super) fn log_failure_context(win: &crate::AXElem, role: &str, subrole: &str
         None => "unknown",
     };
     debug!(
-        "failure: role='{}' subrole='{}' settable_pos={} settable_size={}",
-        role, subrole, s_pos, s_size
+        target: "mac_winops::place",
+        role = %role,
+        subrole = %subrole,
+        settable_pos = %s_pos,
+        settable_size = %s_size,
+        "placement_failure_context"
     );
+    PLACEMENT_COUNTERS.record_failure();
 }
 
 #[cfg(test)]

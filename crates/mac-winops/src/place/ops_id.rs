@@ -5,7 +5,10 @@ use tracing::debug;
 
 use super::{
     apply::apply_and_wait,
-    common::{VERIFY_EPS, clamp_flags, log_failure_context, log_summary},
+    common::{
+        AttemptKind, AttemptOrder, VERIFY_EPS, clamp_flags, log_failure_context, log_summary,
+        trace_safe_park,
+    },
     fallback::{fallback_shrink_move_grow, needs_safe_park, preflight_safe_park},
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
@@ -61,6 +64,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         let target = Rect::new(g.x, g.y, g.w, g.h);
         // Stage 3.1: if we would trip coordinate-space issues near global (0,0)
         if needs_safe_park(&target, vf.x, vf.y) {
+            trace_safe_park("place_grid");
             preflight_safe_park("place_grid", &win, attr_pos, attr_size, vf.x, vf.y, &target)?;
         }
         let cur = Rect::from((cur_p, cur_s));
@@ -84,7 +88,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 "size->pos"
             }
         );
-        let (got1, _settle_ms1) = apply_and_wait(
+        let (got1, settle_ms1) = apply_and_wait(
             "place_grid",
             &win,
             attr_pos,
@@ -104,16 +108,20 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         );
         debug!("vf_used:center={} -> vf={}", got1.center(), vf2);
         debug!("clamp={}", clamp_flags(&got1, &vf2, VERIFY_EPS));
+        let first_verified = got1.approx_eq(&target, VERIFY_EPS);
         log_summary(
+            "place_grid",
+            AttemptKind::Primary,
             if initial_pos_first {
-                "pos->size"
+                AttemptOrder::PosThenSize
             } else {
-                "size->pos"
+                AttemptOrder::SizeThenPos
             },
             1,
-            VERIFY_EPS,
+            settle_ms1,
+            first_verified,
         );
-        if got1.approx_eq(&target, VERIFY_EPS) && !force_second {
+        if first_verified && !force_second {
             debug!("verified=true");
             debug!(
                 "WinOps: place_grid verified | id={} target={} got={}",
@@ -136,7 +144,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             // Stage 7.1: If only one axis is off, try a single-axis nudge first.
             let mut attempt_idx = 2u32;
             if let Some(axis) = super::common::one_axis_off(d1, VERIFY_EPS) {
-                let (got_ax, _settle_ms_ax) = super::apply::nudge_axis_pos_and_wait(
+                let (got_ax, settle_ms_ax) = super::apply::nudge_axis_pos_and_wait(
                     "place_grid",
                     &win,
                     attr_pos,
@@ -155,12 +163,20 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                 );
                 debug!("vf_used:center={} -> vf={}", got_ax.center(), vf3);
                 debug!("clamp={}", clamp_flags(&got_ax, &vf3, VERIFY_EPS));
-                let label = match axis {
-                    crate::geom::Axis::Horizontal => "axis-pos:x",
-                    crate::geom::Axis::Vertical => "axis-pos:y",
+                let axis_order = match axis {
+                    crate::geom::Axis::Horizontal => AttemptOrder::AxisHorizontal,
+                    crate::geom::Axis::Vertical => AttemptOrder::AxisVertical,
                 };
-                log_summary(label, attempt_idx, VERIFY_EPS);
-                if got_ax.approx_eq(&target, VERIFY_EPS) {
+                let axis_verified = got_ax.approx_eq(&target, VERIFY_EPS);
+                log_summary(
+                    "place_grid",
+                    AttemptKind::AxisNudge,
+                    axis_order,
+                    attempt_idx,
+                    settle_ms_ax,
+                    axis_verified,
+                );
+                if axis_verified {
                     debug!("verified=true");
                     debug!("order_used=axis-pos, attempts=2");
                     debug!(
@@ -169,10 +185,10 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                     );
                     return Ok(());
                 }
-                attempt_idx = 3;
+                attempt_idx = attempt_idx.saturating_add(1);
             }
             // Stage 3: retry size->pos
-            let (got2, _settle_ms2) = apply_and_wait(
+            let (got2, settle_ms2) = apply_and_wait(
                 "place_grid",
                 &win,
                 attr_pos,
@@ -191,13 +207,30 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             );
             debug!("vf_used:center={} -> vf={}", got2.center(), vf4);
             debug!("clamp={}", clamp_flags(&got2, &vf4, VERIFY_EPS));
-            log_summary("size->pos", attempt_idx, VERIFY_EPS);
+            let retry_verified = got2.approx_eq(&target, VERIFY_EPS);
+            log_summary(
+                "place_grid",
+                AttemptKind::RetryOpposite,
+                AttemptOrder::SizeThenPos,
+                attempt_idx,
+                settle_ms2,
+                retry_verified,
+            );
             let force_smg = false;
             if force_smg {
                 debug!("fallback_used=true");
-                let got3 =
+                let (got3, settle_smg) =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                if got3.approx_eq(&target, VERIFY_EPS) {
+                let smg_verified = got3.approx_eq(&target, VERIFY_EPS);
+                log_summary(
+                    "place_grid",
+                    AttemptKind::FallbackShrinkMoveGrow,
+                    AttemptOrder::Fallback,
+                    attempt_idx.saturating_add(1),
+                    settle_smg,
+                    smg_verified,
+                );
+                if smg_verified {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(
@@ -225,7 +258,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
                         clamped,
                     })
                 }
-            } else if got2.approx_eq(&target, VERIFY_EPS) {
+            } else if retry_verified {
                 debug!("verified=true");
                 debug!("order_used=size->pos, attempts={}", attempt_idx);
                 debug!(
@@ -236,9 +269,18 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
             } else {
                 // Stage 4: shrink→move→grow fallback
                 debug!("fallback_used=true");
-                let got3 =
+                let (got3, settle_smg) =
                     fallback_shrink_move_grow("place_grid", &win, attr_pos, attr_size, &target)?;
-                if got3.approx_eq(&target, VERIFY_EPS) {
+                let smg_verified = got3.approx_eq(&target, VERIFY_EPS);
+                log_summary(
+                    "place_grid",
+                    AttemptKind::FallbackShrinkMoveGrow,
+                    AttemptOrder::Fallback,
+                    attempt_idx.saturating_add(1),
+                    settle_smg,
+                    smg_verified,
+                );
+                if smg_verified {
                     debug!("verified=true");
                     debug!("order_used=shrink->move->grow, attempts=3");
                     debug!(

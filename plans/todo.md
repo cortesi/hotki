@@ -1,174 +1,62 @@
-# Hotki Reliability Roadmap — Clean Slate (Sep 14, 2025)
+# Place Module Reliability Overhaul
 
-We’ve condensed all completed work into a succinct summary and rebuilt the remaining plan into fresh, 0‑indexed stages. Treat this file as the single source of truth for next actions. All checklist items include exact touch points and validation guidance so a fresh agent can proceed with zero external context.
+The `mac-winops::place` module drives every grid-based move in Hotki via
+`main_thread_ops`. Its multi-stage pipeline repeats across focused, id-based,
+and directional placements, leaving us with divergent logic, opaque fallbacks,
+and almost no automated coverage beyond simple helpers. We need to tighten
+observability first, then consolidate the implementation into reusable
+components that we can test in isolation, before hardening fallbacks and
+integrating the improvements across the crate.
 
-**What’s Done (succinct)**
-- Placement stability: choose initial write order from cached settable bits; skip unsettable writes; structured clamp flags; safe‑park preflight near global (0,0); explicit local→global conversion; grid math tested.
-- AX observability: per‑PID AXObserver with runloop source; rich AxEvent (Created/Destroyed/Focused/Moved/Resized/TitleChanged); throttled AxEvent→Hint integration; world “hint refresh” fast‑path.
-- AX read isolation: per‑PID read pool with bounded concurrency and stale‑drop; pool behavior covered by tests.
-- Focus/raise robustness: prefer AXRaise with NS app activation fallback; private window id via `_AXUIElementGetWindow` when available; title fallback; all AX mutations verified on AppKit main thread.
-- Coalescing: enqueue‑time per‑window/pid coalescer for placement ops (older intents dropped before drain).
-- Diagnostics: periodic world snapshot dump flag; once‑per‑bundle dedupe for non‑settable warnings.
+1. Stage One: Establish Observability and Guard Rails
 
-Guardrails & Validation
-- Platform: macOS only. Accessibility permission must be granted to the invoking terminal.
-- AX mutations: main thread only.
-- Lint/format: `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples 2>&1` then `cargo +nightly fmt --all`.
-- Tests (bounded): `timeout 100s cargo test --all --all-features`.
-- Smoketest: `cargo run --bin smoketest -- all`.
+1. [x] Add module-level documentation summarizing the placement pipeline,
+       invariants, and how callers interact through `main_thread_ops`.
+2. [x] Expand unit coverage for pure helpers (`grid_guess_cell_by_pos`,
+       `needs_safe_park`, `skip_reason_for_role_subrole`) to lock down current
+       behaviour.
+3. [x] Introduce structured tracing (attempt order, settle durations,
+       fallback usage) and surface counters so we can baseline failure modes
+       before large refactors.
 
----
+2. Stage Two: Extract a Shared Placement Engine
 
-0. Stage Zero — Coalescing Finalization
+1. [ ] Introduce a `PlacementContext` struct that captures the shared inputs
+       (AX element, target rect, visible frame, attempt options).
+2. [ ] Move the multi-attempt pipeline into a single `PlacementEngine::execute`
+       function that returns detailed outcomes for verification and logging.
+3. [ ] Rebuild `place_grid`, `place_grid_focused`, `place_grid_focused_opts`,
+       and `place_move_grid` on top of the new engine to eliminate duplicated
+       branches.
+4. [ ] Collapse the duplicate `PlaceAttemptOptions` definitions and re-export
+       a single configuration surface for callers and tests.
 
-Goal: Eliminate residual rubber‑banding and bound latency during bursts.
+3. Stage Three: Harden Fallback Behaviour
 
-1. [x] Deadline‑aware draining.  
-   Change: Implemented time‑boxed batch draining with in‑batch coalescing for placement ops. `drain_main_ops` now:
-   - Collects ops for ~30 ms or until the queue is empty.
-   - Preserves FIFO order for non‑placement ops in the batch.
-   - Applies only the latest placement per `WindowId` or `pid` using last‑writer order.  
-   Touch: `crates/mac-winops/src/lib.rs` (new deadline batcher, in‑batch coalescing, execution helper).  
-   Tests: Added unit test `deadline_batching_coalesces_to_single_apply` in `crates/mac-winops/src/lib.rs` using test‑only indirection to count placement applies without touching AX.  
-   Validation: `timeout 100s cargo test --all --all-features`.
+1. [ ] Make settle timing, epsilon thresholds, and retry limits configurable
+       via the new engine so we can tune per-call and in tests.
+2. [ ] Revisit safe-park and shrink→move→grow heuristics, turning the fixed
+       booleans (`force_smg`, etc.) into explicit decision hooks.
+3. [ ] Extend error reporting to include attempt timelines, clamp diagnostics,
+       and the visible-frame context we verified against.
 
-2. [x] Cross‑type stale‑drop at drain time.  
-   Change: During the batch drain, if any id‑specific placement maps to the same `pid` as a focused placement present in the batch, drop the focused one (id‑specific wins).  
-   Touch: `crates/mac-winops/src/lib.rs` (added batch‑time drop logic).  
-   Tests: `cross_type_stale_drop_prefers_id_over_focused` uses a test‑only id→pid map to assert only the id‑specific placement applies.
+4. Stage Four: Build a Deterministic Test Harness
 
-   [x] 2.1 Best‑effort id→pid resolver.  
-   Change: `resolve_pid_for_id(WindowId) -> Option<pid>` tries, in order: test‑only map (for hermetic tests), CoreGraphics `list_windows` (fast path), and non‑test builds fall back to AX window resolution. If resolution fails, keeps both ops (no drop).
+1. [ ] Introduce an `AxAdapter` trait that wraps the current accessibility
+       calls, with an in-memory fake to simulate window responses.
+2. [ ] Add scenario tests covering success, axis nudges, fallback activation,
+       and failure-to-settle paths through the new engine.
+3. [ ] Layer property-style tests over grid math and clamping behaviour to
+       catch regressions across different grid sizes and screen origins.
+4. [ ] Extend the smoketest binary to exercise representative placement flows
+       (focused, id-based, move) using the fake adapter when CI lacks GUI
+       access.
 
----
+5. Stage Five: Share Components and Update Integrations
 
-1. Stage One — Smoketest Helpers (Window Types)
-
-Goal: Realistic window behaviors to exercise verification and settling.
-
-1. [x] Async window: realistic delayed apply (~50 ms).  
-   Touch:
-   - `crates/smoketest/src/winhelper.rs` — explicit delayed-apply simulation independent of winit events. New fields: `delay_apply_ms`, `apply_target`, and `apply_grid`. Before the delay expires, the helper actively reverts any external frame changes, simulating apps that ignore early writes. On expiry, it applies either an explicit `(x,y,w,h)` target or computes a grid target `(cols,rows,col,row)` on the current screen visible frame, then updates its last-known geometry. Retained older `--delay-setframe-ms` interception for completeness.
-   - `crates/smoketest/src/cli.rs` — flags on `focus-winhelper`: `--delay-apply-ms`, `--apply-target X Y W H`, `--apply-grid COLS ROWS COL ROW`; kept `--delay-setframe-ms`. Added `place-async` subcommand.
-   - `crates/smoketest/src/process.rs` — builder APIs: `with_delay_apply_grid(ms, cols, rows, col, row)` plus passthrough for the other flags.
-   - `crates/smoketest/src/tests/place_async.rs` — drives placement directly via `mac_winops::place_grid_focused`, spawns helper with `with_delay_apply_grid(50, 2, 2, 1, 1)`, and asserts convergence. Runs with `--no-warn` to avoid overlay focus interference.
-   Validation:
-   - Unit tests: `timeout 100s cargo test --all --all-features` OK aside from a pre-existing coalescing test flake in `mac-winops` (queue length assertion; unrelated).
-   - Smoketest (targeted): `RUST_LOG=mac_winops=debug cargo run --bin smoketest -- --logs --quiet --no-warn place-async` → PASS.
-
-7. [x] Orchestrate async helper in “all”.  
-   Change: Added `place-async` to the default `all` sequence, positioned immediately after `place` to group related placement checks. This exercises delayed‑apply (~50 ms) convergence during the main run.  
-   Touch: `crates/smoketest/src/orchestrator.rs` (inserted `run("place-async", duration_ms)`).  
-   Validation: 
-   - Lint/format: `cargo clippy -q --fix --all-targets --all-features --allow-dirty --tests --examples 2>&1` then `cargo +nightly fmt --all`.  
-   - Tests: `timeout 100s cargo test --all --all-features` (clean on host).  
-   - Smoketest: `cargo run --bin smoketest -- all` (completed without failures on host).
-
-8. [x] Async helper v2: explicit delayed apply.  
-   Implemented as per 1 above using `--delay-apply-ms` with either `--apply-target` or `--apply-grid`. `place-async` now green.
-
-9. [x] Seq exposure for async case.  
-   Change: Added `place-async` to the `seq` command’s enum so callers can run `smoketest seq place-async`.  
-   Touch: `crates/smoketest/src/cli.rs` (extend `SeqTest`), `crates/smoketest/src/orchestrator.rs` (`to_subcmd`).  
-   Validation: `cargo run --bin smoketest -- seq place-async` completes and prints OK on host.
-
-2. [x] Animated window: tween to target over ~120 ms; ignore mid‑animation reads.  
-   Change: Added helper tween mode (`--tween-ms`) that animates to a delayed explicit target (`--delay-apply-ms` + `--apply-grid/--apply-target`) or, without an explicit target, to the latest desired frame. Intercepts now defer tweening when a future explicit target is present so incidental move/resize events don’t preempt the final goal.  
-   Touch: `crates/smoketest/src/cli.rs`, `crates/smoketest/src/winhelper.rs`, `crates/smoketest/src/process.rs` (builder + optional `spawn_inherit_io()` for debug), `crates/smoketest/src/tests/place_animated.rs` (validates final CG rect equals expected grid).  
-   Validation: `cargo run --bin smoketest -- place-animated` passes locally; included in `all`.
-
-   [x] 2.1 CLI+Builder exposure for tween.  
-       `--tween-ms` on `focus-winhelper`; `HelperWindowBuilder::with_tween_ms(ms)` to script scenarios.
-
-   [x] 2.2 Orchestrate animated case.  
-       Added a `place-animated` subcommand and included it after `place-async` in the `all` sequence. The helper animates to a grid target after a short delay; the test verifies the final frame. Future work (Stage Three) will relax settle epsilon dynamically during animation to harden this case under engine-driven placement.
-
-3. [ ] Min‑size window: enforce ≥800×600 via `constrainFrameRect:`.  
-   Touch: same.  
-   Tests: grid target shrinks to constraints; verification passes.
-
-4. [ ] Tabbed window: NSWindow tabbing on; some writes ignored until focus.  
-   Touch: same.  
-   Tests: raise+place sequencing converges.
-
-5. [ ] Non‑movable panel: refuse position writes; size‑only settable.  
-   Touch: same.  
-   Tests: “skip unsettable” path yields success via size‑only.
-
-6. [ ] Sheet‑attached parent: placement is skipped by role/subrole guard.  
-   Touch: same.  
-   Tests: scenario logs “skipped” and does not retry.
-
----
-
-2. Stage Two — Test Stabilization & Coverage
-
-Goal: Make `smoketest -- all` consistently green and harden edge cases.
-
-1. [ ] Orchestrator readiness: stabilize `all` runs for `place`/`place‑minimized` with explicit readiness waits and tuned key‑send delays.  
-   Touch: `crates/smoketest/src/orchestrator.rs`.  
-   Tests: flake rate → 0 locally.
-
-2. [ ] Multi‑display geometry: displays to the left of primary (negative origin) trigger safe‑park then converge.  
-   Touch: `crates/smoketest` harness.  
-   Tests: assert safe‑park log precedes normal placement; no `BadCoordinateSpace`.
-
-3. [ ] Synthetic churn & stress: zoom/minimize/title churn + 10 Hz placements for 5 s; bound settle and no deadlocks/panics.  
-   Touch: `crates/smoketest` (CLI + helpers).  
-   Tests: enforce time and liveness budgets.
-
----
-
-3. Stage Three — Verification & Tuning
-
-Goal: Adapt settle tolerance to animated windows and bound effort.
-
-1. [ ] Animated‑aware eps: temporarily relax eps to ~3–4 pt while rect changes between polls; restore baseline afterwards.  
-   Touch: `crates/mac-winops/src/place.rs` (detect animation in settle loop).  
-   Tests: animated helper passes; non‑animated unaffected.
-
-2. [ ] Cap total placement effort: at most two order attempts plus one fallback within ≤800 ms total.  
-   Touch: `crates/mac-winops/src/place.rs`.  
-   Tests: enforced budget with logs.
-
----
-
-4. Stage Four — Observers
-
-Goal: Validate AX observer pipeline end‑to‑end and lifecycle safety.
-
-1. [ ] Observer integration: with observers enabled, create/close windows; world snapshot updates within one hint cycle.  
-   Touch: `crates/smoketest` (flagged test).  
-   Tests: event‑to‑hint timing within budget.
-
-2. [ ] Observer lifecycle & memory: repeated app launch/quit; observers detach; CF objects released (debug build leak check).  
-   Touch: `crates/smoketest`.  
-   Tests: no leaks, stable teardown.
-
----
-
-5. Stage Five — Diagnostics & Telemetry
-
-Goal: Set expectations, quiet logs, and capture minimal metrics (opt‑in).
-
-1. [ ] Document Spaces caveats & recommendations.  
-   Touch: `README.md` (separate Spaces behavior; current scope).  
-   Tests: docs build; guidance is clear.
-
-2. [ ] Logging gates & dedupe: consolidate noisy warnings behind targeted gates and extend once‑per‑bundle dedupe beyond non‑settable attributes.  
-   Touch: `crates/mac-winops` logging.  
-   Tests: repeated scenarios emit at most one warning per bundle.
-
-3. [ ] Basic telemetry counters (opt‑in): counts for `settle_time_ms`, `attempts`, `order_used`, `fallback_used`, and final `outcome`.  
-   Touch: `crates/mac-winops` (feature‑gated if needed).  
-   Tests: counters increment and reset correctly.
-
-4. [ ] AX setter call counters for unit tests: test‑only `AtomicUsize` hooks for `ax_set_point/size` with clear/query API.  
-   Touch: `crates/mac-winops/src/ax.rs`; unit in `place.rs`.  
-   Tests: verifies “skip unsettable” reduces AX writes.
-
----
-
-Notes
-- Paths match the current tree (`crates/mac-winops`, `crates/hotki-world`, `crates/smoketest`, …).
-- All steps assume macOS with Accessibility permission granted to the invoking terminal.
+1. [ ] Audit `fullscreen`, `raise`, and other window ops for opportunities to
+       reuse the new adapter, normalization, and fallback utilities.
+2. [ ] Expose explicit placement APIs in `main_thread_ops`/`ops.rs` that accept
+       the new options surface so callers outside Hotki can opt in incrementally.
+3. [ ] Update crate-level documentation and DEV.md to describe the placement
+       engine, adapter pattern, and new testing strategy.
