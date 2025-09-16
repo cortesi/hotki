@@ -51,8 +51,25 @@ impl SubtestIo {
 struct SubtestOutcome {
     /// Whether the child exited successfully.
     success: bool,
-    /// Combined stderr/stdout payload for captured runs; empty when inheriting stdio.
-    details: String,
+    /// Captured stdout payload; empty when inheriting stdio or when no data was emitted.
+    stdout: String,
+    /// Captured stderr payload; empty when inheriting stdio or when no data was emitted.
+    stderr: String,
+}
+
+/// Pretty-print captured stdout/stderr for a failed run, preserving stream boundaries.
+fn print_captured_streams(outcome: &SubtestOutcome) {
+    let stderr = outcome.stderr.trim_end();
+    let stdout = outcome.stdout.trim_end();
+    if stderr.is_empty() && stdout.is_empty() {
+        return;
+    }
+    if !stderr.is_empty() {
+        println!("--- stderr ---\n{}", stderr);
+    }
+    if !stdout.is_empty() {
+        println!("--- stdout ---\n{}", stdout);
+    }
 }
 
 /// Launch and supervise a smoketest child process with the requested stdio policy.
@@ -73,7 +90,8 @@ fn run_subtest(
             }
             return SubtestOutcome {
                 success: false,
-                details: msg,
+                stdout: String::new(),
+                stderr: msg,
             };
         }
     };
@@ -110,7 +128,8 @@ fn run_subtest(
             }
             return SubtestOutcome {
                 success: false,
-                details: msg,
+                stdout: String::new(),
+                stderr: msg,
             };
         }
     };
@@ -165,18 +184,16 @@ fn run_subtest(
         {
             eprintln!("orchestrator: failed reading stdout: {}", e);
         }
-        let details = if stderr.trim().is_empty() {
-            stdout
-        } else if stdout.trim().is_empty() {
-            stderr
-        } else {
-            format!("{}\n{}", stderr, stdout)
-        };
-        SubtestOutcome { success, details }
+        SubtestOutcome {
+            success,
+            stdout,
+            stderr,
+        }
     } else {
         SubtestOutcome {
             success,
-            details: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
         }
     }
 }
@@ -202,13 +219,13 @@ fn run_subtest_with_watchdog(
 }
 
 /// Run a child `smoketest` subcommand with a watchdog, capturing output and forcing quiet mode.
-/// Returns (success, stderr + newline + stdout) for error details.
+/// Returns the outcome alongside separated stdout/stderr payloads.
 fn run_subtest_capture(
     subcmd: &str,
     duration_ms: u64,
     timeout_ms: u64,
     extra_args: &[String],
-) -> (bool, String) {
+) -> SubtestOutcome {
     run_subtest_capture_with_extra(subcmd, duration_ms, timeout_ms, 0, extra_args)
 }
 
@@ -220,16 +237,15 @@ fn run_subtest_capture_with_extra(
     timeout_ms: u64,
     extra_watchdog_ms: u64,
     extra_args: &[String],
-) -> (bool, String) {
-    let outcome = run_subtest(
+) -> SubtestOutcome {
+    run_subtest(
         subcmd,
         duration_ms,
         timeout_ms,
         extra_watchdog_ms,
         extra_args,
         SubtestIo::CaptureQuiet,
-    );
-    (outcome.success, outcome.details)
+    )
 }
 
 /// Run all smoketests sequentially in isolated subprocesses.
@@ -354,16 +370,14 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         // Clear info by default unless a variant sets it explicitly
         process::write_overlay_info("");
         let start = Instant::now();
-        let (ok, details) = run_subtest_capture(name, dur, timeout_ms, &[]);
+        let outcome = run_subtest_capture(name, dur, timeout_ms, &[]);
         let elapsed = start.elapsed();
-        if ok {
+        if outcome.success {
             println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
             true
         } else {
             println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
+            print_captured_streams(&outcome);
             false
         }
     };
@@ -388,7 +402,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         process::write_overlay_status(name);
         process::write_overlay_info("");
         let start = Instant::now();
-        let (ok, details) = run_subtest_capture_with_extra(
+        let outcome = run_subtest_capture_with_extra(
             name,
             duration_ms,
             timeout_ms.saturating_add(10_000),
@@ -396,13 +410,11 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             &[],
         );
         let elapsed = start.elapsed();
-        if ok {
+        if outcome.success {
             println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
         } else {
             println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
+            print_captured_streams(&outcome);
         }
     }
     all_ok &= run("place", duration_ms);
@@ -425,7 +437,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         process::write_overlay_status(name);
         process::write_overlay_info("");
         let start = Instant::now();
-        let (ok, details) = run_subtest_capture_with_extra(
+        let outcome = run_subtest_capture_with_extra(
             name,
             duration_ms,
             timeout_ms.saturating_add(60_000), // give the child extra timeout too
@@ -433,15 +445,13 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             &[],
         );
         let elapsed = start.elapsed();
-        if ok {
+        if outcome.success {
             println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
         } else {
             println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
+            print_captured_streams(&outcome);
         }
-        all_ok &= ok;
+        all_ok &= outcome.success;
     }
     all_ok &= run("place-zoomed", duration_ms);
     // Stage 6 advisory gating: validate skip behavior when possible
@@ -455,9 +465,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
         let args = place_flex_args(&cfg);
         let json = serde_json::to_string(&cfg).unwrap_or_default();
         let start = Instant::now();
-        let (ok, details) = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
+        let outcome = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         let elapsed = start.elapsed();
-        if ok {
+        if outcome.success {
             println!(
                 "place-flex... OK ({:.3}s)\n  settings: {}\n  info: {}",
                 elapsed.as_secs_f64(),
@@ -471,11 +481,9 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
                 json,
                 info
             );
-            if !details.trim().is_empty() {
-                println!("{}", details.trim_end());
-            }
+            print_captured_streams(&outcome);
         }
-        all_ok &= ok;
+        all_ok &= outcome.success;
     }
     all_ok &= run("fullscreen", duration_ms);
 

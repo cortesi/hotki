@@ -48,7 +48,7 @@ Trim copy-paste watchdog logic and improve diagnostics.
 
 1. [x] Refactor `run_subtest_with_watchdog` and friends to share one
        implementation that toggles capture vs inherit behavior.
-2. [ ] Improve failure propagation so orchestrator surfaces child stderr/stdout
+2. [x] Improve failure propagation so orchestrator surfaces child stderr/stdout
        without concatenation artifacts.
 3. [ ] Add regression coverage for the watchdog (stub binary exceeding timeout)
        to guard against future regressions.
