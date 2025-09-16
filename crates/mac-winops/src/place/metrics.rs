@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 
 /// Categorization of placement attempts for structured tracing and metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AttemptKind {
+pub enum AttemptKind {
     /// First attempt using the preferred ordering from AX hints.
     Primary,
     /// Single-axis nudge when only one axis remains out of bounds.
@@ -23,7 +23,7 @@ pub(crate) enum AttemptKind {
 
 /// Ordering applied for a placement attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AttemptOrder {
+pub enum AttemptOrder {
     PosThenSize,
     SizeThenPos,
     AxisHorizontal,

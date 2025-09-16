@@ -33,11 +33,11 @@ integrating the improvements across the crate.
 
 3. Stage Three: Harden Fallback Behaviour
 
-1. [ ] Make settle timing, epsilon thresholds, and retry limits configurable
+1. [x] Make settle timing, epsilon thresholds, and retry limits configurable
        via the new engine so we can tune per-call and in tests.
-2. [ ] Revisit safe-park and shrink→move→grow heuristics, turning the fixed
+2. [x] Revisit safe-park and shrink→move→grow heuristics, turning the fixed
        booleans (`force_smg`, etc.) into explicit decision hooks.
-3. [ ] Extend error reporting to include attempt timelines, clamp diagnostics,
+3. [x] Extend error reporting to include attempt timelines, clamp diagnostics,
        and the visible-frame context we verified against.
 
 4. Stage Four: Build a Deterministic Test Harness

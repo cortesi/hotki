@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use mac_winops::PlaceAttemptOptions;
+use mac_winops::{FallbackTrigger, PlaceAttemptOptions};
 
 use crate::{
     config,
@@ -58,11 +58,17 @@ pub fn run_place_flex(
     let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
     // Build attempt options for placement
-    let opts = PlaceAttemptOptions {
-        force_second_attempt: force_size_pos || force_shrink_move_grow,
-        pos_first_only,
-        force_shrink_move_grow,
-    };
+    let mut opts = PlaceAttemptOptions::default()
+        .with_force_second_attempt(force_size_pos || force_shrink_move_grow)
+        .with_pos_first_only(pos_first_only);
+    if force_shrink_move_grow {
+        opts = opts.with_fallback_hook(|invocation| {
+            matches!(
+                invocation.trigger,
+                FallbackTrigger::Forced | FallbackTrigger::Final
+            )
+        });
+    }
 
     // Call mac-winops directly to place the focused window
     mac_winops::place_grid_focused_opts(helper.pid, cols, rows, col, row, opts)

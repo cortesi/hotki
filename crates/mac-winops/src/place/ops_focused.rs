@@ -4,14 +4,16 @@ use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
 use super::{
-    common::{PlaceAttemptOptions, PlacementContext, VERIFY_EPS, trace_safe_park},
+    apply::AxAttrRefs,
+    common::{PlaceAttemptOptions, PlacementContext, trace_safe_park},
     engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome},
-    fallback::{needs_safe_park, preflight_safe_park},
+    fallback::preflight_safe_park,
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
     Error, Result,
     ax::{ax_check, ax_get_point, ax_get_size, cfstr},
+    error::PlacementErrorDetails,
     geom::Rect,
     screen_util::visible_frame_containing_point,
 };
@@ -68,14 +70,12 @@ fn place_grid_focused_inner(
         let vf = *ctx.visible_frame();
         let target = *ctx.target();
         let opts = ctx.attempt_options();
-        if opts.force_second_attempt {
+        let tuning = opts.tuning();
+        if opts.force_second_attempt() {
             debug!("opts: force_second_attempt=true");
         }
-        if opts.pos_first_only {
+        if opts.pos_first_only() {
             debug!("opts: pos_first_only=true");
-        }
-        if opts.force_shrink_move_grow {
-            debug!("opts: force_shrink_move_grow=true");
         }
         let engine = PlacementEngine::new(
             &ctx,
@@ -93,16 +93,19 @@ fn place_grid_focused_inner(
                 subrole: &subrole,
             },
         );
-        if needs_safe_park(&target, vf.x, vf.y) {
+        if opts.hooks().should_safe_park(&ctx) {
             trace_safe_park("place_grid_focused");
             preflight_safe_park(
                 "place_grid_focused",
                 ctx.win(),
-                attr_pos,
-                attr_size,
-                vf.x,
-                vf.y,
+                AxAttrRefs {
+                    pos: attr_pos,
+                    size: attr_size,
+                },
+                &vf,
                 &target,
+                tuning.epsilon(),
+                tuning.settle_timing(),
             )?;
         }
         let cur = Rect::from((cur_p, cur_s));
@@ -129,10 +132,14 @@ fn place_grid_focused_inner(
             | PlacementOutcome::VerificationFailure(failure) => {
                 Err(Error::PlacementVerificationFailed {
                     op: "place_grid_focused",
-                    expected: target,
-                    got: failure.got,
-                    epsilon: VERIFY_EPS,
-                    clamped: failure.clamped,
+                    details: Box::new(PlacementErrorDetails {
+                        expected: target,
+                        got: failure.got,
+                        epsilon: tuning.epsilon(),
+                        clamped: failure.clamped,
+                        visible_frame: failure.visible_frame,
+                        timeline: failure.timeline,
+                    }),
                 })
             }
         }

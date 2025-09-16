@@ -13,7 +13,7 @@
 //!   displays so subsequent moves happen in a stable coordinate space.
 //! * Attempt placement using Accessibility setters via `apply`, choosing
 //!   position-first or size-first order from cached hints and settling within
-//!   `VERIFY_EPS`.
+//!   the configured epsilon (defaults to `VERIFY_EPS`).
 //! * Validate the resulting rect; nudge a single axis, retry with the opposite
 //!   order, or fall back to shrink→move→grow when still clamped.
 //!
@@ -37,8 +37,10 @@ mod ops_focused;
 mod ops_id;
 mod ops_move;
 
-pub use common::PlaceAttemptOptions;
-pub use metrics::PlacementCountersSnapshot;
+pub use common::{
+    AttemptRecord, AttemptTimeline, FallbackInvocation, FallbackTrigger, PlaceAttemptOptions,
+};
+pub use metrics::{AttemptKind, AttemptOrder, PlacementCountersSnapshot};
 pub use ops_focused::{place_grid_focused, place_grid_focused_opts};
 pub(crate) use ops_id::place_grid;
 pub(crate) use ops_move::place_move_grid;

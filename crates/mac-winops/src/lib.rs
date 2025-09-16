@@ -63,6 +63,7 @@ pub use main_thread_ops::{
 };
 use once_cell::sync::Lazy;
 pub use place::{
+    AttemptKind, AttemptOrder, AttemptRecord, AttemptTimeline, FallbackInvocation, FallbackTrigger,
     PlaceAttemptOptions, PlacementCountersSnapshot, place_grid_focused, place_grid_focused_opts,
     placement_counters_reset, placement_counters_snapshot,
 };

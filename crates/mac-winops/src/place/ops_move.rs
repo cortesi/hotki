@@ -2,14 +2,16 @@ use objc2_foundation::MainThreadMarker;
 use tracing::{debug, warn};
 
 use super::{
-    common::{PlaceAttemptOptions, PlacementContext, VERIFY_EPS, trace_safe_park},
+    apply::AxAttrRefs,
+    common::{PlaceAttemptOptions, PlacementContext, trace_safe_park},
     engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome},
-    fallback::{needs_safe_park, preflight_safe_park},
+    fallback::preflight_safe_park,
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
     Error, Result, WindowId,
     ax::{ax_check, ax_get_point, ax_get_size, ax_window_for_id, cfstr},
+    error::PlacementErrorDetails,
     geom::Rect,
     screen_util::visible_frame_containing_point,
 };
@@ -45,7 +47,8 @@ pub(crate) fn place_move_grid(
         let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
         let vf = visible_frame_containing_point(mtm, cur_p);
 
-        let eps = VERIFY_EPS;
+        let base_opts = PlaceAttemptOptions::default();
+        let eps = base_opts.tuning().epsilon();
         let cur_cell = vf.grid_find_cell(cols, rows, cur_p, cur_s, eps);
 
         let (next_col, next_row) = match cur_cell {
@@ -102,9 +105,11 @@ pub(crate) fn place_move_grid(
             target_local, vf.x, vf.y, g
         );
         let target = Rect::new(g.x, g.y, g.w, g.h);
-        let ctx = PlacementContext::new(win.clone(), target, vf, PlaceAttemptOptions::default());
+        let ctx = PlacementContext::new(win.clone(), target, vf, base_opts);
         let vf = *ctx.visible_frame();
         let target = *ctx.target();
+        let opts = ctx.attempt_options();
+        let tuning = opts.tuning();
         let engine = PlacementEngine::new(
             &ctx,
             PlacementEngineConfig {
@@ -121,16 +126,19 @@ pub(crate) fn place_move_grid(
                 subrole: &subrole,
             },
         );
-        if needs_safe_park(&target, vf.x, vf.y) {
+        if opts.hooks().should_safe_park(&ctx) {
             trace_safe_park("place_move_grid");
             preflight_safe_park(
                 "place_move_grid",
                 ctx.win(),
-                attr_pos,
-                attr_size,
-                vf.x,
-                vf.y,
+                AxAttrRefs {
+                    pos: attr_pos,
+                    size: attr_size,
+                },
+                &vf,
                 &target,
+                tuning.epsilon(),
+                tuning.settle_timing(),
             )?;
         }
         let cur = Rect::from((cur_p, cur_s));
@@ -175,10 +183,14 @@ pub(crate) fn place_move_grid(
                 let _ = crate::raise::raise_window(pid_for_id, id);
                 Err(Error::PlacementVerificationFailed {
                     op: "place_move_grid",
-                    expected: target,
-                    got: failure.got,
-                    epsilon: VERIFY_EPS,
-                    clamped: failure.clamped,
+                    details: Box::new(PlacementErrorDetails {
+                        expected: target,
+                        got: failure.got,
+                        epsilon: tuning.epsilon(),
+                        clamped: failure.clamped,
+                        visible_frame: failure.visible_frame,
+                        timeline: failure.timeline,
+                    }),
                 })
             }
             PlacementOutcome::VerificationFailure(failure) => {
@@ -189,10 +201,14 @@ pub(crate) fn place_move_grid(
                 let _ = crate::raise::raise_window(pid_for_id, id);
                 Err(Error::PlacementVerificationFailed {
                     op: "place_move_grid",
-                    expected: target,
-                    got: failure.got,
-                    epsilon: VERIFY_EPS,
-                    clamped: failure.clamped,
+                    details: Box::new(PlacementErrorDetails {
+                        expected: target,
+                        got: failure.got,
+                        epsilon: tuning.epsilon(),
+                        clamped: failure.clamped,
+                        visible_frame: failure.visible_frame,
+                        timeline: failure.timeline,
+                    }),
                 })
             }
         }

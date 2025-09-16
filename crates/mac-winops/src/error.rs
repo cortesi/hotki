@@ -2,7 +2,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use thiserror::Error;
 
-use crate::geom::Rect;
+use crate::{geom::Rect, place::AttemptTimeline};
 
 /// Bitflags-style struct capturing which edges were clamped to the
 /// visible frame during placement verification.
@@ -49,6 +49,26 @@ impl Display for ClampFlags {
 }
 
 /// Errors that can occur during window operations.
+#[derive(Debug)]
+pub struct PlacementErrorDetails {
+    pub expected: Rect,
+    pub got: Rect,
+    pub epsilon: f64,
+    pub clamped: ClampFlags,
+    pub visible_frame: Rect,
+    pub timeline: AttemptTimeline,
+}
+
+impl Display for PlacementErrorDetails {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(
+            f,
+            "expected={:?} got={:?} eps={:.2} clamped={} vf={:?} attempts={}",
+            self.expected, self.got, self.epsilon, self.clamped, self.visible_frame, self.timeline
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     /// Accessibility permission is required but not granted.
@@ -100,20 +120,12 @@ pub enum Error {
 
     /// Post‑placement verification failed: the window's actual frame did not
     /// match the requested target within `epsilon` tolerance.
-    #[error(
-        "post-placement verification failed in {op}: expected={expected:?} got={got:?} eps={epsilon:.2} clamped={clamped}"
-    )]
+    #[error("post-placement verification failed in {op}: {details}")]
     PlacementVerificationFailed {
         /// Logical operation name (e.g., "place_grid").
         op: &'static str,
-        /// The requested target rectangle.
-        expected: Rect,
-        /// The actual rectangle observed after placement.
-        got: Rect,
-        /// Allowed absolute tolerance for each component.
-        epsilon: f64,
-        /// Which edges appear clamped to the visible frame (≈ within eps).
-        clamped: ClampFlags,
+        /// Detailed failure diagnostics captured by the engine.
+        details: Box<PlacementErrorDetails>,
     },
 }
 

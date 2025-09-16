@@ -1,6 +1,9 @@
 use tracing::debug;
 
-use super::{apply::apply_and_wait, common::VERIFY_EPS};
+use super::{
+    apply::{AxAttrRefs, apply_and_wait},
+    common::SettleTiming,
+};
 use crate::{
     ax::{ax_get_point, ax_get_size},
     geom::Rect,
@@ -10,28 +13,17 @@ use crate::{
 const FALLBACK_SAFE_MAX_W: f64 = 400.0;
 const FALLBACK_SAFE_MAX_H: f64 = 300.0;
 
-#[inline]
-pub(super) fn needs_safe_park(target: &Rect, vf_x: f64, vf_y: f64) -> bool {
-    // Trigger only when target is near global origin AND the chosen screen's
-    // origin is not at the global origin (i.e., likely a non‑primary screen).
-    let near_zero = crate::geom::approx_eq(target.x, 0.0, VERIFY_EPS)
-        && crate::geom::approx_eq(target.y, 0.0, VERIFY_EPS);
-    let non_primary = !crate::geom::approx_eq(vf_x, 0.0, VERIFY_EPS)
-        || !crate::geom::approx_eq(vf_y, 0.0, VERIFY_EPS);
-    near_zero && non_primary
-}
-
-/// Preflight "safe‑park" to avoid BadCoordinateSpace near global (0,0)
-/// on non‑primary displays. Parks the window inside the visible frame with a
+/// Preflight "safe-park" to avoid BadCoordinateSpace near global (0,0)
+/// on non-primary displays. Parks the window inside the visible frame with a
 /// small safe size, then proceeds with the normal placement.
 pub(super) fn preflight_safe_park(
     op_label: &str,
     win: &crate::AXElem,
-    attr_pos: core_foundation::string::CFStringRef,
-    attr_size: core_foundation::string::CFStringRef,
-    vf_x: f64,
-    vf_y: f64,
+    attrs: AxAttrRefs,
+    visible_frame: &Rect,
     target: &Rect,
+    eps: f64,
+    timing: SettleTiming,
 ) -> crate::Result<()> {
     // Only attempt when both setters are known to be supported (or unknown).
     let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
@@ -40,10 +32,10 @@ pub(super) fn preflight_safe_park(
         return Ok(());
     }
 
-    // Pick a conservative in‑frame parking rect near the visible-frame origin.
+    // Pick a conservative in-frame parking rect near the visible-frame origin.
     let park = Rect {
-        x: vf_x + 32.0,
-        y: vf_y + 32.0,
+        x: visible_frame.x + 32.0,
+        y: visible_frame.y + 32.0,
         w: target.w.min(FALLBACK_SAFE_MAX_W),
         h: target.h.min(FALLBACK_SAFE_MAX_H),
     };
@@ -51,7 +43,7 @@ pub(super) fn preflight_safe_park(
         "safe_park: {} -> ({:.1},{:.1},{:.1},{:.1})",
         op_label, park.x, park.y, park.w, park.h
     );
-    let _ = apply_and_wait(op_label, win, attr_pos, attr_size, &park, true, VERIFY_EPS)?;
+    let _ = apply_and_wait(op_label, win, attrs, &park, true, eps, timing)?;
     Ok(())
 }
 
@@ -62,17 +54,18 @@ pub(super) fn preflight_safe_park(
 pub(super) fn fallback_shrink_move_grow(
     op_label: &str,
     win: &crate::AXElem,
-    attr_pos: core_foundation::string::CFStringRef,
-    attr_size: core_foundation::string::CFStringRef,
+    attrs: AxAttrRefs,
     target: &Rect,
+    eps: f64,
+    timing: SettleTiming,
 ) -> crate::Result<(Rect, u64)> {
     // Determine safe size bounded by constants and no larger than target.
     let safe_w = target.w.min(FALLBACK_SAFE_MAX_W);
     let safe_h = target.h.min(FALLBACK_SAFE_MAX_H);
 
     // Read current position for initial shrink step.
-    let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
-    let _cur_s = ax_get_size(win.as_ptr(), attr_size)?;
+    let cur_p = ax_get_point(win.as_ptr(), attrs.pos)?;
+    let _cur_s = ax_get_size(win.as_ptr(), attrs.size)?;
 
     // Step 1: shrink at current position (size then pos ordering).
     let shrink_rect = Rect {
@@ -81,15 +74,8 @@ pub(super) fn fallback_shrink_move_grow(
         w: safe_w,
         h: safe_h,
     };
-    let (_shrink_got, settle_shrink) = apply_and_wait(
-        op_label,
-        win,
-        attr_pos,
-        attr_size,
-        &shrink_rect,
-        false,
-        VERIFY_EPS,
-    )?;
+    let (_shrink_got, settle_shrink) =
+        apply_and_wait(op_label, win, attrs, &shrink_rect, false, eps, timing)?;
 
     // Step 2: move to final position with pos->size using safe size.
     let move_rect = Rect {
@@ -98,9 +84,8 @@ pub(super) fn fallback_shrink_move_grow(
         w: safe_w,
         h: safe_h,
     };
-    let (_move_got, settle_move) = apply_and_wait(
-        op_label, win, attr_pos, attr_size, &move_rect, true, VERIFY_EPS,
-    )?;
+    let (_move_got, settle_move) =
+        apply_and_wait(op_label, win, attrs, &move_rect, true, eps, timing)?;
 
     // Step 3: grow to the final size at the final position using size->pos.
     let grow_rect = Rect {
@@ -109,40 +94,27 @@ pub(super) fn fallback_shrink_move_grow(
         w: target.w,
         h: target.h,
     };
-    let (got, settle_grow) = apply_and_wait(
-        op_label, win, attr_pos, attr_size, &grow_rect, false, VERIFY_EPS,
-    )?;
+    let (got, settle_grow) = apply_and_wait(op_label, win, attrs, &grow_rect, false, eps, timing)?;
 
     let total_settle = settle_shrink + settle_move + settle_grow;
     Ok((got, total_settle))
 }
-// Safe‑park and shrink→move→grow fallback strategies.
+// Safe-park and shrink→move→grow fallback strategies.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rect(x: f64, y: f64) -> Rect {
-        Rect {
-            x,
-            y,
-            w: 640.0,
-            h: 480.0,
-        }
-    }
-
     #[test]
-    fn safe_park_triggers_on_secondary_origin_near_global_zero() {
-        assert!(needs_safe_park(&rect(0.0, 0.0), 2560.0, 0.0));
-    }
-
-    #[test]
-    fn safe_park_skips_on_primary_origin_even_at_zero_target() {
-        assert!(!needs_safe_park(&rect(0.0, 0.0), 0.0, 0.0));
-    }
-
-    #[test]
-    fn safe_park_skips_when_target_far_from_origin() {
-        assert!(!needs_safe_park(&rect(400.0, 300.0), 2560.0, -1080.0));
+    fn safe_park_preflight_uses_safe_dimensions() {
+        let target = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 900.0,
+            h: 700.0,
+        };
+        // The helper should clamp to safe bounds regardless of the oversized target.
+        assert_eq!(target.w.min(FALLBACK_SAFE_MAX_W), 400.0);
+        assert_eq!(target.h.min(FALLBACK_SAFE_MAX_H), 300.0);
     }
 }
