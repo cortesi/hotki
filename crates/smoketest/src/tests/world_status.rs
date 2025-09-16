@@ -18,7 +18,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
     let bin = resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
     // Use default test config for server
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
+    let cfg_path = cwd.join(config::PATHS.test_config);
     if !cfg_path.exists() {
         return Err(Error::MissingConfig(cfg_path));
     }
@@ -41,7 +41,7 @@ pub fn run_world_status_test(timeout_ms: u64, _logs: bool) -> Result<()> {
                         during: "world-status connect",
                     });
                 }
-                thread::sleep(Duration::from_millis(config::FAST_RETRY_DELAY_MS));
+                thread::sleep(Duration::from_millis(config::RETRY.fast_delay_ms));
             }
         }
     };

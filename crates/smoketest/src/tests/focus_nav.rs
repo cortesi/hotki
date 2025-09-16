@@ -121,10 +121,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     (bl.pid, &title_bl),
                     (br.pid, &title_br),
                 ],
-                config::WAIT_BOTH_WINDOWS_MS,
+                config::WAITS.both_windows_ms,
             ) {
                 return Err(Error::FocusNotObserved {
-                    timeout_ms: config::WAIT_BOTH_WINDOWS_MS,
+                    timeout_ms: config::WAITS.both_windows_ms,
                     expected: "helpers not visible (4)".into(),
                 });
             }
@@ -136,14 +136,14 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 "ctrl+alt+k",
                 "ctrl+alt+j",
             ] {
-                server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS * 2)?;
+                server_drive::wait_for_ident(ident, config::BINDING_GATES.default_ms * 2)?;
             }
 
             // Helpers self-place into 2x2 via mac-winops; no server placement required
 
             // Establish initial focus quickly via direct raise binding
             send_key("ctrl+alt+1")?;
-            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
+            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV.step_timeout_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tl,
@@ -197,7 +197,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
             drive("l")?; // RIGHT
-            if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
+            if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV.step_timeout_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tr,
@@ -208,7 +208,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             fixtures::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
             drive("j")?; // DOWN
-            if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
+            if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV.step_timeout_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_br,
@@ -219,7 +219,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             fixtures::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
             drive("h")?; // LEFT
-            if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
+            if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV.step_timeout_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_bl,
@@ -230,7 +230,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Verify source before move
             fixtures::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
             drive("k")?; // UP
-            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
+            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV.step_timeout_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
                     expected: title_tl,

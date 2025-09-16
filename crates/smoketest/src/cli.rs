@@ -28,11 +28,11 @@ pub struct Cli {
     pub info: Option<String>,
 
     /// Default duration for repeat tests in milliseconds
-    #[arg(long, default_value_t = config::DEFAULT_DURATION_MS)]
+    #[arg(long, default_value_t = config::DEFAULTS.duration_ms)]
     pub duration: u64,
 
     /// Default timeout for UI readiness and waits in milliseconds
-    #[arg(long, default_value_t = config::DEFAULT_TIMEOUT_MS)]
+    #[arg(long, default_value_t = config::DEFAULTS.timeout_ms)]
     pub timeout: u64,
 
     /// Which subcommand to run
@@ -164,10 +164,10 @@ pub enum Commands {
     #[command(name = "place-flex")]
     PlaceFlex {
         /// Grid columns
-        #[arg(long, default_value_t = config::PLACE_COLS)]
+        #[arg(long, default_value_t = config::PLACE.grid_cols)]
         cols: u32,
         /// Grid rows
-        #[arg(long, default_value_t = config::PLACE_ROWS)]
+        #[arg(long, default_value_t = config::PLACE.grid_rows)]
         rows: u32,
         /// Target column (0-based)
         #[arg(long, default_value_t = 0)]
@@ -201,7 +201,7 @@ pub enum Commands {
         #[arg(long)]
         title: String,
         /// How long to keep the window alive (ms)
-        #[arg(long, default_value_t = config::DEFAULT_HELPER_WINDOW_TIME_MS)]
+        #[arg(long, default_value_t = config::HELPER_WINDOW.default_lifetime_ms)]
         time: u64,
         /// Optional delay to apply when the system attempts to change the
         /// window frame (position/size). When set, the helper will briefly

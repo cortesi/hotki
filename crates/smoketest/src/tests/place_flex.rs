@@ -31,25 +31,28 @@ pub fn run_place_flex(
     let title = format!("hotki smoketest: place-flex {}-{}", process::id(), now_pre);
 
     // Spawn helper and wait until visible
-    let lifetime = config::DEFAULT_TIMEOUT_MS + config::HELPER_WINDOW_EXTRA_TIME_MS;
+    let lifetime = config::DEFAULTS.timeout_ms + config::HELPER_WINDOW.extra_time_ms;
     let mut helper = spawn_helper_visible(
         &title,
         lifetime,
-        cmp::min(config::DEFAULT_TIMEOUT_MS, config::HIDE_FIRST_WINDOW_MAX_MS),
-        config::PLACE_POLL_MS,
+        cmp::min(
+            config::DEFAULTS.timeout_ms,
+            config::HIDE.first_window_max_ms,
+        ),
+        config::PLACE.poll_ms,
         "FLEX",
     )?;
 
     // Bring to front to ensure mac-winops targets the correct focused window
     ensure_frontmost(helper.pid, &title, 3, 50);
-    let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
+    let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
 
     // Compute expected rect from screen VF containing current AX position
     let vf = fixtures::resolve_vf_for_window(
         helper.pid,
         &title,
-        config::DEFAULT_TIMEOUT_MS,
-        config::PLACE_POLL_MS,
+        config::DEFAULTS.timeout_ms,
+        config::PLACE.poll_ms,
     )
     .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
     let expected = fixtures::cell_rect(vf, cols, rows, col, row);
@@ -70,9 +73,9 @@ pub fn run_place_flex(
         helper.pid,
         &title,
         expected,
-        config::PLACE_EPS,
-        config::PLACE_STEP_TIMEOUT_MS,
-        config::PLACE_POLL_MS,
+        config::PLACE.eps,
+        config::PLACE.step_timeout_ms,
+        config::PLACE.poll_ms,
     );
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)

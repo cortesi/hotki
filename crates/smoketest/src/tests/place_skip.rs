@@ -60,7 +60,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let helper = HelperWindowBuilder::new(title.clone())
                 .with_time_ms(helper_time)
                 .with_label_text("NM")
@@ -71,8 +71,8 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
             ) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms,
@@ -110,11 +110,11 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Ensure helper is frontmost and that the backend reports the helper PID focused,
             // then request placement via the key binding. This tightens targeting so we never
             // resize a non-test window even if world focus lags.
-            server_drive::wait_for_ident("g", config::BINDING_GATE_DEFAULT_MS * 2)?;
-            server_drive::wait_for_ident("1", config::BINDING_GATE_DEFAULT_MS * 2)?;
+            server_drive::wait_for_ident("g", config::BINDING_GATES.default_ms * 2)?;
+            server_drive::wait_for_ident("1", config::BINDING_GATES.default_ms * 2)?;
             send_key("g")?;
-            let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
-            server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS)?;
+            let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
+            server_drive::wait_for_focused_pid(helper.pid, config::WAITS.first_window_ms)?;
             send_key("1")?;
             // Wait for a short settle period and compare
             let settle_ms = 350; // generous but bounded
@@ -122,12 +122,12 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let mut unchanged = false;
             while Instant::now() < deadline {
                 if let Some(after) = ax_frame(helper.pid, &title)
-                    && same_frame(before, after, config::PLACE_EPS)
+                    && same_frame(before, after, config::PLACE.eps)
                 {
                     unchanged = true;
                     break;
                 }
-                thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+                thread::sleep(Duration::from_millis(config::PLACE.poll_ms));
             }
             if expect_skip {
                 if !unchanged {

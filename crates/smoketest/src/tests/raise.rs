@@ -83,7 +83,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::RAISE_HELPER_EXTRA_MS);
+                .saturating_add(config::RAISE.helper_extra_time_ms);
             let child1 = HelperWindow::spawn_frontmost_with_builder(
                 HelperWindowBuilder::new(&title1)
                     .with_time_ms(helper_time)
@@ -91,13 +91,15 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_size(600.0, 420.0)
                     .with_position(60.0, 60.0),
                 &title1,
-                cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
-                config::WINDOW_REGISTRATION_DELAY_MS,
+                cmp::min(ctx.config.timeout_ms, config::RAISE.first_window_max_ms),
+                config::INPUT_DELAYS.window_registration_delay_ms,
             )?;
             let pid1 = child1.pid;
             // Small active wait to let the first window register before spawning the second
-            let _ =
-                wait_for_windows_visible(&[(pid1, &title1)], config::WINDOW_REGISTRATION_DELAY_MS);
+            let _ = wait_for_windows_visible(
+                &[(pid1, &title1)],
+                config::INPUT_DELAYS.window_registration_delay_ms,
+            );
             let child2 = HelperWindow::spawn_frontmost_with_builder(
                 HelperWindowBuilder::new(&title2)
                     .with_time_ms(helper_time)
@@ -105,8 +107,8 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .with_size(600.0, 420.0)
                     .with_position(1000.0, 60.0),
                 &title2,
-                cmp::min(ctx.config.timeout_ms, config::RAISE_FIRST_WINDOW_MAX_MS),
-                config::WINDOW_REGISTRATION_DELAY_MS,
+                cmp::min(ctx.config.timeout_ms, config::RAISE.first_window_max_ms),
+                config::INPUT_DELAYS.window_registration_delay_ms,
             )?;
             let pid2 = child2.pid;
             // Keep child1/child2 alive for the duration of this execute block.
@@ -114,7 +116,7 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Ensure both helper windows are present before proceeding.
             if !wait_for_windows_visible(
                 &[(pid1, &title1), (pid2, &title2)],
-                config::WAIT_BOTH_WINDOWS_MS,
+                config::WAITS.both_windows_ms,
             ) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 8000,
@@ -124,17 +126,17 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Phase 1: raise first window (shift+cmd+0 → r → 1), then assert CG frontmost.
             ctx.ensure_rpc_ready(&[])?;
-            gate_ident_when_ready("shift+cmd+0", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("shift+cmd+0", config::RAISE.binding_gate_ms)?;
             send_key("shift+cmd+0")?;
-            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("r", config::RAISE.binding_gate_ms)?;
             send_key("r")?;
-            if !wait_for_windows_visible(&[(pid1, &title1)], config::RAISE_FIRST_WINDOW_MAX_MS) {
+            if !wait_for_windows_visible(&[(pid1, &title1)], config::RAISE.first_window_max_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("first window not visible before menu: '{}'", title1),
                 });
             }
-            gate_ident_when_ready("1", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("1", config::RAISE.binding_gate_ms)?;
             send_key("1")?;
             if !wait_for_frontmost_title(&title1, ctx.config.timeout_ms / 2) {
                 return Err(Error::FocusNotObserved {
@@ -147,17 +149,17 @@ pub fn run_raise_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Phase 2: raise second window (shift+cmd+0 → r → 2), then assert CG frontmost.
-            gate_ident_when_ready("shift+cmd+0", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("shift+cmd+0", config::RAISE.binding_gate_ms)?;
             send_key("shift+cmd+0")?;
-            gate_ident_when_ready("r", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("r", config::RAISE.binding_gate_ms)?;
             send_key("r")?;
-            if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE_FIRST_WINDOW_MAX_MS) {
+            if !wait_for_windows_visible(&[(pid2, &title2)], config::RAISE.first_window_max_ms) {
                 return Err(Error::FocusNotObserved {
                     timeout_ms: 6000,
                     expected: format!("second window not visible before menu: '{}'", title2),
                 });
             }
-            gate_ident_when_ready("2", config::RAISE_BINDING_GATE_MS)?;
+            gate_ident_when_ready("2", config::RAISE.binding_gate_ms)?;
             send_key("2")?;
             if !wait_for_frontmost_title(&title2, ctx.config.timeout_ms / 2) {
                 return Err(Error::FocusNotObserved {

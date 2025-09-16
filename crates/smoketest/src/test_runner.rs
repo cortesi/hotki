@@ -105,7 +105,7 @@ impl TestContext {
         } else {
             // Use default test config
             let cwd = env::current_dir()?;
-            let path = cwd.join(config::DEFAULT_TEST_CONFIG_PATH);
+            let path = cwd.join(config::PATHS.test_config);
             if !path.exists() {
                 return Err(Error::MissingConfig(path));
             }
@@ -159,7 +159,7 @@ impl TestContext {
 
         server_drive::ensure_init(&sock, 3000)?;
         if !idents.is_empty() {
-            let gate_ms = config::BINDING_GATE_DEFAULT_MS * 2;
+            let gate_ms = config::BINDING_GATES.default_ms * 2;
             server_drive::wait_for_idents(idents, gate_ms)?;
         }
         Ok(())

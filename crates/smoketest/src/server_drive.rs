@@ -181,7 +181,7 @@ pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> DriverResult<()> {
             }
             Err(err) => {
                 last_error = Some(err.to_string());
-                thread::sleep(config::ms(config::FAST_RETRY_DELAY_MS));
+                thread::sleep(config::ms(config::RETRY.fast_delay_ms));
             }
         }
     }
@@ -255,7 +255,7 @@ pub fn inject_key(seq: &str) -> DriverResult<()> {
         block_on_rpc("inject_key_down", async {
             conn.inject_key_down(&ident).await
         })?;
-        thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.key_event_delay_ms));
         match block_on_rpc("inject_key_up", async { conn.inject_key_up(&ident).await }) {
             Ok(_) => {}
             Err(DriverError::RpcFailure { action, source })
@@ -274,7 +274,7 @@ pub fn inject_key(seq: &str) -> DriverResult<()> {
 pub fn inject_sequence(sequences: &[&str]) -> DriverResult<()> {
     for s in sequences {
         inject_key(s)?;
-        thread::sleep(config::ms(config::UI_ACTION_DELAY_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.ui_action_delay_ms));
     }
     Ok(())
 }
@@ -313,7 +313,7 @@ pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
             return Ok(());
         }
 
-        thread::sleep(config::ms(config::RETRY_DELAY_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
     }
 
     let missing = remaining.into_iter().collect::<Vec<_>>().join(", ");
@@ -350,7 +350,7 @@ pub fn wait_for_focused_pid(expected_pid: i32, timeout_ms: u64) -> DriverResult<
         {
             return Ok(());
         }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
     }
     Err(DriverError::FocusPidTimeout {
         expected_pid,
@@ -369,7 +369,7 @@ pub fn wait_for_focused_title(expected_title: &str, timeout_ms: u64) -> DriverRe
         {
             return Ok(());
         }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
     }
     Err(DriverError::FocusTitleTimeout {
         expected_title: want.to_string(),

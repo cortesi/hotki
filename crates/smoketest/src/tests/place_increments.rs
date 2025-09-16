@@ -26,8 +26,8 @@ fn verify_anchored(
 ) -> bool {
     let right = expected.x + expected.w;
     let top = expected.y + expected.h;
-    let eps = config::PLACE_EPS;
-    let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
+    let eps = config::PLACE.eps;
+    let deadline = Instant::now() + Duration::from_millis(config::PLACE.step_timeout_ms);
     while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, title) {
             let mut ok = true;
@@ -47,7 +47,7 @@ fn verify_anchored(
                 return true;
             }
         }
-        thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+        thread::sleep(Duration::from_millis(config::PLACE.poll_ms));
     }
     false
 }
@@ -76,7 +76,7 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper: ManagedChild = HelperWindowBuilder::new(title.clone())
                 .with_time_ms(helper_time)
                 .with_label_text("INC")
@@ -87,8 +87,8 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
             if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
@@ -98,7 +98,7 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 helper.pid,
                 &title,
                 5,
-                config::RETRY_DELAY_MS,
+                config::INPUT_DELAYS.retry_delay_ms,
             );
 
             // Case A: 2x2 bottom-right cell — expect right and TOP edges flush

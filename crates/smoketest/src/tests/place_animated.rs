@@ -41,7 +41,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper: ManagedChild = HelperWindowBuilder::new(title.clone())
                 .with_time_ms(helper_time)
                 .with_label_text("A")
@@ -53,20 +53,21 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
 
             // Resolve window id and ensure frontmost
-            let _ = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
-                .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let _ =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
             ensure_frontmost(
                 helper.pid,
                 &title,
                 5,
-                config::RETRY_DELAY_MS,
+                config::INPUT_DELAYS.retry_delay_ms,
             );
 
             // Compute expected rect on the helper's current screen from CG, then
@@ -85,8 +86,9 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 fixtures::cell_rect(vf, cols, rows, col, row)
             };
             let cg_ok = {
-                let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
-                let eps = 2.0_f64;
+                let deadline =
+                    Instant::now() + Duration::from_millis(config::PLACE.step_timeout_ms);
+                let eps = config::PLACE.eps;
                 let mut ok = false;
                 while Instant::now() < deadline {
                     if let Some(pos) = mac_winops::list_windows()
@@ -105,7 +107,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                             break;
                         }
                     }
-                    thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+                    thread::sleep(Duration::from_millis(config::PLACE.poll_ms));
                 }
                 ok
             };

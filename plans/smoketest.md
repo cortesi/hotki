@@ -58,9 +58,9 @@ Trim copy-paste watchdog logic and improve diagnostics.
 
 Finish migrating to the modern reporting types and tame configuration sprawl.
 
-1. [ ] Convert remaining consumers of `Summary`/`FocusOutcome` to `TestOutcome`
+1. [x] Convert remaining consumers of `Summary`/`FocusOutcome` to `TestOutcome`
        and delete the legacy structs.
-2. [ ] Group constants in `config.rs` into structured collections to cut the
+2. [x] Group constants in `config.rs` into structured collections to cut the
        top-level clutter while keeping defaults explicit.
-3. [ ] Refresh documentation comments to match the new layout, then rerun
+3. [x] Refresh documentation comments to match the new layout, then rerun
        formatting, tests, and the smoketest all-run.

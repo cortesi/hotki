@@ -26,7 +26,7 @@ pub fn wait_for_windows_visible(entries: &[(i32, &str)], timeout_ms: u64) -> boo
     wait::wait_for_windows_visible(
         entries,
         config::ms(timeout_ms),
-        config::ms(config::POLL_INTERVAL_MS),
+        config::ms(config::INPUT_DELAYS.poll_interval_ms),
     )
 }
 

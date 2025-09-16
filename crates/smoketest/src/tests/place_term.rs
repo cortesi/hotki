@@ -66,7 +66,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper: ManagedChild = HelperWindowBuilder::new(title.clone())
                 .with_time_ms(helper_time)
                 .with_label_text("TM")
@@ -77,12 +77,12 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
-            ensure_frontmost(helper.pid, &title, 5, config::RETRY_DELAY_MS);
+            ensure_frontmost(helper.pid, &title, 5, config::INPUT_DELAYS.retry_delay_ms);
 
             // Compute expected visibleFrame and cell target
             let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
@@ -102,7 +102,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             let pid_clone = helper.pid;
             thread::spawn(move || {
                 let deadline = Instant::now()
-                    + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS.saturating_add(1500));
+                    + Duration::from_millis(config::PLACE.step_timeout_ms.saturating_add(1500));
                 while !d_clone.load(Ordering::SeqCst) && Instant::now() < deadline {
                     if let Some(((x, y), (w, h))) =
                         mac_winops::ax_window_frame(pid_clone, &title_clone)

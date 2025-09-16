@@ -144,10 +144,10 @@ impl HotkiSession {
                     if Instant::now() >= deadline {
                         return Err(Error::HudNotVisible { timeout_ms });
                     }
-                    let delay = if attempts <= config::INITIAL_RETRY_ATTEMPTS {
-                        config::INITIAL_RETRY_DELAY_MS
+                    let delay = if attempts <= config::RETRY.initial_attempts {
+                        config::RETRY.initial_delay_ms
                     } else {
-                        config::FAST_RETRY_DELAY_MS
+                        config::RETRY.fast_delay_ms
                     };
                     thread::sleep(Duration::from_millis(delay));
                     continue;
@@ -178,7 +178,7 @@ impl HotkiSession {
 
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
-            let chunk = cmp::min(left, config::ms(config::EVENT_CHECK_INTERVAL_MS));
+            let chunk = cmp::min(left, config::ms(config::RETRY.event_check_interval_ms));
             let res = runtime::block_on(async { timeout(chunk, conn.recv_event()).await });
             match res {
                 Ok(Ok(Ok(msg))) => {
@@ -205,7 +205,8 @@ impl HotkiSession {
                 return Ok(start.elapsed().as_millis() as u64);
             }
             if let Some(last) = last_sent
-                && last.elapsed() >= Duration::from_millis(config::ACTIVATION_RESEND_INTERVAL_MS)
+                && last.elapsed()
+                    >= Duration::from_millis(config::SESSION.activation_resend_interval_ms)
             {
                 send_activation_chord()?;
                 last_sent = Some(Instant::now());

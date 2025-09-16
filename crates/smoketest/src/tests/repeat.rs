@@ -69,7 +69,7 @@ pub fn count_relay(ms: u64) -> usize {
         let mut f = focus_ctx.lock();
         *f = Some((
             "smoketest-app".to_string(),
-            config::RELAY_TEST_TITLE.to_string(),
+            config::TITLES.relay_test.to_string(),
             std_process::id() as i32,
         ));
     }
@@ -227,12 +227,12 @@ impl ApplicationHandler for RelayApp {
         if self.window.is_none() {
             use winit::dpi::{LogicalPosition, LogicalSize};
             let attrs = Window::default_attributes()
-                .with_title(config::RELAY_TEST_TITLE)
+                .with_title(config::TITLES.relay_test)
                 .with_visible(true)
                 // Make the popup smaller to reduce intrusion.
                 .with_inner_size(LogicalSize::new(
-                    config::HELPER_WIN_WIDTH,
-                    config::HELPER_WIN_HEIGHT,
+                    config::HELPER_WINDOW.width_px,
+                    config::HELPER_WINDOW.height_px,
                 ));
             let win = elwt.create_window(attrs).expect("create window");
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -242,10 +242,10 @@ impl ApplicationHandler for RelayApp {
             // Place the window at the top-right of the main screen.
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 use objc2_app_kit::NSScreen;
-                let margin: f64 = config::HELPER_WIN_MARGIN;
+                let margin: f64 = config::HELPER_WINDOW.margin_px;
                 if let Some(scr) = NSScreen::mainScreen(mtm) {
                     let vf = scr.visibleFrame();
-                    let w = config::HELPER_WIN_WIDTH;
+                    let w = config::HELPER_WINDOW.width_px;
                     let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
                     // Use small Y from the visible frame's origin for top anchoring
                     let y = (vf.origin.y + margin).max(0.0);

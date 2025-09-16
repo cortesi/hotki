@@ -23,8 +23,8 @@ fn run_place_with_state(
     start_zoomed: bool,
     label: String,
 ) -> Result<()> {
-    let cols = config::PLACE_COLS;
-    let rows = config::PLACE_ROWS;
+    let cols = config::PLACE.grid_cols;
+    let rows = config::PLACE.grid_rows;
     let now_pre = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -49,31 +49,36 @@ fn run_place_with_state(
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper = spawn_helper_with_options(
                 &title,
                 helper_time,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
                 &label,
                 start_minimized,
                 start_zoomed,
             )?;
 
             // Best-effort: bring the helper frontmost for deterministic AXFocused/AXMain resolution
-            ensure_frontmost(helper.pid, &title, 3, config::UI_ACTION_DELAY_MS);
+            ensure_frontmost(
+                helper.pid,
+                &title,
+                3,
+                config::INPUT_DELAYS.ui_action_delay_ms,
+            );
 
             // If the helper started minimized, AX frame can lag after de-miniaturize.
             // Actively wait until an AX frame is available before issuing placement.
             let ready_deadline = Instant::now()
                 + Duration::from_millis(cmp::min(
                     ctx.config.timeout_ms,
-                    config::WAIT_FIRST_WINDOW_MS,
+                    config::WAITS.first_window_ms,
                 ));
             while Instant::now() < ready_deadline
                 && mac_winops::ax_window_frame(helper.pid, &title).is_none()
             {
-                thread::sleep(config::ms(config::PLACE_POLL_MS));
+                thread::sleep(config::ms(config::PLACE.poll_ms));
             }
 
             let vf = if let Some(((ax, ay), _)) = mac_winops::ax_window_frame(helper.pid, &title) {
@@ -83,8 +88,8 @@ fn run_place_with_state(
             } else if let Some(vf) = fixtures::resolve_vf_for_window(
                 helper.pid,
                 &title,
-                config::DEFAULT_TIMEOUT_MS,
-                config::PLACE_POLL_MS,
+                config::DEFAULTS.timeout_ms,
+                config::PLACE.poll_ms,
             ) {
                 vf
             } else {
@@ -102,9 +107,9 @@ fn run_place_with_state(
                 helper.pid,
                 &title,
                 expected,
-                config::PLACE_EPS,
-                config::PLACE_STEP_TIMEOUT_MS,
-                config::PLACE_POLL_MS,
+                config::PLACE.eps,
+                config::PLACE.step_timeout_ms,
+                config::PLACE.poll_ms,
             );
             if !ok {
                 return Err(Error::InvalidState("placement verification failed".into()));

@@ -117,7 +117,7 @@ where
 }
 
 // Re-export common result types
-pub use results::{FocusOutcome, Summary, TestDetails, TestOutcome};
+pub use results::{TestDetails, TestOutcome};
 
 /// Unified case runner: heading + optional overlay + watchdog.
 #[allow(clippy::too_many_arguments)]
@@ -418,7 +418,7 @@ fn handle_volume(cli: &Cli) {
     if !cli.quiet {
         heading("Test: repeat-volume");
     }
-    let duration = max(cli.duration, config::MIN_VOLUME_TEST_DURATION_MS);
+    let duration = max(cli.duration, config::DEFAULTS.min_volume_duration_ms);
     let mut overlay = None;
     if !cli.no_warn {
         overlay = process::start_warn_overlay_with_delay();
@@ -583,8 +583,8 @@ fn handle_place_fallback(cli: &Cli) {
         true,
         move || {
             tests::place_flex::run_place_flex(
-                config::PLACE_COLS,
-                config::PLACE_ROWS,
+                config::PLACE.grid_cols,
+                config::PLACE.grid_rows,
                 0,
                 0,
                 true,
@@ -713,10 +713,7 @@ fn handle_focus(cli: &Cli) {
     ) {
         Ok(out) => {
             if !cli.quiet {
-                println!(
-                    "focus-tracking: OK (title='{}', pid={}, time_to_match_ms={})",
-                    out.title, out.pid, out.elapsed_ms
-                );
+                println!("{}", out.format_status("focus-tracking"));
             }
         }
         Err(e) => {
@@ -976,12 +973,9 @@ fn handle_ui(cli: &Cli) {
         }
     }
     match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
-        Ok(sum) => {
+        Ok(out) => {
             if !cli.quiet {
-                println!(
-                    "ui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                    sum.hud_seen, sum.time_to_hud_ms
-                );
+                println!("{}", out.format_status("ui"));
             }
         }
         Err(e) => {
@@ -1017,12 +1011,9 @@ fn handle_minui(cli: &Cli) {
         }
     }
     match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
-        Ok(sum) => {
+        Ok(out) => {
             if !cli.quiet {
-                println!(
-                    "minui: OK (hud_seen={}, time_to_hud_ms={:?})",
-                    sum.hud_seen, sum.time_to_hud_ms
-                );
+                println!("{}", out.format_status("minui"));
             }
         }
         Err(e) => {

@@ -56,7 +56,7 @@ impl OverlayApp {
     ) {
         use objc2_app_kit::{NSColor, NSFont, NSTextAlignment, NSTextField};
         let margin_x: f64 = 12.0;
-        let lw = (config::WARN_OVERLAY_WIDTH - 2.0 * margin_x).max(10.0);
+        let lw = (config::WARN_OVERLAY.width_px - 2.0 * margin_x).max(10.0);
 
         // Title label
         let title_text = NSString::from_str("...");
@@ -65,7 +65,7 @@ impl OverlayApp {
         unsafe { title.setFont(Some(&title_font)) };
         unsafe { title.setAlignment(NSTextAlignment::Center) };
         let title_h: f64 = 32.0;
-        let title_y = (config::WARN_OVERLAY_HEIGHT - title_h) / 2.0;
+        let title_y = (config::WARN_OVERLAY.height_px - title_h) / 2.0;
         let title_frame = NSRect::new(NSPoint::new(margin_x, title_y), NSSize::new(lw, title_h));
         unsafe { title.setFrame(title_frame) };
         unsafe { view.addSubview(&title) };
@@ -133,8 +133,8 @@ impl ApplicationHandler for OverlayApp {
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_inner_size(LogicalSize::new(
-                    config::WARN_OVERLAY_WIDTH,
-                    config::WARN_OVERLAY_HEIGHT,
+                    config::WARN_OVERLAY.width_px,
+                    config::WARN_OVERLAY.height_px,
                 ));
             let win = match elwt.create_window(attrs) {
                 Ok(w) => w,
@@ -158,8 +158,8 @@ impl ApplicationHandler for OverlayApp {
                 app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
                 if let Some(scr) = objc2_app_kit::NSScreen::mainScreen(mtm) {
                     let vf = scr.visibleFrame();
-                    let x = vf.origin.x + (vf.size.width - config::WARN_OVERLAY_WIDTH) / 2.0;
-                    let y = vf.origin.y + (vf.size.height - config::WARN_OVERLAY_HEIGHT) / 2.0;
+                    let x = vf.origin.x + (vf.size.width - config::WARN_OVERLAY.width_px) / 2.0;
+                    let y = vf.origin.y + (vf.size.height - config::WARN_OVERLAY.height_px) / 2.0;
                     win.set_outer_position(LogicalPosition::new(x.max(0.0), y.max(0.0)));
 
                     // Attach overlay labels to the window's content view
@@ -204,7 +204,7 @@ impl ApplicationHandler for OverlayApp {
             // Update countdown timer or spinner
             if self.countdown_active {
                 let elapsed = now.duration_since(self.start_time);
-                let grace_ms = config::WARN_OVERLAY_INITIAL_DELAY_MS;
+                let grace_ms = config::WARN_OVERLAY.initial_delay_ms;
                 let remaining_ms = grace_ms.saturating_sub(elapsed.as_millis() as u64);
 
                 if let Some(countdown_label) = &self.countdown_label

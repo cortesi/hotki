@@ -25,7 +25,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     // on typical 1440p/2x screens. We pick 380 to exceed ~337px cell height
     // at 1350 VF height.
     let title = config::test_title("place-move-min");
-    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW.extra_time_ms);
     let builder = HelperWindowBuilder::new(title.clone())
         .with_time_ms(lifetime)
         .with_label_text("MIN")
@@ -35,8 +35,8 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     let mut helper = HelperWindow::spawn_frontmost_with_builder(
         builder,
         &title,
-        cmp::min(timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-        config::PLACE_POLL_MS,
+        cmp::min(timeout_ms, config::HIDE.first_window_max_ms),
+        config::PLACE.poll_ms,
     )?;
     let pid = helper.pid;
     let ((ax, ay), _) = mac_winops::ax_window_frame(pid, &title)
@@ -47,7 +47,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     // Verify initial cell anchors (left+bottom) — accept H >= cell height
     let expected0 = fixtures::cell_rect(vf, 4, 4, 0, 0);
     if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title) {
-        let eps = config::PLACE_EPS;
+        let eps = config::PLACE.eps;
         if !(fixtures::approx(x, expected0.x, eps)
             && fixtures::approx(y, expected0.y, eps)
             && fixtures::approx(w, expected0.w, eps)
@@ -64,8 +64,8 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
     let id = fixtures::find_window_id(
         pid,
         &title,
-        config::DEFAULT_TIMEOUT_MS,
-        config::PLACE_POLL_MS,
+        config::DEFAULTS.timeout_ms,
+        config::PLACE.poll_ms,
     )
     .ok_or_else(|| Error::InvalidState("failed to resolve WindowId for helper".into()))?;
     mac_winops::request_place_move_grid(id, 4, 4, mac_winops::MoveDir::Right)
@@ -75,8 +75,8 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
 
     // Expected anchors after moving right: x changes to col=1; bottom flush; width equals cell width; height >= cell height.
     let expected1 = fixtures::cell_rect(vf, 4, 4, 1, 0);
-    let eps = config::PLACE_EPS;
-    let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
+    let eps = config::PLACE.eps;
+    let deadline = Instant::now() + Duration::from_millis(config::PLACE.step_timeout_ms);
     let mut ok = false;
     while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title)
@@ -88,7 +88,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
             ok = true;
             break;
         }
-        thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+        thread::sleep(Duration::from_millis(config::PLACE.poll_ms));
     }
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)

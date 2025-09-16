@@ -20,7 +20,7 @@ use crate::{
 /// Run the non-resizable move smoketest to verify anchored fallback when AXSize is not settable.
 pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
     let title = config::test_title("place-move-nonresizable");
-    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW.extra_time_ms);
     // Spawn helper: start in TL of 4x4 grid with a size larger than a single cell
     let builder = HelperWindowBuilder::new(title.clone())
         .with_time_ms(lifetime)
@@ -32,7 +32,7 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
         builder,
         &title,
         timeout_ms,
-        config::PLACE_POLL_MS,
+        config::PLACE.poll_ms,
     )?;
     let pid = helper.pid;
 
@@ -46,8 +46,8 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
     let id = fixtures::find_window_id(
         pid,
         &title,
-        config::DEFAULT_TIMEOUT_MS,
-        config::PLACE_POLL_MS,
+        config::DEFAULTS.timeout_ms,
+        config::PLACE.poll_ms,
     )
     .ok_or_else(|| Error::InvalidState("failed to resolve WindowId for helper".into()))?;
     mac_winops::request_place_move_grid(id, 4, 4, mac_winops::MoveDir::Right)
@@ -57,8 +57,8 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
     // Expectation: x,y align to the next cell's origin (left+bottom flush);
     // width/height remain at or above cell size because resizing is disabled.
     let expected1 = fixtures::cell_rect(vf, 4, 4, 1, 0);
-    let eps = config::PLACE_EPS;
-    let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
+    let eps = config::PLACE.eps;
+    let deadline = Instant::now() + Duration::from_millis(config::PLACE.step_timeout_ms);
     let mut ok = false;
     while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title)
@@ -70,7 +70,7 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
             ok = true;
             break;
         }
-        thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
+        thread::sleep(Duration::from_millis(config::PLACE.poll_ms));
     }
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)

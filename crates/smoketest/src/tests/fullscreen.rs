@@ -8,7 +8,8 @@
 //! Acceptance criteria
 //! - The test captures an initial frame, drives fullscreen using the configured
 //!   binding, then successfully reads a non-`None` frame afterward within
-//!   `FULLSCREEN_WAIT_TOTAL_MS` while polling at `FULLSCREEN_WAIT_POLL_MS`.
+//!   `config::FULLSCREEN.wait_total_ms` while polling at
+//!   `config::FULLSCREEN.wait_poll_ms`.
 //! - Backend connectivity remains healthy during the wait; an IPC failure
 //!   causes the test to fail with `IpcDisconnected`.
 //! - A significant area change is expected but not enforced strictly; this is a
@@ -78,19 +79,24 @@ pub fn run_fullscreen_test(
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper = HelperWindow::spawn_frontmost(
                 &title,
                 helper_time,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::FULLSCREEN_HELPER_SHOW_DELAY_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::FULLSCREEN.helper_show_delay_ms,
                 "FS",
             )?;
             // Gate safety: raise the helper via backend binding, then wait until
             // both CG frontmost and backend world focus agree on our helper PID.
             send_key("g")?;
-            ensure_frontmost(helper.pid, &title, 4, config::UI_ACTION_DELAY_MS);
-            server_drive::wait_for_focused_pid(helper.pid, config::WAIT_FIRST_WINDOW_MS)?;
+            ensure_frontmost(
+                helper.pid,
+                &title,
+                4,
+                config::INPUT_DELAYS.ui_action_delay_ms,
+            );
+            server_drive::wait_for_focused_pid(helper.pid, config::WAITS.first_window_ms)?;
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
@@ -104,7 +110,7 @@ pub fn run_fullscreen_test(
             let mut after = mac_winops::ax_window_frame(helper.pid, &title);
             let start_wait = Instant::now();
             while after.is_none()
-                && start_wait.elapsed() < config::ms(config::FULLSCREEN_WAIT_TOTAL_MS)
+                && start_wait.elapsed() < config::ms(config::FULLSCREEN.wait_total_ms)
             {
                 // Bail early if backend died
                 if let Err(err) = server_drive::check_alive() {
@@ -113,7 +119,7 @@ pub fn run_fullscreen_test(
                         during: "fullscreen toggle",
                     });
                 }
-                thread::sleep(config::ms(config::FULLSCREEN_WAIT_POLL_MS));
+                thread::sleep(config::ms(config::FULLSCREEN.wait_poll_ms));
                 after = mac_winops::ax_window_frame(helper.pid, &title);
             }
             let after = after.ok_or_else(|| {

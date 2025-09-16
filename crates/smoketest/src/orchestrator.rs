@@ -213,7 +213,7 @@ fn run_subtest(
                     }
                     break false;
                 }
-                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+                thread::sleep(Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms));
             }
             Err(e) => {
                 if io.inherits_stdio() {
@@ -339,8 +339,8 @@ const PLACE_FLEX_VARIANTS: &[(PlaceFlexSettings, &str)] = &[
     // Default grid TL cell, pos-first-only
     (
         PlaceFlexSettings {
-            cols: config::PLACE_COLS,
-            rows: config::PLACE_ROWS,
+            cols: config::PLACE.grid_cols,
+            rows: config::PLACE.grid_rows,
             col: 0,
             row: 0,
             force_size_pos: false,
@@ -352,8 +352,8 @@ const PLACE_FLEX_VARIANTS: &[(PlaceFlexSettings, &str)] = &[
     // Default grid BL cell, normal path
     (
         PlaceFlexSettings {
-            cols: config::PLACE_COLS,
-            rows: config::PLACE_ROWS,
+            cols: config::PLACE.grid_cols,
+            rows: config::PLACE.grid_rows,
             col: 0,
             row: 1,
             force_size_pos: false,
@@ -411,7 +411,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     let mut overlay: Option<ManagedChild> = None;
     if warn_overlay && let Ok(child) = process::spawn_warn_overlay() {
         overlay = Some(child);
-        thread::sleep(Duration::from_millis(config::WARN_OVERLAY_INITIAL_DELAY_MS));
+        thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
         // Initialize overlay title
         process::write_overlay_status("Preparing tests...");
     }
@@ -443,7 +443,7 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
     // Repeat tests
     all_ok &= run("repeat-relay", duration_ms);
     all_ok &= run("repeat-shell", duration_ms);
-    let vol_duration = cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS);
+    let vol_duration = cmp::max(duration_ms, config::DEFAULTS.min_volume_duration_ms);
     all_ok &= run("repeat-volume", vol_duration);
 
     // Focus and window ops
@@ -582,7 +582,7 @@ pub fn run_sequence_tests(tests: &[SeqTest], duration_ms: u64, timeout_ms: u64, 
         let name = to_subcmd(t);
         heading(&format!("Test: {}", name));
         let dur = if matches!(t, SeqTest::RepeatVolume) {
-            cmp::max(duration_ms, config::MIN_VOLUME_TEST_DURATION_MS)
+            cmp::max(duration_ms, config::DEFAULTS.min_volume_duration_ms)
         } else {
             duration_ms
         };

@@ -9,7 +9,8 @@
 //! Acceptance criteria
 //! - For every `(col,row)` cell, after sending the bound key, the helper
 //!   window’s `(x, y, w, h)` matches the expected cell rectangle within
-//!   `PLACE_EPS` tolerance and before `PLACE_STEP_TIMEOUT_MS` expires.
+//!   `config::PLACE.eps` tolerance and before `config::PLACE.step_timeout_ms`
+//!   expires.
 //! - If the helper CGWindowId cannot be found, the screen’s visible frame
 //!   cannot be resolved, or any cell fails to match within tolerance/time, the
 //!   test fails with a detailed mismatch error (expected vs. actual).
@@ -34,8 +35,8 @@ use crate::{
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Minimal backend (HUD hidden); we drive placement via mac-winops by PID to
     // ensure we never resize a non-test window.
-    let cols = config::PLACE_COLS;
-    let rows = config::PLACE_ROWS;
+    let cols = config::PLACE.grid_cols;
+    let rows = config::PLACE.grid_rows;
     let helper_title = config::test_title("place");
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
@@ -57,21 +58,21 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let mut helper = HelperWindow::spawn_frontmost(
                 &title,
                 helper_time,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
                 "P",
             )?;
 
             // Resolve CG window id
-            let _wid = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
+            let _wid = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
 
             // Ensure helper is frontmost to make AX resolution stable
-            let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
+            let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
 
             // Iterate all grid cells in row-major order (top-left is (0,0)) and
             // drive placement directly via mac-winops on the helper PID.
@@ -81,8 +82,8 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     let vf = fixtures::resolve_vf_for_window(
                         helper.pid,
                         &title,
-                        config::DEFAULT_TIMEOUT_MS,
-                        config::PLACE_POLL_MS,
+                        config::DEFAULTS.timeout_ms,
+                        config::PLACE.poll_ms,
                     )
                     .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
 
@@ -101,9 +102,9 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                         helper.pid,
                         &title,
                         expected,
-                        config::PLACE_EPS,
-                        config::PLACE_STEP_TIMEOUT_MS,
-                        config::PLACE_POLL_MS,
+                        config::PLACE.eps,
+                        config::PLACE.step_timeout_ms,
+                        config::PLACE.poll_ms,
                     );
                     if !ok {
                         let actual = mac_winops::ax_window_frame(helper.pid, &title)

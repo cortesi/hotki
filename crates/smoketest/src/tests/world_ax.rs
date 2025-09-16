@@ -28,12 +28,12 @@ pub fn run_world_ax_test(timeout_ms: u64, _logs: bool) -> Result<()> {
         .unwrap()
         .as_nanos();
     let title = format!("hotki smoketest: world-ax {}-{}", std_process::id(), now);
-    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+    let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW.extra_time_ms);
     let mut helper = spawn_helper_visible(
         &title,
         lifetime,
-        config::WAIT_FIRST_WINDOW_MS,
-        config::POLL_INTERVAL_MS,
+        config::WAITS.first_window_ms,
+        config::INPUT_DELAYS.poll_interval_ms,
         "AX",
     )?;
 

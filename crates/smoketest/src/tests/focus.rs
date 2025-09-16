@@ -10,7 +10,7 @@
 //! - Within `timeout_ms`, at least one of the above signals is observed.
 //! - IPC to the backend remains connected while waiting; if it disconnects the
 //!   test fails with `IpcDisconnected`.
-//! - On success, the test returns a `FocusOutcome` containing the observed
+//! - On success, the test returns a `TestOutcome` containing the observed
 //!   title, pid, and elapsed time.
 //! - On failure, the test errors with `FocusNotObserved { expected, timeout_ms }`.
 //!
@@ -33,7 +33,7 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
-    results::FocusOutcome,
+    results::{TestDetails, TestOutcome},
     runtime, server_drive,
     test_runner::{TestConfig, TestRunner},
 };
@@ -75,7 +75,7 @@ async fn listen_for_focus(
         }
     };
 
-    let per_wait = config::ms(config::FOCUS_EVENT_POLL_MS);
+    let per_wait = config::ms(config::FOCUS.event_poll_ms);
     loop {
         if done.load(Ordering::SeqCst) {
             break;
@@ -109,7 +109,7 @@ async fn listen_for_focus(
 // Use fixtures::wait_for_frontmost_title
 
 /// Run focus tracking test; returns observed title/pid and elapsed time.
-pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {
+pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<TestOutcome> {
     let ron_config = "(keys: [], style: (hud: (mode: hide)))";
     let config = TestConfig::new(timeout_ms)
         .with_logs(with_logs)
@@ -167,19 +167,19 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             let helper = spawn_helper_visible(
                 &expected_title,
                 helper_time,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::FOCUS_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::FOCUS.poll_ms,
                 "F",
             )?;
             let expected_pid = helper.pid;
 
             // Best‑effort: explicitly bring helper to front
             ensure_frontmost(expected_pid, &expected_title, 20, 150);
-            if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
+            if wait_for_frontmost_title(&expected_title, config::FOCUS.event_poll_ms) {
                 if let Ok(mut g) = matched.lock() {
                     *g = Some((expected_title.clone(), expected_pid));
                 }
@@ -195,7 +195,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                     break;
                 }
                 // Fall back to CG frontmost check to reduce flakiness
-                if wait_for_frontmost_title(&expected_title, config::FOCUS_EVENT_POLL_MS) {
+                if wait_for_frontmost_title(&expected_title, config::FOCUS.event_poll_ms) {
                     if let Ok(mut g) = matched.lock() {
                         *g = Some((expected_title.clone(), expected_pid));
                     }
@@ -205,7 +205,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 // Attempt lazy init of RPC driver until connected
                 if !server_drive::is_ready()
                     && let Err(err) =
-                        server_drive::ensure_init(&socket_path, config::FAST_RETRY_DELAY_MS)
+                        server_drive::ensure_init(&socket_path, config::RETRY.fast_delay_ms)
                 {
                     eprintln!("focus: failed to reinitialize RPC driver: {}", err);
                 }
@@ -220,7 +220,7 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                         during: "focus wait",
                     });
                 }
-                thread::sleep(config::ms(config::FOCUS_POLL_MS));
+                thread::sleep(config::ms(config::FOCUS.poll_ms));
             }
 
             // Signal listener to stop
@@ -246,11 +246,8 @@ pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> 
                 .and_then(|g| g.clone())
                 .unwrap_or((expected_title, expected_pid));
 
-            Ok(FocusOutcome {
-                title,
-                pid,
-                elapsed_ms: start.elapsed().as_millis() as u64,
-            })
+            Ok(TestOutcome::success(TestDetails::Focus { title, pid })
+                .with_elapsed_ms(start.elapsed().as_millis() as u64))
         })
         .with_teardown(|ctx, _| {
             ctx.shutdown();

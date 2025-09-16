@@ -129,8 +129,12 @@ pub fn run_focus_winhelper(
                 .with_visible(true)
                 .with_decorations(false)
                 .with_inner_size(LogicalSize::new(
-                    self.size.map(|s| s.0).unwrap_or(config::HELPER_WIN_WIDTH),
-                    self.size.map(|s| s.1).unwrap_or(config::HELPER_WIN_HEIGHT),
+                    self.size
+                        .map(|s| s.0)
+                        .unwrap_or(config::HELPER_WINDOW.width_px),
+                    self.size
+                        .map(|s| s.1)
+                        .unwrap_or(config::HELPER_WINDOW.height_px),
                 ));
             elwt.create_window(attrs).map_err(|e| e.to_string())
         }
@@ -225,10 +229,10 @@ pub fn run_focus_winhelper(
             } else if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 // Fallback: bottom-right corner at a fixed small size on main screen.
                 use objc2_app_kit::NSScreen;
-                let margin: f64 = config::HELPER_WIN_MARGIN;
+                let margin: f64 = config::HELPER_WINDOW.margin_px;
                 if let Some(scr) = NSScreen::mainScreen(mtm) {
                     let vf = scr.visibleFrame();
-                    let w = config::HELPER_WIN_WIDTH;
+                    let w = config::HELPER_WINDOW.width_px;
                     let x = (vf.origin.x + vf.size.width - w - margin).max(0.0);
                     let y = (vf.origin.y + margin).max(0.0);
                     win.set_outer_position(LogicalPosition::new(x, y));
@@ -639,9 +643,10 @@ pub fn run_focus_winhelper(
         /// Interpolate position and size based on tween progress `t`.
         fn tween_interpolate(&self, t: f64) -> (f64, f64, f64, f64) {
             let (mut nx, mut ny) = self.last_pos.unwrap_or((0.0, 0.0));
-            let (mut nw, mut nh) = self
-                .last_size
-                .unwrap_or((config::HELPER_WIN_WIDTH, config::HELPER_WIN_HEIGHT));
+            let (mut nw, mut nh) = self.last_size.unwrap_or((
+                config::HELPER_WINDOW.width_px,
+                config::HELPER_WINDOW.height_px,
+            ));
             if let (Some((fx, fy)), Some((tx, ty))) = (self.tween_from_pos, self.tween_to_pos) {
                 nx = fx + (tx - fx) * t;
                 ny = fy + (ty - fy) * t;
@@ -810,7 +815,9 @@ pub fn run_focus_winhelper(
             self.apply_nonmovable_if_requested();
             self.initial_placement(&win);
             // Allow registration to settle before adding label.
-            thread::sleep(config::ms(config::WINDOW_REGISTRATION_DELAY_MS));
+            thread::sleep(config::ms(
+                config::INPUT_DELAYS.window_registration_delay_ms,
+            ));
             self.capture_initial_geometry(&win);
             self.arm_delayed_apply_if_configured();
             let _ = self.attach_sheet; // placeholder hook

@@ -317,7 +317,7 @@ pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
         {
             return true;
         }
-        thread::sleep(config::ms(config::POLL_INTERVAL_MS));
+        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
     }
     false
 }
@@ -422,7 +422,7 @@ impl HelperWindow {
         let child =
             spawn_helper_visible(title, lifetime_ms, visible_timeout_ms, poll_ms, label_text)?;
         let pid = child.pid;
-        ensure_frontmost(pid, title, 3, config::UI_ACTION_DELAY_MS);
+        ensure_frontmost(pid, title, 3, config::INPUT_DELAYS.ui_action_delay_ms);
         Ok(Self { child, pid })
     }
 
@@ -440,7 +440,12 @@ impl HelperWindow {
                 expected: format!("helper window '{}' not visible", expected_title),
             });
         }
-        ensure_frontmost(child.pid, expected_title, 3, config::UI_ACTION_DELAY_MS);
+        ensure_frontmost(
+            child.pid,
+            expected_title,
+            3,
+            config::INPUT_DELAYS.ui_action_delay_ms,
+        );
         Ok(Self {
             pid: child.pid,
             child,

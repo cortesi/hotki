@@ -45,7 +45,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HELPER_WINDOW_EXTRA_TIME_MS);
+                .saturating_add(config::HELPER_WINDOW.extra_time_ms);
             // Compute expected grid rect now based on the main or first screen;
             // the helper spawns on the main screen by default.
             let mut helper: ManagedChild = HelperWindowBuilder::new(title.clone())
@@ -58,28 +58,29 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !wait_for_window_visible(
                 helper.pid,
                 &title,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::PLACE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::PLACE.poll_ms,
             ) {
                 return Err(Error::InvalidState("helper window not visible".into()));
             }
 
             // Resolve window id and ensure frontmost by best-effort activation
-            let _ = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
-                .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let _ =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
             ensure_frontmost(
                 helper.pid,
                 &title,
                 5,
-                config::RETRY_DELAY_MS,
+                config::INPUT_DELAYS.retry_delay_ms,
             );
 
             // Compute expected rect for (1,1) at current screen
             let vf = fixtures::resolve_vf_for_window(
                 helper.pid,
                 &title,
-                config::DEFAULT_TIMEOUT_MS,
-                config::PLACE_POLL_MS,
+                config::DEFAULTS.timeout_ms,
+                config::PLACE.poll_ms,
             )
             .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
             let expected = fixtures::cell_rect(vf, cols, rows, col, row);
@@ -93,9 +94,9 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 helper.pid,
                 &title,
                 expected,
-                config::PLACE_EPS,
-                config::PLACE_STEP_TIMEOUT_MS,
-                config::PLACE_POLL_MS,
+                config::PLACE.eps,
+                config::PLACE.step_timeout_ms,
+                config::PLACE.poll_ms,
             );
             if !ok {
                 let actual = mac_winops::ax_window_frame(helper.pid, &title)

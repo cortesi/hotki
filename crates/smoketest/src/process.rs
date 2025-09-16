@@ -37,7 +37,7 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
 pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
     match spawn_warn_overlay() {
         Ok(child) => {
-            thread::sleep(Duration::from_millis(config::WARN_OVERLAY_INITIAL_DELAY_MS));
+            thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
             Some(child)
         }
         Err(_) => None,
@@ -108,7 +108,7 @@ pub fn build_hotki_quiet() -> Result<()> {
                         "Build timeout: cargo build took too long".to_string(),
                     ));
                 }
-                thread::sleep(Duration::from_millis(config::RETRY_DELAY_MS));
+                thread::sleep(Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms));
             }
         }
     }

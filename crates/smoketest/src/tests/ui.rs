@@ -7,7 +7,7 @@
 //! - `run_minui_demo`: Same as above, but with the mini HUD mode.
 //!
 //! Acceptance criteria
-//! - The HUD is observed (readiness gate satisfied) and a `Summary` is
+//! - The HUD is observed (readiness gate satisfied) and a `TestOutcome` is
 //!   returned with `hud_seen = true` and `time_to_hud_ms` set.
 //! - The driving sequence completes without backend errors, and the session is
 //!   cleanly torn down.
@@ -16,14 +16,14 @@ use std::iter::repeat_n;
 use crate::{
     config,
     error::Result,
-    results::Summary,
+    results::{TestDetails, TestOutcome},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key_sequence,
 };
 
 /// Run the standard UI demo test.
-pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
+pub fn run_ui_demo(timeout_ms: u64) -> Result<TestOutcome> {
     // Keep HUD visible and anchor it to the bottom-right (se) for this demo.
     let ron_config = r#"(
         keys: [
@@ -52,7 +52,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATE_DEFAULT_MS * 2)?;
+            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATES.default_ms * 2)?;
             // Send key sequence to test UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
@@ -61,10 +61,11 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
             seq.push("shift+cmd+0");
             send_key_sequence(&seq)?;
 
-            let mut sum = Summary::new();
-            sum.hud_seen = true;
-            sum.time_to_hud_ms = Some(time_to_hud);
-            Ok(sum)
+            Ok(TestOutcome::success(TestDetails::Ui {
+                hud_seen: true,
+                time_to_hud_ms: Some(time_to_hud),
+            })
+            .with_elapsed_ms(time_to_hud))
         })
         .with_teardown(|ctx, _| {
             ctx.shutdown();
@@ -74,7 +75,7 @@ pub fn run_ui_demo(timeout_ms: u64) -> Result<Summary> {
 }
 
 /// Run the mini UI demo test.
-pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
+pub fn run_minui_demo(timeout_ms: u64) -> Result<TestOutcome> {
     let ron_config = r#"(
         keys: [
             ("shift+cmd+0", "activate", keys([
@@ -102,7 +103,7 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
         })
         .with_execute(|ctx| {
             let time_to_hud = ctx.wait_for_hud()?;
-            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATE_DEFAULT_MS * 2)?;
+            server_drive::wait_for_ident("shift+cmd+0", config::BINDING_GATES.default_ms * 2)?;
             // Send key sequence to test mini UI
             let mut seq: Vec<&str> = Vec::new();
             seq.push("t");
@@ -111,10 +112,11 @@ pub fn run_minui_demo(timeout_ms: u64) -> Result<Summary> {
             seq.push("shift+cmd+0");
             send_key_sequence(&seq)?;
 
-            let mut sum = Summary::new();
-            sum.hud_seen = true;
-            sum.time_to_hud_ms = Some(time_to_hud);
-            Ok(sum)
+            Ok(TestOutcome::success(TestDetails::Ui {
+                hud_seen: true,
+                time_to_hud_ms: Some(time_to_hud),
+            })
+            .with_elapsed_ms(time_to_hud))
         })
         .with_teardown(|ctx, _| {
             ctx.shutdown();

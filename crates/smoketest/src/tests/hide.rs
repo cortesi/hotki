@@ -74,12 +74,12 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let helper_time = ctx
                 .config
                 .timeout_ms
-                .saturating_add(config::HIDE_HELPER_EXTRA_TIME_MS);
+                .saturating_add(config::HIDE.helper_extra_time_ms);
             let helper = HelperWindow::spawn_frontmost(
                 &title,
                 helper_time,
-                cmp::min(ctx.config.timeout_ms, config::HIDE_FIRST_WINDOW_MAX_MS),
-                config::HIDE_POLL_MS,
+                cmp::min(ctx.config.timeout_ms, config::HIDE.first_window_max_ms),
+                config::HIDE.poll_ms,
                 "H",
             )?;
             let pid = helper.pid;
@@ -103,11 +103,11 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 (vf.origin.x + vf.size.width) - 1.0
             } else {
                 // Fallback guess: large X likely on right
-                p0.0 + config::WINDOW_POSITION_OFFSET
+                p0.0 + config::HIDE.position_offset
             };
 
             // Ensure the helper window is frontmost before issuing hide commands.
-            ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
+            ensure_frontmost(pid, &title, 2, config::HIDE.activate_post_delay_ms);
 
             // Drive: send 'h' then 'o' (hide on) — idents are pre-gated in setup
             send_key("h")?;
@@ -117,7 +117,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let mut moved = false;
             let deadline = Instant::now()
                 + Duration::from_millis(cmp::max(
-                    config::HIDE_MIN_TIMEOUT_MS,
+                    config::HIDE.min_timeout_ms,
                     ctx.config.timeout_ms / 4,
                 ));
             let mut _p_on = p0;
@@ -129,7 +129,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                         break;
                     }
                 }
-                thread::sleep(config::ms(config::KEY_EVENT_DELAY_MS));
+                thread::sleep(config::ms(config::INPUT_DELAYS.key_event_delay_ms));
             }
             if !moved {
                 eprintln!(
@@ -144,7 +144,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Drive: reopen/activate and turn hide off (reveal)
             send_activation_chord()?;
             // Raise helper again before revealing to avoid toggling an unrelated window.
-            ensure_frontmost(pid, &title, 2, config::HIDE_ACTIVATE_POST_DELAY_MS);
+            ensure_frontmost(pid, &title, 2, config::HIDE.activate_post_delay_ms);
             send_key("h")?;
             send_key("f")?;
 
@@ -152,8 +152,8 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let mut restored = false;
             let deadline2 = Instant::now()
                 + Duration::from_millis((ctx.config.timeout_ms / 3).clamp(
-                    config::HIDE_SECONDARY_MIN_TIMEOUT_MS,
-                    config::HIDE_RESTORE_MAX_MS,
+                    config::HIDE.secondary_min_timeout_ms,
+                    config::HIDE.restore_max_ms,
                 ));
             while Instant::now() < deadline2 {
                 if let Some(((px2, py2), (width2, height2))) =
@@ -167,7 +167,7 @@ pub fn run_hide_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                         break;
                     }
                 }
-                thread::sleep(config::ms(config::HIDE_POLL_MS));
+                thread::sleep(config::ms(config::HIDE.poll_ms));
             }
 
             if !restored {
