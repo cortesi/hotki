@@ -21,14 +21,14 @@ integrating the improvements across the crate.
 
 2. Stage Two: Extract a Shared Placement Engine
 
-1. [ ] Introduce a `PlacementContext` struct that captures the shared inputs
+1. [x] Introduce a `PlacementContext` struct that captures the shared inputs
        (AX element, target rect, visible frame, attempt options).
-2. [ ] Move the multi-attempt pipeline into a single `PlacementEngine::execute`
+2. [x] Move the multi-attempt pipeline into a single `PlacementEngine::execute`
        function that returns detailed outcomes for verification and logging.
-3. [ ] Rebuild `place_grid`, `place_grid_focused`, `place_grid_focused_opts`,
+3. [x] Rebuild `place_grid`, `place_grid_focused`, `place_grid_focused_opts`,
        and `place_move_grid` on top of the new engine to eliminate duplicated
        branches.
-4. [ ] Collapse the duplicate `PlaceAttemptOptions` definitions and re-export
+4. [x] Collapse the duplicate `PlaceAttemptOptions` definitions and re-export
        a single configuration surface for callers and tests.
 
 3. Stage Three: Harden Fallback Behaviour

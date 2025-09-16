@@ -1,3 +1,5 @@
+use std::fmt;
+
 use tracing::debug;
 
 // Shared placement utilities: constants, small helpers, and attempt options.
@@ -23,6 +25,68 @@ pub struct PlaceAttemptOptions {
     pub pos_first_only: bool,
     /// Force shrink->move->grow fallback even if dual-order converged.
     pub force_shrink_move_grow: bool,
+}
+
+/// Shared placement inputs derived during normalization.
+#[derive(Clone)]
+pub struct PlacementContext {
+    win: crate::AXElem,
+    target: Rect,
+    visible_frame: Rect,
+    attempt_options: PlaceAttemptOptions,
+}
+
+impl fmt::Debug for PlacementContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlacementContext")
+            .field("win_ptr", &(self.win.as_ptr() as *const ()))
+            .field("target", &self.target)
+            .field("visible_frame", &self.visible_frame)
+            .field("attempt_options", &self.attempt_options)
+            .finish()
+    }
+}
+
+impl PlacementContext {
+    /// Build a placement context from the normalized window state.
+    #[inline]
+    pub fn new(
+        win: crate::AXElem,
+        target: Rect,
+        visible_frame: Rect,
+        attempt_options: PlaceAttemptOptions,
+    ) -> Self {
+        Self {
+            win,
+            target,
+            visible_frame,
+            attempt_options,
+        }
+    }
+
+    /// Access the retained Accessibility element for subsequent operations.
+    #[inline]
+    pub fn win(&self) -> &crate::AXElem {
+        &self.win
+    }
+
+    /// Retrieve the resolved visible frame used during placement.
+    #[inline]
+    pub fn visible_frame(&self) -> &Rect {
+        &self.visible_frame
+    }
+
+    /// Retrieve the global target rect produced by grid resolution.
+    #[inline]
+    pub fn target(&self) -> &Rect {
+        &self.target
+    }
+
+    /// Return the placement attempt options configured by the caller.
+    #[inline]
+    pub fn attempt_options(&self) -> PlaceAttemptOptions {
+        self.attempt_options
+    }
 }
 
 #[inline]

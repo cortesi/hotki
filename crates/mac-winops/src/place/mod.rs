@@ -29,6 +29,7 @@ use crate::geom;
 
 mod apply;
 mod common;
+mod engine;
 mod fallback;
 mod metrics;
 mod normalize;
