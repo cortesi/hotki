@@ -4,7 +4,7 @@
 
 use tracing::info;
 
-use super::{geom, helpers::wait_for_windows_visible};
+use super::fixtures::{self, Rect, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
@@ -20,38 +20,27 @@ use crate::{
 const EPS: f64 = 2.0;
 
 /// Resolve the visible frame for the screen containing the frontmost window.
-fn current_frontmost_vf() -> Result<geom::Rect> {
+fn current_frontmost_vf() -> Result<Rect> {
     let front = mac_winops::frontmost_window()
         .ok_or_else(|| Error::InvalidState("No frontmost CG window".into()))?;
     let ((x, y), _) = mac_winops::ax_window_frame(front.pid, &front.title)
         .ok_or_else(|| Error::InvalidState("AX frame for frontmost not available".into()))?;
-    geom::visible_frame_containing_point(x, y)
+    fixtures::visible_frame_containing_point(x, y)
         .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Find the grid cell index for a given frame within the visible frame.
 fn find_cell_for_frame(
-    vf_x: f64,
-    vf_y: f64,
-    vf_w: f64,
-    vf_h: f64,
+    vf: Rect,
     cols: u32,
     rows: u32,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+    frame: Rect,
     eps: f64,
 ) -> Option<(u32, u32)> {
     for row in 0..rows {
         for col in 0..cols {
-            let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, col, row);
-            if (x - ex).abs() <= eps
-                && (y - ey).abs() <= eps
-                && (w - ew).abs() <= eps
-                && (h - eh).abs() <= eps
-            {
+            let expected = fixtures::cell_rect(vf, cols, rows, col, row);
+            if frame.approx_eq(&expected, eps) {
                 return Some((col, row));
             }
         }
@@ -170,11 +159,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())
                 })?;
-            let (vf_x, vf_y, vf_w, vf_h) = geom::visible_frame_containing_point(x, y)
+            let vf = fixtures::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
-            if let Some((cx, cy)) =
-                find_cell_for_frame(vf_x, vf_y, vf_w, vf_h, 2, 2, x, y, w, h, EPS)
-            {
+            let frame = Rect::new(x, y, w, h);
+            if let Some((cx, cy)) = find_cell_for_frame(vf, 2, 2, frame, EPS) {
                 info!(
                     "focus-nav: TL cell coords=({}, {}) — expecting (0, 0)",
                     cx, cy
@@ -190,7 +178,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     "Could not resolve TL cell coords".into(),
                 ));
             }
-            geom::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
+            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
 
             // Helper to drive focus(dir) via direct global bindings
             let drive = |dir: &str| -> Result<()> {
@@ -207,7 +195,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // TL -> TR
             // Verify source before move
-            geom::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
+            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
             drive("l")?; // RIGHT
             if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
@@ -215,10 +203,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     expected: title_tr,
                 });
             }
-            geom::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
+            fixtures::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
             // TR -> BR
             // Verify source before move
-            geom::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
+            fixtures::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
             drive("j")?; // DOWN
             if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
@@ -226,10 +214,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     expected: title_br,
                 });
             }
-            geom::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
+            fixtures::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
             // BR -> BL
             // Verify source before move
-            geom::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
+            fixtures::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
             drive("h")?; // LEFT
             if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
@@ -237,10 +225,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     expected: title_bl,
                 });
             }
-            geom::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
+            fixtures::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
             // BL -> TL
             // Verify source before move
-            geom::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
+            fixtures::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
             drive("k")?; // UP
             if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV_STEP_TIMEOUT_MS) {
                 return Err(Error::FocusNotObserved {
@@ -256,11 +244,10 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())
                 })?;
-            let (vf_x, vf_y, vf_w, vf_h) = geom::visible_frame_containing_point(x, y)
+            let vf = fixtures::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
-            if let Some((cx, cy)) =
-                find_cell_for_frame(vf_x, vf_y, vf_w, vf_h, 2, 2, x, y, w, h, EPS)
-            {
+            let frame = Rect::new(x, y, w, h);
+            if let Some((cx, cy)) = find_cell_for_frame(vf, 2, 2, frame, EPS) {
                 info!(
                     "focus-nav: END — TL cell coords=({}, {}) — expecting (0, 0)",
                     cx, cy
@@ -276,7 +263,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     "Could not resolve END TL cell coords".into(),
                 ));
             }
-            geom::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
+            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
             Ok(())
         })
         .run()

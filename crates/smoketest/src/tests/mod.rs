@@ -1,10 +1,9 @@
 //! Test implementations for smoketest.
 
+pub mod fixtures;
 pub mod focus;
 pub mod focus_nav;
 pub mod fullscreen;
-pub mod geom;
-pub mod helpers;
 pub mod hide;
 pub mod place;
 pub mod place_animated;

@@ -10,10 +10,10 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::geom,
+    tests::fixtures::{self, Rect},
 };
 
-// Geometry helpers moved to `tests::geom`.
+// Geometry helpers moved to `tests::fixtures`.
 
 /// Run the async placement smoketest with a small 2×2 grid.
 pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -65,7 +65,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Resolve window id and ensure frontmost by best-effort activation
-            let _ = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
+            let _ = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
             ensure_frontmost(
                 helper.pid,
@@ -75,21 +75,21 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             );
 
             // Compute expected rect for (1,1) at current screen
-            let (vf_x, vf_y, vf_w, vf_h) = geom::resolve_vf_for_window(
+            let vf = fixtures::resolve_vf_for_window(
                 helper.pid,
                 &title,
                 config::DEFAULT_TIMEOUT_MS,
                 config::PLACE_POLL_MS,
             )
             .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
-            let expected = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, col, row);
+            let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
             // Trigger placement directly via mac-winops (focused-for-pid)
             // This exercises the exact placement code-path while avoiding
             // orchestrator races.
             mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
                 .map_err(|e| Error::SpawnFailed(format!("place_grid_focused failed: {}", e)))?;
-            let ok = geom::wait_for_expected_frame(
+            let ok = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,
                 expected,
@@ -99,15 +99,15 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             );
             if !ok {
                 let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                    .map(|((ax, ay), (aw, ah))| (ax, ay, aw, ah));
+                    .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
                 return Err(Error::SpawnFailed(match actual {
-                    Some((ax, ay, aw, ah)) => format!(
+                    Some(actual) => format!(
                         "placement mismatch (async) (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                        expected.0, expected.1, expected.2, expected.3, ax, ay, aw, ah
+                        expected.x, expected.y, expected.w, expected.h, actual.x, actual.y, actual.w, actual.h
                     ),
                     None => format!(
                         "placement mismatch (async) (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                        expected.0, expected.1, expected.2, expected.3
+                        expected.x, expected.y, expected.w, expected.h
                     ),
                 }));
             }

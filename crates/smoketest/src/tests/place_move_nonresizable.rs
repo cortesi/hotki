@@ -14,7 +14,7 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{HelperWindow, HelperWindowBuilder},
-    tests::{geom, helpers},
+    tests::fixtures::{self, Rect},
 };
 
 /// Run the non-resizable move smoketest to verify anchored fallback when AXSize is not settable.
@@ -39,11 +39,11 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
     // Establish visible frame at current center
     let ((ax, ay), _) = mac_winops::ax_window_frame(pid, &title)
         .ok_or_else(|| Error::InvalidState("AX frame for helper unavailable".into()))?;
-    let vf = geom::visible_frame_containing_point(ax, ay)
+    let vf = fixtures::visible_frame_containing_point(ax, ay)
         .ok_or_else(|| Error::InvalidState("visibleFrame not resolved".into()))?;
 
     // Move right by one cell
-    let id = geom::find_window_id(
+    let id = fixtures::find_window_id(
         pid,
         &title,
         config::DEFAULT_TIMEOUT_MS,
@@ -56,16 +56,16 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
 
     // Expectation: x,y align to the next cell's origin (left+bottom flush);
     // width/height remain at or above cell size because resizing is disabled.
-    let (ex1, ey1, ew1, eh1) = geom::cell_rect(vf, 4, 4, 1, 0);
+    let expected1 = fixtures::cell_rect(vf, 4, 4, 1, 0);
     let eps = config::PLACE_EPS;
     let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
     let mut ok = false;
     while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &title)
-            && helpers::approx(x, ex1, eps)
-            && helpers::approx(y, ey1, eps)
-            && w >= ew1 - eps
-            && h >= eh1 - eps
+            && fixtures::approx(x, expected1.x, eps)
+            && fixtures::approx(y, expected1.y, eps)
+            && w >= expected1.w - eps
+            && h >= expected1.h - eps
         {
             ok = true;
             break;
@@ -73,12 +73,19 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
         thread::sleep(Duration::from_millis(config::PLACE_POLL_MS));
     }
     if !ok {
-        let actual =
-            mac_winops::ax_window_frame(helper.pid, &title).map(|((x, y), (w, h))| (x, y, w, h));
+        let actual = mac_winops::ax_window_frame(helper.pid, &title)
+            .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
         return Err(Error::InvalidState(match actual {
-            Some((x, y, w, h)) => format!(
+            Some(actual) => format!(
                 "place-move-nonresizable mismatch (expected col=1 anchors; ex x={:.1} y={:.1} w>={:.1} h>={:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                ex1, ey1, ew1, eh1, x, y, w, h
+                expected1.x,
+                expected1.y,
+                expected1.w,
+                expected1.h,
+                actual.x,
+                actual.y,
+                actual.w,
+                actual.h
             ),
             None => "place-move-nonresizable mismatch (frame unavailable)".into(),
         }));

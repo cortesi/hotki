@@ -37,6 +37,7 @@ pub mod ops;
 mod place;
 mod raise;
 mod screen_util;
+pub mod wait;
 mod window;
 
 pub mod focus;
@@ -52,6 +53,7 @@ pub use ax::{
 };
 pub use error::{Error, Result};
 pub use fullscreen::{fullscreen_native, fullscreen_nonnative};
+pub use geom::{Rect, approx_eq, approx_eq_eps, cell_rect};
 pub use hide::{hide_bottom_left, hide_corner};
 use main_thread_ops::{MAIN_OPS, MainOp};
 pub use main_thread_ops::{

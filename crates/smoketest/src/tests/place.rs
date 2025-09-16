@@ -20,7 +20,7 @@
 
 use std::cmp;
 
-use super::geom;
+use super::fixtures::{self, Rect};
 use crate::{
     config,
     error::{Error, Result},
@@ -28,7 +28,7 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
 };
 
-// Geometry helpers are provided by `tests::geom`.
+// Geometry helpers are provided by `tests::fixtures`.
 
 /// Run grid placement test across all cells of the default grid.
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
@@ -67,7 +67,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             )?;
 
             // Resolve CG window id
-            let _wid = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
+            let _wid = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
 
             // Ensure helper is frontmost to make AX resolution stable
@@ -78,7 +78,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             for row in 0..rows {
                 for col in 0..cols {
                     // Resolve visible frame based on current AX position
-                    let vf = geom::resolve_vf_for_window(
+                    let vf = fixtures::resolve_vf_for_window(
                         helper.pid,
                         &title,
                         config::DEFAULT_TIMEOUT_MS,
@@ -87,7 +87,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
 
                     // Compute expected cell rect
-                    let (ex, ey, ew, eh) = geom::cell_rect(vf, cols, rows, col, row);
+                    let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
                     // Place only the focused window for the helper's PID
                     mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
@@ -97,25 +97,34 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                         )))?;
 
                     // Wait for expected frame within tolerance
-                    let ok = geom::wait_for_expected_frame(
+                    let ok = fixtures::wait_for_expected_frame(
                         helper.pid,
                         &title,
-                        (ex, ey, ew, eh),
+                        expected,
                         config::PLACE_EPS,
                         config::PLACE_STEP_TIMEOUT_MS,
                         config::PLACE_POLL_MS,
                     );
                     if !ok {
                         let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                            .map(|((ax, ay), (aw, ah))| (ax, ay, aw, ah));
+                            .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
                         return Err(Error::SpawnFailed(match actual {
-                            Some((ax, ay, aw, ah)) => format!(
+                            Some(actual) => format!(
                                 "placement mismatch at col={}, row={} (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                                col, row, ex, ey, ew, eh, ax, ay, aw, ah
+                                col,
+                                row,
+                                expected.x,
+                                expected.y,
+                                expected.w,
+                                expected.h,
+                                actual.x,
+                                actual.y,
+                                actual.w,
+                                actual.h
                             ),
                             None => format!(
                                 "placement mismatch at col={}, row={} (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                                col, row, ex, ey, ew, eh
+                                col, row, expected.x, expected.y, expected.w, expected.h
                             ),
                         }));
                     }

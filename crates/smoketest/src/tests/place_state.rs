@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use super::geom;
+use super::fixtures;
 use crate::{
     config,
     error::{Error, Result},
@@ -13,7 +13,7 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
 };
 
-// Geometry and polling helpers are provided by `tests::geom`.
+// Geometry and polling helpers are provided by `tests::fixtures`.
 
 /// Drive a placement with initial minimized/zoomed state and verify normalization.
 fn run_place_with_state(
@@ -76,33 +76,32 @@ fn run_place_with_state(
                 thread::sleep(config::ms(config::PLACE_POLL_MS));
             }
 
-            let (vf_x, vf_y, vf_w, vf_h) =
-                if let Some(((ax, ay), _)) = mac_winops::ax_window_frame(helper.pid, &title) {
-                    geom::visible_frame_containing_point(ax, ay).ok_or_else(|| {
-                        Error::InvalidState("Failed to resolve screen visibleFrame".into())
-                    })?
-                } else if let Some(vf) = geom::resolve_vf_for_window(
-                    helper.pid,
-                    &title,
-                    config::DEFAULT_TIMEOUT_MS,
-                    config::PLACE_POLL_MS,
-                ) {
-                    vf
-                } else {
-                    return Err(Error::InvalidState(
-                        "Failed to resolve screen visibleFrame".into(),
-                    ));
-                };
+            let vf = if let Some(((ax, ay), _)) = mac_winops::ax_window_frame(helper.pid, &title) {
+                fixtures::visible_frame_containing_point(ax, ay).ok_or_else(|| {
+                    Error::InvalidState("Failed to resolve screen visibleFrame".into())
+                })?
+            } else if let Some(vf) = fixtures::resolve_vf_for_window(
+                helper.pid,
+                &title,
+                config::DEFAULT_TIMEOUT_MS,
+                config::PLACE_POLL_MS,
+            ) {
+                vf
+            } else {
+                return Err(Error::InvalidState(
+                    "Failed to resolve screen visibleFrame".into(),
+                ));
+            };
 
             // Expected cell rect for (0,0)
-            let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, 0, 0);
+            let expected = fixtures::cell_rect(vf, cols, rows, 0, 0);
             // Enforce constraint: place only the focused window for the helper's PID
             mac_winops::place_grid_focused(helper.pid, cols, rows, 0, 0)
                 .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
-            let ok = geom::wait_for_expected_frame(
+            let ok = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,
-                (ex, ey, ew, eh),
+                expected,
                 config::PLACE_EPS,
                 config::PLACE_STEP_TIMEOUT_MS,
                 config::PLACE_POLL_MS,

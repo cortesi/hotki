@@ -3,6 +3,10 @@
 //! - `active_frame()`: visible frame of the active screen at mouse location.
 //! - `list_display_bounds()`: bounds for all active displays with IDs.
 
+use objc2_foundation::MainThreadMarker;
+
+use crate::geom::{Point, Rect};
+
 /// Get the active screen frame as `(x, y, w, h, global_top)`.
 ///
 /// Delegates to the AppKit-backed implementation in `nswindow`.
@@ -34,4 +38,14 @@ pub fn list_display_bounds() -> Vec<(u32, i32, i32, i32, i32)> {
         out.push((id, x, y, w, h));
     }
     out
+}
+
+/// Resolve the visible frame for the screen containing `(x, y)`.
+///
+/// Returns `None` when invoked outside the main thread or when no displays
+/// are available.
+pub fn visible_frame_containing_point(x: f64, y: f64) -> Option<Rect> {
+    let mtm = MainThreadMarker::new()?;
+    let pt = Point { x, y };
+    Some(crate::screen_util::visible_frame_containing_point(mtm, pt))
 }

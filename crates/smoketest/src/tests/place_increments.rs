@@ -11,38 +11,37 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::{geom, helpers::approx},
+    tests::fixtures::{self, Rect},
 };
 
 /// Check whether the window frame anchors to selected edges within tolerance.
 fn verify_anchored(
     pid: i32,
     title: &str,
-    expected: (f64, f64, f64, f64),
+    expected: Rect,
     anchor_left: bool,
     anchor_right: bool,
     anchor_bottom: bool,
     anchor_top: bool,
 ) -> bool {
-    let (ex, ey, ew, eh) = expected;
-    let right = ex + ew;
-    let top = ey + eh;
+    let right = expected.x + expected.w;
+    let top = expected.y + expected.h;
     let eps = config::PLACE_EPS;
     let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
     while Instant::now() < deadline {
         if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, title) {
             let mut ok = true;
             if anchor_left {
-                ok &= approx(x, ex, eps);
+                ok &= fixtures::approx(x, expected.x, eps);
             }
             if anchor_right {
-                ok &= approx(x + w, right, eps);
+                ok &= fixtures::approx(x + w, right, eps);
             }
             if anchor_bottom {
-                ok &= approx(y, ey, eps);
+                ok &= fixtures::approx(y, expected.y, eps);
             }
             if anchor_top {
-                ok &= approx(y + h, top, eps);
+                ok &= fixtures::approx(y + h, top, eps);
             }
             if ok {
                 return true;
@@ -108,26 +107,33 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 let rows = 2u32;
                 let col = 1u32;
                 let row = 1u32; // last row => top anchored
-                let (ex, ey, ew, eh) = {
+                let expected = {
                     let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                         .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-                    let vf = geom::visible_frame_containing_point(ax, ay)
+                    let vf = fixtures::visible_frame_containing_point(ax, ay)
                         .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
-                    geom::cell_rect(vf, cols, rows, col, row)
+                    fixtures::cell_rect(vf, cols, rows, col, row)
                 };
                 mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
                     .map_err(|e| Error::SpawnFailed(format!(
                         "place_grid_focused failed (2x2 BR): {}",
                         e
                     )))?;
-                let ok = verify_anchored(helper.pid, &title, (ex, ey, ew, eh), false, true, false, true);
+                let ok = verify_anchored(helper.pid, &title, expected, false, true, false, true);
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                        .map(|((x, y), (w, h))| (x, y, w, h));
+                        .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
                     return Err(Error::SpawnFailed(match actual {
-                        Some((x, y, w, h)) => format!(
+                        Some(actual) => format!(
                             "increments A not anchored (expect right+top flush; ex={:.1},{:.1},{:.1},{:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                            ex, ey, ew, eh, x, y, w, h
+                            expected.x,
+                            expected.y,
+                            expected.w,
+                            expected.h,
+                            actual.x,
+                            actual.y,
+                            actual.w,
+                            actual.h
                         ),
                         None => "increments A not anchored (frame unavailable)".into(),
                     }));
@@ -140,26 +146,33 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 let rows = 1u32;
                 let col = 1u32; // middle
                 let row = 0u32;
-                let (ex, ey, ew, eh) = {
+                let expected = {
                     let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                         .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-                    let vf = geom::visible_frame_containing_point(ax, ay)
+                    let vf = fixtures::visible_frame_containing_point(ax, ay)
                         .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
-                    geom::cell_rect(vf, cols, rows, col, row)
+                    fixtures::cell_rect(vf, cols, rows, col, row)
                 };
                 mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
                     .map_err(|e| Error::SpawnFailed(format!(
                         "place_grid_focused failed (3x1 mid): {}",
                         e
                     )))?;
-                let ok = verify_anchored(helper.pid, &title, (ex, ey, ew, eh), true, false, true, false);
+                let ok = verify_anchored(helper.pid, &title, expected, true, false, true, false);
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                        .map(|((x, y), (w, h))| (x, y, w, h));
+                        .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
                     return Err(Error::SpawnFailed(match actual {
-                        Some((x, y, w, h)) => format!(
+                        Some(actual) => format!(
                             "increments B not anchored (expect left+bottom flush; ex={:.1},{:.1},{:.1},{:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                            ex, ey, ew, eh, x, y, w, h
+                            expected.x,
+                            expected.y,
+                            expected.w,
+                            expected.h,
+                            actual.x,
+                            actual.y,
+                            actual.w,
+                            actual.h
                         ),
                         None => "increments B not anchored (frame unavailable)".into(),
                     }));

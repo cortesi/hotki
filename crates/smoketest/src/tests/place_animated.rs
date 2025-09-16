@@ -11,7 +11,7 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::{geom, helpers::approx},
+    tests::fixtures,
 };
 
 /// Run the animated placement smoketest with a small 2×2 grid.
@@ -60,7 +60,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Resolve window id and ensure frontmost
-            let _ = geom::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
+            let _ = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE_POLL_MS)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
             ensure_frontmost(
                 helper.pid,
@@ -71,19 +71,18 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
 
             // Compute expected rect on the helper's current screen from CG, then
             // wait until CG bounds approximately match it (no AX dependency).
-            let (expected_x, expected_y, expected_w, expected_h) = {
+            let expected = {
                 let start = mac_winops::list_windows()
                     .into_iter()
                     .find(|w| w.pid == helper.pid && w.title == title)
                     .and_then(|w| w.pos)
                     .ok_or_else(|| Error::InvalidState("No CG bounds for helper".into()))?;
-                let vf = geom::visible_frame_containing_point(
+                let vf = fixtures::visible_frame_containing_point(
                     start.x as f64,
                     start.y as f64,
                 )
                 .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
-                let (ex, ey, ew, eh) = geom::cell_rect(vf, cols, rows, col, row);
-                (ex, ey, ew, eh)
+                fixtures::cell_rect(vf, cols, rows, col, row)
             };
             let cg_ok = {
                 let deadline = Instant::now() + Duration::from_millis(config::PLACE_STEP_TIMEOUT_MS);
@@ -97,10 +96,10 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     {
                         let (x, y, w, h) =
                             (pos.x as f64, pos.y as f64, pos.width as f64, pos.height as f64);
-                        if approx(x, expected_x, eps)
-                            && approx(y, expected_y, eps)
-                            && approx(w, expected_w, eps)
-                            && approx(h, expected_h, eps)
+                        if fixtures::approx(x, expected.x, eps)
+                            && fixtures::approx(y, expected.y, eps)
+                            && fixtures::approx(w, expected.w, eps)
+                            && fixtures::approx(h, expected.h, eps)
                         {
                             ok = true;
                             break;
@@ -113,7 +112,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             if !cg_ok {
                 return Err(Error::SpawnFailed(format!(
                     "animated window did not reach expected CG rect (expected x={:.1} y={:.1} w={:.1} h={:.1})",
-                    expected_x, expected_y, expected_w, expected_h
+                    expected.x, expected.y, expected.w, expected.h
                 )));
             }
 

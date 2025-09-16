@@ -10,10 +10,8 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
-    tests::geom,
+    tests::fixtures::{self, Rect},
 };
-
-// Geometry helpers moved to `tests::geom`.
 
 /// Run the flexible placement smoketest with configurable grid/cell and options.
 pub fn run_place_flex(
@@ -47,14 +45,14 @@ pub fn run_place_flex(
     let _ = wait_for_frontmost_title(&title, config::WAIT_FIRST_WINDOW_MS);
 
     // Compute expected rect from screen VF containing current AX position
-    let (vf_x, vf_y, vf_w, vf_h) = geom::resolve_vf_for_window(
+    let vf = fixtures::resolve_vf_for_window(
         helper.pid,
         &title,
         config::DEFAULT_TIMEOUT_MS,
         config::PLACE_POLL_MS,
     )
     .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
-    let (ex, ey, ew, eh) = geom::cell_rect((vf_x, vf_y, vf_w, vf_h), cols, rows, col, row);
+    let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
     // Build attempt options for placement
     let opts = PlaceAttemptOptions {
@@ -68,25 +66,32 @@ pub fn run_place_flex(
         .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
 
     // Verify expected frame
-    let ok = geom::wait_for_expected_frame(
+    let ok = fixtures::wait_for_expected_frame(
         helper.pid,
         &title,
-        (ex, ey, ew, eh),
+        expected,
         config::PLACE_EPS,
         config::PLACE_STEP_TIMEOUT_MS,
         config::PLACE_POLL_MS,
     );
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)
-            .map(|((ax, ay), (aw, ah))| (ax, ay, aw, ah));
+            .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
         return Err(Error::SpawnFailed(match actual {
-            Some((ax, ay, aw, ah)) => format!(
+            Some(actual) => format!(
                 "place-flex mismatch (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                ex, ey, ew, eh, ax, ay, aw, ah
+                expected.x,
+                expected.y,
+                expected.w,
+                expected.h,
+                actual.x,
+                actual.y,
+                actual.w,
+                actual.h
             ),
             None => format!(
                 "place-flex mismatch (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                ex, ey, ew, eh
+                expected.x, expected.y, expected.w, expected.h
             ),
         }));
     }

@@ -106,7 +106,7 @@ async fn listen_for_focus(
 
 // Prefer checking the current frontmost CG window title directly — this avoids
 // relying solely on HUD updates and reduces flakiness from event timing.
-// Use helpers::wait_for_frontmost_title
+// Use fixtures::wait_for_frontmost_title
 
 /// Run focus tracking test; returns observed title/pid and elapsed time.
 pub fn run_focus_test(timeout_ms: u64, with_logs: bool) -> Result<FocusOutcome> {

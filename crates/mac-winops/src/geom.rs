@@ -102,6 +102,12 @@ impl Rect {
         Rect { x, y, w, h }
     }
 
+    /// Convenience helper that mirrors the historical smoketest tuple utility.
+    #[inline]
+    pub fn cell_rect(&self, cols: u32, rows: u32, col: u32, row: u32) -> Rect {
+        self.grid_cell(cols, rows, col, row)
+    }
+
     /// Left edge (minimum x).
     #[inline]
     pub fn left(&self) -> f64 {
@@ -180,6 +186,12 @@ impl Rect {
     pub fn within_diff_eps(&self, eps: f64) -> bool {
         self.x <= eps && self.y <= eps && self.w <= eps && self.h <= eps
     }
+}
+
+/// Compute the rectangle for a grid cell within the provided visible frame.
+#[inline]
+pub fn cell_rect(vf: Rect, cols: u32, rows: u32, col: u32, row: u32) -> Rect {
+    vf.grid_cell(cols, rows, col, row)
 }
 
 impl core::fmt::Display for Rect {

@@ -16,7 +16,7 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::geom,
+    tests::fixtures,
 };
 
 /// Lightweight sample of a window frame at a point in time.
@@ -87,11 +87,11 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             // Compute expected visibleFrame and cell target
             let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-            let vf = geom::visible_frame_containing_point(ax, ay)
+            let vf = fixtures::visible_frame_containing_point(ax, ay)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
-            let (tx, ty, tw, th) = geom::cell_rect(vf, cols, rows, col, row);
-            let right = tx + tw;
-            let top = ty + th;
+            let target = fixtures::cell_rect(vf, cols, rows, col, row);
+            let right = target.x + target.w;
+            let top = target.y + target.h;
 
             // Sampler: collect AX frame timeline in the background
             let samples: Arc<Mutex<Vec<Sample>>> = Arc::new(Mutex::new(Vec::new()));
@@ -132,9 +132,9 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             // Find last sample anchored to cell edges
             let mut last_idx: Option<usize> = None;
             for (i, s) in samples.iter().enumerate().rev() {
-                let left_ok = approx(s.x, tx, eps);
+                let left_ok = approx(s.x, target.x, eps);
                 let right_ok = approx(s.x + s.w, right, eps);
-                let bottom_ok = approx(s.y, ty, eps);
+                let bottom_ok = approx(s.y, target.y, eps);
                 let top_ok = approx(s.y + s.h, top, eps);
                 if (left_ok || right_ok) && (bottom_ok || top_ok) {
                     last_idx = Some(i);
@@ -145,8 +145,8 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
                 Error::InvalidState("no anchored sample found in timeline".into())
             })?;
             let last = &samples[last_idx];
-            let left_ok = approx(last.x, tx, eps);
-            let bottom_ok = approx(last.y, ty, eps);
+            let left_ok = approx(last.x, target.x, eps);
+            let bottom_ok = approx(last.y, target.y, eps);
 
             // Find earliest sample that matches final anchoring and assert no drift after
             let mut latch_idx: Option<usize> = None;
@@ -154,12 +154,12 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
                 let htop = s.y + s.h;
                 let hright = s.x + s.w;
                 let horiz_ok = if left_ok {
-                    approx(s.x, tx, eps)
+                    approx(s.x, target.x, eps)
                 } else {
                     approx(hright, right, eps)
                 };
                 let vert_ok = if bottom_ok {
-                    approx(s.y, ty, eps)
+                    approx(s.y, target.y, eps)
                 } else {
                     approx(htop, top, eps)
                 };
@@ -175,12 +175,12 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
                 let htop = s.y + s.h;
                 let hright = s.x + s.w;
                 let horiz_ok = if left_ok {
-                    approx(s.x, tx, eps)
+                    approx(s.x, target.x, eps)
                 } else {
                     approx(hright, right, eps)
                 };
                 let vert_ok = if bottom_ok {
-                    approx(s.y, ty, eps)
+                    approx(s.y, target.y, eps)
                 } else {
                     approx(htop, top, eps)
                 };
