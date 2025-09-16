@@ -3,10 +3,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Child, Command},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
+use hotki_world::{World, WorldView, view_util};
+use mac_winops::ops::RealWinOps;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -97,13 +100,15 @@ fn socket_path_for_pid(pid: u32) -> String {
     hotki_server::socket_path_for_pid(pid)
 }
 
-fn wait_for_hud(sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
+fn wait_for_hud(
+    rt: &tokio::runtime::Runtime,
+    world: &Arc<dyn WorldView>,
+    sock: &str,
+    hotki_pid: u32,
+    timeout_ms: u64,
+) -> bool {
     // Connect client with retry
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(_) => return false,
-    };
     let mut client = loop {
         let res = rt.block_on(async {
             hotki_server::Client::new_with_socket(sock)
@@ -125,7 +130,7 @@ fn wait_for_hud(sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
 
     if let Ok(conn) = client.connection() {
         // Send activation chord a few times while we wait
-        inject_key(&rt, conn, "shift+cmd+0");
+        inject_key(rt, conn, "shift+cmd+0");
         let poll = Duration::from_millis(200);
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -141,13 +146,17 @@ fn wait_for_hud(sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
                 Ok(Err(_)) | Err(_) => {}
             }
             // Side-check using CG list
-            if mac_winops::list_windows()
-                .into_iter()
-                .any(|w| w.pid == hotki_pid as i32 && w.title == "Hotki HUD")
-            {
+            world.hint_refresh();
+            let hud_visible = rt.block_on(async {
+                view_util::any_window_matching(world.as_ref(), |w| {
+                    w.pid == hotki_pid as i32 && w.title == "Hotki HUD"
+                })
+                .await
+            });
+            if hud_visible {
                 return true;
             }
-            inject_key(&rt, conn, "shift+cmd+0");
+            inject_key(rt, conn, "shift+cmd+0");
         }
     }
     false
@@ -163,18 +172,32 @@ fn inject_key(rt: &tokio::runtime::Runtime, conn: &mut hotki_server::Connection,
 }
 
 type Rect = (i32, i32, i32, i32);
-fn find_window_by_title(pid: u32, title: &str) -> Option<(u32, Option<Rect>)> {
-    mac_winops::list_windows()
-        .into_iter()
-        .find(|w| w.pid == pid as i32 && w.title == title)
-        .map(|w| {
-            let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
-            (w.id, rect)
-        })
+fn find_window_by_title(
+    rt: &tokio::runtime::Runtime,
+    world: &Arc<dyn WorldView>,
+    pid: u32,
+    title: &str,
+) -> Option<(u32, Option<Rect>)> {
+    world.hint_refresh();
+    rt.block_on(async {
+        view_util::window_by_pid_title(world.as_ref(), pid as i32, title)
+            .await
+            .map(|w| {
+                let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
+                (w.id, rect)
+            })
+    })
 }
 
-fn capture_window_by_id_or_rect(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
-    if let Some((win_id, rect_opt)) = find_window_by_title(pid, title) {
+fn capture_window_by_id_or_rect(
+    rt: &tokio::runtime::Runtime,
+    world: &Arc<dyn WorldView>,
+    pid: u32,
+    title: &str,
+    dir: &Path,
+    name: &str,
+) -> bool {
+    if let Some((win_id, rect_opt)) = find_window_by_title(rt, world, pid, title) {
         let sanitized = name
             .chars()
             .map(|c| {
@@ -246,16 +269,6 @@ fn main() {
     let hotki_pid = child.id();
     let sock = socket_path_for_pid(hotki_pid);
 
-    if !wait_for_hud(&sock, hotki_pid, cli.timeout) {
-        let _ = child.kill();
-        let _ = child.wait();
-        eprintln!("ERROR: HUD did not appear within {} ms", cli.timeout);
-        std::process::exit(2);
-    }
-
-    let _ = fs::create_dir_all(&cli.dir);
-
-    // Connect once for key injection
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -265,6 +278,21 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let world = {
+        let guard = rt.enter();
+        let world = World::spawn_view(Arc::new(RealWinOps), hotki_world::WorldCfg::default());
+        drop(guard);
+        world
+    };
+
+    if !wait_for_hud(&rt, &world, &sock, hotki_pid, cli.timeout) {
+        let _ = child.kill();
+        let _ = child.wait();
+        eprintln!("ERROR: HUD did not appear within {} ms", cli.timeout);
+        std::process::exit(2);
+    }
+
+    let _ = fs::create_dir_all(&cli.dir);
     let mut client = match rt.block_on(async {
         hotki_server::Client::new_with_socket(&sock)
             .with_connect_only()
@@ -290,7 +318,7 @@ fn main() {
     };
 
     // Capture HUD first
-    let hud_ok = capture_window_by_id_or_rect(hotki_pid, "Hotki HUD", &cli.dir, "hud");
+    let hud_ok = capture_window_by_id_or_rect(&rt, &world, hotki_pid, "Hotki HUD", &cli.dir, "hud");
 
     // Trigger notifications via chords and capture
     let gap = Duration::from_millis(160);
@@ -305,7 +333,14 @@ fn main() {
         std::thread::sleep(gap);
         if let Some(n) = name {
             std::thread::sleep(Duration::from_millis(120));
-            let _ = capture_window_by_id_or_rect(hotki_pid, "Hotki Notification", &cli.dir, n);
+            let _ = capture_window_by_id_or_rect(
+                &rt,
+                &world,
+                hotki_pid,
+                "Hotki Notification",
+                &cli.dir,
+                n,
+            );
         }
     }
 

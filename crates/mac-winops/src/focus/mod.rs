@@ -74,7 +74,7 @@ pub fn start_watcher_snapshots(tx: UnboundedSender<FocusSnapshot>) -> Result<(),
 pub fn poll_now() -> FocusSnapshot {
     if let Some((app, title, pid)) = ax::system_focus_snapshot() {
         FocusSnapshot { app, title, pid }
-    } else if let Some(w) = crate::frontmost_window() {
+    } else if let Some(w) = crate::window::frontmost_window() {
         FocusSnapshot {
             app: w.app,
             title: w.title,
@@ -126,7 +126,7 @@ impl FocusWatcher {
         {
             let initial = if let Some((app, title, pid)) = ax::system_focus_snapshot() {
                 FocusSnapshot { app, title, pid }
-            } else if let Some(w) = crate::frontmost_window() {
+            } else if let Some(w) = crate::window::frontmost_window() {
                 FocusSnapshot {
                     app: w.app,
                     title: w.title,

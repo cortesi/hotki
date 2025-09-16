@@ -10,7 +10,7 @@ use std::{
 use crate::{
     config,
     error::{Error, Result},
-    proc_registry,
+    proc_registry, world,
 };
 
 /// Managed child process that cleans up on drop.
@@ -312,7 +312,7 @@ fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
 pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        if let Some(win) = mac_winops::frontmost_window()
+        if let Some(win) = world::frontmost_window_opt()
             && win.title == expected
         {
             return true;
@@ -326,7 +326,7 @@ pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
 pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        let wins = mac_winops::list_windows();
+        let wins = world::list_windows_or_empty();
         let cg_ok = wins.iter().any(|w| w.pid == pid && w.title == title);
         let ax_ok = mac_winops::ax_has_window_title(pid, title);
         if cg_ok || ax_ok {
@@ -340,7 +340,7 @@ pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: 
 /// Best-effort: bring the given window to the front by raising it or activating its PID.
 pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
     for _ in 0..attempts {
-        if let Some(w) = mac_winops::list_windows()
+        if let Some(w) = world::list_windows_or_empty()
             .into_iter()
             .find(|w| w.pid == pid && w.title == title)
         {

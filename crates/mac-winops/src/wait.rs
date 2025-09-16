@@ -10,8 +10,8 @@ use objc2_foundation::MainThreadMarker;
 use crate::{
     WindowId, ax_has_window_title, ax_window_position,
     geom::{Point, Rect},
-    list_windows,
 };
+use crate::window::list_windows;
 
 /// Wait until all `(pid, title)` pairs are visible via CoreGraphics or AX.
 ///

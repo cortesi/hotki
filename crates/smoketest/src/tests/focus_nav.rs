@@ -12,6 +12,7 @@ use crate::{
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
+    world,
 };
 
 // Placement handled via server by driving config bindings (no direct WinOps here).
@@ -21,8 +22,8 @@ const EPS: f64 = 2.0;
 
 /// Resolve the visible frame for the screen containing the frontmost window.
 fn current_frontmost_vf() -> Result<Rect> {
-    let front = mac_winops::frontmost_window()
-        .ok_or_else(|| Error::InvalidState("No frontmost CG window".into()))?;
+    let front = world::frontmost_window_opt()
+        .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
     let ((x, y), _) = mac_winops::ax_window_frame(front.pid, &front.title)
         .ok_or_else(|| Error::InvalidState("AX frame for frontmost not available".into()))?;
     fixtures::visible_frame_containing_point(x, y)
@@ -50,7 +51,7 @@ fn find_cell_for_frame(
 
 /// Log the frontmost window title and pid for debugging.
 fn log_frontmost() {
-    if let Some(w) = mac_winops::frontmost_window() {
+    if let Some(w) = world::frontmost_window_opt() {
         info!("focus-nav: now on window title='{}' pid={}", w.title, w.pid);
     } else {
         info!("focus-nav: now on window title=<none>");
@@ -153,8 +154,8 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             info!("focus-nav: START — expecting TL focused");
             log_frontmost();
             // Check TL is at cell (0,0) within epsilon
-            let front = mac_winops::frontmost_window()
-                .ok_or_else(|| Error::InvalidState("No frontmost CG window".into()))?;
+            let front = world::frontmost_window_opt()
+                .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
             let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())
@@ -238,8 +239,8 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
             // Final explicit confirmation: back at TL and at (0,0)
             log_frontmost();
-            let front = mac_winops::frontmost_window()
-                .ok_or_else(|| Error::InvalidState("No frontmost CG window".into()))?;
+            let front = world::frontmost_window_opt()
+                .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
             let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
                 .ok_or_else(|| {
                     Error::InvalidState("AX frame for frontmost not available".into())

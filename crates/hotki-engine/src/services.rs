@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use hotki_world::WorldView;
 use mac_winops::ops::WinOps;
 
 use crate::{notification::NotificationDispatcher, relay::RelayHandler, repeater::Repeater};
@@ -12,5 +13,5 @@ pub struct Services {
     pub notifier: NotificationDispatcher,
     pub repeater: Repeater,
     pub winops: Arc<dyn WinOps>,
-    pub world: hotki_world::WorldHandle,
+    pub world: Arc<dyn WorldView>,
 }

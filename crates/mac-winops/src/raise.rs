@@ -12,8 +12,8 @@ use crate::{
     WindowId,
     ax::{ax_check, ax_perform_action, cfstr},
     error::{Error, Result},
-    frontmost_window, list_windows,
 };
+use crate::window::{frontmost_window, list_windows};
 
 #[allow(clippy::missing_safety_doc)]
 pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {

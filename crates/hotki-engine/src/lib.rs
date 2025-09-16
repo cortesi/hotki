@@ -70,6 +70,7 @@ use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use focus::FocusState;
 use hotki_protocol::MsgToUI;
+use hotki_world::WorldView;
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
@@ -151,7 +152,8 @@ impl Engine {
 
         // Prepare shared winops and world before constructing Self
         let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
-        let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+        let world =
+            hotki_world::World::spawn_view(winops.clone(), hotki_world::WorldCfg::default());
         let repeater =
             Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let svc = Services {
@@ -159,7 +161,7 @@ impl Engine {
             notifier,
             repeater,
             winops,
-            world,
+            world: world.clone(),
         };
 
         let eng = Self {
@@ -194,7 +196,8 @@ impl Engine {
             config::Style::default(),
         )));
 
-        let world = hotki_world::World::spawn(winops.clone(), hotki_world::WorldCfg::default());
+        let world =
+            hotki_world::World::spawn_view(winops.clone(), hotki_world::WorldCfg::default());
         let repeater =
             Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let svc = Services {
@@ -202,7 +205,7 @@ impl Engine {
             notifier,
             repeater,
             winops,
-            world,
+            world: world.clone(),
         };
 
         let eng = Self {
@@ -220,13 +223,13 @@ impl Engine {
     }
 
     /// Custom constructor for tests and advanced scenarios.
-    /// Allows injecting a `HotkeyApi`, `WinOps`, relay enable flag, and an explicit World handle.
+    /// Allows injecting a `HotkeyApi`, `WinOps`, relay enable flag, and an explicit world view.
     pub fn new_with_api_and_ops(
         api: Arc<dyn deps::HotkeyApi>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
         winops: Arc<dyn WinOps>,
         relay_enabled: bool,
-        world: hotki_world::WorldHandle,
+        world: Arc<dyn WorldView>,
     ) -> Self {
         let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
             KeyBindingManager::new_with_api(api),
@@ -241,7 +244,7 @@ impl Engine {
             notifier,
             repeater,
             winops: winops.clone(),
-            world,
+            world: world.clone(),
         };
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
@@ -262,8 +265,8 @@ impl Engine {
         eng
     }
 
-    /// Access the world service handle for event subscriptions and snapshots.
-    pub fn world_handle(&self) -> hotki_world::WorldHandle {
+    /// Access the world view for event subscriptions and snapshots.
+    pub fn world(&self) -> Arc<dyn WorldView> {
         self.svc.world.clone()
     }
 

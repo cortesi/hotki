@@ -14,6 +14,12 @@
 //! Display mapping:
 //! - Each window is mapped to the display with the greatest overlap of its
 //!   bounds among current screens.
+//!
+//! Trait boundary:
+//! - Downstream crates consume the [`WorldView`] trait for snapshots, focus
+//!   context, and refresh hints. Direct `mac_winops` enumeration APIs are no
+//!   longer exported; use the `view_util` helpers or the test-only `TestWorld`
+//!   shim when inspecting window state outside a real macOS session.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -318,6 +324,7 @@ pub struct World;
 
 mod ax_read_pool;
 mod view;
+pub mod view_util;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use view::TestWorld;
@@ -923,7 +930,7 @@ pub mod test_api {
 
     use tokio::time::{Instant, sleep};
 
-    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides, WorldHandle, WorldWindow};
+    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides, WorldWindow};
 
     /// Get a clone of the AX hint bridge sender (if initialized) for tests.
     pub fn ax_hint_bridge_sender() -> Option<crossbeam_channel::Sender<mac_winops::AxEvent>> {
@@ -1011,8 +1018,11 @@ pub mod test_api {
 
     /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.
     /// Returns true if the predicate matched in time.
-    pub async fn wait_snapshot_until<F>(world: &WorldHandle, timeout_ms: u64, mut pred: F) -> bool
+    use crate::WorldView;
+
+    pub async fn wait_snapshot_until<F, W>(world: &W, timeout_ms: u64, mut pred: F) -> bool
     where
+        W: WorldView + ?Sized,
         F: FnMut(&[WorldWindow]) -> bool,
     {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);

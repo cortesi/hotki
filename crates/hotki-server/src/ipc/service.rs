@@ -167,23 +167,18 @@ impl HotkeyService {
         let resync_pending = self.world_resync_pending.clone();
         let engine = self.engine.clone();
         tokio::spawn(async move {
-            // Ensure engine exists and get world handle
-            let _world = loop {
+            // Ensure engine exists and get world view
+            let world = loop {
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
                 if let Some(eng) = engine.lock().await.as_ref() {
-                    break eng.clone();
+                    break eng.world();
                 }
                 // engine not initialized yet; wait briefly
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             };
-            let wh = {
-                let eng = engine.lock().await;
-                // safe to unwrap: loop above ensured Some
-                eng.as_ref().unwrap().world_handle()
-            };
-            let mut rx = wh.subscribe();
+            let mut rx = world.subscribe();
             loop {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
@@ -215,7 +210,7 @@ impl HotkeyService {
                             hotki_world::WorldEvent::MetaAdded(_, _)
                             | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
                             hotki_world::WorldEvent::FocusChanged(_k) => {
-                                let ctx = wh.focused_context().await;
+                                let ctx = world.focused_context().await;
                                 let app = ctx.map(|(app, title, pid)| App { app, title, pid });
                                 Some(WorldStreamMsg::FocusChanged(app))
                             }
@@ -627,9 +622,9 @@ impl MrpcConnection for HotkeyService {
                         ));
                     }
                 };
-                let wh = eng.world_handle();
+                let world = eng.world();
                 // Obtain consistent snapshot + focused key
-                let (_rx, snap, focused_key) = wh.subscribe_with_snapshot().await;
+                let (_rx, snap, focused_key) = world.subscribe_with_snapshot().await;
                 // Convert to protocol types
                 let mut wins: Vec<hotki_protocol::WorldWindowLite> = snap
                     .into_iter()

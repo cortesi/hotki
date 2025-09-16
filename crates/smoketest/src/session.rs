@@ -14,6 +14,7 @@ use crate::{
     error::{Error, Result},
     proc_registry, runtime, server_drive,
     ui_interaction::send_activation_chord,
+    world,
 };
 
 /// State tracking for HotkiSession
@@ -198,7 +199,7 @@ impl HotkiSession {
                 Ok(Err(_)) | Err(_) => {}
             }
             // Side-check to catch HUD presence even if we missed an event.
-            if mac_winops::list_windows()
+            if world::list_windows_or_empty()
                 .into_iter()
                 .any(|w| w.pid == self.pid() as i32 && w.title == "Hotki HUD")
             {

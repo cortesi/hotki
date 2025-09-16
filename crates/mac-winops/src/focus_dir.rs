@@ -5,8 +5,8 @@ use crate::{
     Error, Result,
     ax::{ax_check, ax_get_point, ax_get_size, ax_window_for_id, cfstr},
     geom::{self},
-    list_windows, request_activate_pid,
-    window::frontmost_window,
+    request_activate_pid,
+    window::{frontmost_window, list_windows},
 };
 
 /// Focus the next window in the given direction on the current screen within the

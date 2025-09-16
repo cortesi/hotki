@@ -183,6 +183,55 @@ fn focus_changes_emit_event_and_snapshot_updates() {
 }
 
 #[test]
+fn hint_refresh_via_trait_updates_snapshot() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let mock = Arc::new(MockWinOps::new());
+        mock.set_windows(vec![win(
+            "AppA",
+            "A1",
+            100,
+            1,
+            Pos {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 300,
+            },
+            0,
+            true,
+        )]);
+        let world = World::spawn_view(mock.clone() as Arc<dyn WinOps>, cfg_fast());
+        assert!(wait_snapshot_until(world.as_ref(), 200, |snap| snap.len() == 1).await);
+
+        mock.set_windows(vec![win(
+            "AppB",
+            "B2",
+            200,
+            2,
+            Pos {
+                x: 10,
+                y: 10,
+                width: 800,
+                height: 600,
+            },
+            0,
+            true,
+        )]);
+        world.hint_refresh();
+        let updated = wait_snapshot_until(world.as_ref(), 200, |snap| {
+            snap.iter()
+                .any(|w| w.pid == 200 && w.title == "B2" && w.focused)
+        })
+        .await;
+        assert!(updated, "world snapshot did not refresh after hint");
+    });
+}
+
+#[test]
 fn title_update_reflected_in_snapshot() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()

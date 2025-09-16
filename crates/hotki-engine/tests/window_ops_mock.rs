@@ -22,8 +22,9 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         layer: 0,
         focused: true,
     }]);
-    engine.world_handle().hint_refresh();
-    let _ = wait_snapshot_until(&engine.world_handle(), 50, |snap| {
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 50, |snap| {
         snap.iter().any(|w| w.pid == pid && w.focused)
     })
     .await;
@@ -35,7 +36,7 @@ async fn engine_uses_window_ops_for_focus() {
     let (tx, mut _rx): (mpsc::Sender<MsgToUI>, mpsc::Receiver<MsgToUI>) = mpsc::channel(32);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), fast_world_cfg());
+    let world = World::spawn_view(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
 
     // Simple config: single binding that triggers focus(left)
@@ -63,7 +64,7 @@ async fn engine_hide_uses_winops() {
     let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), fast_world_cfg());
+    let world = World::spawn_view(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"a\", \"hide\", hide(on))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -83,7 +84,7 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
     let (tx, _rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), fast_world_cfg());
+    let world = World::spawn_view(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"n\", \"fs native\", fullscreen(on, native)), (\"f\", \"fs nonnative\", fullscreen(on, nonnative))]",
@@ -122,7 +123,7 @@ async fn engine_raise_activates_on_match() {
         focused: false,
     }]);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"a\", \"raise\", raise(app: \"^Zed$\", title: \"Downloads\"))]",
@@ -154,8 +155,9 @@ async fn engine_raise_activates_on_match() {
             focused: false,
         },
     ]);
-    engine.world_handle().hint_refresh();
-    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 60, |snap| {
         snap.iter().any(|w| w.pid == 1 && w.focused)
             && snap.iter().any(|w| w.pid == 888 && !w.focused)
     })
@@ -199,7 +201,7 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         },
     ]);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron(
         "[(\"r\", \"raise\", raise(title: \"raise-me\")), (\"p\", \"place\", place(grid(2,2), at(0,0)))]",
@@ -209,8 +211,9 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
     let mut engine = engine;
     engine.set_config(cfg).await.unwrap();
     // World already has A focused and B present via set_windows above.
-    engine.world_handle().hint_refresh();
-    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 60, |snap| {
         snap.iter().any(|w| w.pid == 200 && w.focused)
     })
     .await;
@@ -248,8 +251,9 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
             focused: true,
         },
     ]);
-    engine.world_handle().hint_refresh();
-    let _ = wait_snapshot_until(&engine.world_handle(), 60, |snap| {
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 60, |snap| {
         snap.iter().any(|w| w.pid == 200 && w.focused)
     })
     .await;
@@ -267,7 +271,7 @@ async fn engine_fullscreen_error_notifies() {
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_fullscreen_nonnative(true);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"f\", \"fs\", fullscreen(on, nonnative))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -290,7 +294,7 @@ async fn engine_hide_error_notifies() {
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_hide(true);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"h\", \"hide\", hide(on))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());
@@ -311,7 +315,7 @@ async fn engine_raise_invalid_regex_notifies() {
     let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn(mock.clone(), hotki_world::WorldCfg::default());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     // invalid regex for app
     let keys = keymode::Keys::from_ron("[(\"r\", \"raise\", raise(app: \"(unclosed\"))]").unwrap();
@@ -334,7 +338,7 @@ async fn engine_focus_error_propagates_notification() {
     let mock = Arc::new(MockWinOps::new());
     mock.set_fail_focus_dir(true);
     let api = Arc::new(MockHotkeyApi::new());
-    let world = World::spawn_noop();
+    let world = World::spawn_noop_view();
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
     let keys = keymode::Keys::from_ron("[(\"a\", \"focus left\", focus(left))]").unwrap();
     let cfg = config::Config::from_parts(keys, config::Style::default());

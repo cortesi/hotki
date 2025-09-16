@@ -43,6 +43,9 @@ pub trait WorldView: Send + Sync {
     /// Retrieve a lightweight `(app, title, pid)` tuple for the focused window, if any.
     async fn focused_context(&self) -> Option<(String, String, i32)>;
 
+    /// Resolve a `WindowKey` into its context tuple if the window is still present.
+    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)>;
+
     /// Fetch current capability and permission information.
     async fn capabilities(&self) -> Capabilities;
 
@@ -96,6 +99,10 @@ impl WorldView for WorldHandle {
 
     async fn focused_context(&self) -> Option<(String, String, i32)> {
         WorldHandle::focused_context(self).await
+    }
+
+    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
+        WorldHandle::context_for_key(self, key).await
     }
 
     async fn capabilities(&self) -> Capabilities {
@@ -255,13 +262,22 @@ mod test_world {
                     .snapshot
                     .iter()
                     .find(|w| w.pid == focused.pid && w.id == focused.id)
-                {
-                    return Some((w.app.clone(), w.title.clone(), w.pid));
-                }
+            {
+                return Some((w.app.clone(), w.title.clone(), w.pid));
+            }
             state
                 .snapshot
                 .iter()
                 .min_by_key(|w| w.z)
+                .map(|w| (w.app.clone(), w.title.clone(), w.pid))
+        }
+
+        async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
+            let state = self.state.read();
+            state
+                .snapshot
+                .iter()
+                .find(|w| w.pid == key.pid && w.id == key.id)
                 .map(|w| (w.app.clone(), w.title.clone(), w.pid))
         }
 

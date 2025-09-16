@@ -29,6 +29,8 @@ mod util;
 mod warn_overlay;
 /// Helper window for UI-driven tests and animations.
 mod winhelper;
+/// World snapshot helpers backed by hotki-world.
+mod world;
 
 use std::{cmp::max, env, process::exit, sync::mpsc, thread, time::Duration};
 

@@ -24,6 +24,16 @@ below for how to build it. Next steps:
 - Window groups
 
 
+## Window State Architecture
+
+Hotki relies on the `hotki-world` crate as the single source of truth for
+window and focus state. Engines, smoketests, and auxiliary tooling subscribe
+to the [`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
+`mac_winops::list_windows` directly. This keeps CoreGraphics and AX access in
+one place, simplifies testing via the in-memory `TestWorld`, and ensures that
+refresh hints flow through a single channel.
+
+
 ## Configuration
 
 Hotki configuration lives at `~/.hotki.ron`, and uses RON ([Rusty Object

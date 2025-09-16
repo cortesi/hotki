@@ -1,9 +1,10 @@
 use crate::{
-    MoveDir, PlaceAttemptOptions, Result as WinResult, WindowId, WindowInfo, frontmost_window,
-    frontmost_window_for_pid, hide_bottom_left, list_windows, request_activate_pid,
-    request_focus_dir, request_fullscreen_native, request_fullscreen_nonnative, request_place_grid,
-    request_place_grid_focused, request_place_grid_focused_opts, request_place_grid_opts,
-    request_place_move_grid, request_place_move_grid_opts,
+    MoveDir, PlaceAttemptOptions, Result as WinResult, WindowId, WindowInfo, hide_bottom_left,
+    request_activate_pid, request_focus_dir, request_fullscreen_native,
+    request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
+    request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
+    request_place_move_grid_opts,
+    window::{frontmost_window, frontmost_window_for_pid, list_windows},
 };
 
 /// Trait abstraction over window operations to improve testability.

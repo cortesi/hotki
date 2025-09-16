@@ -86,7 +86,7 @@ pub use place::{
     place_grid_focused_opts, placement_counters_reset, placement_counters_snapshot,
 };
 pub use raise::raise_window;
-pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
+pub use window::{Pos, WindowInfo};
 
 // ===== Observer wiring =====
 thread_local! {
@@ -272,11 +272,11 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
     // Opportunistically install an observer for the queried PID (no-op if disabled).
     ensure_ax_observer(pid);
     if !permissions::accessibility_ok() {
-        return frontmost_window_for_pid(pid).map(|w| w.id);
+        return window::frontmost_window_for_pid(pid).map(|w| w.id);
     }
     // Create AX application element for pid
     let Some(app) = (unsafe { AXElem::from_create(AXUIElementCreateApplication(pid)) }) else {
-        return frontmost_window_for_pid(pid).map(|w| w.id);
+        return window::frontmost_window_for_pid(pid).map(|w| w.id);
     };
     // Fetch AXWindows array for the app
     let mut wins_ref: CFTypeRef = std::ptr::null_mut();
@@ -284,7 +284,7 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
     let err =
         unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
-        return frontmost_window_for_pid(pid).map(|w| w.id);
+        return window::frontmost_window_for_pid(pid).map(|w| w.id);
     }
     // SAFETY: Wrap ownership of returned CFArray.
     let arr = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(wins_ref as _) };
@@ -317,7 +317,7 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
         }
     }
     if chosen.is_null() {
-        return frontmost_window_for_pid(pid).map(|w| w.id);
+        return window::frontmost_window_for_pid(pid).map(|w| w.id);
     }
     // Prefer private API if available
     let wid = if let Some(idp) = ax_private::window_id_for_ax_element(chosen) {
@@ -327,14 +327,14 @@ pub fn ax_focused_window_id_for_pid(pid: i32) -> Option<WindowId> {
         let nerr =
             unsafe { AXUIElementCopyAttributeValue(chosen, cfstr("AXWindowNumber"), &mut num_ref) };
         if nerr != 0 || num_ref.is_null() {
-            return frontmost_window_for_pid(pid).map(|w| w.id);
+            return window::frontmost_window_for_pid(pid).map(|w| w.id);
         }
         let cfnum =
             unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
         cfnum.to_i64().unwrap_or(0) as u32
     };
     if wid == 0 {
-        frontmost_window_for_pid(pid).map(|w| w.id)
+        window::frontmost_window_for_pid(pid).map(|w| w.id)
     } else {
         Some(wid)
     }
@@ -396,7 +396,7 @@ pub(crate) fn focused_window_for_pid(pid: i32) -> Result<AXElem> {
     }
 
     // Fallback: try mapping CG frontmost window for pid via AXWindowNumber.
-    if let Some(info) = frontmost_window_for_pid(pid) {
+    if let Some(info) = window::frontmost_window_for_pid(pid) {
         // Reuse existing helper to resolve AX element by CGWindowID
         if let Ok((w, _pid)) = ax_window_for_id(info.id) {
             debug!("focused_window_for_pid: fallback via AXWindowNumber");

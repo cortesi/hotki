@@ -27,7 +27,7 @@ async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>) {
     let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
     // Use noop world for tests that don't need focus
-    let world = World::spawn_noop();
+    let world = World::spawn_noop_view();
     let engine =
         Engine::new_with_api_and_ops(api, tx, Arc::new(mac_winops::ops::RealWinOps), false, world);
     (engine, rx)
@@ -40,7 +40,7 @@ async fn create_test_engine_with_mock(
     let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
     let mock = Arc::new(MockWinOps::new());
-    let world = World::spawn(mock.clone(), fast_world_cfg());
+    let world = World::spawn_view(mock.clone(), fast_world_cfg());
     let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), relay_enabled, world);
     (engine, rx, mock)
 }
@@ -56,8 +56,9 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         layer: 0,
         focused: true,
     }]);
-    engine.world_handle().hint_refresh();
-    let _ = wait_snapshot_until(&engine.world_handle(), 50, |snap| {
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 50, |snap| {
         snap.iter().any(|w| w.pid == pid && w.focused)
     })
     .await;

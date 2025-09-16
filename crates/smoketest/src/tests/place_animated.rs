@@ -12,6 +12,7 @@ use crate::{
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
     tests::fixtures,
+    world,
 };
 
 /// Run the animated placement smoketest with a small 2×2 grid.
@@ -73,11 +74,11 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Compute expected rect on the helper's current screen from CG, then
             // wait until CG bounds approximately match it (no AX dependency).
             let expected = {
-                let start = mac_winops::list_windows()
+                let start = world::list_windows_or_empty()
                     .into_iter()
                     .find(|w| w.pid == helper.pid && w.title == title)
                     .and_then(|w| w.pos)
-                    .ok_or_else(|| Error::InvalidState("No CG bounds for helper".into()))?;
+                    .ok_or_else(|| Error::InvalidState("No world bounds for helper".into()))?;
                 let vf = fixtures::visible_frame_containing_point(
                     start.x as f64,
                     start.y as f64,
@@ -91,7 +92,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 let eps = config::PLACE.eps;
                 let mut ok = false;
                 while Instant::now() < deadline {
-                    if let Some(pos) = mac_winops::list_windows()
+                    if let Some(pos) = world::list_windows_or_empty()
                         .into_iter()
                         .find(|w| w.pid == helper.pid && w.title == title)
                         .and_then(|w| w.pos)

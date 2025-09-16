@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use mac_winops::ops::{RealWinOps, WinOps};
 
 #[derive(Parser, Debug)]
 #[command(name = "winops", about = "mac-winops tester", version)]
@@ -27,16 +28,17 @@ enum Cmd {
 
 fn main() {
     let cli = Cli::parse();
+    let ops = RealWinOps;
     match cli.cmd {
         Cmd::List => {
-            for w in mac_winops::list_windows() {
+            for w in ops.list_windows() {
                 println!(
                     "pid={} id={} app='{}' title='{}'",
                     w.pid, w.id, w.app, w.title
                 );
             }
         }
-        Cmd::Front => match mac_winops::frontmost_window() {
+        Cmd::Front => match ops.frontmost_window() {
             Some(w) => println!(
                 "front: pid={} id={} app='{}' title='{}'",
                 w.pid, w.id, w.app, w.title
@@ -53,8 +55,8 @@ fn main() {
         Cmd::RaiseTitle { title, app } => {
             let app_re = app.and_then(|s| regex::Regex::new(&s).ok());
             let title_re = regex::Regex::new(&title).unwrap();
-            let all = mac_winops::list_windows();
-            let cur = mac_winops::frontmost_window();
+            let all = ops.list_windows();
+            let cur = ops.frontmost_window();
             let matches = |w: &mac_winops::WindowInfo| -> bool {
                 let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
                 let tok = title_re.is_match(&w.title);

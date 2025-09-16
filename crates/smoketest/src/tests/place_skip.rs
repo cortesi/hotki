@@ -15,6 +15,7 @@ use crate::{
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
+    world,
 };
 
 /// Fetch the AX frame for `(pid,title)` as `(x,y,w,h)`.
@@ -81,7 +82,7 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Inspect AX props to determine if a skip is expected on this system
-            let id = mac_winops::list_windows()
+            let id = world::list_windows_or_empty()
                 .into_iter()
                 .find(|w| w.pid == helper.pid && w.title == title)
                 .map(|w| w.id)

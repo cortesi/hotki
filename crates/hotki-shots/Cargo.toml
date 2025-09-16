@@ -8,6 +8,7 @@ publish = false
 clap = { workspace = true, features = ["derive"] }
 hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
 hotki-server = { path = "../hotki-server" }
+hotki-world = { path = "../hotki-world" }
 mac-keycode = { version = "0.0.1", path = "../mac-keycode" }
 mac-winops = { path = "../mac-winops" }
 regex = { workspace = true }

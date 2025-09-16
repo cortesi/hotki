@@ -9,7 +9,6 @@ use crate::{
     ax::{ax_bool, ax_check, ax_get_point, ax_get_size, ax_set_bool, cfstr},
     error::PlacementErrorDetails,
     frame_storage::{PREV_FRAMES, PREV_FRAMES_CAP},
-    frontmost_window_for_pid,
     geom::Rect,
     place::{
         PlaceAttemptOptions, PlacementContext, PlacementEngine, PlacementEngineConfig,
@@ -17,6 +16,7 @@ use crate::{
     },
     screen_util::visible_frame_containing_point,
 };
+use crate::window::frontmost_window_for_pid;
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
 ///

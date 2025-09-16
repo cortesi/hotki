@@ -69,7 +69,7 @@ pub fn hide_corner(pid: i32, desired: crate::Desired, corner: ScreenCorner) -> R
     let cur_p = ax_get_point(win.as_ptr(), attr_pos)?;
     let cur_s = ax_get_size(win.as_ptr(), attr_size)?;
 
-    let key = crate::frontmost_window_for_pid(pid).map(|w| (pid, w.id));
+    let key = crate::window::frontmost_window_for_pid(pid).map(|w| (pid, w.id));
     let is_hidden = key
         .as_ref()
         .map(|k| HIDDEN_FRAMES.lock().contains_key(k))
