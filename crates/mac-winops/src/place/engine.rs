@@ -3,16 +3,12 @@ use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
 use super::{
-    apply::{
-        AxAttrRefs, anchor_legal_size_and_wait, apply_and_wait, apply_size_only_and_wait,
-        nudge_axis_pos_and_wait,
-    },
+    apply::{AxAttrRefs, anchor_legal_size_and_wait},
     common::{
         AttemptKind, AttemptOrder, AttemptRecord, AttemptTimeline, FallbackInvocation,
         FallbackTrigger, PlacementContext, choose_initial_order, clamp_flags, log_failure_context,
         log_summary, one_axis_off,
     },
-    fallback::fallback_shrink_move_grow,
 };
 use crate::{
     Result,
@@ -125,8 +121,10 @@ impl<'a> PlacementEngine<'a> {
             pos: attr_pos,
             size: attr_size,
         };
+        let adapter = self.ctx.adapter();
+        let adapter_ref = adapter.as_ref();
 
-        let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+        let (can_pos, can_size) = adapter_ref.settable_pos_size(win);
         let initial_pos_first = choose_initial_order(can_pos, can_size);
         debug!(
             "order_hint: settable_pos={:?} settable_size={:?} -> initial={}",
@@ -145,8 +143,15 @@ impl<'a> PlacementEngine<'a> {
         let allow_opposite_order = options.force_second_attempt() || limits.max_opposite_order > 0;
         let mut anchor_attempts_remaining = limits.max_anchor_attempts;
 
-        let (got1, settle_ms1) =
-            apply_and_wait(label, win, attrs, &target, initial_pos_first, eps, timing)?;
+        let (got1, settle_ms1) = adapter_ref.apply_and_wait(
+            label,
+            win,
+            attrs,
+            &target,
+            initial_pos_first,
+            eps,
+            timing,
+        )?;
         let d1 = got1.diffs(&target);
         let vf2 = visible_frame_containing_point(
             mtm,
@@ -181,7 +186,7 @@ impl<'a> PlacementEngine<'a> {
 
         if options.pos_first_only() {
             debug!("verified=false");
-            log_failure_context(win, self.config.role, self.config.subrole);
+            log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
             let clamped = clamp_flags(&got1, &vf2, eps);
             return Ok(PlacementOutcome::PosFirstOnlyFailure(
                 PlacementFailureContext {
@@ -195,8 +200,8 @@ impl<'a> PlacementEngine<'a> {
 
         if let Some(axis) = one_axis_off(d1, eps) {
             if allow_axis_nudge {
-                let (got_ax, settle_ms_ax) =
-                    nudge_axis_pos_and_wait(label, win, attrs, &target, axis, eps, timing)?;
+                let (got_ax, settle_ms_ax) = adapter_ref
+                    .nudge_axis_pos_and_wait(label, win, attrs, &target, axis, eps, timing)?;
                 let vf3 = visible_frame_containing_point(
                     mtm,
                     geom::Point {
@@ -242,8 +247,15 @@ impl<'a> PlacementEngine<'a> {
         let mut vf4 = vf2;
         let mut retry_verified = false;
         if allow_opposite_order {
-            let (got_retry, settle_retry) =
-                apply_and_wait(label, win, attrs, &target, !initial_pos_first, eps, timing)?;
+            let (got_retry, settle_retry) = adapter_ref.apply_and_wait(
+                label,
+                win,
+                attrs,
+                &target,
+                !initial_pos_first,
+                eps,
+                timing,
+            )?;
             got2 = got_retry;
             vf4 = visible_frame_containing_point(
                 mtm,
@@ -286,7 +298,7 @@ impl<'a> PlacementEngine<'a> {
         if forced_allowed {
             debug!("fallback_used=true (forced)");
             let (got_fallback, settle_ms_fb) =
-                fallback_shrink_move_grow(label, win, attrs, &target, eps, timing)?;
+                adapter_ref.fallback_shrink_move_grow(label, win, attrs, &target, eps, timing)?;
             let smg_verified = got_fallback.approx_eq(&target, eps);
             let fb_idx = log_and_record_attempt(
                 label,
@@ -309,7 +321,7 @@ impl<'a> PlacementEngine<'a> {
                 }));
             }
             debug!("verified=false");
-            log_failure_context(win, self.config.role, self.config.subrole);
+            log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
             let vf = visible_frame_containing_point(
                 mtm,
                 geom::Point {
@@ -354,7 +366,7 @@ impl<'a> PlacementEngine<'a> {
             } else {
                 debug!("switching to size-only adjustments");
                 let size_only_label = format!("{}:size-only", label);
-                match apply_size_only_and_wait(
+                match adapter_ref.apply_size_only_and_wait(
                     &size_only_label,
                     win,
                     attrs,
@@ -377,8 +389,18 @@ impl<'a> PlacementEngine<'a> {
                             anchor_attempts_remaining = anchor_attempts_remaining.saturating_sub(1);
                             let (got_anchor, anchored, settle_ms_anchor_sz) =
                                 anchor_legal_size_and_wait(
-                                    label, win, attrs, &target, &got_sz, grid.cols, grid.rows,
-                                    grid.col, grid.row, eps, timing,
+                                    adapter_ref,
+                                    label,
+                                    win,
+                                    attrs,
+                                    &target,
+                                    &got_sz,
+                                    grid.cols,
+                                    grid.rows,
+                                    grid.col,
+                                    grid.row,
+                                    eps,
+                                    timing,
                                 )?;
                             let anchor_verified = got_anchor.approx_eq(&anchored, eps);
                             log_and_record_attempt(
@@ -414,7 +436,17 @@ impl<'a> PlacementEngine<'a> {
 
         if anchor_attempts_remaining > 0 {
             let (got_anchor, anchored, settle_ms_anchor) = anchor_legal_size_and_wait(
-                label, win, attrs, &target, &got2, grid.cols, grid.rows, grid.col, grid.row, eps,
+                adapter_ref,
+                label,
+                win,
+                attrs,
+                &target,
+                &got2,
+                grid.cols,
+                grid.rows,
+                grid.col,
+                grid.row,
+                eps,
                 timing,
             )?;
             let vf5 = visible_frame_containing_point(
@@ -461,7 +493,7 @@ impl<'a> PlacementEngine<'a> {
         if final_allowed {
             debug!("fallback_used=true");
             let (got_fallback, settle_ms_fb) =
-                fallback_shrink_move_grow(label, win, attrs, &target, eps, timing)?;
+                adapter_ref.fallback_shrink_move_grow(label, win, attrs, &target, eps, timing)?;
             let smg_verified = got_fallback.approx_eq(&target, eps);
             log_and_record_attempt(
                 label,
@@ -484,7 +516,7 @@ impl<'a> PlacementEngine<'a> {
                 }));
             }
             debug!("verified=false");
-            log_failure_context(win, self.config.role, self.config.subrole);
+            log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
             let vf = visible_frame_containing_point(
                 mtm,
                 geom::Point {
@@ -510,7 +542,7 @@ impl<'a> PlacementEngine<'a> {
         }
 
         debug!("verified=false");
-        log_failure_context(win, self.config.role, self.config.subrole);
+        log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
         let clamped = clamp_flags(&got2, &vf4, eps);
         Ok(PlacementOutcome::VerificationFailure(
             PlacementFailureContext {

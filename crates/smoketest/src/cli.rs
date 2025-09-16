@@ -68,6 +68,8 @@ pub enum SeqTest {
     Ui,
     /// Mini UI smoke
     Minui,
+    /// Fake placement harness (no GUI required)
+    PlaceFake,
 }
 
 /// Desired fullscreen state for tests.
@@ -126,6 +128,10 @@ pub enum Commands {
 
     /// Verify window placement into a grid by cycling a helper window through all cells
     Place,
+
+    /// Exercise placement flows with a fake AX adapter (no GUI required)
+    #[command(name = "place-fake")]
+    PlaceFake,
 
     /// Verify placement convergence when the target app applies geometry with a small delay
     #[command(name = "place-async")]

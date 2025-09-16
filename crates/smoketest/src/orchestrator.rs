@@ -404,12 +404,21 @@ fn place_flex_args(cfg: &PlaceFlexSettings) -> Vec<String> {
 
 /// Run all smoketests sequentially with basic reporting; exits with non-zero
 /// status on failure.
-pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overlay: bool) {
+pub fn run_all_tests(
+    duration_ms: u64,
+    timeout_ms: u64,
+    _logs: bool,
+    warn_overlay: bool,
+    fake_mode: bool,
+) {
     let mut all_ok = true;
 
     // Optionally show the hands-off overlay for the entire run
     let mut overlay: Option<ManagedChild> = None;
-    if warn_overlay && let Ok(child) = process::spawn_warn_overlay() {
+    if warn_overlay
+        && !fake_mode
+        && let Ok(child) = process::spawn_warn_overlay()
+    {
         overlay = Some(child);
         thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
         // Initialize overlay title
@@ -434,6 +443,20 @@ pub fn run_all_tests(duration_ms: u64, timeout_ms: u64, _logs: bool, warn_overla
             false
         }
     };
+
+    if fake_mode {
+        println!("Running fake placement smoke (GUI unavailable)");
+        all_ok &= run("place-fake", duration_ms);
+        if let Some(mut c) = overlay
+            && let Err(e) = c.kill_and_wait()
+        {
+            eprintln!("orchestrator: failed to stop overlay: {}", e);
+        }
+        if !all_ok {
+            std_process::exit(1);
+        }
+        return;
+    }
 
     // Quick diagnostics: verify world status/permissions first
     all_ok &= run("world-status", duration_ms);
@@ -569,6 +592,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::Fullscreen => "fullscreen",
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",
+        SeqTest::PlaceFake => "place-fake",
     }
 }
 

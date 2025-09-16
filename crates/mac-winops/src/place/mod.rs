@@ -27,8 +27,11 @@
 
 use crate::geom;
 
+mod adapter;
 mod apply;
 mod common;
+#[cfg(test)]
+mod deterministic_tests;
 mod engine;
 mod fallback;
 mod metrics;
@@ -36,10 +39,19 @@ mod normalize;
 mod ops_focused;
 mod ops_id;
 mod ops_move;
+#[cfg(test)]
+mod property_tests;
 
+#[allow(unused_imports)]
+pub use adapter::{
+    AxAdapter, AxAdapterHandle, FakeApplyResponse, FakeAxAdapter, FakeOp, FakeWindowConfig,
+};
+#[allow(unused_imports)]
 pub use common::{
     AttemptRecord, AttemptTimeline, FallbackInvocation, FallbackTrigger, PlaceAttemptOptions,
+    PlacementContext, RetryLimits,
 };
+pub use engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome};
 pub use metrics::{AttemptKind, AttemptOrder, PlacementCountersSnapshot};
 pub use ops_focused::{place_grid_focused, place_grid_focused_opts};
 pub(crate) use ops_id::place_grid;

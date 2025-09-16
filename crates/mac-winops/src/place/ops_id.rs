@@ -7,7 +7,6 @@ use super::{
     apply::AxAttrRefs,
     common::{PlaceAttemptOptions, PlacementContext, trace_safe_park},
     engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome},
-    fallback::preflight_safe_park,
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
@@ -66,6 +65,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         let target = *ctx.target();
         let opts = ctx.attempt_options();
         let tuning = opts.tuning();
+        let adapter = ctx.adapter();
         let engine = PlacementEngine::new(
             &ctx,
             PlacementEngineConfig {
@@ -85,7 +85,7 @@ pub(crate) fn place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32)
         // Stage 3.1: if we would trip coordinate-space issues near global (0,0)
         if opts.hooks().should_safe_park(&ctx) {
             trace_safe_park("place_grid");
-            preflight_safe_park(
+            adapter.preflight_safe_park(
                 "place_grid",
                 ctx.win(),
                 AxAttrRefs {

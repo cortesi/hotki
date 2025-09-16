@@ -1,6 +1,9 @@
 use tracing::debug;
 
-use super::common::{SettleTiming, now_ms, sleep_ms};
+use super::{
+    adapter::AxAdapter,
+    common::{SettleTiming, now_ms, sleep_ms},
+};
 use crate::{
     ax::{
         ax_element_pid, ax_get_point, ax_get_size, ax_set_point, ax_set_size, warn_once_nonsettable,
@@ -9,7 +12,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(super) struct AxAttrRefs {
+pub struct AxAttrRefs {
     pub pos: core_foundation::string::CFStringRef,
     pub size: core_foundation::string::CFStringRef,
 }
@@ -260,6 +263,7 @@ pub(super) fn nudge_axis_pos_and_wait(
 /// the visually important edges to the grid cell.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn anchor_legal_size_and_wait(
+    adapter: &dyn AxAdapter,
     op_label: &str,
     win: &crate::AXElem,
     attrs: AxAttrRefs,
@@ -292,7 +296,8 @@ pub(super) fn anchor_legal_size_and_wait(
         "anchor_legal: target={} observed={} -> anchored={}",
         target, observed, anchored
     );
-    let (got, settle) = apply_and_wait(op_label, win, attrs, &anchored, true, eps, timing)?;
+    let (got, settle) =
+        adapter.apply_and_wait(op_label, win, attrs, &anchored, true, eps, timing)?;
     Ok((got, anchored, settle))
 }
 

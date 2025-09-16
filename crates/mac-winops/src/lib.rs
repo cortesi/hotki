@@ -49,7 +49,7 @@ use ax::*;
 pub use ax::{
     AxProps, ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed,
     ax_props_for_window_id, ax_set_bool_by_title, ax_set_window_minimized, ax_set_window_zoomed,
-    ax_window_frame, ax_window_position, ax_window_size,
+    ax_window_frame, ax_window_position, ax_window_size, cfstr,
 };
 pub use error::{Error, Result};
 pub use fullscreen::{fullscreen_native, fullscreen_nonnative};
@@ -63,9 +63,11 @@ pub use main_thread_ops::{
 };
 use once_cell::sync::Lazy;
 pub use place::{
-    AttemptKind, AttemptOrder, AttemptRecord, AttemptTimeline, FallbackInvocation, FallbackTrigger,
-    PlaceAttemptOptions, PlacementCountersSnapshot, place_grid_focused, place_grid_focused_opts,
-    placement_counters_reset, placement_counters_snapshot,
+    AttemptKind, AttemptOrder, AttemptRecord, AttemptTimeline, AxAdapterHandle, FakeApplyResponse,
+    FakeAxAdapter, FakeOp, FakeWindowConfig, FallbackInvocation, FallbackTrigger,
+    PlaceAttemptOptions, PlacementContext, PlacementCountersSnapshot, PlacementEngine,
+    PlacementEngineConfig, PlacementGrid, PlacementOutcome, RetryLimits, place_grid_focused,
+    place_grid_focused_opts, placement_counters_reset, placement_counters_snapshot,
 };
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo, frontmost_window, frontmost_window_for_pid, list_windows};
@@ -142,7 +144,7 @@ unsafe extern "C" {
 pub type WindowId = u32;
 
 /// RAII guard that releases an AX element on drop.
-pub(crate) struct AXElem(*mut c_void);
+pub struct AXElem(*mut c_void);
 impl AXElem {
     /// Wrap an AX pointer we own under the Create rule. Returns None if null.
     #[inline]

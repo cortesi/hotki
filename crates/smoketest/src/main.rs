@@ -30,7 +30,7 @@ mod warn_overlay;
 /// Helper window for UI-driven tests and animations.
 mod winhelper;
 
-use std::{cmp::max, process::exit, sync::mpsc, thread, time::Duration};
+use std::{cmp::max, env, process::exit, sync::mpsc, thread, time::Duration};
 
 use cli::{Cli, Commands, FsState};
 use error::print_hints;
@@ -170,10 +170,18 @@ fn main() {
         return;
     }
 
-    enforce_permissions_or_exit();
+    let perms = permissions::check_permissions();
+    let fake_mode = (!perms.accessibility_ok || !perms.input_ok) && env::var_os("CI").is_some();
+    if fake_mode && !cli.quiet {
+        println!(
+            "smoketest: Accessibility/Input permissions missing; running fake placement smoke"
+        );
+    }
+
+    enforce_permissions_or_exit(perms, fake_mode);
     build_hotki_or_exit(&cli);
 
-    dispatch_command(&cli);
+    dispatch_command(&cli, fake_mode);
 }
 
 /// Initialize tracing/logging according to CLI flags and defaults.
@@ -286,12 +294,14 @@ fn handle_helper_commands_early(cli: &Cli) -> bool {
 }
 
 /// Ensure required macOS permissions are granted; exit with a helpful message if not.
-fn enforce_permissions_or_exit() {
-    let p = permissions::check_permissions();
-    if !p.accessibility_ok || !p.input_ok {
+fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus, fake_mode: bool) {
+    if fake_mode {
+        return;
+    }
+    if !perms.accessibility_ok || !perms.input_ok {
         eprintln!(
             "ERROR: required permissions missing (accessibility={}, input_monitoring={})",
-            p.accessibility_ok, p.input_ok
+            perms.accessibility_ok, perms.input_ok
         );
         eprintln!(
             "Grant Accessibility and Input Monitoring to your terminal under System Settings → Privacy & Security."
@@ -313,12 +323,12 @@ fn build_hotki_or_exit(cli: &Cli) {
 }
 
 /// Dispatch to the concrete smoketest command handlers.
-fn dispatch_command(cli: &Cli) {
+fn dispatch_command(cli: &Cli, fake_mode: bool) {
     match &cli.command {
         Commands::Relay => handle_relay(cli),
         Commands::Shell => handle_shell(cli),
         Commands::Volume => handle_volume(cli),
-        Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn),
+        Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn, fake_mode),
         Commands::PlaceIncrements => handle_place_increments(cli),
         Commands::Seq { tests } => {
             orchestrator::run_sequence_tests(tests, cli.duration, cli.timeout, true)
@@ -350,7 +360,14 @@ fn dispatch_command(cli: &Cli) {
         Commands::FocusNav => handle_focus_nav(cli),
         Commands::Focus => handle_focus(cli),
         Commands::Hide => handle_hide(cli),
-        Commands::Place => handle_place(cli),
+        Commands::Place => {
+            if fake_mode {
+                handle_place_fake(cli);
+            } else {
+                handle_place(cli);
+            }
+        }
+        Commands::PlaceFake => handle_place_fake(cli),
         Commands::PlaceAsync => handle_place_async(cli),
         Commands::PlaceAnimated => handle_place_animated(cli),
         Commands::PlaceTerm => handle_place_term(cli),
@@ -772,6 +789,33 @@ fn handle_place(cli: &Cli) {
         }
         Err(e) => {
             eprintln!("place: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle the fake placement test harness.
+fn handle_place_fake(cli: &Cli) {
+    let timeout = cli.timeout;
+    let logs = true;
+    match run_case(
+        "place-fake",
+        "place-fake",
+        timeout,
+        cli.quiet,
+        false,
+        cli.info.as_deref(),
+        false,
+        move || tests::place_fake::run_fake_place_test(timeout, logs),
+    ) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("place-fake: OK (fake adapter flows)");
+            }
+        }
+        Err(e) => {
+            eprintln!("place-fake: ERROR: {}", e);
             print_hints(&e);
             exit(1);
         }

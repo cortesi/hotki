@@ -31,3 +31,4 @@ crossbeam-channel.workspace = true
 [dev-dependencies]
 regex = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+proptest = "1.7.0"

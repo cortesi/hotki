@@ -42,13 +42,13 @@ integrating the improvements across the crate.
 
 4. Stage Four: Build a Deterministic Test Harness
 
-1. [ ] Introduce an `AxAdapter` trait that wraps the current accessibility
+1. [x] Introduce an `AxAdapter` trait that wraps the current accessibility
        calls, with an in-memory fake to simulate window responses.
-2. [ ] Add scenario tests covering success, axis nudges, fallback activation,
+2. [x] Add scenario tests covering success, axis nudges, fallback activation,
        and failure-to-settle paths through the new engine.
-3. [ ] Layer property-style tests over grid math and clamping behaviour to
+3. [x] Layer property-style tests over grid math and clamping behaviour to
        catch regressions across different grid sizes and screen origins.
-4. [ ] Extend the smoketest binary to exercise representative placement flows
+4. [x] Extend the smoketest binary to exercise representative placement flows
        (focused, id-based, move) using the fake adapter when CI lacks GUI
        access.
 

@@ -8,6 +8,8 @@ pub mod hide;
 pub mod place;
 pub mod place_animated;
 pub mod place_async;
+/// Fake placement harness exercising the adapter when GUI access is unavailable.
+pub mod place_fake;
 pub mod place_flex;
 pub mod place_increments;
 #[cfg(test)]

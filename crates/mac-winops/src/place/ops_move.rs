@@ -5,7 +5,6 @@ use super::{
     apply::AxAttrRefs,
     common::{PlaceAttemptOptions, PlacementContext, trace_safe_park},
     engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome},
-    fallback::preflight_safe_park,
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
@@ -110,6 +109,7 @@ pub(crate) fn place_move_grid(
         let target = *ctx.target();
         let opts = ctx.attempt_options();
         let tuning = opts.tuning();
+        let adapter = ctx.adapter();
         let engine = PlacementEngine::new(
             &ctx,
             PlacementEngineConfig {
@@ -128,7 +128,7 @@ pub(crate) fn place_move_grid(
         );
         if opts.hooks().should_safe_park(&ctx) {
             trace_safe_park("place_move_grid");
-            preflight_safe_park(
+            adapter.preflight_safe_park(
                 "place_move_grid",
                 ctx.win(),
                 AxAttrRefs {

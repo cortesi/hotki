@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc};
 use tracing::debug;
 
 // Shared placement utilities: constants, small helpers, and attempt options.
+use super::adapter::{self, AxAdapter, AxAdapterHandle};
 use super::metrics::PLACEMENT_COUNTERS;
 pub(super) use super::metrics::{AttemptKind, AttemptOrder};
 use crate::geom::{self, Rect};
@@ -368,6 +369,7 @@ pub struct PlacementContext {
     target: Rect,
     visible_frame: Rect,
     attempt_options: PlaceAttemptOptions,
+    adapter: AxAdapterHandle,
 }
 
 impl fmt::Debug for PlacementContext {
@@ -377,6 +379,7 @@ impl fmt::Debug for PlacementContext {
             .field("target", &self.target)
             .field("visible_frame", &self.visible_frame)
             .field("attempt_options", &self.attempt_options)
+            .field("adapter", &"adapter")
             .finish()
     }
 }
@@ -390,11 +393,28 @@ impl PlacementContext {
         visible_frame: Rect,
         attempt_options: PlaceAttemptOptions,
     ) -> Self {
+        Self::with_adapter(
+            win,
+            target,
+            visible_frame,
+            attempt_options,
+            adapter::system_adapter_handle(),
+        )
+    }
+
+    pub fn with_adapter(
+        win: crate::AXElem,
+        target: Rect,
+        visible_frame: Rect,
+        attempt_options: PlaceAttemptOptions,
+        adapter: AxAdapterHandle,
+    ) -> Self {
         Self {
             win,
             target,
             visible_frame,
             attempt_options,
+            adapter,
         }
     }
 
@@ -432,6 +452,12 @@ impl PlacementContext {
     #[inline]
     pub fn tuning(&self) -> PlacementTuning {
         self.attempt_options.tuning()
+    }
+
+    /// Access the adapter used for Accessibility operations.
+    #[inline]
+    pub(crate) fn adapter(&self) -> AxAdapterHandle {
+        self.adapter.clone()
     }
 }
 
@@ -512,8 +538,13 @@ pub(super) fn now_ms(start: std::time::Instant) -> u64 {
 }
 
 #[inline]
-pub(super) fn log_failure_context(win: &crate::AXElem, role: &str, subrole: &str) {
-    let (can_pos, can_size) = crate::ax::ax_settable_pos_size(win.as_ptr());
+pub(super) fn log_failure_context(
+    adapter: &dyn AxAdapter,
+    win: &crate::AXElem,
+    role: &str,
+    subrole: &str,
+) {
+    let (can_pos, can_size) = adapter.settable_pos_size(win);
     let s_pos = match can_pos {
         Some(true) => "true",
         Some(false) => "false",

@@ -7,7 +7,6 @@ use super::{
     apply::AxAttrRefs,
     common::{PlaceAttemptOptions, PlacementContext, trace_safe_park},
     engine::{PlacementEngine, PlacementEngineConfig, PlacementGrid, PlacementOutcome},
-    fallback::preflight_safe_park,
     normalize::{normalize_before_move, skip_reason_for_role_subrole},
 };
 use crate::{
@@ -71,6 +70,7 @@ fn place_grid_focused_inner(
         let target = *ctx.target();
         let opts = ctx.attempt_options();
         let tuning = opts.tuning();
+        let adapter = ctx.adapter();
         if opts.force_second_attempt() {
             debug!("opts: force_second_attempt=true");
         }
@@ -95,7 +95,7 @@ fn place_grid_focused_inner(
         );
         if opts.hooks().should_safe_park(&ctx) {
             trace_safe_park("place_grid_focused");
-            preflight_safe_park(
+            adapter.preflight_safe_park(
                 "place_grid_focused",
                 ctx.win(),
                 AxAttrRefs {
