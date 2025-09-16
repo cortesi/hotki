@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     future::Future,
     result::Result as StdResult,
     sync::OnceLock,
@@ -96,6 +97,13 @@ impl DriverError {
             cause: err.to_string(),
         }
     }
+}
+
+/// Normalize an identifier by parsing it as a chord when possible.
+fn canonicalize_ident(raw: &str) -> String {
+    mac_keycode::Chord::parse(raw)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// Access the global connection slot, initializing storage if needed.
@@ -241,9 +249,7 @@ fn drain_events_loop() {
 
 /// Inject a single key press (down + small delay + up) via MRPC.
 pub fn inject_key(seq: &str) -> DriverResult<()> {
-    let ident = mac_keycode::Chord::parse(seq)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| seq.to_string());
+    let ident = canonicalize_ident(seq);
 
     with_connection_mut(|conn| {
         block_on_rpc("inject_key_down", async {
@@ -280,25 +286,39 @@ pub fn get_bindings() -> DriverResult<Vec<String>> {
 
 /// Wait until a specific identifier is present in the current bindings.
 pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> DriverResult<()> {
-    let want = mac_keycode::Chord::parse(ident)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| ident.to_string());
+    wait_for_idents(&[ident], timeout_ms)
+}
+
+/// Wait until all identifiers are present in the current bindings.
+pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
+    if idents.is_empty() {
+        return Ok(());
+    }
+
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut remaining: BTreeSet<String> = idents
+        .iter()
+        .map(|ident| canonicalize_ident(ident))
+        .collect();
+
     while Instant::now() < deadline {
         let binds = get_bindings()?;
-        if binds.iter().any(|b| {
-            let trimmed = b.trim_matches('"');
-            let normalized = mac_keycode::Chord::parse(trimmed)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| trimmed.to_string());
-            normalized == want
-        }) {
+        for binding in binds {
+            let trimmed = binding.trim_matches('"');
+            let normalized = canonicalize_ident(trimmed);
+            remaining.remove(&normalized);
+        }
+
+        if remaining.is_empty() {
             return Ok(());
         }
+
         thread::sleep(config::ms(config::RETRY_DELAY_MS));
     }
+
+    let missing = remaining.into_iter().collect::<Vec<_>>().join(", ");
     Err(DriverError::BindingTimeout {
-        ident: want,
+        ident: missing,
         timeout_ms,
     })
 }

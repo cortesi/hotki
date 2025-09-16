@@ -1,8 +1,11 @@
 //! Test orchestration and execution logic.
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 use std::{
     cmp, env,
-    io::Read,
+    io::{self, Read},
+    path::PathBuf,
     process as std_process,
     process::{Command, Stdio},
     thread,
@@ -47,6 +50,56 @@ impl SubtestIo {
     }
 }
 
+#[cfg(test)]
+fn forced_exe_slot() -> &'static Mutex<Option<PathBuf>> {
+    static SLOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn forced_overhead_slot() -> &'static Mutex<Option<u64>> {
+    static SLOT: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Resolve the smoketest executable path, honoring test overrides when set.
+fn resolve_smoketest_executable() -> io::Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = forced_exe_slot().lock().unwrap().clone() {
+        return Ok(path);
+    }
+    env::current_exe()
+}
+
+/// Base watchdog overhead duration, optionally overridden for tests.
+fn watchdog_base_overhead() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = *forced_overhead_slot().lock().unwrap() {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_millis(15_000)
+}
+
+#[cfg(test)]
+fn set_forced_executable(path: PathBuf) {
+    *forced_exe_slot().lock().unwrap() = Some(path);
+}
+
+#[cfg(test)]
+fn clear_forced_executable() {
+    *forced_exe_slot().lock().unwrap() = None;
+}
+
+#[cfg(test)]
+fn set_watchdog_overhead_for_tests(ms: u64) {
+    *forced_overhead_slot().lock().unwrap() = Some(ms);
+}
+
+#[cfg(test)]
+fn clear_watchdog_overhead_override() {
+    *forced_overhead_slot().lock().unwrap() = None;
+}
+
 /// Result from running a subtest under the watchdog.
 struct SubtestOutcome {
     /// Whether the child exited successfully.
@@ -81,7 +134,7 @@ fn run_subtest(
     extra_args: &[String],
     io: SubtestIo,
 ) -> SubtestOutcome {
-    let exe = match env::current_exe() {
+    let exe = match resolve_smoketest_executable() {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("orchestrator: failed to resolve current_exe: {}", e);
@@ -134,7 +187,7 @@ fn run_subtest(
         }
     };
 
-    let overhead = Duration::from_millis(15_000);
+    let overhead = watchdog_base_overhead();
     let extra_overhead = Duration::from_millis(extra_watchdog_ms);
     let max_wait = Duration::from_millis(timeout_ms)
         .saturating_add(overhead)
@@ -538,4 +591,83 @@ pub fn run_sequence_tests(tests: &[SeqTest], duration_ms: u64, timeout_ms: u64, 
         }
     }
     println!("Selected smoketests passed");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        process::Command as StdCommand,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    const STUB_SRC: &str = r#"
+use std::{env, thread, time::Duration};
+
+fn main() {
+    let mut args = env::args().skip(1);
+    let mut timeout_ms: u64 = 0;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--timeout" => {
+                if let Some(val) = args.next() {
+                    timeout_ms = val.parse().unwrap_or(0);
+                }
+            }
+            "--duration" => {
+                let _ = args.next();
+            }
+            _ => {}
+        }
+    }
+    let sleep_ms = timeout_ms.saturating_add(100);
+    thread::sleep(Duration::from_millis(sleep_ms));
+}
+"#;
+
+    fn build_watchdog_stub() -> PathBuf {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+        fs::create_dir_all(&base).unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let src = base.join(format!("watchdog_stub_{}.rs", nanos));
+        fs::write(&src, STUB_SRC).unwrap();
+        let bin = base.join(format!("watchdog_stub_{}", nanos));
+        let status = StdCommand::new("rustc")
+            .arg(src.to_str().unwrap())
+            .arg("-O")
+            .arg("-o")
+            .arg(bin.to_str().unwrap())
+            .status()
+            .expect("failed to compile watchdog stub");
+        assert!(status.success());
+        if let Err(_e) = fs::remove_file(src) {}
+        bin
+    }
+
+    struct OverrideGuard {
+        path: PathBuf,
+    }
+
+    impl Drop for OverrideGuard {
+        fn drop(&mut self) {
+            clear_watchdog_overhead_override();
+            clear_forced_executable();
+            if let Err(_e) = fs::remove_file(&self.path) {}
+        }
+    }
+
+    #[test]
+    fn watchdog_kills_hung_child() {
+        let stub = build_watchdog_stub();
+        set_forced_executable(stub.clone());
+        set_watchdog_overhead_for_tests(50);
+        let _guard = OverrideGuard { path: stub };
+        let outcome = run_subtest_capture("watchdog-stub", 5, 25, &[]);
+        assert!(!outcome.success);
+    }
 }

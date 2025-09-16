@@ -158,8 +158,9 @@ impl TestContext {
             .to_string();
 
         server_drive::ensure_init(&sock, 3000)?;
-        for ident in idents {
-            server_drive::wait_for_ident(ident, config::BINDING_GATE_DEFAULT_MS)?;
+        if !idents.is_empty() {
+            let gate_ms = config::BINDING_GATE_DEFAULT_MS * 2;
+            server_drive::wait_for_idents(idents, gate_ms)?;
         }
         Ok(())
     }

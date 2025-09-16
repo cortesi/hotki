@@ -50,9 +50,9 @@ Trim copy-paste watchdog logic and improve diagnostics.
        implementation that toggles capture vs inherit behavior.
 2. [x] Improve failure propagation so orchestrator surfaces child stderr/stdout
        without concatenation artifacts.
-3. [ ] Add regression coverage for the watchdog (stub binary exceeding timeout)
+3. [x] Add regression coverage for the watchdog (stub binary exceeding timeout)
        to guard against future regressions.
-4. [ ] Investigate the recurring `focus-nav` smoketest timeout and land a fix.
+4. [x] Investigate the recurring `focus-nav` smoketest timeout and land a fix.
 
 5. Stage Five: Outcome and Config Clarity
 
