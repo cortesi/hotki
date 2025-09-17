@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use hotki_world::{view_util, World, WorldView, WorldWindow};
-use mac_winops::{ops::RealWinOps, WindowInfo};
+use hotki_world::{World, WorldView, WorldWindow, view_util};
+use mac_winops::{WindowInfo, ops::RealWinOps};
 use once_cell::sync::OnceCell;
 
 use crate::{

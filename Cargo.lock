@@ -2300,6 +2300,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hotki-tester"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "config",
+ "hotki-protocol",
+ "hotki-server",
+ "humantime",
+ "logging",
+ "mac-winops",
+ "permissions",
+ "ron",
+ "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hotki-world"
 version = "0.1.0"
 dependencies = [
@@ -2312,6 +2331,12 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "icu_collections"

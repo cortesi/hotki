@@ -15,8 +15,8 @@ use crate::{
         PlacementGrid, PlacementOutcome, normalize_before_move, skip_reason_for_role_subrole,
     },
     screen_util::visible_frame_containing_point,
+    window::frontmost_window_for_pid,
 };
-use crate::window::frontmost_window_for_pid;
 
 /// Toggle or set native full screen (AXFullScreen) for the focused window of `pid`.
 ///
