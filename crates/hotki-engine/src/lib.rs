@@ -697,28 +697,37 @@ impl Engine {
                         .unwrap_or(true);
                     aok && tok
                 };
-                let mut idx_match: Vec<usize> = Vec::new();
+                let mut idx_any: Vec<usize> = Vec::new();
+                let mut idx_active: Vec<usize> = Vec::new();
                 for (i, w) in wsnap.iter().enumerate() {
                     if matches(w) {
-                        idx_match.push(i);
+                        idx_any.push(i);
+                        if w.on_active_space {
+                            idx_active.push(i);
+                        }
                     }
                 }
-                tracing::debug!("Raise(World): matched count={}", idx_match.len());
-                if !idx_match.is_empty() {
+                tracing::debug!(
+                    "Raise(World): matched active={} total={}",
+                    idx_active.len(),
+                    idx_any.len()
+                );
+                if !idx_active.is_empty() {
+                    let idx_match = idx_active;
                     let target_idx = if let Some(c) = focused.as_ref() {
                         if matches(c) {
                             let cur_index =
                                 wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
                             if let Some(ci) = cur_index {
-                                idx_match.into_iter().find(|&i| i > ci).unwrap_or(ci)
+                                idx_match.iter().copied().find(|&i| i > ci).unwrap_or(ci)
                             } else {
-                                idx_match[0]
+                                *idx_match.first().unwrap()
                             }
                         } else {
-                            idx_match[0]
+                            *idx_match.first().unwrap()
                         }
                     } else {
-                        idx_match[0]
+                        *idx_match.first().unwrap()
                     };
                     let target = &wsnap[target_idx];
                     tracing::debug!(
@@ -739,6 +748,9 @@ impl Engine {
                         let _ = self.svc.notifier.send_error("Raise", format!("{}", e));
                     }
                     self.hint_refresh();
+                } else if let Some(off_idx) = idx_any.first() {
+                    let off = &wsnap[*off_idx];
+                    self.guard_off_active_space("raise", "Raise", off.pid, Some(off))?;
                 } else {
                     tracing::debug!("Raise(World): no match in snapshot; no-op");
                 }
@@ -782,6 +794,7 @@ impl Engine {
         let (wapp, wtitle, wpid) = self.current_context_tuple();
         let mut snap = self.svc.world.snapshot().await;
         snap.sort_by_key(|w| w.z);
+        let focused_window = self.svc.world.focused_window().await;
         if let Some(top) = snap.first() {
             tracing::debug!(
                 "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
@@ -814,12 +827,24 @@ impl Engine {
             );
         }
 
+        if let Some(ref wf) = focused_window
+            && wf.pid == pid
+            && !wf.on_active_space
+        {
+            return self.guard_off_active_space("place", "Place", pid, Some(wf));
+        }
+        if !snap.iter().any(|w| w.pid == pid && w.on_active_space)
+            && let Some(offspace) = snap.iter().find(|w| w.pid == pid && !w.on_active_space)
+        {
+            return self.guard_off_active_space("place", "Place", pid, Some(offspace));
+        }
+
         // Stage 6: Advisory pre-gate using World AX props for the focused window.
         // If the currently focused window belongs to our target pid and appears
         // unsupported (role/subrole) skip early. Only treat AXPosition=false as
         // non-movable; allow proceeding when only AXSize is false so we can still
         // attempt a position-only placement.
-        if let Some(wf) = self.svc.world.focused_window().await
+        if let Some(wf) = focused_window.clone()
             && wf.pid == pid
             && let Some(ax) = wf.ax.clone()
         {
@@ -868,7 +893,7 @@ impl Engine {
         if !snap.is_empty() {
             let candidate = snap
                 .iter()
-                .filter(|w| w.pid == pid)
+                .filter(|w| w.pid == pid && w.on_active_space)
                 .min_by_key(|w| (!w.focused, w.z))
                 .cloned();
             if let Some(w) = candidate {
@@ -909,6 +934,9 @@ impl Engine {
                     let _ = self.svc.notifier.send_error("Move", format!("{}", e));
                 }
                 self.hint_refresh();
+            } else if let Some(offspace) = snap.iter().find(|w| w.pid == pid && !w.on_active_space)
+            {
+                return self.guard_off_active_space("place_move", "Move", pid, Some(offspace));
             } else {
                 let _ = self
                     .svc
@@ -984,13 +1012,13 @@ impl Engine {
 
     /// Dispatch a hotkey event by id, handling all lookups and callback execution internally.
     /// This reduces the server's knowledge about engine internals and avoids repeated async locking.
-    pub async fn dispatch(&self, id: u32, kind: mac_hotkey::EventKind, repeat: bool) {
+    pub async fn dispatch(&self, id: u32, kind: mac_hotkey::EventKind, repeat: bool) -> Result<()> {
         // Resolve the registration to get identifier and chord
         let (ident, chord) = match self.binding_manager.lock().await.resolve(id) {
             Some((i, c)) => (i, c),
             None => {
                 trace!("Dispatch called with unregistered id: {}", id);
-                return;
+                return Ok(());
             }
         };
 
@@ -1005,7 +1033,7 @@ impl Engine {
                     {
                         self.handle_repeat(&ident);
                     }
-                    return;
+                    return Ok(());
                 }
 
                 self.key_tracker.on_key_down(&ident);
@@ -1014,6 +1042,7 @@ impl Engine {
                     Ok(_depth_changed) => {}
                     Err(e) => {
                         warn!("Key handler failed: {}", e);
+                        return Err(e);
                     }
                 }
             }
@@ -1022,6 +1051,7 @@ impl Engine {
                 self.handle_key_up(&ident);
             }
         }
+        Ok(())
     }
 }
 
@@ -1045,6 +1075,35 @@ impl Engine {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)
+    }
+
+    fn guard_off_active_space(
+        &self,
+        op: &'static str,
+        notify_title: &str,
+        pid: i32,
+        window: Option<&WorldWindow>,
+    ) -> Result<()> {
+        let (id, space) = match window {
+            Some(w) => (Some(w.id), w.space),
+            None => (None, None),
+        };
+        let message = match space {
+            Some(space_id) => format!(
+                "Window is on Mission Control space {}. Switch back to that space and try again.",
+                space_id
+            ),
+            None => "Window is not on the active Mission Control space.".to_string(),
+        };
+        let _ = self.svc.notifier.send_error(notify_title, message);
+        warn!(
+            op = op,
+            pid = pid,
+            window_id = id,
+            space = space,
+            "refusing window operation on off-space window"
+        );
+        Err(Error::OffActiveSpace { op, pid, id, space })
     }
 
     fn hint_refresh(&self) {

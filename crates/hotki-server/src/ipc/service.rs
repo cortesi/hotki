@@ -27,7 +27,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use hotki_engine::Engine;
+use hotki_engine::{Engine, Error};
 use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use parking_lot::Mutex;
@@ -539,9 +539,65 @@ impl MrpcConnection for HotkeyService {
                 tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: resolved id={} for ident={} -> dispatch", id, req.ident);
 
                 // Dispatch directly through the engine (same path as OS events)
-                eng.dispatch(id, req.kind.to_event_kind(), req.repeat).await;
-                tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: dispatch done for id={}", id);
-                Ok(Value::Boolean(true))
+                match eng.dispatch(id, req.kind.to_event_kind(), req.repeat).await {
+                    Ok(_) => {
+                        tracing::debug!(
+                            target: "hotki_server::ipc::service",
+                            "InjectKey: dispatch done for id={}",
+                            id
+                        );
+                        Ok(Value::Boolean(true))
+                    }
+                    Err(Error::OffActiveSpace {
+                        op,
+                        pid: err_pid,
+                        id: err_id,
+                        space,
+                    }) => {
+                        tracing::debug!(
+                            target: "hotki_server::ipc::service",
+                            "InjectKey: operation {} refused for pid={} id={:?} space={:?}",
+                            op,
+                            err_pid,
+                            err_id,
+                            space
+                        );
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::WindowOffActiveSpace,
+                            &[
+                                ("operation", Value::String(op.into())),
+                                ("pid", Value::Integer((err_pid as i64).into())),
+                                (
+                                    "id",
+                                    match err_id {
+                                        Some(v) => Value::Integer((v as i64).into()),
+                                        None => Value::Nil,
+                                    },
+                                ),
+                                (
+                                    "space",
+                                    match space {
+                                        Some(s) => Value::Integer(s.into()),
+                                        None => Value::Nil,
+                                    },
+                                ),
+                            ],
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "hotki_server::ipc::service",
+                            "InjectKey: dispatch failed id={} ident={}: {}",
+                            id,
+                            req.ident,
+                            e
+                        );
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::EngineDispatch,
+                            &[("message", Value::String(e.to_string().into()))],
+                        ));
+                    }
+                }
             }
 
             Some(HotkeyMethod::GetBindings) => {
@@ -639,44 +695,15 @@ impl MrpcConnection for HotkeyService {
                 let world = eng.world();
                 // Obtain consistent snapshot + focused key
                 let (_rx, snap, focused_key) = world.subscribe_with_snapshot().await;
-                // Convert to protocol types
-                let mut wins: Vec<hotki_protocol::WorldWindowLite> = snap
-                    .into_iter()
-                    .map(|w| hotki_protocol::WorldWindowLite {
-                        app: w.app,
-                        title: w.title,
-                        pid: w.pid,
-                        id: w.id,
-                        z: w.z,
-                        focused: w.focused,
-                        display_id: w.display_id,
-                        space: w.space,
-                        on_active_space: w.on_active_space,
-                        is_on_screen: w.is_on_screen,
-                    })
-                    .collect();
-                wins.sort_by_key(|w| (w.z, w.pid, w.id));
-                let offspace_count = wins.iter().filter(|w| !w.on_active_space).count();
+                let (payload, total, offspace_count) = build_snapshot_payload(snap, focused_key);
                 if offspace_count > 0 {
                     info!(
-                        total = wins.len(),
+                        total,
                         offspace = offspace_count,
-                        "world snapshot contains off-space windows"
+                        retained = payload.windows.len(),
+                        "world snapshot dropped off-space windows"
                     );
                 }
-                let focused = focused_key.and_then(|k| {
-                    wins.iter()
-                        .find(|w| w.pid == k.pid && w.id == k.id)
-                        .map(|w| hotki_protocol::App {
-                            app: w.app.clone(),
-                            title: w.title.clone(),
-                            pid: w.pid,
-                        })
-                });
-                let payload = crate::ipc::rpc::WorldSnapshotLite {
-                    windows: wins,
-                    focused,
-                };
                 crate::ipc::rpc::enc_world_snapshot(&payload).map_err(|e| {
                     Self::typed_err(
                         crate::error::RpcErrorCode::InvalidType,
@@ -765,8 +792,16 @@ impl HotkeyService {
                                 break;
                             }
                             let eng_guard = engine.lock().await;
-                            if let Some(eng) = eng_guard.as_ref() {
-                                eng.dispatch(ev.id, ev.kind, ev.repeat).await;
+                            if let Some(eng) = eng_guard.as_ref()
+                                && let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await
+                            {
+                                tracing::trace!(
+                                    target: "hotki_server::ipc::service",
+                                    "OS dispatch failed id={} kind={:?}: {}",
+                                    ev.id,
+                                    ev.kind,
+                                    e
+                                );
                             }
                         }
                     });
@@ -783,8 +818,16 @@ impl HotkeyService {
                                 break;
                             }
                             let eng_guard = engine.lock().await;
-                            if let Some(eng) = eng_guard.as_ref() {
-                                eng.dispatch(ev.id, ev.kind, ev.repeat).await;
+                            if let Some(eng) = eng_guard.as_ref()
+                                && let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await
+                            {
+                                tracing::trace!(
+                                    target: "hotki_server::ipc::service",
+                                    "OS dispatch failed id={} kind={:?}: {}",
+                                    ev.id,
+                                    ev.kind,
+                                    e
+                                );
                             }
                         }
                     });
@@ -819,5 +862,109 @@ impl HotkeyServiceBuilder {
         svc.auto_shutdown_on_empty
             .store(self.auto_shutdown_on_empty, Ordering::SeqCst);
         svc
+    }
+}
+fn build_snapshot_payload(
+    mut snap: Vec<hotki_world::WorldWindow>,
+    focused_key: Option<hotki_world::WindowKey>,
+) -> (crate::ipc::rpc::WorldSnapshotLite, usize, usize) {
+    snap.sort_by_key(|w| (w.z, w.pid, w.id));
+    let total = snap.len();
+    let offspace_count = snap.iter().filter(|w| !w.on_active_space).count();
+    let windows: Vec<hotki_protocol::WorldWindowLite> = snap
+        .into_iter()
+        .filter(|w| w.on_active_space)
+        .map(|w| hotki_protocol::WorldWindowLite {
+            app: w.app,
+            title: w.title,
+            pid: w.pid,
+            id: w.id,
+            z: w.z,
+            focused: w.focused,
+            display_id: w.display_id,
+            space: w.space,
+            on_active_space: w.on_active_space,
+            is_on_screen: w.is_on_screen,
+        })
+        .collect();
+    let focused = focused_key.and_then(|k| {
+        windows
+            .iter()
+            .find(|w| w.pid == k.pid && w.id == k.id)
+            .map(|w| hotki_protocol::App {
+                app: w.app.clone(),
+                title: w.title.clone(),
+                pid: w.pid,
+            })
+    });
+    (
+        crate::ipc::rpc::WorldSnapshotLite { windows, focused },
+        total,
+        offspace_count,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use hotki_world::{WindowKey, WorldWindow};
+
+    use super::*;
+
+    fn ww(
+        pid: i32,
+        id: u32,
+        z: u32,
+        on_active_space: bool,
+        focused: bool,
+        space: Option<i64>,
+    ) -> WorldWindow {
+        WorldWindow {
+            app: format!("App{}", pid),
+            title: format!("Win{}", id),
+            pid,
+            id,
+            pos: None,
+            layer: 0,
+            z,
+            space,
+            on_active_space,
+            is_on_screen: true,
+            display_id: None,
+            focused,
+            ax: None,
+            meta: Vec::new(),
+            last_seen: Instant::now(),
+            seen_seq: 0,
+        }
+    }
+
+    #[test]
+    fn build_snapshot_filters_offspace() {
+        let snap = vec![
+            ww(1, 1, 0, true, true, Some(1)),
+            ww(2, 2, 1, false, false, Some(2)),
+            ww(3, 3, 2, true, false, None),
+        ];
+        let focused_key = Some(WindowKey { pid: 1, id: 1 });
+        let (payload, total, offspace) = build_snapshot_payload(snap, focused_key);
+        assert_eq!(total, 3);
+        assert_eq!(offspace, 1);
+        assert_eq!(payload.windows.len(), 2);
+        assert!(payload.windows.iter().all(|w| w.on_active_space));
+        let focused = payload.focused.expect("focused app retained");
+        assert_eq!(focused.pid, 1);
+    }
+
+    #[test]
+    fn build_snapshot_drops_offspace_focus() {
+        let snap = vec![ww(5, 10, 0, false, true, Some(5))];
+        let focused_key = Some(WindowKey { pid: 5, id: 10 });
+        let (payload, total, offspace) = build_snapshot_payload(snap, focused_key);
+        assert_eq!(total, 1);
+        assert_eq!(offspace, 1);
+        assert!(payload.windows.is_empty());
+        assert!(payload.focused.is_none());
     }
 }

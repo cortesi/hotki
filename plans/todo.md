@@ -26,15 +26,15 @@ aren't on our current space.
    that closed while we were away without sweeping every other space.
 
 4. Stage Four: Enforce Space Guardrails Downstream
-8. [ ] Guard engine/server window manipulation APIs so we refuse place/move/raise requests when
+8. [x] Guard engine/server window manipulation APIs so we refuse place/move/raise requests when
    `on_active_space` is false, returning structured errors and telemetry.
-9. [ ] Update protocol/client runtime handling to keep requests scoped to active-space windows and
+9. [x] Update protocol/client runtime handling to keep requests scoped to active-space windows and
    cover the new guardrails with tests.
 
 5. Stage Five: Validation And Perf Regression Tests
-10. [ ] Expand smoketests to simulate multi-space navigation, asserting adoption/reaping behavior
+10. [x] Expand smoketests to simulate multi-space navigation, asserting adoption/reaping behavior
     and ensuring runtime stays under the agreed performance budget.
-11. [ ] Refresh world/unit/integration tests to cover the new lifecycle and guardrail logic end to
+11. [x] Refresh world/unit/integration tests to cover the new lifecycle and guardrail logic end to
     end.
 
 6. Stage Six: Release Hygiene

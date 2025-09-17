@@ -23,6 +23,8 @@ pub mod raise;
 pub mod repeat;
 pub mod ui;
 pub mod world_ax;
+/// Simulated multi-space adoption smoketest utilities.
+pub mod world_spaces;
 pub mod world_status;
 
 // Re-export the main test functions for easier access

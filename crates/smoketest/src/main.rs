@@ -387,6 +387,7 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
         Commands::Fullscreen { state, native } => handle_fullscreen(cli, *state, *native),
         Commands::WorldStatus => handle_world_status(cli),
         Commands::WorldAx => handle_world_ax(cli),
+        Commands::WorldSpaces => handle_world_spaces(cli),
         Commands::SpaceProbe {
             samples,
             interval_ms,
@@ -1135,6 +1136,28 @@ fn handle_world_status(cli: &Cli) {
         }
         Err(e) => {
             eprintln!("world-status: ERROR: {}", e);
+            print_hints(&e);
+            exit(1);
+        }
+    }
+}
+
+/// Handle `world-spaces` test case.
+fn handle_world_spaces(cli: &Cli) {
+    if !cli.quiet {
+        heading("Test: world-spaces");
+    }
+    let timeout = cli.timeout;
+    match run_with_watchdog("world-spaces", timeout, move || {
+        tests::world_spaces::run_world_spaces_test(timeout, true)
+    }) {
+        Ok(()) => {
+            if !cli.quiet {
+                println!("world-spaces: OK (multi-space adoption within budget)");
+            }
+        }
+        Err(e) => {
+            eprintln!("world-spaces: ERROR: {}", e);
             print_hints(&e);
             exit(1);
         }

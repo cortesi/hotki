@@ -462,6 +462,7 @@ pub fn run_all_tests(
     all_ok &= run("world-status", duration_ms);
     // Verify World AX props path as a quick sanity check.
     all_ok &= run("world-ax", duration_ms);
+    all_ok &= run("world-spaces", duration_ms);
 
     // Repeat tests
     all_ok &= run("repeat-relay", duration_ms);
@@ -593,6 +594,7 @@ fn to_subcmd(t: SeqTest) -> &'static str {
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",
         SeqTest::PlaceFake => "place-fake",
+        SeqTest::WorldSpaces => "world-spaces",
     }
 }
 

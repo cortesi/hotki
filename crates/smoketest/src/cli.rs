@@ -70,6 +70,8 @@ pub enum SeqTest {
     Minui,
     /// Fake placement harness (no GUI required)
     PlaceFake,
+    /// Simulated multi-space adoption/performance check
+    WorldSpaces,
 }
 
 /// Desired fullscreen state for tests.
@@ -309,6 +311,9 @@ pub enum Commands {
     /// Query AX props for the frontmost helper via WorldHandle
     #[command(name = "world-ax")]
     WorldAx,
+    /// Simulate multi-space navigation and verify adoption performance.
+    #[command(name = "world-spaces")]
+    WorldSpaces,
     /// Capture raw CoreGraphics window listings for Mission Control analysis.
     #[command(name = "space-probe")]
     SpaceProbe {

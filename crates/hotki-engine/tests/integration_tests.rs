@@ -112,7 +112,8 @@ async fn test_rebind_on_depth_change() {
     // Dispatch the key event to change depth
     engine
         .dispatch(cmd_k_id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch cmd+k");
 
     // Await a HUD update to ensure rebind completed
     let got_hud_update = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;

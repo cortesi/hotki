@@ -67,4 +67,8 @@ pub enum RpcErrorCode {
     EngineSetConfig,
     #[error("KeyNotBound")]
     KeyNotBound,
+    #[error("EngineDispatch")]
+    EngineDispatch,
+    #[error("WindowOffActiveSpace")]
+    WindowOffActiveSpace,
 }

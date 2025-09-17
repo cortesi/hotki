@@ -23,4 +23,18 @@ pub enum Error {
     /// Generic error with context.
     #[error("Engine error: {0}")]
     Msg(String),
+
+    /// Refused a window operation because the target window is not on the
+    /// active Mission Control space set.
+    #[error("{op} refused: pid={pid} id={id:?} space={space:?} off active space")]
+    OffActiveSpace {
+        /// Operation identifier (e.g., "place", "place_move", "raise").
+        op: &'static str,
+        /// Target process identifier.
+        pid: i32,
+        /// Optional CoreGraphics window id.
+        id: Option<u32>,
+        /// Optional Mission Control space identifier.
+        space: Option<i64>,
+    },
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hotki_engine::{Engine, MockHotkeyApi, test_support as testutil};
+use hotki_engine::{Engine, Error, MockHotkeyApi, test_support as testutil};
 use hotki_protocol::MsgToUI;
 use hotki_world::World;
 use mac_winops::ops::MockWinOps;
@@ -55,7 +55,8 @@ async fn engine_uses_window_ops_for_focus() {
         .expect("registered id for a");
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch focus");
 
     assert!(mock.calls_contains("focus_dir"));
 }
@@ -76,7 +77,8 @@ async fn engine_hide_uses_winops() {
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch hide");
     assert!(mock.calls_contains("hide"));
 }
 
@@ -99,11 +101,13 @@ async fn engine_fullscreen_routes_native_and_nonnative() {
     let id_n = engine.resolve_id_for_ident("n").await.unwrap();
     engine
         .dispatch(id_n, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch fullscreen native");
     let id_f = engine.resolve_id_for_ident("f").await.unwrap();
     engine
         .dispatch(id_f, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch fullscreen nonnative");
     assert!(mock.calls_contains("fullscreen_native"));
     assert!(mock.calls_contains("fullscreen_nonnative"));
 }
@@ -173,7 +177,8 @@ async fn engine_raise_activates_on_match() {
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch raise");
     assert!(mock.calls_contains("activate_pid"));
 }
 
@@ -233,12 +238,14 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
     let id_r = engine.resolve_id_for_ident("r").await.unwrap();
     engine
         .dispatch(id_r, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch raise to B");
     // Place should prefer last raise pid (200)
     let id_p = engine.resolve_id_for_ident("p").await.unwrap();
     engine
         .dispatch(id_p, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch place with raise pid");
     assert_eq!(mock.last_place_grid_pid(), Some(200));
     // Simulate focus moving to pid 200 in the world snapshot
     mock.set_windows(vec![
@@ -276,8 +283,181 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
     // Next place should use world-focused (cleared hint)
     engine
         .dispatch(id_p, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch place with focus pid");
     assert_eq!(mock.last_place_grid_pid(), Some(200));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn engine_place_rejects_offspace_window() {
+    ensure_no_os_interaction();
+    let (tx, mut rx) = mpsc::channel(16);
+    let mock = Arc::new(MockWinOps::new());
+    let api = Arc::new(MockHotkeyApi::new());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
+    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
+    let keys = keymode::Keys::from_ron("[(\"p\", \"place\", place(grid(2,2), at(0,0)))]").unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+
+    set_world_focus(&engine, &mock, "App", "Win", 77).await;
+
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 1,
+        pid: 77,
+        app: "App".into(),
+        title: "Win".into(),
+        pos: None,
+        space: Some(5),
+        layer: 0,
+        focused: true,
+        is_on_screen: false,
+        on_active_space: false,
+    }]);
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 80, |snap| {
+        snap.iter().any(|w| w.pid == 77 && !w.on_active_space)
+    })
+    .await;
+
+    let id = engine.resolve_id_for_ident("p").await.unwrap();
+    let err = engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .expect_err("expected place guard error");
+    assert!(matches!(err, Error::OffActiveSpace { op: "place", .. }));
+
+    let saw = recv_error_with_title(&mut rx, "Place", 80).await;
+    assert!(saw, "expected Place guard notification");
+    assert!(
+        !mock.calls_contains("place_grid_focused"),
+        "place operation should not reach winops"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn engine_place_move_rejects_offspace_window() {
+    ensure_no_os_interaction();
+    let (tx, mut rx) = mpsc::channel(16);
+    let mock = Arc::new(MockWinOps::new());
+    let api = Arc::new(MockHotkeyApi::new());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
+    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
+    let keys =
+        keymode::Keys::from_ron("[(\"m\", \"move\", place_move(grid(2,2), right))]").unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+
+    set_world_focus(&engine, &mock, "App", "Win", 42).await;
+    let world = engine.world();
+
+    mock.set_windows(Vec::new());
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 80, |snap| snap.is_empty()).await;
+
+    mock.set_windows(vec![mac_winops::WindowInfo {
+        id: 9,
+        pid: 42,
+        app: "App".into(),
+        title: "Win".into(),
+        pos: None,
+        space: Some(3),
+        layer: 0,
+        focused: true,
+        is_on_screen: true,
+        on_active_space: false,
+    }]);
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 80, |snap| {
+        snap.iter().any(|w| w.pid == 42 && !w.on_active_space)
+    })
+    .await;
+
+    let id = engine.resolve_id_for_ident("m").await.unwrap();
+    let err = engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .expect_err("expected move guard error");
+    assert!(matches!(
+        err,
+        Error::OffActiveSpace {
+            op: "place_move",
+            ..
+        }
+    ));
+
+    let saw = recv_error_with_title(&mut rx, "Move", 150).await;
+    assert!(saw, "expected Move guard notification");
+    assert!(
+        !mock.calls_contains("place_move"),
+        "place_move should not run for off-space window"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn engine_raise_rejects_offspace_window() {
+    ensure_no_os_interaction();
+    let (tx, mut rx) = mpsc::channel(16);
+    let mock = Arc::new(MockWinOps::new());
+    let api = Arc::new(MockHotkeyApi::new());
+    let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
+    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
+    let keys =
+        keymode::Keys::from_ron("[(\"r\", \"raise\", raise(app: \"^Target$\", title: \"Win\"))]")
+            .unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+
+    mock.set_windows(vec![
+        mac_winops::WindowInfo {
+            id: 1,
+            pid: 10,
+            app: "Other".into(),
+            title: "Front".into(),
+            pos: None,
+            space: Some(1),
+            layer: 0,
+            focused: true,
+            is_on_screen: true,
+            on_active_space: true,
+        },
+        mac_winops::WindowInfo {
+            id: 2,
+            pid: 20,
+            app: "Target".into(),
+            title: "Win".into(),
+            pos: None,
+            space: Some(4),
+            layer: 0,
+            focused: false,
+            is_on_screen: false,
+            on_active_space: false,
+        },
+    ]);
+    let world = engine.world();
+    world.hint_refresh();
+    let _ = wait_snapshot_until(world.as_ref(), 80, |snap| {
+        snap.iter().any(|w| w.pid == 20 && !w.on_active_space)
+    })
+    .await;
+
+    let id = engine.resolve_id_for_ident("r").await.unwrap();
+    let err = engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .expect_err("expected raise guard error");
+    assert!(matches!(err, Error::OffActiveSpace { op: "raise", .. }));
+
+    let saw = recv_error_with_title(&mut rx, "Raise", 80).await;
+    assert!(saw, "expected Raise guard notification");
+    assert!(
+        !mock.calls_contains("activate_pid"),
+        "raise should not activate off-space window"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -297,7 +477,8 @@ async fn engine_fullscreen_error_notifies() {
     let id = engine.resolve_id_for_ident("f").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch raise invalid regex");
     // expect an error Notify with title "Fullscreen"
     let saw = recv_error_with_title(&mut rx, "Fullscreen", 80).await;
     assert!(saw, "expected Fullscreen error notification");
@@ -320,7 +501,8 @@ async fn engine_hide_error_notifies() {
     let id = engine.resolve_id_for_ident("h").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch focus left error");
     let saw = recv_error_with_title(&mut rx, "Hide", 80).await;
     assert!(saw, "expected Hide error notification");
 }
@@ -342,7 +524,8 @@ async fn engine_raise_invalid_regex_notifies() {
     let id = engine.resolve_id_for_ident("r").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch place_move");
     let saw = recv_error_with_title(&mut rx, "Raise", 80).await;
     assert!(saw, "expected Raise error notification for invalid regex");
 }
@@ -364,7 +547,8 @@ async fn engine_focus_error_propagates_notification() {
     let id = engine.resolve_id_for_ident("a").await.unwrap();
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch focus dir error");
 
     // Drain messages until we see an error notification about Focus
     let saw_error = recv_error_with_title(&mut rx, "Focus", 80).await;
@@ -405,6 +589,7 @@ async fn engine_place_move_uses_winops() {
         .expect("registered id");
     engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-        .await;
+        .await
+        .expect("dispatch place_move success");
     assert!(mock.calls_contains("place_move"));
 }
