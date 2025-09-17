@@ -7,11 +7,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+use mac_winops::{
+    WindowInfo,
+    ops::{RealWinOps, WinOps},
+    wait::{find_window_id_ms, wait_for_windows_visible_ms},
+};
+
 use crate::{
     config,
     error::{Error, Result},
-    proc_registry, world,
+    proc_registry,
 };
+
+/// Titles of internal smoketest windows that should be ignored when checking focus.
+pub const FRONTMOST_IGNORE_TITLES: &[&str] = &["hotki smoketest: hands-off", "Cursor"];
+
+/// Returns true if `title` should be ignored when evaluating frontmost windows.
+fn is_ignored_title(title: &str, ignore_titles: &[&str]) -> bool {
+    ignore_titles.iter().any(|candidate| candidate == &title)
+}
+
+/// Resolve the frontmost application window while skipping known helper overlays.
+pub fn frontmost_app_window(ignore_titles: &[&str]) -> Option<WindowInfo> {
+    RealWinOps
+        .list_windows()
+        .into_iter()
+        .find(|win| win.layer == 0 && !is_ignored_title(&win.title, ignore_titles))
+}
 
 /// Managed child process that cleans up on drop.
 pub struct ManagedChild {
@@ -312,8 +334,10 @@ fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
 pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        if let Some(win) = world::frontmost_window_opt()
+        if let Some(win) = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
             && win.title == expected
+            && mac_winops::ax_has_window_title(win.pid, expected)
+            && mac_winops::ax_window_frame(win.pid, expected).is_some()
         {
             return true;
         }
@@ -324,27 +348,16 @@ pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
 
 /// Wait until a window with `(pid,title)` is visible via CG or AX.
 pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        let wins = world::list_windows_or_empty();
-        let cg_ok = wins.iter().any(|w| w.pid == pid && w.title == title);
-        let ax_ok = mac_winops::ax_has_window_title(pid, title);
-        if cg_ok || ax_ok {
-            return true;
-        }
-        thread::sleep(config::ms(poll_ms));
-    }
-    false
+    wait_for_windows_visible_ms(&[(pid, title)], timeout_ms, poll_ms)
 }
 
 /// Best-effort: bring the given window to the front by raising it or activating its PID.
 pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
     for _ in 0..attempts {
-        if let Some(w) = world::list_windows_or_empty()
-            .into_iter()
-            .find(|w| w.pid == pid && w.title == title)
-        {
-            drop(mac_winops::request_raise_window(pid, w.id));
+        let window_id =
+            find_window_id_ms(pid, title, delay_ms, config::INPUT_DELAYS.poll_interval_ms);
+        if let Some(id) = window_id {
+            drop(mac_winops::request_raise_window(pid, id));
         } else {
             drop(mac_winops::request_activate_pid(pid));
         }

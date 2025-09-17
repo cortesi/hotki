@@ -8,11 +8,13 @@ use super::fixtures::{self, Rect, wait_for_windows_visible};
 use crate::{
     config,
     error::{Error, Result},
-    helper_window::{HelperWindowBuilder, wait_for_frontmost_title},
+    helper_window::{
+        FRONTMOST_IGNORE_TITLES, HelperWindowBuilder, frontmost_app_window,
+        wait_for_frontmost_title,
+    },
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
-    world,
 };
 
 // Placement handled via server by driving config bindings (no direct WinOps here).
@@ -22,8 +24,8 @@ const EPS: f64 = 2.0;
 
 /// Resolve the visible frame for the screen containing the frontmost window.
 fn current_frontmost_vf() -> Result<Rect> {
-    let front = world::frontmost_window_opt()
-        .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
+    let front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+        .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
     let ((x, y), _) = mac_winops::ax_window_frame(front.pid, &front.title)
         .ok_or_else(|| Error::InvalidState("AX frame for frontmost not available".into()))?;
     fixtures::visible_frame_containing_point(x, y)
@@ -51,7 +53,7 @@ fn find_cell_for_frame(
 
 /// Log the frontmost window title and pid for debugging.
 fn log_frontmost() {
-    if let Some(w) = world::frontmost_window_opt() {
+    if let Some(w) = frontmost_app_window(FRONTMOST_IGNORE_TITLES) {
         info!("focus-nav: now on window title='{}' pid={}", w.title, w.pid);
     } else {
         info!("focus-nav: now on window title=<none>");
@@ -154,11 +156,14 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             info!("focus-nav: START — expecting TL focused");
             log_frontmost();
             // Check TL is at cell (0,0) within epsilon
-            let front = world::frontmost_window_opt()
-                .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
+            let front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+                .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
             let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
                 .ok_or_else(|| {
-                    Error::InvalidState("AX frame for frontmost not available".into())
+                    Error::InvalidState(format!(
+                        "AX frame for frontmost not available (title='{}' pid={})",
+                        front.title, front.pid
+                    ))
                 })?;
             let vf = fixtures::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
@@ -175,9 +180,33 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     )));
                 }
             } else {
-                return Err(Error::InvalidState(
-                    "Could not resolve TL cell coords".into(),
-                ));
+                info!(
+                    "focus-nav: TL frame mismatch frame={:?} vf={:?}",
+                    frame,
+                    vf
+                );
+                for row in 0..2 {
+                    for col in 0..2 {
+                        let expected = fixtures::cell_rect(vf, 2, 2, col, row);
+                        let dx = (frame.x - expected.x).abs();
+                        let dy = (frame.y - expected.y).abs();
+                        let dw = (frame.w - expected.w).abs();
+                        let dh = (frame.h - expected.h).abs();
+                        info!(
+                            "focus-nav: TL diff col={} row={} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
+                            col,
+                            row,
+                            dx,
+                            dy,
+                            dw,
+                            dh
+                        );
+                    }
+                }
+                return Err(Error::InvalidState(format!(
+                    "Could not resolve TL cell coords: frame={:?} vf={:?}",
+                    frame, vf
+                )));
             }
             fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
 
@@ -239,11 +268,14 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
             // Final explicit confirmation: back at TL and at (0,0)
             log_frontmost();
-            let front = world::frontmost_window_opt()
-                .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
+            let front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+                .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
             let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
                 .ok_or_else(|| {
-                    Error::InvalidState("AX frame for frontmost not available".into())
+                    Error::InvalidState(format!(
+                        "AX frame for frontmost not available (title='{}' pid={})",
+                        front.title, front.pid
+                    ))
                 })?;
             let vf = fixtures::visible_frame_containing_point(x, y)
                 .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
@@ -260,9 +292,33 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     )));
                 }
             } else {
-                return Err(Error::InvalidState(
-                    "Could not resolve END TL cell coords".into(),
-                ));
+                info!(
+                    "focus-nav: END TL frame mismatch frame={:?} vf={:?}",
+                    frame,
+                    vf
+                );
+                for row in 0..2 {
+                    for col in 0..2 {
+                        let expected = fixtures::cell_rect(vf, 2, 2, col, row);
+                        let dx = (frame.x - expected.x).abs();
+                        let dy = (frame.y - expected.y).abs();
+                        let dw = (frame.w - expected.w).abs();
+                        let dh = (frame.h - expected.h).abs();
+                        info!(
+                            "focus-nav: END TL diff col={} row={} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
+                            col,
+                            row,
+                            dx,
+                            dy,
+                            dw,
+                            dh
+                        );
+                    }
+                }
+                return Err(Error::InvalidState(format!(
+                    "Could not resolve END TL cell coords: frame={:?} vf={:?}",
+                    frame, vf
+                )));
             }
             fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
             Ok(())

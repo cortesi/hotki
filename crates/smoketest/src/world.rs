@@ -58,19 +58,3 @@ pub fn list_windows() -> Result<Vec<WindowInfo>> {
 pub fn list_windows_or_empty() -> Vec<WindowInfo> {
     list_windows().unwrap_or_default()
 }
-
-/// Resolve the frontmost window using focus preference, falling back to lowest `z`.
-pub fn frontmost_window() -> Result<Option<WindowInfo>> {
-    let world = ensure_world()?;
-    world.hint_refresh();
-    runtime::block_on(async move {
-        view_util::frontmost_window(world.as_ref())
-            .await
-            .map(convert_window)
-    })
-}
-
-/// Convenience helper that normalizes the optional result from [`frontmost_window`].
-pub fn frontmost_window_opt() -> Option<WindowInfo> {
-    frontmost_window().ok().flatten()
-}

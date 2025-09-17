@@ -11,7 +11,8 @@ use mac_winops::{approx_eq_eps, cell_rect as win_cell_rect, screen, wait};
 use crate::{
     config,
     error::{Error, Result},
-    server_drive, world,
+    helper_window::{self, FRONTMOST_IGNORE_TITLES},
+    server_drive,
 };
 
 /// Approximate float equality within `eps` tolerance.
@@ -103,8 +104,8 @@ pub fn assert_frontmost_cell(
     row: u32,
     eps: f64,
 ) -> Result<()> {
-    let front = world::frontmost_window_opt()
-        .ok_or_else(|| Error::InvalidState("No frontmost world window".into()))?;
+    let front = helper_window::frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+        .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
     if front.title != expected_title {
         return Err(Error::FocusNotObserved {
             timeout_ms: 1000,
