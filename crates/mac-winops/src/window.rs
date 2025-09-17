@@ -209,11 +209,16 @@ fn should_include_window(
     match filter_spaces {
         None => on_active_space,
         Some([]) => true,
-        Some(spaces) => match space {
-            Some(id) if id >= 0 => spaces.contains(&id),
-            Some(_) => true,
-            None => true,
-        },
+        Some(spaces) => {
+            if !on_active_space {
+                return false;
+            }
+            match space {
+                Some(id) if id >= 0 => spaces.contains(&id),
+                Some(_) => true,
+                None => true,
+            }
+        }
     }
 }
 
