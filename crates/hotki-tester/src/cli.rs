@@ -32,8 +32,8 @@ pub enum Commands {
 /// Arguments for the `place` subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct PlaceArgs {
-    /// One or more place directives in RON syntax, e.g. `place(grid(3, 2), at(1, 0))`.
-    #[arg(value_name = "PLACE_SPEC", num_args = 1..)]
+    /// One or more placement directives (e.g. `place(...)`, `place_move(...)`) in RON syntax.
+    #[arg(value_name = "DIRECTIVE", num_args = 1..)]
     pub specs: Vec<String>,
 
     /// Duration to wait before capturing the pre-placement snapshot.

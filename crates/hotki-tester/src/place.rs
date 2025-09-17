@@ -8,11 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use config::{Action, At, AtSpec, Grid, GridSpec};
+use config::{Action, At, AtSpec, Dir, Grid, GridSpec};
 use humantime::format_duration;
 use mac_winops::{
-    self, ax_props_for_window_id, ax_window_frame, placement_counters_reset,
-    placement_counters_snapshot,
+    self, MoveDir, WindowId, ax_focused_window_id_for_pid, ax_props_for_window_id, ax_window_frame,
+    placement_counters_reset, placement_counters_snapshot,
 };
 use ron::{Options, extensions::Extensions};
 use tokio::runtime::Runtime;
@@ -25,33 +25,45 @@ use crate::{
     error::{Error, Result},
 };
 
-/// Normalized placement parameters derived from a parsed CLI directive.
+/// Normalized placement directives accepted by the CLI.
 #[derive(Debug, Clone, Copy)]
-struct PlaceSpec {
-    /// Number of columns in the placement grid.
-    cols: u32,
-    /// Number of rows in the placement grid.
-    rows: u32,
-    /// Target column index (0-based).
-    col: u32,
-    /// Target row index (0-based).
-    row: u32,
+enum Directive {
+    /// Absolute placement within a grid cell.
+    Place {
+        /// Number of columns in the placement grid.
+        cols: u32,
+        /// Number of rows in the placement grid.
+        rows: u32,
+        /// Target column index (0-based).
+        col: u32,
+        /// Target row index (0-based).
+        row: u32,
+    },
+    /// Relative movement within a grid.
+    PlaceMove {
+        /// Number of columns in the placement grid.
+        cols: u32,
+        /// Number of rows in the placement grid.
+        rows: u32,
+        /// Direction to move within the grid.
+        dir: Dir,
+    },
 }
 
 /// Run the placement diagnostic workflow.
 pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
-    let parsed_specs: Vec<(String, PlaceSpec)> = args
+    let parsed_directives: Vec<(String, Directive)> = args
         .specs
         .iter()
         .enumerate()
         .map(|(idx, raw)| {
-            parse_place_spec(raw)
-                .map(|spec| (raw.clone(), spec))
+            parse_directive(raw)
+                .map(|directive| (raw.clone(), directive))
                 .map_err(|err| Error::parse(format!("directive {} ('{}'): {}", idx + 1, raw, err)))
         })
         .collect::<Result<_>>()?;
 
-    let total_steps = parsed_specs.len();
+    let total_steps = parsed_directives.len();
     info!(steps = total_steps, "Placement directives queued");
     let hotki_bin = resolve_hotki_bin(args)?;
     let runtime = Runtime::new()?;
@@ -89,7 +101,7 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
     let mut current_snapshot = runtime.block_on(conn.get_world_snapshot())?;
     diagnostics::log_world_snapshot("initial", &current_snapshot);
 
-    for (idx, (raw_spec, place_spec)) in parsed_specs.iter().enumerate() {
+    for (idx, (raw_spec, directive)) in parsed_directives.iter().enumerate() {
         let step = idx + 1;
 
         let status = runtime.block_on(conn.get_world_status())?;
@@ -124,23 +136,41 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
         }
 
         placement_counters_reset();
-        info!(
-            step,
-            total = total_steps,
-            directive = raw_spec.as_str(),
-            grid.cols = place_spec.cols,
-            grid.rows = place_spec.rows,
-            target.col = place_spec.col,
-            target.row = place_spec.row,
-            "Applying place directive"
-        );
-        mac_winops::place_grid_focused(
-            focused_pid,
-            place_spec.cols,
-            place_spec.rows,
-            place_spec.col,
-            place_spec.row,
-        )?;
+        match directive {
+            Directive::Place {
+                cols,
+                rows,
+                col,
+                row,
+            } => {
+                info!(
+                    step,
+                    total = total_steps,
+                    directive = raw_spec.as_str(),
+                    grid.cols = *cols,
+                    grid.rows = *rows,
+                    target.col = *col,
+                    target.row = *row,
+                    "Applying place directive"
+                );
+                mac_winops::place_grid_focused(focused_pid, *cols, *rows, *col, *row)?;
+            }
+            Directive::PlaceMove { cols, rows, dir } => {
+                let window_id = resolve_window_id(pre_window.as_ref(), focused_pid)?;
+                let move_dir = to_move_dir(*dir);
+                info!(
+                    step,
+                    total = total_steps,
+                    directive = raw_spec.as_str(),
+                    grid.cols = *cols,
+                    grid.rows = *rows,
+                    move.dir = ?dir,
+                    window.id = window_id,
+                    "Applying place_move directive"
+                );
+                mac_winops::place_move_grid(window_id, *cols, *rows, move_dir)?;
+            }
+        }
 
         info!(
             step,
@@ -189,8 +219,8 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse a RON `place(...)` specification into grid coordinates.
-fn parse_place_spec(spec: &str) -> Result<PlaceSpec> {
+/// Parse a RON placement specification into a normalized directive.
+fn parse_directive(spec: &str) -> Result<Directive> {
     let options = Options::default()
         .with_default_extension(Extensions::UNWRAP_NEWTYPES)
         .with_default_extension(Extensions::UNWRAP_VARIANT_NEWTYPES);
@@ -199,15 +229,18 @@ fn parse_place_spec(spec: &str) -> Result<PlaceSpec> {
         .map_err(|e| Error::parse(e.to_string()))?;
     match action {
         Action::Place(GridSpec::Grid(Grid(cols, rows)), AtSpec::At(At(col, row))) => {
-            Ok(PlaceSpec {
+            Ok(Directive::Place {
                 cols,
                 rows,
                 col,
                 row,
             })
         }
+        Action::PlaceMove(GridSpec::Grid(Grid(cols, rows)), dir) => {
+            Ok(Directive::PlaceMove { cols, rows, dir })
+        }
         other => Err(Error::parse(format!(
-            "expected place(...), got {:?}",
+            "expected place(...) or place_move(...), got {:?}",
             other
         ))),
     }
@@ -301,16 +334,61 @@ fn collect_window_snapshot(
     }))
 }
 
+/// Determine the Core Graphics window identifier to target for the move directive.
+fn resolve_window_id(pre_window: Option<&WindowSnapshot>, pid: i32) -> Result<WindowId> {
+    if let Some(snapshot) = pre_window {
+        return Ok(snapshot.window_id);
+    }
+    if let Some(id) = ax_focused_window_id_for_pid(pid) {
+        debug!(pid, id, "Resolved window id via AX focus fallback");
+        return Ok(id);
+    }
+    Err(Error::WindowIdUnavailable { pid })
+}
+
+/// Convert configuration directions into mac_winops move directions.
+fn to_move_dir(dir: Dir) -> MoveDir {
+    match dir {
+        Dir::Left => MoveDir::Left,
+        Dir::Right => MoveDir::Right,
+        Dir::Up => MoveDir::Up,
+        Dir::Down => MoveDir::Down,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_place_spec_accepts_standard_syntax() {
-        let spec = parse_place_spec("place(grid(4, 4), at(1, 0))").expect("parse");
-        assert_eq!(spec.cols, 4);
-        assert_eq!(spec.rows, 4);
-        assert_eq!(spec.col, 1);
-        assert_eq!(spec.row, 0);
+    fn parse_directive_accepts_place() {
+        let directive = parse_directive("place(grid(4, 4), at(1, 0))").expect("parse");
+        match directive {
+            Directive::Place {
+                cols,
+                rows,
+                col,
+                row,
+            } => {
+                assert_eq!(cols, 4);
+                assert_eq!(rows, 4);
+                assert_eq!(col, 1);
+                assert_eq!(row, 0);
+            }
+            other => panic!("unexpected directive: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_directive_accepts_place_move() {
+        let directive = parse_directive("place_move(grid(3, 2), left)").expect("parse");
+        match directive {
+            Directive::PlaceMove { cols, rows, dir } => {
+                assert_eq!(cols, 3);
+                assert_eq!(rows, 2);
+                assert_eq!(dir, Dir::Left);
+            }
+            other => panic!("unexpected directive: {other:?}"),
+        }
     }
 }

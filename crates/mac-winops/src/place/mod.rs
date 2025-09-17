@@ -56,6 +56,7 @@ pub use metrics::{AttemptKind, AttemptOrder, PlacementCountersSnapshot};
 pub(crate) use normalize::{normalize_before_move, skip_reason_for_role_subrole};
 pub use ops_focused::{place_grid_focused, place_grid_focused_opts};
 pub(crate) use ops_id::place_grid_opts;
+pub use ops_move::place_move_grid;
 pub(crate) use ops_move::place_move_grid_opts;
 
 /// Capture a snapshot of placement attempt counters for diagnostics.

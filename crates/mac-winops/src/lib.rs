@@ -83,7 +83,8 @@ pub use place::{
     FakeAxAdapter, FakeOp, FakeWindowConfig, FallbackInvocation, FallbackTrigger,
     PlaceAttemptOptions, PlacementContext, PlacementCountersSnapshot, PlacementEngine,
     PlacementEngineConfig, PlacementGrid, PlacementOutcome, RetryLimits, place_grid_focused,
-    place_grid_focused_opts, placement_counters_reset, placement_counters_snapshot,
+    place_grid_focused_opts, place_move_grid, placement_counters_reset,
+    placement_counters_snapshot,
 };
 pub use raise::raise_window;
 pub use window::{Pos, WindowInfo};

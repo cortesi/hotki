@@ -15,6 +15,11 @@ use crate::{
     screen_util::visible_frame_containing_point,
 };
 
+/// Move a window (by `id`) within a grid in the given direction using default placement options.
+pub fn place_move_grid(id: WindowId, cols: u32, rows: u32, dir: crate::MoveDir) -> Result<()> {
+    place_move_grid_inner(id, cols, rows, dir, PlaceAttemptOptions::default())
+}
+
 /// Move a window (by `id`) within a grid in the given direction with explicit options.
 pub(crate) fn place_move_grid_opts(
     id: WindowId,

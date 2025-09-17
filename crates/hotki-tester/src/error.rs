@@ -23,15 +23,21 @@ pub enum Error {
     /// Configuration parsing or resolution errors.
     #[error("Configuration error: {0}")]
     Config(#[from] config::Error),
-    /// Failed to parse the place specification string.
-    #[error("Failed to parse place specification: {0}")]
-    PlaceSpec(String),
+    /// Failed to parse the placement directive string.
+    #[error("Failed to parse placement directive: {0}")]
+    DirectiveSpec(String),
     /// The backend did not become ready before the timeout elapsed.
     #[error("Backend startup timed out after {0:?}")]
     BackendStartupTimeout(Duration),
     /// No focused window could be determined from the world snapshot.
     #[error("No focused window detected in world snapshot")]
     NoFocusedWindow,
+    /// Unable to resolve the Core Graphics window identifier for the focused window.
+    #[error("Unable to determine window id for PID {pid}")]
+    WindowIdUnavailable {
+        /// Process identifier associated with the missing window id.
+        pid: i32,
+    },
     /// Generic error for unexpected conditions.
     #[error("{0}")]
     Other(String),
@@ -46,7 +52,7 @@ impl From<Elapsed> for Error {
 impl Error {
     /// Helper to build a parse error from an arbitrary message.
     pub fn parse<M: Into<String>>(msg: M) -> Self {
-        Self::PlaceSpec(msg.into())
+        Self::DirectiveSpec(msg.into())
     }
 
     /// Helper for wrapping generic string errors.
