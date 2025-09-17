@@ -55,6 +55,8 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         space: None,
         layer: 0,
         focused: true,
+        is_on_screen: true,
+        on_active_space: true,
     }]);
     let world = engine.world();
     world.hint_refresh();

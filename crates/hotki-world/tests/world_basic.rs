@@ -27,6 +27,8 @@ fn win(
         space: Some(1),
         layer,
         focused,
+        is_on_screen: true,
+        on_active_space: true,
     }
 }
 

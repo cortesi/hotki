@@ -1,62 +1,45 @@
-# Place Module Reliability Overhaul
+# Space-Scoped Window Tracking
 
-The `mac-winops::place` module drives every grid-based move in Hotki via
-`main_thread_ops`. Its multi-stage pipeline repeats across focused, id-based,
-and directional placements, leaving us with divergent logic, opaque fallbacks,
-and almost no automated coverage beyond simple helpers. We need to tighten
-observability first, then consolidate the implementation into reusable
-components that we can test in isolation, before hardening fallbacks and
-integrating the improvements across the crate.
+Hotki currently enumerates every window across all Mission Control spaces each sweep, slowing
+smoketests and inflating world reconciliation costs. We want the world tracker to focus on the
+active space, adopt windows when we land on a new space, and refuse operations on windows that
+aren't on our current space.
 
-1. Stage One: Establish Observability and Guard Rails
+1. Stage One: Capture Baseline And Requirements
+1. [x] Instrument the smoketest (and optionally the new `space_probe`) to capture sweep timings,
+   window counts, and active-space sets so we can quantify the slowdown.
+2. [x] Review collected traces to confirm the slowdown is tied to off-space enumeration and agree
+   on target timings for "fast" smoketests.
 
-1. [x] Add module-level documentation summarizing the placement pipeline,
-       invariants, and how callers interact through `main_thread_ops`.
-2. [x] Expand unit coverage for pure helpers (`grid_guess_cell_by_pos`,
-       `needs_safe_park`, `skip_reason_for_role_subrole`) to lock down current
-       behaviour.
-3. [x] Introduce structured tracing (attempt order, settle durations,
-       fallback usage) and surface counters so we can baseline failure modes
-       before large refactors.
+2. Stage Two: mac-winops Targeted Enumeration
+3. [x] Extend `mac_winops::ops::WinOps` with an API that filters to the active space set by default
+   and exposes a `list_windows_for_spaces` helper for on-demand adoption.
+4. [x] Update `RealWinOps` / `MockWinOps` implementations plus unit tests so the new API surfaces
+   work without pulling in off-space windows unless explicitly requested.
 
-2. Stage Two: Extract a Shared Placement Engine
+3. Stage Three: World Space-Adoption Lifecycle
+5. [ ] Teach `WorldState` to track the currently active space ids and retain per-space caches so the
+   live snapshot only includes windows for the foreground space(s).
+6. [ ] When the active space set changes, enumerate just the newly activated spaces, adopt their
+   windows into the world, and drop windows for spaces we leave.
+7. [ ] On re-entering a space, diff the cached snapshot against a fresh enumeration to reap windows
+   that closed while we were away without sweeping every other space.
 
-1. [x] Introduce a `PlacementContext` struct that captures the shared inputs
-       (AX element, target rect, visible frame, attempt options).
-2. [x] Move the multi-attempt pipeline into a single `PlacementEngine::execute`
-       function that returns detailed outcomes for verification and logging.
-3. [x] Rebuild `place_grid`, `place_grid_focused`, `place_grid_focused_opts`,
-       and `place_move_grid` on top of the new engine to eliminate duplicated
-       branches.
-4. [x] Collapse the duplicate `PlaceAttemptOptions` definitions and re-export
-       a single configuration surface for callers and tests.
+4. Stage Four: Enforce Space Guardrails Downstream
+8. [ ] Guard engine/server window manipulation APIs so we refuse place/move/raise requests when
+   `on_active_space` is false, returning structured errors and telemetry.
+9. [ ] Update protocol/client runtime handling to keep requests scoped to active-space windows and
+   cover the new guardrails with tests.
 
-3. Stage Three: Harden Fallback Behaviour
+5. Stage Five: Validation And Perf Regression Tests
+10. [ ] Expand smoketests to simulate multi-space navigation, asserting adoption/reaping behavior
+    and ensuring runtime stays under the agreed performance budget.
+11. [ ] Refresh world/unit/integration tests to cover the new lifecycle and guardrail logic end to
+    end.
 
-1. [x] Make settle timing, epsilon thresholds, and retry limits configurable
-       via the new engine so we can tune per-call and in tests.
-2. [x] Revisit safe-park and shrink→move→grow heuristics, turning the fixed
-       booleans (`force_smg`, etc.) into explicit decision hooks.
-3. [x] Extend error reporting to include attempt timelines, clamp diagnostics,
-       and the visible-frame context we verified against.
-
-4. Stage Four: Build a Deterministic Test Harness
-
-1. [x] Introduce an `AxAdapter` trait that wraps the current accessibility
-       calls, with an in-memory fake to simulate window responses.
-2. [x] Add scenario tests covering success, axis nudges, fallback activation,
-       and failure-to-settle paths through the new engine.
-3. [x] Layer property-style tests over grid math and clamping behaviour to
-       catch regressions across different grid sizes and screen origins.
-4. [x] Extend the smoketest binary to exercise representative placement flows
-       (focused, id-based, move) using the fake adapter when CI lacks GUI
-       access.
-
-5. Stage Five: Share Components and Update Integrations
-
-1. [x] Audit `fullscreen`, `raise`, and other window ops for opportunities to
-       reuse the new adapter, normalization, and fallback utilities.
-2. [x] Expose explicit placement APIs in `main_thread_ops`/`ops.rs` that accept
-       the new options surface so callers outside Hotki can opt in incrementally.
-3. [x] Update crate-level documentation and DEV.md to describe the placement
-       engine, adapter pattern, and new testing strategy.
+6. Stage Six: Release Hygiene
+12. [ ] Run `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests
+    --examples 2>&1` and resolve warnings.
+13. [ ] Execute `cargo test --all` and `cargo run --bin smoketest -- all` with extended timeouts.
+14. [ ] Document the space-scoped tracking strategy and performance expectations in
+    `plans/world.md` or `DEV.md`.

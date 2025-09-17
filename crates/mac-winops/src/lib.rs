@@ -87,7 +87,7 @@ pub use place::{
     placement_counters_snapshot,
 };
 pub use raise::raise_window;
-pub use window::{Pos, WindowInfo};
+pub use window::{Pos, SpaceId, WindowInfo, active_space_ids};
 
 // ===== Observer wiring =====
 thread_local! {

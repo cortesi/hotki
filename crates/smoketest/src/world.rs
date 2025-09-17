@@ -1,10 +1,11 @@
 //! Shared trait-backed window snapshot helpers for smoketests.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use hotki_world::{World, WorldView, WorldWindow, view_util};
-use mac_winops::{WindowInfo, ops::RealWinOps};
+use mac_winops::{WindowInfo, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
+use tracing::info;
 
 use crate::{
     error::{Error, Result},
@@ -38,20 +39,37 @@ fn convert_window(w: WorldWindow) -> WindowInfo {
         pid: w.pid,
         id: w.id,
         pos: w.pos,
-        space: None,
+        space: w.space,
         layer: w.layer,
         focused: w.focused,
+        is_on_screen: w.is_on_screen,
+        on_active_space: w.on_active_space,
     }
 }
 
 /// Fetch a complete snapshot via the [`WorldView`].
 pub fn list_windows() -> Result<Vec<WindowInfo>> {
     let world = ensure_world()?;
+    let sweep_start = Instant::now();
+    let active_spaces = active_space_ids();
     world.hint_refresh();
-    runtime::block_on(async move {
+    let windows: Vec<WindowInfo> = runtime::block_on(async move {
         let snap = view_util::list_windows(world.as_ref()).await;
         snap.into_iter().map(convert_window).collect::<Vec<_>>()
-    })
+    })?;
+    let elapsed = sweep_start.elapsed();
+    let active_count = windows.iter().filter(|w| w.on_active_space).count();
+    let total = windows.len();
+    info!(
+        target: "smoketest::world",
+        sweep_ms = elapsed.as_secs_f64() * 1000.0,
+        total_windows = total,
+        active_windows = active_count,
+        offspace_windows = total.saturating_sub(active_count),
+        active_spaces = ?active_spaces,
+        "world_snapshot_metrics"
+    );
+    Ok(windows)
 }
 
 /// Resolve a window snapshot or return an empty list if the world is unavailable.

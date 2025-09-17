@@ -20,6 +20,8 @@ mod runtime;
 mod server_drive;
 /// Session management for launching and controlling hotki.
 mod session;
+/// Mission Control capture helpers.
+mod space_probe;
 mod test_runner;
 mod tests;
 mod ui_interaction;
@@ -32,7 +34,7 @@ mod winhelper;
 /// World snapshot helpers backed by hotki-world.
 mod world;
 
-use std::{cmp::max, env, process::exit, sync::mpsc, thread, time::Duration};
+use std::{cmp::max, env, path::Path, process::exit, sync::mpsc, thread, time::Duration};
 
 use cli::{Cli, Commands, FsState};
 use error::print_hints;
@@ -385,6 +387,11 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
         Commands::Fullscreen { state, native } => handle_fullscreen(cli, *state, *native),
         Commands::WorldStatus => handle_world_status(cli),
         Commands::WorldAx => handle_world_ax(cli),
+        Commands::SpaceProbe {
+            samples,
+            interval_ms,
+            output,
+        } => handle_space_probe(cli, *samples, *interval_ms, output.as_deref()),
     }
 }
 
@@ -1153,5 +1160,17 @@ fn handle_world_ax(cli: &Cli) {
             print_hints(&e);
             exit(1);
         }
+    }
+}
+
+/// Invoke the Mission Control space probe helper.
+fn handle_space_probe(cli: &Cli, samples: u32, interval_ms: u64, output: Option<&Path>) {
+    if !cli.quiet {
+        heading("space-probe");
+    }
+    if let Err(e) = space_probe::run(samples, interval_ms, output, cli.quiet) {
+        eprintln!("space-probe: ERROR: {}", e);
+        print_hints(&e);
+        exit(1);
     }
 }

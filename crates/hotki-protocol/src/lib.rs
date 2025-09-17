@@ -146,6 +146,12 @@ pub struct WorldWindowLite {
     pub focused: bool,
     /// Display identifier with the greatest overlap, if known.
     pub display_id: Option<u32>,
+    /// Mission Control space identifier reported by CoreGraphics.
+    pub space: Option<i64>,
+    /// True if the window belongs to one of the active Spaces.
+    pub on_active_space: bool,
+    /// True if CoreGraphics reports the window as currently on-screen.
+    pub is_on_screen: bool,
 }
 
 /// Streamed world events from the server.

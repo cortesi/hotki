@@ -309,6 +309,19 @@ pub enum Commands {
     /// Query AX props for the frontmost helper via WorldHandle
     #[command(name = "world-ax")]
     WorldAx,
+    /// Capture raw CoreGraphics window listings for Mission Control analysis.
+    #[command(name = "space-probe")]
+    SpaceProbe {
+        /// Number of samples to capture.
+        #[arg(long, default_value_t = 30)]
+        samples: u32,
+        /// Delay between samples in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        interval_ms: u64,
+        /// Optional JSONL output path (stdout if omitted).
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     // Preflight smoketest removed.
     /// Focused test: attempt placement on a non-movable window and assert skip
     #[command(name = "place-skip")]

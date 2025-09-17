@@ -21,6 +21,8 @@ async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &
         space: None,
         layer: 0,
         focused: true,
+        is_on_screen: true,
+        on_active_space: true,
     }]);
     let world = engine.world();
     world.hint_refresh();
@@ -121,6 +123,8 @@ async fn engine_raise_activates_on_match() {
         space: None,
         layer: 0,
         focused: false,
+        is_on_screen: true,
+        on_active_space: true,
     }]);
     let api = Arc::new(MockHotkeyApi::new());
     let world = World::spawn_view(mock.clone(), hotki_world::WorldCfg::default());
@@ -143,6 +147,8 @@ async fn engine_raise_activates_on_match() {
             space: None,
             layer: 0,
             focused: true,
+            is_on_screen: true,
+            on_active_space: true,
         },
         mac_winops::WindowInfo {
             id: 3,
@@ -153,6 +159,8 @@ async fn engine_raise_activates_on_match() {
             space: None,
             layer: 0,
             focused: false,
+            is_on_screen: true,
+            on_active_space: true,
         },
     ]);
     let world = engine.world();
@@ -184,6 +192,8 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         space: None,
         layer: 0,
         focused: true,
+        is_on_screen: true,
+        on_active_space: true,
     };
     mock.set_frontmost(Some(frontmost.clone()));
     // Also have B for raise
@@ -198,6 +208,8 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
             space: None,
             layer: 0,
             focused: false,
+            is_on_screen: true,
+            on_active_space: true,
         },
     ]);
     let api = Arc::new(MockHotkeyApi::new());
@@ -239,6 +251,8 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
             space: None,
             layer: 0,
             focused: false,
+            is_on_screen: true,
+            on_active_space: true,
         },
         mac_winops::WindowInfo {
             id: 2,
@@ -249,6 +263,8 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
             space: None,
             layer: 0,
             focused: true,
+            is_on_screen: true,
+            on_active_space: true,
         },
     ]);
     let world = engine.world();
@@ -372,6 +388,8 @@ async fn engine_place_move_uses_winops() {
         space: None,
         layer: 0,
         focused: true,
+        is_on_screen: true,
+        on_active_space: true,
     }]);
     let mgr = Arc::new(mac_hotkey::Manager::new().expect("manager"));
     let engine = Engine::new_with_ops(mgr, tx, mock.clone());

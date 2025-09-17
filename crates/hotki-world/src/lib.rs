@@ -84,8 +84,12 @@ pub struct WorldWindow {
     /// Monotonic z-order index within the current snapshot: 0 is frontmost, larger
     /// values are farther back. Derived from CoreGraphics enumeration order.
     pub z: u32,
+    /// Mission Control space identifier reported by CoreGraphics.
+    pub space: Option<mac_winops::SpaceId>,
     /// True if the window is observed on the active Space in the current snapshot.
     pub on_active_space: bool,
+    /// True if CoreGraphics reports the window as currently on-screen.
+    pub is_on_screen: bool,
     /// Identifier of the display with the largest overlap of the window's bounds, if any.
     pub display_id: Option<DisplayId>,
     /// True if this is the focused window according to AX (preferred) or CG fallback.
@@ -167,7 +171,7 @@ pub struct WindowDelta;
 #[derive(Clone, Debug)]
 pub enum WorldEvent {
     /// A new window was observed. Carries the initial snapshot of that window.
-    Added(WorldWindow),
+    Added(Box<WorldWindow>),
     /// A previously observed window disappeared from the active Space.
     Removed(WindowKey),
     /// A window's properties changed. Updates are coalesced with a ~50ms debounce
@@ -631,7 +635,7 @@ fn reconcile(
     state.seen_seq = state.seen_seq.wrapping_add(1);
     let seq = state.seen_seq;
 
-    let wins: Vec<WindowInfo> = winops.list_windows();
+    let wins: Vec<WindowInfo> = winops.list_windows_for_spaces(&[]);
     let mut had_changes = false;
 
     // Focus: prefer AX if available; fall back to CG-derived focus flag.
@@ -715,8 +719,16 @@ fn reconcile(
                 existing.z = z;
                 changed = true;
             }
-            if !existing.on_active_space {
-                existing.on_active_space = true;
+            if existing.space != w.space {
+                existing.space = w.space;
+                changed = true;
+            }
+            if existing.on_active_space != w.on_active_space {
+                existing.on_active_space = w.on_active_space;
+                changed = true;
+            }
+            if existing.is_on_screen != w.is_on_screen {
+                existing.is_on_screen = w.is_on_screen;
                 changed = true;
             }
             if existing.display_id != display_id {
@@ -754,7 +766,9 @@ fn reconcile(
                 pos: w.pos,
                 layer: w.layer,
                 z,
-                on_active_space: true,
+                space: w.space,
+                on_active_space: w.on_active_space,
+                is_on_screen: w.is_on_screen,
                 display_id,
                 focused: is_focus,
                 ax: if is_focus {
@@ -767,7 +781,7 @@ fn reconcile(
                 seen_seq: seq,
             };
             state.store.insert(key, ww.clone());
-            let _ = events.send(WorldEvent::Added(ww));
+            let _ = events.send(WorldEvent::Added(Box::new(ww)));
             state.last_emit.insert(key, now);
         }
     }
@@ -787,7 +801,7 @@ fn reconcile(
             if *misses > SUSPECT_MISSES {
                 // Confirm absence against a fresh CGWindowList filtered by the same pid/id
                 let still_absent = {
-                    let confirm = winops.list_windows();
+                    let confirm = winops.list_windows_for_spaces(&[]);
                     !confirm.iter().any(|w| w.pid == key.pid && w.id == key.id)
                 };
                 if still_absent {

@@ -42,6 +42,24 @@ pub(crate) fn dict_get_string(dict: CFDictionaryRef, key: CFStringRef) -> Option
     Some(cfstring_to_string(value as CFStringRef))
 }
 
+/// Get a nested dictionary for the given CFDictionary key.
+pub(crate) fn dict_get_dict(dict: CFDictionaryRef, key: CFStringRef) -> Option<CFDictionaryRef> {
+    unsafe extern "C" {
+        fn CFGetTypeID(cf: CFTypeRef) -> u64;
+        fn CFDictionaryGetTypeID() -> u64;
+    }
+    let value = unsafe {
+        core_foundation::dictionary::CFDictionaryGetValue(dict, key as *const core::ffi::c_void)
+    } as CFTypeRef;
+    if value.is_null() {
+        return None;
+    }
+    if unsafe { CFGetTypeID(value) != CFDictionaryGetTypeID() } {
+        return None;
+    }
+    Some(value as CFDictionaryRef)
+}
+
 /// Get a 32-bit integer from CFDictionary for the given key.
 pub(crate) fn dict_get_i32(dict: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
     unsafe extern "C" {
@@ -59,6 +77,45 @@ pub(crate) fn dict_get_i32(dict: CFDictionaryRef, key: CFStringRef) -> Option<i3
     }
     let n = unsafe { CFNumber::wrap_under_get_rule(value as _) };
     n.to_i64().map(|v| v as i32)
+}
+
+/// Get a 64-bit integer from CFDictionary for the given key.
+pub(crate) fn dict_get_i64(dict: CFDictionaryRef, key: CFStringRef) -> Option<i64> {
+    unsafe extern "C" {
+        fn CFGetTypeID(cf: CFTypeRef) -> u64;
+        fn CFNumberGetTypeID() -> u64;
+    }
+    let value = unsafe {
+        core_foundation::dictionary::CFDictionaryGetValue(dict, key as *const core::ffi::c_void)
+    } as CFTypeRef;
+    if value.is_null() {
+        return None;
+    }
+    if unsafe { CFGetTypeID(value) != CFNumberGetTypeID() } {
+        return None;
+    }
+    let n = unsafe { CFNumber::wrap_under_get_rule(value as _) };
+    n.to_i64()
+}
+
+/// Get a boolean from CFDictionary for the given key.
+pub(crate) fn dict_get_bool(dict: CFDictionaryRef, key: CFStringRef) -> Option<bool> {
+    unsafe extern "C" {
+        fn CFGetTypeID(cf: CFTypeRef) -> u64;
+        fn CFBooleanGetTypeID() -> u64;
+        fn CFBooleanGetValue(boolean: CFTypeRef) -> bool;
+    }
+    let value = unsafe {
+        core_foundation::dictionary::CFDictionaryGetValue(dict, key as *const core::ffi::c_void)
+    } as CFTypeRef;
+    if value.is_null() {
+        return None;
+    }
+    if unsafe { CFGetTypeID(value) != CFBooleanGetTypeID() } {
+        return None;
+    }
+    let raw = unsafe { CFBooleanGetValue(value) };
+    Some(raw)
 }
 
 // (no f64 numeric helper is currently required)

@@ -1,10 +1,10 @@
 use crate::{
-    MoveDir, PlaceAttemptOptions, Result as WinResult, WindowId, WindowInfo, hide_bottom_left,
-    request_activate_pid, request_focus_dir, request_fullscreen_native,
+    MoveDir, PlaceAttemptOptions, Result as WinResult, SpaceId, WindowId, WindowInfo,
+    hide_bottom_left, request_activate_pid, request_focus_dir, request_fullscreen_native,
     request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
     request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
     request_place_move_grid_opts,
-    window::{frontmost_window, frontmost_window_for_pid, list_windows},
+    window::{frontmost_window, frontmost_window_for_pid, list_windows, list_windows_for_spaces},
 };
 
 /// Trait abstraction over window operations to improve testability.
@@ -72,6 +72,7 @@ pub trait WinOps: Send + Sync {
     fn request_focus_dir(&self, dir: MoveDir) -> WinResult<()>;
     fn request_activate_pid(&self, pid: i32) -> WinResult<()>;
     fn list_windows(&self) -> Vec<WindowInfo>;
+    fn list_windows_for_spaces(&self, spaces: &[SpaceId]) -> Vec<WindowInfo>;
     fn frontmost_window(&self) -> Option<WindowInfo>;
     fn frontmost_window_for_pid(&self, pid: i32) -> Option<WindowInfo>;
     fn hide_bottom_left(&self, pid: i32, desired: crate::Desired) -> WinResult<()>;
@@ -157,6 +158,9 @@ impl WinOps for RealWinOps {
     fn list_windows(&self) -> Vec<WindowInfo> {
         list_windows()
     }
+    fn list_windows_for_spaces(&self, spaces: &[SpaceId]) -> Vec<WindowInfo> {
+        list_windows_for_spaces(spaces)
+    }
     fn frontmost_window(&self) -> Option<WindowInfo> {
         frontmost_window()
     }
@@ -183,6 +187,7 @@ pub struct MockWinOps {
     calls: Arc<Mutex<Vec<String>>>,
     front_for_pid: Arc<Mutex<Option<WI>>>,
     windows: Arc<Mutex<Vec<WI>>>,
+    active_spaces: Arc<Mutex<Vec<SpaceId>>>,
     fail_focus_dir: Arc<AtomicBool>,
     frontmost: Arc<Mutex<Option<WI>>>,
     last_place_grid_pid: Arc<Mutex<Option<i32>>>,
@@ -200,6 +205,7 @@ impl MockWinOps {
             calls: Arc::new(Mutex::new(Vec::new())),
             front_for_pid: Arc::new(Mutex::new(None)),
             windows: Arc::new(Mutex::new(Vec::new())),
+            active_spaces: Arc::new(Mutex::new(Vec::new())),
             fail_focus_dir: Arc::new(AtomicBool::new(false)),
             frontmost: Arc::new(Mutex::new(None)),
             last_place_grid_pid: Arc::new(Mutex::new(None)),
@@ -216,8 +222,11 @@ impl MockWinOps {
         *g = info;
     }
     pub fn set_windows(&self, wins: Vec<WI>) {
-        let mut g = self.windows.lock();
-        *g = wins;
+        {
+            let mut g = self.windows.lock();
+            *g = wins;
+        }
+        self.recompute_active_flags();
     }
     pub fn calls_contains(&self, s: &str) -> bool {
         self.calls.lock().iter().any(|x| x == s)
@@ -252,6 +261,34 @@ impl MockWinOps {
     }
     fn note(&self, s: &str) {
         self.calls.lock().push(s.to_string());
+    }
+    /// Override the simulated active space ids for window filtering.
+    pub fn set_active_spaces(&self, spaces: Vec<SpaceId>) {
+        {
+            let mut g = self.active_spaces.lock();
+            *g = spaces;
+        }
+        self.recompute_active_flags();
+    }
+    fn recompute_active_flags(&self) {
+        let active = {
+            let g = self.active_spaces.lock();
+            g.clone()
+        };
+        if active.is_empty() {
+            return;
+        }
+        let mut wins = self.windows.lock();
+        for w in wins.iter_mut() {
+            w.on_active_space = matches_active_space(w.space, w.is_on_screen, &active);
+        }
+    }
+    fn filter_windows(&self, filter: Option<&[SpaceId]>) -> Vec<WindowInfo> {
+        let wins = self.windows.lock();
+        wins.iter()
+            .filter(|&w| should_include_mock_window(w, filter))
+            .cloned()
+            .collect()
     }
 }
 
@@ -362,7 +399,10 @@ impl WinOps for MockWinOps {
         Ok(())
     }
     fn list_windows(&self) -> Vec<WindowInfo> {
-        self.windows.lock().clone()
+        self.filter_windows(None)
+    }
+    fn list_windows_for_spaces(&self, spaces: &[SpaceId]) -> Vec<WindowInfo> {
+        self.filter_windows(Some(spaces))
     }
     fn frontmost_window(&self) -> Option<WindowInfo> {
         self.frontmost.lock().clone()
@@ -376,5 +416,93 @@ impl WinOps for MockWinOps {
             return Err(crate::error::Error::MainThread);
         }
         Ok(())
+    }
+}
+
+fn matches_active_space(space: Option<SpaceId>, is_on_screen: bool, active: &[SpaceId]) -> bool {
+    match space {
+        Some(id) if id >= 0 => active.contains(&id),
+        Some(_) => true,
+        None => is_on_screen,
+    }
+}
+
+fn should_include_mock_window(window: &WI, filter: Option<&[SpaceId]>) -> bool {
+    match filter {
+        None => window.on_active_space,
+        Some([]) => true,
+        Some(spaces) => match window.space {
+            Some(id) if id >= 0 => spaces.contains(&id),
+            Some(_) => true,
+            None => true,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MockWinOps, SpaceId, WinOps, WindowInfo};
+
+    fn win_with_space(
+        pid: i32,
+        id: u32,
+        space: Option<SpaceId>,
+        on_active_space: bool,
+    ) -> WindowInfo {
+        WindowInfo {
+            app: format!("App{pid}"),
+            title: format!("Title{id}"),
+            pid,
+            id,
+            pos: None,
+            space,
+            layer: 0,
+            focused: false,
+            is_on_screen: true,
+            on_active_space,
+        }
+    }
+
+    #[test]
+    fn list_windows_filters_to_active_flags() {
+        let mock = MockWinOps::new();
+        mock.set_windows(vec![
+            win_with_space(1, 1, Some(1), true),
+            win_with_space(2, 2, Some(2), false),
+        ]);
+
+        let active = mock.list_windows();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].pid, 1);
+
+        let all = mock.list_windows_for_spaces(&[]);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_windows_for_specific_spaces_includes_matches() {
+        let mock = MockWinOps::new();
+        mock.set_windows(vec![
+            win_with_space(1, 1, Some(1), true),
+            win_with_space(2, 2, Some(2), false),
+            win_with_space(3, 3, Some(-1), false),
+        ]);
+
+        let only_two = mock.list_windows_for_spaces(&[2_i64]);
+        assert_eq!(only_two.len(), 2, "includes sticky window");
+        assert!(only_two.iter().any(|w| w.pid == 2));
+        assert!(only_two.iter().any(|w| w.pid == 3));
+    }
+
+    #[test]
+    fn active_spaces_override_flags_when_configured() {
+        let mock = MockWinOps::new();
+        mock.set_windows(vec![win_with_space(4, 4, Some(5), false)]);
+        assert!(mock.list_windows().is_empty());
+
+        mock.set_active_spaces(vec![5_i64]);
+        let active = mock.list_windows();
+        assert_eq!(active.len(), 1);
+        assert!(active[0].on_active_space);
     }
 }

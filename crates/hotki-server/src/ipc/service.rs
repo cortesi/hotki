@@ -187,6 +187,17 @@ impl HotkeyService {
                     Ok(ev) => {
                         let msg_opt: Option<WorldStreamMsg> = match ev {
                             hotki_world::WorldEvent::Added(w) => {
+                                let w = *w;
+                                if !w.on_active_space {
+                                    info!(
+                                        pid = w.pid,
+                                        id = w.id,
+                                        space = ?w.space,
+                                        title = %w.title,
+                                        app = %w.app,
+                                        "world window added off active space"
+                                    );
+                                }
                                 Some(WorldStreamMsg::Added(WorldWindowLite {
                                     app: w.app,
                                     title: w.title,
@@ -195,6 +206,9 @@ impl HotkeyService {
                                     z: w.z,
                                     focused: w.focused,
                                     display_id: w.display_id,
+                                    space: w.space,
+                                    on_active_space: w.on_active_space,
+                                    is_on_screen: w.is_on_screen,
                                 }))
                             }
                             hotki_world::WorldEvent::Removed(k) => Some(WorldStreamMsg::Removed {
@@ -636,9 +650,20 @@ impl MrpcConnection for HotkeyService {
                         z: w.z,
                         focused: w.focused,
                         display_id: w.display_id,
+                        space: w.space,
+                        on_active_space: w.on_active_space,
+                        is_on_screen: w.is_on_screen,
                     })
                     .collect();
                 wins.sort_by_key(|w| (w.z, w.pid, w.id));
+                let offspace_count = wins.iter().filter(|w| !w.on_active_space).count();
+                if offspace_count > 0 {
+                    info!(
+                        total = wins.len(),
+                        offspace = offspace_count,
+                        "world snapshot contains off-space windows"
+                    );
+                }
                 let focused = focused_key.and_then(|k| {
                     wins.iter()
                         .find(|w| w.pid == k.pid && w.id == k.id)

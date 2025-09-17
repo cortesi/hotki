@@ -24,6 +24,8 @@ fn win(app: &str, title: &str, pid: i32, id: WindowId) -> WindowInfo {
         space: Some(1),
         layer: 0,
         focused: true,
+        is_on_screen: true,
+        on_active_space: true,
     }
 }
 

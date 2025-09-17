@@ -59,32 +59,8 @@ struct ConnectionDriver {
 impl ConnectionDriver {
     /// Handle a server-recommended resync by fetching a fresh snapshot and notifying the user.
     async fn handle_resync(&self, conn: &mut hotki_server::Connection) {
-        if self
-            .tx_keys
-            .send(AppEvent::Notify {
-                kind: NotifyKind::Info,
-                title: "World".to_string(),
-                text: "Syncing…".to_string(),
-            })
-            .is_err()
-        {
-            tracing::warn!("failed to send world-sync start notification");
-        }
-        self.egui_ctx.request_repaint();
-
         match conn.get_world_snapshot().await {
             Ok(_snap) => {
-                if self
-                    .tx_keys
-                    .send(AppEvent::Notify {
-                        kind: NotifyKind::Success,
-                        title: "World".to_string(),
-                        text: "Synced".to_string(),
-                    })
-                    .is_err()
-                {
-                    tracing::warn!("failed to send world-sync success notification");
-                }
                 self.egui_ctx.request_repaint();
             }
             Err(e) => {
