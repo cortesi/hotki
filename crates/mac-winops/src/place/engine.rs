@@ -152,7 +152,6 @@ impl<'a> PlacementEngine<'a> {
             eps,
             timing,
         )?;
-        let d1 = got1.diffs(&target);
         let vf2 = visible_frame_containing_point(
             mtm,
             geom::Point {
@@ -162,6 +161,10 @@ impl<'a> PlacementEngine<'a> {
         );
         debug!("vf_used:center={} -> vf={}", got1.center(), vf2);
         debug!("clamp={}", clamp_flags(&got1, &vf2, eps));
+        let d1 = got1.diffs(&target);
+        let mut latest_rect = got1;
+        let mut latest_vf = vf2;
+        let mut latest_diffs = d1;
         let first_verified = got1.approx_eq(&target, eps);
         log_and_record_attempt(
             label,
@@ -238,15 +241,36 @@ impl<'a> PlacementEngine<'a> {
                         anchored_target: None,
                     }));
                 }
+                let diffs_ax = got_ax.diffs(&target);
+                if diffs_ax.x <= eps && diffs_ax.y <= eps {
+                    latest_rect = got_ax;
+                    latest_vf = vf3;
+                    latest_diffs = diffs_ax;
+                }
             } else {
                 debug!("axis_nudge_skipped=true; limit_exceeded");
             }
         }
 
-        let mut got2 = got1;
-        let mut vf4 = vf2;
+        let mut got2 = latest_rect;
+        let mut vf4 = latest_vf;
         let mut retry_verified = false;
-        if allow_opposite_order {
+        let mut diffs_after_pos_stage = latest_diffs;
+        let mut should_run_opposite = allow_opposite_order;
+        let mut opposite_skip_reason: Option<&str> = None;
+        if !allow_opposite_order {
+            should_run_opposite = false;
+            opposite_skip_reason = Some("limit_exceeded");
+        } else if !options.force_second_attempt() {
+            let pos_aligned = diffs_after_pos_stage.x <= eps && diffs_after_pos_stage.y <= eps;
+            let size_off = diffs_after_pos_stage.w > eps || diffs_after_pos_stage.h > eps;
+            if pos_aligned && size_off {
+                should_run_opposite = false;
+                opposite_skip_reason = Some("latched_pos_size_mismatch");
+            }
+        }
+
+        if should_run_opposite {
             let (got_retry, settle_retry) = adapter_ref.apply_and_wait(
                 label,
                 win,
@@ -272,6 +296,7 @@ impl<'a> PlacementEngine<'a> {
             );
             debug!("clamp={}", clamp_flags(&got2, &vf4, eps));
             retry_verified = got2.approx_eq(&target, eps);
+            diffs_after_pos_stage = got2.diffs(&target);
             log_and_record_attempt(
                 label,
                 &mut timeline,
@@ -285,8 +310,8 @@ impl<'a> PlacementEngine<'a> {
                 settle_retry,
                 retry_verified,
             );
-        } else {
-            debug!("opposite_order_retry_skipped=true; limit_exceeded");
+        } else if let Some(reason) = opposite_skip_reason {
+            debug!("opposite_order_retry_skipped=true; reason={}", reason);
         }
 
         let forced_allowed = limits.max_fallback_runs > 0
@@ -358,7 +383,7 @@ impl<'a> PlacementEngine<'a> {
             }));
         }
 
-        let pos_latched = got2.diffs(&target).x <= eps && got2.diffs(&target).y <= eps;
+        let pos_latched = diffs_after_pos_stage.x <= eps && diffs_after_pos_stage.y <= eps;
         if pos_latched {
             debug!("pos_latched=true (x,y within eps)");
             if can_size == Some(false) {

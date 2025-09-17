@@ -177,3 +177,60 @@ fn placement_reports_failure_when_all_attempts_exhausted() {
         ops
     );
 }
+
+#[test]
+fn placement_skips_opposite_when_size_only_needed() {
+    let fake = Arc::new(FakeAxAdapter::new());
+    let mut config = FakeWindowConfig {
+        initial_rect: Rect::new(822.0, 22.0, 1505.0, 1325.0),
+        ..Default::default()
+    };
+    config
+        .apply_script
+        .push(FakeApplyResponse::new(Rect::new(0.0, 0.0, 1505.0, 1325.0)).with_persist(true));
+    config
+        .apply_script
+        .push(FakeApplyResponse::new(Rect::new(0.0, 0.0, 800.0, 375.0)).with_persist(true));
+    config
+        .size_only_script
+        .push(FakeApplyResponse::new(Rect::new(5.0, 0.0, 800.0, 375.0)).with_persist(true));
+    let win = fake.new_window(config);
+    let target = Rect::new(0.0, 0.0, 800.0, 375.0);
+    let visible = Rect::new(0.0, 0.0, 3200.0, 1800.0);
+    let adapter_handle: AxAdapterHandle = fake.clone() as AxAdapterHandle;
+    let ctx = PlacementContext::with_adapter(
+        win.clone(),
+        target,
+        visible,
+        PlaceAttemptOptions::default(),
+        adapter_handle,
+    );
+    let engine = PlacementEngine::new(&ctx, engine_config());
+
+    let outcome = engine
+        .execute(main_thread_marker())
+        .expect("engine should succeed");
+    match outcome {
+        PlacementOutcome::Verified(success) => {
+            assert_eq!(success.final_rect, Rect::new(0.0, 0.0, 800.0, 375.0));
+        }
+        other => panic!("unexpected outcome: {:?}", other),
+    }
+
+    let ops = fake.operations(&win);
+    assert!(
+        ops.iter().any(|op| matches!(op, FakeOp::SizeOnly { .. })),
+        "size-only adjustment missing: {:?}",
+        ops
+    );
+    assert!(
+        ops.iter()
+            .filter_map(|op| match op {
+                FakeOp::Apply { pos_first, .. } => Some(*pos_first),
+                _ => None,
+            })
+            .all(|pos_first| pos_first),
+        "unexpected opposite-order retry: {:?}",
+        ops
+    );
+}
