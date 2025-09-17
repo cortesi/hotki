@@ -189,7 +189,7 @@ impl HotkeyService {
                             hotki_world::WorldEvent::Added(w) => {
                                 let w = *w;
                                 if !w.on_active_space {
-                                    info!(
+                                    debug!(
                                         pid = w.pid,
                                         id = w.id,
                                         space = ?w.space,

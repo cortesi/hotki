@@ -57,9 +57,11 @@ const K_AX_VALUE_CGPOINT_TYPE: i32 = 1;
 const K_AX_VALUE_CGSIZE_TYPE: i32 = 2;
 // AX error for invalid UI element (window closed / stale reference)
 const K_AX_ERROR_INVALID_UI_ELEMENT: i32 = -25202;
+// AX error returned when messaging cannot complete within the timeout window.
+const K_AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
 
 #[inline]
-fn ax_error_name(code: i32) -> &'static str {
+pub(crate) fn ax_error_name(code: i32) -> &'static str {
     match code {
         0 => "Success",
         -25200 => "Failure",
@@ -79,6 +81,15 @@ fn ax_error_name(code: i32) -> &'static str {
         -25214 => "NotEnoughPrecision",
         _ => "Unknown",
     }
+}
+
+#[inline]
+pub(crate) fn ax_observer_expected_error(code: i32) -> bool {
+    // kAXErrorCannotComplete (-25204) is reported when the target app is busy or the
+    // Accessibility server times out mid-call. Apple documents this as a transient
+    // failure where retrying is appropriate, so the observer installation treats it
+    // as an expected noisy condition and logs at debug level.
+    matches!(code, K_AX_ERROR_CANNOT_COMPLETE)
 }
 
 thread_local! {

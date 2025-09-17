@@ -21,9 +21,12 @@ use core_foundation::{
     string::{CFString, CFStringRef},
 };
 use parking_lot::Mutex;
-use tracing::warn;
+use tracing::{debug, warn};
 
-use crate::AXElem;
+use crate::{
+    AXElem,
+    ax::{ax_error_name, ax_observer_expected_error},
+};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -476,10 +479,27 @@ impl AxObserverRegistry {
             "AXUIElementDestroyed",
         ] {
             if let Err(e) = p.subscribe_app(name) {
-                warn!(
-                    "AXObserverAddNotification({}, pid={}) failed: {}",
-                    name, pid, e
-                );
+                let err_name = ax_error_name(e);
+                if ax_observer_expected_error(e) {
+                    // kAXErrorCannotComplete surfaces when the target app times out responding to
+                    // AX during observer registration. The attach path will retry on the next
+                    // focus transition, so log at debug to avoid spamming.
+                    debug!(
+                        notification = name,
+                        pid,
+                        code = e,
+                        error = err_name,
+                        "AXObserverAddNotification skipped"
+                    );
+                } else {
+                    warn!(
+                        notification = name,
+                        pid,
+                        code = e,
+                        error = err_name,
+                        "AXObserverAddNotification failed"
+                    );
+                }
             }
         }
         m.insert(pid, p);
