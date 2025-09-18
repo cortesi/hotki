@@ -5,6 +5,8 @@
 
 use std::cmp;
 
+use hotki_world_ids::WorldWindowId;
+
 use crate::{
     config,
     error::{Error, Result},
@@ -13,7 +15,6 @@ use crate::{
     tests::fixtures::{self, Rect},
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 // Geometry helpers moved to `tests::fixtures`.
 

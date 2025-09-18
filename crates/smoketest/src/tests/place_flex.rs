@@ -5,6 +5,7 @@ use std::{
 };
 
 use hotki_world::PlaceAttemptOptions;
+use hotki_world_ids::WorldWindowId;
 use mac_winops::FallbackTrigger;
 
 use crate::{
@@ -14,7 +15,6 @@ use crate::{
     tests::fixtures::{self, Rect},
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 /// Run the flexible placement smoketest with configurable grid/cell and options.
 pub fn run_place_flex(

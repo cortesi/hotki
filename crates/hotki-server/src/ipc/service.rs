@@ -223,9 +223,16 @@ impl HotkeyService {
                             }
                             hotki_world::WorldEvent::MetaAdded(_, _)
                             | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
-                            hotki_world::WorldEvent::FocusChanged(_k) => {
-                                let ctx = world.focused_context().await;
-                                let app = ctx.map(|(app, title, pid)| App { app, title, pid });
+                            hotki_world::WorldEvent::FocusChanged(change) => {
+                                let app = match (change.app, change.title, change.pid) {
+                                    (Some(app), Some(title), Some(pid)) => {
+                                        Some(App { app, title, pid })
+                                    }
+                                    _ => world
+                                        .focused_context()
+                                        .await
+                                        .map(|(app, title, pid)| App { app, title, pid }),
+                                };
                                 Some(WorldStreamMsg::FocusChanged(app))
                             }
                         };

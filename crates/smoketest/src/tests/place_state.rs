@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use hotki_world_ids::WorldWindowId;
+
 use super::fixtures;
 use crate::{
     config,
@@ -13,7 +15,6 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 // Geometry and polling helpers are provided by `tests::fixtures`.
 

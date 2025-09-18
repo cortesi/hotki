@@ -21,6 +21,8 @@
 
 use std::cmp;
 
+use hotki_world_ids::WorldWindowId;
+
 use super::fixtures::{self, Rect};
 use crate::{
     config,
@@ -29,7 +31,6 @@ use crate::{
     test_runner::{TestConfig, TestRunner},
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 // Geometry helpers are provided by `tests::fixtures`.
 

@@ -45,13 +45,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use regex::Regex;
-
 pub use hotki_world_ids::WorldWindowId;
 use mac_winops::{
     AxProps, Error as WinOpsError, PlaceAttemptOptions as WinPlaceAttemptOptions, Pos, WindowId,
     WindowInfo, ops::WinOps,
 };
+use regex::Regex;
 
 /// Re-export of placement attempt tuning options used by mac-winops.
 pub type PlaceAttemptOptions = WinPlaceAttemptOptions;
@@ -450,6 +449,19 @@ impl Default for WorldCfg {
 #[derive(Clone, Debug, Default)]
 pub struct WindowDelta;
 
+/// Context describing the current focus selection accompanying focus events.
+#[derive(Clone, Debug, Default)]
+pub struct FocusChange {
+    /// Window key for the focused window, when available.
+    pub key: Option<WindowKey>,
+    /// Focused window's application name.
+    pub app: Option<String>,
+    /// Focused window's title.
+    pub title: Option<String>,
+    /// Focused window's process identifier.
+    pub pid: Option<i32>,
+}
+
 /// World events stream payloads.
 #[derive(Clone, Debug)]
 pub enum WorldEvent {
@@ -464,8 +476,8 @@ pub enum WorldEvent {
     MetaAdded(WindowKey, WindowMeta),
     /// A metadata tag was removed from a window (reserved for future use).
     MetaRemoved(WindowKey, WindowMeta),
-    /// The focused window changed. `None` indicates no focused window.
-    FocusChanged(Option<WindowKey>),
+    /// The focused window changed, including best-effort context.
+    FocusChanged(FocusChange),
 }
 
 /// Diagnostic snapshot of world internals.
@@ -1269,7 +1281,20 @@ fn reconcile(
     // Focus changes
     if state.focused != new_focused {
         state.focused = new_focused;
-        let _ = events.send(WorldEvent::FocusChanged(new_focused));
+        let mut change = FocusChange {
+            key: new_focused,
+            app: None,
+            title: None,
+            pid: None,
+        };
+        if let Some(key) = new_focused
+            && let Some(win) = state.store.get(&key)
+        {
+            change.app = Some(win.app.clone());
+            change.title = Some(win.title.clone());
+            change.pid = Some(win.pid);
+        }
+        let _ = events.send(WorldEvent::FocusChanged(change));
     }
 
     had_changes
@@ -1742,35 +1767,31 @@ fn handle_raise(
         idx_any.len()
     );
 
-    if let Some(&target_idx) = idx_active.first() {
-        let target_idx = if let Some(ref focused_window) = focused {
-            if intent.matches(focused_window) {
-                if let Some(cur_index) = snapshot
-                    .iter()
-                    .position(|w| w.pid == focused_window.pid && w.id == focused_window.id)
-                {
-                    idx_active
-                        .iter()
-                        .copied()
-                        .find(|&i| i > cur_index)
-                        .unwrap_or(target_idx)
-                } else {
-                    target_idx
-                }
-            } else {
-                target_idx
-            }
-        } else {
-            target_idx
-        };
+    let pick_index = |candidates: &[usize]| -> Option<usize> {
+        if candidates.is_empty() {
+            return None;
+        }
+        if let Some(ref focused_window) = focused
+            && intent.matches(focused_window)
+            && let Some(cur_index) = snapshot
+                .iter()
+                .position(|w| w.pid == focused_window.pid && w.id == focused_window.id)
+            && let Some(next) = candidates.iter().copied().find(|&i| i > cur_index)
+        {
+            return Some(next);
+        }
+        candidates.first().copied()
+    };
 
+    if let Some(target_idx) = pick_index(&idx_active).or_else(|| pick_index(&idx_any)) {
         let target = snapshot[target_idx].clone();
         tracing::debug!(
-            "Raise(World): target pid={} id={} app='{}' title='{}'",
+            "Raise(World): target pid={} id={} app='{}' title='{}' off_space={}",
             target.pid,
             target.id,
             target.app,
-            target.title
+            target.title,
+            !target.on_active_space
         );
 
         if !winops.ensure_frontmost_by_title(target.pid, &target.title, 7, 80) {
@@ -1791,9 +1812,6 @@ fn handle_raise(
             Some(target),
             Some(TargetSelection::Cycle),
         ))
-    } else if let Some(&off_idx) = idx_any.first() {
-        let off = &snapshot[off_idx];
-        Err(off_active_space_error(off.pid, off))
     } else {
         tracing::debug!("Raise(World): no match in snapshot; no-op");
         Err(CommandError::NoEligibleWindow { kind, pid: None })

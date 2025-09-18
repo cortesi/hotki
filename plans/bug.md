@@ -83,6 +83,24 @@
   reduced some churn but did not change the outcome; CG immediately replaces
   the helper with whichever window previously held focus.
 
+## Resolution (September 19, 2025)
+- Root cause: the new space guard in `hotki-world::handle_raise` filtered out
+  any windows not already on the active Mission Control space. When helpers
+  spawned on a different space, the guard short-circuited the raise before
+  `ensure_frontmost_by_title` ever ran. The smoketest fallback kept retrying
+  `mac_winops` directly, but the world layer never switched spaces, leaving CG
+  focus stuck on the prior window.
+- Fix: teach `handle_raise` to fall back to off-space matches by cycling over
+  the broader candidate list, logging the adoption, and still driving
+  `ensure_frontmost_by_title`. This lets the world request activate the target
+  PID, switching spaces before polling stabilizes.
+- Hardened `wait::find_window_id` to perform a one-time
+  `list_windows_for_spaces(&[])` sweep so we can still recover an id while the
+  active-space filter updates. This keeps raise loops functional when the
+  target was discovered via an off-space snapshot.
+- Outcome: `cargo run --bin smoketest -- raise` now completes with both helper
+  windows raised in sequence, even when one spawns on a different space.
+
 ## Owner Notes
 - Any future modifications to `mac-winops::raise::raise_window` must keep the
   main-thread constraints in mind; direct CGS calls outside AppKit continue to

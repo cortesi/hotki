@@ -72,8 +72,8 @@ pub use error::{Error, Result};
 use focus::FocusState;
 use hotki_protocol::MsgToUI;
 use hotki_world::{
-    CommandError, CommandToggle, FullscreenIntent, FullscreenKind, HideIntent, MoveDirection,
-    MoveIntent, PlaceIntent, RaiseIntent, WorldView,
+    CommandError, CommandToggle, FocusChange, FullscreenIntent, FullscreenKind, HideIntent,
+    MoveDirection, MoveIntent, PlaceIntent, RaiseIntent, WorldView,
 };
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
@@ -309,20 +309,25 @@ impl Engine {
 
                 loop {
                     match rx.recv().await {
-                        Ok(hotki_world::WorldEvent::FocusChanged(Some(key))) => {
-                            let ctx = world.context_for_key(key).await;
-                            if let Err(err) = engine.apply_world_focus_context(ctx).await {
-                                warn!("World focus update failed: {}", err);
-                            }
-                        }
-                        Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
-                            if let Err(err) = engine.apply_world_focus_context(None).await {
-                                warn!("World focus clear failed: {}", err);
-                            }
+                        Ok(hotki_world::WorldEvent::FocusChanged(change)) => {
+                            let world_clone = world.clone();
+                            let engine_clone = engine.clone();
+                            tokio::spawn(async move {
+                                Engine::handle_focus_change_event(
+                                    engine_clone,
+                                    world_clone,
+                                    change,
+                                )
+                                .await;
+                            });
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!(skipped, "World focus subscription lagged; resubscribing");
+                            if skipped >= 256 {
+                                warn!(skipped, "World focus subscription lagged; resubscribing");
+                            } else {
+                                debug!(skipped, "World focus subscription lagged; resubscribing");
+                            }
                             break;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -354,6 +359,33 @@ impl Engine {
             debug!("Engine: world focus context cleared");
         }
         self.rebind_current_context().await
+    }
+
+    async fn handle_focus_change_event(
+        engine: Engine,
+        world: Arc<dyn WorldView>,
+        change: FocusChange,
+    ) {
+        let ctx =
+            if let (Some(app), Some(title), Some(pid)) = (change.app, change.title, change.pid) {
+                Some((app, title, pid))
+            } else if let Some(key) = change.key {
+                world.context_for_key(key).await
+            } else {
+                None
+            };
+
+        if let Some(ctx) = ctx {
+            if let Err(err) = engine.apply_world_focus_context(Some(ctx)).await {
+                warn!("World focus update failed: {}", err);
+            }
+        } else if change.key.is_none() {
+            if let Err(err) = engine.apply_world_focus_context(None).await {
+                warn!("World focus clear failed: {}", err);
+            }
+        } else {
+            warn!(key = ?change.key, "World focus context unavailable after focus change");
+        }
     }
 
     async fn rebind_current_context(&self) -> Result<()> {

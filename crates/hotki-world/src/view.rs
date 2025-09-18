@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hotki_world_ids::WorldWindowId;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -8,7 +9,6 @@ use crate::{
     MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldHandle,
     WorldStatus, WorldWindow,
 };
-use hotki_world_ids::WorldWindowId;
 
 /// Unified view over window state snapshots and focus context.
 #[async_trait]
@@ -521,7 +521,7 @@ mod test_world {
         use std::time::Instant;
 
         use super::TestWorld;
-        use crate::{WindowKey, WorldEvent, WorldView, WorldWindow};
+        use crate::{FocusChange, WindowKey, WorldEvent, WorldView, WorldWindow};
 
         fn basic_window(z: u32, focused: bool) -> WorldWindow {
             WorldWindow {
@@ -565,7 +565,12 @@ mod test_world {
         async fn test_world_events_and_hint() {
             let world = TestWorld::new();
             let mut rx = world.subscribe();
-            world.push_event(WorldEvent::FocusChanged(None));
+            world.push_event(WorldEvent::FocusChanged(FocusChange {
+                key: None,
+                app: None,
+                title: None,
+                pid: None,
+            }));
             assert!(rx.recv().await.is_ok());
 
             assert_eq!(world.hint_refresh_count(), 0);

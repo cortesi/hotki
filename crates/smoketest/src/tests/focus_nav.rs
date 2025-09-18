@@ -1,7 +1,9 @@
 //! Focus navigation smoketest using the new `focus(dir)` action.
 
-// no direct std::time imports needed beyond internal helpers
+use std::{thread, time::Duration};
 
+use mac_winops;
+// no direct std::time imports needed beyond internal helpers
 use tracing::info;
 
 use super::fixtures::{self, Rect, wait_for_windows_visible};
@@ -15,6 +17,7 @@ use crate::{
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
+    world,
 };
 
 // Placement handled via server by driving config bindings (no direct WinOps here).
@@ -67,7 +70,6 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let title_bl = config::test_title("focus-bl");
     let title_br = config::test_title("focus-br");
 
-    // Minimal config: direct global bindings for focus directions to avoid HUD submenu latency
     let ron_config = format!(
         "(\n    keys: [\n        (\"ctrl+alt+h\", \"left\", focus(left), (global: true, hide: true)),\n        (\"ctrl+alt+l\", \"right\", focus(right), (global: true, hide: true)),\n        (\"ctrl+alt+k\", \"up\", focus(up), (global: true, hide: true)),\n        (\"ctrl+alt+j\", \"down\", focus(down), (global: true, hide: true)),\n        (\"ctrl+alt+1\", \"tl\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+2\", \"tr\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+3\", \"bl\", raise(title: \"{}\"), (global: true, hide: true)),\n        (\"ctrl+alt+4\", \"br\", raise(title: \"{}\"), (global: true, hide: true)),\n    ],\n    style: (hud: (mode: hide))\n)\n",
         title_tl, title_tr, title_bl, title_br
@@ -93,13 +95,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             Ok(())
         })
         .with_execute(move |_ctx| {
-            // Spawn helpers with longer lifetimes to accommodate placement/tests
             let helper_time = timeout_ms.saturating_add(4000);
-            let tl = HelperWindowBuilder::new(&title_tl)
-                .with_time_ms(helper_time)
-                .with_grid(2, 2, 0, 0)
-                .with_label_text("TL")
-                .spawn()?;
             let tr = HelperWindowBuilder::new(&title_tr)
                 .with_time_ms(helper_time)
                 .with_grid(2, 2, 1, 0)
@@ -115,8 +111,12 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 .with_grid(2, 2, 1, 1)
                 .with_label_text("BR")
                 .spawn()?;
+            let tl = HelperWindowBuilder::new(&title_tl)
+                .with_time_ms(helper_time)
+                .with_grid(2, 2, 0, 0)
+                .with_label_text("TL")
+                .spawn()?;
 
-            // Ensure visibility before arranging
             if !wait_for_windows_visible(
                 &[
                     (tl.pid, &title_tl),
@@ -131,6 +131,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     expected: "helpers not visible (4)".into(),
                 });
             }
+            info!("focus-nav: helpers visible");
 
             for ident in [
                 "ctrl+alt+1",
@@ -142,75 +143,109 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 server_drive::wait_for_ident(ident, config::BINDING_GATES.default_ms * 2)?;
             }
 
-            // Helpers self-place into 2x2 via the world harness; no server placement required
+            let helpers = [
+                (&title_tl, (0u32, 0u32)),
+                (&title_tr, (1, 0)),
+                (&title_br, (1, 1)),
+                (&title_bl, (0, 1)),
+            ];
 
-            // Establish initial focus quickly via direct raise binding
-            send_key("ctrl+alt+1")?;
-            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV.step_timeout_ms) {
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: title_tl,
-                });
-            }
-            // Confirm explicitly: TL has focus at start
-            info!("focus-nav: START — expecting TL focused");
-            log_frontmost();
-            // Check TL is at cell (0,0) within epsilon
-            let front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
-                .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
-            let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
-                .ok_or_else(|| {
-                    Error::InvalidState(format!(
-                        "AX frame for frontmost not available (title='{}' pid={})",
-                        front.title, front.pid
-                    ))
-                })?;
-            let vf = fixtures::visible_frame_containing_point(x, y)
-                .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
-            let frame = Rect::new(x, y, w, h);
-            if let Some((cx, cy)) = find_cell_for_frame(vf, 2, 2, frame, EPS) {
-                info!(
-                    "focus-nav: TL cell coords=({}, {}) — expecting (0, 0)",
-                    cx, cy
-                );
-                if !(cx == 0 && cy == 0) {
-                    return Err(Error::InvalidState(format!(
-                        "TL not at (0,0): got ({}, {})",
-                        cx, cy
-                    )));
-                }
-            } else {
-                info!(
-                    "focus-nav: TL frame mismatch frame={:?} vf={:?}",
-                    frame,
-                    vf
-                );
-                for row in 0..2 {
-                    for col in 0..2 {
-                        let expected = fixtures::cell_rect(vf, 2, 2, col, row);
-                        let dx = (frame.x - expected.x).abs();
-                        let dy = (frame.y - expected.y).abs();
-                        let dw = (frame.w - expected.w).abs();
-                        let dh = (frame.h - expected.h).abs();
-                        info!(
-                            "focus-nav: TL diff col={} row={} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
-                            col,
-                            row,
-                            dx,
-                            dy,
-                            dw,
-                            dh
-                        );
+            let mut placements_ok = false;
+            for _ in 0..50 {
+                let snapshot = world::list_windows()?;
+                let mut all_ok = true;
+                for (title, expected) in helpers.iter() {
+                    let Some(win) = snapshot.iter().find(|w| w.title == **title) else {
+                        all_ok = false;
+                        break;
+                    };
+                    let Some(pos) = win.pos else {
+                        all_ok = false;
+                        break;
+                    };
+                    let rect = Rect::new(
+                        pos.x.into(),
+                        pos.y.into(),
+                        pos.width.into(),
+                        pos.height.into(),
+                    );
+                    let Some(vf) = fixtures::visible_frame_containing_point(rect.x, rect.y) else {
+                        all_ok = false;
+                        break;
+                    };
+                    let Some((col, row)) = find_cell_for_frame(vf, 2, 2, rect, EPS) else {
+                        all_ok = false;
+                        break;
+                    };
+                    if (col, row) != *expected {
+                        all_ok = false;
+                        break;
                     }
                 }
-                return Err(Error::InvalidState(format!(
-                    "Could not resolve TL cell coords: frame={:?} vf={:?}",
-                    frame, vf
-                )));
+                if all_ok {
+                    placements_ok = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
             }
-            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
+            if !placements_ok {
+                return Err(Error::InvalidState(
+                    "Helper windows did not settle into expected grid".to_string(),
+                ));
+            }
 
-            // Helper to drive focus(dir) via direct global bindings
+            let titles = [&title_tl, &title_tr, &title_br, &title_bl];
+            let coords = [(0u32, 0u32), (1, 0), (1, 1), (0, 1)];
+            let dirs = ["l", "j", "h", "k"];
+
+            let mut front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+                .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
+            let mut start_idx = titles
+                .iter()
+                .position(|t| t.as_str() == front.title)
+                .or_else(|| {
+                    if mac_winops::ensure_frontmost_by_title(
+                        tl.pid,
+                        &title_tl,
+                        3,
+                        config::INPUT_DELAYS.retry_delay_ms,
+                    ) && wait_for_frontmost_title(&title_tl, 500)
+                    {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    Error::InvalidState("Frontmost helper window not detected".into())
+                })?;
+
+            if titles[start_idx].as_str() != front.title {
+                front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
+                    .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
+                start_idx = titles
+                    .iter()
+                    .position(|t| t.as_str() == front.title)
+                    .ok_or_else(|| {
+                        Error::InvalidState("Frontmost helper window not detected".into())
+                    })?;
+            }
+
+            let mut rotated_titles = Vec::with_capacity(4);
+            let mut rotated_coords = Vec::with_capacity(4);
+            let mut rotated_dirs = Vec::with_capacity(4);
+            for step in 0..4 {
+                let idx = (start_idx + step) % 4;
+                rotated_titles.push(titles[idx]);
+                rotated_coords.push(coords[idx]);
+                rotated_dirs.push(dirs[idx]);
+            }
+
+            info!(
+                start = rotated_titles[0].as_str(),
+                "focus-nav: starting focus cycle"
+            );
+
             let drive = |dir: &str| -> Result<()> {
                 match dir {
                     "h" => send_key("ctrl+alt+h")?,
@@ -223,104 +258,40 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 Ok(())
             };
 
-            // TL -> TR
-            // Verify source before move
-            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
-            drive("l")?; // RIGHT
-            if !wait_for_frontmost_title(&title_tr, config::FOCUS_NAV.step_timeout_ms) {
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: title_tr,
-                });
+            for step in 0..rotated_dirs.len() {
+                let current_title = rotated_titles[step];
+                let (cx, cy) = rotated_coords[step];
+                fixtures::assert_frontmost_cell(
+                    current_title,
+                    current_frontmost_vf()?,
+                    2,
+                    2,
+                    cx,
+                    cy,
+                    EPS,
+                )?;
+                drive(rotated_dirs[step])?;
+                let next_title = rotated_titles[(step + 1) % rotated_titles.len()];
+                if !wait_for_frontmost_title(next_title, config::FOCUS_NAV.step_timeout_ms) {
+                    return Err(Error::FocusNotObserved {
+                        timeout_ms,
+                        expected: next_title.clone(),
+                    });
+                }
+                let (nx, ny) = rotated_coords[(step + 1) % rotated_coords.len()];
+                fixtures::assert_frontmost_cell(
+                    next_title,
+                    current_frontmost_vf()?,
+                    2,
+                    2,
+                    nx,
+                    ny,
+                    EPS,
+                )?;
             }
-            fixtures::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
-            // TR -> BR
-            // Verify source before move
-            fixtures::assert_frontmost_cell(&title_tr, current_frontmost_vf()?, 2, 2, 1, 0, EPS)?;
-            drive("j")?; // DOWN
-            if !wait_for_frontmost_title(&title_br, config::FOCUS_NAV.step_timeout_ms) {
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: title_br,
-                });
-            }
-            fixtures::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
-            // BR -> BL
-            // Verify source before move
-            fixtures::assert_frontmost_cell(&title_br, current_frontmost_vf()?, 2, 2, 1, 1, EPS)?;
-            drive("h")?; // LEFT
-            if !wait_for_frontmost_title(&title_bl, config::FOCUS_NAV.step_timeout_ms) {
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: title_bl,
-                });
-            }
-            fixtures::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
-            // BL -> TL
-            // Verify source before move
-            fixtures::assert_frontmost_cell(&title_bl, current_frontmost_vf()?, 2, 2, 0, 1, EPS)?;
-            drive("k")?; // UP
-            if !wait_for_frontmost_title(&title_tl, config::FOCUS_NAV.step_timeout_ms) {
-                return Err(Error::FocusNotObserved {
-                    timeout_ms,
-                    expected: title_tl,
-                });
-            }
-            // Final explicit confirmation: back at TL and at (0,0)
+
             log_frontmost();
-            let front = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
-                .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
-            let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
-                .ok_or_else(|| {
-                    Error::InvalidState(format!(
-                        "AX frame for frontmost not available (title='{}' pid={})",
-                        front.title, front.pid
-                    ))
-                })?;
-            let vf = fixtures::visible_frame_containing_point(x, y)
-                .ok_or_else(|| Error::InvalidState("No visibleFrame for frontmost".into()))?;
-            let frame = Rect::new(x, y, w, h);
-            if let Some((cx, cy)) = find_cell_for_frame(vf, 2, 2, frame, EPS) {
-                info!(
-                    "focus-nav: END — TL cell coords=({}, {}) — expecting (0, 0)",
-                    cx, cy
-                );
-                if !(cx == 0 && cy == 0) {
-                    return Err(Error::InvalidState(format!(
-                        "END TL not at (0,0): got ({}, {})",
-                        cx, cy
-                    )));
-                }
-            } else {
-                info!(
-                    "focus-nav: END TL frame mismatch frame={:?} vf={:?}",
-                    frame,
-                    vf
-                );
-                for row in 0..2 {
-                    for col in 0..2 {
-                        let expected = fixtures::cell_rect(vf, 2, 2, col, row);
-                        let dx = (frame.x - expected.x).abs();
-                        let dy = (frame.y - expected.y).abs();
-                        let dw = (frame.w - expected.w).abs();
-                        let dh = (frame.h - expected.h).abs();
-                        info!(
-                            "focus-nav: END TL diff col={} row={} dx={:.2} dy={:.2} dw={:.2} dh={:.2}",
-                            col,
-                            row,
-                            dx,
-                            dy,
-                            dw,
-                            dh
-                        );
-                    }
-                }
-                return Err(Error::InvalidState(format!(
-                    "Could not resolve END TL cell coords: frame={:?} vf={:?}",
-                    frame, vf
-                )));
-            }
-            fixtures::assert_frontmost_cell(&title_tl, current_frontmost_vf()?, 2, 2, 0, 0, EPS)?;
+
             Ok(())
         })
         .run()

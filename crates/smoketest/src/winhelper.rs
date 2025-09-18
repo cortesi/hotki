@@ -1,52 +1,77 @@
 //! Helper window (winit) used by smoketests to verify placement behaviors.
-use std::time::{Duration, Instant};
-
-use tracing::{debug, info};
 
 use crate::{config, world};
-use hotki_world::PlaceAttemptOptions;
-use hotki_world_ids::WorldWindowId;
 
 /// Target rect as ((x,y), (w,h), name) used for tween targets.
 type TargetRect = ((f64, f64), (f64, f64), &'static str);
 
-/// Run the helper window configured by the provided parameters.
-#[allow(clippy::too_many_arguments)]
-pub fn run_focus_winhelper(
-    title: &str,
-    time_ms: u64,
-    delay_setframe_ms: u64,
-    delay_apply_ms: u64,
-    tween_ms: u64,
-    apply_target: Option<(f64, f64, f64, f64)>,
-    apply_grid: Option<(u32, u32, u32, u32)>,
-    slot: Option<u8>,
-    grid: Option<(u32, u32, u32, u32)>,
-    size: Option<(f64, f64)>,
-    pos: Option<(f64, f64)>,
-    label_text: Option<String>,
-    min_size: Option<(f64, f64)>,
-    step_size: Option<(f64, f64)>,
-    start_minimized: bool,
-    start_zoomed: bool,
-    panel_nonmovable: bool,
-    panel_nonresizable: bool,
-    attach_sheet: bool,
-) -> Result<(), String> {
-    // Create event loop after items below to satisfy clippy's items-after-statements lint.
+/// Internal helper application state used to drive the smoketest helper window.
+mod helper_app {
+    use std::{
+        cmp::min,
+        process::id,
+        thread,
+        time::{Duration, Instant},
+    };
 
-    use std::{cmp::min, process::id, thread};
-
+    use hotki_world::PlaceAttemptOptions;
+    use hotki_world_ids::WorldWindowId;
     use objc2::rc::autoreleasepool;
+    use tracing::{debug, info};
     use winit::{
         application::ApplicationHandler,
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::WindowEvent,
-        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+        event_loop::{ActiveEventLoop, ControlFlow},
         window::{Window, WindowId},
     };
 
-    struct HelperApp {
+    use super::{TargetRect, config, world};
+
+    /// Parameter bundle for constructing a [`HelperApp`].
+    pub(super) struct HelperParams {
+        /// Window title shown on the helper surface.
+        pub(super) title: String,
+        /// Total runtime for the helper window before forced shutdown.
+        pub(super) time_ms: u64,
+        /// Delay before applying position updates when directly setting frames.
+        pub(super) delay_setframe_ms: u64,
+        /// Delay before invoking the primary placement operation.
+        pub(super) delay_apply_ms: u64,
+        /// Duration for tweened placement animations.
+        pub(super) tween_ms: u64,
+        /// Absolute placement target rectangle, when provided.
+        pub(super) apply_target: Option<(f64, f64, f64, f64)>,
+        /// Grid placement specification, when provided.
+        pub(super) apply_grid: Option<(u32, u32, u32, u32)>,
+        /// Optional slot identifier for 2x2 layouts.
+        pub(super) slot: Option<u8>,
+        /// Optional grid dimensions and coordinates.
+        pub(super) grid: Option<(u32, u32, u32, u32)>,
+        /// Optional explicit window size.
+        pub(super) size: Option<(f64, f64)>,
+        /// Optional explicit window position.
+        pub(super) pos: Option<(f64, f64)>,
+        /// Optional overlay label text.
+        pub(super) label_text: Option<String>,
+        /// Optional minimum content size.
+        pub(super) min_size: Option<(f64, f64)>,
+        /// Optional rounding step for requested sizes.
+        pub(super) step_size: Option<(f64, f64)>,
+        /// Whether the helper launches minimized.
+        pub(super) start_minimized: bool,
+        /// Whether the helper launches zoomed (macOS zoom behavior).
+        pub(super) start_zoomed: bool,
+        /// Whether the helper window should be non-movable.
+        pub(super) panel_nonmovable: bool,
+        /// Whether the helper window should be non-resizable.
+        pub(super) panel_nonresizable: bool,
+        /// Whether to attach a modal sheet on launch.
+        pub(super) attach_sheet: bool,
+    }
+
+    /// State machine orchestrating the smoketest helper window lifecycle.
+    pub(super) struct HelperApp {
         /// Handle to the helper window, if created.
         window: Option<Window>,
         /// Window title used to locate the NSWindow for tweaks.
@@ -123,6 +148,73 @@ pub fn run_focus_winhelper(
     }
 
     impl HelperApp {
+        /// Build a helper app with the provided configuration snapshot.
+        pub(super) fn new(params: HelperParams) -> Self {
+            let HelperParams {
+                title,
+                time_ms,
+                delay_setframe_ms,
+                delay_apply_ms,
+                tween_ms,
+                apply_target,
+                apply_grid,
+                slot,
+                grid,
+                size,
+                pos,
+                label_text,
+                min_size,
+                step_size,
+                start_minimized,
+                start_zoomed,
+                panel_nonmovable,
+                panel_nonresizable,
+                attach_sheet,
+            } = params;
+            Self {
+                window: None,
+                title,
+                deadline: Instant::now() + config::ms(time_ms.max(1000)),
+                delay_setframe_ms,
+                delay_apply_ms,
+                tween_ms,
+                apply_target,
+                apply_grid,
+                last_pos: None,
+                last_size: None,
+                desired_pos: None,
+                desired_size: None,
+                apply_after: None,
+                tween_active: false,
+                tween_start: None,
+                tween_end: None,
+                tween_from_pos: None,
+                tween_from_size: None,
+                tween_to_pos: None,
+                tween_to_size: None,
+                suppress_events: false,
+                slot,
+                grid,
+                size,
+                pos,
+                label_text,
+                min_size,
+                error: None,
+                start_minimized,
+                start_zoomed,
+                panel_nonmovable,
+                panel_nonresizable,
+                attach_sheet,
+                step_w: step_size.map(|s| s.0).unwrap_or(0.0),
+                step_h: step_size.map(|s| s.1).unwrap_or(0.0),
+            }
+        }
+
+        /// Return any captured fatal error and clear it from state.
+        pub(super) fn take_error(&mut self) -> Option<String> {
+            self.error.take()
+        }
+
         /// Create the helper window with initial attributes.
         fn try_create_window(&self, elwt: &ActiveEventLoop) -> Result<Window, String> {
             use winit::dpi::LogicalSize;
@@ -228,8 +320,14 @@ pub fn run_focus_winhelper(
         fn initial_placement(&self, win: &Window) {
             use winit::dpi::LogicalPosition;
             let pid = id() as i32;
-            let _ =
-                world::ensure_frontmost(pid, &self.title, 3, config::INPUT_DELAYS.retry_delay_ms);
+            if let Err(err) =
+                world::ensure_frontmost(pid, &self.title, 3, config::INPUT_DELAYS.retry_delay_ms)
+            {
+                debug!(
+                    "winhelper: ensure_frontmost failed pid={} title='{}': {}",
+                    pid, self.title, err
+                );
+            }
             if let Some((cols, rows, col, row)) = self.grid {
                 self.try_world_place(cols, rows, col, row, None);
             } else if let Some(slot) = self.slot {
@@ -266,11 +364,11 @@ pub fn run_focus_winhelper(
             rows: u32,
             col: u32,
             row: u32,
-            options: Option<PlaceAttemptOptions>,
+            options: Option<&PlaceAttemptOptions>,
         ) {
             for attempt in 0..120 {
                 if let Some(target) = self.resolve_world_window() {
-                    match world::place_window(target, cols, rows, col, row, options.clone()) {
+                    match world::place_window(target, cols, rows, col, row, options.cloned()) {
                         Ok(_) => return,
                         Err(err) => {
                             debug!(
@@ -895,47 +993,60 @@ pub fn run_focus_winhelper(
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
+}
+
+/// Run the helper window configured by the provided parameters.
+#[allow(clippy::too_many_arguments)]
+pub fn run_focus_winhelper(
+    title: &str,
+    time_ms: u64,
+    delay_setframe_ms: u64,
+    delay_apply_ms: u64,
+    tween_ms: u64,
+    apply_target: Option<(f64, f64, f64, f64)>,
+    apply_grid: Option<(u32, u32, u32, u32)>,
+    slot: Option<u8>,
+    grid: Option<(u32, u32, u32, u32)>,
+    size: Option<(f64, f64)>,
+    pos: Option<(f64, f64)>,
+    label_text: Option<String>,
+    min_size: Option<(f64, f64)>,
+    step_size: Option<(f64, f64)>,
+    start_minimized: bool,
+    start_zoomed: bool,
+    panel_nonmovable: bool,
+    panel_nonresizable: bool,
+    attach_sheet: bool,
+) -> Result<(), String> {
+    // Create event loop after items below to satisfy clippy's items-after-statements lint.
+
+    use helper_app::HelperApp;
+    use winit::event_loop::EventLoop;
 
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
-    let mut app = HelperApp {
-        window: None,
+    let mut app = HelperApp::new(helper_app::HelperParams {
         title: title.to_string(),
-        deadline: Instant::now() + config::ms(time_ms.max(1000)),
+        time_ms,
         delay_setframe_ms,
         delay_apply_ms,
         tween_ms,
         apply_target,
         apply_grid,
-        last_pos: None,
-        last_size: None,
-        desired_pos: None,
-        desired_size: None,
-        apply_after: None,
-        tween_active: false,
-        tween_start: None,
-        tween_end: None,
-        tween_from_pos: None,
-        tween_from_size: None,
-        tween_to_pos: None,
-        tween_to_size: None,
-        suppress_events: false,
         slot,
         grid,
         size,
         pos,
         label_text,
         min_size,
-        error: None,
+        step_size,
         start_minimized,
         start_zoomed,
         panel_nonmovable,
         panel_nonresizable,
         attach_sheet,
-        step_w: step_size.map(|s| s.0).unwrap_or(0.0),
-        step_h: step_size.map(|s| s.1).unwrap_or(0.0),
-    };
+    });
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
-    if let Some(e) = app.error.take() {
+    if let Some(e) = app.take_error() {
         Err(e)
     } else {
         Ok(())

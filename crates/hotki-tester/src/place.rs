@@ -14,9 +14,9 @@ use config::{Action, At, AtSpec, Dir, Grid, GridSpec};
 use hotki_world::{MoveDirection, World, WorldCfg};
 use hotki_world_ids::WorldWindowId;
 use humantime::format_duration;
-use mac_winops::ops::{RealWinOps, WinOps};
 use mac_winops::{
     self, WindowId, ax_focused_window_id_for_pid, ax_props_for_window_id, ax_window_frame,
+    ops::{RealWinOps, WinOps},
     placement_counters_reset, placement_counters_snapshot,
 };
 use ron::{Options, extensions::Extensions};

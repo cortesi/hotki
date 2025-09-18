@@ -497,7 +497,7 @@ async fn engine_place_move_rejects_offspace_window() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn engine_raise_rejects_offspace_window() {
+async fn engine_raise_adopts_offspace_window() {
     ensure_no_os_interaction();
     let (tx, mut rx) = mpsc::channel(16);
     let mock = Arc::new(MockWinOps::new());
@@ -545,25 +545,23 @@ async fn engine_raise_rejects_offspace_window() {
     .await;
 
     let id = engine.resolve_id_for_ident("r").await.unwrap();
-    let err = engine
+    engine
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await
-        .expect_err("expected raise guard error");
-    assert!(matches!(err, Error::OffActiveSpace { op: "raise", .. }));
+        .expect("off-space raise should adopt window");
 
-    let saw = recv_error_with_title(&mut rx, "Raise", 80).await;
-    assert!(saw, "expected Raise guard notification");
+    let saw_error = recv_error_with_title(&mut rx, "Raise", 40).await;
     assert!(
-        !mock.calls_contains("raise_window"),
-        "raise should not schedule off-space window"
+        !saw_error,
+        "unexpected Raise guard notification for off-space raise"
     );
     assert!(
-        !mock.calls_contains("ensure_frontmost"),
-        "raise should not run ensure_frontmost off-space"
+        mock.calls_contains("ensure_frontmost"),
+        "raise should attempt ensure_frontmost for off-space window"
     );
     assert!(
-        !mock.calls_contains("activate_pid"),
-        "raise should not activate off-space window"
+        mock.calls_contains("raise_window"),
+        "raise should attempt to reorder the off-space window"
     );
 }
 

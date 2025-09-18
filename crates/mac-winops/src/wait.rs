@@ -8,9 +8,9 @@ use std::{
 use objc2_foundation::MainThreadMarker;
 
 use crate::{
-    WindowId, ax_has_window_title, ax_window_position,
+    WindowId, WindowInfo, ax_has_window_title, ax_window_position,
     geom::{Point, Rect},
-    window::list_windows,
+    window::{list_windows, list_windows_for_spaces},
 };
 
 /// Wait until all `(pid, title)` pairs are visible via CoreGraphics or AX.
@@ -128,13 +128,21 @@ pub fn find_window_id(
     let deadline = start
         .checked_add(timeout)
         .unwrap_or_else(|| start + timeout);
+    let mut attempted_all_spaces = false;
 
     loop {
-        if let Some(w) = list_windows()
-            .into_iter()
-            .find(|w| w.pid == pid && w.title == title)
-        {
+        let search =
+            |wins: Vec<WindowInfo>| wins.into_iter().find(|w| w.pid == pid && w.title == title);
+
+        if let Some(w) = search(list_windows()) {
             return Some(w.id);
+        }
+
+        if !attempted_all_spaces {
+            if let Some(w) = search(list_windows_for_spaces(&[])) {
+                return Some(w.id);
+            }
+            attempted_all_spaces = true;
         }
 
         if Instant::now() >= deadline {

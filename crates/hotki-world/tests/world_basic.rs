@@ -8,6 +8,35 @@ use mac_winops::{
     Pos, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
 };
+use tokio::sync::broadcast;
+
+async fn count_updates_for(
+    rx: &mut broadcast::Receiver<WorldEvent>,
+    key: WindowKey,
+    timeout: Duration,
+) -> u32 {
+    let mut count = 0;
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        let remaining = deadline.saturating_duration_since(now);
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(WorldEvent::Updated(k, _))) if k == key => {
+                count += 1;
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    count
+}
 
 fn win(
     app: &str,
@@ -172,8 +201,23 @@ fn focus_changes_emit_event_and_snapshot_updates() {
         ]);
 
         // Observe FocusChanged event to AppB
-        let ev = recv_event_until(&mut rx, 500, |ev| matches!(ev, &WorldEvent::FocusChanged(Some(ref k)) if *k == (WindowKey{pid:200,id:2}))).await;
-        match ev { Some(WorldEvent::FocusChanged(k)) => assert_eq!(k, Some(WindowKey{pid:200,id:2})), _ => panic!("expected FocusChanged to AppB") }
+        let ev = recv_event_until(&mut rx, 500, |ev| {
+            if let WorldEvent::FocusChanged(change) = ev {
+                change.key == Some(WindowKey { pid: 200, id: 2 })
+            } else {
+                false
+            }
+        })
+        .await;
+        match ev {
+            Some(WorldEvent::FocusChanged(change)) => {
+                assert_eq!(change.key, Some(WindowKey { pid: 200, id: 2 }));
+                assert_eq!(change.app.as_deref(), Some("AppB"));
+                assert_eq!(change.title.as_deref(), Some("B1"));
+                assert_eq!(change.pid, Some(200));
+            }
+            _ => panic!("expected FocusChanged to AppB"),
+        }
 
         // Snapshot should reflect focused flags
         let snap = world.snapshot().await;
@@ -622,19 +666,8 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         world.hint_refresh();
 
         // Collect events for a little while; expect exactly ONE Updated in this burst.
-        let start = tokio::time::Instant::now();
-        let mut updated_count = 0u32;
-        while start.elapsed() < Duration::from_millis(600) {
-            if let Some(ev) = recv_event_until(&mut rx, 120, |_| true).await {
-                if let WorldEvent::Updated(k, _) = ev
-                    && k == (WindowKey { pid: 1, id: 1 })
-                {
-                    updated_count += 1;
-                }
-            } else {
-                break;
-            }
-        }
+        let key = WindowKey { pid: 1, id: 1 };
+        let updated_count = count_updates_for(&mut rx, key, Duration::from_millis(600)).await;
         assert_eq!(
             updated_count, 1,
             "debounce should coalesce rapid updates to a single event"
@@ -666,23 +699,17 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         world.hint_refresh();
 
         // Expect one more Updated for the same window.
-        let start2 = tokio::time::Instant::now();
-        let mut added = 0u32;
-        while start2.elapsed() < Duration::from_millis(600) {
-            if let Ok(ev) = rx.try_recv() {
-                if let WorldEvent::Updated(k, _) = ev
-                    && k == (WindowKey { pid: 1, id: 1 })
-                {
-                    added += 1;
-                    break;
-                }
-            } else {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
+        let added = count_updates_for(&mut rx, key, Duration::from_millis(600)).await;
         assert_eq!(
             added, 1,
             "expected one additional Updated after debounce window"
+        );
+
+        // Ensure no further updates arrive once quiet again.
+        let trailing = count_updates_for(&mut rx, key, Duration::from_millis(200)).await;
+        assert_eq!(
+            trailing, 0,
+            "no trailing Updated events expected after quiet period"
         );
 
         // Final snapshot reflects T3 and latest geometry

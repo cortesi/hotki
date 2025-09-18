@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_world_ids::WorldWindowId;
+
 use crate::{
     config,
     error::{Error, Result},
@@ -19,7 +21,6 @@ use crate::{
     tests::fixtures,
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 /// Lightweight sample of a window frame at a point in time.
 #[derive(Clone, Copy)]

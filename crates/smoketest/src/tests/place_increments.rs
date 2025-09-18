@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_world_ids::WorldWindowId;
+
 use crate::{
     config,
     error::{Error, Result},
@@ -14,7 +16,6 @@ use crate::{
     tests::fixtures::{self, Rect},
     world,
 };
-use hotki_world_ids::WorldWindowId;
 
 /// Check whether the window frame anchors to selected edges within tolerance.
 fn verify_anchored(
