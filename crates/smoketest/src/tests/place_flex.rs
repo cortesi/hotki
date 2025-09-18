@@ -4,14 +4,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use mac_winops::{FallbackTrigger, PlaceAttemptOptions};
+use hotki_world::PlaceAttemptOptions;
+use mac_winops::FallbackTrigger;
 
 use crate::{
     config,
     error::{Error, Result},
     helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
     tests::fixtures::{self, Rect},
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 /// Run the flexible placement smoketest with configurable grid/cell and options.
 pub fn run_place_flex(
@@ -43,7 +46,7 @@ pub fn run_place_flex(
         "FLEX",
     )?;
 
-    // Bring to front to ensure mac-winops targets the correct focused window
+    // Bring to front to ensure the world selects the correct focused window
     ensure_frontmost(helper.pid, &title, 3, 50);
     let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
 
@@ -70,9 +73,11 @@ pub fn run_place_flex(
         });
     }
 
-    // Call mac-winops directly to place the focused window
-    mac_winops::place_grid_focused_opts(helper.pid, cols, rows, col, row, opts)
-        .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
+    let window_id = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+        .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+    let target = WorldWindowId::new(helper.pid, window_id);
+
+    world::place_window(target, cols, rows, col, row, Some(opts))?;
 
     // Verify expected frame
     let ok = fixtures::wait_for_expected_frame(

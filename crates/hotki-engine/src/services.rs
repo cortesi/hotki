@@ -12,6 +12,7 @@ pub struct Services {
     pub relay: RelayHandler,
     pub notifier: NotificationDispatcher,
     pub repeater: Repeater,
+    #[allow(dead_code)]
     pub winops: Arc<dyn WinOps>,
     pub world: Arc<dyn WorldView>,
 }

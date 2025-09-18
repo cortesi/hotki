@@ -5,14 +5,18 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
 use config::{Action, At, AtSpec, Dir, Grid, GridSpec};
+use hotki_world::{MoveDirection, World, WorldCfg};
+use hotki_world_ids::WorldWindowId;
 use humantime::format_duration;
+use mac_winops::ops::{RealWinOps, WinOps};
 use mac_winops::{
-    self, MoveDir, WindowId, ax_focused_window_id_for_pid, ax_props_for_window_id, ax_window_frame,
+    self, WindowId, ax_focused_window_id_for_pid, ax_props_for_window_id, ax_window_frame,
     placement_counters_reset, placement_counters_snapshot,
 };
 use ron::{Options, extensions::Extensions};
@@ -72,6 +76,9 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
     info!(steps = total_steps, "Placement directives queued");
     let hotki_bin = resolve_hotki_bin(args)?;
     let runtime = Runtime::new()?;
+
+    let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
+    let world = World::spawn_view(winops.clone(), WorldCfg::default());
 
     let mut backend = BackendProcess::spawn(&hotki_bin, args.server_logs, Some(log_spec))?;
     let mut conn = connect_backend(
@@ -158,7 +165,15 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
                     target.row = *row,
                     "Applying place directive"
                 );
-                mac_winops::place_grid_focused(focused_pid, *cols, *rows, *col, *row)?;
+                let window_id = resolve_window_id(pre_window.as_ref(), focused_pid)?;
+                let target = WorldWindowId::new(focused_pid, window_id);
+                runtime
+                    .block_on(
+                        world
+                            .clone()
+                            .request_place_for_window(target, *cols, *rows, *col, *row, None),
+                    )
+                    .map_err(Error::from)?;
             }
             Directive::PlaceMove { cols, rows, dir } => {
                 let window_id = resolve_window_id(pre_window.as_ref(), focused_pid)?;
@@ -173,7 +188,14 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
                     window.id = window_id,
                     "Applying place_move directive"
                 );
-                mac_winops::place_move_grid(window_id, *cols, *rows, move_dir)?;
+                let target = WorldWindowId::new(focused_pid, window_id);
+                runtime
+                    .block_on(
+                        world
+                            .clone()
+                            .request_place_move_for_window(target, *cols, *rows, move_dir, None),
+                    )
+                    .map_err(Error::from)?;
             }
         }
 
@@ -477,12 +499,12 @@ fn resolve_window_id(pre_window: Option<&WindowSnapshot>, pid: i32) -> Result<Wi
 }
 
 /// Convert configuration directions into mac_winops move directions.
-fn to_move_dir(dir: Dir) -> MoveDir {
+fn to_move_dir(dir: Dir) -> MoveDirection {
     match dir {
-        Dir::Left => MoveDir::Left,
-        Dir::Right => MoveDir::Right,
-        Dir::Up => MoveDir::Up,
-        Dir::Down => MoveDir::Down,
+        Dir::Left => MoveDirection::Left,
+        Dir::Right => MoveDirection::Right,
+        Dir::Up => MoveDirection::Up,
+        Dir::Down => MoveDirection::Down,
     }
 }
 

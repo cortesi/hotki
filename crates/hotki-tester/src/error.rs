@@ -2,6 +2,7 @@
 
 use std::{io, result, time::Duration};
 
+use hotki_world::CommandError;
 use thiserror::Error;
 use tokio::time::error::Elapsed;
 
@@ -20,6 +21,9 @@ pub enum Error {
     /// Errors encountered while performing placement operations.
     #[error("Placement error: {0}")]
     Placement(#[from] mac_winops::Error),
+    /// Errors returned by world-mediated placement commands.
+    #[error("World command error: {0}")]
+    WorldCommand(#[from] CommandError),
     /// Configuration parsing or resolution errors.
     #[error("Configuration error: {0}")]
     Config(#[from] config::Error),

@@ -1,9 +1,11 @@
 //! Helper window (winit) used by smoketests to verify placement behaviors.
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
-use crate::config;
+use crate::{config, world};
+use hotki_world::PlaceAttemptOptions;
+use hotki_world_ids::WorldWindowId;
 
 /// Target rect as ((x,y), (w,h), name) used for tween targets.
 type TargetRect = ((f64, f64), (f64, f64), &'static str);
@@ -207,13 +209,29 @@ pub fn run_focus_winhelper(
             }
         }
 
+        /// Poll the world snapshot to resolve the helper window's identifier.
+        fn resolve_world_window(&self) -> Option<WorldWindowId> {
+            let pid = id() as i32;
+            match world::list_windows() {
+                Ok(windows) => windows
+                    .into_iter()
+                    .find(|w| w.pid == pid && w.title == self.title)
+                    .map(|w| WorldWindowId::new(w.pid, w.id)),
+                Err(err) => {
+                    tracing::debug!("winhelper: world snapshot failed: {}", err);
+                    None
+                }
+            }
+        }
+
         /// Perform the initial placement of the window.
         fn initial_placement(&self, win: &Window) {
             use winit::dpi::LogicalPosition;
+            let pid = id() as i32;
+            let _ =
+                world::ensure_frontmost(pid, &self.title, 3, config::INPUT_DELAYS.retry_delay_ms);
             if let Some((cols, rows, col, row)) = self.grid {
-                if let Err(e) = mac_winops::place_grid_focused(id() as i32, cols, rows, col, row) {
-                    debug!("winhelper: place_grid_focused error: {}", e);
-                }
+                self.try_world_place(cols, rows, col, row, None);
             } else if let Some(slot) = self.slot {
                 let (col, row) = match slot {
                     1 => (0, 0),
@@ -221,9 +239,7 @@ pub fn run_focus_winhelper(
                     3 => (0, 1),
                     _ => (1, 1),
                 };
-                if let Err(e) = mac_winops::place_grid_focused(id() as i32, 2, 2, col, row) {
-                    debug!("winhelper: place_grid_focused error: {}", e);
-                }
+                self.try_world_place(2, 2, col, row, None);
             } else if let Some((x, y)) = self.pos {
                 win.set_outer_position(LogicalPosition::new(x, y));
             } else if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -241,6 +257,32 @@ pub fn run_focus_winhelper(
             // Apply style tweaks after initial placement to avoid interfering with it.
             self.apply_nonresizable_if_requested();
             self.apply_nonmovable_if_requested();
+        }
+
+        /// Retry world placement until the helper window is visible to the world snapshot.
+        fn try_world_place(
+            &self,
+            cols: u32,
+            rows: u32,
+            col: u32,
+            row: u32,
+            options: Option<PlaceAttemptOptions>,
+        ) {
+            for attempt in 0..120 {
+                if let Some(target) = self.resolve_world_window() {
+                    match world::place_window(target, cols, rows, col, row, options.clone()) {
+                        Ok(_) => return,
+                        Err(err) => {
+                            debug!(
+                                "winhelper: world placement attempt {} failed: {}",
+                                attempt, err
+                            );
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            debug!("winhelper: world placement giving up after retries");
         }
 
         /// Capture the starting geometry used by delayed/tweened placement logic.

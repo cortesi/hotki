@@ -16,7 +16,7 @@ use mac_winops::{
 use crate::{
     config,
     error::{Error, Result},
-    proc_registry,
+    proc_registry, world,
 };
 
 /// Titles of internal smoketest windows that should be ignored when checking focus.
@@ -391,7 +391,19 @@ pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: 
 
 /// Best-effort: bring the given window to the front by raising it or activating its PID.
 pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
-    let _ = mac_winops::ensure_frontmost_by_title(pid, title, attempts, delay_ms);
+    if let Err(err) = world::ensure_frontmost(pid, title, attempts, delay_ms) {
+        tracing::warn!(
+            "ensure_frontmost: world mediation failed ({}); falling back to AX raise",
+            err
+        );
+        if !mac_winops::ensure_frontmost_by_title(pid, title, attempts, delay_ms) {
+            tracing::warn!(
+                "ensure_frontmost: mac_winops fallback failed pid={} title='{}'",
+                pid,
+                title
+            );
+        }
+    }
 }
 
 /// Spawn a helper window with `title`, keep it alive for `lifetime_ms`, and

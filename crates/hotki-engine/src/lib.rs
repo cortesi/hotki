@@ -109,16 +109,6 @@ fn to_world_move_dir(d: config::Dir) -> MoveDirection {
 }
 
 #[inline]
-fn to_mac_move_dir(d: config::Dir) -> mac_winops::MoveDir {
-    match d {
-        config::Dir::Left => mac_winops::MoveDir::Left,
-        config::Dir::Right => mac_winops::MoveDir::Right,
-        config::Dir::Up => mac_winops::MoveDir::Up,
-        config::Dir::Down => mac_winops::MoveDir::Down,
-    }
-}
-
-#[inline]
 fn to_fullscreen_kind(kind: config::FullscreenKind) -> FullscreenKind {
     match kind {
         config::FullscreenKind::Native => FullscreenKind::Native,
@@ -536,14 +526,16 @@ impl Engine {
                 match resp {
                     KeyResponse::Focus { dir } => {
                         tracing::info!("Engine: focus(dir={:?})", dir);
-                        if let Err(e) = self.svc.winops.request_focus_dir(to_mac_move_dir(dir)) {
-                            if let mac_winops::Error::MainThread = e {
-                                tracing::warn!(
-                                    "Focus requires main thread; scheduling failed: {}",
-                                    e
-                                );
+                        if let Err(err) = self
+                            .svc
+                            .world
+                            .request_focus_dir(to_world_move_dir(dir))
+                            .await
+                        {
+                            tracing::warn!("Focus(World) command failed: {}", err);
+                            if let Some(msg) = command_error_message("Focus", &err) {
+                                let _ = self.svc.notifier.send_error("Focus", msg);
                             }
-                            let _ = self.svc.notifier.send_error("Focus", format!("{}", e));
                         }
                         self.hint_refresh();
                         Ok(())
@@ -779,6 +771,8 @@ impl Engine {
             col,
             row,
             pid_hint: raise_pid,
+            target: None,
+            options: None,
         };
 
         match self.svc.world.request_place_grid(intent).await {
@@ -811,6 +805,8 @@ impl Engine {
             rows,
             dir: to_world_move_dir(dir),
             pid_hint: None,
+            target: None,
+            options: None,
         };
 
         match self.svc.world.request_place_move_grid(intent).await {

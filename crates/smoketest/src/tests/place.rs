@@ -27,14 +27,16 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindow, wait_for_frontmost_title},
     test_runner::{TestConfig, TestRunner},
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 // Geometry helpers are provided by `tests::fixtures`.
 
 /// Run grid placement test across all cells of the default grid.
 pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
-    // Minimal backend (HUD hidden); we drive placement via mac-winops by PID to
-    // ensure we never resize a non-test window.
+    // Minimal backend (HUD hidden); we drive placement via hotki-world so we
+    // never resize a non-test window.
     let cols = config::PLACE.grid_cols;
     let rows = config::PLACE.grid_rows;
     let helper_title = config::test_title("place");
@@ -48,7 +50,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     TestRunner::new("place_test", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // No MRPC bindings needed; placement driven via mac-winops.
+            // No MRPC bindings needed; placement driven via hotki-world APIs.
             ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
@@ -68,14 +70,15 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             )?;
 
             // Resolve CG window id
-            let _wid = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+            let window_id = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
                 .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let target = WorldWindowId::new(helper.pid, window_id);
 
             // Ensure helper is frontmost to make AX resolution stable
             let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
 
             // Iterate all grid cells in row-major order (top-left is (0,0)) and
-            // drive placement directly via mac-winops on the helper PID.
+            // drive placement through hotki-world for the helper PID.
             for row in 0..rows {
                 for col in 0..cols {
                     // Resolve visible frame based on current AX position
@@ -91,11 +94,7 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
                     // Place only the focused window for the helper's PID
-                    mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
-                        .map_err(|e| Error::SpawnFailed(format!(
-                            "place_grid_focused failed: {}",
-                            e
-                        )))?;
+                    world::place_window(target, cols, rows, col, row, None)?;
 
                     // Wait for expected frame within tolerance
                     let ok = fixtures::wait_for_expected_frame(

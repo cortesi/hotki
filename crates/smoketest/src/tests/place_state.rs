@@ -11,7 +11,9 @@ use crate::{
     error::{Error, Result},
     helper_window::{ensure_frontmost, spawn_helper_with_options},
     test_runner::{TestConfig, TestRunner},
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 // Geometry and polling helpers are provided by `tests::fixtures`.
 
@@ -30,7 +32,7 @@ fn run_place_with_state(
         .unwrap()
         .as_nanos();
     let helper_title = format!("hotki smoketest: place-state {}-{}", process::id(), now_pre);
-    // Minimal backend; direct placement is driven via mac-winops and the helper PID.
+    // Minimal backend; direct placement is driven via hotki-world using the helper PID.
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
     let config = TestConfig::new(timeout_ms)
@@ -40,7 +42,7 @@ fn run_place_with_state(
     TestRunner::new("place_state", config)
         .with_setup(|ctx| {
             ctx.launch_hotki()?;
-            // No MRPC bindings are required; placement is driven via mac-winops APIs.
+            // No MRPC bindings are required; placement is driven via hotki-world APIs.
             ctx.ensure_rpc_ready(&[])?;
             Ok(())
         })
@@ -100,9 +102,13 @@ fn run_place_with_state(
 
             // Expected cell rect for (0,0)
             let expected = fixtures::cell_rect(vf, cols, rows, 0, 0);
-            // Enforce constraint: place only the focused window for the helper's PID
-            mac_winops::place_grid_focused(helper.pid, cols, rows, 0, 0)
-                .map_err(|e| Error::InvalidState(format!("place_grid_focused failed: {}", e)))?;
+            let window_id =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve helper CGWindowId".into())
+                    })?;
+            let target = WorldWindowId::new(helper.pid, window_id);
+            world::place_window(target, cols, rows, 0, 0, None)?;
             let ok = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,

@@ -17,7 +17,9 @@ use crate::{
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
     tests::fixtures,
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 /// Lightweight sample of a window frame at a point in time.
 #[derive(Clone, Copy)]
@@ -46,7 +48,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
     let row = 0u32;
     let helper_title = config::test_title("place-term");
 
-    // Minimal hotki config (server up; we drive mac-winops directly here).
+    // Minimal hotki config (server up; we drive placement via hotki-world).
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
@@ -84,6 +86,13 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             }
             ensure_frontmost(helper.pid, &title, 5, config::INPUT_DELAYS.retry_delay_ms);
 
+            let window_id =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve helper CGWindowId".into())
+                    })?;
+            let target_id = WorldWindowId::new(helper.pid, window_id);
+
             // Compute expected visibleFrame and cell target
             let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
@@ -115,8 +124,7 @@ pub fn run_place_term_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
             });
 
             // Execute placement
-            mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
-                .map_err(|e| Error::SpawnFailed(format!("place_grid_focused failed: {}", e)))?;
+            world::place_window(target_id, cols, rows, col, row, None)?;
             // Allow tail to capture final state, then stop sampler
             thread::sleep(Duration::from_millis(300));
             done.store(true, Ordering::SeqCst);

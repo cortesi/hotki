@@ -2307,6 +2307,8 @@ dependencies = [
  "config",
  "hotki-protocol",
  "hotki-server",
+ "hotki-world",
+ "hotki-world-ids",
  "humantime",
  "logging",
  "mac-winops",

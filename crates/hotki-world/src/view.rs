@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use crate::{
-    Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveIntent,
-    PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldHandle, WorldStatus, WorldWindow,
+    Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveDirection,
+    MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldHandle,
+    WorldStatus, WorldWindow,
 };
+use hotki_world_ids::WorldWindowId;
 
 /// Unified view over window state snapshots and focus context.
 #[async_trait]
@@ -91,10 +93,31 @@ pub trait WorldView: Send + Sync {
     async fn request_place_grid(&self, intent: PlaceIntent)
     -> Result<CommandReceipt, CommandError>;
 
+    /// Queue a grid placement command for a specific world window.
+    async fn request_place_for_window(
+        &self,
+        target: WorldWindowId,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        options: Option<PlaceAttemptOptions>,
+    ) -> Result<CommandReceipt, CommandError>;
+
     /// Queue a relative placement move command.
     async fn request_place_move_grid(
         &self,
         intent: MoveIntent,
+    ) -> Result<CommandReceipt, CommandError>;
+
+    /// Queue a relative placement move for a specific world window.
+    async fn request_place_move_for_window(
+        &self,
+        target: WorldWindowId,
+        cols: u32,
+        rows: u32,
+        dir: MoveDirection,
+        options: Option<PlaceAttemptOptions>,
     ) -> Result<CommandReceipt, CommandError>;
 
     /// Queue a hide/show command for the active application.
@@ -108,6 +131,9 @@ pub trait WorldView: Send + Sync {
 
     /// Queue a raise command using optional regex filters.
     async fn request_raise(&self, intent: RaiseIntent) -> Result<CommandReceipt, CommandError>;
+
+    /// Request directional focus navigation mediated by the world.
+    async fn request_focus_dir(&self, dir: MoveDirection) -> Result<CommandReceipt, CommandError>;
 }
 
 #[async_trait]
@@ -182,11 +208,34 @@ impl WorldView for WorldHandle {
         WorldHandle::request_place_grid(self, intent).await
     }
 
+    async fn request_place_for_window(
+        &self,
+        target: WorldWindowId,
+        cols: u32,
+        rows: u32,
+        col: u32,
+        row: u32,
+        options: Option<PlaceAttemptOptions>,
+    ) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_place_for_window(self, target, cols, rows, col, row, options).await
+    }
+
     async fn request_place_move_grid(
         &self,
         intent: MoveIntent,
     ) -> Result<CommandReceipt, CommandError> {
         WorldHandle::request_place_move_grid(self, intent).await
+    }
+
+    async fn request_place_move_for_window(
+        &self,
+        target: WorldWindowId,
+        cols: u32,
+        rows: u32,
+        dir: MoveDirection,
+        options: Option<PlaceAttemptOptions>,
+    ) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_place_move_for_window(self, target, cols, rows, dir, options).await
     }
 
     async fn request_hide(&self, intent: HideIntent) -> Result<CommandReceipt, CommandError> {
@@ -202,6 +251,10 @@ impl WorldView for WorldHandle {
 
     async fn request_raise(&self, intent: RaiseIntent) -> Result<CommandReceipt, CommandError> {
         WorldHandle::request_raise(self, intent).await
+    }
+
+    async fn request_focus_dir(&self, dir: MoveDirection) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_focus_dir(self, dir).await
     }
 }
 
@@ -221,8 +274,9 @@ mod test_world {
 
     use super::WorldView;
     use crate::{
-        Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveIntent,
-        PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldStatus, WorldWindow,
+        Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveDirection,
+        MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey, WorldEvent,
+        WorldStatus, WorldWindow, WorldWindowId,
     };
 
     #[derive(Default)]
@@ -392,9 +446,36 @@ mod test_world {
             })
         }
 
+        async fn request_place_for_window(
+            &self,
+            _target: WorldWindowId,
+            _cols: u32,
+            _rows: u32,
+            _col: u32,
+            _row: u32,
+            _options: Option<PlaceAttemptOptions>,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate placement".into(),
+            })
+        }
+
         async fn request_place_move_grid(
             &self,
             _intent: MoveIntent,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate placement".into(),
+            })
+        }
+
+        async fn request_place_move_for_window(
+            &self,
+            _target: WorldWindowId,
+            _cols: u32,
+            _rows: u32,
+            _dir: MoveDirection,
+            _options: Option<PlaceAttemptOptions>,
         ) -> Result<CommandReceipt, CommandError> {
             Err(CommandError::InvalidRequest {
                 message: "TestWorld does not orchestrate placement".into(),
@@ -422,6 +503,15 @@ mod test_world {
         ) -> Result<CommandReceipt, CommandError> {
             Err(CommandError::InvalidRequest {
                 message: "TestWorld does not orchestrate raise commands".into(),
+            })
+        }
+
+        async fn request_focus_dir(
+            &self,
+            _dir: MoveDirection,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate focus commands".into(),
             })
         }
     }

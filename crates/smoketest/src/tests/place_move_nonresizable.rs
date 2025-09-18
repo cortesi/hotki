@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_world::MoveDirection;
 use hotki_world_ids::WorldWindowId;
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindow, HelperWindowBuilder},
     tests::fixtures::{self, Rect},
+    world,
 };
 
 /// Run the non-resizable move smoketest to verify anchored fallback when AXSize is not settable.
@@ -53,13 +55,13 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, with_logs: bool) -> Res
         config::PLACE.poll_ms,
     )
     .ok_or_else(|| Error::InvalidState("failed to resolve WindowId for helper".into()))?;
-    mac_winops::request_place_move_grid(
+    world::move_window(
         WorldWindowId::new(pid, id),
         4,
         4,
-        mac_winops::MoveDir::Right,
-    )
-    .map_err(|e| Error::SpawnFailed(format!("request_place_move_grid failed: {}", e)))?;
+        MoveDirection::Right,
+        None,
+    )?;
     mac_winops::drain_main_ops();
 
     // Expectation: x,y align to the next cell's origin (left+bottom flush);

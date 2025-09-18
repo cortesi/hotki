@@ -23,7 +23,7 @@ pub fn run_place_animated_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let row = 1u32;
     let helper_title = config::test_title("place-animated");
 
-    // Minimal hotki config so backend is up; direct mac-winops call drives placement.
+    // Minimal hotki config so backend is up; placements go through hotki-world.
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 

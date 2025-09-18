@@ -142,7 +142,7 @@ pub fn run_focus_nav_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                 server_drive::wait_for_ident(ident, config::BINDING_GATES.default_ms * 2)?;
             }
 
-            // Helpers self-place into 2x2 via mac-winops; no server placement required
+            // Helpers self-place into 2x2 via the world harness; no server placement required
 
             // Establish initial focus quickly via direct raise binding
             send_key("ctrl+alt+1")?;

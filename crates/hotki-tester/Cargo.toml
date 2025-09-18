@@ -21,3 +21,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 humantime = "2.1"
 ron = { workspace = true }
+hotki-world = { version = "0.1.0", path = "../hotki-world" }
+hotki-world-ids = { version = "0.0.1", path = "../hotki-world-ids" }

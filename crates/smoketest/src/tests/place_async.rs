@@ -11,7 +11,9 @@ use crate::{
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
     tests::fixtures::{self, Rect},
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 // Geometry helpers moved to `tests::fixtures`.
 
@@ -23,8 +25,8 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let row = 1u32;
     let helper_title = config::test_title("place-async");
 
-    // Build a minimal hotki config so the backend is up (but we will call
-    // mac-winops directly for placement to reduce orchestration flakiness).
+    // Build a minimal hotki config so the backend is up; placements go through
+    // the world façade to ensure full mediation.
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
@@ -65,9 +67,10 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             }
 
             // Resolve window id and ensure frontmost by best-effort activation
-            let _ =
+            let window_id =
                 fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
                     .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let target = WorldWindowId::new(helper.pid, window_id);
             ensure_frontmost(
                 helper.pid,
                 &title,
@@ -85,11 +88,7 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
             let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
-            // Trigger placement directly via mac-winops (focused-for-pid)
-            // This exercises the exact placement code-path while avoiding
-            // orchestrator races.
-            mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
-                .map_err(|e| Error::SpawnFailed(format!("place_grid_focused failed: {}", e)))?;
+            world::place_window(target, cols, rows, col, row, None)?;
             let ok = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,

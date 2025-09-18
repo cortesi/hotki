@@ -12,7 +12,9 @@ use crate::{
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
     tests::fixtures::{self, Rect},
+    world,
 };
+use hotki_world_ids::WorldWindowId;
 
 /// Check whether the window frame anchors to selected edges within tolerance.
 fn verify_anchored(
@@ -56,7 +58,7 @@ fn verify_anchored(
 pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let helper_title = config::test_title("place-increments");
 
-    // Minimal hotki config so backend is up; direct mac-winops call drives placement.
+    // Minimal hotki config so backend is up; direct placement flows through hotki-world.
     let ron_config: String =
         "(keys: [], style: (hud: (mode: hide)), server: (exit_if_no_clients: true))\n".into();
 
@@ -101,6 +103,10 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 config::INPUT_DELAYS.retry_delay_ms,
             );
 
+            let window_id = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let target = WorldWindowId::new(helper.pid, window_id);
+
             // Case A: 2x2 bottom-right cell — expect right and TOP edges flush
             {
                 let cols = 2u32;
@@ -114,11 +120,7 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                         .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
                     fixtures::cell_rect(vf, cols, rows, col, row)
                 };
-                mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
-                    .map_err(|e| Error::SpawnFailed(format!(
-                        "place_grid_focused failed (2x2 BR): {}",
-                        e
-                    )))?;
+                world::place_window(target, cols, rows, col, row, None)?;
                 let ok = verify_anchored(helper.pid, &title, expected, false, true, false, true);
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
@@ -153,11 +155,7 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                         .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
                     fixtures::cell_rect(vf, cols, rows, col, row)
                 };
-                mac_winops::place_grid_focused(helper.pid, cols, rows, col, row)
-                    .map_err(|e| Error::SpawnFailed(format!(
-                        "place_grid_focused failed (3x1 mid): {}",
-                        e
-                    )))?;
+                world::place_window(target, cols, rows, col, row, None)?;
                 let ok = verify_anchored(helper.pid, &title, expected, true, false, true, false);
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
