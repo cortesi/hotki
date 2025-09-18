@@ -5,6 +5,8 @@
 use std::time::Duration;
 
 use hotki_protocol::MsgToUI;
+use hotki_world::WorldView;
+use tokio::time::{Instant, sleep};
 
 /// Create a low-latency `hotki_world` configuration suitable for tests.
 pub fn fast_world_cfg() -> hotki_world::WorldCfg {
@@ -15,8 +17,24 @@ pub fn fast_world_cfg() -> hotki_world::WorldCfg {
     }
 }
 
-/// Re-export the canonical world snapshot wait helper from `hotki_world`.
-pub use hotki_world::test_api::wait_snapshot_until;
+/// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.
+pub async fn wait_snapshot_until<F, W>(world: &W, timeout_ms: u64, mut pred: F) -> bool
+where
+    W: WorldView + ?Sized,
+    F: FnMut(&[hotki_world::WorldWindow]) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let snapshot = world.snapshot().await;
+        if pred(&snapshot) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(2)).await;
+    }
+}
 
 /// Receive an error notification with a specific `title` within `timeout_ms`.
 pub async fn recv_error_with_title(

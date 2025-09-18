@@ -17,9 +17,23 @@
 //!
 //! Trait boundary:
 //! - Downstream crates consume the [`WorldView`] trait for snapshots, focus
-//!   context, and refresh hints. Direct `mac_winops` enumeration APIs are no
-//!   longer exported; use the `view_util` helpers or the test-only `TestWorld`
-//!   shim when inspecting window state outside a real macOS session.
+//!   context, and refresh hints. Convenience methods such as
+//!   [`WorldView::frontmost_window`], [`WorldView::window_by_pid_title`], and
+//!   [`WorldView::resolve_key`] replace the old `view_util::*` helpers.
+//!
+//! # Stable API Surface
+//! The following items form the supported interface for other crates:
+//! - [`World`] and [`WorldHandle`] for constructing and querying the service.
+//! - [`WorldView`] for trait-object access to snapshots, focus, and helpers such
+//!   as [`WorldView::frontmost_window`] and [`WorldView::window_by_pid_title`].
+//! - Data carriers [`WorldWindow`], [`WorldEvent`], [`WorldStatus`],
+//!   [`Capabilities`], [`PermissionState`], and [`WindowKey`] describing the
+//!   snapshot contract.
+//!
+//! # Test Utilities
+//! Enable the `test-utils` feature to pull in [`test_support`] and [`test_api`]
+//! for integration tests. These remain available unconditionally inside this
+//! crate's own test suite.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -54,10 +68,10 @@ pub struct WindowKey {
 pub struct WindowMeta;
 
 /// Identifier for a display.
-pub type DisplayId = u32;
+type DisplayId = u32;
 
 /// Display bounds tuple: `(display_id, x, y, width, height)` in Cocoa screen coordinates.
-pub type DisplayBounds = (DisplayId, i32, i32, i32, i32);
+type DisplayBounds = (DisplayId, i32, i32, i32, i32);
 
 /// Snapshot of a single window.
 #[derive(Clone, Debug)]
@@ -91,7 +105,7 @@ pub struct WorldWindow {
     /// True if CoreGraphics reports the window as currently on-screen.
     pub is_on_screen: bool,
     /// Identifier of the display with the largest overlap of the window's bounds, if any.
-    pub display_id: Option<DisplayId>,
+    pub display_id: Option<u32>,
     /// True if this is the focused window according to AX (preferred) or CG fallback.
     pub focused: bool,
     /// AX properties/capabilities for the focused window (None for non‑focused).
@@ -328,7 +342,6 @@ pub struct World;
 
 mod ax_read_pool;
 mod view;
-pub mod view_util;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use view::TestWorld;
@@ -1057,4 +1070,5 @@ pub mod test_api {
 }
 
 /// Test support utilities exported for the test suite.
+#[doc(hidden)]
 pub mod test_support;

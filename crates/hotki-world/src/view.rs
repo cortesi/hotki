@@ -54,6 +54,35 @@ pub trait WorldView: Send + Sync {
 
     /// Hint that external state likely changed and should be refreshed quickly.
     fn hint_refresh(&self);
+
+    /// Fetch a complete snapshot of current windows.
+    async fn list_windows(&self) -> Vec<WorldWindow> {
+        self.snapshot().await
+    }
+
+    /// Resolve the frontmost window, preferring focus information.
+    async fn frontmost_window(&self) -> Option<WorldWindow> {
+        if let Some(focused) = self.focused_window().await {
+            return Some(focused);
+        }
+        self.snapshot().await.into_iter().min_by_key(|w| w.z)
+    }
+
+    /// Resolve a [`WindowKey`] using the latest snapshot.
+    async fn resolve_key(&self, key: WindowKey) -> Option<WorldWindow> {
+        self.snapshot()
+            .await
+            .into_iter()
+            .find(|w| w.pid == key.pid && w.id == key.id)
+    }
+
+    /// Resolve a window by process identifier and title, if still present.
+    async fn window_by_pid_title(&self, pid: i32, title: &str) -> Option<WorldWindow> {
+        self.snapshot()
+            .await
+            .into_iter()
+            .find(|w| w.pid == pid && w.title == title)
+    }
 }
 
 #[async_trait]
@@ -115,6 +144,10 @@ impl WorldView for WorldHandle {
 
     fn hint_refresh(&self) {
         WorldHandle::hint_refresh(self);
+    }
+
+    async fn resolve_key(&self, key: WindowKey) -> Option<WorldWindow> {
+        WorldHandle::get(self, key).await
     }
 }
 

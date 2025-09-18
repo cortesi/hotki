@@ -8,7 +8,7 @@ use std::{
 };
 
 use clap::Parser;
-use hotki_world::{World, WorldView, view_util};
+use hotki_world::{World, WorldView};
 use mac_winops::ops::RealWinOps;
 
 #[derive(Parser, Debug)]
@@ -148,10 +148,10 @@ fn wait_for_hud(
             // Side-check using CG list
             world.hint_refresh();
             let hud_visible = rt.block_on(async {
-                view_util::any_window_matching(world.as_ref(), |w| {
-                    w.pid == hotki_pid as i32 && w.title == "Hotki HUD"
-                })
-                .await
+                world
+                    .window_by_pid_title(hotki_pid as i32, "Hotki HUD")
+                    .await
+                    .is_some()
             });
             if hud_visible {
                 return true;
@@ -180,12 +180,10 @@ fn find_window_by_title(
 ) -> Option<(u32, Option<Rect>)> {
     world.hint_refresh();
     rt.block_on(async {
-        view_util::window_by_pid_title(world.as_ref(), pid as i32, title)
-            .await
-            .map(|w| {
-                let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
-                (w.id, rect)
-            })
+        world.window_by_pid_title(pid as i32, title).await.map(|w| {
+            let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
+            (w.id, rect)
+        })
     })
 }
 

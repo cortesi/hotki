@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use hotki_world::{World, WorldView, WorldWindow, view_util};
+use hotki_world::{World, WorldView, WorldWindow};
 use mac_winops::{WindowInfo, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
 use tracing::info;
@@ -54,8 +54,12 @@ pub fn list_windows() -> Result<Vec<WindowInfo>> {
     let active_spaces = active_space_ids();
     world.hint_refresh();
     let windows: Vec<WindowInfo> = runtime::block_on(async move {
-        let snap = view_util::list_windows(world.as_ref()).await;
-        snap.into_iter().map(convert_window).collect::<Vec<_>>()
+        world
+            .list_windows()
+            .await
+            .into_iter()
+            .map(convert_window)
+            .collect::<Vec<_>>()
     })?;
     let elapsed = sweep_start.elapsed();
     let active_count = windows.iter().filter(|w| w.on_active_space).count();
