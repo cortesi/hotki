@@ -57,6 +57,7 @@ pub mod ops;
 mod place;
 mod raise;
 mod screen_util;
+mod status;
 pub mod wait;
 mod window;
 

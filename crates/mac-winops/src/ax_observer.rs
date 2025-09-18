@@ -25,7 +25,8 @@ use tracing::{debug, warn};
 
 use crate::{
     AXElem,
-    ax::{ax_error_name, ax_observer_expected_error},
+    ax::ax_error_name,
+    status::{self, StatusKind},
 };
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -480,15 +481,13 @@ impl AxObserverRegistry {
         ] {
             if let Err(e) = p.subscribe_app(name) {
                 let err_name = ax_error_name(e);
-                if ax_observer_expected_error(e) {
-                    // kAXErrorCannotComplete surfaces when the target app times out responding to
-                    // AX during observer registration. The attach path will retry on the next
-                    // focus transition, so log at debug to avoid spamming.
+                if let Some(policy) = status::policy(StatusKind::AxObserverAttach, e) {
                     debug!(
                         notification = name,
                         pid,
                         code = e,
                         error = err_name,
+                        note = policy.note,
                         "AXObserverAddNotification skipped"
                     );
                 } else {

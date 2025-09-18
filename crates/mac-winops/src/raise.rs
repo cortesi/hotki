@@ -6,12 +6,13 @@ use core_foundation::{
 };
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::MainThreadMarker;
-use tracing::{info, warn};
+use tracing::{Level, debug, error, info, trace, warn};
 
 use crate::{
     WindowId,
     ax::{ax_check, ax_perform_action, cfstr},
     error::{Error, Result},
+    status::{self, StatusKind},
     window::{frontmost_window, list_windows},
 };
 
@@ -245,6 +246,15 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                 "raise_window: CGSOrderWindow promoted pid={} id={} above all",
                 pid, id
             );
+        } else if let Some(policy) = status::policy(StatusKind::CgsOrderWindow, order_err) {
+            let msg = "raise_window: CGSOrderWindow returned expected error";
+            match policy.level {
+                Level::ERROR => error!(pid, id, err = order_err, note = policy.note, "{msg}"),
+                Level::WARN => warn!(pid, id, err = order_err, note = policy.note, "{msg}"),
+                Level::INFO => info!(pid, id, err = order_err, note = policy.note, "{msg}"),
+                Level::DEBUG => debug!(pid, id, err = order_err, note = policy.note, "{msg}"),
+                Level::TRACE => trace!(pid, id, err = order_err, note = policy.note, "{msg}"),
+            }
         } else {
             warn!(
                 "raise_window: CGSOrderWindow failed for pid={} id={} err={}",
