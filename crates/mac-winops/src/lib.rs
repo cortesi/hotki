@@ -24,14 +24,19 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
-    ptr,
-    time::Duration,
+    ptr, thread,
+    time::{Duration, Instant},
 };
 
 use core_foundation::{
     array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
     base::{CFRelease, CFTypeRef, TCFType},
     string::{CFString, CFStringRef},
+};
+use core_graphics::{
+    event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+    event_source::{CGEventSource, CGEventSourceStateID},
+    geometry::CGPoint,
 };
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::MainThreadMarker;
@@ -260,6 +265,216 @@ pub fn ax_has_window_title(pid: i32, expected_title: &str) -> bool {
         let title = cfs.to_string();
         if title == expected_title {
             return true;
+        }
+    }
+    false
+}
+
+fn frontmost_title_matches(pid: i32, expected_title: &str) -> bool {
+    if let Some(win) = window::frontmost_window() {
+        return win.pid == pid && win.title == expected_title;
+    }
+    false
+}
+
+fn post_mouse_event(point: CGPoint, event_type: CGEventType) -> bool {
+    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(src) => src,
+        Err(_) => return false,
+    };
+    let Ok(event) = CGEvent::new_mouse_event(source, event_type, point, CGMouseButton::Left) else {
+        return false;
+    };
+    event.post(CGEventTapLocation::HID);
+    true
+}
+
+fn nudge_frontmost_with_click(pid: i32, title: &str) -> bool {
+    if !permissions::accessibility_ok() {
+        return false;
+    }
+    let Some(((x, y), (w, h))) = ax_window_frame(pid, title) else {
+        return false;
+    };
+    if w <= 0.0 || h <= 0.0 {
+        return false;
+    }
+    let center = CGPoint::new(x + (w / 2.0), y + (h / 2.0));
+    // Move momentarily to the window center, click, then restore.
+    let moved = post_mouse_event(center, CGEventType::MouseMoved);
+    let down = post_mouse_event(center, CGEventType::LeftMouseDown);
+    let up = post_mouse_event(center, CGEventType::LeftMouseUp);
+    if !(moved && down && up) {
+        return false;
+    }
+    true
+}
+
+pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_ms: u64) -> bool {
+    if attempts == 0 {
+        return false;
+    }
+    let step_ms = delay_ms.clamp(10, 40);
+    let hold_target_ms = delay_ms.max(400);
+    let mut cg_hold_ms: u64 = 0;
+    let mut focus_hold_ms: u64 = 0;
+    for attempt in 0..attempts {
+        let mut cached_id = wait::find_window_id_ms(pid, title, delay_ms, 20);
+        let mut last_nudge: Option<Instant> = None;
+        if let Some(id) = cached_id {
+            debug!(
+                "ensure_frontmost_by_title: attempt={} pid={} id={} title='{}' (raise)",
+                attempt + 1,
+                pid,
+                id,
+                title
+            );
+            let _ = request_raise_window(pid, id);
+        } else {
+            debug!(
+                "ensure_frontmost_by_title: attempt={} pid={} title='{}' (activate)",
+                attempt + 1,
+                pid,
+                title
+            );
+            let _ = request_activate_pid(pid);
+        }
+        let mut waited_ms: u64 = 0;
+        while waited_ms < hold_target_ms {
+            thread::sleep(Duration::from_millis(step_ms));
+            waited_ms += step_ms;
+            let front = window::frontmost_window()
+                .map(|w| format!("pid={} title='{}'", w.pid, w.title))
+                .unwrap_or_else(|| "<none>".to_string());
+            let cg_match = frontmost_title_matches(pid, title);
+            let ax_match = ax_has_window_title(pid, title);
+            let focus_snap = crate::focus::poll_now();
+            let focus_pid_match = focus_snap.pid == pid && pid >= 0;
+            let focus_title_match = focus_pid_match && focus_snap.title == title;
+            let focus_window_match = focus_title_match || (focus_pid_match && ax_match);
+            debug!(
+                "ensure_frontmost_by_title: attempt={} poll frontmost={} cg_match={} ax_match={} focus_match={} cg_hold_ms={} focus_hold_ms={}",
+                attempt + 1,
+                front,
+                cg_match,
+                ax_match,
+                focus_window_match,
+                cg_hold_ms,
+                focus_hold_ms
+            );
+            if cg_match {
+                if !ax_match {
+                    debug!(
+                        "ensure_frontmost_by_title: cg matched but ax mismatch pid={} title='{}'",
+                        pid, title
+                    );
+                }
+                cg_hold_ms = (cg_hold_ms + step_ms).min(hold_target_ms);
+                if focus_window_match {
+                    focus_hold_ms = (focus_hold_ms + step_ms).min(hold_target_ms);
+                } else if focus_hold_ms > 0 {
+                    debug!(
+                        "ensure_frontmost_by_title: focus hold reset after {} ms (loss observed)",
+                        focus_hold_ms
+                    );
+                    focus_hold_ms = 0;
+                }
+                if cg_hold_ms >= hold_target_ms {
+                    debug!(
+                        "ensure_frontmost_by_title: stabilized after {} attempts (hold {} ms)",
+                        attempt + 1,
+                        cg_hold_ms
+                    );
+                    if nudge_frontmost_with_click(pid, title) {
+                        debug!(
+                            "ensure_frontmost_by_title: post-stabilize synthetic click pid={} title='{}'",
+                            pid, title
+                        );
+                    } else {
+                        debug!(
+                            "ensure_frontmost_by_title: post-stabilize synthetic click skipped pid={} title='{}'",
+                            pid, title
+                        );
+                    }
+                    return true;
+                }
+                if focus_hold_ms >= hold_target_ms {
+                    debug!(
+                        "ensure_frontmost_by_title: stabilized via focus snapshot after {} attempts (hold {} ms)",
+                        attempt + 1,
+                        focus_hold_ms
+                    );
+                    return true;
+                }
+            } else {
+                if focus_window_match {
+                    focus_hold_ms = (focus_hold_ms + step_ms).min(hold_target_ms);
+                    if focus_hold_ms >= hold_target_ms {
+                        debug!(
+                            "ensure_frontmost_by_title: stabilized via focus snapshot after {} attempts (hold {} ms)",
+                            attempt + 1,
+                            focus_hold_ms
+                        );
+                        return true;
+                    }
+                    cg_hold_ms = 0;
+                    continue;
+                }
+                if cg_hold_ms > 0 {
+                    debug!(
+                        "ensure_frontmost_by_title: hold reset after {} ms (loss observed)",
+                        cg_hold_ms
+                    );
+                    cg_hold_ms = 0;
+                }
+                if focus_hold_ms > 0 {
+                    debug!(
+                        "ensure_frontmost_by_title: focus hold reset after {} ms (loss observed)",
+                        focus_hold_ms
+                    );
+                    focus_hold_ms = 0;
+                }
+                if ax_match {
+                    let should_nudge = last_nudge
+                        .map(|ts| ts.elapsed() >= Duration::from_millis(120))
+                        .unwrap_or(true);
+                    if should_nudge && nudge_frontmost_with_click(pid, title) {
+                        last_nudge = Some(Instant::now());
+                        debug!(
+                            "ensure_frontmost_by_title: issued synthetic click nudge pid={} title='{}'",
+                            pid, title
+                        );
+                        continue;
+                    } else if should_nudge {
+                        debug!(
+                            "ensure_frontmost_by_title: synthetic click nudge failed pid={} title='{}'",
+                            pid, title
+                        );
+                    }
+                }
+                if let Some(id) = cached_id {
+                    debug!(
+                        "ensure_frontmost_by_title: re-raising pid={} id={} title='{}' after loss",
+                        pid, id, title
+                    );
+                    let _ = request_raise_window(pid, id);
+                } else {
+                    cached_id = wait::find_window_id_ms(pid, title, delay_ms, 20);
+                    if let Some(id) = cached_id {
+                        debug!(
+                            "ensure_frontmost_by_title: resolved id={} on retry; raising",
+                            id
+                        );
+                        let _ = request_raise_window(pid, id);
+                    } else {
+                        debug!(
+                            "ensure_frontmost_by_title: id unresolved on retry; activating pid={}",
+                            pid
+                        );
+                        let _ = request_activate_pid(pid);
+                    }
+                }
+            }
         }
     }
     false

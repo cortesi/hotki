@@ -71,6 +71,14 @@ pub trait WinOps: Send + Sync {
     }
     fn request_focus_dir(&self, dir: MoveDir) -> WinResult<()>;
     fn request_activate_pid(&self, pid: i32) -> WinResult<()>;
+    fn request_raise_window(&self, pid: i32, id: WindowId) -> WinResult<()>;
+    fn ensure_frontmost_by_title(
+        &self,
+        pid: i32,
+        title: &str,
+        attempts: usize,
+        delay_ms: u64,
+    ) -> bool;
     fn list_windows(&self) -> Vec<WindowInfo>;
     fn list_windows_for_spaces(&self, spaces: &[SpaceId]) -> Vec<WindowInfo>;
     fn frontmost_window(&self) -> Option<WindowInfo>;
@@ -155,6 +163,18 @@ impl WinOps for RealWinOps {
     fn request_activate_pid(&self, pid: i32) -> WinResult<()> {
         request_activate_pid(pid)
     }
+    fn request_raise_window(&self, pid: i32, id: WindowId) -> WinResult<()> {
+        crate::request_raise_window(pid, id)
+    }
+    fn ensure_frontmost_by_title(
+        &self,
+        pid: i32,
+        title: &str,
+        attempts: usize,
+        delay_ms: u64,
+    ) -> bool {
+        crate::ensure_frontmost_by_title(pid, title, attempts, delay_ms)
+    }
     fn list_windows(&self) -> Vec<WindowInfo> {
         list_windows()
     }
@@ -182,7 +202,7 @@ use parking_lot::Mutex;
 use crate::WindowInfo as WI;
 
 /// Simple mock implementation for tests (enabled with `test-utils` feature).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MockWinOps {
     calls: Arc<Mutex<Vec<String>>>,
     front_for_pid: Arc<Mutex<Option<WI>>>,
@@ -197,6 +217,8 @@ pub struct MockWinOps {
     fail_place_move_grid: Arc<AtomicBool>,
     fail_activate_pid: Arc<AtomicBool>,
     fail_hide: Arc<AtomicBool>,
+    fail_raise_window: Arc<AtomicBool>,
+    ensure_return: Arc<AtomicBool>,
 }
 
 impl MockWinOps {
@@ -215,6 +237,8 @@ impl MockWinOps {
             fail_place_move_grid: Arc::new(AtomicBool::new(false)),
             fail_activate_pid: Arc::new(AtomicBool::new(false)),
             fail_hide: Arc::new(AtomicBool::new(false)),
+            fail_raise_window: Arc::new(AtomicBool::new(false)),
+            ensure_return: Arc::new(AtomicBool::new(true)),
         }
     }
     pub fn set_frontmost_for_pid(&self, info: Option<WI>) {
@@ -259,6 +283,12 @@ impl MockWinOps {
     pub fn set_fail_hide(&self, v: bool) {
         self.fail_hide.store(v, Ordering::SeqCst);
     }
+    pub fn set_fail_raise_window(&self, v: bool) {
+        self.fail_raise_window.store(v, Ordering::SeqCst);
+    }
+    pub fn set_ensure_result(&self, v: bool) {
+        self.ensure_return.store(v, Ordering::SeqCst);
+    }
     fn note(&self, s: &str) {
         self.calls.lock().push(s.to_string());
     }
@@ -289,6 +319,12 @@ impl MockWinOps {
             .filter(|&w| should_include_mock_window(w, filter))
             .cloned()
             .collect()
+    }
+}
+
+impl Default for MockWinOps {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -397,6 +433,27 @@ impl WinOps for MockWinOps {
             return Err(crate::error::Error::MainThread);
         }
         Ok(())
+    }
+    fn request_raise_window(&self, _pid: i32, _id: WindowId) -> WinResult<()> {
+        self.note("raise_window");
+        if self.fail_raise_window.load(Ordering::SeqCst) {
+            return Err(crate::error::Error::MainThread);
+        }
+        Ok(())
+    }
+    fn ensure_frontmost_by_title(
+        &self,
+        _pid: i32,
+        _title: &str,
+        _attempts: usize,
+        _delay_ms: u64,
+    ) -> bool {
+        self.note("ensure_frontmost");
+        self.note("raise_window");
+        if self.fail_raise_window.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.ensure_return.load(Ordering::SeqCst)
     }
     fn list_windows(&self) -> Vec<WindowInfo> {
         self.filter_windows(None)

@@ -224,9 +224,28 @@ fn should_include_window(
 
 /// Convenience: return the frontmost on-screen window, if any.
 pub fn frontmost_window() -> Option<WindowInfo> {
+    let wins = list_windows();
+    if let Some((app, title, pid)) = crate::focus::system_focus_snapshot() {
+        if let Some(win) = wins.iter().find(|w| {
+            w.pid == pid
+                && w.layer == 0
+                && w.title == title
+                && !crate::FOCUS_SKIP_APPS.contains(&app.as_str())
+        }) {
+            return Some(win.clone());
+        }
+        if let Some(win) = wins.iter().find(|w| {
+            w.pid == pid
+                && w.layer == 0
+                && !crate::FOCUS_SKIP_APPS.contains(&w.app.as_str())
+                && !w.title.trim().is_empty()
+        }) {
+            return Some(win.clone());
+        }
+    }
     let mut first_on_screen = None;
     let mut first_any = None;
-    for w in list_windows().into_iter() {
+    for w in wins.into_iter() {
         if crate::FOCUS_SKIP_APPS.iter().any(|s| *s == w.app) {
             if first_any.is_none() {
                 first_any = Some(w.clone());

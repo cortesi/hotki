@@ -1,7 +1,7 @@
 //! Helper window (winit) used by smoketests to verify placement behaviors.
 use std::time::Instant;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::config;
 
@@ -448,6 +448,7 @@ pub fn run_focus_winhelper(
 
         /// Handle a `WindowEvent::Focused`.
         fn on_focused(&self, focused: bool) {
+            info!(title = %self.title, focused, "winhelper: focus event");
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                 let windows = app.windows();

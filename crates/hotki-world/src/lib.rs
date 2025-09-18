@@ -638,7 +638,7 @@ fn reconcile(
     let wins: Vec<WindowInfo> = winops.list_windows_for_spaces(&[]);
     let mut had_changes = false;
 
-    // Focus: prefer AX if available; fall back to CG-derived focus flag.
+    // Focus: prefer AX/system snapshot when available; fall back to CG-derived focus flag.
     let cg_focus_key = wins
         .iter()
         .find(|w| w.layer == 0 && w.focused)
@@ -655,24 +655,27 @@ fn reconcile(
 
     let mut ax_focus_key: Option<WindowKey> = None;
     let mut ax_focus_title: Option<String> = None;
-    if acc_ok()
-        && let Some(front_pid) = wins
-            .iter()
-            .find(|w| w.layer == 0)
-            .map(|w| w.pid)
-            .or_else(|| wins.first().map(|w| w.pid))
-        && let Some(ax_id) = ax_read_pool::focused_id(front_pid)
+
+    let front_pid = wins
+        .iter()
+        .find(|w| w.layer == 0)
+        .map(|w| w.pid)
+        .or_else(|| wins.first().map(|w| w.pid));
+
+    if let Some(pid) = front_pid
+        && acc_ok()
+        && let Some(ax_id) = ax_read_pool::focused_id(pid)
     {
-        let candidate = WindowKey {
-            pid: front_pid,
-            id: ax_id,
-        };
-        if wins
-            .iter()
-            .any(|w| w.pid == candidate.pid && w.id == candidate.id)
-        {
-            ax_focus_title = ax_read_pool::title(front_pid, ax_id);
+        let candidate = WindowKey { pid, id: ax_id };
+        if wins.iter().any(|w| w.pid == pid && w.id == ax_id) {
+            ax_focus_title = ax_read_pool::title(pid, ax_id);
             ax_focus_key = Some(candidate);
+            tracing::debug!(
+                pid,
+                ax_id,
+                title = ax_focus_title.as_deref().unwrap_or(""),
+                "reconcile: accepted ax focus candidate"
+            );
         }
     }
 

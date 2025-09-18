@@ -8,9 +8,9 @@ use std::{
 };
 
 use mac_winops::{
-    WindowInfo,
+    WindowInfo, focus,
     ops::{RealWinOps, WinOps},
-    wait::{find_window_id_ms, wait_for_windows_visible_ms},
+    wait::wait_for_windows_visible_ms,
 };
 
 use crate::{
@@ -29,10 +29,24 @@ fn is_ignored_title(title: &str, ignore_titles: &[&str]) -> bool {
 
 /// Resolve the frontmost application window while skipping known helper overlays.
 pub fn frontmost_app_window(ignore_titles: &[&str]) -> Option<WindowInfo> {
-    RealWinOps
-        .list_windows()
-        .into_iter()
-        .find(|win| win.layer == 0 && !is_ignored_title(&win.title, ignore_titles))
+    let windows = RealWinOps.list_windows();
+    let snap = focus::poll_now();
+    if snap.pid >= 0
+        && !snap.title.is_empty()
+        && let Some(win) = windows.iter().find(|w| {
+            w.pid == snap.pid
+                && w.title == snap.title
+                && w.layer == 0
+                && !is_ignored_title(&w.title, ignore_titles)
+        })
+    {
+        return Some(win.clone());
+    }
+    windows.into_iter().find(|win| {
+        win.layer == 0
+            && !is_ignored_title(&win.title, ignore_titles)
+            && !win.title.trim().is_empty()
+    })
 }
 
 /// Managed child process that cleans up on drop.
@@ -334,12 +348,36 @@ fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
 pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        if let Some(win) = frontmost_app_window(FRONTMOST_IGNORE_TITLES)
-            && win.title == expected
-            && mac_winops::ax_has_window_title(win.pid, expected)
-            && mac_winops::ax_window_frame(win.pid, expected).is_some()
-        {
+        let focus_snap = focus::poll_now();
+        if focus_snap.title == expected {
             return true;
+        }
+        if let Some(win) = frontmost_app_window(FRONTMOST_IGNORE_TITLES) {
+            if win.title == expected {
+                let ax_match = mac_winops::ax_has_window_title(win.pid, expected);
+                let frame_present = mac_winops::ax_window_frame(win.pid, expected).is_some();
+                if ax_match && frame_present {
+                    return true;
+                }
+                tracing::debug!(
+                    "wait_for_frontmost_title: CG matched '{}' (pid={}); AX match={} frame_present={}",
+                    expected,
+                    win.pid,
+                    ax_match,
+                    frame_present
+                );
+            }
+            if focus_snap.pid == win.pid
+                && mac_winops::ax_has_window_title(win.pid, expected)
+                && mac_winops::ax_window_frame(win.pid, expected).is_some()
+            {
+                tracing::debug!(
+                    "wait_for_frontmost_title: focus pid matched pid={} with AX title '{}'",
+                    win.pid,
+                    expected
+                );
+                return true;
+            }
         }
         thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
     }
@@ -353,19 +391,7 @@ pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: 
 
 /// Best-effort: bring the given window to the front by raising it or activating its PID.
 pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) {
-    for _ in 0..attempts {
-        let window_id =
-            find_window_id_ms(pid, title, delay_ms, config::INPUT_DELAYS.poll_interval_ms);
-        if let Some(id) = window_id {
-            drop(mac_winops::request_raise_window(pid, id));
-        } else {
-            drop(mac_winops::request_activate_pid(pid));
-        }
-        thread::sleep(config::ms(delay_ms));
-        if wait_for_frontmost_title(title, delay_ms) {
-            break;
-        }
-    }
+    let _ = mac_winops::ensure_frontmost_by_title(pid, title, attempts, delay_ms);
 }
 
 /// Spawn a helper window with `title`, keep it alive for `lifetime_ms`, and
@@ -445,8 +471,13 @@ impl HelperWindow {
         expected_title: &str,
         visible_timeout_ms: u64,
         poll_ms: u64,
+        with_logs: bool,
     ) -> Result<Self> {
-        let child = builder.spawn()?;
+        let child = if with_logs {
+            builder.spawn_inherit_io()?
+        } else {
+            builder.spawn()?
+        };
         if !wait_for_window_visible(child.pid, expected_title, visible_timeout_ms, poll_ms) {
             return Err(Error::FocusNotObserved {
                 timeout_ms: visible_timeout_ms,

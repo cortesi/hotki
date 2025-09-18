@@ -719,7 +719,11 @@ impl Engine {
                             let cur_index =
                                 wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
                             if let Some(ci) = cur_index {
-                                idx_match.iter().copied().find(|&i| i > ci).unwrap_or(ci)
+                                idx_match
+                                    .iter()
+                                    .copied()
+                                    .find(|&i| i > ci)
+                                    .unwrap_or_else(|| *idx_match.first().unwrap())
                             } else {
                                 *idx_match.first().unwrap()
                             }
@@ -741,11 +745,26 @@ impl Engine {
                         let mut g = self.focus.last_target_pid.lock();
                         *g = Some(target.pid);
                     }
-                    if let Err(e) = self.svc.winops.request_activate_pid(target.pid) {
-                        if let mac_winops::Error::MainThread = e {
-                            tracing::warn!("Raise requires main thread; scheduling failed: {}", e);
+                    if !self
+                        .svc
+                        .winops
+                        .ensure_frontmost_by_title(target.pid, &target.title, 7, 80)
+                    {
+                        tracing::warn!(
+                            "Raise ensure_frontmost_by_title fallback failed pid={} id={} title='{}'",
+                            target.pid,
+                            target.id,
+                            target.title
+                        );
+                        if let Err(e) = self.svc.winops.request_activate_pid(target.pid) {
+                            if let mac_winops::Error::MainThread = e {
+                                tracing::warn!(
+                                    "Activate requires main thread; scheduling failed: {}",
+                                    e
+                                );
+                            }
+                            let _ = self.svc.notifier.send_error("Raise", format!("{}", e));
                         }
-                        let _ = self.svc.notifier.send_error("Raise", format!("{}", e));
                     }
                     self.hint_refresh();
                 } else if let Some(off_idx) = idx_any.first() {

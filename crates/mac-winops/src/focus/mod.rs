@@ -85,6 +85,11 @@ pub fn poll_now() -> FocusSnapshot {
     }
 }
 
+/// Fetch the current AX focus snapshot (app, title, pid) if available.
+pub fn system_focus_snapshot() -> Option<(String, String, i32)> {
+    ax::system_focus_snapshot()
+}
+
 /// Engine-friendly watcher handle that owns lifecycle and broadcasts snapshots.
 pub struct FocusWatcher {
     proxy: tao::event_loop::EventLoopProxy<()>,

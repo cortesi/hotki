@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// Run the move-with-min-size smoketest to verify anchoring with height limits.
-pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
+pub fn run_place_move_min_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     // Create a helper with a minimum height strictly larger than a 4x4 cell
     // on typical 1440p/2x screens. We pick 380 to exceed ~337px cell height
     // at 1350 VF height.
@@ -37,6 +37,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, _with_logs: bool) -> Result<()> 
         &title,
         cmp::min(timeout_ms, config::HIDE.first_window_max_ms),
         config::PLACE.poll_ms,
+        with_logs,
     )?;
     let pid = helper.pid;
     let ((ax, ay), _) = mac_winops::ax_window_frame(pid, &title)

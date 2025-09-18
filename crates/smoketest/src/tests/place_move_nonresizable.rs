@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Run the non-resizable move smoketest to verify anchored fallback when AXSize is not settable.
-pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Result<()> {
+pub fn run_place_move_nonresizable_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let title = config::test_title("place-move-nonresizable");
     let lifetime = timeout_ms.saturating_add(config::HELPER_WINDOW.extra_time_ms);
     // Spawn helper: start in TL of 4x4 grid with a size larger than a single cell
@@ -33,6 +33,7 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, _with_logs: bool) -> Re
         &title,
         timeout_ms,
         config::PLACE.poll_ms,
+        with_logs,
     )?;
     let pid = helper.pid;
 

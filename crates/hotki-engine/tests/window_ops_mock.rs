@@ -179,7 +179,12 @@ async fn engine_raise_activates_on_match() {
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await
         .expect("dispatch raise");
-    assert!(mock.calls_contains("activate_pid"));
+    assert!(mock.calls_contains("raise_window"));
+    assert!(mock.calls_contains("ensure_frontmost"));
+    assert!(
+        !mock.calls_contains("activate_pid"),
+        "raise should not fall back to activate when winops succeeds"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -454,6 +459,14 @@ async fn engine_raise_rejects_offspace_window() {
 
     let saw = recv_error_with_title(&mut rx, "Raise", 80).await;
     assert!(saw, "expected Raise guard notification");
+    assert!(
+        !mock.calls_contains("raise_window"),
+        "raise should not schedule off-space window"
+    );
+    assert!(
+        !mock.calls_contains("ensure_frontmost"),
+        "raise should not run ensure_frontmost off-space"
+    );
     assert!(
         !mock.calls_contains("activate_pid"),
         "raise should not activate off-space window"

@@ -15,6 +15,14 @@ use crate::{
     window::{frontmost_window, list_windows},
 };
 
+#[link(name = "SkyLight", kind = "framework")]
+unsafe extern "C" {
+    fn CGSMainConnectionID() -> i32;
+    fn CGSOrderWindow(connection: i32, window: i32, place: i32, relative_to_window: i32) -> i32;
+}
+
+const K_CGS_ORDER_ABOVE: i32 = 1;
+
 #[allow(clippy::missing_safety_doc)]
 pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     // Ensure Accessibility and main thread
@@ -178,6 +186,16 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                 core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
             )
         };
+        let _ = unsafe {
+            AXUIElementSetAttributeValue(app.as_ptr(), cfstr("AXFocusedWindow"), found as CFTypeRef)
+        };
+        let _ = unsafe {
+            AXUIElementSetAttributeValue(
+                app.as_ptr(),
+                cfstr("AXFrontmost"),
+                core_foundation::boolean::kCFBooleanTrue as CFTypeRef,
+            )
+        };
         // Best-effort: unminimize before attempting raise to make focus effective.
         let _ = unsafe {
             AXUIElementSetAttributeValue(
@@ -218,6 +236,20 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             } else {
                 info!("raise_window: window does not support AXRaise; skipping action");
             }
+        }
+
+        let order_err =
+            unsafe { CGSOrderWindow(CGSMainConnectionID(), id as i32, K_CGS_ORDER_ABOVE, 0) };
+        if order_err == 0 {
+            info!(
+                "raise_window: CGSOrderWindow promoted pid={} id={} above all",
+                pid, id
+            );
+        } else {
+            warn!(
+                "raise_window: CGSOrderWindow failed for pid={} id={} err={}",
+                pid, id, order_err
+            );
         }
     }
 
