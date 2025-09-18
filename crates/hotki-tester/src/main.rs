@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)]
 #![warn(missing_docs)]
 
 //! Entry point for the `hotki-tester` binary.

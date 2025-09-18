@@ -21,11 +21,33 @@ use hotki_protocol::Toggle;
 use crate::{
     config,
     error::{Error, Result},
-    helper_window::{HelperWindow, ensure_frontmost},
+    helper_window::{self, HelperWindow, ensure_frontmost},
     server_drive,
     test_runner::{TestConfig, TestRunner},
     ui_interaction::send_key,
 };
+
+/// Ensure the helper window is unequivocally frontmost before driving actions.
+fn ensure_helper_focus(pid: i32, title: &str) -> Result<()> {
+    ensure_frontmost(pid, title, 4, config::INPUT_DELAYS.ui_action_delay_ms);
+    server_drive::wait_for_focused_pid(pid, config::WAITS.first_window_ms).map_err(Error::from)?;
+    server_drive::wait_for_focused_title(title, config::WAITS.first_window_ms)
+        .map_err(Error::from)?;
+    match helper_window::frontmost_app_window(helper_window::FRONTMOST_IGNORE_TITLES) {
+        Some(win) if win.pid == pid && win.title == title => Ok(()),
+        Some(win) => Err(Error::FocusNotObserved {
+            timeout_ms: config::WAITS.first_window_ms,
+            expected: format!(
+                "frontmost helper '{}' (frontmost pid={} title='{}')",
+                title, win.pid, win.title
+            ),
+        }),
+        None => Err(Error::FocusNotObserved {
+            timeout_ms: config::WAITS.first_window_ms,
+            expected: format!("frontmost helper '{}'", title),
+        }),
+    }
+}
 
 /// Run a focused non-native fullscreen toggle against a helper window.
 ///
@@ -90,18 +112,15 @@ pub fn run_fullscreen_test(
             // Gate safety: raise the helper via backend binding, then wait until
             // both CG frontmost and backend world focus agree on our helper PID.
             send_key("g")?;
-            ensure_frontmost(
-                helper.pid,
-                &title,
-                4,
-                config::INPUT_DELAYS.ui_action_delay_ms,
-            );
-            server_drive::wait_for_focused_pid(helper.pid, config::WAITS.first_window_ms)?;
+            ensure_helper_focus(helper.pid, &title)?;
 
             // Capture initial frame via AX
             let before = mac_winops::ax_window_frame(helper.pid, &title)
                 .ok_or_else(|| Error::InvalidState("Failed to read initial window frame".into()))?;
             let _ = &before;
+
+            // Reconfirm focus before triggering fullscreen to avoid touching non-test windows.
+            ensure_helper_focus(helper.pid, &title)?;
 
             // Trigger fullscreen toggle via global chord, then actively wait for a frame update
             send_key("shift+cmd+9")?;
@@ -125,6 +144,9 @@ pub fn run_fullscreen_test(
             let after = after.ok_or_else(|| {
                 Error::InvalidState("Failed to read window frame after toggle".into())
             })?;
+
+            // Validate we remained focused on the helper window post-toggle.
+            ensure_helper_focus(helper.pid, &title)?;
 
             // Quick sanity: area or dimensions changed meaningfully
             let area_before = before.1.0 * before.1.1;

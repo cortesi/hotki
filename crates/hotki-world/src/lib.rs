@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)]
 //! hotki-world: Window State Service
 //!
 //! Single source of truth for window and focus state on macOS.
@@ -39,9 +40,12 @@
 
 use std::{
     collections::HashMap,
+    fmt,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
+
+use regex::Regex;
 
 pub use hotki_world_ids::WorldWindowId;
 use mac_winops::{AxProps, Pos, WindowId, WindowInfo, ops::WinOps};
@@ -133,6 +137,237 @@ impl From<&WorldWindow> for WorldWindowId {
         value.world_id()
     }
 }
+
+/// Identifier for a command issued through the world orchestration layer.
+pub type CommandId = u64;
+
+/// High-level command categories handled by the world service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandKind {
+    /// Place a window onto an absolute grid cell.
+    PlaceGrid,
+    /// Move a window relative to its current grid cell.
+    PlaceMoveGrid,
+    /// Toggle hide/unhide behaviour for an application's windows.
+    Hide,
+    /// Enter or exit fullscreen.
+    Fullscreen,
+    /// Raise a specific window to the foreground.
+    Raise,
+}
+
+/// Describes how the target window was chosen for a command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetSelection {
+    /// The currently focused window satisfied the request.
+    Focused,
+    /// The active-space frontmost window was chosen.
+    ActiveFrontmost,
+    /// Selection cycled among matched candidates.
+    Cycle,
+}
+
+impl TargetSelection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Focused => "focused",
+            Self::ActiveFrontmost => "active-frontmost",
+            Self::Cycle => "cycle",
+        }
+    }
+}
+
+/// Toggle semantics for world-managed commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandToggle {
+    /// Explicitly enable the behaviour.
+    On,
+    /// Explicitly disable the behaviour.
+    Off,
+    /// Toggle between on/off.
+    Toggle,
+}
+
+/// Fullscreen flavour requested by a client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FullscreenKind {
+    /// Native macOS fullscreen transition.
+    Native,
+    /// Nonnative fullscreen handled by window APIs.
+    Nonnative,
+}
+
+/// Direction for move-based placement commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveDirection {
+    /// Move left on the grid.
+    Left,
+    /// Move right on the grid.
+    Right,
+    /// Move up on the grid.
+    Up,
+    /// Move down on the grid.
+    Down,
+}
+
+/// Intent for an absolute placement request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaceIntent {
+    /// Number of columns in the target grid.
+    pub cols: u32,
+    /// Number of rows in the target grid.
+    pub rows: u32,
+    /// Column index to place the window at.
+    pub col: u32,
+    /// Row index to place the window at.
+    pub row: u32,
+    /// Optional preferred process identifier for selection.
+    pub pid_hint: Option<i32>,
+}
+
+/// Intent for a relative placement request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveIntent {
+    /// Number of columns in the target grid.
+    pub cols: u32,
+    /// Number of rows in the target grid.
+    pub rows: u32,
+    /// Direction to move within the grid.
+    pub dir: MoveDirection,
+    /// Optional preferred process identifier for selection.
+    pub pid_hint: Option<i32>,
+}
+
+/// Intent for hide/show commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HideIntent {
+    /// Desired toggle behaviour.
+    pub desired: CommandToggle,
+}
+
+/// Intent for fullscreen commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FullscreenIntent {
+    /// Desired toggle behaviour.
+    pub desired: CommandToggle,
+    /// Fullscreen flavour.
+    pub kind: FullscreenKind,
+}
+
+/// Intent for raise commands using optional regex filters.
+#[derive(Clone, Debug)]
+pub struct RaiseIntent {
+    /// Optional application name regex.
+    pub app_regex: Option<Arc<Regex>>,
+    /// Optional window title regex.
+    pub title_regex: Option<Arc<Regex>>,
+}
+
+impl RaiseIntent {
+    /// Return true when a world window matches the configured filters.
+    fn matches(&self, window: &WorldWindow) -> bool {
+        let app_ok = self
+            .app_regex
+            .as_ref()
+            .map(|regex| regex.is_match(&window.app))
+            .unwrap_or(true);
+        let title_ok = self
+            .title_regex
+            .as_ref()
+            .map(|regex| regex.is_match(&window.title))
+            .unwrap_or(true);
+        app_ok && title_ok
+    }
+}
+
+/// Outcome of a world command accepted by the orchestration layer.
+#[derive(Clone, Debug)]
+pub struct CommandReceipt {
+    /// Unique identifier assigned to this command.
+    pub id: CommandId,
+    /// Command category.
+    pub kind: CommandKind,
+    /// Issue timestamp (monotonic clock).
+    pub issued_at: Instant,
+    /// Target window chosen for the command, if any.
+    pub target: Option<WorldWindow>,
+    /// Selection strategy explanation.
+    pub selection: Option<TargetSelection>,
+}
+
+impl CommandReceipt {
+    /// Helper returning the world window id if a target was selected.
+    #[must_use]
+    pub fn target_id(&self) -> Option<WorldWindowId> {
+        self.target.as_ref().map(WorldWindow::world_id)
+    }
+}
+
+/// Errors returned by world-orchestrated command handling.
+#[derive(Debug)]
+pub enum CommandError {
+    /// No window matched the request on the active space.
+    NoEligibleWindow {
+        /// Command category.
+        kind: CommandKind,
+        /// Optional process identifier hint.
+        pid: Option<i32>,
+    },
+    /// The matching window resides on a different Mission Control space.
+    OffActiveSpace {
+        /// Process identifier involved in the request.
+        pid: i32,
+        /// Space identifier, when known.
+        space: Option<mac_winops::SpaceId>,
+    },
+    /// Backend failure while invoking macOS window operations.
+    BackendFailure {
+        /// Command category.
+        kind: CommandKind,
+        /// Error message from the backend.
+        message: String,
+    },
+    /// Request was invalid (e.g., missing context).
+    InvalidRequest {
+        /// Description of the invalid condition.
+        message: String,
+    },
+}
+
+impl CommandError {
+    fn backend(kind: CommandKind, err: impl fmt::Display) -> Self {
+        Self::BackendFailure {
+            kind,
+            message: err.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandError::NoEligibleWindow { kind, pid } => {
+                write!(f, "No eligible window for {:?}", kind)?;
+                if let Some(pid) = pid {
+                    write!(f, " (pid={})", pid)?;
+                }
+                Ok(())
+            }
+            CommandError::OffActiveSpace { pid: _, space } => match space {
+                Some(space_id) => write!(
+                    f,
+                    "Window is on Mission Control space {}. Switch back to that space and try again.",
+                    space_id
+                ),
+                None => write!(f, "Window is not on the active Mission Control space."),
+            },
+            CommandError::BackendFailure { message, .. } => f.write_str(message),
+            CommandError::InvalidRequest { message } => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
 
 /// Permission state for capabilities that affect data quality.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +537,87 @@ impl WorldHandle {
         self.focused_window().await.map(|w| (w.app, w.title, w.pid))
     }
 
+    /// Queue a grid placement command.
+    ///
+    /// The request resolves the target window inside `hotki-world`, invokes the
+    /// macOS window operation, and returns once the command is scheduled. The
+    /// returned [`CommandReceipt`] includes the chosen target, if any. Listen to
+    /// [`WorldEvent::Updated`] events for the target's [`WorldWindowId`] to
+    /// observe completion, which typically lands within ~100ms once AX publishes
+    /// the resulting geometry change.
+    pub async fn request_place_grid(
+        &self,
+        intent: PlaceIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        self.dispatch_operation(OperationRequest::PlaceGrid(intent))
+            .await
+    }
+
+    /// Queue a relative move command on the placement grid.
+    ///
+    /// See [`WorldHandle::request_place_grid`] for completion semantics.
+    pub async fn request_place_move_grid(
+        &self,
+        intent: MoveIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        self.dispatch_operation(OperationRequest::PlaceMoveGrid(intent))
+            .await
+    }
+
+    /// Queue a hide/show request for the active application.
+    ///
+    /// Completion is observable via AX-backed [`WorldEvent`] updates on the
+    /// application's windows.
+    pub async fn request_hide(&self, intent: HideIntent) -> Result<CommandReceipt, CommandError> {
+        self.dispatch_operation(OperationRequest::Hide(intent))
+            .await
+    }
+
+    /// Queue a fullscreen request for the active application.
+    ///
+    /// AX updates typically surface within ~150ms once macOS transitions the
+    /// window; subscribe to [`WorldEvent::Updated`] for confirmation.
+    pub async fn request_fullscreen(
+        &self,
+        intent: FullscreenIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        self.dispatch_operation(OperationRequest::Fullscreen(intent))
+            .await
+    }
+
+    /// Queue a raise request based on optional regex filters.
+    ///
+    /// The receipt carries the selected window; monitor world events for the
+    /// corresponding [`WorldWindowId`] to confirm foreground arrival.
+    pub async fn request_raise(&self, intent: RaiseIntent) -> Result<CommandReceipt, CommandError> {
+        self.dispatch_operation(OperationRequest::Raise(intent))
+            .await
+    }
+
+    async fn dispatch_operation(
+        &self,
+        request: OperationRequest,
+    ) -> Result<CommandReceipt, CommandError> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::Operation {
+                request,
+                respond: tx,
+            })
+            .is_err()
+        {
+            return Err(CommandError::InvalidRequest {
+                message: "World service is no longer running".to_string(),
+            });
+        }
+        rx.await.unwrap_or_else(|_| {
+            Err(CommandError::InvalidRequest {
+                message: "World service dropped command response".to_string(),
+            })
+        })
+    }
+
     /// Subscribe to world events and return an initial focus context, if any.
     ///
     /// The seed context is derived atomically relative to the returned
@@ -456,6 +772,11 @@ impl World {
                     Command::Status { respond } => {
                         let _ = respond.send(WorldStatus::default());
                     }
+                    Command::Operation { respond, .. } => {
+                        let _ = respond.send(Err(CommandError::InvalidRequest {
+                            message: "noop world does not execute commands".to_string(),
+                        }));
+                    }
                 }
             }
         });
@@ -486,6 +807,8 @@ struct WorldState {
     /// Windows that have gone missing recently and are pending confirmation
     /// before eviction. Value is the number of consecutive misses observed.
     suspects: HashMap<WindowKey, u8>,
+    /// Monotonic identifier generator for world commands.
+    next_command_id: CommandId,
 }
 
 impl WorldState {
@@ -502,6 +825,7 @@ impl WorldState {
             warned_ax: false,
             warned_screen: false,
             suspects: HashMap::new(),
+            next_command_id: 1,
         }
     }
 }
@@ -533,6 +857,20 @@ enum Command {
     Status {
         respond: oneshot::Sender<WorldStatus>,
     },
+    /// Execute a world-orchestrated command (placement, hide, etc.).
+    Operation {
+        request: OperationRequest,
+        respond: oneshot::Sender<Result<CommandReceipt, CommandError>>,
+    },
+}
+
+#[derive(Debug)]
+enum OperationRequest {
+    PlaceGrid(PlaceIntent),
+    PlaceMoveGrid(MoveIntent),
+    Hide(HideIntent),
+    Fullscreen(FullscreenIntent),
+    Raise(RaiseIntent),
 }
 
 async fn run_actor(
@@ -606,6 +944,16 @@ async fn run_actor(
                             capabilities: state.capabilities.clone(),
                         };
                         let _ = respond.send(status);
+                    }
+                    Command::Operation { request, respond } => {
+                        let result = process_operation(&mut state, &*winops, request);
+                        let ok = result.is_ok();
+                        let _ = respond.send(result);
+                        if ok {
+                            current_ms = cfg.poll_ms_min;
+                            state.current_poll_ms = current_ms;
+                            next_tick.as_mut().reset(TokioInstant::now());
+                        }
                     }
                 }
             }
@@ -854,6 +1202,488 @@ fn reconcile(
     }
 
     had_changes
+}
+
+fn process_operation(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    request: OperationRequest,
+) -> Result<CommandReceipt, CommandError> {
+    match request {
+        OperationRequest::PlaceGrid(intent) => handle_place_grid(state, winops, intent),
+        OperationRequest::PlaceMoveGrid(intent) => handle_place_move(state, winops, intent),
+        OperationRequest::Hide(intent) => handle_hide(state, winops, intent),
+        OperationRequest::Fullscreen(intent) => handle_fullscreen(state, winops, intent),
+        OperationRequest::Raise(intent) => handle_raise(state, winops, intent),
+    }
+}
+
+fn handle_place_grid(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    intent: PlaceIntent,
+) -> Result<CommandReceipt, CommandError> {
+    let kind = CommandKind::PlaceGrid;
+    let snapshot = sorted_snapshot(state);
+    if snapshot.is_empty() {
+        tracing::debug!("Place(World): empty snapshot; no-op");
+        return Err(CommandError::NoEligibleWindow {
+            kind,
+            pid: intent.pid_hint,
+        });
+    }
+    let focused = focused_window(state);
+    let pid = determine_pid(intent.pid_hint, focused.as_ref(), &snapshot).ok_or(
+        CommandError::NoEligibleWindow {
+            kind,
+            pid: intent.pid_hint,
+        },
+    )?;
+
+    if let Some(ref wf) = focused
+        && wf.pid == pid
+        && !wf.on_active_space
+    {
+        return Err(off_active_space_error(pid, wf));
+    }
+
+    if let Some(off) = snapshot
+        .iter()
+        .find(|w| w.pid == pid && !w.on_active_space)
+        .filter(|_| !snapshot.iter().any(|w| w.pid == pid && w.on_active_space))
+    {
+        return Err(off_active_space_error(pid, off));
+    }
+
+    if let Some(ref wf) = focused
+        && wf.pid == pid
+        && let Some(reason) = placement_guard_reason(wf)
+    {
+        tracing::debug!(
+            "Place(World): skipped: reason={} app='{}' title='{}' pid={}",
+            reason,
+            wf.app,
+            wf.title,
+            wf.pid
+        );
+        return Ok(issue_receipt(state, kind, None, None));
+    }
+
+    let (target, selection) = resolve_target_for_pid(&snapshot, focused.as_ref(), pid).ok_or(
+        CommandError::NoEligibleWindow {
+            kind,
+            pid: Some(pid),
+        },
+    )?;
+
+    tracing::debug!(
+        "Place(World): resolved via {} pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
+        selection.as_str(),
+        target.pid,
+        target.id,
+        target.app,
+        target.title,
+        intent.cols,
+        intent.rows,
+        intent.col,
+        intent.row
+    );
+
+    if let Err(e) = winops.request_place_grid(
+        target.world_id(),
+        intent.cols,
+        intent.rows,
+        intent.col,
+        intent.row,
+    ) {
+        tracing::warn!(
+            error = %e,
+            pid = target.pid,
+            id = target.id,
+            "Place(World): backend failure"
+        );
+        return Err(CommandError::backend(kind, e));
+    }
+
+    Ok(issue_receipt(state, kind, Some(target), Some(selection)))
+}
+
+fn handle_place_move(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    intent: MoveIntent,
+) -> Result<CommandReceipt, CommandError> {
+    let kind = CommandKind::PlaceMoveGrid;
+    let snapshot = sorted_snapshot(state);
+    if snapshot.is_empty() {
+        tracing::debug!("Move(World): empty snapshot; no-op");
+        return Err(CommandError::NoEligibleWindow {
+            kind,
+            pid: intent.pid_hint,
+        });
+    }
+    let focused = focused_window(state);
+    let pid = determine_pid(intent.pid_hint, focused.as_ref(), &snapshot).ok_or(
+        CommandError::NoEligibleWindow {
+            kind,
+            pid: intent.pid_hint,
+        },
+    )?;
+
+    if let Some(ref wf) = focused
+        && wf.pid == pid
+        && !wf.on_active_space
+    {
+        return Err(off_active_space_error(pid, wf));
+    }
+
+    if let Some(off) = snapshot
+        .iter()
+        .find(|w| w.pid == pid && !w.on_active_space)
+        .filter(|_| !snapshot.iter().any(|w| w.pid == pid && w.on_active_space))
+    {
+        return Err(off_active_space_error(pid, off));
+    }
+
+    let (target, selection) = resolve_target_for_pid(&snapshot, focused.as_ref(), pid).ok_or(
+        CommandError::NoEligibleWindow {
+            kind,
+            pid: Some(pid),
+        },
+    )?;
+
+    if target.focused
+        && let Some(reason) = placement_guard_reason(&target)
+    {
+        tracing::debug!(
+            "Move(World): skipped: reason={} app='{}' title='{}' pid={}",
+            reason,
+            target.app,
+            target.title,
+            target.pid
+        );
+        return Ok(issue_receipt(state, kind, None, None));
+    }
+
+    let dir = convert_move_dir(intent.dir);
+    tracing::debug!(
+        "Move(World): resolved via {} pid={} id={} app='{}' title='{}' cols={} rows={} dir={:?}",
+        selection.as_str(),
+        target.pid,
+        target.id,
+        target.app,
+        target.title,
+        intent.cols,
+        intent.rows,
+        intent.dir
+    );
+
+    if let Err(e) = winops.request_place_move_grid(target.world_id(), intent.cols, intent.rows, dir)
+    {
+        tracing::warn!(
+            error = %e,
+            pid = target.pid,
+            id = target.id,
+            "Move(World): backend failure"
+        );
+        return Err(CommandError::backend(kind, e));
+    }
+
+    Ok(issue_receipt(state, kind, Some(target), Some(selection)))
+}
+
+fn handle_hide(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    intent: HideIntent,
+) -> Result<CommandReceipt, CommandError> {
+    let kind = CommandKind::Hide;
+    let snapshot = sorted_snapshot(state);
+    let focused = focused_window(state);
+    let pid =
+        determine_pid(None, focused.as_ref(), &snapshot).ok_or(CommandError::InvalidRequest {
+            message: "Hide requires an active application".to_string(),
+        })?;
+
+    let desired = convert_toggle(intent.desired);
+    if let Some(top) = snapshot.first() {
+        tracing::debug!(
+            "Hide(World): pid={} desired={:?} focus_app='{}' focus_title='{}' top_pid={} top_id={} top_app='{}' top_title='{}'",
+            pid,
+            intent.desired,
+            focused.as_ref().map(|w| w.app.as_str()).unwrap_or(""),
+            focused.as_ref().map(|w| w.title.as_str()).unwrap_or(""),
+            top.pid,
+            top.id,
+            top.app,
+            top.title
+        );
+    } else {
+        tracing::debug!(
+            "Hide(World): pid={} desired={:?} focus_app='{}' focus_title='{}' top=<none>",
+            pid,
+            intent.desired,
+            focused.as_ref().map(|w| w.app.as_str()).unwrap_or(""),
+            focused.as_ref().map(|w| w.title.as_str()).unwrap_or("")
+        );
+    }
+
+    if let Err(e) = winops.hide_bottom_left(pid, desired) {
+        tracing::warn!(error = %e, pid, "Hide(World): backend failure");
+        return Err(CommandError::backend(kind, e));
+    }
+
+    Ok(issue_receipt(state, kind, focused, None))
+}
+
+fn handle_fullscreen(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    intent: FullscreenIntent,
+) -> Result<CommandReceipt, CommandError> {
+    let kind = CommandKind::Fullscreen;
+    let snapshot = sorted_snapshot(state);
+    let focused = focused_window(state);
+    let pid =
+        determine_pid(None, focused.as_ref(), &snapshot).ok_or(CommandError::InvalidRequest {
+            message: "Fullscreen requires an active application".to_string(),
+        })?;
+
+    let desired = convert_toggle(intent.desired);
+    if let Some(top) = snapshot.first() {
+        tracing::debug!(
+            "Fullscreen(World): pid={} desired={:?} kind={:?} focus_app='{}' focus_title='{}' top_pid={} top_id={} top_app='{}' top_title='{}'",
+            pid,
+            intent.desired,
+            intent.kind,
+            focused.as_ref().map(|w| w.app.as_str()).unwrap_or(""),
+            focused.as_ref().map(|w| w.title.as_str()).unwrap_or(""),
+            top.pid,
+            top.id,
+            top.app,
+            top.title
+        );
+    } else {
+        tracing::debug!(
+            "Fullscreen(World): pid={} desired={:?} kind={:?} focus_app='{}' focus_title='{}' top=<none>",
+            pid,
+            intent.desired,
+            intent.kind,
+            focused.as_ref().map(|w| w.app.as_str()).unwrap_or(""),
+            focused.as_ref().map(|w| w.title.as_str()).unwrap_or("")
+        );
+    }
+
+    let res = match intent.kind {
+        FullscreenKind::Native => winops.request_fullscreen_native(pid, desired),
+        FullscreenKind::Nonnative => winops.request_fullscreen_nonnative(pid, desired),
+    };
+
+    if let Err(e) = res {
+        tracing::warn!(error = %e, pid, kind = ?intent.kind, "Fullscreen(World): backend failure");
+        return Err(CommandError::backend(kind, e));
+    }
+
+    Ok(issue_receipt(state, kind, focused, None))
+}
+
+fn handle_raise(
+    state: &mut WorldState,
+    winops: &dyn WinOps,
+    intent: RaiseIntent,
+) -> Result<CommandReceipt, CommandError> {
+    let kind = CommandKind::Raise;
+    let snapshot = sorted_snapshot(state);
+    if snapshot.is_empty() {
+        tracing::debug!("Raise(World): empty snapshot; no-op");
+        return Err(CommandError::NoEligibleWindow { kind, pid: None });
+    }
+    let focused = focused_window(state);
+
+    let mut idx_any: Vec<usize> = Vec::new();
+    let mut idx_active: Vec<usize> = Vec::new();
+    for (idx, window) in snapshot.iter().enumerate() {
+        if intent.matches(window) {
+            idx_any.push(idx);
+            if window.on_active_space {
+                idx_active.push(idx);
+            }
+        }
+    }
+
+    tracing::debug!(
+        "Raise(World): matched active={} total={}",
+        idx_active.len(),
+        idx_any.len()
+    );
+
+    if let Some(&target_idx) = idx_active.first() {
+        let target_idx = if let Some(ref focused_window) = focused {
+            if intent.matches(focused_window) {
+                if let Some(cur_index) = snapshot
+                    .iter()
+                    .position(|w| w.pid == focused_window.pid && w.id == focused_window.id)
+                {
+                    idx_active
+                        .iter()
+                        .copied()
+                        .find(|&i| i > cur_index)
+                        .unwrap_or(target_idx)
+                } else {
+                    target_idx
+                }
+            } else {
+                target_idx
+            }
+        } else {
+            target_idx
+        };
+
+        let target = snapshot[target_idx].clone();
+        tracing::debug!(
+            "Raise(World): target pid={} id={} app='{}' title='{}'",
+            target.pid,
+            target.id,
+            target.app,
+            target.title
+        );
+
+        if !winops.ensure_frontmost_by_title(target.pid, &target.title, 7, 80) {
+            tracing::warn!(
+                pid = target.pid,
+                id = target.id,
+                "Raise(World): ensure_frontmost_by_title fallback"
+            );
+            if let Err(e) = winops.request_activate_pid(target.pid) {
+                tracing::warn!(error = %e, pid = target.pid, "Raise(World): activate fallback failed");
+                return Err(CommandError::backend(kind, e));
+            }
+        }
+
+        Ok(issue_receipt(
+            state,
+            kind,
+            Some(target),
+            Some(TargetSelection::Cycle),
+        ))
+    } else if let Some(&off_idx) = idx_any.first() {
+        let off = &snapshot[off_idx];
+        Err(off_active_space_error(off.pid, off))
+    } else {
+        tracing::debug!("Raise(World): no match in snapshot; no-op");
+        Err(CommandError::NoEligibleWindow { kind, pid: None })
+    }
+}
+
+fn determine_pid(
+    hint: Option<i32>,
+    focused: Option<&WorldWindow>,
+    snapshot: &[WorldWindow],
+) -> Option<i32> {
+    if let Some(pid) = hint {
+        return Some(pid);
+    }
+    if let Some(focused) = focused {
+        return Some(focused.pid);
+    }
+    snapshot
+        .iter()
+        .find(|w| w.on_active_space)
+        .or_else(|| snapshot.first())
+        .map(|w| w.pid)
+}
+
+fn sorted_snapshot(state: &WorldState) -> Vec<WorldWindow> {
+    let mut windows: Vec<_> = state.store.values().cloned().collect();
+    windows.sort_by_key(|w| (w.z, w.pid, w.id));
+    windows
+}
+
+fn focused_window(state: &WorldState) -> Option<WorldWindow> {
+    state.focused.and_then(|key| state.store.get(&key).cloned())
+}
+
+fn resolve_target_for_pid(
+    snapshot: &[WorldWindow],
+    focused: Option<&WorldWindow>,
+    pid: i32,
+) -> Option<(WorldWindow, TargetSelection)> {
+    if let Some(focused_window) = focused
+        && focused_window.pid == pid
+        && focused_window.on_active_space
+    {
+        return Some((focused_window.clone(), TargetSelection::Focused));
+    }
+
+    snapshot
+        .iter()
+        .filter(|w| w.pid == pid && w.on_active_space)
+        .min_by_key(|w| (w.z, w.id))
+        .cloned()
+        .map(|w| (w, TargetSelection::ActiveFrontmost))
+}
+
+fn issue_receipt(
+    state: &mut WorldState,
+    kind: CommandKind,
+    target: Option<WorldWindow>,
+    selection: Option<TargetSelection>,
+) -> CommandReceipt {
+    let id = state.next_command_id;
+    state.next_command_id = state.next_command_id.wrapping_add(1).max(1);
+    CommandReceipt {
+        id,
+        kind,
+        issued_at: Instant::now(),
+        target,
+        selection,
+    }
+}
+
+fn convert_toggle(toggle: CommandToggle) -> mac_winops::Desired {
+    match toggle {
+        CommandToggle::On => mac_winops::Desired::On,
+        CommandToggle::Off => mac_winops::Desired::Off,
+        CommandToggle::Toggle => mac_winops::Desired::Toggle,
+    }
+}
+
+fn convert_move_dir(dir: MoveDirection) -> mac_winops::MoveDir {
+    match dir {
+        MoveDirection::Left => mac_winops::MoveDir::Left,
+        MoveDirection::Right => mac_winops::MoveDir::Right,
+        MoveDirection::Up => mac_winops::MoveDir::Up,
+        MoveDirection::Down => mac_winops::MoveDir::Down,
+    }
+}
+
+fn placement_guard_reason(window: &WorldWindow) -> Option<&'static str> {
+    let ax = window.ax.as_ref()?;
+    let role = ax.role.as_deref().unwrap_or_default();
+    let subrole = ax.subrole.as_deref().unwrap_or_default();
+    if role == "AXSheet" {
+        return Some("role=AXSheet");
+    }
+    if role == "AXPopover" || subrole == "AXPopover" {
+        return Some("popover");
+    }
+    if subrole == "AXDialog" || subrole == "AXSystemDialog" {
+        return Some("dialog");
+    }
+    if subrole == "AXFloatingWindow" {
+        return Some("floating");
+    }
+    if ax.can_set_pos == Some(false) {
+        return Some("not settable");
+    }
+    None
+}
+
+fn off_active_space_error(pid: i32, window: &WorldWindow) -> CommandError {
+    CommandError::OffActiveSpace {
+        pid,
+        space: window.space,
+    }
 }
 
 impl WorldHandle {

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)]
 //! Smoketest binary for Hotki. Provides repeat and UI validation helpers.
 use clap::Parser;
 use logging as logshared;

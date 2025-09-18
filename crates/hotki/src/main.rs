@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Binary entrypoint for the Hotki macOS app.
 use std::{path::PathBuf, process};
 

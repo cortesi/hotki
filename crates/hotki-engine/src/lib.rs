@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Hotki Engine
 //!
 //! The Hotki Engine crate coordinates side effects for hotkeys:
@@ -70,7 +71,10 @@ use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use focus::FocusState;
 use hotki_protocol::MsgToUI;
-use hotki_world::WorldView;
+use hotki_world::{
+    CommandError, CommandToggle, FullscreenIntent, FullscreenKind, HideIntent, MoveDirection,
+    MoveIntent, PlaceIntent, RaiseIntent, WorldView,
+};
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
@@ -86,16 +90,26 @@ use services::Services;
 use tracing::{debug, trace, warn};
 
 #[inline]
-fn to_desired(t: config::Toggle) -> mac_winops::Desired {
+fn to_command_toggle(t: config::Toggle) -> CommandToggle {
     match t {
-        config::Toggle::On => mac_winops::Desired::On,
-        config::Toggle::Off => mac_winops::Desired::Off,
-        config::Toggle::Toggle => mac_winops::Desired::Toggle,
+        config::Toggle::On => CommandToggle::On,
+        config::Toggle::Off => CommandToggle::Off,
+        config::Toggle::Toggle => CommandToggle::Toggle,
     }
 }
 
 #[inline]
-fn to_move_dir(d: config::Dir) -> mac_winops::MoveDir {
+fn to_world_move_dir(d: config::Dir) -> MoveDirection {
+    match d {
+        config::Dir::Left => MoveDirection::Left,
+        config::Dir::Right => MoveDirection::Right,
+        config::Dir::Up => MoveDirection::Up,
+        config::Dir::Down => MoveDirection::Down,
+    }
+}
+
+#[inline]
+fn to_mac_move_dir(d: config::Dir) -> mac_winops::MoveDir {
     match d {
         config::Dir::Left => mac_winops::MoveDir::Left,
         config::Dir::Right => mac_winops::MoveDir::Right,
@@ -104,18 +118,26 @@ fn to_move_dir(d: config::Dir) -> mac_winops::MoveDir {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetMatch {
-    Focused,
-    ActiveFrontmost,
+#[inline]
+fn to_fullscreen_kind(kind: config::FullscreenKind) -> FullscreenKind {
+    match kind {
+        config::FullscreenKind::Native => FullscreenKind::Native,
+        config::FullscreenKind::Nonnative => FullscreenKind::Nonnative,
+    }
 }
 
-impl TargetMatch {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Focused => "focused",
-            Self::ActiveFrontmost => "active-frontmost",
-        }
+fn command_error_message(op: &'static str, err: &CommandError) -> Option<String> {
+    match err {
+        CommandError::BackendFailure { message, .. } => Some(message.clone()),
+        CommandError::InvalidRequest { message } => Some(message.clone()),
+        CommandError::OffActiveSpace { .. } => Some(err.to_string()),
+        CommandError::NoEligibleWindow { .. } => match op {
+            "Place" => Some("No eligible window to place".to_string()),
+            "Move" => Some("No focused window to move".to_string()),
+            "Hide" | "Fullscreen" => Some(err.to_string()),
+            "Raise" => None,
+            _ => Some(err.to_string()),
+        },
     }
 }
 
@@ -488,7 +510,7 @@ impl Engine {
                 attrs,
             }) => self.handle_action_relay(&identifier, target, &attrs).await,
             Ok(KeyResponse::Fullscreen { desired, kind }) => {
-                self.handle_action_fullscreen(desired, kind)
+                self.handle_action_fullscreen(desired, kind).await
             }
             Ok(KeyResponse::Raise { app, title }) => self.handle_action_raise(app, title).await,
             Ok(KeyResponse::Place {
@@ -514,7 +536,7 @@ impl Engine {
                 match resp {
                     KeyResponse::Focus { dir } => {
                         tracing::info!("Engine: focus(dir={:?})", dir);
-                        if let Err(e) = self.svc.winops.request_focus_dir(to_move_dir(dir)) {
+                        if let Err(e) = self.svc.winops.request_focus_dir(to_mac_move_dir(dir)) {
                             if let mac_winops::Error::MainThread = e {
                                 tracing::warn!(
                                     "Focus requires main thread; scheduling failed: {}",
@@ -619,29 +641,29 @@ impl Engine {
         Ok(())
     }
 
-    fn handle_action_fullscreen(
+    async fn handle_action_fullscreen(
         &self,
         desired: config::Toggle,
         kind: config::FullscreenKind,
     ) -> Result<()> {
-        tracing::debug!(
-            "Engine: fullscreen action received: desired={:?} kind={:?}",
-            desired,
-            kind
-        );
-        let d = to_desired(desired);
-        let pid = self.current_pid_world_first();
-        let res = match kind {
-            config::FullscreenKind::Native => self.svc.winops.request_fullscreen_native(pid, d),
-            config::FullscreenKind::Nonnative => {
-                self.svc.winops.request_fullscreen_nonnative(pid, d)
-            }
+        let intent = FullscreenIntent {
+            desired: to_command_toggle(desired),
+            kind: to_fullscreen_kind(kind),
         };
-        if let Err(e) = res {
-            let _ = self.svc.notifier.send_error("Fullscreen", format!("{}", e));
+        match self.svc.world.request_fullscreen(intent).await {
+            Ok(receipt) => {
+                if receipt.target.is_some() {
+                    self.hint_refresh();
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(msg) = command_error_message("Fullscreen", &err) {
+                    let _ = self.svc.notifier.send_error("Fullscreen", msg);
+                }
+                Ok(())
+            }
         }
-        self.hint_refresh();
-        Ok(())
     }
 
     async fn handle_action_shell(
@@ -697,100 +719,50 @@ impl Engine {
         } else {
             None
         };
-        if !invalid {
-            let mut wsnap = self.svc.world.snapshot().await;
-            wsnap.sort_by_key(|w| w.z);
-            if wsnap.is_empty() {
-                tracing::debug!("Raise(World): empty snapshot; no-op");
-            } else {
-                let focused = self.svc.world.focused_window().await;
-                let matches = |w: &hotki_world::WorldWindow| -> bool {
-                    let aok = app_re.as_ref().map(|r| r.is_match(&w.app)).unwrap_or(true);
-                    let tok = title_re
-                        .as_ref()
-                        .map(|r| r.is_match(&w.title))
-                        .unwrap_or(true);
-                    aok && tok
-                };
-                let mut idx_any: Vec<usize> = Vec::new();
-                let mut idx_active: Vec<usize> = Vec::new();
-                for (i, w) in wsnap.iter().enumerate() {
-                    if matches(w) {
-                        idx_any.push(i);
-                        if w.on_active_space {
-                            idx_active.push(i);
-                        }
-                    }
-                }
-                tracing::debug!(
-                    "Raise(World): matched active={} total={}",
-                    idx_active.len(),
-                    idx_any.len()
-                );
-                if !idx_active.is_empty() {
-                    let idx_match = idx_active;
-                    let target_idx = if let Some(c) = focused.as_ref() {
-                        if matches(c) {
-                            let cur_index =
-                                wsnap.iter().position(|w| w.id == c.id && w.pid == c.pid);
-                            if let Some(ci) = cur_index {
-                                idx_match
-                                    .iter()
-                                    .copied()
-                                    .find(|&i| i > ci)
-                                    .unwrap_or_else(|| *idx_match.first().unwrap())
-                            } else {
-                                *idx_match.first().unwrap()
-                            }
-                        } else {
-                            *idx_match.first().unwrap()
-                        }
-                    } else {
-                        *idx_match.first().unwrap()
-                    };
-                    let target = &wsnap[target_idx];
-                    tracing::debug!(
-                        "Raise(World): target pid={} id={} app='{}' title='{}'",
-                        target.pid,
-                        target.id,
-                        target.app,
-                        target.title
-                    );
+        if invalid {
+            return Ok(());
+        }
+        let intent = RaiseIntent {
+            app_regex: app_re,
+            title_regex: title_re,
+        };
+        match self.svc.world.request_raise(intent).await {
+            Ok(receipt) => {
+                if let Some(target) = receipt.target {
                     {
                         let mut g = self.focus.last_target_pid.lock();
                         *g = Some(target.pid);
                     }
-                    if !self
-                        .svc
-                        .winops
-                        .ensure_frontmost_by_title(target.pid, &target.title, 7, 80)
-                    {
-                        tracing::warn!(
-                            "Raise ensure_frontmost_by_title fallback failed pid={} id={} title='{}'",
-                            target.pid,
-                            target.id,
-                            target.title
-                        );
-                        if let Err(e) = self.svc.winops.request_activate_pid(target.pid) {
-                            if let mac_winops::Error::MainThread = e {
-                                tracing::warn!(
-                                    "Activate requires main thread; scheduling failed: {}",
-                                    e
-                                );
-                            }
-                            let _ = self.svc.notifier.send_error("Raise", format!("{}", e));
-                        }
-                    }
                     self.hint_refresh();
-                } else if let Some(off_idx) = idx_any.first() {
-                    let off = &wsnap[*off_idx];
-                    self.guard_off_active_space("raise", "Raise", off.pid, Some(off))?;
                 } else {
-                    tracing::debug!("Raise(World): no match in snapshot; no-op");
+                    tracing::debug!("Raise(World): world returned no target; no-op");
                 }
+                Ok(())
             }
+            Err(err) => match err {
+                CommandError::NoEligibleWindow { .. } => {
+                    tracing::debug!("Raise(World): no match in snapshot; no-op");
+                    Ok(())
+                }
+                CommandError::OffActiveSpace { pid, space } => {
+                    if let Some(msg) = command_error_message("Raise", &err) {
+                        let _ = self.svc.notifier.send_error("Raise", msg);
+                    }
+                    Err(Error::OffActiveSpace {
+                        op: "raise",
+                        pid,
+                        id: None,
+                        space,
+                    })
+                }
+                other => {
+                    if let Some(msg) = command_error_message("Raise", &other) {
+                        let _ = self.svc.notifier.send_error("Raise", msg);
+                    }
+                    Ok(())
+                }
+            },
         }
-        Ok(())
     }
 
     async fn handle_action_place_request(
@@ -801,273 +773,88 @@ impl Engine {
         row: u32,
         raise_pid: Option<i32>,
     ) -> Result<()> {
-        let (pid, pid_src): (i32, &str) = if let Some(p) = raise_pid {
-            (p, "raise")
-        } else if let Some((_, _, p)) = self.focus.ctx.lock().clone() {
-            (p, "world")
-        } else {
-            let mut snap = self.svc.world.snapshot().await;
-            snap.sort_by_key(|w| w.z);
-            if snap.is_empty() {
-                tracing::debug!("Place(World): empty snapshot; no-op");
-                return Ok(());
-            } else if let Some(w) = self
-                .svc
-                .world
-                .focused_window()
-                .await
-                .or_else(|| snap.first().cloned())
-            {
-                (w.pid, "world_top")
-            } else {
-                tracing::debug!("Place(World): no top window; no-op");
-                return Ok(());
-            }
+        let intent = PlaceIntent {
+            cols,
+            rows,
+            col,
+            row,
+            pid_hint: raise_pid,
         };
 
-        let (wapp, wtitle, wpid) = self.current_context_tuple();
-        let mut snap = self.svc.world.snapshot().await;
-        snap.sort_by_key(|w| w.z);
-        let focused_window = self.svc.world.focused_window().await;
-        if let Some(top) = snap.first() {
-            tracing::debug!(
-                "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
-                pid,
-                pid_src,
-                wapp,
-                wtitle,
-                wpid,
-                top.pid,
-                top.id,
-                top.app,
-                top.title,
-                cols,
-                rows,
-                col,
-                row
-            );
-        } else {
-            tracing::debug!(
-                "Place: chosen pid={} (src={}) | world_focus app='{}' title='{}' pid={} | world_top=<none> cols={} rows={} col={} row={}",
-                pid,
-                pid_src,
-                wapp,
-                wtitle,
-                wpid,
-                cols,
-                rows,
-                col,
-                row
-            );
-        }
-
-        if let Some(ref wf) = focused_window
-            && wf.pid == pid
-            && !wf.on_active_space
-        {
-            return self.guard_off_active_space("place", "Place", pid, Some(wf));
-        }
-        if !snap.iter().any(|w| w.pid == pid && w.on_active_space)
-            && let Some(offspace) = snap.iter().find(|w| w.pid == pid && !w.on_active_space)
-        {
-            return self.guard_off_active_space("place", "Place", pid, Some(offspace));
-        }
-
-        // Stage 6: Advisory pre-gate using World AX props for the focused window.
-        // If the currently focused window belongs to our target pid and appears
-        // unsupported (role/subrole) skip early. Only treat AXPosition=false as
-        // non-movable; allow proceeding when only AXSize is false so we can still
-        // attempt a position-only placement.
-        if let Some(wf) = focused_window.clone()
-            && wf.pid == pid
-            && let Some(ax) = wf.ax.clone()
-        {
-            let role = ax.role.unwrap_or_default();
-            let subrole = ax.subrole.unwrap_or_default();
-            let mut reason: Option<&'static str> = None;
-            if role == "AXSheet" {
-                reason = Some("role=AXSheet");
-            } else if role == "AXPopover" || subrole == "AXPopover" {
-                reason = Some("popover");
-            } else if subrole == "AXDialog" || subrole == "AXSystemDialog" {
-                reason = Some("dialog");
-            } else if subrole == "AXFloatingWindow" {
-                reason = Some("floating");
+        match self.svc.world.request_place_grid(intent).await {
+            Ok(receipt) => {
+                if receipt.target.is_some() {
+                    self.hint_refresh();
+                }
+                Ok(())
             }
-            // Only skip if position is explicitly non-settable. Size-only false
-            // should not block a move; winops will degrade to position-only.
-            if reason.is_none() && ax.can_set_pos == Some(false) {
-                reason = Some("not settable");
+            Err(err) => {
+                if let Some(msg) = command_error_message("Place", &err) {
+                    let _ = self.svc.notifier.send_error("Place", msg);
+                }
+                if let CommandError::OffActiveSpace { pid, space } = err {
+                    return Err(Error::OffActiveSpace {
+                        op: "place",
+                        pid,
+                        id: None,
+                        space,
+                    });
+                }
+                Ok(())
             }
-            if let Some(r) = reason {
-                debug!(
-                    "Place(World): skipped: reason={} role='{}' subrole='{}' can_set_pos={:?} can_set_size={:?} app='{}' title='{}'",
-                    r, role, subrole, ax.can_set_pos, ax.can_set_size, wf.app, wf.title
-                );
-                return Ok(());
-            }
-        }
-
-        if let Some((target, selection)) =
-            Self::resolve_target_window(&snap, focused_window.as_ref(), pid)
-        {
-            tracing::debug!(
-                "Place(World): resolved target via {} pid={} id={} app='{}' title='{}'",
-                selection.as_str(),
-                target.pid,
-                target.id,
-                target.app,
-                target.title
-            );
-            if let Err(e) =
-                self.svc
-                    .winops
-                    .request_place_grid(target.world_id(), cols, rows, col, row)
-            {
-                let _ = self.svc.notifier.send_error("Place", format!("{}", e));
-            }
-            self.hint_refresh();
-            Ok(())
-        } else {
-            tracing::debug!(
-                "Place(World): no active-space window resolved for pid={}",
-                pid
-            );
-            let _ = self
-                .svc
-                .notifier
-                .send_error("Place", "No eligible window to place".to_string());
-            Ok(())
         }
     }
 
     async fn handle_action_place_move(&self, cols: u32, rows: u32, dir: config::Dir) -> Result<()> {
-        let mdir = to_move_dir(dir);
-        let pid = self.current_pid_world_first();
-        let mut snap = self.svc.world.snapshot().await;
-        snap.sort_by_key(|w| w.z);
-        if !snap.is_empty() {
-            let focused_window = self.svc.world.focused_window().await;
-            if let Some((w, selection)) =
-                Self::resolve_target_window(&snap, focused_window.as_ref(), pid)
-            {
-                tracing::debug!(
-                    "Move(World): resolved target via {} pid={} id={} app='{}' title='{}'",
-                    selection.as_str(),
-                    w.pid,
-                    w.id,
-                    w.app,
-                    w.title
-                );
-                // Stage 6: Advisory pre-gate for move using AX props when the candidate is focused.
-                if w.focused
-                    && let Some(ax) = w.ax.clone()
-                {
-                    let role = ax.role.unwrap_or_default();
-                    let subrole = ax.subrole.unwrap_or_default();
-                    let mut reason: Option<&'static str> = None;
-                    if role == "AXSheet" {
-                        reason = Some("role=AXSheet");
-                    } else if role == "AXPopover" || subrole == "AXPopover" {
-                        reason = Some("popover");
-                    } else if subrole == "AXDialog" || subrole == "AXSystemDialog" {
-                        reason = Some("dialog");
-                    } else if subrole == "AXFloatingWindow" {
-                        reason = Some("floating");
-                    }
-                    // Only skip if position is explicitly non-settable. Size-only false
-                    // should not block a move; winops will degrade to position-only.
-                    if reason.is_none() && ax.can_set_pos == Some(false) {
-                        reason = Some("not settable");
-                    }
-                    if let Some(r) = reason {
-                        debug!(
-                            "Move(World): skipped: reason={} role='{}' subrole='{}' can_set_pos={:?} can_set_size={:?} app='{}' title='{}'",
-                            r, role, subrole, ax.can_set_pos, ax.can_set_size, w.app, w.title
-                        );
-                        return Ok(());
-                    }
+        let intent = MoveIntent {
+            cols,
+            rows,
+            dir: to_world_move_dir(dir),
+            pid_hint: None,
+        };
+
+        match self.svc.world.request_place_move_grid(intent).await {
+            Ok(receipt) => {
+                if receipt.target.is_some() {
+                    self.hint_refresh();
                 }
-                if let Err(e) =
-                    self.svc
-                        .winops
-                        .request_place_move_grid(w.world_id(), cols, rows, mdir)
-                {
-                    let _ = self.svc.notifier.send_error("Move", format!("{}", e));
-                }
-                self.hint_refresh();
-            } else if let Some(offspace) = snap.iter().find(|w| w.pid == pid && !w.on_active_space)
-            {
-                return self.guard_off_active_space("place_move", "Move", pid, Some(offspace));
-            } else {
-                let _ = self
-                    .svc
-                    .notifier
-                    .send_error("Move", "No focused window to move".to_string());
+                Ok(())
             }
-        } else {
-            let _ = self
-                .svc
-                .notifier
-                .send_error("Move", "No focused window to move".to_string());
+            Err(err) => {
+                if let Some(msg) = command_error_message("Move", &err) {
+                    let _ = self.svc.notifier.send_error("Move", msg);
+                }
+                if let CommandError::OffActiveSpace { pid, space } = err {
+                    return Err(Error::OffActiveSpace {
+                        op: "place_move",
+                        pid,
+                        id: None,
+                        space,
+                    });
+                }
+                Ok(())
+            }
         }
-        Ok(())
-    }
-
-    fn resolve_target_window(
-        snapshot: &[WorldWindow],
-        focused: Option<&WorldWindow>,
-        pid: i32,
-    ) -> Option<(WorldWindow, TargetMatch)> {
-        if let Some(focused_window) = focused
-            && focused_window.pid == pid
-            && focused_window.on_active_space
-        {
-            return Some((focused_window.clone(), TargetMatch::Focused));
-        }
-
-        snapshot
-            .iter()
-            .filter(|w| w.pid == pid && w.on_active_space)
-            .min_by_key(|w| (if w.focused { 0 } else { 1 }, w.z))
-            .cloned()
-            .map(|window| (window, TargetMatch::ActiveFrontmost))
     }
 
     async fn handle_action_hide(&self, desired: config::Toggle) -> Result<()> {
-        let (wapp, wtitle, wpid) = self.current_context_tuple();
-        let mut snap = self.svc.world.snapshot().await;
-        snap.sort_by_key(|w| w.z);
-        if let Some(top) = snap.first() {
-            tracing::info!(
-                "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top pid={} id={} app='{}' title='{}'",
-                desired,
-                wapp,
-                wtitle,
-                wpid,
-                top.pid,
-                top.id,
-                top.app,
-                top.title
-            );
-        } else {
-            tracing::info!(
-                "Hide: request desired={:?}; world_focus app='{}' title='{}' pid={}; world_top=<none>",
-                desired,
-                wapp,
-                wtitle,
-                wpid
-            );
+        let intent = HideIntent {
+            desired: to_command_toggle(desired),
+        };
+        match self.svc.world.request_hide(intent).await {
+            Ok(receipt) => {
+                if receipt.target.is_some() {
+                    self.hint_refresh();
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(msg) = command_error_message("Hide", &err) {
+                    let _ = self.svc.notifier.send_error("Hide", msg);
+                }
+                Ok(())
+            }
         }
-        tracing::debug!("Hide action received: desired={:?}", desired);
-        let d = to_desired(desired);
-        let pid = self.current_pid_world_first();
-        tracing::debug!("Hide: perform right now for pid={} desired={:?}", pid, d);
-        if let Err(e) = self.svc.winops.hide_bottom_left(pid, d) {
-            let _ = self.svc.notifier.send_error("Hide", format!("{}", e));
-        }
-        self.hint_refresh();
-        Ok(())
     }
 
     /// Handle a key up event
@@ -1157,35 +944,6 @@ impl Engine {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)
-    }
-
-    fn guard_off_active_space(
-        &self,
-        op: &'static str,
-        notify_title: &str,
-        pid: i32,
-        window: Option<&WorldWindow>,
-    ) -> Result<()> {
-        let (id, space) = match window {
-            Some(w) => (Some(w.id), w.space),
-            None => (None, None),
-        };
-        let message = match space {
-            Some(space_id) => format!(
-                "Window is on Mission Control space {}. Switch back to that space and try again.",
-                space_id
-            ),
-            None => "Window is not on the active Mission Control space.".to_string(),
-        };
-        let _ = self.svc.notifier.send_error(notify_title, message);
-        warn!(
-            op = op,
-            pid = pid,
-            window_id = id,
-            space = space,
-            "refusing window operation on off-space window"
-        );
-        Err(Error::OffActiveSpace { op, pid, id, space })
     }
 
     fn hint_refresh(&self) {

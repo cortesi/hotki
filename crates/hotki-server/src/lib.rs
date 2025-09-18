@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Internal hotkey server integration for Hotki.
 //!
 //! This crate provides a thin server/client layer around the core engine to

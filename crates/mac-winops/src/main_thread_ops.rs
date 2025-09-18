@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use crate::{
     Desired, PlaceAttemptOptions, WindowId,
     error::{Error, Result},
+    observability,
 };
 
 /// Direction for moving a window within a grid layout.
@@ -241,6 +242,7 @@ pub fn request_place_grid_focused_opts(
     if cols == 0 || rows == 0 {
         return Err(Error::Unsupported);
     }
+    observability::record_focused_fallback("request_place_grid_focused_opts", pid);
     enqueue_with_coalescing(MainOp::PlaceGridFocused {
         pid,
         cols,

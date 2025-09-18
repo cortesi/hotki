@@ -1,6 +1,6 @@
 ## Project-wide Clippy preferences
-## Note: Severity (warn/deny) is configured via crate-level attributes.
-## This file only uses Clippy's recognized toggles to avoid parse errors.
+## Note: Most lint severities remain crate-scoped; crates that must deny a lint
+## explicitly do so via crate-level attributes.
 
 # Prefer explicit imports over wildcard imports.
 warn-on-all-wildcard-imports = true
@@ -16,3 +16,20 @@ excessive-nesting-threshold = 8
 too-many-lines-threshold = 800
 cognitive-complexity-threshold = 25
 
+disallowed-methods = [
+    { path = "mac_winops::request_place_grid_focused", reason = "Use world-scoped placement APIs" },
+    { path = "mac_winops::request_place_grid_focused_opts", reason = "Use world-scoped placement APIs" },
+    { path = "mac_winops::place_grid_focused", reason = "Use world-scoped placement APIs" },
+    { path = "mac_winops::place_grid_focused_opts", reason = "Use world-scoped placement APIs" },
+    { path = "mac_winops::window::frontmost_window_for_pid", reason = "World is the focus authority" },
+    { path = "mac_winops::focus::system_focus_snapshot", reason = "World is the focus authority" },
+    { path = "mac_winops::focus::poll_now", reason = "World is the focus authority" },
+    { path = "mac_winops::request_place_grid", reason = "Use world-orchestrated placement APIs" },
+    { path = "mac_winops::request_place_move_grid", reason = "Use world-orchestrated placement APIs" },
+    { path = "mac_winops::request_fullscreen_native", reason = "Use world-orchestrated fullscreen APIs" },
+    { path = "mac_winops::request_fullscreen_nonnative", reason = "Use world-orchestrated fullscreen APIs" },
+    { path = "mac_winops::hide_bottom_left", reason = "Use world-orchestrated hide APIs" },
+    { path = "mac_winops::ensure_frontmost_by_title", reason = "Use world-orchestrated raise APIs" },
+    { path = "mac_winops::request_activate_pid", reason = "Use world-orchestrated raise APIs" },
+    { path = "mac_winops::request_raise_window", reason = "Use world-orchestrated raise APIs" },
+]

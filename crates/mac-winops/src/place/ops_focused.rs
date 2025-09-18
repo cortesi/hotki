@@ -14,6 +14,7 @@ use crate::{
     ax::{ax_check, ax_get_point, ax_get_size, cfstr},
     error::PlacementErrorDetails,
     geom::Rect,
+    observability,
     screen_util::visible_frame_containing_point,
 };
 
@@ -27,6 +28,7 @@ fn place_grid_focused_inner(
     row: u32,
     opts: PlaceAttemptOptions,
 ) -> Result<()> {
+    observability::record_focused_fallback("place_grid_focused", pid);
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
     let win = crate::focused_window_for_pid(pid)?;

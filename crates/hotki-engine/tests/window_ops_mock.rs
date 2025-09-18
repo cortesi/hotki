@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use hotki_engine::{Engine, Error, MockHotkeyApi, test_support as testutil};
 use hotki_protocol::MsgToUI;
-use hotki_world::World;
+use hotki_world::{World, WorldWindowId};
 use mac_winops::ops::MockWinOps;
 use testutil::{fast_world_cfg, recv_error_with_title, wait_snapshot_until};
 use tokio::sync::mpsc;
@@ -291,6 +291,100 @@ async fn engine_place_prefers_last_raise_pid_then_clears() {
         .await
         .expect("dispatch place with focus pid");
     assert_eq!(mock.last_place_grid_pid(), Some(200));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn engine_place_and_move_use_world_window_ids_for_pid_collisions() {
+    ensure_no_os_interaction();
+    let (tx, _rx) = mpsc::channel(16);
+    let mock = Arc::new(MockWinOps::new());
+    let api = Arc::new(MockHotkeyApi::new());
+    let world = World::spawn_view(mock.clone(), fast_world_cfg());
+    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), false, world);
+    mac_winops::reset_focused_fallback_count();
+    let keys = keymode::Keys::from_ron(
+        "[(\"p\", \"place\", place(grid(2,2), at(0,0))), (\"m\", \"move\", place_move(grid(2,2), right))]",
+    )
+    .unwrap();
+    let cfg = config::Config::from_parts(keys, config::Style::default());
+    let mut engine = engine;
+    engine.set_config(cfg).await.unwrap();
+
+    let pid = 4949;
+    let decoy = mac_winops::WindowInfo {
+        id: 10,
+        pid,
+        app: "PidTwin".into(),
+        title: "Decoy".into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: false,
+        is_on_screen: true,
+        on_active_space: true,
+    };
+    let target = mac_winops::WindowInfo {
+        id: 44,
+        pid,
+        app: "PidTwin".into(),
+        title: "Target".into(),
+        pos: None,
+        space: None,
+        layer: 0,
+        focused: true,
+        is_on_screen: true,
+        on_active_space: true,
+    };
+    mock.set_frontmost_for_pid(Some(decoy.clone()));
+    mock.set_windows(vec![decoy.clone(), target.clone()]);
+    let world = engine.world();
+    world.hint_refresh();
+    let snapshot_ready = wait_snapshot_until(world.as_ref(), 120, |snap| {
+        let pid_windows: Vec<_> = snap.iter().filter(|w| w.pid == pid).collect();
+        pid_windows.len() == 2 && pid_windows.iter().any(|w| w.id == target.id && w.focused)
+    })
+    .await;
+    assert!(
+        snapshot_ready,
+        "world should observe both windows with focus on target"
+    );
+
+    let place_id = engine.resolve_id_for_ident("p").await.unwrap();
+    engine
+        .dispatch(place_id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .expect("place dispatch");
+
+    let expected_target = WorldWindowId::new(pid, target.id);
+    assert_eq!(
+        mock.last_place_grid_target(),
+        Some(expected_target),
+        "place should target the world-selected window id"
+    );
+    assert!(
+        mock.calls_contains("place_grid"),
+        "place should call explicit id-based placement"
+    );
+    assert!(
+        !mock.calls_contains("place_grid_focused"),
+        "place should not fall back to focused placement"
+    );
+
+    let move_id = engine.resolve_id_for_ident("m").await.unwrap();
+    engine
+        .dispatch(move_id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .expect("place_move dispatch");
+    assert_eq!(
+        mock.last_place_move_target(),
+        Some(expected_target),
+        "place_move should retain the same world window id"
+    );
+    assert_eq!(
+        mac_winops::focused_fallback_count(),
+        0,
+        "tests should trigger observability if fallback placement sneaks in"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

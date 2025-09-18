@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)]
 //! mac-winops: macOS window operations for Hotki.
 //!
 //! Provides APIs to toggle/set native full screen (AppKit-managed Space)
@@ -54,6 +55,7 @@ mod fullscreen;
 mod geom;
 mod hide;
 mod main_thread_ops;
+mod observability;
 pub mod ops;
 mod place;
 mod raise;
@@ -84,6 +86,7 @@ pub use main_thread_ops::{
     request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
     request_place_move_grid_opts, request_raise_window,
 };
+pub use observability::{focused_fallback_count, reset_focused_fallback_count};
 use once_cell::sync::Lazy;
 pub use place::{
     AttemptKind, AttemptOrder, AttemptRecord, AttemptTimeline, AxAdapterHandle, FakeApplyResponse,

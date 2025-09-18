@@ -2,10 +2,10 @@ use hotki_world_ids::WorldWindowId;
 
 use crate::{
     MoveDir, PlaceAttemptOptions, Result as WinResult, SpaceId, WindowId, WindowInfo,
-    hide_bottom_left, request_activate_pid, request_focus_dir, request_fullscreen_native,
-    request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
-    request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
-    request_place_move_grid_opts,
+    hide_bottom_left, observability, request_activate_pid, request_focus_dir,
+    request_fullscreen_native, request_fullscreen_nonnative, request_place_grid,
+    request_place_grid_focused, request_place_grid_focused_opts, request_place_grid_opts,
+    request_place_move_grid, request_place_move_grid_opts,
     window::{frontmost_window, frontmost_window_for_pid, list_windows, list_windows_for_spaces},
 };
 
@@ -213,6 +213,8 @@ pub struct MockWinOps {
     fail_focus_dir: Arc<AtomicBool>,
     frontmost: Arc<Mutex<Option<WI>>>,
     last_place_grid_pid: Arc<Mutex<Option<i32>>>,
+    last_place_grid_target: Arc<Mutex<Option<WorldWindowId>>>,
+    last_place_move_target: Arc<Mutex<Option<WorldWindowId>>>,
     fail_fullscreen_native: Arc<AtomicBool>,
     fail_fullscreen_nonnative: Arc<AtomicBool>,
     fail_place_grid_focused: Arc<AtomicBool>,
@@ -233,6 +235,8 @@ impl MockWinOps {
             fail_focus_dir: Arc::new(AtomicBool::new(false)),
             frontmost: Arc::new(Mutex::new(None)),
             last_place_grid_pid: Arc::new(Mutex::new(None)),
+            last_place_grid_target: Arc::new(Mutex::new(None)),
+            last_place_move_target: Arc::new(Mutex::new(None)),
             fail_fullscreen_native: Arc::new(AtomicBool::new(false)),
             fail_fullscreen_nonnative: Arc::new(AtomicBool::new(false)),
             fail_place_grid_focused: Arc::new(AtomicBool::new(false)),
@@ -266,6 +270,12 @@ impl MockWinOps {
     }
     pub fn last_place_grid_pid(&self) -> Option<i32> {
         *self.last_place_grid_pid.lock()
+    }
+    pub fn last_place_grid_target(&self) -> Option<WorldWindowId> {
+        *self.last_place_grid_target.lock()
+    }
+    pub fn last_place_move_target(&self) -> Option<WorldWindowId> {
+        *self.last_place_move_target.lock()
     }
     pub fn set_fail_fullscreen_native(&self, v: bool) {
         self.fail_fullscreen_native.store(v, Ordering::SeqCst);
@@ -358,6 +368,10 @@ impl WinOps for MockWinOps {
             let mut g = self.last_place_grid_pid.lock();
             *g = Some(target.pid());
         }
+        {
+            let mut g = self.last_place_grid_target.lock();
+            *g = Some(target);
+        }
         if self.fail_place_move_grid.load(Ordering::SeqCst) {
             return Err(crate::error::Error::MainThread);
         }
@@ -376,16 +390,21 @@ impl WinOps for MockWinOps {
     }
     fn request_place_grid_focused(
         &self,
-        _pid: i32,
+        pid: i32,
         _cols: u32,
         _rows: u32,
         _col: u32,
         _row: u32,
     ) -> WinResult<()> {
+        observability::record_focused_fallback("MockWinOps::request_place_grid_focused", pid);
         self.note("place_grid_focused");
         {
             let mut g = self.last_place_grid_pid.lock();
-            *g = Some(_pid);
+            *g = Some(pid);
+        }
+        {
+            let mut g = self.last_place_grid_target.lock();
+            *g = None;
         }
         if self.fail_place_grid_focused.load(Ordering::SeqCst) {
             return Err(crate::error::Error::MainThread);
@@ -411,6 +430,10 @@ impl WinOps for MockWinOps {
         _dir: MoveDir,
     ) -> WinResult<()> {
         self.note("place_move");
+        {
+            let mut g = self.last_place_move_target.lock();
+            *g = Some(_target);
+        }
         if self.fail_place_move_grid.load(Ordering::SeqCst) {
             return Err(crate::error::Error::MainThread);
         }

@@ -3,7 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
-use crate::{Capabilities, WindowKey, WorldEvent, WorldHandle, WorldStatus, WorldWindow};
+use crate::{
+    Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveIntent,
+    PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldHandle, WorldStatus, WorldWindow,
+};
 
 /// Unified view over window state snapshots and focus context.
 #[async_trait]
@@ -83,6 +86,28 @@ pub trait WorldView: Send + Sync {
             .into_iter()
             .find(|w| w.pid == pid && w.title == title)
     }
+
+    /// Queue a grid placement command.
+    async fn request_place_grid(&self, intent: PlaceIntent)
+    -> Result<CommandReceipt, CommandError>;
+
+    /// Queue a relative placement move command.
+    async fn request_place_move_grid(
+        &self,
+        intent: MoveIntent,
+    ) -> Result<CommandReceipt, CommandError>;
+
+    /// Queue a hide/show command for the active application.
+    async fn request_hide(&self, intent: HideIntent) -> Result<CommandReceipt, CommandError>;
+
+    /// Queue a fullscreen command for the active application.
+    async fn request_fullscreen(
+        &self,
+        intent: FullscreenIntent,
+    ) -> Result<CommandReceipt, CommandError>;
+
+    /// Queue a raise command using optional regex filters.
+    async fn request_raise(&self, intent: RaiseIntent) -> Result<CommandReceipt, CommandError>;
 }
 
 #[async_trait]
@@ -149,6 +174,35 @@ impl WorldView for WorldHandle {
     async fn resolve_key(&self, key: WindowKey) -> Option<WorldWindow> {
         WorldHandle::get(self, key).await
     }
+
+    async fn request_place_grid(
+        &self,
+        intent: PlaceIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_place_grid(self, intent).await
+    }
+
+    async fn request_place_move_grid(
+        &self,
+        intent: MoveIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_place_move_grid(self, intent).await
+    }
+
+    async fn request_hide(&self, intent: HideIntent) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_hide(self, intent).await
+    }
+
+    async fn request_fullscreen(
+        &self,
+        intent: FullscreenIntent,
+    ) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_fullscreen(self, intent).await
+    }
+
+    async fn request_raise(&self, intent: RaiseIntent) -> Result<CommandReceipt, CommandError> {
+        WorldHandle::request_raise(self, intent).await
+    }
 }
 
 impl WorldHandle {
@@ -166,7 +220,10 @@ mod test_world {
     use tokio::sync::broadcast;
 
     use super::WorldView;
-    use crate::{Capabilities, WindowKey, WorldEvent, WorldStatus, WorldWindow};
+    use crate::{
+        Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveIntent,
+        PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldStatus, WorldWindow,
+    };
 
     #[derive(Default)]
     struct TestState {
@@ -324,6 +381,48 @@ mod test_world {
 
         fn hint_refresh(&self) {
             self.state.write().hint_refreshes += 1;
+        }
+
+        async fn request_place_grid(
+            &self,
+            _intent: PlaceIntent,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate placement".into(),
+            })
+        }
+
+        async fn request_place_move_grid(
+            &self,
+            _intent: MoveIntent,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate placement".into(),
+            })
+        }
+
+        async fn request_hide(&self, _intent: HideIntent) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate hide commands".into(),
+            })
+        }
+
+        async fn request_fullscreen(
+            &self,
+            _intent: FullscreenIntent,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate fullscreen commands".into(),
+            })
+        }
+
+        async fn request_raise(
+            &self,
+            _intent: RaiseIntent,
+        ) -> Result<CommandReceipt, CommandError> {
+            Err(CommandError::InvalidRequest {
+                message: "TestWorld does not orchestrate raise commands".into(),
+            })
         }
     }
 

@@ -697,7 +697,7 @@ impl MrpcConnection for HotkeyService {
                 let (_rx, snap, focused_key) = world.subscribe_with_snapshot().await;
                 let (payload, total, offspace_count) = build_snapshot_payload(snap, focused_key);
                 if offspace_count > 0 {
-                    info!(
+                    trace!(
                         total,
                         offspace = offspace_count,
                         retained = payload.windows.len(),
