@@ -19,8 +19,12 @@ use crate::{
 /// server→client notifications. Messages include HUD updates, log
 /// forwarding, and a heartbeat for liveness.
 pub struct Connection {
-    client: MrpcClient<ClientHandler>,
+    // Drop order matters: `client` must be released before `event_rx` so the
+    // MRPC connection closes before we tear down the receive channel. Otherwise
+    // in-flight notifications arrive after the receiver disappears, spamming
+    // "Failed to send event to channel" errors during normal shutdown.
     event_rx: UnboundedReceiver<MsgToUI>,
+    client: MrpcClient<ClientHandler>,
 }
 
 impl Connection {
@@ -43,7 +47,7 @@ impl Connection {
 
         info!("IPC client connected");
 
-        Ok(Connection { client, event_rx })
+        Ok(Connection { event_rx, client })
     }
 
     /// Send shutdown request to server (typed convenience method).
@@ -381,8 +385,12 @@ impl MrpcConnection for ClientHandler {
             // Parse event and send to channel
             match super::rpc::dec_event(params[0].clone()) {
                 Ok(msg) => {
-                    if let Err(e) = self.event_tx.send(msg) {
-                        error!("Failed to send event to channel: {}", e);
+                    if let Err(err) = self.event_tx.send(msg) {
+                        if self.event_tx.is_closed() {
+                            debug!("Dropping notify: client event receiver already closed");
+                        } else {
+                            error!("Failed to send event to channel: {}", err);
+                        }
                     }
                 }
                 Err(e) => {

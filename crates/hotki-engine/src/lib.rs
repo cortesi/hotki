@@ -299,30 +299,61 @@ impl Engine {
 
     fn spawn_world_focus_subscription(&self) {
         let world = self.svc.world.clone();
-        let focus_ctx = self.focus.ctx.clone();
+        let engine = self.clone();
         tokio::spawn(async move {
-            let (mut rx, seed) = world.subscribe_with_context().await;
-            if let Some(ctx) = seed {
-                let mut g = focus_ctx.lock();
-                *g = Some(ctx);
-            }
             loop {
-                match rx.recv().await {
-                    Ok(hotki_world::WorldEvent::FocusChanged(Some(key))) => {
-                        if let Some(ctx) = world.context_for_key(key).await {
-                            let mut g = focus_ctx.lock();
-                            *g = Some(ctx);
+                let (mut rx, seed) = world.subscribe_with_context().await;
+                if let Err(err) = engine.apply_world_focus_context(seed).await {
+                    warn!("World focus seed apply failed: {}", err);
+                }
+
+                loop {
+                    match rx.recv().await {
+                        Ok(hotki_world::WorldEvent::FocusChanged(Some(key))) => {
+                            let ctx = world.context_for_key(key).await;
+                            if let Err(err) = engine.apply_world_focus_context(ctx).await {
+                                warn!("World focus update failed: {}", err);
+                            }
+                        }
+                        Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
+                            if let Err(err) = engine.apply_world_focus_context(None).await {
+                                warn!("World focus clear failed: {}", err);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "World focus subscription lagged; resubscribing");
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!("World focus subscription closed; exiting");
+                            return;
                         }
                     }
-                    Ok(hotki_world::WorldEvent::FocusChanged(None)) => {
-                        let mut g = focus_ctx.lock();
-                        *g = None;
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
                 }
             }
         });
+    }
+
+    async fn apply_world_focus_context(&self, ctx: Option<(String, String, i32)>) -> Result<()> {
+        let mut changed = false;
+        {
+            let mut guard = self.focus.ctx.lock();
+            if guard.as_ref() != ctx.as_ref() {
+                *guard = ctx.clone();
+                changed = true;
+            }
+        }
+        if !changed {
+            trace!("World focus context unchanged; skipping rebind");
+            return Ok(());
+        }
+        if let Some((ref app, ref title, pid)) = ctx {
+            debug!(pid, app = %app, title = %title, "Engine: world focus context updated");
+        } else {
+            debug!("Engine: world focus context cleared");
+        }
+        self.rebind_current_context().await
     }
 
     async fn rebind_current_context(&self) -> Result<()> {
