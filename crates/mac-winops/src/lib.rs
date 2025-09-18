@@ -38,6 +38,7 @@ use core_graphics::{
     event_source::{CGEventSource, CGEventSourceStateID},
     geometry::CGPoint,
 };
+use hotki_world_ids::WorldWindowId;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::MainThreadMarker;
 use tracing::{debug, warn};
@@ -677,16 +678,18 @@ pub fn drain_main_ops() {
                 }
             }
             MainOp::PlaceGrid {
-                id,
+                target,
                 cols,
                 rows,
                 col,
                 row,
                 opts,
             } => {
+                let id: WindowId = target.window_id();
                 if let Err(e) = placement().place_grid(id, cols, rows, col, row, opts) {
                     tracing::warn!(
-                        "PlaceGrid failed: id={} cols={} rows={} col={} row={} err={}",
+                        "PlaceGrid failed: pid={} id={} cols={} rows={} col={} row={} err={}",
+                        target.pid(),
                         id,
                         cols,
                         rows,
@@ -697,15 +700,17 @@ pub fn drain_main_ops() {
                 }
             }
             MainOp::PlaceMoveGrid {
-                id,
+                target,
                 cols,
                 rows,
                 dir,
                 opts,
             } => {
+                let id: WindowId = target.window_id();
                 if let Err(e) = placement().place_move_grid(id, cols, rows, dir, opts) {
                     tracing::warn!(
-                        "PlaceMoveGrid failed: id={} cols={} rows={} dir={:?} err={}",
+                        "PlaceMoveGrid failed: pid={} id={} cols={} rows={} dir={:?} err={}",
+                        target.pid(),
                         id,
                         cols,
                         rows,
@@ -761,7 +766,7 @@ pub fn drain_main_ops() {
     // Local key to preserve last-writer order across id/pid groups.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     enum Key {
-        Id(WindowId),
+        World(WorldWindowId),
         Pid(i32),
     }
 
@@ -789,7 +794,7 @@ pub fn drain_main_ops() {
         // Non-placement ops are executed in FIFO order within the batch.
         let mut non_place: Vec<MainOp> = Vec::new();
         // Latest placement intents during the budget window.
-        let mut latest_by_id: HashMap<WindowId, MainOp> = HashMap::new();
+        let mut latest_by_id: HashMap<WorldWindowId, MainOp> = HashMap::new();
         let mut latest_by_pid: HashMap<i32, MainOp> = HashMap::new();
         let mut order: Vec<Key> = Vec::new();
 
@@ -803,7 +808,7 @@ pub fn drain_main_ops() {
 
             match op {
                 MainOp::PlaceGrid {
-                    id,
+                    target,
                     cols,
                     rows,
                     col,
@@ -811,9 +816,9 @@ pub fn drain_main_ops() {
                     opts,
                 } => {
                     latest_by_id.insert(
-                        id,
+                        target,
                         MainOp::PlaceGrid {
-                            id,
+                            target,
                             cols,
                             rows,
                             col,
@@ -821,28 +826,28 @@ pub fn drain_main_ops() {
                             opts,
                         },
                     );
-                    order.retain(|k| *k != Key::Id(id));
-                    order.push(Key::Id(id));
+                    order.retain(|k| *k != Key::World(target));
+                    order.push(Key::World(target));
                 }
                 MainOp::PlaceMoveGrid {
-                    id,
+                    target,
                     cols,
                     rows,
                     dir,
                     opts,
                 } => {
                     latest_by_id.insert(
-                        id,
+                        target,
                         MainOp::PlaceMoveGrid {
-                            id,
+                            target,
                             cols,
                             rows,
                             dir,
                             opts,
                         },
                     );
-                    order.retain(|k| *k != Key::Id(id));
-                    order.push(Key::Id(id));
+                    order.retain(|k| *k != Key::World(target));
+                    order.push(Key::World(target));
                 }
                 MainOp::PlaceGridFocused {
                     pid,
@@ -886,10 +891,9 @@ pub fn drain_main_ops() {
         // Cross-type stale-drop: if an id-specific placement maps to the same pid as a
         // focused placement within this batch, drop the focused placement.
         let mut pid_with_id: HashSet<i32> = HashSet::new();
-        for (idk, _op) in latest_by_id.iter() {
-            if let Some(pid) = resolve_pid_for_id(*idk) {
-                pid_with_id.insert(pid);
-            }
+        for (target, _op) in latest_by_id.iter() {
+            let pid = resolve_pid_for_id(target.window_id()).unwrap_or(target.pid());
+            pid_with_id.insert(pid);
         }
         if !pid_with_id.is_empty() {
             latest_by_pid.retain(|pid, _| !pid_with_id.contains(pid));
@@ -902,8 +906,8 @@ pub fn drain_main_ops() {
         // Then execute the coalesced placement intents using last-writer ordering.
         for k in order.into_iter() {
             match k {
-                Key::Id(id) => {
-                    if let Some(op) = latest_by_id.remove(&id) {
+                Key::World(target) => {
+                    if let Some(op) = latest_by_id.remove(&target) {
                         apply_one(op);
                     }
                 }
@@ -1081,12 +1085,12 @@ mod tests {
         // Build a synthetic burst: mixed non-placement ops and multiple placements
         // for the same id/pid. Verify we keep FIFO for non-placement and only
         // the latest placement per target.
-        let id = 1122u32;
         let pid = 7788i32;
+        let target = WorldWindowId::new(pid, 1122u32);
         let ops = vec![
             MainOp::ActivatePid { pid: 1 },
             MainOp::PlaceGrid {
-                id,
+                target,
                 cols: 3,
                 rows: 2,
                 col: 0,
@@ -1097,7 +1101,7 @@ mod tests {
                 dir: crate::main_thread_ops::MoveDir::Left,
             },
             MainOp::PlaceGrid {
-                id,
+                target,
                 cols: 3,
                 rows: 2,
                 col: 2,
@@ -1125,11 +1129,11 @@ mod tests {
         // Local planner that mirrors drain_main_ops batch logic without touching the global queue.
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
         enum Key {
-            Id(WindowId),
+            World(WorldWindowId),
             Pid(i32),
         }
         let mut non_place: Vec<MainOp> = Vec::new();
-        let mut latest_by_id: std::collections::HashMap<WindowId, MainOp> =
+        let mut latest_by_id: std::collections::HashMap<WorldWindowId, MainOp> =
             std::collections::HashMap::new();
         let mut latest_by_pid: std::collections::HashMap<i32, MainOp> =
             std::collections::HashMap::new();
@@ -1137,7 +1141,7 @@ mod tests {
         for op in ops.into_iter() {
             match op {
                 MainOp::PlaceGrid {
-                    id,
+                    target,
                     cols,
                     rows,
                     col,
@@ -1145,9 +1149,9 @@ mod tests {
                     opts,
                 } => {
                     latest_by_id.insert(
-                        id,
+                        target,
                         MainOp::PlaceGrid {
-                            id,
+                            target,
                             cols,
                             rows,
                             col,
@@ -1155,28 +1159,28 @@ mod tests {
                             opts,
                         },
                     );
-                    order.retain(|k| *k != Key::Id(id));
-                    order.push(Key::Id(id));
+                    order.retain(|k| *k != Key::World(target));
+                    order.push(Key::World(target));
                 }
                 MainOp::PlaceMoveGrid {
-                    id,
+                    target,
                     cols,
                     rows,
                     dir,
                     opts,
                 } => {
                     latest_by_id.insert(
-                        id,
+                        target,
                         MainOp::PlaceMoveGrid {
-                            id,
+                            target,
                             cols,
                             rows,
                             dir,
                             opts,
                         },
                     );
-                    order.retain(|k| *k != Key::Id(id));
-                    order.push(Key::Id(id));
+                    order.retain(|k| *k != Key::World(target));
+                    order.push(Key::World(target));
                 }
                 MainOp::PlaceGridFocused {
                     pid,
@@ -1215,11 +1219,13 @@ mod tests {
         }
         for k in order.into_iter() {
             match k {
-                Key::Id(idk) => match latest_by_id.remove(&idk).unwrap() {
+                Key::World(target) => match latest_by_id.remove(&target).unwrap() {
                     MainOp::PlaceGrid { col, row, .. } => {
-                        applied.push(format!("place:id:{}-{},{}", idk, col, row))
+                        applied.push(format!("place:id:{}-{},{}", target.window_id(), col, row))
                     }
-                    MainOp::PlaceMoveGrid { .. } => applied.push(format!("move:id:{}", idk)),
+                    MainOp::PlaceMoveGrid { .. } => {
+                        applied.push(format!("move:id:{}", target.window_id()))
+                    }
                     _ => unreachable!(),
                 },
                 Key::Pid(pk) => match latest_by_pid.remove(&pk).unwrap() {
@@ -1237,7 +1243,7 @@ mod tests {
             vec![
                 "activate:1".to_string(),
                 "focus".to_string(),
-                format!("place:id:{}-2,1", id),
+                format!("place:id:{}-2,1", target.window_id()),
                 format!("place:pid:{}-1,1", pid),
             ]
         );
@@ -1247,8 +1253,9 @@ mod tests {
     fn cross_type_stale_drop_prefers_id_over_focused() {
         // A focused placement for pid followed by an id-specific placement
         // for a window with the same pid should drop the focused placement.
-        let id = 9001u32;
         let pid = 1337i32;
+        let id = 9001u32;
+        let target = WorldWindowId::new(pid, id);
         clear_test_id_pid();
         set_test_id_pid(id, pid);
         {
@@ -1256,7 +1263,7 @@ mod tests {
             q.clear();
         }
         let _ = crate::main_thread_ops::request_place_grid_focused(pid, 2, 2, 0, 0);
-        let _ = crate::main_thread_ops::request_place_grid(id, 2, 2, 1, 1);
+        let _ = crate::main_thread_ops::request_place_grid(target, 2, 2, 1, 1);
         {
             let mut w = super::PLACEMENT_EXECUTOR.write().unwrap();
             *w = Arc::new(CountingPlacement);

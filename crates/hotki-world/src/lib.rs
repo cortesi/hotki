@@ -43,6 +43,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use hotki_world_ids::WorldWindowId;
 use mac_winops::{AxProps, Pos, WindowId, WindowInfo, ops::WinOps};
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
@@ -117,6 +118,20 @@ pub struct WorldWindow {
     /// Sequence number of the last scan in which this window was seen. Useful for
     /// debugging and tests.
     pub seen_seq: u64,
+}
+
+impl WorldWindow {
+    /// Identifier pairing the owning process id with the window id.
+    #[must_use]
+    pub fn world_id(&self) -> WorldWindowId {
+        WorldWindowId::new(self.pid, self.id)
+    }
+}
+
+impl From<&WorldWindow> for WorldWindowId {
+    fn from(value: &WorldWindow) -> Self {
+        value.world_id()
+    }
 }
 
 /// Permission state for capabilities that affect data quality.

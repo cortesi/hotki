@@ -17,3 +17,4 @@ once_cell = { workspace = true }
 parking_lot = "0.12.4"
 crossbeam-channel.workspace = true
 async-trait.workspace = true
+hotki-world-ids = { version = "0.0.1", path = "../hotki-world-ids" }

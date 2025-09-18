@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use hotki_world_ids::WorldWindowId;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 
@@ -32,7 +33,7 @@ pub enum MainOp {
         desired: Desired,
     },
     PlaceGrid {
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
@@ -40,7 +41,7 @@ pub enum MainOp {
         opts: PlaceAttemptOptions,
     },
     PlaceMoveGrid {
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
@@ -77,8 +78,8 @@ fn should_coalesce(existing: &MainOp, incoming: &MainOp) -> bool {
     match (existing, incoming) {
         // Coalesce per-WindowId for id-specific placements (keep latest intent)
         (
-            MainOp::PlaceGrid { id: a, .. } | MainOp::PlaceMoveGrid { id: a, .. },
-            MainOp::PlaceGrid { id: b, .. } | MainOp::PlaceMoveGrid { id: b, .. },
+            MainOp::PlaceGrid { target: a, .. } | MainOp::PlaceMoveGrid { target: a, .. },
+            MainOp::PlaceGrid { target: b, .. } | MainOp::PlaceMoveGrid { target: b, .. },
         ) => a == b,
 
         // Coalesce focused placements per pid (we don't know WindowId yet)
@@ -147,16 +148,22 @@ pub fn request_fullscreen_native(pid: i32, desired: Desired) -> Result<()> {
     Ok(())
 }
 
-/// Schedule placement of a specific window (by `WindowId`) into a grid cell on
+/// Schedule placement of a specific world-tracked window into a grid cell on
 /// its current screen's visible frame. Runs on the AppKit main thread and
 /// wakes the Tao event loop.
-pub fn request_place_grid(id: WindowId, cols: u32, rows: u32, col: u32, row: u32) -> Result<()> {
-    request_place_grid_opts(id, cols, rows, col, row, PlaceAttemptOptions::default())
+pub fn request_place_grid(
+    target: WorldWindowId,
+    cols: u32,
+    rows: u32,
+    col: u32,
+    row: u32,
+) -> Result<()> {
+    request_place_grid_opts(target, cols, rows, col, row, PlaceAttemptOptions::default())
 }
 
 /// Schedule an id-specific placement with explicit attempt options.
 pub fn request_place_grid_opts(
-    id: WindowId,
+    target: WorldWindowId,
     cols: u32,
     rows: u32,
     col: u32,
@@ -167,7 +174,7 @@ pub fn request_place_grid_opts(
         return Err(Error::Unsupported);
     }
     enqueue_with_coalescing(MainOp::PlaceGrid {
-        id,
+        target,
         cols,
         rows,
         col,
@@ -178,15 +185,20 @@ pub fn request_place_grid_opts(
     Ok(())
 }
 
-/// Schedule movement of a specific window (by `WindowId`) within a grid on the
+/// Schedule movement of a specific world-tracked window within a grid on the
 /// AppKit main thread.
-pub fn request_place_move_grid(id: WindowId, cols: u32, rows: u32, dir: MoveDir) -> Result<()> {
-    request_place_move_grid_opts(id, cols, rows, dir, PlaceAttemptOptions::default())
+pub fn request_place_move_grid(
+    target: WorldWindowId,
+    cols: u32,
+    rows: u32,
+    dir: MoveDir,
+) -> Result<()> {
+    request_place_move_grid_opts(target, cols, rows, dir, PlaceAttemptOptions::default())
 }
 
 /// Schedule a grid move with explicit attempt options.
 pub fn request_place_move_grid_opts(
-    id: WindowId,
+    target: WorldWindowId,
     cols: u32,
     rows: u32,
     dir: MoveDir,
@@ -196,7 +208,7 @@ pub fn request_place_move_grid_opts(
         return Err(Error::Unsupported);
     }
     enqueue_with_coalescing(MainOp::PlaceMoveGrid {
-        id,
+        target,
         cols,
         rows,
         dir,
@@ -282,19 +294,22 @@ mod tests {
     fn coalesce_id_specific_latest_wins() {
         let _g = TEST_SERIAL.lock();
         clear_queue();
-        let id = 42u32;
+        let target = WorldWindowId::new(123, 42);
         // enqueue several ops for same id
-        let _ = request_place_grid(id, 3, 2, 0, 0);
-        let _ = request_place_move_grid(id, 3, 2, MoveDir::Right);
-        let _ = request_place_grid(id, 3, 2, 2, 1); // latest should win
+        let _ = request_place_grid(target, 3, 2, 0, 0);
+        let _ = request_place_move_grid(target, 3, 2, MoveDir::Right);
+        let _ = request_place_grid(target, 3, 2, 2, 1); // latest should win
 
         let q = MAIN_OPS.lock();
         assert_eq!(q.len(), 1);
         match q.front().unwrap() {
             MainOp::PlaceGrid {
-                id: got, col, row, ..
+                target: got,
+                col,
+                row,
+                ..
             } => {
-                assert_eq!(*got, id);
+                assert_eq!(*got, target);
                 assert_eq!((*col, *row), (2, 1));
             }
             _ => panic!("unexpected op in queue"),
@@ -330,8 +345,8 @@ mod tests {
         let _ = request_focus_dir(MoveDir::Left);
         let _ = request_raise_window(7, 9);
         // Different id gets its own entry
-        let _ = request_place_grid(1, 2, 2, 0, 0);
-        let _ = request_place_grid(2, 2, 2, 1, 1);
+        let _ = request_place_grid(WorldWindowId::new(1, 10), 2, 2, 0, 0);
+        let _ = request_place_grid(WorldWindowId::new(2, 20), 2, 2, 1, 1);
         let q = MAIN_OPS.lock();
         assert_eq!(q.len(), 5);
     }

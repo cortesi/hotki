@@ -1,3 +1,5 @@
+use hotki_world_ids::WorldWindowId;
+
 use crate::{
     MoveDir, PlaceAttemptOptions, Result as WinResult, SpaceId, WindowId, WindowInfo,
     hide_bottom_left, request_activate_pid, request_focus_dir, request_fullscreen_native,
@@ -13,7 +15,7 @@ pub trait WinOps: Send + Sync {
     fn request_fullscreen_nonnative(&self, pid: i32, desired: crate::Desired) -> WinResult<()>;
     fn request_place_grid(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
@@ -21,7 +23,7 @@ pub trait WinOps: Send + Sync {
     ) -> WinResult<()>;
     fn request_place_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
@@ -29,7 +31,7 @@ pub trait WinOps: Send + Sync {
         opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
         let _ = opts;
-        self.request_place_grid(id, cols, rows, col, row)
+        self.request_place_grid(target, cols, rows, col, row)
     }
     fn request_place_grid_focused(
         &self,
@@ -53,21 +55,21 @@ pub trait WinOps: Send + Sync {
     }
     fn request_place_move_grid(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
     ) -> WinResult<()>;
     fn request_place_move_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
         opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
         let _ = opts;
-        self.request_place_move_grid(id, cols, rows, dir)
+        self.request_place_move_grid(target, cols, rows, dir)
     }
     fn request_focus_dir(&self, dir: MoveDir) -> WinResult<()>;
     fn request_activate_pid(&self, pid: i32) -> WinResult<()>;
@@ -98,24 +100,24 @@ impl WinOps for RealWinOps {
     }
     fn request_place_grid(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
         row: u32,
     ) -> WinResult<()> {
-        request_place_grid(id, cols, rows, col, row)
+        request_place_grid(target, cols, rows, col, row)
     }
     fn request_place_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
         row: u32,
         opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
-        request_place_grid_opts(id, cols, rows, col, row, opts)
+        request_place_grid_opts(target, cols, rows, col, row, opts)
     }
     fn request_place_grid_focused(
         &self,
@@ -140,22 +142,22 @@ impl WinOps for RealWinOps {
     }
     fn request_place_move_grid(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
     ) -> WinResult<()> {
-        request_place_move_grid(id, cols, rows, dir)
+        request_place_move_grid(target, cols, rows, dir)
     }
     fn request_place_move_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
         opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
-        request_place_move_grid_opts(id, cols, rows, dir, opts)
+        request_place_move_grid_opts(target, cols, rows, dir, opts)
     }
     fn request_focus_dir(&self, dir: MoveDir) -> WinResult<()> {
         request_focus_dir(dir)
@@ -345,13 +347,17 @@ impl WinOps for MockWinOps {
     }
     fn request_place_grid(
         &self,
-        _id: WindowId,
+        target: WorldWindowId,
         _cols: u32,
         _rows: u32,
         _col: u32,
         _row: u32,
     ) -> WinResult<()> {
         self.note("place_grid");
+        {
+            let mut g = self.last_place_grid_pid.lock();
+            *g = Some(target.pid());
+        }
         if self.fail_place_move_grid.load(Ordering::SeqCst) {
             return Err(crate::error::Error::MainThread);
         }
@@ -359,14 +365,14 @@ impl WinOps for MockWinOps {
     }
     fn request_place_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         col: u32,
         row: u32,
         _opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
-        self.request_place_grid(id, cols, rows, col, row)
+        self.request_place_grid(target, cols, rows, col, row)
     }
     fn request_place_grid_focused(
         &self,
@@ -399,7 +405,7 @@ impl WinOps for MockWinOps {
     }
     fn request_place_move_grid(
         &self,
-        _id: WindowId,
+        _target: WorldWindowId,
         _cols: u32,
         _rows: u32,
         _dir: MoveDir,
@@ -412,13 +418,13 @@ impl WinOps for MockWinOps {
     }
     fn request_place_move_grid_opts(
         &self,
-        id: WindowId,
+        target: WorldWindowId,
         cols: u32,
         rows: u32,
         dir: MoveDir,
         _opts: PlaceAttemptOptions,
     ) -> WinResult<()> {
-        self.request_place_move_grid(id, cols, rows, dir)
+        self.request_place_move_grid(target, cols, rows, dir)
     }
     fn request_focus_dir(&self, _dir: MoveDir) -> WinResult<()> {
         self.note("focus_dir");

@@ -104,6 +104,21 @@ fn to_move_dir(d: config::Dir) -> mac_winops::MoveDir {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetMatch {
+    Focused,
+    ActiveFrontmost,
+}
+
+impl TargetMatch {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Focused => "focused",
+            Self::ActiveFrontmost => "active-frontmost",
+        }
+    }
+}
+
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
@@ -893,15 +908,37 @@ impl Engine {
             }
         }
 
-        if let Err(e) = self
-            .svc
-            .winops
-            .request_place_grid_focused(pid, cols, rows, col, row)
+        if let Some((target, selection)) =
+            Self::resolve_target_window(&snap, focused_window.as_ref(), pid)
         {
-            let _ = self.svc.notifier.send_error("Place", format!("{}", e));
+            tracing::debug!(
+                "Place(World): resolved target via {} pid={} id={} app='{}' title='{}'",
+                selection.as_str(),
+                target.pid,
+                target.id,
+                target.app,
+                target.title
+            );
+            if let Err(e) =
+                self.svc
+                    .winops
+                    .request_place_grid(target.world_id(), cols, rows, col, row)
+            {
+                let _ = self.svc.notifier.send_error("Place", format!("{}", e));
+            }
+            self.hint_refresh();
+            Ok(())
+        } else {
+            tracing::debug!(
+                "Place(World): no active-space window resolved for pid={}",
+                pid
+            );
+            let _ = self
+                .svc
+                .notifier
+                .send_error("Place", "No eligible window to place".to_string());
+            Ok(())
         }
-        self.hint_refresh();
-        Ok(())
     }
 
     async fn handle_action_place_move(&self, cols: u32, rows: u32, dir: config::Dir) -> Result<()> {
@@ -910,12 +947,18 @@ impl Engine {
         let mut snap = self.svc.world.snapshot().await;
         snap.sort_by_key(|w| w.z);
         if !snap.is_empty() {
-            let candidate = snap
-                .iter()
-                .filter(|w| w.pid == pid && w.on_active_space)
-                .min_by_key(|w| (!w.focused, w.z))
-                .cloned();
-            if let Some(w) = candidate {
+            let focused_window = self.svc.world.focused_window().await;
+            if let Some((w, selection)) =
+                Self::resolve_target_window(&snap, focused_window.as_ref(), pid)
+            {
+                tracing::debug!(
+                    "Move(World): resolved target via {} pid={} id={} app='{}' title='{}'",
+                    selection.as_str(),
+                    w.pid,
+                    w.id,
+                    w.app,
+                    w.title
+                );
                 // Stage 6: Advisory pre-gate for move using AX props when the candidate is focused.
                 if w.focused
                     && let Some(ax) = w.ax.clone()
@@ -945,10 +988,10 @@ impl Engine {
                         return Ok(());
                     }
                 }
-                if let Err(e) = self
-                    .svc
-                    .winops
-                    .request_place_move_grid(w.id, cols, rows, mdir)
+                if let Err(e) =
+                    self.svc
+                        .winops
+                        .request_place_move_grid(w.world_id(), cols, rows, mdir)
                 {
                     let _ = self.svc.notifier.send_error("Move", format!("{}", e));
                 }
@@ -969,6 +1012,26 @@ impl Engine {
                 .send_error("Move", "No focused window to move".to_string());
         }
         Ok(())
+    }
+
+    fn resolve_target_window(
+        snapshot: &[WorldWindow],
+        focused: Option<&WorldWindow>,
+        pid: i32,
+    ) -> Option<(WorldWindow, TargetMatch)> {
+        if let Some(focused_window) = focused
+            && focused_window.pid == pid
+            && focused_window.on_active_space
+        {
+            return Some((focused_window.clone(), TargetMatch::Focused));
+        }
+
+        snapshot
+            .iter()
+            .filter(|w| w.pid == pid && w.on_active_space)
+            .min_by_key(|w| (if w.focused { 0 } else { 1 }, w.z))
+            .cloned()
+            .map(|window| (window, TargetMatch::ActiveFrontmost))
     }
 
     async fn handle_action_hide(&self, desired: config::Toggle) -> Result<()> {
