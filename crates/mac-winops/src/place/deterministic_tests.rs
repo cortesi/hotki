@@ -42,7 +42,11 @@ fn placement_succeeds_on_primary_attempt() {
         visible,
         PlaceAttemptOptions::default(),
         adapter_handle,
-    );
+    )
+    .with_visible_frame_resolver({
+        let visible_frame = visible;
+        move |_, _| visible_frame
+    });
     let engine = PlacementEngine::new(&ctx, engine_config());
 
     let outcome = engine
@@ -84,7 +88,11 @@ fn placement_recovers_with_axis_nudge() {
         visible,
         PlaceAttemptOptions::default(),
         adapter_handle,
-    );
+    )
+    .with_visible_frame_resolver({
+        let visible_frame = visible;
+        move |_, _| visible_frame
+    });
     let engine = PlacementEngine::new(&ctx, engine_config());
 
     let outcome = engine
@@ -121,7 +129,11 @@ fn placement_uses_fallback_on_retry_exhaustion() {
     let limits = RetryLimits::new(0, 0, 0, 1);
     let opts = PlaceAttemptOptions::default().with_retry_limits(limits);
     let adapter_handle: AxAdapterHandle = fake.clone() as AxAdapterHandle;
-    let ctx = PlacementContext::with_adapter(win.clone(), target, visible, opts, adapter_handle);
+    let ctx = PlacementContext::with_adapter(win.clone(), target, visible, opts, adapter_handle)
+        .with_visible_frame_resolver({
+            let visible_frame = visible;
+            move |_, _| visible_frame
+        });
     let engine = PlacementEngine::new(&ctx, engine_config());
 
     let outcome = engine
@@ -156,7 +168,11 @@ fn placement_reports_failure_when_all_attempts_exhausted() {
     let limits = RetryLimits::new(0, 0, 0, 1);
     let opts = PlaceAttemptOptions::default().with_retry_limits(limits);
     let adapter_handle: AxAdapterHandle = fake.clone() as AxAdapterHandle;
-    let ctx = PlacementContext::with_adapter(win.clone(), target, visible, opts, adapter_handle);
+    let ctx = PlacementContext::with_adapter(win.clone(), target, visible, opts, adapter_handle)
+        .with_visible_frame_resolver({
+            let visible_frame = visible;
+            move |_, _| visible_frame
+        });
     let engine = PlacementEngine::new(&ctx, engine_config());
 
     let outcome = engine
@@ -204,7 +220,11 @@ fn placement_skips_opposite_when_size_only_needed() {
         visible,
         PlaceAttemptOptions::default(),
         adapter_handle,
-    );
+    )
+    .with_visible_frame_resolver({
+        let visible_frame = visible;
+        move |_, _| visible_frame
+    });
     let engine = PlacementEngine::new(&ctx, engine_config());
 
     let outcome = engine

@@ -1,12 +1,13 @@
 use std::{fmt, sync::Arc};
 
+use objc2_foundation::MainThreadMarker;
 use tracing::debug;
 
 // Shared placement utilities: constants, small helpers, and attempt options.
 use super::adapter::{self, AxAdapter, AxAdapterHandle};
 use super::metrics::PLACEMENT_COUNTERS;
 pub(super) use super::metrics::{AttemptKind, AttemptOrder};
-use crate::geom::{self, Rect};
+use crate::geom::{self, Point, Rect};
 
 /// Default epsilon tolerance (in points) used to verify post-placement geometry.
 pub(super) const VERIFY_EPS: f64 = 2.0;
@@ -199,6 +200,7 @@ pub struct FallbackInvocation<'a> {
 
 type SafeParkHook = dyn Fn(&PlacementContext) -> bool + Send + Sync;
 type FallbackHook = dyn Fn(&FallbackInvocation<'_>) -> bool + Send + Sync;
+type VisibleFrameResolver = dyn Fn(MainThreadMarker, Point) -> Rect + Send + Sync + 'static;
 
 /// Customisable decision hooks for safe-park and fallback execution.
 #[derive(Clone)]
@@ -370,6 +372,7 @@ pub struct PlacementContext {
     visible_frame: Rect,
     attempt_options: PlaceAttemptOptions,
     adapter: AxAdapterHandle,
+    visible_frame_resolver: Arc<VisibleFrameResolver>,
 }
 
 impl fmt::Debug for PlacementContext {
@@ -415,7 +418,18 @@ impl PlacementContext {
             visible_frame,
             attempt_options,
             adapter,
+            visible_frame_resolver: default_visible_frame_resolver(),
         }
+    }
+
+    /// Override the resolver used to compute visible frames for the placement pipeline.
+    #[inline]
+    pub fn with_visible_frame_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(MainThreadMarker, Point) -> Rect + Send + Sync + 'static,
+    {
+        self.visible_frame_resolver = Arc::new(resolver);
+        self
     }
 
     /// Access the retained Accessibility element for subsequent operations.
@@ -459,6 +473,16 @@ impl PlacementContext {
     pub(crate) fn adapter(&self) -> AxAdapterHandle {
         self.adapter.clone()
     }
+
+    /// Resolve a visible frame for the supplied point using the configured resolver.
+    #[inline]
+    pub(crate) fn resolve_visible_frame(&self, mtm: MainThreadMarker, point: Point) -> Rect {
+        (self.visible_frame_resolver)(mtm, point)
+    }
+}
+
+fn default_visible_frame_resolver() -> Arc<VisibleFrameResolver> {
+    Arc::new(crate::screen_util::visible_frame_containing_point)
 }
 
 #[inline]

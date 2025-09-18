@@ -13,7 +13,6 @@ use super::{
 use crate::{
     Result,
     geom::{self, Rect},
-    screen_util::visible_frame_containing_point,
 };
 
 /// Successful placement outcome details.
@@ -152,7 +151,7 @@ impl<'a> PlacementEngine<'a> {
             eps,
             timing,
         )?;
-        let vf2 = visible_frame_containing_point(
+        let vf2 = self.ctx.resolve_visible_frame(
             mtm,
             geom::Point {
                 x: got1.cx(),
@@ -205,7 +204,7 @@ impl<'a> PlacementEngine<'a> {
             if allow_axis_nudge {
                 let (got_ax, settle_ms_ax) = adapter_ref
                     .nudge_axis_pos_and_wait(label, win, attrs, &target, axis, eps, timing)?;
-                let vf3 = visible_frame_containing_point(
+                let vf3 = self.ctx.resolve_visible_frame(
                     mtm,
                     geom::Point {
                         x: got_ax.cx(),
@@ -281,7 +280,7 @@ impl<'a> PlacementEngine<'a> {
                 timing,
             )?;
             got2 = got_retry;
-            vf4 = visible_frame_containing_point(
+            vf4 = self.ctx.resolve_visible_frame(
                 mtm,
                 geom::Point {
                     x: got2.cx(),
@@ -347,7 +346,7 @@ impl<'a> PlacementEngine<'a> {
             }
             debug!("verified=false");
             log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
-            let vf = visible_frame_containing_point(
+            let vf = self.ctx.resolve_visible_frame(
                 mtm,
                 geom::Point {
                     x: got_fallback.cx(),
@@ -474,7 +473,7 @@ impl<'a> PlacementEngine<'a> {
                 eps,
                 timing,
             )?;
-            let vf5 = visible_frame_containing_point(
+            let vf5 = self.ctx.resolve_visible_frame(
                 mtm,
                 geom::Point {
                     x: got_anchor.cx(),
@@ -542,7 +541,7 @@ impl<'a> PlacementEngine<'a> {
             }
             debug!("verified=false");
             log_failure_context(adapter_ref, win, self.config.role, self.config.subrole);
-            let vf = visible_frame_containing_point(
+            let vf = self.ctx.resolve_visible_frame(
                 mtm,
                 geom::Point {
                     x: got_fallback.cx(),
