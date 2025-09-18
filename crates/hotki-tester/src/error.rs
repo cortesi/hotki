@@ -32,6 +32,9 @@ pub enum Error {
     /// No focused window could be determined from the world snapshot.
     #[error("No focused window detected in world snapshot")]
     NoFocusedWindow,
+    /// No placement directives were provided to the tester command.
+    #[error("No placement directives supplied; pass place(...) or place_move(...) arguments")]
+    NoPlacementDirectives,
     /// Unable to resolve the Core Graphics window identifier for the focused window.
     #[error("Unable to determine window id for PID {pid}")]
     WindowIdUnavailable {

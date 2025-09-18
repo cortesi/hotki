@@ -3,7 +3,8 @@
 use std::{
     convert::TryFrom,
     env,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -62,6 +63,10 @@ pub fn run(args: &PlaceArgs, log_spec: &str) -> Result<()> {
                 .map_err(|err| Error::parse(format!("directive {} ('{}'): {}", idx + 1, raw, err)))
         })
         .collect::<Result<_>>()?;
+
+    if parsed_directives.is_empty() {
+        return Err(Error::NoPlacementDirectives);
+    }
 
     let total_steps = parsed_directives.len();
     info!(steps = total_steps, "Placement directives queued");
@@ -257,6 +262,7 @@ fn resolve_hotki_bin(args: &PlaceArgs) -> Result<PathBuf> {
             explicit.display()
         )));
     }
+
     if let Ok(env_path) = env::var("HOTKI_BIN") {
         let pb = PathBuf::from(&env_path);
         if pb.exists() {
@@ -264,16 +270,140 @@ fn resolve_hotki_bin(args: &PlaceArgs) -> Result<PathBuf> {
         }
         warn!(path = env_path, "HOTKI_BIN set but file does not exist");
     }
-    let exe = env::current_exe()?;
-    if let Some(dir) = exe.parent() {
-        let candidate = dir.join("hotki");
-        if candidate.exists() {
-            return Ok(candidate);
+
+    if let Ok(cargo_bin) = env::var("CARGO_BIN_EXE_hotki") {
+        let pb = PathBuf::from(&cargo_bin);
+        if pb.exists() {
+            info!(path = %pb.display(), "Using cargo-provided hotki binary path");
+            return Ok(pb);
         }
+        debug!(
+            path = cargo_bin,
+            "CARGO_BIN_EXE_hotki provided but missing on disk"
+        );
     }
-    Err(Error::other(
-        "could not locate hotki binary; pass --hotki-bin or set HOTKI_BIN",
-    ))
+
+    let exe = env::current_exe()?;
+    let exe_dir = exe.parent();
+    let workspace_root = workspace_root()?;
+    let target_dir = target_dir(&workspace_root);
+    let profile = exe_dir
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .map(|s| s.to_owned())
+        .or_else(|| env::var("PROFILE").ok())
+        .unwrap_or_else(|| "debug".to_string());
+
+    let mut primary = primary_hotki_paths(exe_dir, &target_dir, profile.as_str());
+    if let Some(existing) = primary.iter().find(|path| path.exists()) {
+        info!(path = %existing.display(), "Using existing hotki backend binary");
+        return Ok(existing.clone());
+    }
+
+    info!(profile = %profile, "Hotki backend binary missing; building via cargo");
+    build_hotki_backend(&workspace_root, profile.as_str())?;
+
+    primary = primary_hotki_paths(exe_dir, &target_dir, profile.as_str());
+    if let Some(existing) = primary.iter().find(|path| path.exists()) {
+        info!(path = %existing.display(), "Hotki backend built");
+        return Ok(existing.clone());
+    }
+
+    let fallback = fallback_hotki_paths(&target_dir, profile.as_str());
+    if let Some(existing) = fallback.iter().find(|path| path.exists()) {
+        info!(
+            path = %existing.display(),
+            "Falling back to alternate-profile hotki backend binary"
+        );
+        return Ok(existing.clone());
+    }
+
+    let searched = primary
+        .into_iter()
+        .chain(fallback)
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(Error::other(format!(
+        "could not locate hotki binary; pass --hotki-bin or set HOTKI_BIN (searched: {searched})"
+    )))
+}
+
+/// Return the workspace root directory derived from the crate manifest.
+fn workspace_root() -> Result<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| Error::other("failed to resolve workspace root"))
+}
+
+/// Determine the Cargo target directory, honouring `CARGO_TARGET_DIR` when set.
+fn target_dir(workspace_root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"))
+}
+
+/// Candidate hotki binaries that match the current build profile.
+fn primary_hotki_paths(exe_dir: Option<&Path>, target_dir: &Path, profile: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let bin_name = hotki_binary_name();
+
+    if let Some(dir) = exe_dir {
+        paths.push(dir.join(bin_name));
+    }
+
+    paths.push(target_dir.join(profile).join(bin_name));
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Alternate-profile hotki binaries used as a fallback when primary lookup fails.
+fn fallback_hotki_paths(target_dir: &Path, profile: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let bin_name = hotki_binary_name();
+    let alt_profile = if profile == "release" {
+        "debug"
+    } else {
+        "release"
+    };
+
+    paths.push(target_dir.join(alt_profile).join(bin_name));
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Platform-specific executable name for the hotki binary.
+fn hotki_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "hotki.exe"
+    } else {
+        "hotki"
+    }
+}
+
+/// Invoke `cargo build` to produce the hotki binary for the given profile.
+fn build_hotki_backend(workspace_root: &Path, profile: &str) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command.arg("build").arg("-p").arg("hotki");
+    if profile == "release" {
+        command.arg("--release");
+    }
+    info!(profile = %profile, "Running cargo build for hotki backend");
+    let status = command.current_dir(workspace_root).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::other(format!(
+            "cargo build -p hotki failed with status {}",
+            status
+        )))
+    }
 }
 
 /// Connect to the backend socket, retrying until the timeout expires.

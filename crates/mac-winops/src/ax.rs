@@ -11,6 +11,7 @@ use core_foundation::{
     string::{CFString, CFStringRef},
 };
 use objc2_app_kit::NSRunningApplication;
+#[cfg(debug_assertions)]
 use objc2_foundation::MainThreadMarker;
 use tracing::{Level, debug, enabled, warn};
 
