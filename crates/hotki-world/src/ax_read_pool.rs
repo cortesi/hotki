@@ -248,6 +248,7 @@ const MAX_CACHE_ENTRIES: usize = 2048;
 struct PoolTestOverrides {
     title: Option<(WindowId, String)>,
     title_delay_ms: Option<u64>,
+    props: HashMap<Key, AxProps>,
 }
 
 static TEST_OVERRIDES_GLOBAL: OnceLock<Mutex<PoolTestOverrides>> = OnceLock::new();
@@ -495,6 +496,17 @@ pub fn props(pid: i32, id: WindowId) -> Option<AxProps> {
             return Some(p);
         }
     }
+    let force_async = override_value(|o| o.ax_async_only).unwrap_or(false);
+    let props_override = if force_async {
+        None
+    } else {
+        test_overrides().lock().props.get(&Key { pid, id }).cloned()
+    };
+    if let Some(props) = props_override {
+        let mut cache = pool.cache.write();
+        cache.set_props(pid, id, props.clone(), Instant::now());
+        return Some(props);
+    }
     let tx = pool.ensure_worker(pid);
     let _ = tx.send(TimedJob {
         job: Job::PropsForId { pid, id },
@@ -550,6 +562,11 @@ pub fn _test_set_title_override(id: WindowId, title: &str) {
 pub fn _test_set_title_delay_ms(ms: u64) {
     let mut o = test_overrides().lock();
     o.title_delay_ms = Some(ms);
+}
+
+pub fn _test_set_props_override(pid: i32, id: WindowId, props: AxProps) {
+    let mut o = test_overrides().lock();
+    o.props.insert(Key { pid, id }, props);
 }
 
 pub fn _test_cache_usage() -> (usize, usize) {

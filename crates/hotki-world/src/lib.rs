@@ -2325,7 +2325,7 @@ pub mod test_api {
 
     use tokio::time::{Instant, sleep};
 
-    use super::{DisplayBounds, TEST_OVERRIDES, TestOverrides, WorldWindow};
+    use super::{AxProps, DisplayBounds, TEST_OVERRIDES, TestOverrides, WorldWindow};
 
     /// Get a clone of the AX hint bridge sender (if initialized) for tests.
     pub fn ax_hint_bridge_sender() -> Option<crossbeam_channel::Sender<mac_winops::AxEvent>> {
@@ -2434,6 +2434,9 @@ pub mod test_api {
         });
         super::global_overrides().lock().ax_title = Some((id, title.to_string()));
         super::ax_read_pool::_test_set_title_override(id, title);
+    }
+    pub fn set_ax_props(pid: i32, id: u32, props: AxProps) {
+        super::ax_read_pool::_test_set_props_override(pid, id, props);
     }
     pub fn set_coalesce_ms(ms: u64) {
         TEST_OVERRIDES.with(|o| {
