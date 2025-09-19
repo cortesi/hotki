@@ -40,6 +40,6 @@ aren't on our current space.
 6. Stage Six: Release Hygiene
 12. [x] Run `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests
     --examples 2>&1` and resolve warnings.
-13. [ ] Execute `cargo test --all` and `cargo run --bin smoketest -- all` with extended timeouts.
+13. [x] Execute `cargo test --all` and `cargo run --bin smoketest -- all` with extended timeouts.
 14. [ ] Document the space-scoped tracking strategy and performance expectations in
     `plans/world.md` or `DEV.md`.

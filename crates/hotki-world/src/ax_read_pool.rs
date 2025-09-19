@@ -1,7 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
-        OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -41,31 +41,176 @@ struct TimedJob {
     deadline: Instant,
 }
 
+struct CacheEntry<T> {
+    value: T,
+    expires_at: Instant,
+    order: u64,
+}
+
+impl<T> CacheEntry<T> {
+    fn new(value: T, order: u64, now: Instant) -> Self {
+        Self {
+            value,
+            expires_at: now + CACHE_TTL,
+            order,
+        }
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        now >= self.expires_at
+    }
+}
+
 #[derive(Default)]
 struct Cache {
     focus_by_pid: HashMap<i32, WindowId>,
-    title_by_key: HashMap<Key, String>,
-    props_by_key: HashMap<Key, AxProps>,
+    title_by_key: HashMap<Key, CacheEntry<String>>,
+    title_order: VecDeque<(Key, u64)>,
+    props_by_key: HashMap<Key, CacheEntry<AxProps>>,
+    props_order: VecDeque<(Key, u64)>,
+    next_order: u64,
 }
 
 impl Cache {
     fn get_focus(&self, pid: i32) -> Option<WindowId> {
         self.focus_by_pid.get(&pid).copied()
     }
+
     fn set_focus(&mut self, pid: i32, id: WindowId) {
         self.focus_by_pid.insert(pid, id);
     }
-    fn get_title(&self, pid: i32, id: WindowId) -> Option<String> {
-        self.title_by_key.get(&Key { pid, id }).cloned()
+
+    fn get_title(&mut self, pid: i32, id: WindowId, now: Instant) -> Option<String> {
+        self.prune_titles(now);
+        self.title_by_key
+            .get(&Key { pid, id })
+            .map(|entry| entry.value.clone())
     }
-    fn set_title(&mut self, pid: i32, id: WindowId, title: String) {
-        self.title_by_key.insert(Key { pid, id }, title);
+
+    fn set_title(&mut self, pid: i32, id: WindowId, title: String, now: Instant) {
+        let key = Key { pid, id };
+        let order = self.next_order;
+        self.next_order = self.next_order.wrapping_add(1);
+        self.title_by_key
+            .insert(key, CacheEntry::new(title, order, now));
+        self.title_order.push_back((key, order));
+        self.prune_titles(now);
+        self.enforce_title_capacity();
     }
-    fn get_props(&self, pid: i32, id: WindowId) -> Option<AxProps> {
-        self.props_by_key.get(&Key { pid, id }).cloned()
+
+    fn get_props(&mut self, pid: i32, id: WindowId, now: Instant) -> Option<AxProps> {
+        self.prune_props(now);
+        self.props_by_key
+            .get(&Key { pid, id })
+            .map(|entry| entry.value.clone())
     }
-    fn set_props(&mut self, pid: i32, id: WindowId, props: AxProps) {
-        self.props_by_key.insert(Key { pid, id }, props);
+
+    fn set_props(&mut self, pid: i32, id: WindowId, props: AxProps, now: Instant) {
+        let key = Key { pid, id };
+        let order = self.next_order;
+        self.next_order = self.next_order.wrapping_add(1);
+        self.props_by_key
+            .insert(key, CacheEntry::new(props, order, now));
+        self.props_order.push_back((key, order));
+        self.prune_props(now);
+        self.enforce_props_capacity();
+    }
+
+    fn prune_titles(&mut self, now: Instant) {
+        Self::prune_map(&mut self.title_by_key, &mut self.title_order, now);
+    }
+
+    fn prune_props(&mut self, now: Instant) {
+        Self::prune_map(&mut self.props_by_key, &mut self.props_order, now);
+    }
+
+    fn enforce_title_capacity(&mut self) {
+        Self::enforce_capacity(&mut self.title_by_key, &mut self.title_order);
+    }
+
+    fn enforce_props_capacity(&mut self) {
+        Self::enforce_capacity(&mut self.props_by_key, &mut self.props_order);
+    }
+
+    fn prune_map<T>(
+        map: &mut HashMap<Key, CacheEntry<T>>,
+        order: &mut VecDeque<(Key, u64)>,
+        now: Instant,
+    ) {
+        loop {
+            let Some((key, token)) = order.front().copied() else {
+                break;
+            };
+            let remove_front = match map.get(&key) {
+                Some(entry) if entry.order == token => entry.is_expired(now),
+                Some(_) => true,
+                None => true,
+            };
+            if remove_front {
+                order.pop_front();
+                if let Some(entry) = map.get(&key)
+                    && entry.order == token
+                    && entry.is_expired(now)
+                {
+                    map.remove(&key);
+                }
+                continue;
+            }
+            break;
+        }
+    }
+
+    fn enforce_capacity<T>(
+        map: &mut HashMap<Key, CacheEntry<T>>,
+        order: &mut VecDeque<(Key, u64)>,
+    ) {
+        while map.len() > MAX_CACHE_ENTRIES {
+            let Some((key, token)) = order.pop_front() else {
+                break;
+            };
+            if let Some(entry) = map.get(&key)
+                && entry.order == token
+            {
+                map.remove(&key);
+            }
+        }
+    }
+
+    fn peek_title(&self, pid: i32, id: WindowId) -> Option<String> {
+        self.title_by_key
+            .get(&Key { pid, id })
+            .map(|entry| entry.value.clone())
+    }
+
+    fn title_len(&self) -> usize {
+        self.title_by_key.len()
+    }
+
+    fn props_len(&self) -> usize {
+        self.props_by_key.len()
+    }
+}
+
+#[derive(Clone)]
+struct SharedWorldTx {
+    inner: Arc<RwLock<tokio::sync::mpsc::UnboundedSender<super::Command>>>,
+}
+
+impl SharedWorldTx {
+    fn new(tx: tokio::sync::mpsc::UnboundedSender<super::Command>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(tx)),
+        }
+    }
+
+    fn replace(&self, tx: tokio::sync::mpsc::UnboundedSender<super::Command>) {
+        *self.inner.write() = tx;
+    }
+
+    fn send(&self, cmd: super::Command) {
+        if let Err(err) = self.inner.read().send(cmd) {
+            tracing::debug!("ax-read pool hint refresh send failed: {err:?}");
+        }
     }
 }
 
@@ -75,12 +220,12 @@ struct Worker {
 }
 
 pub struct AxReadPool {
-    // cache mutated by workers; reads are lock‑free via RwLock read guard
+    // cache mutated by workers; reads are lock-free via RwLock read guard
     cache: RwLock<Cache>,
     // one worker per PID created lazily
     workers: RwLock<HashMap<Pid, Worker>>,
     // world actor command sender: used to nudge a reconcile
-    world_tx: tokio::sync::mpsc::UnboundedSender<super::Command>,
+    world_tx: SharedWorldTx,
     // global semaphore implemented via a bounded channel pre-filled with MAX_PARALLEL tokens
     sem_tx: Sender<()>,
     sem_rx: Receiver<()>,
@@ -94,6 +239,9 @@ const READ_DEADLINE_MS: u64 = 200;
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static PEAK_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static STALE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+const CACHE_TTL: Duration = Duration::from_secs(3);
+const MAX_CACHE_ENTRIES: usize = 2048;
 
 // Global test overrides visible across worker threads (integration tests only use via test_api).
 #[derive(Default, Clone)]
@@ -110,6 +258,10 @@ fn test_overrides() -> &'static Mutex<PoolTestOverrides> {
 impl AxReadPool {
     fn get() -> &'static AxReadPool {
         POOL.get().expect("AxReadPool not initialized")
+    }
+
+    fn rebind_world_tx(&self, world_tx: tokio::sync::mpsc::UnboundedSender<super::Command>) {
+        self.world_tx.replace(world_tx);
     }
 
     fn ensure_worker(&self, pid: i32) -> Sender<TimedJob> {
@@ -144,7 +296,7 @@ impl AxReadPool {
 fn worker_loop(
     pid: i32,
     rx: Receiver<TimedJob>,
-    world_tx: tokio::sync::mpsc::UnboundedSender<super::Command>,
+    world_tx: SharedWorldTx,
     sem_tx: Sender<()>,
     sem_rx: Receiver<()>,
 ) {
@@ -228,7 +380,7 @@ fn worker_loop(
                     if Instant::now() < tj.deadline {
                         let pool = AxReadPool::get();
                         let mut c = pool.cache.write();
-                        c.set_title(pid, id, title);
+                        c.set_title(pid, id, title, Instant::now());
                     } else {
                         STALE_DROPS.fetch_add(1, Ordering::SeqCst);
                     }
@@ -240,14 +392,14 @@ fn worker_loop(
                 {
                     let pool = AxReadPool::get();
                     let mut c = pool.cache.write();
-                    c.set_props(pid, id, props);
+                    c.set_props(pid, id, props, Instant::now());
                 }
             }
         }
         // Nudge world to refresh, lightly throttled
         let now = std::time::Instant::now();
         if now.saturating_duration_since(last_nudge) >= min_nudge_gap {
-            let _ = world_tx.send(super::Command::HintRefresh);
+            world_tx.send(super::Command::HintRefresh);
             last_nudge = now;
         }
     }
@@ -258,12 +410,17 @@ fn worker_loop(
 
 /// Initialize the AX read pool. Idempotent.
 pub fn init(world_tx: tokio::sync::mpsc::UnboundedSender<super::Command>) {
+    if let Some(pool) = POOL.get() {
+        pool.rebind_world_tx(world_tx);
+        return;
+    }
     // Create a bounded channel and prefill it with MAX_PARALLEL tokens.
     let (sem_tx, sem_rx) = chan::bounded::<()>(MAX_PARALLEL);
     for _ in 0..MAX_PARALLEL {
         let _ = sem_tx.send(());
     }
 
+    let world_tx = SharedWorldTx::new(world_tx);
     let _ = POOL.set(AxReadPool {
         cache: RwLock::new(Cache::default()),
         workers: RwLock::new(HashMap::new()),
@@ -302,8 +459,12 @@ pub fn focused_id(pid: i32) -> Option<WindowId> {
 /// Get last cached AX title for (pid, id); schedule background refresh if missing.
 pub fn title(pid: i32, id: WindowId) -> Option<String> {
     let pool = AxReadPool::get();
-    if let Some(t) = pool.cache.read().get_title(pid, id) {
-        return Some(t);
+    {
+        let now = Instant::now();
+        let mut cache = pool.cache.write();
+        if let Some(t) = cache.get_title(pid, id, now) {
+            return Some(t);
+        }
     }
     // Respect test overrides synchronously when present, unless forced async.
     let has_override = override_value(|o| o.ax_title.clone()).is_some();
@@ -313,7 +474,7 @@ pub fn title(pid: i32, id: WindowId) -> Option<String> {
         && let Some(t) = super::ax_title_for_window_id(id)
     {
         let mut c = pool.cache.write();
-        c.set_title(pid, id, t.clone());
+        c.set_title(pid, id, t.clone(), Instant::now());
         return Some(t);
     }
     let tx = pool.ensure_worker(pid);
@@ -327,8 +488,12 @@ pub fn title(pid: i32, id: WindowId) -> Option<String> {
 /// Get last cached `AxProps` for (pid, id); schedule background refresh if missing.
 pub fn props(pid: i32, id: WindowId) -> Option<AxProps> {
     let pool = AxReadPool::get();
-    if let Some(p) = pool.cache.read().get_props(pid, id) {
-        return Some(p);
+    {
+        let now = Instant::now();
+        let mut cache = pool.cache.write();
+        if let Some(p) = cache.get_props(pid, id, now) {
+            return Some(p);
+        }
     }
     let tx = pool.ensure_worker(pid);
     let _ = tx.send(TimedJob {
@@ -362,7 +527,7 @@ pub fn _test_reset_metrics_and_cache() {
 
 /// Peek cached title without scheduling a background job.
 pub fn _test_peek_title(pid: i32, id: WindowId) -> Option<String> {
-    AxReadPool::get().cache.read().get_title(pid, id)
+    AxReadPool::get().cache.read().peek_title(pid, id)
 }
 
 /// Peek cached focus without scheduling a background job.
@@ -382,4 +547,13 @@ pub fn _test_set_title_override(id: WindowId, title: &str) {
 pub fn _test_set_title_delay_ms(ms: u64) {
     let mut o = test_overrides().lock();
     o.title_delay_ms = Some(ms);
+}
+
+pub fn _test_cache_usage() -> (usize, usize) {
+    let pool = AxReadPool::get();
+    let mut cache = pool.cache.write();
+    let now = Instant::now();
+    cache.prune_titles(now);
+    cache.prune_props(now);
+    (cache.title_len(), cache.props_len())
 }

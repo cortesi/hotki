@@ -812,7 +812,6 @@ async fn handle_control_msg(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Start background key runtime and server connection driver on a dedicated thread.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_key_runtime(

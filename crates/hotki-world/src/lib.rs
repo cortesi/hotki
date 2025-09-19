@@ -393,20 +393,15 @@ impl fmt::Display for CommandError {
 impl std::error::Error for CommandError {}
 
 /// Permission state for capabilities that affect data quality.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PermissionState {
     /// Permission is granted.
     Granted,
     /// Permission is explicitly denied.
     Denied,
     /// Permission has not been determined yet.
+    #[default]
     Unknown,
-}
-
-impl Default for PermissionState {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Reported capabilities and current permission state.
@@ -2250,6 +2245,9 @@ pub mod test_api {
     }
     pub fn ax_pool_peek_title(pid: i32, id: u32) -> Option<String> {
         super::ax_read_pool::_test_peek_title(pid, id)
+    }
+    pub fn ax_pool_cache_usage() -> (usize, usize) {
+        super::ax_read_pool::_test_cache_usage()
     }
     pub fn ax_pool_schedule_title(pid: i32, id: u32) -> Option<String> {
         super::ax_read_pool::title(pid, id)
