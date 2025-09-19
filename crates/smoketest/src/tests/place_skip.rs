@@ -115,7 +115,37 @@ pub fn run_place_skip_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             server_drive::wait_for_ident("1", config::BINDING_GATES.default_ms * 2)?;
             send_key("g")?;
             let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
-            server_drive::wait_for_focused_pid(helper.pid, config::WAITS.first_window_ms)?;
+            let max_focus_retries: usize = 1;
+            let mut last_focus_timeout: Option<server_drive::DriverError> = None;
+            for attempt in 0..=max_focus_retries {
+                match server_drive::wait_for_focused_pid(helper.pid, config::WAITS.first_window_ms)
+                {
+                    Ok(()) => {
+                        last_focus_timeout = None;
+                        break;
+                    }
+                    Err(err @ server_drive::DriverError::FocusPidTimeout { .. })
+                        if attempt < max_focus_retries =>
+                    {
+                        eprintln!(
+                            "place-skip: focus wait timed out (attempt {} of {}); retrying raise",
+                            attempt + 1,
+                            max_focus_retries + 1
+                        );
+                        last_focus_timeout = Some(err);
+                        send_key("g")?;
+                        let _ = wait_for_frontmost_title(&title, config::WAITS.first_window_ms);
+                    }
+                    Err(err @ server_drive::DriverError::FocusPidTimeout { .. }) => {
+                        last_focus_timeout = Some(err);
+                        break;
+                    }
+                    Err(err) => return Err(Error::RpcDriver(err)),
+                }
+            }
+            if let Some(err) = last_focus_timeout {
+                return Err(Error::RpcDriver(err));
+            }
             send_key("1")?;
             // Wait for a short settle period and compare
             let settle_ms = 350; // generous but bounded

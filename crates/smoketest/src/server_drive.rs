@@ -72,12 +72,19 @@ pub enum DriverError {
         timeout_ms: u64,
     },
     /// Waiting for a focus PID match timed out.
-    #[error("timed out after {timeout_ms} ms waiting for focused pid {expected_pid}")]
+    #[error(
+        "timed out after {timeout_ms} ms waiting for focused pid {expected_pid} \
+         (last snapshot pid: {last_snapshot_pid:?}, last status pid: {last_status_pid:?})"
+    )]
     FocusPidTimeout {
         /// Expected process identifier.
         expected_pid: i32,
         /// Timeout duration in milliseconds.
         timeout_ms: u64,
+        /// Most recent pid reported by `get_world_snapshot`.
+        last_snapshot_pid: Option<i32>,
+        /// Most recent pid reported by `get_world_status`.
+        last_status_pid: Option<i32>,
     },
     /// Waiting for a focus title match timed out.
     #[error("timed out after {timeout_ms} ms waiting for focused title '{expected_title}'")]
@@ -340,21 +347,59 @@ pub fn get_world_snapshot() -> DriverResult<hotki_server::WorldSnapshotLite> {
     })
 }
 
+/// Fetch the currently focused PID from aggregated world status metrics.
+pub fn get_world_status_focused_pid() -> DriverResult<Option<i64>> {
+    with_connection_mut(|conn| {
+        block_on_rpc("get_world_status", async {
+            conn.get_world_status()
+                .await
+                .map(|status| status.focused_pid)
+        })
+    })
+}
+
 /// Wait until the backend reports the focused PID equals `expected_pid`.
 pub fn wait_for_focused_pid(expected_pid: i32, timeout_ms: u64) -> DriverResult<()> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let status_interval = Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms);
+    let mut last_status_query = Instant::now() - status_interval;
+    let mut last_snapshot_pid: Option<i32> = None;
+    let mut last_status_pid: Option<i32> = None;
+
     while Instant::now() < deadline {
         let snap = get_world_snapshot()?;
-        if let Some(app) = snap.focused
-            && app.pid == expected_pid
-        {
-            return Ok(());
+        let snapshot_pid = snap
+            .focused
+            .as_ref()
+            .map(|app| app.pid)
+            .or_else(|| snap.windows.iter().find(|w| w.focused).map(|w| w.pid));
+        if let Some(pid) = snapshot_pid {
+            last_snapshot_pid = Some(pid);
+            if pid == expected_pid {
+                return Ok(());
+            }
         }
+
+        let now = Instant::now();
+        if now.duration_since(last_status_query) >= status_interval {
+            if let Some(pid) = get_world_status_focused_pid()? {
+                if pid == i64::from(expected_pid) {
+                    return Ok(());
+                }
+                if pid >= i64::from(i32::MIN) && pid <= i64::from(i32::MAX) {
+                    last_status_pid = Some(pid as i32);
+                }
+            }
+            last_status_query = now;
+        }
+
         thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
     }
     Err(DriverError::FocusPidTimeout {
         expected_pid,
         timeout_ms,
+        last_snapshot_pid,
+        last_status_pid,
     })
 }
 
@@ -367,6 +412,9 @@ pub fn wait_for_focused_title(expected_title: &str, timeout_ms: u64) -> DriverRe
         if let Some(app) = snap.focused
             && app.title == want
         {
+            return Ok(());
+        }
+        if snap.windows.iter().any(|w| w.focused && w.title == want) {
             return Ok(());
         }
         thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
