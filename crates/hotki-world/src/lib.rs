@@ -445,9 +445,115 @@ impl Default for WorldCfg {
     }
 }
 
-/// Delta describing changed fields (placeholder for Stage 1).
+/// Captures the previous and current value for a window field that changed.
+#[derive(Clone, Debug)]
+pub struct ValueChange<T> {
+    /// Value observed before the change was applied.
+    pub old: T,
+    /// Value observed after the change was applied.
+    pub new: T,
+}
+
+impl<T> ValueChange<T> {
+    #[must_use]
+    fn new(old: T, new: T) -> Self {
+        Self { old, new }
+    }
+}
+
+/// Field-level delta attached to [`WorldEvent::Updated`].
 #[derive(Clone, Debug, Default)]
-pub struct WindowDelta;
+pub struct WindowDelta {
+    /// Title change.
+    pub title: Option<ValueChange<String>>,
+    /// Layer change.
+    pub layer: Option<ValueChange<i32>>,
+    /// Geometry change.
+    pub pos: Option<ValueChange<Option<Pos>>>,
+    /// Z-order change.
+    pub z: Option<ValueChange<u32>>,
+    /// Space assignment change.
+    pub space: Option<ValueChange<Option<mac_winops::SpaceId>>>,
+    /// Active-space residency change.
+    pub on_active_space: Option<ValueChange<bool>>,
+    /// On-screen residency change.
+    pub is_on_screen: Option<ValueChange<bool>>,
+    /// Display identifier change.
+    pub display_id: Option<ValueChange<Option<DisplayId>>>,
+    /// Focus flag change.
+    pub focused: Option<ValueChange<bool>>,
+}
+
+impl WindowDelta {
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.layer.is_none()
+            && self.pos.is_none()
+            && self.z.is_none()
+            && self.space.is_none()
+            && self.on_active_space.is_none()
+            && self.is_on_screen.is_none()
+            && self.display_id.is_none()
+            && self.focused.is_none()
+    }
+
+    fn merge(&mut self, other: WindowDelta) {
+        if let Some(change) = other.title {
+            match &mut self.title {
+                Some(existing) => existing.new = change.new,
+                None => self.title = Some(change),
+            }
+        }
+        if let Some(change) = other.layer {
+            match &mut self.layer {
+                Some(existing) => existing.new = change.new,
+                None => self.layer = Some(change),
+            }
+        }
+        if let Some(change) = other.pos {
+            match &mut self.pos {
+                Some(existing) => existing.new = change.new,
+                None => self.pos = Some(change),
+            }
+        }
+        if let Some(change) = other.z {
+            match &mut self.z {
+                Some(existing) => existing.new = change.new,
+                None => self.z = Some(change),
+            }
+        }
+        if let Some(change) = other.space {
+            match &mut self.space {
+                Some(existing) => existing.new = change.new,
+                None => self.space = Some(change),
+            }
+        }
+        if let Some(change) = other.on_active_space {
+            match &mut self.on_active_space {
+                Some(existing) => existing.new = change.new,
+                None => self.on_active_space = Some(change),
+            }
+        }
+        if let Some(change) = other.is_on_screen {
+            match &mut self.is_on_screen {
+                Some(existing) => existing.new = change.new,
+                None => self.is_on_screen = Some(change),
+            }
+        }
+        if let Some(change) = other.display_id {
+            match &mut self.display_id {
+                Some(existing) => existing.new = change.new,
+                None => self.display_id = Some(change),
+            }
+        }
+        if let Some(change) = other.focused {
+            match &mut self.focused {
+                Some(existing) => existing.new = change.new,
+                None => self.focused = Some(change),
+            }
+        }
+    }
+}
 
 /// Context describing the current focus selection accompanying focus events.
 #[derive(Clone, Debug, Default)]
@@ -471,6 +577,7 @@ pub enum WorldEvent {
     Removed(WindowKey),
     /// A window's properties changed. Updates are coalesced with a ~50ms debounce
     /// to avoid flooding on rapid changes (tests may override the debounce interval).
+    /// Each event carries field-level diffs for the changed properties.
     Updated(WindowKey, WindowDelta),
     /// A metadata tag was attached to a window (reserved for future use).
     MetaAdded(WindowKey, WindowMeta),
@@ -952,9 +1059,8 @@ struct WorldState {
     focused: Option<WindowKey>,
     capabilities: Capabilities,
     seen_seq: u64,
-    last_emit: HashMap<WindowKey, Instant>,
-    /// Pending coalesced Updated events with their flush deadline.
-    coalesce: HashMap<WindowKey, Instant>,
+    /// Pending coalesced Updated events keyed by window id.
+    coalesce: HashMap<WindowKey, PendingUpdate>,
     last_tick_ms: u64,
     current_poll_ms: u64,
     warned_ax: bool,
@@ -973,7 +1079,6 @@ impl WorldState {
             focused: None,
             capabilities: Capabilities::default(),
             seen_seq: 0,
-            last_emit: HashMap::new(),
             coalesce: HashMap::new(),
             last_tick_ms: 0,
             current_poll_ms: 0,
@@ -982,6 +1087,36 @@ impl WorldState {
             suspects: HashMap::new(),
             next_command_id: 1,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingUpdate {
+    due: Instant,
+    delta: WindowDelta,
+}
+
+impl PendingUpdate {
+    fn new(now: Instant) -> Self {
+        Self {
+            due: schedule_deadline(now),
+            delta: WindowDelta::default(),
+        }
+    }
+
+    fn reschedule(&mut self, now: Instant) {
+        self.due = schedule_deadline(now);
+    }
+}
+
+impl WorldState {
+    fn queue_update(&mut self, key: WindowKey, delta: WindowDelta, now: Instant) {
+        let entry = self
+            .coalesce
+            .entry(key)
+            .or_insert_with(|| PendingUpdate::new(now));
+        entry.delta.merge(delta);
+        entry.reschedule(now);
     }
 }
 
@@ -1097,7 +1232,7 @@ async fn run_actor(
                             focused: state.focused,
                             last_tick_ms: state.last_tick_ms,
                             current_poll_ms: state.current_poll_ms,
-                            debounce_cache: state.last_emit.len(),
+                            debounce_cache: state.coalesce.len(),
                             debounce_pending: state.coalesce.len(),
                             reconcile_seq: state.seen_seq,
                             suspects_pending: state.suspects.len(),
@@ -1130,7 +1265,7 @@ async fn run_actor(
                 metrics.sync_from_state(&state);
 
                 // Update coalesce timer to earliest pending deadline
-                next_coalesce_due = state.coalesce.values().copied().min();
+                next_coalesce_due = state.coalesce.values().map(|p| p.due).min();
                 if let Some(due) = next_coalesce_due {
                     coalesce_tick.as_mut().reset(TokioInstant::from_std(due));
                 }
@@ -1138,21 +1273,20 @@ async fn run_actor(
             _ = &mut coalesce_tick => {
                 let now = Instant::now();
                 // Emit coalesced updates whose deadline has passed
-                let keys: Vec<WindowKey> = state
+                let ready_keys: Vec<WindowKey> = state
                     .coalesce
                     .iter()
-                    .filter_map(|(k, &due)| if due <= now { Some(*k) } else { None })
+                    .filter_map(|(&k, pending)| if pending.due <= now { Some(k) } else { None })
                     .collect();
-                for k in keys.iter() {
-                    if state.store.contains_key(k) {
-                        let _ = events.send(WorldEvent::Updated(*k, WindowDelta));
-                        state.last_emit.insert(*k, now);
-                    }
-                    state.coalesce.remove(k);
+                for key in ready_keys {
+                    if let Some(pending) = state.coalesce.remove(&key)
+                        && state.store.contains_key(&key) {
+                            let _ = events.send(WorldEvent::Updated(key, pending.delta));
+                        }
                 }
                 metrics.sync_from_state(&state);
                 // Re-arm the timer for the next earliest deadline
-                next_coalesce_due = state.coalesce.values().copied().min();
+                next_coalesce_due = state.coalesce.values().map(|p| p.due).min();
                 if let Some(due) = next_coalesce_due {
                     coalesce_tick.as_mut().reset(TokioInstant::from_std(due));
                 } else {
@@ -1238,47 +1372,58 @@ fn reconcile(
             _ => None,
         };
         if let Some(existing) = state.store.get_mut(&key) {
-            let mut changed = false;
+            let mut delta = WindowDelta::default();
             let new_title = if is_focus {
                 ax_focus_title.clone().unwrap_or_else(|| w.title.clone())
             } else {
                 w.title.clone()
             };
             if existing.title != new_title {
-                existing.title = new_title;
-                changed = true;
+                let old = existing.title.clone();
+                existing.title = new_title.clone();
+                delta.title = Some(ValueChange::new(old, new_title));
             }
             if existing.layer != w.layer {
+                let old = existing.layer;
                 existing.layer = w.layer;
-                changed = true;
+                delta.layer = Some(ValueChange::new(old, w.layer));
             }
             if existing.pos != w.pos {
-                existing.pos = w.pos;
-                changed = true;
+                let old = existing.pos;
+                let new_pos = w.pos;
+                existing.pos = new_pos;
+                delta.pos = Some(ValueChange::new(old, new_pos));
             }
             if existing.z != z {
+                let old = existing.z;
                 existing.z = z;
-                changed = true;
+                delta.z = Some(ValueChange::new(old, z));
             }
             if existing.space != w.space {
-                existing.space = w.space;
-                changed = true;
+                let old = existing.space;
+                let new_space = w.space;
+                existing.space = new_space;
+                delta.space = Some(ValueChange::new(old, new_space));
             }
             if existing.on_active_space != w.on_active_space {
+                let old = existing.on_active_space;
                 existing.on_active_space = w.on_active_space;
-                changed = true;
+                delta.on_active_space = Some(ValueChange::new(old, w.on_active_space));
             }
             if existing.is_on_screen != w.is_on_screen {
+                let old = existing.is_on_screen;
                 existing.is_on_screen = w.is_on_screen;
-                changed = true;
+                delta.is_on_screen = Some(ValueChange::new(old, w.is_on_screen));
             }
             if existing.display_id != display_id {
+                let old = existing.display_id;
                 existing.display_id = display_id;
-                changed = true;
+                delta.display_id = Some(ValueChange::new(old, display_id));
             }
             if existing.focused != is_focus {
+                let old = existing.focused;
                 existing.focused = is_focus;
-                changed = true;
+                delta.focused = Some(ValueChange::new(old, is_focus));
             }
             // Populate AX props only for the focused window; clear otherwise.
             existing.ax = if is_focus {
@@ -1288,12 +1433,9 @@ fn reconcile(
             };
             existing.last_seen = now;
             existing.seen_seq = seq;
-            if changed {
+            if !delta.is_empty() {
                 had_changes = true;
-                // Trailing-edge debounce: schedule coalesced Updated after quiet period
-                state
-                    .coalesce
-                    .insert(key, now + Duration::from_millis(coalesce_window_ms()));
+                state.queue_update(key, delta, now);
             }
         } else {
             had_changes = true;
@@ -1325,7 +1467,6 @@ fn reconcile(
             };
             state.store.insert(key, ww.clone());
             let _ = events.send(WorldEvent::Added(Box::new(ww)));
-            state.last_emit.insert(key, now);
         }
     }
 
@@ -1333,6 +1474,7 @@ fn reconcile(
     const SUSPECT_MISSES: u8 = 1; // mark suspect after 1 missed pass; evict on next if still absent
     let seen: std::collections::HashSet<_> = seen_keys.iter().copied().collect();
     let existing_keys: Vec<_> = state.store.keys().copied().collect();
+    let mut confirm_cache: Option<Vec<WindowInfo>> = None;
     // First, clear suspect status for any windows we have seen this pass.
     for key in seen.iter() {
         state.suspects.remove(key);
@@ -1343,14 +1485,12 @@ fn reconcile(
             *misses = misses.saturating_add(1);
             if *misses > SUSPECT_MISSES {
                 // Confirm absence against a fresh CGWindowList filtered by the same pid/id
-                let still_absent = {
-                    let confirm = winops.list_windows_for_spaces(&[]);
-                    !confirm.iter().any(|w| w.pid == key.pid && w.id == key.id)
-                };
+                let confirm =
+                    confirm_cache.get_or_insert_with(|| winops.list_windows_for_spaces(&[]));
+                let still_absent = !confirm.iter().any(|w| w.pid == key.pid && w.id == key.id);
                 if still_absent {
                     had_changes = true;
                     state.store.remove(&key);
-                    state.last_emit.remove(&key);
                     state.coalesce.remove(&key);
                     state.suspects.remove(&key);
                     let _ = events.send(WorldEvent::Removed(key));
@@ -2165,6 +2305,10 @@ fn list_display_bounds() -> Vec<DisplayBounds> {
         return v;
     }
     mac_winops::screen::list_display_bounds()
+}
+
+fn schedule_deadline(now: Instant) -> Instant {
+    now + Duration::from_millis(coalesce_window_ms())
 }
 
 fn coalesce_window_ms() -> u64 {

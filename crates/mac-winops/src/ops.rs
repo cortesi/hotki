@@ -261,6 +261,13 @@ impl MockWinOps {
     pub fn calls_contains(&self, s: &str) -> bool {
         self.calls.lock().iter().any(|x| x == s)
     }
+    pub fn call_count(&self, name: &str) -> usize {
+        self.calls
+            .lock()
+            .iter()
+            .filter(|call| call.as_str() == name)
+            .count()
+    }
     pub fn set_fail_focus_dir(&self, v: bool) {
         self.fail_focus_dir.store(v, Ordering::SeqCst);
     }
@@ -488,6 +495,7 @@ impl WinOps for MockWinOps {
         self.filter_windows(None)
     }
     fn list_windows_for_spaces(&self, spaces: &[SpaceId]) -> Vec<WindowInfo> {
+        self.note("list_windows_for_spaces");
         self.filter_windows(Some(spaces))
     }
     fn frontmost_window(&self) -> Option<WindowInfo> {

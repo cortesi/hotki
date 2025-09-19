@@ -851,6 +851,169 @@ fn coalesced_trailing_update_after_quiet_period() {
 }
 
 #[test]
+fn updated_event_includes_field_deltas() {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
+        let mock = Arc::new(MockWinOps::new());
+        mock.set_windows(vec![win(
+            "AppA",
+            "Initial",
+            10,
+            1,
+            Pos {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 300,
+            },
+            0,
+            true,
+        )]);
+        let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
+
+        let mut rx = world.subscribe();
+        tokio::time::sleep(Duration::from_millis(FAST_COALESCE_MS * 2)).await;
+        drain_events(&mut rx);
+
+        let mut updated = win(
+            "AppA",
+            "Renamed",
+            10,
+            1,
+            Pos {
+                x: 2100,
+                y: 20,
+                width: 420,
+                height: 330,
+            },
+            5,
+            true,
+        );
+        updated.space = Some(2);
+        updated.on_active_space = false;
+        mock.set_windows(vec![updated]);
+
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "expected pending debounce entry"
+        );
+
+        let event = recv_event_until(&mut rx, FAST_COALESCE_MS * 4, |ev| {
+            matches!(ev, WorldEvent::Updated(_, _))
+        })
+        .await
+        .expect("updated event should arrive");
+
+        let key = WindowKey { pid: 10, id: 1 };
+        let delta = match event {
+            WorldEvent::Updated(k, delta) => {
+                assert_eq!(k, key);
+                delta
+            }
+            _ => unreachable!("filtered for Updated events"),
+        };
+
+        let title = delta.title.expect("title change should be captured");
+        assert_eq!(title.old, "Initial");
+        assert_eq!(title.new, "Renamed");
+
+        let layer = delta.layer.expect("layer change recorded");
+        assert_eq!(layer.old, 0);
+        assert_eq!(layer.new, 5);
+
+        let pos = delta.pos.expect("geometry change recorded");
+        assert_eq!(pos.old.unwrap().x, 0);
+        assert_eq!(pos.new.unwrap().x, 2100);
+
+        let space = delta.space.expect("space change recorded");
+        assert_eq!(space.old, Some(1));
+        assert_eq!(space.new, Some(2));
+
+        let on_active = delta
+            .on_active_space
+            .expect("on_active_space change recorded");
+        assert!(on_active.old);
+        assert!(!on_active.new);
+
+        let display = delta.display_id.expect("display change recorded");
+        assert_eq!(display.old, Some(1));
+        assert_eq!(display.new, Some(2));
+
+        assert!(delta.focused.is_none(), "focus should be unchanged");
+
+        let snap = world.snapshot().await;
+        let updated_window = snap.iter().find(|w| w.id == 1).unwrap();
+        assert_eq!(updated_window.title, "Renamed");
+        assert_eq!(updated_window.layer, 5);
+        assert_eq!(updated_window.space, Some(2));
+        assert!(!updated_window.on_active_space);
+        assert_eq!(updated_window.display_id, Some(2));
+    });
+}
+
+#[test]
+fn status_exposes_debounce_cache_size() {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
+        let mock = Arc::new(MockWinOps::new());
+        mock.set_windows(vec![win(
+            "AppA",
+            "Initial",
+            20,
+            1,
+            Pos {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 180,
+            },
+            0,
+            true,
+        )]);
+        let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
+        let mut rx = world.subscribe();
+        tokio::time::sleep(Duration::from_millis(FAST_COALESCE_MS * 2)).await;
+        drain_events(&mut rx);
+
+        let mut updated = win(
+            "AppA",
+            "Initial",
+            20,
+            1,
+            Pos {
+                x: 15,
+                y: 10,
+                width: 220,
+                height: 200,
+            },
+            0,
+            true,
+        );
+        updated.title = "Later".into();
+        mock.set_windows(vec![updated]);
+
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "debounce cache should register the change"
+        );
+
+        let status = world.status().await;
+        assert_eq!(status.debounce_cache, 1);
+        assert_eq!(status.debounce_pending, 1);
+
+        let _ = recv_event_until(&mut rx, FAST_COALESCE_MS * 4, |ev| {
+            matches!(ev, WorldEvent::Updated(_, _))
+        })
+        .await
+        .expect("coalesced update should flush");
+
+        let status_cleared = world.status().await;
+        assert_eq!(status_cleared.debounce_cache, 0);
+        assert_eq!(status_cleared.debounce_pending, 0);
+    });
+}
+
+#[test]
 fn startup_focus_event_and_context_and_snapshot() {
     run_world_test(Some(FAST_COALESCE_MS), async move {
         // Single focused window present at startup

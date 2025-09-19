@@ -167,3 +167,64 @@ fn pid_reuse_no_false_positive() {
         );
     });
 }
+
+#[test]
+fn confirmation_snapshot_reused_across_suspects() {
+    run_async_test(async move {
+        let _guard = override_scope();
+        let mock = Arc::new(MockWinOps::new());
+        mock.set_windows(vec![win("AppA", "A1", 200, 1), win("AppB", "B1", 201, 2)]);
+        world_test::set_ax_bridge_enabled(false);
+        world_test::set_accessibility_ok(false);
+        world_test::set_screen_recording_ok(false);
+        world_test::set_displays(vec![(1, 0, 0, 1920, 1080)]);
+
+        let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
+        tokio::task::yield_now().await;
+        assert!(
+            wait_snapshot_until(&world, 500, |s| s.len() == 2).await,
+            "expected two windows to be tracked initially"
+        );
+
+        mock.set_windows(vec![]);
+        drain_events(&mut world.subscribe()); // drop immediate Added events we don't care about
+
+        let initial_calls = mock.call_count("list_windows_for_spaces");
+        let baseline_seq = world.metrics_snapshot().reconcile_seq;
+
+        world.hint_refresh();
+        let first_pass =
+            wait_metrics_until(&world, 1000, |metrics| metrics.reconcile_seq > baseline_seq)
+                .await
+                .expect("first reconcile pass should execute");
+        assert_eq!(
+            mock.call_count("list_windows_for_spaces") - initial_calls,
+            1,
+            "first pass should only enumerate once"
+        );
+        assert_eq!(
+            first_pass.suspects_pending, 2,
+            "both windows should be suspect"
+        );
+
+        let calls_before_second = mock.call_count("list_windows_for_spaces");
+        world.hint_refresh();
+        let second_pass = wait_metrics_until(&world, 1000, |metrics| {
+            metrics.reconcile_seq > first_pass.reconcile_seq
+        })
+        .await
+        .expect("second reconcile pass should execute");
+
+        let calls_after_second = mock.call_count("list_windows_for_spaces");
+        assert_eq!(
+            calls_after_second - calls_before_second,
+            2,
+            "second pass should reuse a single confirmation snapshot for both suspects"
+        );
+        assert_eq!(second_pass.windows_count, 0, "windows should be evicted");
+        assert_eq!(
+            second_pass.suspects_pending, 0,
+            "suspects should be cleared"
+        );
+    });
+}
