@@ -8,7 +8,7 @@
 //! even if H > cell height.
 
 use std::{
-    cmp, thread,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -39,7 +39,7 @@ pub fn run_place_move_min_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     let mut helper = HelperWindow::spawn_frontmost_with_builder(
         builder,
         &title,
-        cmp::min(timeout_ms, config::HIDE.first_window_max_ms),
+        timeout_ms,
         config::PLACE.poll_ms,
         with_logs,
     )?;

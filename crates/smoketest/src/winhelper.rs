@@ -16,7 +16,7 @@ mod helper_app {
 
     use hotki_world::PlaceAttemptOptions;
     use hotki_world_ids::WorldWindowId;
-    use mac_winops::{self, Rect, screen};
+    use mac_winops::{self, screen};
     use objc2::rc::autoreleasepool;
     use tracing::{debug, info};
     use winit::{
@@ -389,14 +389,18 @@ mod helper_app {
             debug!("winhelper: world placement giving up after retries");
         }
 
-        /// Confirm the helper window occupies the requested grid cell.
+        /// Confirm the helper window occupies the requested grid cell using
+        /// anchored semantics (position matches exactly; size may exceed the
+        /// cell because of minimums or non-resizable windows).
         fn verify_grid_cell(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> bool {
             if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &self.title)
                 && let Some(vf) = screen::visible_frame_containing_point(x, y)
             {
                 let expected = mac_winops::cell_rect(vf, cols, rows, col, row);
-                let actual = Rect::new(x, y, w, h);
-                return actual.approx_eq(&expected, config::PLACE.eps);
+                let eps = config::PLACE.eps;
+                let pos_ok = (x - expected.x).abs() <= eps && (y - expected.y).abs() <= eps;
+                let size_ok = (w + eps) >= expected.w && (h + eps) >= expected.h;
+                return pos_ok && size_ok;
             }
             false
         }
