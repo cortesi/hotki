@@ -16,6 +16,7 @@ mod helper_app {
 
     use hotki_world::PlaceAttemptOptions;
     use hotki_world_ids::WorldWindowId;
+    use mac_winops::{self, Rect, screen};
     use objc2::rc::autoreleasepool;
     use tracing::{debug, info};
     use winit::{
@@ -368,8 +369,13 @@ mod helper_app {
         ) {
             for attempt in 0..120 {
                 if let Some(target) = self.resolve_world_window() {
+                    let pid = target.pid();
                     match world::place_window(target, cols, rows, col, row, options.cloned()) {
-                        Ok(_) => return,
+                        Ok(_) => {
+                            if self.verify_grid_cell(pid, cols, rows, col, row) {
+                                return;
+                            }
+                        }
                         Err(err) => {
                             debug!(
                                 "winhelper: world placement attempt {} failed: {}",
@@ -381,6 +387,18 @@ mod helper_app {
                 thread::sleep(Duration::from_millis(20));
             }
             debug!("winhelper: world placement giving up after retries");
+        }
+
+        /// Confirm the helper window occupies the requested grid cell.
+        fn verify_grid_cell(&self, pid: i32, cols: u32, rows: u32, col: u32, row: u32) -> bool {
+            if let Some(((x, y), (w, h))) = mac_winops::ax_window_frame(pid, &self.title)
+                && let Some(vf) = screen::visible_frame_containing_point(x, y)
+            {
+                let expected = mac_winops::cell_rect(vf, cols, rows, col, row);
+                let actual = Rect::new(x, y, w, h);
+                return actual.approx_eq(&expected, config::PLACE.eps);
+            }
+            false
         }
 
         /// Capture the starting geometry used by delayed/tweened placement logic.

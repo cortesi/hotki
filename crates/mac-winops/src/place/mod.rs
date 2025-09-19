@@ -27,6 +27,9 @@
 
 use crate::geom;
 
+const AX_WINDOW_RETRIES: usize = 40;
+const AX_WINDOW_RETRY_DELAY_MS: u64 = 20;
+
 mod adapter;
 mod apply;
 mod common;
@@ -58,6 +61,26 @@ pub use ops_focused::{place_grid_focused, place_grid_focused_opts};
 pub(crate) use ops_id::place_grid_opts;
 pub use ops_move::place_move_grid;
 pub(crate) use ops_move::place_move_grid_opts;
+
+/// Resolve an AX window by id, retrying briefly when the window has not yet
+/// surfaced in the AXWindows list. Newly spawned helpers sometimes delay their
+/// accessibility registration; a short retry loop keeps placement callers from
+/// racing that hand-off.
+pub(super) fn ax_window_for_id_with_retry(
+    id: crate::WindowId,
+) -> crate::Result<(crate::AXElem, i32)> {
+    let mut attempts = 0usize;
+    loop {
+        match crate::ax::ax_window_for_id(id) {
+            Ok(found) => return Ok(found),
+            Err(crate::Error::FocusedWindow) if attempts < AX_WINDOW_RETRIES => {
+                attempts = attempts.saturating_add(1);
+                common::sleep_ms(AX_WINDOW_RETRY_DELAY_MS);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
 
 /// Capture a snapshot of placement attempt counters for diagnostics.
 pub fn placement_counters_snapshot() -> PlacementCountersSnapshot {

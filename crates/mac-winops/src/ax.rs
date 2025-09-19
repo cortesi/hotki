@@ -13,7 +13,7 @@ use core_foundation::{
 use objc2_app_kit::NSRunningApplication;
 #[cfg(debug_assertions)]
 use objc2_foundation::MainThreadMarker;
-use tracing::{Level, debug, enabled, warn};
+use tracing::{Level, debug, enabled, info};
 
 use crate::{
     AXElem, WindowId,
@@ -442,7 +442,7 @@ pub fn warn_once_nonsettable(pid: i32, can_pos: Option<bool>, can_size: Option<b
                 Some(true) => "true",
                 None => "unknown",
             };
-            warn!(
+            info!(
                 "AX non-settable attributes for {}: AXPosition={} AXSize={}",
                 key, s_pos, s_size
             );

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     Error, Result, WindowId,
-    ax::{ax_check, ax_get_point, ax_get_size, ax_window_for_id, cfstr},
+    ax::{ax_check, ax_get_point, ax_get_size, cfstr},
     error::PlacementErrorDetails,
     geom::Rect,
     screen_util::visible_frame_containing_point,
@@ -40,7 +40,7 @@ fn place_move_grid_inner(
 ) -> Result<()> {
     ax_check()?;
     let mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
-    let (win, pid_for_id) = ax_window_for_id(id)?;
+    let (win, pid_for_id) = super::ax_window_for_id_with_retry(id)?;
     let attr_pos = cfstr("AXPosition");
     let attr_size = cfstr("AXSize");
 

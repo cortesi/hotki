@@ -689,17 +689,81 @@ pub fn drain_main_ops() {
                 opts,
             } => {
                 let id: WindowId = target.window_id();
-                if let Err(e) = placement().place_grid(id, cols, rows, col, row, opts) {
-                    tracing::warn!(
-                        "PlaceGrid failed: pid={} id={} cols={} rows={} col={} row={} err={}",
-                        target.pid(),
-                        id,
-                        cols,
-                        rows,
-                        col,
-                        row,
-                        e
-                    );
+                let pid = target.pid();
+                match placement().place_grid(id, cols, rows, col, row, opts.clone()) {
+                    Ok(()) => {}
+                    Err(Error::FocusedWindow) => {
+                        let front_matches = crate::window::frontmost_window_for_pid(pid)
+                            .map(|front| front.id == id)
+                            .unwrap_or(false);
+                        let windows = crate::window::list_windows_for_spaces(&[]);
+                        let target_info = windows.iter().find(|w| w.pid == pid && w.id == id);
+                        let focused_matches = target_info
+                            .map(|info| info.focused && info.on_active_space)
+                            .unwrap_or(false);
+                        let single_window_for_pid = target_info.is_some()
+                            && windows.iter().filter(|w| w.pid == pid).count() == 1;
+                        if front_matches || focused_matches || single_window_for_pid {
+                            match placement().place_grid_focused(
+                                pid,
+                                cols,
+                                rows,
+                                col,
+                                row,
+                                opts.clone(),
+                            ) {
+                                Ok(()) => {
+                                    tracing::debug!(
+                                        "PlaceGrid recovered via focused fallback: pid={} id={} cols={} rows={} col={} row={}",
+                                        pid,
+                                        id,
+                                        cols,
+                                        rows,
+                                        col,
+                                        row
+                                    );
+                                }
+                                Err(focused_err) => {
+                                    tracing::warn!(
+                                        "PlaceGrid failed (focused fallback): pid={} id={} cols={} rows={} col={} row={} err={}",
+                                        pid,
+                                        id,
+                                        cols,
+                                        rows,
+                                        col,
+                                        row,
+                                        focused_err
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::debug!(
+                                "PlaceGrid skipping focused fallback: pid={} id={} cols={} rows={} col={} row={} reason={}",
+                                pid,
+                                id,
+                                cols,
+                                rows,
+                                col,
+                                row,
+                                match target_info {
+                                    None => "target_not_present",
+                                    Some(_) => "target_not_frontmost",
+                                }
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "PlaceGrid failed: pid={} id={} cols={} rows={} col={} row={} err={}",
+                            pid,
+                            id,
+                            cols,
+                            rows,
+                            col,
+                            row,
+                            e
+                        );
+                    }
                 }
             }
             MainOp::PlaceMoveGrid {
