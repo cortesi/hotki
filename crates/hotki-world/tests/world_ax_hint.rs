@@ -57,10 +57,7 @@ where
         let _guard = override_scope();
         world_test::set_accessibility_ok(true);
         world_test::set_screen_recording_ok(true);
-        world_test::set_displays(vec![
-            (1, 0, 0, 1920, 1080),
-            (2, 1920, 0, 1920, 1080),
-        ]);
+        world_test::set_displays(vec![(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
         if let Some(ms) = coalesce_ms {
             world_test::set_coalesce_ms(ms);
         }
