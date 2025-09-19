@@ -47,7 +47,7 @@ fn cfg_slow_min() -> WorldCfg {
     }
 }
 
-const FAST_COALESCE_MS: u64 = 10;
+const FAST_COALESCE_MS: u64 = 30;
 
 fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
 where
@@ -87,7 +87,7 @@ fn ax_event_created_triggers_fast_refresh() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_slow_min());
 
         // Wait for initial reconcile (1 window)
-        assert!(wait_snapshot_until(&world, 220, |s| s.len() == 1).await);
+        assert!(wait_snapshot_until(&world, 260, |s| s.len() == 1).await);
 
         // Change underlying windows to add one more; without a hint this would
         // only be observed after ~poll_ms_min (500 ms).

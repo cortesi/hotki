@@ -221,6 +221,7 @@ pub struct WorldStatusLite {
     pub last_tick_ms: u64,
     pub current_poll_ms: u64,
     pub debounce_cache: u64,
+    pub debounce_pending: u64,
     pub accessibility: i32,
     pub screen_recording: i32,
 }
@@ -281,6 +282,7 @@ impl WorldStatusLite {
                 let mut last_tick_ms = 0u64;
                 let mut current_poll_ms = 0u64;
                 let mut debounce_cache = 0u64;
+                let mut debounce_pending = 0u64;
                 let mut accessibility = -1i32;
                 let mut screen_recording = -1i32;
 
@@ -316,6 +318,11 @@ impl WorldStatusLite {
                                     debounce_cache = i.as_u64().unwrap_or(0);
                                 }
                             }
+                            Some("debounce_pending") => {
+                                if let Value::Integer(i) = val {
+                                    debounce_pending = i.as_u64().unwrap_or(0);
+                                }
+                            }
                             Some("capabilities") => {
                                 if let Value::Map(cap) = val {
                                     let (acc, scr) = Self::parse_capabilities(cap);
@@ -334,6 +341,7 @@ impl WorldStatusLite {
                     last_tick_ms,
                     current_poll_ms,
                     debounce_cache,
+                    debounce_pending,
                     accessibility,
                     screen_recording,
                 })

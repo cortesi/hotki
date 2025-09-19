@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::{sync::broadcast, time::Instant};
 
 /// Drop guard that clears any test overrides on scope exit.
 pub struct TestOverridesGuard;
@@ -52,5 +52,25 @@ where
             Ok(Err(_)) => return None,
             Err(_) => return None,
         }
+    }
+}
+
+/// Wait until the world's debounce queue matches `expected` pending entries.
+/// Returns false if the condition was not met before `timeout_ms` elapsed.
+pub async fn wait_debounce_pending(
+    world: &crate::WorldHandle,
+    expected: usize,
+    timeout_ms: u64,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let status = world.status().await;
+        if status.debounce_pending == expected {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }

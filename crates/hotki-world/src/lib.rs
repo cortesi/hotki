@@ -472,7 +472,7 @@ pub enum WorldEvent {
     /// A previously observed window disappeared from the active Space.
     Removed(WindowKey),
     /// A window's properties changed. Updates are coalesced with a ~50ms debounce
-    /// to avoid flooding on rapid changes (tests may override the window).
+    /// to avoid flooding on rapid changes (tests may override the debounce interval).
     Updated(WindowKey, WindowDelta),
     /// A metadata tag was attached to a window (reserved for future use).
     MetaAdded(WindowKey, WindowMeta),
@@ -495,6 +495,8 @@ pub struct WorldStatus {
     pub current_poll_ms: u64,
     /// Size of the internal debounce cache used to coalesce updates.
     pub debounce_cache: usize,
+    /// Number of pending coalesced updates waiting for their quiet-period deadline.
+    pub debounce_pending: usize,
     /// Reported capability/permission state affecting data quality.
     pub capabilities: Capabilities,
 }
@@ -1026,6 +1028,7 @@ async fn run_actor(
                             last_tick_ms: state.last_tick_ms,
                             current_poll_ms: state.current_poll_ms,
                             debounce_cache: state.last_emit.len(),
+                            debounce_pending: state.coalesce.len(),
                             capabilities: state.capabilities.clone(),
                         };
                         let _ = respond.send(status);

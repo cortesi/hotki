@@ -2,41 +2,14 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use hotki_world::{
     WindowKey, World, WorldCfg, WorldEvent, test_api as world_test,
-    test_support::{drain_events, override_scope, recv_event_until, wait_snapshot_until},
+    test_support::{
+        drain_events, override_scope, recv_event_until, wait_debounce_pending, wait_snapshot_until,
+    },
 };
 use mac_winops::{
     Pos, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
 };
-use tokio::sync::broadcast;
-
-async fn count_updates_for(
-    rx: &mut broadcast::Receiver<WorldEvent>,
-    key: WindowKey,
-    timeout: Duration,
-) -> u32 {
-    let mut count = 0;
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            break;
-        }
-
-        let remaining = deadline.saturating_duration_since(now);
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Ok(WorldEvent::Updated(k, _))) if k == key => {
-                count += 1;
-            }
-            Ok(Ok(_)) => {}
-            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(_)) | Err(_) => break,
-        }
-    }
-
-    count
-}
 
 fn win(
     app: &str,
@@ -71,7 +44,7 @@ fn cfg_fast() -> WorldCfg {
     }
 }
 
-const FAST_COALESCE_MS: u64 = 10;
+const FAST_COALESCE_MS: u64 = 30;
 
 fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
 where
@@ -305,7 +278,7 @@ fn title_update_reflected_in_snapshot() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         let _rx = world.subscribe();
         // Wait for initial Added and debounce window to expire
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
 
         // Change title
         mock.set_windows(vec![win(
@@ -484,7 +457,7 @@ fn debounce_updates_within_window() {
             },
         );
         let mut rx = world.subscribe();
-        tokio::time::sleep(Duration::from_millis(25)).await; // drain Added and exceed debounce window
+        tokio::time::sleep(Duration::from_millis(60)).await; // drain Added and exceed debounce window
         drain_events(&mut rx);
 
         // First change -> expect snapshot to update
@@ -593,7 +566,7 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 
         // Subscribe and drain startup events (Added, FocusChanged, etc.)
         let mut rx = world.subscribe();
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
         drain_events(&mut rx);
 
         // Burst of rapid updates still inside the debounce window:
@@ -614,7 +587,11 @@ fn debounce_event_coalescing_for_repetitive_changes() {
             0,
             true,
         )]);
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "expected debounce queue to register first change"
+        );
         mock.set_windows(vec![win(
             "AppA",
             "T1",
@@ -629,7 +606,11 @@ fn debounce_event_coalescing_for_repetitive_changes() {
             0,
             true,
         )]); // move
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "debounce queue should continue tracking the burst"
+        );
         mock.set_windows(vec![win(
             "AppA",
             "T2",
@@ -644,16 +625,33 @@ fn debounce_event_coalescing_for_repetitive_changes() {
             0,
             true,
         )]); // resize + title
-
-        // Trigger immediate reconcile to observe burst deterministically.
         world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "debounce queue should still be pending after final burst change"
+        );
 
-        // Collect events for a little while; expect exactly ONE Updated in this burst.
+        // Expect exactly one coalesced Updated event for the burst.
         let key = WindowKey { pid: 1, id: 1 };
-        let updated_count = count_updates_for(&mut rx, key, Duration::from_millis(220)).await;
-        assert_eq!(
-            updated_count, 1,
-            "debounce should coalesce rapid updates to a single event"
+        let updated = recv_event_until(
+            &mut rx,
+            FAST_COALESCE_MS * 4,
+            |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
+        )
+        .await;
+        assert!(updated.is_some(), "expected one coalesced Updated event");
+
+        assert!(
+            wait_debounce_pending(&world, 0, FAST_COALESCE_MS * 4).await,
+            "debounce queue should drain after emitting the coalesced event"
+        );
+        assert!(
+            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+                matches!(ev, WorldEvent::Updated(k, _) if *k == key)
+            })
+            .await
+            .is_none(),
+            "no additional Updated events expected once quiet"
         );
 
         // Snapshot should reflect the latest state from the burst (T2 and resized size)
@@ -664,7 +662,11 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         assert_eq!(w.pos.unwrap().height, 110);
 
         // After the debounce window, another change should emit a NEW Updated event.
-        tokio::time::sleep(Duration::from_millis(35)).await;
+        tokio::time::sleep(Duration::from_millis(FAST_COALESCE_MS + 10)).await;
+        assert!(
+            wait_debounce_pending(&world, 0, FAST_COALESCE_MS * 2).await,
+            "debounce queue should be empty after quiet period"
+        );
         mock.set_windows(vec![win(
             "AppA",
             "T3",
@@ -681,18 +683,27 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         )]);
         world.hint_refresh();
 
-        // Expect one more Updated for the same window.
-        let added = count_updates_for(&mut rx, key, Duration::from_millis(220)).await;
-        assert_eq!(
-            added, 1,
-            "expected one additional Updated after debounce window"
+        let next = recv_event_until(
+            &mut rx,
+            FAST_COALESCE_MS * 4,
+            |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
+        )
+        .await;
+        assert!(
+            next.is_some(),
+            "expected Updated event after debounce window"
         );
-
-        // Ensure no further updates arrive once quiet again.
-        let trailing = count_updates_for(&mut rx, key, Duration::from_millis(120)).await;
-        assert_eq!(
-            trailing, 0,
-            "no trailing Updated events expected after quiet period"
+        assert!(
+            wait_debounce_pending(&world, 0, FAST_COALESCE_MS * 4).await,
+            "debounce queue should drain after trailing update"
+        );
+        assert!(
+            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+                matches!(ev, WorldEvent::Updated(k, _) if *k == key)
+            })
+            .await
+            .is_none(),
+            "no further Updated events expected"
         );
 
         // Final snapshot reflects T3 and latest geometry
@@ -754,7 +765,11 @@ fn coalesced_trailing_update_after_quiet_period() {
             0,
             true,
         )]);
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "expected first change to enqueue debounce entry"
+        );
         mock.set_windows(vec![win(
             "AppA",
             "T2",
@@ -769,7 +784,11 @@ fn coalesced_trailing_update_after_quiet_period() {
             0,
             true,
         )]);
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "debounce entry should remain pending during burst"
+        );
         mock.set_windows(vec![win(
             "AppA",
             "T3",
@@ -785,11 +804,32 @@ fn coalesced_trailing_update_after_quiet_period() {
             true,
         )]);
         world.hint_refresh();
+        assert!(
+            wait_debounce_pending(&world, 1, FAST_COALESCE_MS * 2).await,
+            "pending debounce entry should stay coalesced"
+        );
 
         // Expect exactly one Updated event emitted after the quiet period
         let key = WindowKey { pid: 42, id: 420 };
-        let cnt = count_updates_for(&mut rx, key, Duration::from_millis(240)).await;
-        assert_eq!(cnt, 1, "should emit exactly one coalesced Updated");
+        let only = recv_event_until(
+            &mut rx,
+            FAST_COALESCE_MS * 4,
+            |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
+        )
+        .await;
+        assert!(only.is_some(), "expected trailing coalesced Updated");
+        assert!(
+            wait_debounce_pending(&world, 0, FAST_COALESCE_MS * 4).await,
+            "debounce queue should drain after trailing event"
+        );
+        assert!(
+            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+                matches!(ev, WorldEvent::Updated(k, _) if *k == key)
+            })
+            .await
+            .is_none(),
+            "no further Updated events expected after quiet period"
+        );
     });
 }
 

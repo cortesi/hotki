@@ -91,6 +91,10 @@ pub fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
             V::String("debounce_cache".into()),
             V::Integer((ws.debounce_cache as i64).into()),
         ),
+        (
+            V::String("debounce_pending".into()),
+            V::Integer((ws.debounce_pending as i64).into()),
+        ),
         (V::String("capabilities".into()), caps),
     ])
 }
