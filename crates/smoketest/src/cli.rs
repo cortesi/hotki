@@ -23,6 +23,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_warn: bool,
 
+    /// Continue running the full `all` suite even if individual tests fail
+    #[arg(long)]
+    pub no_fail_fast: bool,
+
     /// Optional short info text to show in the warning overlay under the test title
     #[arg(long)]
     pub info: Option<String>,

@@ -333,7 +333,14 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
         Commands::Relay => handle_relay(cli),
         Commands::Shell => handle_shell(cli),
         Commands::Volume => handle_volume(cli),
-        Commands::All => run_all_tests(cli.duration, cli.timeout, true, !cli.no_warn, fake_mode),
+        Commands::All => run_all_tests(
+            cli.duration,
+            cli.timeout,
+            true,
+            !cli.no_warn,
+            fake_mode,
+            !cli.no_fail_fast,
+        ),
         Commands::PlaceIncrements => handle_place_increments(cli),
         Commands::Seq { tests } => {
             orchestrator::run_sequence_tests(tests, cli.duration, cli.timeout, true)

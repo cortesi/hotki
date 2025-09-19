@@ -125,6 +125,46 @@ fn print_captured_streams(outcome: &SubtestOutcome) {
     }
 }
 
+/// Track a failed smoketest and update fail-fast state.
+fn record_failure(
+    failures: &mut Vec<String>,
+    stop_early: &mut bool,
+    fail_fast: bool,
+    name: impl Into<String>,
+) {
+    failures.push(name.into());
+    if fail_fast {
+        *stop_early = true;
+    }
+}
+
+/// Execute a smoketest subcommand with standard overlay updates and reporting.
+fn run_basic_test(
+    name: &str,
+    duration_ms: u64,
+    timeout_ms: u64,
+    failures: &mut Vec<String>,
+    stop_early: &mut bool,
+    fail_fast: bool,
+) -> bool {
+    if *stop_early {
+        return true;
+    }
+    process::write_overlay_status(name);
+    process::write_overlay_info("");
+    let start = Instant::now();
+    let outcome = run_subtest_capture(name, duration_ms, timeout_ms, &[]);
+    let elapsed = start.elapsed();
+    if outcome.success {
+        println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
+    } else {
+        println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
+        print_captured_streams(&outcome);
+        record_failure(failures, stop_early, fail_fast, name);
+    }
+    outcome.success
+}
+
 /// Launch and supervise a smoketest child process with the requested stdio policy.
 fn run_subtest(
     subcmd: &str,
@@ -410,9 +450,8 @@ pub fn run_all_tests(
     _logs: bool,
     warn_overlay: bool,
     fake_mode: bool,
+    fail_fast: bool,
 ) {
-    let mut all_ok = true;
-
     // Optionally show the hands-off overlay for the entire run
     let mut overlay: Option<ManagedChild> = None;
     if warn_overlay
@@ -425,56 +464,112 @@ pub fn run_all_tests(
         process::write_overlay_status("Preparing tests...");
     }
 
-    // Helper to run + print one-line summary (with elapsed duration)
-    let run = |name: &str, dur: u64| -> bool {
-        // Update overlay title to current test
-        process::write_overlay_status(name);
-        // Clear info by default unless a variant sets it explicitly
-        process::write_overlay_info("");
-        let start = Instant::now();
-        let outcome = run_subtest_capture(name, dur, timeout_ms, &[]);
-        let elapsed = start.elapsed();
-        if outcome.success {
-            println!("{}... OK ({:.3}s)", name, elapsed.as_secs_f64());
-            true
-        } else {
-            println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
-            print_captured_streams(&outcome);
-            false
-        }
-    };
+    let mut failures: Vec<String> = Vec::new();
+    let mut stop_early = false;
 
-    if fake_mode {
-        println!("Running fake placement smoke (GUI unavailable)");
-        all_ok &= run("place-fake", duration_ms);
-        if let Some(mut c) = overlay
+    let finalize = |overlay: &mut Option<ManagedChild>, failures: &Vec<String>| {
+        if let Some(mut c) = overlay.take()
             && let Err(e) = c.kill_and_wait()
         {
             eprintln!("orchestrator: failed to stop overlay: {}", e);
         }
-        if !all_ok {
-            std_process::exit(1);
+        if failures.is_empty() {
+            return;
         }
+        println!("\nFailed smoketests:");
+        for name in failures {
+            println!("- {}", name);
+        }
+        std_process::exit(1);
+    };
+
+    if fake_mode {
+        println!("Running fake placement smoke (GUI unavailable)");
+        run_basic_test(
+            "place-fake",
+            duration_ms,
+            timeout_ms,
+            &mut failures,
+            &mut stop_early,
+            fail_fast,
+        );
+        finalize(&mut overlay, &failures);
         return;
     }
 
     // Quick diagnostics: verify world status/permissions first
-    all_ok &= run("world-status", duration_ms);
+    run_basic_test(
+        "world-status",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Verify World AX props path as a quick sanity check.
-    all_ok &= run("world-ax", duration_ms);
-    all_ok &= run("world-spaces", duration_ms);
+    run_basic_test(
+        "world-ax",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "world-spaces",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
 
     // Repeat tests
-    all_ok &= run("repeat-relay", duration_ms);
-    all_ok &= run("repeat-shell", duration_ms);
+    run_basic_test(
+        "repeat-relay",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "repeat-shell",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     let vol_duration = cmp::max(duration_ms, config::DEFAULTS.min_volume_duration_ms);
-    all_ok &= run("repeat-volume", vol_duration);
+    run_basic_test(
+        "repeat-volume",
+        vol_duration,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
 
     // Focus and window ops
-    all_ok &= run("focus-tracking", duration_ms);
-    all_ok &= run("raise", duration_ms);
+    run_basic_test(
+        "focus-tracking",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "raise",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Focus-nav can be a bit slower due to AX+IPC; add small extra watchdog headroom.
-    {
+    if !stop_early {
         let name = "focus-nav";
         process::write_overlay_status(name);
         process::write_overlay_info("");
@@ -492,24 +587,74 @@ pub fn run_all_tests(
         } else {
             println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
             print_captured_streams(&outcome);
+            record_failure(&mut failures, &mut stop_early, fail_fast, name);
         }
     }
-    all_ok &= run("place", duration_ms);
+    run_basic_test(
+        "place",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Async placement helper: exercises delayed-apply behavior (~50ms) and
     // verifies the engine converges via settle polling. Keep near the other
     // placement cases so failures are easier to triage.
-    all_ok &= run("place-async", duration_ms);
+    run_basic_test(
+        "place-async",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Animated placement helper: exercises tweened setFrame behavior (~120ms).
-    all_ok &= run("place-animated", duration_ms);
+    run_basic_test(
+        "place-animated",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Increments placement: simulate terminal-style resize increments and verify
     // anchor-legal-size behavior keeps cell edges flush.
-    all_ok &= run("place-increments", duration_ms);
+    run_basic_test(
+        "place-increments",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Terminal guard: ensure no position thrash after origin latch under increments.
-    all_ok &= run("place-term", duration_ms);
-    all_ok &= run("place-move-min", duration_ms);
-    all_ok &= run("place-move-nonresizable", duration_ms);
+    run_basic_test(
+        "place-term",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "place-move-min",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "place-move-nonresizable",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // place-minimized can be slower on some hosts after de-miniaturize; add small extra headroom.
-    {
+    if !stop_early {
         let name = "place-minimized";
         process::write_overlay_status(name);
         process::write_overlay_info("");
@@ -527,16 +672,33 @@ pub fn run_all_tests(
         } else {
             println!("{}... FAIL ({:.3}s)", name, elapsed.as_secs_f64());
             print_captured_streams(&outcome);
+            record_failure(&mut failures, &mut stop_early, fail_fast, name);
         }
-        all_ok &= outcome.success;
     }
-    all_ok &= run("place-zoomed", duration_ms);
+    run_basic_test(
+        "place-zoomed",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Stage 6 advisory gating: validate skip behavior when possible
-    all_ok &= run("place-skip", duration_ms);
+    run_basic_test(
+        "place-skip",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
     // Stage 6 advisory gating (focused): available as a separate subcommand `place-skip`.
     // Stage‑3/8 variants via place-flex
     // Encode variants once and iterate to reduce repetition.
     for (cfg, info) in PLACE_FLEX_VARIANTS.iter().copied() {
+        if stop_early {
+            break;
+        }
         process::write_overlay_status("place-flex");
         process::write_overlay_info(info);
         let args = place_flex_args(&cfg);
@@ -544,6 +706,7 @@ pub fn run_all_tests(
         let start = Instant::now();
         let outcome = run_subtest_capture("place-flex", duration_ms, timeout_ms, &args[1..]);
         let elapsed = start.elapsed();
+        let summary_name = format!("place-flex ({})", info);
         if outcome.success {
             println!(
                 "place-flex... OK ({:.3}s)\n  settings: {}\n  info: {}",
@@ -559,23 +722,37 @@ pub fn run_all_tests(
                 info
             );
             print_captured_streams(&outcome);
+            record_failure(&mut failures, &mut stop_early, fail_fast, summary_name);
         }
-        all_ok &= outcome.success;
     }
-    all_ok &= run("fullscreen", duration_ms);
+    run_basic_test(
+        "fullscreen",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
 
     // UI demos
-    run("ui", duration_ms);
-    run("minui", duration_ms);
+    run_basic_test(
+        "ui",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
+    run_basic_test(
+        "minui",
+        duration_ms,
+        timeout_ms,
+        &mut failures,
+        &mut stop_early,
+        fail_fast,
+    );
 
-    if let Some(mut c) = overlay
-        && let Err(e) = c.kill_and_wait()
-    {
-        eprintln!("orchestrator: failed to stop overlay: {}", e);
-    }
-    if !all_ok {
-        std_process::exit(1);
-    }
+    finalize(&mut overlay, &failures);
 }
 
 /// Map a `SeqTest` variant to the corresponding CLI subcommand name.
