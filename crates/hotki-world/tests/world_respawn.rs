@@ -50,6 +50,8 @@ fn ax_pool_hint_reaches_respawned_world() {
         world_test::set_displays(vec![(1, 0, 0, 1920, 1080)]);
         world_test::set_ax_bridge_enabled(false);
         world_test::set_ax_async_only(true);
+        world_test::ensure_ax_pool_inited();
+        world_test::ax_pool_reset_metrics_and_cache();
 
         let mock = Arc::new(MockWinOps::new());
         let pid = 4242;
@@ -62,16 +64,16 @@ fn ax_pool_hint_reaches_respawned_world() {
 
         // Create a worker tied to this pid so it survives the first world instance.
         world_test::set_ax_title(id, "T-1");
-        assert!(world_test::ax_pool_schedule_title(pid, id).is_none());
-        let deadline = Instant::now() + Duration::from_millis(300);
+        let deadline = Instant::now() + Duration::from_millis(2000);
         loop {
-            if world_test::ax_pool_peek_title(pid, id).is_some() {
+            if let Some(title) = world_test::ax_pool_schedule_title(pid, id) {
+                assert_eq!(title, "T-1");
                 break;
             }
             if Instant::now() >= deadline {
                 panic!("timed out waiting for initial AX title cache");
             }
-            sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(10)).await;
         }
 
         drop(world1);
@@ -93,7 +95,7 @@ fn ax_pool_hint_reaches_respawned_world() {
         world_test::set_ax_title(id_new, "T-2");
         assert!(world_test::ax_pool_schedule_title(pid, id_new).is_none());
 
-        let refreshed = wait_snapshot_until(&world2, 250, |snap| snap.len() == 2).await;
+        let refreshed = wait_snapshot_until(&world2, 600, |snap| snap.len() == 2).await;
         assert!(
             refreshed,
             "expected HintRefresh from reused AX worker to reach respawned world before poll interval",

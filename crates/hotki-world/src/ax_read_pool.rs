@@ -515,6 +515,9 @@ pub fn _test_inflight_metrics() -> (usize, usize) {
 
 /// Reset in-flight metrics and clear the internal caches for deterministic tests.
 pub fn _test_reset_metrics_and_cache() {
+    while INFLIGHT.load(Ordering::SeqCst) != 0 {
+        thread::sleep(Duration::from_millis(1));
+    }
     INFLIGHT.store(0, Ordering::SeqCst);
     PEAK_INFLIGHT.store(0, Ordering::SeqCst);
     STALE_DROPS.store(0, Ordering::SeqCst);
