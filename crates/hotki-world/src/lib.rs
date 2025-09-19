@@ -10,7 +10,9 @@
 //!
 //! Event debounce:
 //! - `Updated` events are coalesced with a ~50ms debounce to reduce chatter
-//!   during rapid title/geometry changes. Snapshots always reflect latest state.
+//!   during rapid title/geometry changes. Tests can override the debounce window
+//!   to accelerate timing-sensitive scenarios. Snapshots always reflect latest
+//!   state.
 //!
 //! Display mapping:
 //! - Each window is mapped to the display with the greatest overlap of its
@@ -470,7 +472,7 @@ pub enum WorldEvent {
     /// A previously observed window disappeared from the active Space.
     Removed(WindowKey),
     /// A window's properties changed. Updates are coalesced with a ~50ms debounce
-    /// to avoid flooding on rapid changes.
+    /// to avoid flooding on rapid changes (tests may override the window).
     Updated(WindowKey, WindowDelta),
     /// A metadata tag was attached to a window (reserved for future use).
     MetaAdded(WindowKey, WindowMeta),
@@ -1212,7 +1214,9 @@ fn reconcile(
             if changed {
                 had_changes = true;
                 // Trailing-edge debounce: schedule coalesced Updated after quiet period
-                state.coalesce.insert(key, now + Duration::from_millis(50));
+                state
+                    .coalesce
+                    .insert(key, now + Duration::from_millis(coalesce_window_ms()));
             }
         } else {
             had_changes = true;
@@ -2018,6 +2022,7 @@ struct TestOverrides {
     ax_delay_title_ms: Option<u64>,
     ax_delay_focus_ms: Option<u64>,
     ax_async_only: Option<bool>,
+    coalesce_ms: Option<u64>,
 }
 
 fn acc_ok() -> bool {
@@ -2058,6 +2063,13 @@ fn list_display_bounds() -> Vec<DisplayBounds> {
         return v;
     }
     mac_winops::screen::list_display_bounds()
+}
+
+fn coalesce_window_ms() -> u64 {
+    TEST_OVERRIDES.with(|o| {
+        let guard = o.lock();
+        guard.coalesce_ms.unwrap_or(50).max(1)
+    })
 }
 
 #[doc(hidden)]
@@ -2150,6 +2162,12 @@ pub mod test_api {
             s.ax_title = Some((id, t));
         });
         super::ax_read_pool::_test_set_title_override(id, title);
+    }
+    pub fn set_coalesce_ms(ms: u64) {
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.coalesce_ms = Some(ms.max(1));
+        });
     }
 
     /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.

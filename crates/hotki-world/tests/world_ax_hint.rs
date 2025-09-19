@@ -1,9 +1,13 @@
 use std::{
+    future::Future,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use hotki_world::{World, WorldCfg, test_api as world_test, test_support::wait_snapshot_until};
+use hotki_world::{
+    World, WorldCfg, test_api as world_test,
+    test_support::{override_scope, wait_snapshot_until},
+};
 use mac_winops::{
     AxEvent, AxEventKind, Pos, WindowHint, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
@@ -43,13 +47,28 @@ fn cfg_slow_min() -> WorldCfg {
     }
 }
 
-#[test]
-fn ax_event_created_triggers_fast_refresh() {
+const FAST_COALESCE_MS: u64 = 10;
+
+fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
+where
+    F: Future<Output = ()>,
+{
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .unwrap();
     rt.block_on(async move {
+        let _guard = override_scope();
+        if let Some(ms) = coalesce_ms {
+            world_test::set_coalesce_ms(ms);
+        }
+        fut.await;
+    });
+}
+
+#[test]
+fn ax_event_created_triggers_fast_refresh() {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
             "AppA",
@@ -68,7 +87,7 @@ fn ax_event_created_triggers_fast_refresh() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_slow_min());
 
         // Wait for initial reconcile (1 window)
-        assert!(wait_snapshot_until(&world, 500, |s| s.len() == 1).await);
+        assert!(wait_snapshot_until(&world, 220, |s| s.len() == 1).await);
 
         // Change underlying windows to add one more; without a hint this would
         // only be observed after ~poll_ms_min (500 ms).

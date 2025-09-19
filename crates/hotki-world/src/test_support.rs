@@ -5,6 +5,21 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
+/// Drop guard that clears any test overrides on scope exit.
+pub struct TestOverridesGuard;
+
+impl Drop for TestOverridesGuard {
+    fn drop(&mut self) {
+        crate::test_api::clear();
+    }
+}
+
+/// Create a guard that resets world overrides when dropped.
+#[must_use]
+pub fn override_scope() -> TestOverridesGuard {
+    TestOverridesGuard
+}
+
 /// Re-export the canonical world snapshot wait helper.
 pub use crate::test_api::wait_snapshot_until;
 

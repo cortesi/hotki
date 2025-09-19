@@ -1,8 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use hotki_world::{
     WindowKey, World, WorldCfg, WorldEvent, test_api as world_test,
-    test_support::{drain_events, recv_event_until, wait_snapshot_until},
+    test_support::{drain_events, override_scope, recv_event_until, wait_snapshot_until},
 };
 use mac_winops::{
     Pos, WindowId, WindowInfo,
@@ -71,13 +71,28 @@ fn cfg_fast() -> WorldCfg {
     }
 }
 
-#[test]
-fn startup_adds_and_z_order() {
+const FAST_COALESCE_MS: u64 = 10;
+
+fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
+where
+    F: Future<Output = ()>,
+{
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .unwrap();
     rt.block_on(async move {
+        let _guard = override_scope();
+        if let Some(ms) = coalesce_ms {
+            world_test::set_coalesce_ms(ms);
+        }
+        fut.await;
+    });
+}
+
+#[test]
+fn startup_adds_and_z_order() {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
             win(
@@ -111,7 +126,7 @@ fn startup_adds_and_z_order() {
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
 
-        assert!(wait_snapshot_until(&world, 500, |s| s.len() == 2).await);
+        assert!(wait_snapshot_until(&world, 200, |s| s.len() == 2).await);
         let mut snap = world.snapshot().await;
         snap.sort_by_key(|w| (w.z, w.pid, w.id));
         assert_eq!(snap[0].app, "AppA");
@@ -125,11 +140,7 @@ fn startup_adds_and_z_order() {
 
 #[test]
 fn focus_changes_emit_event_and_snapshot_updates() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
             win(
@@ -165,7 +176,7 @@ fn focus_changes_emit_event_and_snapshot_updates() {
         let mut rx = world.subscribe();
 
         // Wait for initial reconcile and drain any startup events
-        let _ = wait_snapshot_until(&world, 400, |s| s.len() == 2).await;
+        let _ = wait_snapshot_until(&world, 200, |s| s.len() == 2).await;
         drain_events(&mut rx);
 
         // Flip focus to AppB
@@ -201,7 +212,7 @@ fn focus_changes_emit_event_and_snapshot_updates() {
         ]);
 
         // Observe FocusChanged event to AppB
-        let ev = recv_event_until(&mut rx, 500, |ev| {
+        let ev = recv_event_until(&mut rx, 220, |ev| {
             if let WorldEvent::FocusChanged(change) = ev {
                 change.key == Some(WindowKey { pid: 200, id: 2 })
             } else {
@@ -230,11 +241,7 @@ fn focus_changes_emit_event_and_snapshot_updates() {
 
 #[test]
 fn hint_refresh_via_trait_updates_snapshot() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
             "AppA",
@@ -279,11 +286,7 @@ fn hint_refresh_via_trait_updates_snapshot() {
 
 #[test]
 fn title_update_reflected_in_snapshot() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
             "AppA",
@@ -302,7 +305,7 @@ fn title_update_reflected_in_snapshot() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         let _rx = world.subscribe();
         // Wait for initial Added and debounce window to expire
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
 
         // Change title
         mock.set_windows(vec![win(
@@ -322,7 +325,7 @@ fn title_update_reflected_in_snapshot() {
 
         // Confirm snapshot reflects new title
         assert!(
-            wait_snapshot_until(&world, 800, |s| s
+            wait_snapshot_until(&world, 220, |s| s
                 .iter()
                 .any(|w| w.id == 1 && w.title == "New"))
             .await,
@@ -333,11 +336,7 @@ fn title_update_reflected_in_snapshot() {
 
 #[test]
 fn ax_focus_and_title_precedence() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         // Two windows for same app; CG marks first as focused, but AX will point to second.
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![
@@ -379,7 +378,7 @@ fn ax_focus_and_title_precedence() {
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         // Wait until AX-focused window is reflected in snapshot
         assert!(
-            wait_snapshot_until(&world, 600, |s| {
+            wait_snapshot_until(&world, 250, |s| {
                 s.len() == 2
                     && s.iter()
                         .any(|w| w.id == 102 && w.focused && w.title == "AX-Title-2")
@@ -392,18 +391,12 @@ fn ax_focus_and_title_precedence() {
         assert!(!a1.focused);
         assert!(a2.focused);
         assert_eq!(a2.title, "AX-Title-2");
-
-        world_test::clear();
     });
 }
 
 #[test]
 fn display_mapping_selects_best_overlap() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         // Two displays side-by-side: left id=1, right id=2
         world_test::set_displays(vec![(1, 0, 0, 800, 600), (2, 800, 0, 800, 600)]);
         let mock = Arc::new(MockWinOps::new());
@@ -453,24 +446,18 @@ fn display_mapping_selects_best_overlap() {
             ),
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
-        let _ = wait_snapshot_until(&world, 400, |s| s.len() == 3).await;
+        let _ = wait_snapshot_until(&world, 200, |s| s.len() == 3).await;
         let mut snap = world.snapshot().await;
         snap.sort_by_key(|w| w.id);
         assert_eq!(snap[0].display_id, Some(1));
         assert_eq!(snap[1].display_id, Some(2));
         assert_eq!(snap[2].display_id, Some(2));
-
-        world_test::clear();
     });
 }
 
 #[test]
 fn debounce_updates_within_window() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
             "AppA",
@@ -497,7 +484,7 @@ fn debounce_updates_within_window() {
             },
         );
         let mut rx = world.subscribe();
-        tokio::time::sleep(Duration::from_millis(80)).await; // drain Added and exceed debounce window
+        tokio::time::sleep(Duration::from_millis(25)).await; // drain Added and exceed debounce window
         drain_events(&mut rx);
 
         // First change -> expect snapshot to update
@@ -516,14 +503,14 @@ fn debounce_updates_within_window() {
             true,
         )]);
         assert!(
-            wait_snapshot_until(&world, 800, |s| s
+            wait_snapshot_until(&world, 220, |s| s
                 .iter()
                 .any(|w| w.id == 1 && w.title == "T1"))
             .await,
             "expected snapshot to update after first change"
         );
 
-        // Second change within 50ms window -> should be coalesced (no extra Updated)
+        // Second change within debounce window -> should be coalesced (no extra Updated)
         mock.set_windows(vec![win(
             "AppA",
             "T2",
@@ -538,9 +525,9 @@ fn debounce_updates_within_window() {
             0,
             true,
         )]);
-        // Second change within 50ms; snapshot should update too (debounce only affects events)
+        // Second change stays within the debounce window; snapshot should still update
         assert!(
-            wait_snapshot_until(&world, 300, |s| s
+            wait_snapshot_until(&world, 160, |s| s
                 .iter()
                 .any(|w| w.id == 1 && w.title == "T2"))
             .await,
@@ -565,7 +552,7 @@ fn debounce_updates_within_window() {
         )]);
         // Third change after debounce window; snapshot must reflect T3
         assert!(
-            wait_snapshot_until(&world, 800, |s| s
+            wait_snapshot_until(&world, 220, |s| s
                 .iter()
                 .any(|w| w.id == 1 && w.title == "T3"))
             .await,
@@ -576,11 +563,7 @@ fn debounce_updates_within_window() {
 
 #[test]
 fn debounce_event_coalescing_for_repetitive_changes() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         // Start with a single focused window
         mock.set_windows(vec![win(
@@ -610,10 +593,10 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 
         // Subscribe and drain startup events (Added, FocusChanged, etc.)
         let mut rx = world.subscribe();
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
         drain_events(&mut rx);
 
-        // Burst of rapid updates within debounce window (<50ms):
+        // Burst of rapid updates still inside the debounce window:
         //  - title change
         //  - move
         //  - resize
@@ -667,7 +650,7 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 
         // Collect events for a little while; expect exactly ONE Updated in this burst.
         let key = WindowKey { pid: 1, id: 1 };
-        let updated_count = count_updates_for(&mut rx, key, Duration::from_millis(600)).await;
+        let updated_count = count_updates_for(&mut rx, key, Duration::from_millis(220)).await;
         assert_eq!(
             updated_count, 1,
             "debounce should coalesce rapid updates to a single event"
@@ -680,8 +663,8 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         assert_eq!(w.pos.unwrap().width, 120);
         assert_eq!(w.pos.unwrap().height, 110);
 
-        // After debounce window (>50ms), another change should emit a NEW Updated event.
-        tokio::time::sleep(Duration::from_millis(70)).await;
+        // After the debounce window, another change should emit a NEW Updated event.
+        tokio::time::sleep(Duration::from_millis(35)).await;
         mock.set_windows(vec![win(
             "AppA",
             "T3",
@@ -699,14 +682,14 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         world.hint_refresh();
 
         // Expect one more Updated for the same window.
-        let added = count_updates_for(&mut rx, key, Duration::from_millis(600)).await;
+        let added = count_updates_for(&mut rx, key, Duration::from_millis(220)).await;
         assert_eq!(
             added, 1,
             "expected one additional Updated after debounce window"
         );
 
         // Ensure no further updates arrive once quiet again.
-        let trailing = count_updates_for(&mut rx, key, Duration::from_millis(200)).await;
+        let trailing = count_updates_for(&mut rx, key, Duration::from_millis(120)).await;
         assert_eq!(
             trailing, 0,
             "no trailing Updated events expected after quiet period"
@@ -725,11 +708,7 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 
 #[test]
 fn coalesced_trailing_update_after_quiet_period() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
             "AppA",
@@ -757,10 +736,10 @@ fn coalesced_trailing_update_after_quiet_period() {
         );
         let mut rx = world.subscribe();
         // Drain startup events (Added/FocusChanged)
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
         drain_events(&mut rx);
 
-        // Rapid changes within 50ms window: should yield a single Updated after quiet
+        // Rapid changes within debounce window: should yield a single Updated after quiet
         mock.set_windows(vec![win(
             "AppA",
             "T1",
@@ -775,7 +754,7 @@ fn coalesced_trailing_update_after_quiet_period() {
             0,
             true,
         )]);
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
         mock.set_windows(vec![win(
             "AppA",
             "T2",
@@ -790,7 +769,7 @@ fn coalesced_trailing_update_after_quiet_period() {
             0,
             true,
         )]);
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
         mock.set_windows(vec![win(
             "AppA",
             "T3",
@@ -808,34 +787,15 @@ fn coalesced_trailing_update_after_quiet_period() {
         world.hint_refresh();
 
         // Expect exactly one Updated event emitted after the quiet period
-        let start = tokio::time::Instant::now();
-        let mut cnt = 0u32;
-        while start.elapsed() < Duration::from_millis(800) {
-            if let Some(ev) = recv_event_until(&mut rx, 120, |_| true).await {
-                if let WorldEvent::Updated(k, _) = ev
-                    && k == (WindowKey { pid: 42, id: 420 })
-                {
-                    cnt += 1;
-                }
-            } else {
-                break;
-            }
-        }
-        assert!(
-            cnt >= 1,
-            "expected one coalesced Updated event after quiet period"
-        );
+        let key = WindowKey { pid: 42, id: 420 };
+        let cnt = count_updates_for(&mut rx, key, Duration::from_millis(240)).await;
         assert_eq!(cnt, 1, "should emit exactly one coalesced Updated");
     });
 }
 
 #[test]
 fn startup_focus_event_and_context_and_snapshot() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_world_test(Some(FAST_COALESCE_MS), async move {
         // Single focused window present at startup
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![win(
@@ -857,7 +817,7 @@ fn startup_focus_event_and_context_and_snapshot() {
 
         // Snapshot should be available shortly after spawn (best effort ~poll_ms_min)
         assert!(
-            wait_snapshot_until(&world, 800, |s| s.iter().any(|w| w.id == 30)).await,
+            wait_snapshot_until(&world, 200, |s| s.iter().any(|w| w.id == 30)).await,
             "expected startup snapshot to include initial window"
         );
 
