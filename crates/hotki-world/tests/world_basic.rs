@@ -3,7 +3,8 @@ use std::{future::Future, sync::Arc, time::Duration};
 use hotki_world::{
     WindowKey, World, WorldCfg, WorldEvent, test_api as world_test,
     test_support::{
-        drain_events, override_scope, recv_event_until, wait_debounce_pending, wait_snapshot_until,
+        drain_events, override_scope, recv_event_until, run_async_test, wait_debounce_pending,
+        wait_snapshot_until,
     },
 };
 use mac_winops::{
@@ -48,14 +49,13 @@ const FAST_COALESCE_MS: u64 = 30;
 
 fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
 where
-    F: Future<Output = ()>,
+    F: Future<Output = ()> + Send + 'static,
 {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_async_test(async move {
         let _guard = override_scope();
+        world_test::set_accessibility_ok(true);
+        world_test::set_screen_recording_ok(true);
+        world_test::set_displays(vec![(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
         if let Some(ms) = coalesce_ms {
             world_test::set_coalesce_ms(ms);
         }
@@ -67,6 +67,7 @@ where
 fn startup_adds_and_z_order() {
     run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
+        world_test::set_displays(vec![(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
         mock.set_windows(vec![
             win(
                 "AppA",
@@ -277,10 +278,18 @@ fn title_update_reflected_in_snapshot() {
         )]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         let _rx = world.subscribe();
-        // Wait for initial Added and debounce window to expire
-        tokio::time::sleep(Duration::from_millis(60)).await;
 
-        // Change title
+        world.hint_refresh();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            wait_snapshot_until(&world, 200, |s| s.len() == 1).await,
+            "expected initial window in snapshot"
+        );
+        assert!(
+            wait_debounce_pending(&world, 0, 200).await,
+            "initial debounce queue did not drain"
+        );
+
         mock.set_windows(vec![win(
             "AppA",
             "New",
@@ -296,7 +305,6 @@ fn title_update_reflected_in_snapshot() {
             true,
         )]);
 
-        // Confirm snapshot reflects new title
         assert!(
             wait_snapshot_until(&world, 220, |s| s
                 .iter()
@@ -432,6 +440,9 @@ fn display_mapping_selects_best_overlap() {
 fn debounce_updates_within_window() {
     run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
+        world_test::set_accessibility_ok(false);
+        world_test::set_screen_recording_ok(false);
+        world_test::set_ax_bridge_enabled(false);
         mock.set_windows(vec![win(
             "AppA",
             "T0",
@@ -538,6 +549,9 @@ fn debounce_updates_within_window() {
 fn debounce_event_coalescing_for_repetitive_changes() {
     run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
+        world_test::set_accessibility_ok(false);
+        world_test::set_screen_recording_ok(false);
+        world_test::set_ax_bridge_enabled(false);
         // Start with a single focused window
         mock.set_windows(vec![win(
             "AppA",
@@ -721,6 +735,9 @@ fn debounce_event_coalescing_for_repetitive_changes() {
 fn coalesced_trailing_update_after_quiet_period() {
     run_world_test(Some(FAST_COALESCE_MS), async move {
         let mock = Arc::new(MockWinOps::new());
+        world_test::set_accessibility_ok(false);
+        world_test::set_screen_recording_ok(false);
+        world_test::set_ax_bridge_enabled(false);
         mock.set_windows(vec![win(
             "AppA",
             "T0",

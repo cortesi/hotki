@@ -12,7 +12,7 @@ use crossbeam_channel::{self as chan, Receiver, Sender, select};
 use mac_winops::{AxProps, WindowId};
 use parking_lot::{Mutex, RwLock};
 
-use super::TEST_OVERRIDES;
+use super::override_value;
 
 // This module introduces a minimal per‑PID AX read worker pool.
 // It provides non‑blocking getters that return the last cached value (if any)
@@ -281,10 +281,8 @@ pub fn focused_id(pid: i32) -> Option<WindowId> {
     }
     // In tests, when an override is set, resolve synchronously on the caller thread
     // unless tests explicitly force async-only behavior.
-    let (has_override, force_async) = TEST_OVERRIDES.with(|o| {
-        let s = o.lock();
-        (s.ax_focus.is_some(), s.ax_async_only.unwrap_or(false))
-    });
+    let has_override = override_value(|o| o.ax_focus).is_some();
+    let force_async = override_value(|o| o.ax_async_only).unwrap_or(false);
     if has_override
         && !force_async
         && let Some(id) = super::ax_focused_window_id_for_pid(pid)
@@ -308,10 +306,8 @@ pub fn title(pid: i32, id: WindowId) -> Option<String> {
         return Some(t);
     }
     // Respect test overrides synchronously when present, unless forced async.
-    let (has_override, force_async) = TEST_OVERRIDES.with(|o| {
-        let s = o.lock();
-        (s.ax_title.is_some(), s.ax_async_only.unwrap_or(false))
-    });
+    let has_override = override_value(|o| o.ax_title.clone()).is_some();
+    let force_async = override_value(|o| o.ax_async_only).unwrap_or(false);
     if has_override
         && !force_async
         && let Some(t) = super::ax_title_for_window_id(id)

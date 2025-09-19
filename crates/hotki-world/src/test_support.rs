@@ -1,9 +1,10 @@
 //! Test support utilities for `hotki-world` tests.
 //! Public, lightweight helpers imported by the test suite.
 
-use std::time::Duration;
+use std::{future::Future, sync::OnceLock, time::Duration};
 
-use tokio::{sync::broadcast, time::Instant};
+use parking_lot::Mutex;
+use tokio::{runtime::Builder, sync::broadcast, time::Instant};
 
 /// Drop guard that clears any test overrides on scope exit.
 pub struct TestOverridesGuard;
@@ -18,6 +19,38 @@ impl Drop for TestOverridesGuard {
 #[must_use]
 pub fn override_scope() -> TestOverridesGuard {
     TestOverridesGuard
+}
+
+static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Run an async test body on a dedicated multi-threaded Tokio runtime and shut it down promptly.
+pub fn run_async_test<F>(fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let _guard = TEST_LOCK.get_or_init(|| Mutex::new(())).lock();
+    struct RuntimeGuard(Option<tokio::runtime::Runtime>);
+
+    impl Drop for RuntimeGuard {
+        fn drop(&mut self) {
+            if let Some(rt) = self.0.take() {
+                rt.shutdown_timeout(Duration::from_millis(50));
+            }
+        }
+    }
+
+    let guard = RuntimeGuard(Some(
+        Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build test runtime"),
+    ));
+
+    if let Some(rt) = guard.0.as_ref() {
+        rt.block_on(fut);
+    }
+    // RuntimeGuard drops here, enforcing an eager shutdown of the runtime.
 }
 
 /// Re-export the canonical world snapshot wait helper.
@@ -64,12 +97,35 @@ pub async fn wait_debounce_pending(
 ) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let status = world.status().await;
-        if status.debounce_pending == expected {
+        let metrics = world.metrics_snapshot();
+        if metrics.debounce_pending == expected {
             return true;
         }
         if Instant::now() >= deadline {
             return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Poll world metrics until `pred` evaluates to true or `timeout_ms` elapses.
+/// Returns the matching metrics snapshot when successful.
+pub async fn wait_metrics_until<F>(
+    world: &crate::WorldHandle,
+    timeout_ms: u64,
+    mut pred: F,
+) -> Option<crate::WorldMetricsSnapshot>
+where
+    F: FnMut(&crate::WorldMetricsSnapshot) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let snapshot = world.metrics_snapshot();
+        if pred(&snapshot) {
+            return Some(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return None;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }

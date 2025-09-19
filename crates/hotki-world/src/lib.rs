@@ -43,7 +43,10 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -497,8 +500,25 @@ pub struct WorldStatus {
     pub debounce_cache: usize,
     /// Number of pending coalesced updates waiting for their quiet-period deadline.
     pub debounce_pending: usize,
+    /// Monotonic reconciliation sequence number (increments once per reconcile pass).
+    pub reconcile_seq: u64,
+    /// Pending suspect entries awaiting confirmation before eviction.
+    pub suspects_pending: usize,
     /// Reported capability/permission state affecting data quality.
     pub capabilities: Capabilities,
+}
+
+/// Lightweight snapshot of internal world metrics used for test instrumentation.
+#[derive(Clone, Debug, Default)]
+pub struct WorldMetricsSnapshot {
+    /// Number of windows currently tracked.
+    pub windows_count: usize,
+    /// Pending coalesced update count.
+    pub debounce_pending: usize,
+    /// Pending suspect removals awaiting confirmation.
+    pub suspects_pending: usize,
+    /// Latest reconciliation sequence number.
+    pub reconcile_seq: u64,
 }
 
 /// Cheap, clonable handle to the world service.
@@ -506,6 +526,7 @@ pub struct WorldStatus {
 pub struct WorldHandle {
     tx: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<WorldEvent>,
+    metrics: Arc<WorldMetrics>,
 }
 
 impl WorldHandle {
@@ -515,6 +536,11 @@ impl WorldHandle {
     /// should drain events promptly to avoid backpressure on the broadcast buffer.
     pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
         self.events.subscribe()
+    }
+
+    /// Snapshot lightweight internal metrics without asking the actor.
+    pub fn metrics_snapshot(&self) -> WorldMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Subscribe and fetch a consistent snapshot + focused key from the actor.
@@ -760,6 +786,35 @@ pub struct World;
 mod ax_read_pool;
 mod view;
 
+#[derive(Debug, Default)]
+struct WorldMetrics {
+    debounce_pending: AtomicUsize,
+    suspects_pending: AtomicUsize,
+    windows_count: AtomicUsize,
+    reconcile_seq: AtomicU64,
+}
+
+impl WorldMetrics {
+    fn snapshot(&self) -> WorldMetricsSnapshot {
+        WorldMetricsSnapshot {
+            windows_count: self.windows_count.load(Ordering::SeqCst),
+            debounce_pending: self.debounce_pending.load(Ordering::SeqCst),
+            suspects_pending: self.suspects_pending.load(Ordering::SeqCst),
+            reconcile_seq: self.reconcile_seq.load(Ordering::SeqCst),
+        }
+    }
+
+    fn sync_from_state(&self, state: &WorldState) {
+        self.debounce_pending
+            .store(state.coalesce.len(), Ordering::SeqCst);
+        self.suspects_pending
+            .store(state.suspects.len(), Ordering::SeqCst);
+        self.windows_count
+            .store(state.store.len(), Ordering::SeqCst);
+        self.reconcile_seq.store(state.seen_seq, Ordering::SeqCst);
+    }
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 pub use view::TestWorld;
 pub use view::WorldView;
@@ -778,47 +833,62 @@ impl World {
         let (evt_tx, _evt_rx) = broadcast::channel(cfg.events_buffer.max(8));
 
         let state = WorldState::new();
-        tokio::spawn(run_actor(rx, evt_tx.clone(), state, winops, cfg.clone()));
+        let metrics = Arc::new(WorldMetrics::default());
 
-        let handle = WorldHandle { tx, events: evt_tx };
+        let handle = WorldHandle {
+            tx: tx.clone(),
+            events: evt_tx.clone(),
+            metrics: metrics.clone(),
+        };
 
         // Initialize the per‑PID AX read pool and give it a handle to nudge
         // the world actor when reads complete.
         ax_read_pool::init(handle.tx.clone());
 
+        tokio::spawn(run_actor(
+            rx,
+            evt_tx.clone(),
+            metrics.clone(),
+            state,
+            winops,
+            cfg.clone(),
+        ));
+
         // Bridge macOS AX observer events into world refresh hints with light
         // throttling to coalesce bursts (e.g., AXTitleChanged storms).
         // Throttle window: 16ms; send immediately if idle longer than that.
-        let (tx_ax, rx_ax) = crossbeam_channel::unbounded::<mac_winops::AxEvent>();
-        // Expose for tests (cloned)
-        AX_BRIDGE_SENDER
-            .get_or_init(|| parking_lot::Mutex::new(None))
-            .lock()
-            .replace(tx_ax.clone());
-        mac_winops::set_ax_observer_sender(tx_ax);
-        let hint_handle = handle.clone();
-        std::thread::Builder::new()
-            .name("ax-hint-bridge".to_string())
-            .spawn(move || {
-                let mut last = Instant::now() - Duration::from_millis(32);
-                let min_gap = Duration::from_millis(16);
-                while let Ok(_ev) = rx_ax.recv() {
-                    let now = Instant::now();
-                    let since = now.saturating_duration_since(last);
-                    if since >= min_gap {
-                        hint_handle.hint_refresh();
-                        last = now;
-                    } else {
-                        let wait = min_gap - since;
-                        std::thread::sleep(wait);
-                        hint_handle.hint_refresh();
-                        last = Instant::now();
-                        // Drain any burst quickly; coalesce to a single hint
-                        while rx_ax.try_recv().is_ok() {}
+        if ax_bridge_enabled() {
+            let (tx_ax, rx_ax) = crossbeam_channel::unbounded::<mac_winops::AxEvent>();
+            // Expose for tests (cloned)
+            AX_BRIDGE_SENDER
+                .get_or_init(|| parking_lot::Mutex::new(None))
+                .lock()
+                .replace(tx_ax.clone());
+            mac_winops::set_ax_observer_sender(tx_ax);
+            let hint_handle = handle.clone();
+            std::thread::Builder::new()
+                .name("ax-hint-bridge".to_string())
+                .spawn(move || {
+                    let mut last = Instant::now() - Duration::from_millis(32);
+                    let min_gap = Duration::from_millis(16);
+                    while let Ok(_ev) = rx_ax.recv() {
+                        let now = Instant::now();
+                        let since = now.saturating_duration_since(last);
+                        if since >= min_gap {
+                            hint_handle.hint_refresh();
+                            last = now;
+                        } else {
+                            let wait = min_gap - since;
+                            std::thread::sleep(wait);
+                            hint_handle.hint_refresh();
+                            last = Instant::now();
+                            // Drain any burst quickly; coalesce to a single hint
+                            while rx_ax.try_recv().is_ok() {}
+                        }
                     }
-                }
-            })
-            .ok();
+                })
+                .ok();
+        }
 
         handle
     }
@@ -866,7 +936,11 @@ impl World {
                 }
             }
         });
-        WorldHandle { tx, events: evt_tx }
+        WorldHandle {
+            tx,
+            events: evt_tx,
+            metrics: Arc::new(WorldMetrics::default()),
+        }
     }
 
     /// Spawn the no-op world as a trait object for dependency injection in tests.
@@ -963,6 +1037,7 @@ enum OperationRequest {
 async fn run_actor(
     mut rx: mpsc::UnboundedReceiver<Command>,
     events: broadcast::Sender<WorldEvent>,
+    metrics: Arc<WorldMetrics>,
     mut state: WorldState,
     winops: Arc<dyn WinOps>,
     cfg: WorldCfg,
@@ -988,7 +1063,7 @@ async fn run_actor(
     let _ = reconcile(&mut state, &events, &*winops);
     state.last_tick_ms = t0.elapsed().as_millis() as u64;
     state.current_poll_ms = current_ms;
-
+    metrics.sync_from_state(&state);
     loop {
         tokio::select! {
             maybe_cmd = rx.recv() => {
@@ -1029,6 +1104,8 @@ async fn run_actor(
                             current_poll_ms: state.current_poll_ms,
                             debounce_cache: state.last_emit.len(),
                             debounce_pending: state.coalesce.len(),
+                            reconcile_seq: state.seen_seq,
+                            suspects_pending: state.suspects.len(),
                             capabilities: state.capabilities.clone(),
                         };
                         let _ = respond.send(status);
@@ -1055,6 +1132,7 @@ async fn run_actor(
                 else { current_ms = (current_ms + 50).min(cfg.poll_ms_max.max(current_ms)); }
                 state.current_poll_ms = current_ms;
                 next_tick.as_mut().reset(TokioInstant::now() + Duration::from_millis(current_ms));
+                metrics.sync_from_state(&state);
 
                 // Update coalesce timer to earliest pending deadline
                 next_coalesce_due = state.coalesce.values().copied().min();
@@ -1077,6 +1155,7 @@ async fn run_actor(
                     }
                     state.coalesce.remove(k);
                 }
+                metrics.sync_from_state(&state);
                 // Re-arm the timer for the next earliest deadline
                 next_coalesce_due = state.coalesce.values().copied().min();
                 if let Some(due) = next_coalesce_due {
@@ -1962,8 +2041,8 @@ impl WorldHandle {
 }
 
 fn update_capabilities(state: &mut WorldState) {
-    let ax_ok = permissions::accessibility_ok();
-    let sr_ok = permissions::screen_recording_ok();
+    let ax_ok = acc_ok();
+    let sr_ok = screen_ok();
     state.capabilities.accessibility = if ax_ok {
         PermissionState::Granted
     } else {
@@ -2015,6 +2094,22 @@ fn best_display_id(pos: &Pos, displays: &[DisplayBounds]) -> Option<DisplayId> {
 // ===== AX and permission shims (overridable for tests) =====
 use parking_lot::Mutex;
 thread_local! { static TEST_OVERRIDES: Mutex<TestOverrides> = Mutex::new(TestOverrides::default()); }
+static GLOBAL_TEST_OVERRIDES: OnceLock<Mutex<TestOverrides>> = OnceLock::new();
+
+fn global_overrides() -> &'static Mutex<TestOverrides> {
+    GLOBAL_TEST_OVERRIDES.get_or_init(|| Mutex::new(TestOverrides::default()))
+}
+
+fn override_value<T: Clone>(getter: impl Fn(&TestOverrides) -> Option<T>) -> Option<T> {
+    if let Some(val) = TEST_OVERRIDES.with(|o| {
+        let guard = o.lock();
+        getter(&guard)
+    }) {
+        return Some(val);
+    }
+    let guard = global_overrides().lock();
+    getter(&guard)
+}
 
 #[derive(Default, Clone)]
 struct TestOverrides {
@@ -2026,21 +2121,30 @@ struct TestOverrides {
     ax_delay_focus_ms: Option<u64>,
     ax_async_only: Option<bool>,
     coalesce_ms: Option<u64>,
+    ax_bridge_enabled: Option<bool>,
+    screen_ok: Option<bool>,
 }
 
 fn acc_ok() -> bool {
-    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().acc_ok) {
+    if let Some(v) = override_value(|o| o.acc_ok) {
         return v;
     }
     permissions::accessibility_ok()
 }
 
+fn screen_ok() -> bool {
+    if let Some(v) = override_value(|o| o.screen_ok) {
+        return v;
+    }
+    permissions::screen_recording_ok()
+}
+
 fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
     // Optional test delay
-    if let Some(ms) = TEST_OVERRIDES.with(|o| o.lock().ax_delay_focus_ms) {
+    if let Some(ms) = override_value(|o| o.ax_delay_focus_ms) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
-    if let Some((p, id)) = TEST_OVERRIDES.with(|o| o.lock().ax_focus)
+    if let Some((p, id)) = override_value(|o| o.ax_focus)
         && p == pid
     {
         return Some(id);
@@ -2050,10 +2154,10 @@ fn ax_focused_window_id_for_pid(pid: i32) -> Option<u32> {
 
 fn ax_title_for_window_id(id: u32) -> Option<String> {
     // Optional test delay
-    if let Some(ms) = TEST_OVERRIDES.with(|o| o.lock().ax_delay_title_ms) {
+    if let Some(ms) = override_value(|o| o.ax_delay_title_ms) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
-    if let Some((tid, title)) = TEST_OVERRIDES.with(|o| o.lock().ax_title.clone())
+    if let Some((tid, title)) = override_value(|o| o.ax_title.clone())
         && tid == id
     {
         return Some(title);
@@ -2062,17 +2166,18 @@ fn ax_title_for_window_id(id: u32) -> Option<String> {
 }
 
 fn list_display_bounds() -> Vec<DisplayBounds> {
-    if let Some(v) = TEST_OVERRIDES.with(|o| o.lock().displays.clone()) {
+    if let Some(v) = override_value(|o| o.displays.clone()) {
         return v;
     }
     mac_winops::screen::list_display_bounds()
 }
 
 fn coalesce_window_ms() -> u64 {
-    TEST_OVERRIDES.with(|o| {
-        let guard = o.lock();
-        guard.coalesce_ms.unwrap_or(50).max(1)
-    })
+    override_value(|o| o.coalesce_ms).unwrap_or(50).max(1)
+}
+
+fn ax_bridge_enabled() -> bool {
+    override_value(|o| o.ax_bridge_enabled).unwrap_or(true)
 }
 
 #[doc(hidden)]
@@ -2094,27 +2199,39 @@ pub mod test_api {
             let mut s = o.lock();
             s.acc_ok = Some(v);
         });
+        super::global_overrides().lock().acc_ok = Some(v);
+    }
+    pub fn set_screen_recording_ok(v: bool) {
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.screen_ok = Some(v);
+        });
+        super::global_overrides().lock().screen_ok = Some(v);
     }
     pub fn set_ax_focus(pid: i32, id: u32) {
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
             s.ax_focus = Some((pid, id));
         });
+        super::global_overrides().lock().ax_focus = Some((pid, id));
     }
     // set_ax_title now forwards to the AX read pool's cross-thread override so worker threads
     // observe the value. For legacy behavior (thread-local override), prefer using the private
     // helper inside unit tests.
     pub fn set_displays(v: Vec<DisplayBounds>) {
+        let clone = v.clone();
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
             s.displays = Some(v);
         });
+        super::global_overrides().lock().displays = Some(clone);
     }
     pub fn clear() {
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
             *s = TestOverrides::default();
         });
+        *super::global_overrides().lock() = TestOverrides::default();
     }
 
     // ===== AX read pool test helpers =====
@@ -2149,12 +2266,21 @@ pub mod test_api {
             let mut s = o.lock();
             s.ax_delay_focus_ms = Some(ms);
         });
+        super::global_overrides().lock().ax_delay_focus_ms = Some(ms);
     }
     pub fn set_ax_async_only(v: bool) {
         TEST_OVERRIDES.with(|o| {
             let mut s = o.lock();
             s.ax_async_only = Some(v);
         });
+        super::global_overrides().lock().ax_async_only = Some(v);
+    }
+    pub fn set_ax_bridge_enabled(v: bool) {
+        TEST_OVERRIDES.with(|o| {
+            let mut s = o.lock();
+            s.ax_bridge_enabled = Some(v);
+        });
+        super::global_overrides().lock().ax_bridge_enabled = Some(v);
     }
     pub fn set_ax_title(id: u32, title: &str) {
         // Set both: thread-local (for synchronous override path) and
@@ -2164,6 +2290,7 @@ pub mod test_api {
             let mut s = o.lock();
             s.ax_title = Some((id, t));
         });
+        super::global_overrides().lock().ax_title = Some((id, title.to_string()));
         super::ax_read_pool::_test_set_title_override(id, title);
     }
     pub fn set_coalesce_ms(ms: u64) {
@@ -2171,6 +2298,7 @@ pub mod test_api {
             let mut s = o.lock();
             s.coalesce_ms = Some(ms.max(1));
         });
+        super::global_overrides().lock().coalesce_ms = Some(ms.max(1));
     }
 
     /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.

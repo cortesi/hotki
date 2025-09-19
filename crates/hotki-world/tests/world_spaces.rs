@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use hotki_world::{
-    WindowKey, World, WorldCfg, WorldEvent,
-    test_support::{drain_events, recv_event_until, wait_snapshot_until},
+    WindowKey, World, WorldCfg, WorldEvent, test_api as world_test,
+    test_support::{
+        drain_events, override_scope, recv_event_until, run_async_test, wait_snapshot_until,
+    },
 };
 use mac_winops::{
     Pos, WindowInfo,
@@ -41,14 +43,16 @@ fn base_window() -> WindowInfo {
 
 #[test]
 fn window_space_transition_yields_update() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_async_test(async move {
+        let _guard = override_scope();
         let mock = Arc::new(MockWinOps::new());
         mock.set_windows(vec![base_window()]);
+        world_test::set_ax_bridge_enabled(false);
+        world_test::set_accessibility_ok(false);
+        world_test::set_screen_recording_ok(false);
+        world_test::set_displays(vec![(1, 0, 0, 1920, 1080)]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
+        tokio::task::yield_now().await;
         let mut rx = world.subscribe();
 
         assert!(

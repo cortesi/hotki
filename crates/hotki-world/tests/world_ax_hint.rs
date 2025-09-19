@@ -6,7 +6,7 @@ use std::{
 
 use hotki_world::{
     World, WorldCfg, test_api as world_test,
-    test_support::{override_scope, wait_snapshot_until},
+    test_support::{override_scope, run_async_test, wait_snapshot_until},
 };
 use mac_winops::{
     AxEvent, AxEventKind, Pos, WindowHint, WindowId, WindowInfo,
@@ -51,14 +51,16 @@ const FAST_COALESCE_MS: u64 = 30;
 
 fn run_world_test<F>(coalesce_ms: Option<u64>, fut: F)
 where
-    F: Future<Output = ()>,
+    F: Future<Output = ()> + Send + 'static,
 {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
+    run_async_test(async move {
         let _guard = override_scope();
+        world_test::set_accessibility_ok(true);
+        world_test::set_screen_recording_ok(true);
+        world_test::set_displays(vec![
+            (1, 0, 0, 1920, 1080),
+            (2, 1920, 0, 1920, 1080),
+        ]);
         if let Some(ms) = coalesce_ms {
             world_test::set_coalesce_ms(ms);
         }
