@@ -58,6 +58,33 @@ pub(crate) fn visible_frame_containing_point(mtm: MainThreadMarker, p: Point) ->
     }
 }
 
+/// Resolve the backing scale factor for the screen containing `p`.
+pub(crate) fn scale_factor_containing_point(mtm: MainThreadMarker, p: Point) -> f64 {
+    let mut chosen = None;
+    for s in NSScreen::screens(mtm).iter() {
+        let fr = s.visibleFrame();
+        let r = geom::Rect {
+            x: fr.origin.x,
+            y: fr.origin.y,
+            w: fr.size.width,
+            h: fr.size.height,
+        };
+        if r.contains(p.x, p.y) {
+            chosen = Some(s);
+            break;
+        }
+    }
+
+    if let Some(scr) = chosen
+        .or_else(|| NSScreen::mainScreen(mtm))
+        .or_else(|| NSScreen::screens(mtm).iter().next())
+    {
+        return scr.backingScaleFactor();
+    }
+
+    1.0
+}
+
 /// Convert a rectangle expressed in screen‑local coordinates to global
 /// coordinates by adding the screen origin.
 ///

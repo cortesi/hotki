@@ -58,10 +58,15 @@ pub fn run_place_move_min_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             && fixtures::approx(w, expected0.w, eps)
             && h >= expected0.h - eps)
         {
-            return Err(Error::InvalidState(format!(
-                "initial placement not anchored (ex x={:.1} y={:.1} w={:.1} h>={:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                expected0.x, expected0.y, expected0.w, expected0.h, x, y, w, h
-            )));
+            let actual = Rect::new(x, y, w, h);
+            let msg = fixtures::frame_failure_line::<&str>(
+                "place_move_min[col=0]",
+                expected0,
+                Some(actual),
+                eps,
+                &[],
+            );
+            return Err(Error::InvalidState(msg));
         }
     }
 
@@ -103,20 +108,14 @@ pub fn run_place_move_min_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)
             .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
-        return Err(Error::InvalidState(match actual {
-            Some(actual) => format!(
-                "place-move-min mismatch (expected col=1 anchors; ex x={:.1} y={:.1} w={:.1} h>={:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                expected1.x,
-                expected1.y,
-                expected1.w,
-                expected1.h,
-                actual.x,
-                actual.y,
-                actual.w,
-                actual.h
-            ),
-            None => "place-move-min mismatch (frame unavailable)".into(),
-        }));
+        let msg = fixtures::frame_failure_line::<&str>(
+            "place_move_min[col=1]",
+            expected1,
+            actual,
+            eps,
+            &[],
+        );
+        return Err(Error::InvalidState(msg));
     }
 
     if let Err(_e) = helper.kill_and_wait() {}

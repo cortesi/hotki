@@ -12,7 +12,7 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{ensure_frontmost, spawn_helper_visible, wait_for_frontmost_title},
-    tests::fixtures::{self, Rect},
+    tests::fixtures,
     world,
 };
 
@@ -79,35 +79,16 @@ pub fn run_place_flex(
 
     world::place_window(target, cols, rows, col, row, Some(opts))?;
 
-    // Verify expected frame
-    let ok = fixtures::wait_for_expected_frame(
+    if let Err(mismatch) = fixtures::wait_for_expected_frame(
         helper.pid,
         &title,
         expected,
         config::PLACE.eps,
         config::PLACE.step_timeout_ms,
         config::PLACE.poll_ms,
-    );
-    if !ok {
-        let actual = mac_winops::ax_window_frame(helper.pid, &title)
-            .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
-        return Err(Error::SpawnFailed(match actual {
-            Some(actual) => format!(
-                "place-flex mismatch (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                expected.x,
-                expected.y,
-                expected.w,
-                expected.h,
-                actual.x,
-                actual.y,
-                actual.w,
-                actual.h
-            ),
-            None => format!(
-                "place-flex mismatch (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                expected.x, expected.y, expected.w, expected.h
-            ),
-        }));
+    ) {
+        let msg = mismatch.failure_line::<&str>("place_flex", &[]);
+        return Err(Error::InvalidState(msg));
     }
 
     if let Err(_e) = helper.kill_and_wait() {}

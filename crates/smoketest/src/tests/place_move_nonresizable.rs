@@ -85,20 +85,14 @@ pub fn run_place_move_nonresizable_test(timeout_ms: u64, with_logs: bool) -> Res
     if !ok {
         let actual = mac_winops::ax_window_frame(helper.pid, &title)
             .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
-        return Err(Error::InvalidState(match actual {
-            Some(actual) => format!(
-                "place-move-nonresizable mismatch (expected col=1 anchors; ex x={:.1} y={:.1} w>={:.1} h>={:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                expected1.x,
-                expected1.y,
-                expected1.w,
-                expected1.h,
-                actual.x,
-                actual.y,
-                actual.w,
-                actual.h
-            ),
-            None => "place-move-nonresizable mismatch (frame unavailable)".into(),
-        }));
+        let msg = fixtures::frame_failure_line::<&str>(
+            "place_move_nonresizable[col=1]",
+            expected1,
+            actual,
+            eps,
+            &[],
+        );
+        return Err(Error::InvalidState(msg));
     }
 
     if let Err(_e) = helper.kill_and_wait() {}

@@ -97,15 +97,13 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
             }
 
             // Ensure frontmost
-            ensure_frontmost(
-                helper.pid,
-                &title,
-                5,
-                config::INPUT_DELAYS.retry_delay_ms,
-            );
+            ensure_frontmost(helper.pid, &title, 5, config::INPUT_DELAYS.retry_delay_ms);
 
-            let window_id = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
-                .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let window_id =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve helper CGWindowId".into())
+                    })?;
             let target = WorldWindowId::new(helper.pid, window_id);
 
             // Case A: 2x2 bottom-right cell — expect right and TOP edges flush
@@ -117,8 +115,9 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 let expected = {
                     let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                         .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-                    let vf = fixtures::visible_frame_containing_point(ax, ay)
-                        .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
+                    let vf = fixtures::visible_frame_containing_point(ax, ay).ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve visibleFrame".into())
+                    })?;
                     fixtures::cell_rect(vf, cols, rows, col, row)
                 };
                 world::place_window(target, cols, rows, col, row, None)?;
@@ -126,20 +125,15 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
                         .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
-                    return Err(Error::SpawnFailed(match actual {
-                        Some(actual) => format!(
-                            "increments A not anchored (expect right+top flush; ex={:.1},{:.1},{:.1},{:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                            expected.x,
-                            expected.y,
-                            expected.w,
-                            expected.h,
-                            actual.x,
-                            actual.y,
-                            actual.w,
-                            actual.h
-                        ),
-                        None => "increments A not anchored (frame unavailable)".into(),
-                    }));
+                    let case = format!("place_increments[case=A,col={},row={}]", col, row);
+                    let msg = fixtures::frame_failure_line::<&str>(
+                        &case,
+                        expected,
+                        actual,
+                        config::PLACE.eps,
+                        &[],
+                    );
+                    return Err(Error::InvalidState(msg));
                 }
             }
 
@@ -152,8 +146,9 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 let expected = {
                     let ((ax, ay), _) = mac_winops::ax_window_frame(helper.pid, &title)
                         .ok_or_else(|| Error::InvalidState("No AX frame for helper".into()))?;
-                    let vf = fixtures::visible_frame_containing_point(ax, ay)
-                        .ok_or_else(|| Error::InvalidState("Failed to resolve visibleFrame".into()))?;
+                    let vf = fixtures::visible_frame_containing_point(ax, ay).ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve visibleFrame".into())
+                    })?;
                     fixtures::cell_rect(vf, cols, rows, col, row)
                 };
                 world::place_window(target, cols, rows, col, row, None)?;
@@ -161,20 +156,15 @@ pub fn run_place_increments_test(timeout_ms: u64, with_logs: bool) -> Result<()>
                 if !ok {
                     let actual = mac_winops::ax_window_frame(helper.pid, &title)
                         .map(|((x, y), (w, h))| Rect::new(x, y, w, h));
-                    return Err(Error::SpawnFailed(match actual {
-                        Some(actual) => format!(
-                            "increments B not anchored (expect left+bottom flush; ex={:.1},{:.1},{:.1},{:.1}; got x={:.1} y={:.1} w={:.1} h={:.1})",
-                            expected.x,
-                            expected.y,
-                            expected.w,
-                            expected.h,
-                            actual.x,
-                            actual.y,
-                            actual.w,
-                            actual.h
-                        ),
-                        None => "increments B not anchored (frame unavailable)".into(),
-                    }));
+                    let case = format!("place_increments[case=B,col={},row={}]", col, row);
+                    let msg = fixtures::frame_failure_line::<&str>(
+                        &case,
+                        expected,
+                        actual,
+                        config::PLACE.eps,
+                        &[],
+                    );
+                    return Err(Error::InvalidState(msg));
                 }
             }
 

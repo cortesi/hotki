@@ -12,7 +12,7 @@ use crate::{
     error::{Error, Result},
     helper_window::{HelperWindowBuilder, ManagedChild, ensure_frontmost, wait_for_window_visible},
     test_runner::{TestConfig, TestRunner},
-    tests::fixtures::{self, Rect},
+    tests::fixtures,
     world,
 };
 
@@ -70,14 +70,11 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             // Resolve window id and ensure frontmost by best-effort activation
             let window_id =
                 fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
-                    .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve helper CGWindowId".into())
+                    })?;
             let target = WorldWindowId::new(helper.pid, window_id);
-            ensure_frontmost(
-                helper.pid,
-                &title,
-                5,
-                config::INPUT_DELAYS.retry_delay_ms,
-            );
+            ensure_frontmost(helper.pid, &title, 5, config::INPUT_DELAYS.retry_delay_ms);
 
             // Compute expected rect for (1,1) at current screen
             let vf = fixtures::resolve_vf_for_window(
@@ -90,27 +87,16 @@ pub fn run_place_async_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             let expected = fixtures::cell_rect(vf, cols, rows, col, row);
 
             world::place_window(target, cols, rows, col, row, None)?;
-            let ok = fixtures::wait_for_expected_frame(
+            if let Err(mismatch) = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,
                 expected,
                 config::PLACE.eps,
                 config::PLACE.step_timeout_ms,
                 config::PLACE.poll_ms,
-            );
-            if !ok {
-                let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                    .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
-                return Err(Error::SpawnFailed(match actual {
-                    Some(actual) => format!(
-                        "placement mismatch (async) (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                        expected.x, expected.y, expected.w, expected.h, actual.x, actual.y, actual.w, actual.h
-                    ),
-                    None => format!(
-                        "placement mismatch (async) (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                        expected.x, expected.y, expected.w, expected.h
-                    ),
-                }));
+            ) {
+                let msg = mismatch.failure_line::<&str>("place_async", &[]);
+                return Err(Error::InvalidState(msg));
             }
 
             if let Err(_e) = helper.kill_and_wait() {}

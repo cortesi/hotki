@@ -33,18 +33,18 @@ No second data channel; hotki-world is the single assertion surface.
 > * The registry runner replaces the orchestrator, collapsing subprocess plumbing safely.
 
 1. Stage One: Codify Testing Principles
-1. [ ] Write `docs/testing-principles.md` covering world-only flows, runloop pumping, reset contract,
+1. [x] Write `docs/testing-principles.md` covering world-only flows, runloop pumping, reset contract,
        budgets, skip semantics, and canonical environment probes.
-2. [ ] Add a "Do Not Do" page to `testing-principles.md`: no direct AX/CG in tests, no sleeping or
+2. [x] Add a "Do Not Do" page to `testing-principles.md`: no direct AX/CG in tests, no sleeping or
        manual polling, no third-party apps in CI, mutating ops serialized on the main thread.
-3. [ ] Write `docs/mimic-scenarios.md` to describe mimic structure, quirks, and capture lifecycle,
+3. [x] Write `docs/mimic-scenarios.md` to describe mimic structure, quirks, and capture lifecycle,
        and cross-link importer heuristics guidance.
-4. [ ] Link both docs from `README.md`, `DEV.md`, and `crates/smoketest/README.md` contributor
+4. [x] Link both docs from `README.md`, `DEV.md`, and `crates/smoketest/README.md` contributor
        sections.
-5. [ ] Document a "Message Style" subsection with the one-line failure template and ensure helpers
+5. [x] Document a "Message Style" subsection with the one-line failure template and ensure helpers
        emit `case=<name> scale=<n> eps=<px> expected=<x,y,w,h> got=<x,y,w,h>` and
        `delta=<dx,dy,dw,dh> artifacts=<paths...>`.
-6. [ ] Ban async test attributes in world tests: document the rule and add lint coverage for
+6. [x] Ban async test attributes in world tests: document the rule and add lint coverage for
        `#[tokio::test]` (and friends) in `crates/hotki-world/tests`.
 *Acceptance:* Docs spell out the main-thread guarantee, skip policy, and message template, and CI lints
              for banned imports plus async test attributes in `crates/hotki-world/tests`.

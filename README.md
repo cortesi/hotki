@@ -33,6 +33,13 @@ to the [`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
 one place, simplifies testing via the in-memory `TestWorld`, and ensures that
 refresh hints flow through a single channel.
 
+## Contributor Docs
+
+- [Testing Principles](docs/testing-principles.md) – world-only flows, runloop pumping, reset
+  contracts, budgets, skip semantics, message style, and "Do Not Do" guidance.
+- [Mimic Scenarios](docs/mimic-scenarios.md) – capture lifecycle, replay structure, and importer
+  heuristics integration.
+
 
 ## Configuration
 

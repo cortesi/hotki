@@ -23,7 +23,7 @@ use std::cmp;
 
 use hotki_world_ids::WorldWindowId;
 
-use super::fixtures::{self, Rect};
+use super::fixtures;
 use crate::{
     config,
     error::{Error, Result},
@@ -71,8 +71,11 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
             )?;
 
             // Resolve CG window id
-            let window_id = fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
-                .ok_or_else(|| Error::InvalidState("Failed to resolve helper CGWindowId".into()))?;
+            let window_id =
+                fixtures::find_window_id(helper.pid, &title, 2000, config::PLACE.poll_ms)
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve helper CGWindowId".into())
+                    })?;
             let target = WorldWindowId::new(helper.pid, window_id);
 
             // Ensure helper is frontmost to make AX resolution stable
@@ -89,7 +92,9 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                         config::DEFAULTS.timeout_ms,
                         config::PLACE.poll_ms,
                     )
-                    .ok_or_else(|| Error::InvalidState("Failed to resolve screen visibleFrame".into()))?;
+                    .ok_or_else(|| {
+                        Error::InvalidState("Failed to resolve screen visibleFrame".into())
+                    })?;
 
                     // Compute expected cell rect
                     let expected = fixtures::cell_rect(vf, cols, rows, col, row);
@@ -98,36 +103,17 @@ pub fn run_place_test(timeout_ms: u64, with_logs: bool) -> Result<()> {
                     world::place_window(target, cols, rows, col, row, None)?;
 
                     // Wait for expected frame within tolerance
-                    let ok = fixtures::wait_for_expected_frame(
+                    if let Err(mismatch) = fixtures::wait_for_expected_frame(
                         helper.pid,
                         &title,
                         expected,
                         config::PLACE.eps,
                         config::PLACE.step_timeout_ms,
                         config::PLACE.poll_ms,
-                    );
-                    if !ok {
-                        let actual = mac_winops::ax_window_frame(helper.pid, &title)
-                            .map(|((ax, ay), (aw, ah))| Rect::new(ax, ay, aw, ah));
-                        return Err(Error::SpawnFailed(match actual {
-                            Some(actual) => format!(
-                                "placement mismatch at col={}, row={} (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual x={:.1} y={:.1} w={:.1} h={:.1})",
-                                col,
-                                row,
-                                expected.x,
-                                expected.y,
-                                expected.w,
-                                expected.h,
-                                actual.x,
-                                actual.y,
-                                actual.w,
-                                actual.h
-                            ),
-                            None => format!(
-                                "placement mismatch at col={}, row={} (expected x={:.1} y={:.1} w={:.1} h={:.1}; actual frame unavailable)",
-                                col, row, expected.x, expected.y, expected.w, expected.h
-                            ),
-                        }));
+                    ) {
+                        let case = format!("place[col={},row={}]", col, row);
+                        let msg = mismatch.failure_line::<&str>(&case, &[]);
+                        return Err(Error::InvalidState(msg));
                     }
                 }
             }

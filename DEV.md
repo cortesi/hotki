@@ -1,5 +1,12 @@
 # Developer Notes
 
+## Contributor Docs
+
+- [Testing Principles](docs/testing-principles.md) – canonical world-only flow guidance, runloop
+  pumping, reset contracts, budgets, skip semantics, and message format rules.
+- [Mimic Scenarios](docs/mimic-scenarios.md) – capture lifecycle, replay structure, and importer
+  heuristics cross-links.
+
 ## Smoketest
 
 Smoketest provides a small, macOS‑only end‑to‑end check for relay repeat

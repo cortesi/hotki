@@ -110,16 +110,20 @@ fn run_place_with_state(
                     })?;
             let target = WorldWindowId::new(helper.pid, window_id);
             world::place_window(target, cols, rows, 0, 0, None)?;
-            let ok = fixtures::wait_for_expected_frame(
+            if let Err(mismatch) = fixtures::wait_for_expected_frame(
                 helper.pid,
                 &title,
                 expected,
                 config::PLACE.eps,
                 config::PLACE.step_timeout_ms,
                 config::PLACE.poll_ms,
-            );
-            if !ok {
-                return Err(Error::InvalidState("placement verification failed".into()));
+            ) {
+                let case = format!(
+                    "place_state[minimized={},zoomed={}]",
+                    start_minimized, start_zoomed
+                );
+                let msg = mismatch.failure_line::<&str>(&case, &[]);
+                return Err(Error::InvalidState(msg));
             }
             if let Err(_e) = helper.kill_and_wait() {}
             Ok(())

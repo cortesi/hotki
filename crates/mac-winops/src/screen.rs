@@ -49,3 +49,10 @@ pub fn visible_frame_containing_point(x: f64, y: f64) -> Option<Rect> {
     let pt = Point { x, y };
     Some(crate::screen_util::visible_frame_containing_point(mtm, pt))
 }
+
+/// Retrieve the backing scale factor for the display that contains `(x, y)`.
+pub fn display_scale_containing_point(x: f64, y: f64) -> Option<f64> {
+    let mtm = MainThreadMarker::new()?;
+    let pt = Point { x, y };
+    Some(crate::screen_util::scale_factor_containing_point(mtm, pt))
+}
