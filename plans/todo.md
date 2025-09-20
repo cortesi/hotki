@@ -88,21 +88,21 @@ No second data channel; hotki-world is the single assertion surface.
              template message, and reset reports mimic leaks while artifacts include cropped overlays.
 
 4. Stage Four: Mimic Window Harness in hotki-world
-1. [ ] Move winit helper logic from `crates/smoketest/src/winhelper.rs` into a `mimic` module gated
+1. [x] Move winit helper logic from `crates/smoketest/src/winhelper.rs` into a `mimic` module gated
        behind a `world-mimic` feature that stays disabled in release builds.
-2. [ ] Define `MimicSpec`, `MimicScenario`, `Quirk`, and `spawn_mimic`/`kill_mimic` APIs, tagging each
+2. [x] Define `MimicSpec`, `MimicScenario`, `Quirk`, and `spawn_mimic`/`kill_mimic` APIs, tagging each
        window with `{ scenario_slug, window_label, quirks[] }` for artifacts and enforcing naming
        conventions.
-3. [ ] Document quirk semantics precisely: `AxRounding` perturbs raw AX only, `DelayApplyMove` delays
+3. [x] Document quirk semantics precisely: `AxRounding` perturbs raw AX only, `DelayApplyMove` delays
        authoritative updates, `IgnoreMoveIfMinimized` defers placement, and `RaiseCyclesToSibling`
        respects `KeepFrontWindow`.
-4. [ ] Introduce `RaiseStrategy`, `MinimizedPolicy`, and `PlaceOptions` in `hotki-world`, require tests
+4. [x] Introduce `RaiseStrategy`, `MinimizedPolicy`, and `PlaceOptions` in `hotki-world`, require tests
        to pick a strategy, and ensure mimics honor `RaiseStrategy::KeepFrontWindow`.
 5. [ ] Implement quirks as specified and emit diagnostics that include
        `scenario_slug/window_label/quirks[]`.
 6. [ ] Add integration tests validating each individual quirk plus a composite raise-cycle case that
        exercises `RaiseStrategy::KeepFrontWindow`.
-7. [ ] Update build scripts and CI presets so `world-mimic` is on for dev/tests, off for release, and
+7. [x] Update build scripts and CI presets so `world-mimic` is on for dev/tests, off for release, and
        document the required profiles.
 *Acceptance:* Quirk tests (including the composite raise-cycle) pass with artifacts showing the naming
              scheme and `RaiseStrategy` behavior, and feature gates align with CI profiles.

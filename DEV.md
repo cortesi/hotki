@@ -7,6 +7,15 @@
 - [Mimic Scenarios](docs/mimic-scenarios.md) – capture lifecycle, replay structure, and importer
   heuristics cross-links.
 
+## World Mimic Feature
+
+- The `world-mimic` feature gates the winit-based mimic harness. Enable it for development and
+  testing via `cargo check --features world-mimic` or `cargo test --features world-mimic`.
+- Release builds (bundles, CI release profiles) must omit the feature to avoid pulling UI helpers
+  into the shipping binary.
+- `smoketest` and other dev tooling already enable the feature in their crate manifests, so you only
+  need to pass the flag when working directly in `hotki-world`.
+
 ## Smoketest
 
 Smoketest provides a small, macOS‑only end‑to‑end check for relay repeat

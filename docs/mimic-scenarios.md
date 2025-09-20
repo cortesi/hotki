@@ -15,12 +15,27 @@ canonical manifest, and optional importer heuristics to reconcile platform quirk
   assertion surface.
 
 ## Quirks
-- **Scaled pixels** – Bundles store geometry in backing pixels. Helpers convert to logical units using
-  display scale factors before comparing against expectations.
-- **Lost frames** – When a capture omits a matching frame, the harness records `lost_count` and emits
-  artifacts so failures remain diagnosable.
-- **Mode transitions** – Fullscreen or Space changes include mode metadata so helpers can apply the
-  authoritative frame rules documented in `testing-principles.md`.
+
+Stage Four introduces a dedicated mimic harness with deterministic quirks that mirror common
+application behaviours. Each mimic window advertises its quirks in artifacts via the
+`scenario_slug/window_label/quirks[]` tag.
+
+- **AxRounding** – The helper reports CoreGraphics frames verbatim but publishes Accessibility frames
+  rounded toward zero. Tests can assert that authoritative reconciliation prefers CG data while AX
+  retains the historical rounding artefacts.
+- **DelayApplyMove** – The helper defers applying requested frames until an additional main-thread
+  pump occurs (`delay_apply_ms = 160`). This simulates apps that coalesce move requests before
+  updating geometry.
+- **IgnoreMoveIfMinimized** – Placement is skipped while the window remains miniaturized. Tests must
+  restore the window (or choose `MinimizedPolicy::AutoUnminimize`) before expecting geometry changes.
+- **RaiseCyclesToSibling** – Before yielding focus, the helper cycles through its sibling window so
+  `RaiseStrategy::KeepFrontWindow` scenarios keep the original frontmost window ahead of the mimic
+  under test.
+
+Legacy documentation about pixel scaling, lost frames, and mode transitions still applies when the
+`world-mimic` feature is enabled. The harness continues to log scaled-pixel comparisons, track
+`lost_count`, and respect the authoritative reconciliation rules described in
+`docs/testing-principles.md`.
 
 ## Capture Lifecycle
 1. Record a live interaction with `hotki-tester capture --slug <name>`.
@@ -40,4 +55,3 @@ understand why a rule exists and when it is safe to remove.
 - [Testing Principles](./testing-principles.md)
 - [Importer Heuristics](./importer-heuristics.md)
 - [`crates/smoketest` README](../crates/smoketest/README.md)
-

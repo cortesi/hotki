@@ -53,7 +53,8 @@ echo "Building ${APP_NAME} v${VERSION} (debug build)..."
 
 # Build debug binary
 echo "Building debug binary..."
-cargo build --bin "$BIN_NAME"
+CARGO_FEATURES=${CARGO_FEATURES:-world-mimic}
+cargo build --bin "$BIN_NAME" --features "$CARGO_FEATURES"
 BINARY_PATH="$ROOT_DIR/target/debug/$BIN_NAME"
 [[ -f "$BINARY_PATH" ]] || abort "Binary not found at $BINARY_PATH"
 

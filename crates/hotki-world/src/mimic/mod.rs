@@ -2,6 +2,507 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+use std::{
+    fmt,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+};
+
+use once_cell::sync::OnceCell;
+use tracing::warn;
+
+use crate::{PlaceOptions, RaiseStrategy};
+
+/// Internal registry mapping spawned mimic windows to diagnostic metadata so world
+/// reconciliation can surface `{scenario_slug, window_label, quirks[]}`.
+static REGISTRY: OnceCell<Mutex<MimicRegistry>> = OnceCell::new();
+
+fn registry() -> &'static Mutex<MimicRegistry> {
+    REGISTRY.get_or_init(|| Mutex::new(MimicRegistry::default()))
+}
+
+/// Quirks that can be applied to a mimic window to simulate application-specific
+/// behaviour. Semantics are intentionally precise so tests can assert outcomes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Quirk {
+    /// Round raw Accessibility geometry while leaving CoreGraphics untouched.
+    ///
+    /// The helper reports CG frames exactly as requested but perturbs AX frames
+    /// by rounding towards zero, mimicking real-world apps that quantise AX
+    /// positions independently of CG.
+    AxRounding,
+    /// Delay authoritative geometry updates until the helper runloop has pumped
+    /// at least once after observing a `set_frame` request. Mirrors apps that
+    /// apply their own debounced move logic.
+    DelayApplyMove,
+    /// Ignore direct move requests while the window is minimised. Placement
+    /// commands must restore the window first; otherwise the helper defers to
+    /// preserve the minimised state.
+    IgnoreMoveIfMinimized,
+    /// Cycle focus between siblings before yielding the target when the runner
+    /// requests `RaiseStrategy::KeepFrontWindow`, ensuring the previously front
+    /// window remains ahead of the mimic under test.
+    RaiseCyclesToSibling,
+}
+
+impl fmt::Display for Quirk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::AxRounding => "AxRounding",
+            Self::DelayApplyMove => "DelayApplyMove",
+            Self::IgnoreMoveIfMinimized => "IgnoreMoveIfMinimized",
+            Self::RaiseCyclesToSibling => "RaiseCyclesToSibling",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+/// Specification for a single mimic window within a scenario.
+#[derive(Clone, Debug)]
+pub struct MimicSpec {
+    /// Stable slug identifying the scenario that owns this window.
+    pub scenario_slug: Arc<str>,
+    /// Short label (e.g. `primary`, `sibling`) used in artifacts and diagnostics.
+    pub window_label: Arc<str>,
+    /// NSWindow title assigned to the helper window.
+    pub title: String,
+    /// Placement tuning options supplied by smoketest scenarios.
+    pub place: PlaceOptions,
+    /// Quirk list applied to this helper.
+    pub quirks: Vec<Quirk>,
+    /// Runtime configuration that mirrors the legacy winhelper knobs.
+    pub config: HelperConfig,
+}
+
+impl MimicSpec {
+    /// Convenience for building a spec with default helper configuration.
+    #[must_use]
+    pub fn new(slug: Arc<str>, label: impl Into<Arc<str>>, title: impl Into<String>) -> Self {
+        Self {
+            scenario_slug: slug,
+            window_label: label.into(),
+            title: title.into(),
+            place: PlaceOptions::default(),
+            quirks: Vec::new(),
+            config: HelperConfig::default(),
+        }
+    }
+
+    /// Attach quirks to the spec.
+    #[must_use]
+    pub fn with_quirks(mut self, quirks: Vec<Quirk>) -> Self {
+        self.quirks = quirks;
+        self
+    }
+
+    /// Override placement options.
+    #[must_use]
+    pub fn with_place(mut self, place: PlaceOptions) -> Self {
+        self.place = place;
+        self
+    }
+
+    /// Override helper configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: HelperConfig) -> Self {
+        self.config = config;
+        self
+    }
+}
+
+/// Scenario container: a slug plus one or more mimic specs.
+#[derive(Clone, Debug)]
+pub struct MimicScenario {
+    /// Stable slug for artifact tagging.
+    pub slug: Arc<str>,
+    /// Ordered list of mimic windows.
+    pub windows: Vec<MimicSpec>,
+}
+
+impl MimicScenario {
+    /// Construct a scenario with the provided slug and window specifications.
+    #[must_use]
+    pub fn new(slug: impl Into<Arc<str>>, windows: Vec<MimicSpec>) -> Self {
+        Self {
+            slug: slug.into(),
+            windows,
+        }
+    }
+}
+
+/// Handle returned by [`spawn_mimic`] that manages helper lifetimes.
+pub struct MimicHandle {
+    slug: Arc<str>,
+    windows: Vec<MimicWindowHandle>,
+}
+
+impl MimicHandle {
+    /// Scenario slug.
+    #[must_use]
+    pub fn slug(&self) -> &Arc<str> {
+        &self.slug
+    }
+
+    /// Snapshot diagnostic rows for each helper window.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<String> {
+        self.windows
+            .iter()
+            .map(|w| format!("scenario={} {}", self.slug, w.describe()))
+            .collect()
+    }
+}
+
+struct MimicWindowHandle {
+    label: Arc<str>,
+    quirks: Vec<Quirk>,
+    place: PlaceOptions,
+    shutdown: Arc<AtomicBool>,
+    join: Mutex<Option<JoinHandle<Result<(), String>>>>,
+}
+
+impl MimicWindowHandle {
+    fn describe(&self) -> String {
+        let quirks = if self.quirks.is_empty() {
+            "-".to_string()
+        } else {
+            self.quirks
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "label={} quirks=[{}] raise={:?} minimized={:?} animate={}",
+            self.label, quirks, self.place.raise, self.place.minimized, self.place.animate,
+        )
+    }
+
+    fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    fn join(&self) -> Result<(), MimicError> {
+        if let Some(handle) = self.join.lock().unwrap().take() {
+            handle
+                .join()
+                .map_err(|_| MimicError::JoinPanic(self.label.to_string()))?
+                .map_err(|e| MimicError::HelperFailure(self.label.to_string(), e))?
+        }
+        Ok(())
+    }
+}
+
+/// Errors surfaced by mimic helper management.
+#[derive(Debug)]
+pub enum MimicError {
+    /// Helper thread panicked while exiting.
+    JoinPanic(String),
+    /// Helper reported a recoverable failure.
+    HelperFailure(String, String),
+    /// Failed to spawn the helper thread.
+    SpawnFailed(String),
+}
+
+impl fmt::Display for MimicError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JoinPanic(label) => write!(f, "mimic window '{}' panicked", label),
+            Self::HelperFailure(label, err) => {
+                write!(f, "mimic window '{}' failed: {}", label, err)
+            }
+            Self::SpawnFailed(label) => write!(
+                f,
+                "failed to spawn mimic window '{}': thread start error",
+                label
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MimicError {}
+
+/// Launch the provided mimic scenario, returning a handle suitable for teardown.
+pub fn spawn_mimic(scenario: MimicScenario) -> Result<MimicHandle, MimicError> {
+    if scenario.windows.is_empty() {
+        warn!(slug = %scenario.slug, "spawn_mimic called with no windows");
+    }
+    let slug = scenario.slug.clone();
+    let mut handles = Vec::with_capacity(scenario.windows.len());
+    for spec in scenario.windows {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let label = spec.window_label.clone();
+        let quirks = spec.quirks.clone();
+        let place = spec.place;
+        let mut helper_config = spec.config.clone();
+        apply_quirk_defaults(&mut helper_config, &quirks);
+        helper_config.place = place;
+        let helper_config = helper_config
+            .with_shutdown(shutdown.clone())
+            .with_quirks(quirks.clone());
+        let thread_name = format!("mimic-{}-{}", slug, label);
+        let decorated_title = format!(
+            "{} [{}::{}]",
+            spec.title, spec.scenario_slug, spec.window_label
+        );
+        let join = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || run_helper_window(decorated_title, helper_config))
+            .map_err(|_| MimicError::SpawnFailed(thread_name.clone()))?;
+
+        registry()
+            .lock()
+            .unwrap()
+            .register(slug.clone(), label.clone(), quirks.clone(), place);
+
+        handles.push(MimicWindowHandle {
+            label,
+            quirks,
+            place,
+            shutdown,
+            join: Mutex::new(Some(join)),
+        });
+    }
+
+    Ok(MimicHandle {
+        slug,
+        windows: handles,
+    })
+}
+
+/// Signal and join all helpers for the provided handle.
+pub fn kill_mimic(handle: MimicHandle) -> Result<(), MimicError> {
+    for window in &handle.windows {
+        window.shutdown();
+    }
+    for window in &handle.windows {
+        window.join()?;
+    }
+    registry().lock().unwrap().purge_slug(&handle.slug);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delay_apply_move_sets_default_delay() {
+        let mut cfg = HelperConfig {
+            delay_apply_ms: 0,
+            ..HelperConfig::default()
+        };
+        apply_quirk_defaults(&mut cfg, &[Quirk::DelayApplyMove]);
+        assert!(cfg.delay_apply_ms > 0);
+    }
+
+    #[test]
+    fn ax_rounding_sets_step_size() {
+        let mut cfg = HelperConfig {
+            step_size: None,
+            ..HelperConfig::default()
+        };
+        apply_quirk_defaults(&mut cfg, &[Quirk::AxRounding]);
+        assert_eq!(cfg.step_size, Some((1.0, 1.0)));
+    }
+
+    #[test]
+    fn registry_snapshot_reports_registration() {
+        let slug: Arc<str> = Arc::from("test-scenario");
+        let label: Arc<str> = Arc::from("primary");
+        registry().lock().unwrap().register(
+            slug.clone(),
+            label.clone(),
+            vec![Quirk::DelayApplyMove],
+            PlaceOptions::default(),
+        );
+        let snapshot = registry_snapshot();
+        assert!(
+            snapshot
+                .iter()
+                .any(|entry| entry.scenario_slug == slug && entry.window_label == label)
+        );
+        registry().lock().unwrap().purge_slug(&slug);
+    }
+}
+
+/// Runtime helper that owns the registry contents used for diagnostics.
+#[derive(Default)]
+struct MimicRegistry {
+    entries: Vec<MimicRegistryEntry>,
+}
+
+impl MimicRegistry {
+    fn register(
+        &mut self,
+        slug: Arc<str>,
+        label: Arc<str>,
+        quirks: Vec<Quirk>,
+        place: PlaceOptions,
+    ) {
+        self.entries.push(MimicRegistryEntry {
+            slug,
+            label,
+            quirks,
+            place,
+        });
+    }
+
+    fn purge_slug(&mut self, slug: &Arc<str>) {
+        self.entries.retain(|entry| &entry.slug != slug);
+    }
+
+    #[allow(dead_code)]
+    fn snapshot(&self) -> Vec<MimicRegistryEntry> {
+        self.entries.clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MimicRegistryEntry {
+    slug: Arc<str>,
+    label: Arc<str>,
+    quirks: Vec<Quirk>,
+    place: PlaceOptions,
+}
+
+/// Diagnostic snapshot describing an active mimic window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MimicDiagnostic {
+    /// Scenario slug owning the window.
+    pub scenario_slug: Arc<str>,
+    /// Window label recorded for artifacts.
+    pub window_label: Arc<str>,
+    /// Quirks currently active for the helper.
+    pub quirks: Vec<Quirk>,
+    /// Placement strategy in effect for the helper window.
+    pub place: PlaceOptions,
+}
+
+/// Snapshot the active mimic registry for artifact generation.
+#[must_use]
+pub fn registry_snapshot() -> Vec<MimicDiagnostic> {
+    registry()
+        .lock()
+        .unwrap()
+        .snapshot()
+        .into_iter()
+        .map(|entry| MimicDiagnostic {
+            scenario_slug: entry.slug,
+            window_label: entry.label,
+            quirks: entry.quirks,
+            place: entry.place,
+        })
+        .collect()
+}
+
+/// Configuration knobs for the helper window runtime.
+#[derive(Clone, Debug)]
+pub struct HelperConfig {
+    /// Lifetime for the helper window before automatic shutdown (ms).
+    pub time_ms: u64,
+    /// Delay applied when the system attempts to set the frame directly (ms).
+    pub delay_setframe_ms: u64,
+    /// Delay before applying the target frame (ms).
+    pub delay_apply_ms: u64,
+    /// Duration for tweened placement animations (ms).
+    pub tween_ms: u64,
+    /// Explicit `(x, y, w, h)` target applied after the delay, when present.
+    pub apply_target: Option<(f64, f64, f64, f64)>,
+    /// Grid target `(cols, rows, col, row)` used when explicit geometry is not provided.
+    pub apply_grid: Option<(u32, u32, u32, u32)>,
+    /// Optional slot identifier used by legacy 2x2 placements.
+    pub slot: Option<u8>,
+    /// Optional explicit grid specification `(cols, rows, col, row)`.
+    pub grid: Option<(u32, u32, u32, u32)>,
+    /// Optional explicit inner size `(w, h)` for the helper window.
+    pub size: Option<(f64, f64)>,
+    /// Optional explicit position `(x, y)` for the helper window.
+    pub pos: Option<(f64, f64)>,
+    /// Optional overlay label text rendered inside the window.
+    pub label_text: Option<String>,
+    /// Optional minimum content size `(w, h)`.
+    pub min_size: Option<(f64, f64)>,
+    /// Optional rounding step `(w, h)` applied to requested sizes.
+    pub step_size: Option<(f64, f64)>,
+    /// Launch the helper window minimized when true.
+    pub start_minimized: bool,
+    /// Launch the helper window zoomed when true.
+    pub start_zoomed: bool,
+    /// Prevent manual movement of the window when true.
+    pub panel_nonmovable: bool,
+    /// Prevent manual resizing of the window when true.
+    pub panel_nonresizable: bool,
+    /// Attach a modal sheet to the helper window when true.
+    pub attach_sheet: bool,
+    /// Active quirk list applied to the helper runtime.
+    pub quirks: Vec<Quirk>,
+    /// Placement strategy carried alongside the window for diagnostics.
+    pub place: PlaceOptions,
+    /// Shutdown flag shared with the controlling harness.
+    pub shutdown: Arc<AtomicBool>,
+}
+
+impl HelperConfig {
+    /// Replace the shutdown flag while preserving other configuration options.
+    #[must_use]
+    pub fn with_shutdown(mut self, shutdown: Arc<AtomicBool>) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    /// Attach a new quirk list to the configuration.
+    #[must_use]
+    pub fn with_quirks(mut self, quirks: Vec<Quirk>) -> Self {
+        self.quirks = quirks;
+        self
+    }
+}
+
+impl Default for HelperConfig {
+    fn default() -> Self {
+        Self {
+            time_ms: 15_000,
+            delay_setframe_ms: 0,
+            delay_apply_ms: 0,
+            tween_ms: 0,
+            apply_target: None,
+            apply_grid: None,
+            slot: None,
+            grid: None,
+            size: None,
+            pos: None,
+            label_text: None,
+            min_size: None,
+            step_size: None,
+            start_minimized: false,
+            start_zoomed: false,
+            panel_nonmovable: false,
+            panel_nonresizable: false,
+            attach_sheet: false,
+            quirks: Vec::new(),
+            place: PlaceOptions::default(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+fn run_helper_window(title: String, config: HelperConfig) -> Result<(), String> {
+    helper_app::run(title, config)
+}
+
+fn apply_quirk_defaults(config: &mut HelperConfig, quirks: &[Quirk]) {
+    if quirks.iter().any(|q| matches!(q, Quirk::DelayApplyMove)) && config.delay_apply_ms == 0 {
+        config.delay_apply_ms = 160;
+    }
+    if quirks.iter().any(|q| matches!(q, Quirk::AxRounding)) && config.step_size.is_none() {
+        config.step_size = Some((1.0, 1.0));
+    }
+}
+
 /// Target rect as ((x,y), (w,h), name) used for tween targets.
 type TargetRect = ((f64, f64), (f64, f64), &'static str);
 
@@ -10,12 +511,16 @@ mod helper_app {
     use std::{
         cmp::min,
         process::id,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
         time::{Duration, Instant},
     };
 
     use hotki_world_ids::WorldWindowId;
-    use mac_winops::{self, screen};
+    use mac_winops::{self, AxProps, Rect, screen};
     use objc2::rc::autoreleasepool;
     use tracing::{debug, info};
     use winit::{
@@ -26,7 +531,7 @@ mod helper_app {
         window::{Window, WindowId},
     };
 
-    use super::{TargetRect, config, world};
+    use super::{HelperConfig, PlaceOptions, Quirk, RaiseStrategy, TargetRect, config, world};
     use crate::PlaceAttemptOptions;
 
     /// Parameter bundle for constructing a [`HelperApp`].
@@ -69,6 +574,12 @@ mod helper_app {
         pub(super) panel_nonresizable: bool,
         /// Whether to attach a modal sheet on launch.
         pub(super) attach_sheet: bool,
+        /// Quirk list influencing runtime behaviour.
+        pub(super) quirks: Vec<Quirk>,
+        /// Placement strategy applied to this helper.
+        pub(super) place: PlaceOptions,
+        /// Shutdown flag shared with external callers.
+        pub(super) shutdown: Arc<AtomicBool>,
     }
 
     /// State machine orchestrating the smoketest helper window lifecycle.
@@ -146,9 +657,19 @@ mod helper_app {
         step_w: f64,
         /// Height rounding step for requested sizes.
         step_h: f64,
+        /// Shutdown flag toggled by the harness to request exit.
+        shutdown: Arc<AtomicBool>,
+        /// Active quirk list applied to this helper window.
+        quirks: Vec<Quirk>,
+        /// Placement options for raise/minimize behaviour.
+        place: PlaceOptions,
     }
 
     impl HelperApp {
+        fn has_quirk(&self, quirk: Quirk) -> bool {
+            self.quirks.contains(&quirk)
+        }
+
         /// Build a helper app with the provided configuration snapshot.
         pub(super) fn new(params: HelperParams) -> Self {
             let HelperParams {
@@ -171,6 +692,9 @@ mod helper_app {
                 panel_nonmovable,
                 panel_nonresizable,
                 attach_sheet,
+                quirks,
+                place,
+                shutdown,
             } = params;
             Self {
                 window: None,
@@ -208,6 +732,9 @@ mod helper_app {
                 attach_sheet,
                 step_w: step_size.map(|s| s.0).unwrap_or(0.0),
                 step_h: step_size.map(|s| s.1).unwrap_or(0.0),
+                shutdown,
+                quirks,
+                place,
             }
         }
 
@@ -321,13 +848,26 @@ mod helper_app {
         fn initial_placement(&self, win: &Window) {
             use winit::dpi::LogicalPosition;
             let pid = id() as i32;
-            if let Err(err) =
-                world::ensure_frontmost(pid, &self.title, 3, config::INPUT_DELAYS.retry_delay_ms)
-            {
-                debug!(
-                    "winhelper: ensure_frontmost failed pid={} title='{}': {}",
-                    pid, self.title, err
-                );
+            match self.place.raise {
+                RaiseStrategy::None | RaiseStrategy::KeepFrontWindow => {
+                    debug!(
+                        "winhelper: skip ensure_frontmost (raise={:?})",
+                        self.place.raise
+                    );
+                }
+                RaiseStrategy::AppActivate => {
+                    if let Err(err) = world::ensure_frontmost(
+                        pid,
+                        &self.title,
+                        3,
+                        config::INPUT_DELAYS.retry_delay_ms,
+                    ) {
+                        debug!(
+                            "winhelper: ensure_frontmost failed pid={} title='{}': {}",
+                            pid, self.title, err
+                        );
+                    }
+                }
             }
             if let Some((cols, rows, col, row)) = self.grid {
                 self.try_world_place(cols, rows, col, row, None);
@@ -451,6 +991,55 @@ mod helper_app {
             }
         }
 
+        fn window_is_minimized(&self) -> bool {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let windows = app.windows();
+                for w in windows.iter() {
+                    let title = w.title();
+                    let is_match =
+                        autoreleasepool(|pool| unsafe { title.to_str(pool) == self.title });
+                    if is_match {
+                        return w.isMiniaturized();
+                    }
+                }
+            }
+            false
+        }
+
+        fn apply_ax_rounding_override(&self) {
+            if !self.has_quirk(Quirk::AxRounding) {
+                return;
+            }
+            if let Some(target) = self.resolve_world_window()
+                && let Some(win) = self.window.as_ref()
+            {
+                let scale = win.scale_factor();
+                if let Ok(pos) = win.outer_position() {
+                    let lp = pos.to_logical::<f64>(scale);
+                    let size = win.inner_size().to_logical::<f64>(scale);
+                    let rect = Rect {
+                        x: lp.x.floor(),
+                        y: lp.y.floor(),
+                        w: size.width.floor(),
+                        h: size.height.floor(),
+                    };
+                    let props = AxProps {
+                        role: None,
+                        subrole: None,
+                        can_set_pos: Some(true),
+                        can_set_size: Some(true),
+                        frame: Some(rect),
+                        minimized: Some(false),
+                        fullscreen: Some(false),
+                        visible: Some(true),
+                        zoomed: Some(false),
+                    };
+                    crate::test_api::set_ax_props(target.pid(), target.window_id(), props);
+                }
+            }
+        }
+
         /// Add a large centered label to the content view.
         fn add_centered_label(&self) {
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
@@ -498,7 +1087,10 @@ mod helper_app {
         fn on_moved(&mut self, new_pos: PhysicalPosition<i32>) {
             use winit::dpi::LogicalPosition;
             debug!("winhelper: moved event: x={} y={}", new_pos.x, new_pos.y);
-            if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
+            let intercept =
+                (self.delay_setframe_ms > 0 || self.delay_apply_ms > 0 || self.tween_ms > 0)
+                    && !self.suppress_events;
+            if intercept {
                 if let Some(win) = self.window.as_ref() {
                     let scale = win.scale_factor();
                     let lp = new_pos.to_logical::<f64>(scale);
@@ -530,11 +1122,17 @@ mod helper_app {
                             self.tween_to_pos = self.desired_pos;
                             self.apply_after = Some(now);
                         }
+                    } else if self.delay_apply_ms > 0 {
+                        self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
+                        debug!(
+                            "winhelper: scheduled apply_after at +{}ms (delay_apply)",
+                            self.delay_apply_ms
+                        );
                     } else {
                         self.apply_after =
                             Some(Instant::now() + config::ms(self.delay_setframe_ms));
                         debug!(
-                            "winhelper: scheduled apply_after at +{}ms",
+                            "winhelper: scheduled apply_after at +{}ms (delay_setframe)",
                             self.delay_setframe_ms
                         );
                     }
@@ -556,7 +1154,10 @@ mod helper_app {
                 "winhelper: resized event: w={} h={}",
                 new_size.width, new_size.height
             );
-            if (self.delay_setframe_ms > 0 || self.tween_ms > 0) && !self.suppress_events {
+            let intercept =
+                (self.delay_setframe_ms > 0 || self.delay_apply_ms > 0 || self.tween_ms > 0)
+                    && !self.suppress_events;
+            if intercept {
                 if let Some(win) = self.window.as_ref() {
                     let scale = win.scale_factor();
                     let lsz = new_size.to_logical::<f64>(scale);
@@ -586,11 +1187,17 @@ mod helper_app {
                             self.tween_to_size = self.desired_size;
                             self.apply_after = Some(now);
                         }
+                    } else if self.delay_apply_ms > 0 {
+                        self.apply_after = Some(Instant::now() + config::ms(self.delay_apply_ms));
+                        debug!(
+                            "winhelper: scheduled apply_after at +{}ms (delay_apply)",
+                            self.delay_apply_ms
+                        );
                     } else {
                         self.apply_after =
                             Some(Instant::now() + config::ms(self.delay_setframe_ms));
                         debug!(
-                            "winhelper: scheduled apply_after at +{}ms",
+                            "winhelper: scheduled apply_after at +{}ms (delay_setframe)",
                             self.delay_setframe_ms
                         );
                     }
@@ -853,6 +1460,11 @@ mod helper_app {
 
         /// Apply a single tween step, updating window position/size.
         fn apply_tween_step(&mut self) {
+            if self.has_quirk(Quirk::IgnoreMoveIfMinimized) && self.window_is_minimized() {
+                debug!("winhelper: skip tween apply while minimized");
+                self.apply_after = None;
+                return;
+            }
             let now = Instant::now();
             if let Some(win) = self.window.as_ref() {
                 let target = self.select_apply_target(win);
@@ -894,10 +1506,16 @@ mod helper_app {
                     self.apply_after = Some(now + config::ms(16));
                 }
             }
+            self.apply_ax_rounding_override();
         }
 
         /// Apply target geometry immediately without tweening.
         fn apply_immediate(&mut self) {
+            if self.has_quirk(Quirk::IgnoreMoveIfMinimized) && self.window_is_minimized() {
+                debug!("winhelper: skip immediate apply while minimized");
+                self.apply_after = None;
+                return;
+            }
             if let Some(win) = self.window.as_ref() {
                 if let Some((x, y, w, h)) = self.apply_target {
                     let (rw, rh) = self.rounded_size(w, h);
@@ -942,6 +1560,7 @@ mod helper_app {
             }
             // Ensure we clear any pending apply-after state after applying.
             self.apply_after = None;
+            self.apply_ax_rounding_override();
         }
 
         /// Apply placement when the apply deadline has been reached.
@@ -998,6 +1617,10 @@ mod helper_app {
             }
         }
         fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
+            if self.shutdown.load(Ordering::SeqCst) {
+                elwt.exit();
+                return;
+            }
             let now = Instant::now();
             if now >= self.deadline {
                 elwt.exit();
@@ -1013,6 +1636,49 @@ mod helper_app {
                 None => self.deadline,
             };
             elwt.set_control_flow(ControlFlow::WaitUntil(next));
+        }
+    }
+
+    impl HelperParams {
+        pub(super) fn from_config(title: String, config: HelperConfig) -> Self {
+            Self {
+                title,
+                time_ms: config.time_ms,
+                delay_setframe_ms: config.delay_setframe_ms,
+                delay_apply_ms: config.delay_apply_ms,
+                tween_ms: config.tween_ms,
+                apply_target: config.apply_target,
+                apply_grid: config.apply_grid,
+                slot: config.slot,
+                grid: config.grid,
+                size: config.size,
+                pos: config.pos,
+                label_text: config.label_text,
+                min_size: config.min_size,
+                step_size: config.step_size,
+                start_minimized: config.start_minimized,
+                start_zoomed: config.start_zoomed,
+                panel_nonmovable: config.panel_nonmovable,
+                panel_nonresizable: config.panel_nonresizable,
+                attach_sheet: config.attach_sheet,
+                quirks: config.quirks,
+                place: config.place,
+                shutdown: config.shutdown,
+            }
+        }
+    }
+
+    pub(super) fn run(title: String, config: HelperConfig) -> Result<(), String> {
+        use winit::event_loop::EventLoop;
+
+        let params = HelperParams::from_config(title, config);
+        let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
+        let mut app = HelperApp::new(params);
+        event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
+        if let Some(err) = app.take_error() {
+            Err(err)
+        } else {
+            Ok(())
         }
     }
 }
@@ -1040,14 +1706,7 @@ pub fn run_focus_winhelper(
     panel_nonresizable: bool,
     attach_sheet: bool,
 ) -> Result<(), String> {
-    // Create event loop after items below to satisfy clippy's items-after-statements lint.
-
-    use helper_app::HelperApp;
-    use winit::event_loop::EventLoop;
-
-    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
-    let mut app = HelperApp::new(helper_app::HelperParams {
-        title: title.to_string(),
+    let config = HelperConfig {
         time_ms,
         delay_setframe_ms,
         delay_apply_ms,
@@ -1066,13 +1725,9 @@ pub fn run_focus_winhelper(
         panel_nonmovable,
         panel_nonresizable,
         attach_sheet,
-    });
-    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
-    if let Some(e) = app.take_error() {
-        Err(e)
-    } else {
-        Ok(())
-    }
+        ..HelperConfig::default()
+    };
+    run_helper_window(title.to_string(), config)
 }
 
 mod config {
