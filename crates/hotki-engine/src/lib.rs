@@ -302,37 +302,43 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                let (mut rx, seed) = world.subscribe_with_context().await;
+                let (mut cursor, seed) = world.subscribe_with_context().await;
                 if let Err(err) = engine.apply_world_focus_context(seed).await {
                     warn!("World focus seed apply failed: {}", err);
                 }
 
+                let mut last_lost = cursor.lost_count;
                 loop {
-                    match rx.recv().await {
-                        Ok(hotki_world::WorldEvent::FocusChanged(change)) => {
-                            let world_clone = world.clone();
-                            let engine_clone = engine.clone();
-                            tokio::spawn(async move {
-                                Engine::handle_focus_change_event(
-                                    engine_clone,
-                                    world_clone,
-                                    change,
-                                )
-                                .await;
-                            });
-                        }
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            if skipped >= 256 {
-                                warn!(skipped, "World focus subscription lagged; resubscribing");
-                            } else {
-                                debug!(skipped, "World focus subscription lagged; resubscribing");
+                    let deadline =
+                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+                    match world.next_event_until(&mut cursor, deadline).await {
+                        Some(event) => {
+                            if cursor.lost_count > last_lost {
+                                warn!(
+                                    lost = cursor.lost_count - last_lost,
+                                    "World focus subscription observed lost events; resubscribing"
+                                );
+                                break;
                             }
-                            break;
+                            last_lost = cursor.lost_count;
+                            if let hotki_world::WorldEvent::FocusChanged(change) = event {
+                                let world_clone = world.clone();
+                                let engine_clone = engine.clone();
+                                tokio::spawn(async move {
+                                    Engine::handle_focus_change_event(
+                                        engine_clone,
+                                        world_clone,
+                                        change,
+                                    )
+                                    .await;
+                                });
+                            }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            warn!("World focus subscription closed; exiting");
-                            return;
+                        None => {
+                            if cursor.is_closed() {
+                                warn!("World focus subscription closed; exiting");
+                                return;
+                            }
                         }
                     }
                 }
@@ -515,7 +521,7 @@ impl Engine {
     }
 
     /// Re-export: subscribe to world events (Added/Updated/Removed/FocusChanged).
-    pub fn world_events(&self) -> tokio::sync::broadcast::Receiver<WorldEvent> {
+    pub fn world_events(&self) -> hotki_world::EventCursor {
         self.svc.world.subscribe()
     }
 

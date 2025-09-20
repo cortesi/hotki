@@ -5,6 +5,8 @@ use logging as logshared;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*};
 
+/// Artifact capture utilities for failure diagnostics.
+mod artifacts;
 mod cli;
 mod config;
 /// Error definitions and hint helpers used by smoketest.

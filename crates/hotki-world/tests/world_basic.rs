@@ -147,11 +147,11 @@ fn focus_changes_emit_event_and_snapshot_updates() {
             ),
         ]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
 
         // Wait for initial reconcile and drain any startup events
         let _ = wait_snapshot_until(&world, 200, |s| s.len() == 2).await;
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         // Flip focus to AppB
         mock.set_windows(vec![
@@ -186,7 +186,7 @@ fn focus_changes_emit_event_and_snapshot_updates() {
         ]);
 
         // Observe FocusChanged event to AppB
-        let ev = recv_event_until(&mut rx, 220, |ev| {
+        let ev = recv_event_until(&world, &mut cursor, 220, |ev| {
             if let WorldEvent::FocusChanged(change) = ev {
                 change.key == Some(WindowKey { pid: 200, id: 2 })
             } else {
@@ -277,7 +277,6 @@ fn title_update_reflected_in_snapshot() {
             true,
         )]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
-        let _rx = world.subscribe();
 
         world.hint_refresh();
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -467,9 +466,9 @@ fn debounce_updates_within_window() {
                 events_buffer: 64,
             },
         );
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
         tokio::time::sleep(Duration::from_millis(60)).await; // drain Added and exceed debounce window
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         // First change -> expect snapshot to update
         mock.set_windows(vec![win(
@@ -579,9 +578,9 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         );
 
         // Subscribe and drain startup events (Added, FocusChanged, etc.)
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
         tokio::time::sleep(Duration::from_millis(60)).await;
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         // Burst of rapid updates still inside the debounce window:
         //  - title change
@@ -648,7 +647,8 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         // Expect exactly one coalesced Updated event for the burst.
         let key = WindowKey { pid: 1, id: 1 };
         let updated = recv_event_until(
-            &mut rx,
+            &world,
+            &mut cursor,
             FAST_COALESCE_MS * 4,
             |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
         )
@@ -660,7 +660,7 @@ fn debounce_event_coalescing_for_repetitive_changes() {
             "debounce queue should drain after emitting the coalesced event"
         );
         assert!(
-            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+            recv_event_until(&world, &mut cursor, FAST_COALESCE_MS * 2, |ev| {
                 matches!(ev, WorldEvent::Updated(k, _) if *k == key)
             })
             .await
@@ -698,7 +698,8 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         world.hint_refresh();
 
         let next = recv_event_until(
-            &mut rx,
+            &world,
+            &mut cursor,
             FAST_COALESCE_MS * 4,
             |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
         )
@@ -712,7 +713,7 @@ fn debounce_event_coalescing_for_repetitive_changes() {
             "debounce queue should drain after trailing update"
         );
         assert!(
-            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+            recv_event_until(&world, &mut cursor, FAST_COALESCE_MS * 2, |ev| {
                 matches!(ev, WorldEvent::Updated(k, _) if *k == key)
             })
             .await
@@ -762,10 +763,10 @@ fn coalesced_trailing_update_after_quiet_period() {
                 events_buffer: 64,
             },
         );
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
         // Drain startup events (Added/FocusChanged)
         tokio::time::sleep(Duration::from_millis(25)).await;
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         // Rapid changes within debounce window: should yield a single Updated after quiet
         mock.set_windows(vec![win(
@@ -829,7 +830,8 @@ fn coalesced_trailing_update_after_quiet_period() {
         // Expect exactly one Updated event emitted after the quiet period
         let key = WindowKey { pid: 42, id: 420 };
         let only = recv_event_until(
-            &mut rx,
+            &world,
+            &mut cursor,
             FAST_COALESCE_MS * 4,
             |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
         )
@@ -840,7 +842,7 @@ fn coalesced_trailing_update_after_quiet_period() {
             "debounce queue should drain after trailing event"
         );
         assert!(
-            recv_event_until(&mut rx, FAST_COALESCE_MS * 2, |ev| {
+            recv_event_until(&world, &mut cursor, FAST_COALESCE_MS * 2, |ev| {
                 matches!(ev, WorldEvent::Updated(k, _) if *k == key)
             })
             .await
@@ -870,9 +872,9 @@ fn updated_event_includes_field_deltas() {
         )]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
 
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
         tokio::time::sleep(Duration::from_millis(FAST_COALESCE_MS * 2)).await;
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         let mut updated = win(
             "AppA",
@@ -898,7 +900,7 @@ fn updated_event_includes_field_deltas() {
             "expected pending debounce entry"
         );
 
-        let event = recv_event_until(&mut rx, FAST_COALESCE_MS * 4, |ev| {
+        let event = recv_event_until(&world, &mut cursor, FAST_COALESCE_MS * 4, |ev| {
             matches!(ev, WorldEvent::Updated(_, _))
         })
         .await
@@ -970,9 +972,9 @@ fn status_exposes_debounce_cache_size() {
             true,
         )]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
         tokio::time::sleep(Duration::from_millis(FAST_COALESCE_MS * 2)).await;
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         let mut updated = win(
             "AppA",
@@ -1001,7 +1003,7 @@ fn status_exposes_debounce_cache_size() {
         assert_eq!(status.debounce_cache, 1);
         assert_eq!(status.debounce_pending, 1);
 
-        let _ = recv_event_until(&mut rx, FAST_COALESCE_MS * 4, |ev| {
+        let _ = recv_event_until(&world, &mut cursor, FAST_COALESCE_MS * 4, |ev| {
             matches!(ev, WorldEvent::Updated(_, _))
         })
         .await
@@ -1046,7 +1048,7 @@ fn startup_focus_event_and_context_and_snapshot() {
         assert_eq!(ctx, Some(("AppX".to_string(), "TitleX".to_string(), 300)));
 
         // Subscribe with snapshot returns a consistent snapshot + focused key
-        let (_rx2, snap, f2) = world.subscribe_with_snapshot().await;
+        let (_cursor2, snap, f2) = world.subscribe_with_snapshot().await;
         assert_eq!(f2, Some(WindowKey { pid: 300, id: 30 }));
         assert!(snap.iter().any(|w| w.id == 30 && w.focused));
     });

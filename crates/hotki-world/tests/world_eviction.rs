@@ -64,8 +64,8 @@ fn evicts_after_two_passes_when_missing() {
         // Remove from CG; first pass marks suspect, second confirms and removes
         mock.set_windows(vec![]);
 
-        let mut rx = world.subscribe();
-        drain_events(&mut rx);
+        let mut cursor = world.subscribe();
+        drain_events(&world, &mut cursor);
 
         // Track reconcile progress via status instead of wall-clock delays.
         let baseline_seq = world.metrics_snapshot().reconcile_seq;
@@ -91,7 +91,7 @@ fn evicts_after_two_passes_when_missing() {
         assert_eq!(second_pass.windows_count, 0, "expected window removal");
         assert_eq!(second_pass.suspects_pending, 0, "expected suspects cleared");
 
-        let removed = recv_event_until(&mut rx, 200, |ev| {
+        let removed = recv_event_until(&world, &mut cursor, 200, |ev| {
             matches!(
                 ev,
                 WorldEvent::Removed(k) if *k == (WindowKey { pid: 100, id: 1 })
@@ -129,8 +129,8 @@ fn pid_reuse_no_false_positive() {
 
         // First pass: old window disappears, new pid reuses same CG id (1)
         mock.set_windows(vec![win("NewApp", "New", 101, 1)]);
-        let mut rx = world.subscribe();
-        drain_events(&mut rx);
+        let mut cursor = world.subscribe();
+        drain_events(&world, &mut cursor);
 
         let baseline_seq = world.metrics_snapshot().reconcile_seq;
         world.hint_refresh();
@@ -147,7 +147,7 @@ fn pid_reuse_no_false_positive() {
         .expect("second pass should resolve suspect set");
         assert_eq!(second_pass.suspects_pending, 0, "suspects should clear");
 
-        let removed = recv_event_until(&mut rx, 200, |ev| {
+        let removed = recv_event_until(&world, &mut cursor, 200, |ev| {
             matches!(
                 ev,
                 WorldEvent::Removed(k) if *k == (WindowKey { pid: 100, id: 1 })
@@ -187,7 +187,8 @@ fn confirmation_snapshot_reused_across_suspects() {
         );
 
         mock.set_windows(vec![]);
-        drain_events(&mut world.subscribe()); // drop immediate Added events we don't care about
+        let mut cursor = world.subscribe();
+        drain_events(&world, &mut cursor); // drop immediate Added events we don't care about
 
         let initial_calls = mock.call_count("list_windows_for_spaces");
         let baseline_seq = world.metrics_snapshot().reconcile_seq;

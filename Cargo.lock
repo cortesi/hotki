@@ -4676,6 +4676,7 @@ dependencies = [
  "hotki-server",
  "hotki-world",
  "hotki-world-ids",
+ "image",
  "keymode",
  "libc",
  "logging",

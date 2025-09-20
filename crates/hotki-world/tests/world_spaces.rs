@@ -53,13 +53,13 @@ fn window_space_transition_yields_update() {
         world_test::set_displays(vec![(1, 0, 0, 1920, 1080)]);
         let world = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg_fast());
         tokio::task::yield_now().await;
-        let mut rx = world.subscribe();
+        let mut cursor = world.subscribe();
 
         assert!(
             wait_snapshot_until(&world, 200, |s| s.len() == 1).await,
             "initial window should be present"
         );
-        drain_events(&mut rx);
+        drain_events(&world, &mut cursor);
 
         // Move the window to a different Mission Control space (off active space)
         let mut moved = base_window();
@@ -72,7 +72,8 @@ fn window_space_transition_yields_update() {
         world.hint_refresh();
         let key = WindowKey { pid: 4242, id: 7 };
         let evt = recv_event_until(
-            &mut rx,
+            &world,
+            &mut cursor,
             300,
             |ev| matches!(ev, WorldEvent::Updated(k, _) if *k == key),
         )

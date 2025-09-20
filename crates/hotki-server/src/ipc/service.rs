@@ -175,109 +175,119 @@ impl HotkeyService {
                 if let Some(eng) = engine.lock().await.as_ref() {
                     break eng.world();
                 }
-                // engine not initialized yet; wait briefly
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             };
-            let mut rx = world.subscribe();
+
             loop {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
-                match rx.recv().await {
-                    Ok(ev) => {
-                        let msg_opt: Option<WorldStreamMsg> = match ev {
-                            hotki_world::WorldEvent::Added(w) => {
-                                let w = *w;
-                                if !w.on_active_space {
-                                    debug!(
-                                        pid = w.pid,
-                                        id = w.id,
-                                        space = ?w.space,
-                                        title = %w.title,
-                                        app = %w.app,
-                                        "world window added off active space"
-                                    );
-                                }
-                                Some(WorldStreamMsg::Added(WorldWindowLite {
-                                    app: w.app,
-                                    title: w.title,
-                                    pid: w.pid,
-                                    id: w.id,
-                                    z: w.z,
-                                    focused: w.focused,
-                                    display_id: w.display_id,
-                                    space: w.space,
-                                    on_active_space: w.on_active_space,
-                                    is_on_screen: w.is_on_screen,
-                                }))
-                            }
-                            hotki_world::WorldEvent::Removed(k) => Some(WorldStreamMsg::Removed {
-                                pid: k.pid,
-                                id: k.id,
-                            }),
-                            hotki_world::WorldEvent::Updated(k, _d) => {
-                                Some(WorldStreamMsg::Updated {
-                                    pid: k.pid,
-                                    id: k.id,
-                                })
-                            }
-                            hotki_world::WorldEvent::MetaAdded(_, _)
-                            | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
-                            hotki_world::WorldEvent::FocusChanged(change) => {
-                                let app = match (change.app, change.title, change.pid) {
-                                    (Some(app), Some(title), Some(pid)) => {
-                                        Some(App { app, title, pid })
-                                    }
-                                    _ => world
-                                        .focused_context()
-                                        .await
-                                        .map(|(app, title, pid)| App { app, title, pid }),
-                                };
-                                Some(WorldStreamMsg::FocusChanged(app))
-                            }
-                        };
-                        // Nothing to send? Move on quickly.
-                        let Some(msg) = msg_opt else { continue };
 
-                        // If a resync has been scheduled due to prior drops, attempt to send it
-                        // first (one-shot) before normal events.
-                        if resync_pending.load(Ordering::SeqCst) > 0 {
-                            match event_tx
-                                .try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended))
-                            {
-                                Ok(()) => {
-                                    resync_pending.store(0, Ordering::SeqCst);
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                    // Still full; keep pending and drop this event as well.
-                                    let _ = drops.fetch_add(1, Ordering::SeqCst);
-                                    continue;
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                    return;
-                                }
+                let mut cursor = world.subscribe();
+                let mut last_lost = cursor.lost_count;
+
+                loop {
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
+
+                    let deadline =
+                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+                    let event = match world.next_event_until(&mut cursor, deadline).await {
+                        Some(ev) => ev,
+                        None => {
+                            if cursor.is_closed() {
+                                return;
                             }
+                            continue;
                         }
+                    };
 
-                        match event_tx.try_send(MsgToUI::World(msg)) {
-                            Ok(()) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                let n = drops.fetch_add(1, Ordering::SeqCst) + 1;
-                                if n == 1 || n.is_multiple_of(1000) {
-                                    tracing::debug!(count = n, "ui_world_drop");
+                    if cursor.lost_count > last_lost {
+                        let skipped = (cursor.lost_count - last_lost) as u64;
+                        let _ = drops.fetch_add(skipped, Ordering::SeqCst);
+                        resync_pending.store(1, Ordering::SeqCst);
+                        break;
+                    }
+                    last_lost = cursor.lost_count;
+
+                    let msg_opt: Option<WorldStreamMsg> = match event {
+                        hotki_world::WorldEvent::Added(w) => {
+                            let w = *w;
+                            if !w.on_active_space {
+                                debug!(
+                                    pid = w.pid,
+                                    id = w.id,
+                                    space = ?w.space,
+                                    title = %w.title,
+                                    app = %w.app,
+                                    "world window added off active space"
+                                );
+                            }
+                            Some(WorldStreamMsg::Added(WorldWindowLite {
+                                app: w.app,
+                                title: w.title,
+                                pid: w.pid,
+                                id: w.id,
+                                z: w.z,
+                                focused: w.focused,
+                                display_id: w.display_id,
+                                space: w.space,
+                                on_active_space: w.on_active_space,
+                                is_on_screen: w.is_on_screen,
+                            }))
+                        }
+                        hotki_world::WorldEvent::Removed(k) => Some(WorldStreamMsg::Removed {
+                            pid: k.pid,
+                            id: k.id,
+                        }),
+                        hotki_world::WorldEvent::Updated(k, _d) => Some(WorldStreamMsg::Updated {
+                            pid: k.pid,
+                            id: k.id,
+                        }),
+                        hotki_world::WorldEvent::MetaAdded(_, _)
+                        | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
+                        hotki_world::WorldEvent::FocusChanged(change) => {
+                            let app = match (change.app, change.title, change.pid) {
+                                (Some(app), Some(title), Some(pid)) => {
+                                    Some(App { app, title, pid })
                                 }
-                                // Schedule a single ResyncRecommended for when space frees.
-                                resync_pending.store(1, Ordering::SeqCst);
+                                _ => world.focused_context().await.map(|(app, title, pid)| App {
+                                    app,
+                                    title,
+                                    pid,
+                                }),
+                            };
+                            Some(WorldStreamMsg::FocusChanged(app))
+                        }
+                    };
+
+                    let Some(msg) = msg_opt else { continue };
+
+                    if resync_pending.load(Ordering::SeqCst) > 0 {
+                        match event_tx.try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended)) {
+                            Ok(()) => {
+                                resync_pending.store(0, Ordering::SeqCst);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                let _ = drops.fetch_add(1, Ordering::SeqCst);
+                                continue;
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // Upstream lag in world feed: recommend a resync (best-effort).
-                        let _ =
-                            event_tx.try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended));
+
+                    match event_tx.try_send(MsgToUI::World(msg)) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            let n = drops.fetch_add(1, Ordering::SeqCst) + 1;
+                            if n == 1 || n.is_multiple_of(1000) {
+                                tracing::debug!(count = n, "ui_world_drop");
+                            }
+                            resync_pending.store(1, Ordering::SeqCst);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -701,7 +711,7 @@ impl MrpcConnection for HotkeyService {
                 };
                 let world = eng.world();
                 // Obtain consistent snapshot + focused key
-                let (_rx, snap, focused_key) = world.subscribe_with_snapshot().await;
+                let (_cursor, snap, focused_key) = world.subscribe_with_snapshot().await;
                 let (payload, total, offspace_count) = build_snapshot_payload(snap, focused_key);
                 if offspace_count > 0 {
                     trace!(

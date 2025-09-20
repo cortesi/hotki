@@ -57,10 +57,12 @@ use mac_winops::{
 };
 use regex::Regex;
 
+use self::events::{DEFAULT_EVENT_CAPACITY, EventHub};
+
 /// Re-export of placement attempt tuning options used by mac-winops.
 pub type PlaceAttemptOptions = WinPlaceAttemptOptions;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     time::{Instant as TokioInstant, sleep},
 };
 
@@ -623,11 +625,35 @@ pub struct WorldMetricsSnapshot {
     pub reconcile_seq: u64,
 }
 
+/// Diagnostic counts used to verify world teardown quiescence.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuiescenceReport {
+    /// Active Accessibility observers managed by mac-winops.
+    pub active_ax_observers: usize,
+    /// Pending main-thread operations queued in mac-winops.
+    pub pending_main_ops: usize,
+    /// Mimic windows currently alive (tests/dev harness only).
+    pub mimic_windows: usize,
+    /// Active event stream subscriptions on the world handle.
+    pub subscriptions: usize,
+}
+
+impl QuiescenceReport {
+    /// True when all diagnostic counters are zero.
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.active_ax_observers == 0
+            && self.pending_main_ops == 0
+            && self.mimic_windows == 0
+            && self.subscriptions == 0
+    }
+}
+
 /// Cheap, clonable handle to the world service.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WorldHandle {
     tx: mpsc::UnboundedSender<Command>,
-    events: broadcast::Sender<WorldEvent>,
+    events: Arc<EventHub>,
     metrics: Arc<WorldMetrics>,
 }
 
@@ -635,14 +661,74 @@ impl WorldHandle {
     /// Subscribe to the world event stream.
     ///
     /// The stream includes Added/Updated/Removed and FocusChanged events. Callers
-    /// should drain events promptly to avoid backpressure on the broadcast buffer.
-    pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
-        self.events.subscribe()
+    /// should drain events promptly to avoid overrunning the per-subscription ring buffer
+    /// (capacity configured via [`WorldCfg::events_buffer`], default 256 entries).
+    pub fn subscribe(&self) -> EventCursor {
+        self.events.subscribe(None)
+    }
+
+    /// Subscribe to the world event stream using the provided filter.
+    pub fn subscribe_with_filter(&self, filter: EventFilter) -> EventCursor {
+        self.events.subscribe(Some(filter))
+    }
+
+    /// Subscribe to the world event stream using a closure-based filter.
+    pub fn subscribe_filtered<F>(&self, filter: F) -> EventCursor
+    where
+        F: Fn(&WorldEvent) -> bool + Send + Sync + 'static,
+    {
+        self.subscribe_with_filter(Arc::new(filter))
+    }
+
+    /// Await the next event for a cursor until the deadline is reached.
+    pub async fn next_event_until(
+        &self,
+        cursor: &mut EventCursor,
+        deadline: TokioInstant,
+    ) -> Option<WorldEvent> {
+        self.events.next_event_until(cursor, deadline).await
+    }
+
+    /// Attempt to take the next event without waiting.
+    pub fn next_event_now(&self, cursor: &mut EventCursor) -> Option<WorldEvent> {
+        self.events.try_next(cursor)
     }
 
     /// Snapshot lightweight internal metrics without asking the actor.
     pub fn metrics_snapshot(&self) -> WorldMetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Collect counts used to verify teardown quiescence.
+    #[must_use]
+    pub fn quiescence_report(&self) -> QuiescenceReport {
+        QuiescenceReport {
+            active_ax_observers: mac_winops::active_ax_observer_count(),
+            pending_main_ops: mac_winops::pending_main_ops_len(),
+            mimic_windows: mac_winops::mimic_window_count(),
+            subscriptions: self.events.subscriber_count(),
+        }
+    }
+
+    /// True when the world reports no lingering observers, ops, or subscriptions.
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.quiescence_report().is_quiescent()
+    }
+
+    /// Reset helper state by closing subscriptions, mimic windows, and draining main ops.
+    pub fn reset(&self) -> QuiescenceReport {
+        self.events.close_all();
+        mac_winops::close_mimic_windows();
+        while mac_winops::pending_main_ops() {
+            mac_winops::drain_main_ops();
+        }
+        self.quiescence_report()
+    }
+
+    /// Snapshot recent events published by the world, newest last.
+    pub fn recent_events(&self, limit: usize) -> Vec<EventRecord> {
+        self.events.recent_events(limit)
     }
 
     /// Subscribe and fetch a consistent snapshot + focused key from the actor.
@@ -652,16 +738,12 @@ impl WorldHandle {
     /// the snapshot as baseline and then apply subsequent events.
     pub async fn subscribe_with_snapshot(
         &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Vec<WorldWindow>,
-        Option<WindowKey>,
-    ) {
-        let rx = self.events.subscribe();
+    ) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>) {
+        let cursor = self.subscribe();
         let (tx, rx_once) = oneshot::channel();
         let _ = self.tx.send(Command::SnapshotFocus { respond: tx });
         let (snap, focused) = rx_once.await.unwrap_or_default();
-        (rx, snap, focused)
+        (cursor, snap, focused)
     }
 
     /// Get a full snapshot of current windows.
@@ -888,13 +970,8 @@ impl WorldHandle {
     /// The seed context is derived atomically relative to the returned
     /// snapshot+focused pair, but exposed here as a concise tuple to simplify
     /// downstream consumers.
-    pub async fn subscribe_with_context(
-        &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Option<(String, String, i32)>,
-    ) {
-        let (rx, snap, focused) = self.subscribe_with_snapshot().await;
+    pub async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
+        let (cursor, snap, focused) = self.subscribe_with_snapshot().await;
         let ctx = if let Some(fk) = focused {
             snap.iter()
                 .find(|w| w.pid == fk.pid && w.id == fk.id)
@@ -904,7 +981,7 @@ impl WorldHandle {
                 .min_by_key(|w| w.z)
                 .map(|w| (w.app.clone(), w.title.clone(), w.pid))
         };
-        (rx, ctx)
+        (cursor, ctx)
     }
 
     /// Resolve a key to a lightweight context tuple `(app, title, pid)`.
@@ -937,9 +1014,11 @@ impl WorldHandle {
 pub struct World;
 
 mod ax_read_pool;
+mod events;
 mod frames;
 mod view;
 
+pub use events::{EventCursor, EventFilter, EventRecord};
 pub use frames::{
     FrameKind, Frames, RectDelta, RectPx, WindowMode, default_eps, reconcile_authoritative,
 };
@@ -973,9 +1052,7 @@ impl WorldMetrics {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-pub use view::TestWorld;
-pub use view::WorldView;
+pub use view::{TestWorld, WorldView};
 
 impl World {
     #[allow(unused_variables)]
@@ -987,15 +1064,14 @@ impl World {
     /// Returns a [`WorldHandle`] for querying snapshots and subscribing to events.
     pub fn spawn(winops: Arc<dyn WinOps>, cfg: WorldCfg) -> WorldHandle {
         let (tx, rx) = mpsc::unbounded_channel();
-        // Keep event buffer moderate; callers should keep up.
-        let (evt_tx, _evt_rx) = broadcast::channel(cfg.events_buffer.max(8));
+        let events = Arc::new(EventHub::new(cfg.events_buffer.max(8)));
 
         let state = WorldState::new();
         let metrics = Arc::new(WorldMetrics::default());
 
         let handle = WorldHandle {
             tx: tx.clone(),
-            events: evt_tx.clone(),
+            events: events.clone(),
             metrics: metrics.clone(),
         };
 
@@ -1005,7 +1081,7 @@ impl World {
 
         tokio::spawn(run_actor(
             rx,
-            evt_tx.clone(),
+            events.clone(),
             metrics.clone(),
             state,
             winops,
@@ -1060,7 +1136,7 @@ impl World {
     /// default/empty data and emits no events. No polling or background work.
     pub fn spawn_noop() -> WorldHandle {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (evt_tx, _evt_rx) = broadcast::channel(8);
+        let events = Arc::new(EventHub::new(DEFAULT_EVENT_CAPACITY));
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -1099,7 +1175,7 @@ impl World {
         });
         WorldHandle {
             tx,
-            events: evt_tx,
+            events,
             metrics: Arc::new(WorldMetrics::default()),
         }
     }
@@ -1238,7 +1314,7 @@ enum OperationRequest {
 
 async fn run_actor(
     mut rx: mpsc::UnboundedReceiver<Command>,
-    events: broadcast::Sender<WorldEvent>,
+    events: Arc<EventHub>,
     metrics: Arc<WorldMetrics>,
     mut state: WorldState,
     winops: Arc<dyn WinOps>,
@@ -1356,7 +1432,7 @@ async fn run_actor(
                 for key in ready_keys {
                     if let Some(pending) = state.coalesce.remove(&key)
                         && state.store.contains_key(&key) {
-                            let _ = events.send(WorldEvent::Updated(key, pending.delta));
+                            events.publish(WorldEvent::Updated(key, pending.delta));
                         }
                 }
                 metrics.sync_from_state(&state);
@@ -1373,11 +1449,7 @@ async fn run_actor(
     }
 }
 
-fn reconcile(
-    state: &mut WorldState,
-    events: &broadcast::Sender<WorldEvent>,
-    winops: &dyn WinOps,
-) -> bool {
+fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> bool {
     let now = Instant::now();
     state.seen_seq = state.seen_seq.wrapping_add(1);
     let seq = state.seen_seq;
@@ -1559,7 +1631,7 @@ fn reconcile(
                 seen_seq: seq,
             };
             state.store.insert(key, ww.clone());
-            let _ = events.send(WorldEvent::Added(Box::new(ww)));
+            events.publish(WorldEvent::Added(Box::new(ww)));
         }
 
         {
@@ -1615,7 +1687,7 @@ fn reconcile(
                     state.suspects.remove(&key);
                     state.frames.remove(&key);
                     state.frame_history.remove(&key);
-                    let _ = events.send(WorldEvent::Removed(key));
+                    events.publish(WorldEvent::Removed(key));
                 }
             }
         }
@@ -1637,7 +1709,7 @@ fn reconcile(
             change.title = Some(win.title.clone());
             change.pid = Some(win.pid);
         }
-        let _ = events.send(WorldEvent::FocusChanged(change));
+        events.publish(WorldEvent::FocusChanged(change));
     }
 
     had_changes

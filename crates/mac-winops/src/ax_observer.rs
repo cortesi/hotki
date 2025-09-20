@@ -12,7 +12,10 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::c_void,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use core_foundation::{
@@ -442,6 +445,8 @@ impl Drop for PerPid {
 
 /// Thread-safe registry for per‑PID observers.
 #[allow(clippy::arc_with_non_send_sync)]
+static OBSERVER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 pub struct AxObserverRegistry {
     inner: Arc<Mutex<HashMap<i32, PerPid>>>,
     tx: Arc<Mutex<Option<crossbeam_channel::Sender<AxEvent>>>>,
@@ -464,12 +469,16 @@ impl AxObserverRegistry {
     /// Ensure an observer exists for `pid`. Returns `true` if newly created.
     pub fn ensure(&self, pid: i32) -> Result<bool, i32> {
         let mut m = self.inner.lock();
-        if let Some(existing) = m.get(&pid) {
+        let remove_entry = if let Some(existing) = m.get(&pid) {
             if existing.still_same_process() {
                 return Ok(false);
             }
-            // Stale or reused PID; drop the existing observer.
-            m.remove(&pid);
+            true
+        } else {
+            false
+        };
+        if remove_entry && m.remove(&pid).is_some() {
+            OBSERVER_COUNT.fetch_sub(1, Ordering::SeqCst);
         }
         let tx = self.tx.lock().clone();
         let mut p = PerPid::install(pid, tx)?;
@@ -502,23 +511,28 @@ impl AxObserverRegistry {
             }
         }
         m.insert(pid, p);
+        OBSERVER_COUNT.fetch_add(1, Ordering::SeqCst);
         Ok(true)
     }
 
     /// Remove and drop the observer for `pid` if present.
     pub fn remove(&self, pid: i32) -> bool {
-        self.inner.lock().remove(&pid).is_some()
+        if self.inner.lock().remove(&pid).is_some() {
+            OBSERVER_COUNT.fetch_sub(1, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
     }
 
-    /// Number of installed observers (for tests/diagnostics).
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.inner.lock().len()
-    }
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.inner.lock().is_empty()
     }
+}
+
+pub fn observer_count() -> usize {
+    OBSERVER_COUNT.load(Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -546,7 +560,7 @@ mod tests {
         assert!(first, "first ensure creates the observer");
         let second = reg.ensure(pid).expect("ensure ok (second)");
         assert!(!second, "second ensure is idempotent");
-        assert_eq!(reg.len(), 1, "exactly one observer installed");
+        assert_eq!(observer_count(), 1, "exactly one observer installed");
         // Remove and ensure map is empty; Drop should remove the runloop source.
         assert!(reg.remove(pid));
         assert!(reg.is_empty());

@@ -2,36 +2,35 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use hotki_world_ids::WorldWindowId;
-use tokio::sync::broadcast;
+use tokio::time::Instant as TokioInstant;
 
 use crate::{
-    Capabilities, CommandError, CommandReceipt, Frames, FullscreenIntent, HideIntent,
-    MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey,
-    WorldEvent, WorldHandle, WorldStatus, WorldWindow,
+    Capabilities, CommandError, CommandReceipt, EventCursor, EventFilter, Frames, FullscreenIntent,
+    HideIntent, MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent,
+    WindowKey, WorldEvent, WorldHandle, WorldStatus, WorldWindow,
 };
 
 /// Unified view over window state snapshots and focus context.
 #[async_trait]
 pub trait WorldView: Send + Sync {
     /// Subscribe to live [`WorldEvent`] updates.
-    fn subscribe(&self) -> broadcast::Receiver<WorldEvent>;
+    fn subscribe(&self) -> EventCursor;
+
+    /// Subscribe with a filter predicate applied before events enter the ring buffer.
+    fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor;
+
+    /// Await the next event for the given cursor until the deadline expires.
+    async fn next_event_until(
+        &self,
+        cursor: &mut EventCursor,
+        deadline: TokioInstant,
+    ) -> Option<WorldEvent>;
 
     /// Subscribe and obtain an initial snapshot plus focused key.
-    async fn subscribe_with_snapshot(
-        &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Vec<WorldWindow>,
-        Option<WindowKey>,
-    );
+    async fn subscribe_with_snapshot(&self) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>);
 
     /// Subscribe and obtain a derived focus context `(app, title, pid)` if any.
-    async fn subscribe_with_context(
-        &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Option<(String, String, i32)>,
-    );
+    async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>);
 
     /// Retrieve the latest world snapshot.
     async fn snapshot(&self) -> Vec<WorldWindow>;
@@ -150,26 +149,27 @@ pub trait WorldView: Send + Sync {
 
 #[async_trait]
 impl WorldView for WorldHandle {
-    fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
+    fn subscribe(&self) -> EventCursor {
         WorldHandle::subscribe(self)
     }
 
-    async fn subscribe_with_snapshot(
+    fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor {
+        WorldHandle::subscribe_with_filter(self, filter)
+    }
+
+    async fn next_event_until(
         &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Vec<WorldWindow>,
-        Option<WindowKey>,
-    ) {
+        cursor: &mut EventCursor,
+        deadline: TokioInstant,
+    ) -> Option<WorldEvent> {
+        WorldHandle::next_event_until(self, cursor, deadline).await
+    }
+
+    async fn subscribe_with_snapshot(&self) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>) {
         WorldHandle::subscribe_with_snapshot(self).await
     }
 
-    async fn subscribe_with_context(
-        &self,
-    ) -> (
-        broadcast::Receiver<WorldEvent>,
-        Option<(String, String, i32)>,
-    ) {
+    async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
         WorldHandle::subscribe_with_context(self).await
     }
 
@@ -293,18 +293,18 @@ impl WorldHandle {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
 mod test_world {
     use std::{collections::HashMap, sync::Arc};
 
     use parking_lot::RwLock;
-    use tokio::sync::broadcast;
+    use tokio::time::Instant as TokioInstant;
 
     use super::WorldView;
     use crate::{
-        Capabilities, CommandError, CommandReceipt, Frames, FullscreenIntent, HideIntent,
-        MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey,
-        WorldEvent, WorldStatus, WorldWindow, WorldWindowId,
+        Capabilities, CommandError, CommandReceipt, EventCursor, EventFilter, Frames,
+        FullscreenIntent, HideIntent, MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent,
+        RaiseIntent, WindowKey, WorldEvent, WorldStatus, WorldWindow, WorldWindowId,
+        events::EventHub,
     };
 
     #[derive(Default)]
@@ -320,13 +320,13 @@ mod test_world {
     /// Deterministic in-memory [`WorldView`] implementation for unit and smoke tests.
     pub struct TestWorld {
         state: RwLock<TestState>,
-        events: broadcast::Sender<WorldEvent>,
+        events: Arc<EventHub>,
     }
 
     impl TestWorld {
         /// Create an empty test world.
         pub fn new() -> Self {
-            let (events, _) = broadcast::channel(32);
+            let events = Arc::new(EventHub::new(crate::events::DEFAULT_EVENT_CAPACITY));
             Self {
                 state: RwLock::new(TestState::default()),
                 events,
@@ -360,9 +360,9 @@ mod test_world {
             self.state.write().status = status;
         }
 
-        /// Push a synthetic event onto the broadcast stream.
+        /// Push a synthetic event onto the stream.
         pub fn push_event(&self, event: WorldEvent) {
-            let _ = self.events.send(event);
+            self.events.publish(event);
         }
 
         /// Retrieve the number of refresh hints seen so far.
@@ -379,31 +379,34 @@ mod test_world {
 
     #[async_trait::async_trait]
     impl WorldView for TestWorld {
-        fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
-            self.events.subscribe()
+        fn subscribe(&self) -> EventCursor {
+            self.events.subscribe(None)
+        }
+
+        fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor {
+            self.events.subscribe(Some(filter))
+        }
+
+        async fn next_event_until(
+            &self,
+            cursor: &mut EventCursor,
+            deadline: TokioInstant,
+        ) -> Option<WorldEvent> {
+            self.events.next_event_until(cursor, deadline).await
         }
 
         async fn subscribe_with_snapshot(
             &self,
-        ) -> (
-            broadcast::Receiver<WorldEvent>,
-            Vec<WorldWindow>,
-            Option<WindowKey>,
-        ) {
-            let rx = self.events.subscribe();
+        ) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>) {
+            let cursor = self.events.subscribe(None);
             let state = self.state.read();
-            (rx, state.snapshot.clone(), state.focused)
+            (cursor, state.snapshot.clone(), state.focused)
         }
 
-        async fn subscribe_with_context(
-            &self,
-        ) -> (
-            broadcast::Receiver<WorldEvent>,
-            Option<(String, String, i32)>,
-        ) {
-            let rx = self.events.subscribe();
+        async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
+            let cursor = self.events.subscribe(None);
             let ctx = self.focused_context().await;
-            (rx, ctx)
+            (cursor, ctx)
         }
 
         async fn snapshot(&self) -> Vec<WorldWindow> {
@@ -626,14 +629,20 @@ mod test_world {
         #[tokio::test]
         async fn test_world_events_and_hint() {
             let world = TestWorld::new();
-            let mut rx = world.subscribe();
+            let mut cursor = world.subscribe();
             world.push_event(WorldEvent::FocusChanged(FocusChange {
                 key: None,
                 app: None,
                 title: None,
                 pid: None,
             }));
-            assert!(rx.recv().await.is_ok());
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(20);
+            assert!(
+                world
+                    .next_event_until(&mut cursor, deadline)
+                    .await
+                    .is_some()
+            );
 
             assert_eq!(world.hint_refresh_count(), 0);
             world.hint_refresh();
@@ -642,5 +651,4 @@ mod test_world {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
 pub use test_world::TestWorld;

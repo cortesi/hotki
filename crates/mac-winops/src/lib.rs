@@ -134,6 +134,11 @@ pub fn remove_ax_observer(pid: i32) -> bool {
     })
 }
 
+/// Number of active AX observers currently installed.
+pub fn active_ax_observer_count() -> usize {
+    ax_observer::observer_count()
+}
+
 /// Set a global sender to receive `AxEvent`s from all installed observers.
 ///
 /// If the observer registry has not been created yet, this function will
@@ -991,6 +996,21 @@ pub fn drain_main_ops() {
 /// Return true when there are pending main-thread operations waiting to be drained.
 pub fn pending_main_ops() -> bool {
     !MAIN_OPS.lock().is_empty()
+}
+
+/// Number of pending main-thread operations waiting to be drained.
+pub fn pending_main_ops_len() -> usize {
+    MAIN_OPS.lock().len()
+}
+
+/// Close any active mimic windows. Placeholder until the mimic harness is wired up.
+pub fn close_mimic_windows() -> usize {
+    0
+}
+
+/// Current mimic window count.
+pub fn mimic_window_count() -> usize {
+    0
 }
 
 //
