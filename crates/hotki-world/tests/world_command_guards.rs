@@ -71,6 +71,11 @@ fn ax(role: &str, subrole: &str, can_set_pos: bool) -> AxProps {
         subrole: Some(subrole.into()),
         can_set_pos: Some(can_set_pos),
         can_set_size: Some(true),
+        frame: None,
+        minimized: Some(false),
+        fullscreen: Some(false),
+        visible: Some(true),
+        zoomed: Some(false),
     }
 }
 

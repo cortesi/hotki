@@ -34,8 +34,10 @@ fn deadline_drops_stale_title() {
     assert!(world_test::ax_pool_schedule_title(pid, id).is_none());
 
     // Wait well past the delay and confirm we observed a stale drop.
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(world_test::ax_pool_stale_drop_count() >= 1);
+    assert!(wait_until(
+        || world_test::ax_pool_stale_drop_count() >= 1,
+        800
+    ));
 }
 
 #[test]

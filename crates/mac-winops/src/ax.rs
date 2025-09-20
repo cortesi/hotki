@@ -188,6 +188,16 @@ pub struct AxProps {
     pub can_set_pos: Option<bool>,
     /// Whether `AXSize` appears settable for this window (cached).
     pub can_set_size: Option<bool>,
+    /// Reported AX frame `(x,y,w,h)` in global coordinates when available.
+    pub frame: Option<crate::geom::Rect>,
+    /// Current `AXMinimized` state when exposed by the window.
+    pub minimized: Option<bool>,
+    /// Current `AXFullScreen` state when exposed by the window.
+    pub fullscreen: Option<bool>,
+    /// Current `AXVisible` state when exposed by the window.
+    pub visible: Option<bool>,
+    /// Current `AXZoomed` state when exposed by the window.
+    pub zoomed: Option<bool>,
 }
 
 /// Resolve `AxProps` for a CoreGraphics `WindowId` (kCGWindowNumber).
@@ -197,11 +207,35 @@ pub fn ax_props_for_window_id(id: WindowId) -> Result<AxProps> {
     let role = ax_get_string(win.as_ptr(), cfstr("AXRole"));
     let subrole = ax_get_string(win.as_ptr(), cfstr("AXSubrole"));
     let (can_set_pos, can_set_size) = ax_settable_pos_size(win.as_ptr());
+
+    let frame = match (
+        ax_get_point(win.as_ptr(), cfstr("AXPosition")),
+        ax_get_size(win.as_ptr(), cfstr("AXSize")),
+    ) {
+        (Ok(pos), Ok(size)) => Some(crate::geom::Rect {
+            x: pos.x,
+            y: pos.y,
+            w: size.width,
+            h: size.height,
+        }),
+        _ => None,
+    };
+
+    let minimized = ax_bool(win.as_ptr(), cfstr("AXMinimized")).ok().flatten();
+    let fullscreen = ax_bool(win.as_ptr(), cfstr("AXFullScreen")).ok().flatten();
+    let visible = ax_bool(win.as_ptr(), cfstr("AXVisible")).ok().flatten();
+    let zoomed = ax_bool(win.as_ptr(), cfstr("AXZoomed")).ok().flatten();
+
     Ok(AxProps {
         role,
         subrole,
         can_set_pos,
         can_set_size,
+        frame,
+        minimized,
+        fullscreen,
+        visible,
+        zoomed,
     })
 }
 

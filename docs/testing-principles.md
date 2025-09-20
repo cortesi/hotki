@@ -54,6 +54,20 @@ and debuggable.
 - If you need a new probe (e.g., multiple-display detection, screen scale, mission-control state),
   add it to `hotki-world` or the smoketest helper modules so all cases stay on the same contract.
 
+## Authoritative Frames
+- `hotki-world` reconciles CoreGraphics and Accessibility rectangles per window. Use
+  `WorldView::frames_snapshot`/`frames` to inspect the resolved [`WindowMode`], backing scale, and
+  authoritative rectangle.
+- Normal and hidden windows prefer CoreGraphics geometry and fall back to Accessibility only when
+  CG bounds are missing. Fullscreen and tiled windows also prefer CoreGraphics to avoid split-view
+  disagreements.
+- Minimized windows reuse the last visible rectangle observed before the minimize event. The cache
+  is surfaced as `authoritative_kind = Cached` so tests can assert the provenance explicitly.
+- `WorldView::display_scale` and `WorldView::authoritative_eps` expose the reconciled scale and the
+  default pixel epsilon. Tests should query these helpers instead of hard-coding `1` or `2`.
+- Raw AX/CG rectangles are reserved for labs and unit tests behind the `test-introspection`
+  feature flag. Production code should rely on the authoritative rectangle exclusively.
+
 ## Message Style
 Emit failures as a single structured line so CI logs stay machine-parseable:
 
@@ -79,4 +93,3 @@ case=<name> scale=<n> eps=<px> expected=<x,y,w,h> got=<x,y,w,h> delta=<dx,dy,dw,
   the main AppKit thread; never spawn ad-hoc background runloops for window mutation.
 - **No async test attributes in `hotki-world/tests`.** Use `run_async_test` plus explicit runtime
   helpers—the lint guard will fail the build if `#[tokio::test]` (or similar) slips in.
-

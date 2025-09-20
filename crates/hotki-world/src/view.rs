@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use hotki_world_ids::WorldWindowId;
 use tokio::sync::broadcast;
 
 use crate::{
-    Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveDirection,
-    MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey, WorldEvent, WorldHandle,
-    WorldStatus, WorldWindow,
+    Capabilities, CommandError, CommandReceipt, Frames, FullscreenIntent, HideIntent,
+    MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey,
+    WorldEvent, WorldHandle, WorldStatus, WorldWindow,
 };
 
 /// Unified view over window state snapshots and focus context.
@@ -56,6 +56,18 @@ pub trait WorldView: Send + Sync {
 
     /// Fetch comprehensive world status diagnostics.
     async fn status(&self) -> WorldStatus;
+
+    /// Retrieve the full frame snapshot keyed by [`WindowKey`].
+    async fn frames_snapshot(&self) -> HashMap<WindowKey, Frames>;
+
+    /// Retrieve frame metadata for a specific window.
+    async fn frames(&self, key: WindowKey) -> Option<Frames>;
+
+    /// Resolve the scale for a tracked display identifier, if known.
+    async fn display_scale(&self, display_id: u32) -> Option<f32>;
+
+    /// Compute the default epsilon for authoritative comparisons on a display.
+    async fn authoritative_eps(&self, display_id: u32) -> i32;
 
     /// Hint that external state likely changed and should be refreshed quickly.
     fn hint_refresh(&self);
@@ -193,6 +205,22 @@ impl WorldView for WorldHandle {
         WorldHandle::status(self).await
     }
 
+    async fn frames_snapshot(&self) -> HashMap<WindowKey, Frames> {
+        WorldHandle::frames_snapshot(self).await
+    }
+
+    async fn frames(&self, key: WindowKey) -> Option<Frames> {
+        WorldHandle::frames(self, key).await
+    }
+
+    async fn display_scale(&self, display_id: u32) -> Option<f32> {
+        WorldHandle::display_scale(self, display_id).await
+    }
+
+    async fn authoritative_eps(&self, display_id: u32) -> i32 {
+        WorldHandle::authoritative_eps(self, display_id).await
+    }
+
     fn hint_refresh(&self) {
         WorldHandle::hint_refresh(self);
     }
@@ -267,16 +295,16 @@ impl WorldHandle {
 
 #[cfg(any(test, feature = "test-utils"))]
 mod test_world {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use parking_lot::RwLock;
     use tokio::sync::broadcast;
 
     use super::WorldView;
     use crate::{
-        Capabilities, CommandError, CommandReceipt, FullscreenIntent, HideIntent, MoveDirection,
-        MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey, WorldEvent,
-        WorldStatus, WorldWindow, WorldWindowId,
+        Capabilities, CommandError, CommandReceipt, Frames, FullscreenIntent, HideIntent,
+        MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent, WindowKey,
+        WorldEvent, WorldStatus, WorldWindow, WorldWindowId,
     };
 
     #[derive(Default)]
@@ -286,6 +314,7 @@ mod test_world {
         capabilities: Capabilities,
         status: WorldStatus,
         hint_refreshes: u64,
+        frames: HashMap<WindowKey, Frames>,
     }
 
     /// Deterministic in-memory [`WorldView`] implementation for unit and smoke tests.
@@ -314,6 +343,11 @@ mod test_world {
             let mut state = self.state.write();
             state.snapshot = snapshot;
             state.focused = focused;
+        }
+
+        /// Replace the tracked frame metadata map.
+        pub fn set_frames(&self, frames: HashMap<WindowKey, Frames>) {
+            self.state.write().frames = frames;
         }
 
         /// Update the stored capability information.
@@ -431,6 +465,34 @@ mod test_world {
 
         async fn status(&self) -> WorldStatus {
             self.state.read().status.clone()
+        }
+
+        async fn frames_snapshot(&self) -> HashMap<WindowKey, Frames> {
+            self.state.read().frames.clone()
+        }
+
+        async fn frames(&self, key: WindowKey) -> Option<Frames> {
+            self.state.read().frames.get(&key).cloned()
+        }
+
+        async fn display_scale(&self, display_id: u32) -> Option<f32> {
+            self.state
+                .read()
+                .frames
+                .values()
+                .find(|frames| frames.display_id == Some(display_id))
+                .map(|frames| frames.scale)
+        }
+
+        async fn authoritative_eps(&self, display_id: u32) -> i32 {
+            let state = self.state.read();
+            let scale = state
+                .frames
+                .values()
+                .find(|frames| frames.display_id == Some(display_id))
+                .map(|frames| frames.scale)
+                .unwrap_or(1.0);
+            crate::default_eps(scale)
         }
 
         fn hint_refresh(&self) {

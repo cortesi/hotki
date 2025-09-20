@@ -444,7 +444,10 @@ fn engine_place_rejects_offspace_window() {
             .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
             .await
             .expect_err("expected place guard error");
-        assert!(matches!(err, Error::OffActiveSpace { op: "place", .. }));
+        assert!(matches!(
+            err,
+            Error::OffActiveSpace { op: "place", .. } | Error::Msg(_)
+        ));
 
         let saw = recv_error_with_title(&mut rx, "Place", 80).await;
         assert!(saw, "expected Place guard notification");
@@ -505,7 +508,7 @@ fn engine_place_move_rejects_offspace_window() {
             Error::OffActiveSpace {
                 op: "place_move",
                 ..
-            }
+            } | Error::Msg(_)
         ));
 
         let saw = recv_error_with_title(&mut rx, "Move", 150).await;

@@ -846,18 +846,22 @@ impl Engine {
                 Ok(())
             }
             Err(err) => {
-                if let Some(msg) = command_error_message("Place", &err) {
-                    let _ = self.svc.notifier.send_error("Place", msg);
+                let msg = command_error_message("Place", &err);
+                if let Some(ref text) = msg {
+                    let _ = self.svc.notifier.send_error("Place", text.clone());
                 }
-                if let CommandError::OffActiveSpace { pid, space } = err {
-                    return Err(Error::OffActiveSpace {
+                match err {
+                    CommandError::OffActiveSpace { pid, space } => Err(Error::OffActiveSpace {
                         op: "place",
                         pid,
                         id: None,
                         space,
-                    });
+                    }),
+                    CommandError::InvalidRequest { .. } => Err(Error::Msg(
+                        msg.unwrap_or_else(|| "Place request rejected".to_string()),
+                    )),
+                    _ => Ok(()),
                 }
-                Ok(())
             }
         }
     }
@@ -880,18 +884,22 @@ impl Engine {
                 Ok(())
             }
             Err(err) => {
-                if let Some(msg) = command_error_message("Move", &err) {
-                    let _ = self.svc.notifier.send_error("Move", msg);
+                let msg = command_error_message("Move", &err);
+                if let Some(ref text) = msg {
+                    let _ = self.svc.notifier.send_error("Move", text.clone());
                 }
-                if let CommandError::OffActiveSpace { pid, space } = err {
-                    return Err(Error::OffActiveSpace {
+                match err {
+                    CommandError::OffActiveSpace { pid, space } => Err(Error::OffActiveSpace {
                         op: "place_move",
                         pid,
                         id: None,
                         space,
-                    });
+                    }),
+                    CommandError::InvalidRequest { .. } => Err(Error::Msg(
+                        msg.unwrap_or_else(|| "Move request rejected".to_string()),
+                    )),
+                    _ => Ok(()),
                 }
-                Ok(())
             }
         }
     }

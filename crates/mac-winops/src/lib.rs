@@ -988,6 +988,11 @@ pub fn drain_main_ops() {
     }
 }
 
+/// Return true when there are pending main-thread operations waiting to be drained.
+pub fn pending_main_ops() -> bool {
+    !MAIN_OPS.lock().is_empty()
+}
+
 //
 
 /// Perform activation of an app by pid using NSRunningApplication. Main-thread only.

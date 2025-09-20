@@ -7,6 +7,7 @@ license = "MIT"
 
 [features]
 test-utils = []
+test-introspection = []
 
 [dependencies]
 tokio = { workspace = true }

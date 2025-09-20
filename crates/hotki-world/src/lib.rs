@@ -52,8 +52,8 @@ use std::{
 
 pub use hotki_world_ids::WorldWindowId;
 use mac_winops::{
-    AxProps, Error as WinOpsError, PlaceAttemptOptions as WinPlaceAttemptOptions, Pos, WindowId,
-    WindowInfo, ops::WinOps,
+    self, AxProps, Error as WinOpsError, PlaceAttemptOptions as WinPlaceAttemptOptions, Pos,
+    WindowId, WindowInfo, ops::WinOps, screen,
 };
 use regex::Regex;
 
@@ -674,6 +674,57 @@ impl WorldHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// Snapshot of current frame metadata for all tracked windows.
+    pub async fn frames_snapshot(&self) -> HashMap<WindowKey, Frames> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::FramesSnapshot { respond: tx });
+        rx.await.unwrap_or_default()
+    }
+
+    /// Retrieve frame metadata for a specific window key.
+    pub async fn frames(&self, key: WindowKey) -> Option<Frames> {
+        self.frames_snapshot().await.get(&key).cloned()
+    }
+
+    /// Resolve the display scale associated with a display identifier, if tracked.
+    pub async fn display_scale(&self, display_id: u32) -> Option<f32> {
+        self.frames_snapshot()
+            .await
+            .values()
+            .find(|frames| frames.display_id == Some(display_id))
+            .map(|frames| frames.scale)
+    }
+
+    /// Compute the default epsilon for a display based on tracked frame scale information.
+    pub async fn authoritative_eps(&self, display_id: u32) -> i32 {
+        let frames = self.frames_snapshot().await;
+        let scale = frames
+            .values()
+            .find(|f| f.display_id == Some(display_id))
+            .map(|f| f.scale)
+            .unwrap_or(1.0);
+        default_eps(scale)
+    }
+
+    /// Pump pending main-thread operations until `deadline` or the queue empties.
+    ///
+    /// Returns `true` when all operations completed before the deadline, `false`
+    /// otherwise.
+    pub fn pump_main_until(&self, deadline: Instant) -> bool {
+        const STEP_MS: u64 = 5;
+        loop {
+            mac_winops::drain_main_ops();
+            if !mac_winops::pending_main_ops() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(STEP_MS));
+        }
+        false
+    }
+
     /// Lookup a window by key.
     pub async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
         let (tx, rx) = oneshot::channel();
@@ -886,7 +937,12 @@ impl WorldHandle {
 pub struct World;
 
 mod ax_read_pool;
+mod frames;
 mod view;
+
+pub use frames::{
+    FrameKind, Frames, RectDelta, RectPx, WindowMode, default_eps, reconcile_authoritative,
+};
 
 #[derive(Debug, Default)]
 struct WorldMetrics {
@@ -1011,6 +1067,9 @@ impl World {
                     Command::Snapshot { respond } => {
                         let _ = respond.send(Vec::new());
                     }
+                    Command::FramesSnapshot { respond } => {
+                        let _ = respond.send(HashMap::new());
+                    }
                     Command::Get { respond, .. } => {
                         let _ = respond.send(None);
                     }
@@ -1056,6 +1115,8 @@ impl World {
 #[derive(Clone, Debug, Default)]
 struct WorldState {
     store: HashMap<WindowKey, WorldWindow>,
+    frames: HashMap<WindowKey, Frames>,
+    frame_history: HashMap<WindowKey, FrameHistory>,
     focused: Option<WindowKey>,
     capabilities: Capabilities,
     seen_seq: u64,
@@ -1076,6 +1137,8 @@ impl WorldState {
     fn new() -> Self {
         Self {
             store: HashMap::new(),
+            frames: HashMap::new(),
+            frame_history: HashMap::new(),
             focused: None,
             capabilities: Capabilities::default(),
             seen_seq: 0,
@@ -1088,6 +1151,12 @@ impl WorldState {
             next_command_id: 1,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FrameHistory {
+    last_authoritative: RectPx,
+    last_unminimized: Option<RectPx>,
 }
 
 #[derive(Clone, Debug)]
@@ -1123,6 +1192,9 @@ impl WorldState {
 enum Command {
     Snapshot {
         respond: oneshot::Sender<Vec<WorldWindow>>,
+    },
+    FramesSnapshot {
+        respond: oneshot::Sender<HashMap<WindowKey, Frames>>,
     },
     Get {
         key: WindowKey,
@@ -1203,6 +1275,9 @@ async fn run_actor(
                         let mut v: Vec<WorldWindow> = state.store.values().cloned().collect();
                         v.sort_by_key(|w| (w.z, w.pid, w.id));
                         let _ = respond.send(v);
+                    }
+                    Command::FramesSnapshot { respond } => {
+                        let _ = respond.send(state.frames.clone());
                     }
                     Command::Get { key, respond } => {
                         let _ = respond.send(state.store.get(&key).cloned());
@@ -1371,6 +1446,32 @@ fn reconcile(
             (Some(pos), false) => best_display_id(&pos, &displays),
             _ => None,
         };
+        let ax_props = ax_read_pool::props(w.pid, w.id);
+        let cg_rect = w.pos.map(|pos| RectPx::from_pos(&pos));
+        let ax_rect = ax_props
+            .as_ref()
+            .and_then(|props| props.frame.as_ref())
+            .map(RectPx::from_ax);
+        let last_unminimized = state
+            .frame_history
+            .get(&key)
+            .and_then(|hist| hist.last_unminimized);
+        let mode = determine_window_mode(w, ax_props.as_ref());
+        let (authoritative, authoritative_kind) =
+            reconcile_authoritative(ax_rect, cg_rect, mode, last_unminimized);
+        let scale = resolve_display_scale(cg_rect, ax_rect, authoritative);
+        let frames = Frames {
+            authoritative,
+            authoritative_kind,
+            #[cfg(feature = "test-introspection")]
+            ax: ax_rect,
+            #[cfg(feature = "test-introspection")]
+            cg: cg_rect,
+            display_id,
+            space_id: w.space,
+            scale,
+            mode,
+        };
         if let Some(existing) = state.store.get_mut(&key) {
             let mut delta = WindowDelta::default();
             let new_title = if is_focus {
@@ -1426,11 +1527,7 @@ fn reconcile(
                 delta.focused = Some(ValueChange::new(old, is_focus));
             }
             // Populate AX props only for the focused window; clear otherwise.
-            existing.ax = if is_focus {
-                ax_read_pool::props(w.pid, w.id)
-            } else {
-                None
-            };
+            existing.ax = if is_focus { ax_props.clone() } else { None };
             existing.last_seen = now;
             existing.seen_seq = seq;
             if !delta.is_empty() {
@@ -1456,17 +1553,40 @@ fn reconcile(
                 is_on_screen: w.is_on_screen,
                 display_id,
                 focused: is_focus,
-                ax: if is_focus {
-                    ax_read_pool::props(w.pid, w.id)
-                } else {
-                    None
-                },
+                ax: if is_focus { ax_props.clone() } else { None },
                 meta: Vec::new(),
                 last_seen: now,
                 seen_seq: seq,
             };
             state.store.insert(key, ww.clone());
             let _ = events.send(WorldEvent::Added(Box::new(ww)));
+        }
+
+        {
+            let entry = state.frame_history.entry(key).or_default();
+            entry.last_authoritative = frames.authoritative;
+            if frames.mode != WindowMode::Minimized
+                && frames.mode.is_visible()
+                && frames.authoritative.w > 0
+                && frames.authoritative.h > 0
+            {
+                entry.last_unminimized = Some(frames.authoritative);
+            }
+        }
+        state.frames.insert(key, frames.clone());
+        #[cfg(feature = "test-introspection")]
+        if let (Some(ax_rect), Some(cg_rect)) = (frames.ax, frames.cg) {
+            let delta = ax_rect.delta(&cg_rect);
+            if delta != RectDelta::default() {
+                tracing::debug!(
+                    pid = key.pid,
+                    id = key.id,
+                    mode = ?frames.mode,
+                    source = ?frames.authoritative_kind,
+                    %delta,
+                    "frame delta ax↔cg"
+                );
+            }
         }
     }
 
@@ -1493,6 +1613,8 @@ fn reconcile(
                     state.store.remove(&key);
                     state.coalesce.remove(&key);
                     state.suspects.remove(&key);
+                    state.frames.remove(&key);
+                    state.frame_history.remove(&key);
                     let _ = events.send(WorldEvent::Removed(key));
                 }
             }
@@ -1573,6 +1695,15 @@ fn handle_place_grid(
                     target_id.window_id()
                 ),
             })?;
+
+        placement_mode_guard(
+            state,
+            WindowKey {
+                pid: target_window.pid,
+                id: target_window.id,
+            },
+            kind,
+        )?;
 
         if !target_window.on_active_space {
             tracing::debug!(
@@ -1678,6 +1809,15 @@ fn handle_place_grid(
             pid: Some(pid),
         })?;
 
+    placement_mode_guard(
+        state,
+        WindowKey {
+            pid: target_window.pid,
+            id: target_window.id,
+        },
+        kind,
+    )?;
+
     tracing::debug!(
         "Place(World): resolved via {} pid={} id={} app='{}' title='{}' cols={} rows={} col={} row={}",
         selection.as_str(),
@@ -1760,6 +1900,15 @@ fn handle_place_move(
             );
         }
 
+        placement_mode_guard(
+            state,
+            WindowKey {
+                pid: target_window.pid,
+                id: target_window.id,
+            },
+            kind,
+        )?;
+
         let dir_mc = convert_move_dir(dir);
         let _ = winops.request_activate_pid(target_window.pid);
         let move_opts = options.clone().unwrap_or_default();
@@ -1812,6 +1961,15 @@ fn handle_place_move(
             kind,
             pid: Some(pid),
         })?;
+
+    placement_mode_guard(
+        state,
+        WindowKey {
+            pid: target_window.pid,
+            id: target_window.id,
+        },
+        kind,
+    )?;
 
     if target_window.focused
         && let Some(reason) = placement_guard_reason(&target_window)
@@ -2161,6 +2319,25 @@ fn placement_guard_reason(window: &WorldWindow) -> Option<&'static str> {
     None
 }
 
+fn placement_mode_guard(
+    state: &WorldState,
+    key: WindowKey,
+    kind: CommandKind,
+) -> Result<(), CommandError> {
+    let Some(frames) = state.frames.get(&key) else {
+        return Ok(());
+    };
+    match frames.mode {
+        WindowMode::Normal => Ok(()),
+        blocked => Err(CommandError::InvalidRequest {
+            message: format!(
+                "Cannot perform {:?} while window mode={:?}. Exit this mode or adjust placement options.",
+                kind, blocked
+            ),
+        }),
+    }
+}
+
 fn off_active_space_error(pid: i32, window: &WorldWindow) -> CommandError {
     CommandError::OffActiveSpace {
         pid,
@@ -2224,6 +2401,43 @@ fn best_display_id(pos: &Pos, displays: &[DisplayBounds]) -> Option<DisplayId> {
         }
     }
     if best_area > 0 { best_id } else { None }
+}
+
+fn determine_window_mode(info: &WindowInfo, ax: Option<&AxProps>) -> WindowMode {
+    if let Some(props) = ax {
+        if props.minimized == Some(true) {
+            return WindowMode::Minimized;
+        }
+        if props.fullscreen == Some(true) {
+            // macOS split view windows still report AXFullScreen true but retain standard subrole.
+            if props
+                .subrole
+                .as_deref()
+                .is_some_and(|s| s.contains("Standard"))
+            {
+                return WindowMode::Tiled;
+            }
+            return WindowMode::Fullscreen;
+        }
+        if props.visible == Some(false) && !info.is_on_screen {
+            return WindowMode::Hidden;
+        }
+    }
+    if !info.is_on_screen && !info.on_active_space {
+        return WindowMode::Hidden;
+    }
+    WindowMode::Normal
+}
+
+fn resolve_display_scale(cg: Option<RectPx>, ax: Option<RectPx>, authoritative: RectPx) -> f32 {
+    let rect = cg.or(ax).unwrap_or(authoritative);
+    let w = rect.w.max(1) as f64;
+    let h = rect.h.max(1) as f64;
+    let cx = rect.x as f64 + w / 2.0;
+    let cy = rect.y as f64 + h / 2.0;
+    screen::display_scale_containing_point(cx, cy)
+        .unwrap_or(1.0)
+        .max(1.0) as f32
 }
 
 // ===== AX and permission shims (overridable for tests) =====

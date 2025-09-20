@@ -50,19 +50,19 @@ No second data channel; hotki-world is the single assertion surface.
              for banned imports plus async test attributes in `crates/hotki-world/tests`.
 
 2. Stage Two: Extend World Frame Introspection
-1. [ ] Add `test-introspection` feature gating raw AX/CG fields while keeping the authoritative rect
+1. [x] Add `test-introspection` feature gating raw AX/CG fields while keeping the authoritative rect
        always available.
-2. [ ] Introduce `RectPx`, `FrameKind`, and `Frames` (with display/space/scale/mode) in
+2. [x] Introduce `RectPx`, `FrameKind`, and `Frames` (with display/space/scale/mode) in
        `crates/hotki-world/src`, re-export via `lib.rs`, and log AX↔CG deltas in diagnostics.
-3. [ ] Embed the "Authoritative frame rules" policy block in docs and module comments so behavior is
+3. [x] Embed the "Authoritative frame rules" policy block in docs and module comments so behavior is
        explicit when AX and CG disagree or windows change modes.
-4. [ ] Implement `WindowMode { Normal | Minimized | Hidden | Fullscreen | Tiled }` on `Frames` and
+4. [x] Implement `WindowMode { Normal | Minimized | Hidden | Fullscreen | Tiled }` on `Frames` and
        surface `WorldHandle::authoritative_eps(display_id) -> i32` for helpers and diagnostics.
-5. [ ] Provide `WorldHandle::pump_main_until` plus a sync `TestHarness` helper that advances the
+5. [x] Provide `WorldHandle::pump_main_until` plus a sync `TestHarness` helper that advances the
        runloop until a deadline instead of relying on async executors.
-6. [ ] Add `frames`, `display_scale`, and `authoritative_eps` APIs on `WorldHandle`/`WorldView` and
+6. [x] Add `frames`, `display_scale`, and `authoritative_eps` APIs on `WorldHandle`/`WorldView` and
        ensure tests only use those accessors.
-7. [ ] Replace async frame stability tests with synchronous harness-based ones that exercise
+7. [x] Replace async frame stability tests with synchronous harness-based ones that exercise
        minimized, hidden, and fullscreen/tiled windows, asserting `place()` errors when modes disallow
        placement without `PlaceOptions`.
 *Acceptance:* Unit tests cover minimized/hidden/fullscreen modes, `place()` errors in forbidden modes,
