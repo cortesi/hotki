@@ -61,6 +61,47 @@ use self::events::{DEFAULT_EVENT_CAPACITY, EventHub};
 
 /// Re-export of placement attempt tuning options used by mac-winops.
 pub type PlaceAttemptOptions = WinPlaceAttemptOptions;
+
+/// Strategy used to bring a window forward during placement operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RaiseStrategy {
+    /// Do not attempt to raise the window before placement.
+    None,
+    /// Activate the owning application before placement attempts.
+    AppActivate,
+    /// Keep the currently frontmost window ahead of the target during placement.
+    KeepFrontWindow,
+}
+
+/// Policy applied when the target window is minimized during placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MinimizedPolicy {
+    /// Defer placement until the window is restored by the caller.
+    DeferUntilUnminimized,
+    /// Automatically unminimize the window before placement.
+    AutoUnminimize,
+}
+
+/// High-level placement tuning options shared across helpers and mimics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlaceOptions {
+    /// Strategy for raising the window prior to placement.
+    pub raise: RaiseStrategy,
+    /// Policy applied when the window is minimized.
+    pub minimized: MinimizedPolicy,
+    /// Whether to request animated placement behaviour when supported.
+    pub animate: bool,
+}
+
+impl Default for PlaceOptions {
+    fn default() -> Self {
+        Self {
+            raise: RaiseStrategy::AppActivate,
+            minimized: MinimizedPolicy::AutoUnminimize,
+            animate: true,
+        }
+    }
+}
 use tokio::{
     sync::{mpsc, oneshot},
     time::{Instant as TokioInstant, sleep},
@@ -1016,6 +1057,8 @@ pub struct World;
 mod ax_read_pool;
 mod events;
 mod frames;
+#[cfg(feature = "world-mimic")]
+pub mod mimic;
 mod view;
 
 pub use events::{EventCursor, EventFilter, EventRecord};

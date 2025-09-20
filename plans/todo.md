@@ -70,19 +70,19 @@ No second data channel; hotki-world is the single assertion surface.
              starvation.
 
 3. Stage Three: Event Loop, Reset, and Artifacts
-1. [ ] Replace broadcast receivers with a 256-capacity ring buffer per subscription that drops the
+1. [x] Replace broadcast receivers with a 256-capacity ring buffer per subscription that drops the
        oldest entry on overflow and increments a `lost_count` counter.
-2. [ ] Extend `WorldHandle`/`WorldView` for filtered subscribe and `next_event_until`, returning an
+2. [x] Extend `WorldHandle`/`WorldView` for filtered subscribe and `next_event_until`, returning an
        `EventCursor` that carries a monotonic index and `lost_count`.
-3. [ ] Implement `reset`, `is_quiescent`, and `quiescence_report` returning counts for
+3. [x] Implement `reset`, `is_quiescent`, and `quiescence_report` returning counts for
        `active_ax_observers`, `pending_main_ops`, `mimic_windows`, and `subscriptions`, forcibly
        closing mimic windows and unsubscribing all streams before draining main ops.
-4. [ ] Add `capture_failure_artifacts` emitting `.world.txt`, `.frames.txt`, cropped PNGs using the
+4. [x] Add `capture_failure_artifacts` emitting `.world.txt`, `.frames.txt`, cropped PNGs using the
        authoritative rect (with expected vs actual overlays and scale), the last ~50 events with
        timestamps/window ids, `display_id`, `space_id`, scale, and `world_commit`.
-5. [ ] Add unit tests covering overflow (`lost_count` surfaces), leaking subscriptions, mimic cleanup
+5. [x] Add unit tests covering overflow (`lost_count` surfaces), leaking subscriptions, mimic cleanup
        on reset, and verifying artifact crops/overlays appear.
-6. [ ] Propagate `lost_count` to helper wait APIs so they fail loudly with the standardized message
+6. [x] Propagate `lost_count` to helper wait APIs so they fail loudly with the standardized message
        when events drop during waits.
 *Acceptance:* Flooding the ring buffer increments `lost_count` and makes helper waits fail with the
              template message, and reset reports mimic leaks while artifacts include cropped overlays.
