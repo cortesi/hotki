@@ -98,9 +98,9 @@ No second data channel; hotki-world is the single assertion surface.
        respects `KeepFrontWindow`.
 4. [x] Introduce `RaiseStrategy`, `MinimizedPolicy`, and `PlaceOptions` in `hotki-world`, require tests
        to pick a strategy, and ensure mimics honor `RaiseStrategy::KeepFrontWindow`.
-5. [ ] Implement quirks as specified and emit diagnostics that include
+5. [x] Implement quirks as specified and emit diagnostics that include
        `scenario_slug/window_label/quirks[]`.
-6. [ ] Add integration tests validating each individual quirk plus a composite raise-cycle case that
+6. [x] Add integration tests validating each individual quirk plus a composite raise-cycle case that
        exercises `RaiseStrategy::KeepFrontWindow`.
 7. [x] Update build scripts and CI presets so `world-mimic` is on for dev/tests, off for release, and
        document the required profiles.
