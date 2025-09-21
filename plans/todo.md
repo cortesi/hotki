@@ -133,9 +133,9 @@ No second data channel; hotki-world is the single assertion surface.
              through the new helpers.
 
 1. Unported Smoketests
-1. [ ] repeat-relay
-2. [ ] repeat-shell
-3. [ ] repeat-volume
+1. [x] repeat-relay
+2. [x] repeat-shell
+3. [x] repeat-volume
 4. [ ] raise
 5. [ ] focus-nav
 6. [ ] focus-tracking

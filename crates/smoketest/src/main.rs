@@ -41,12 +41,26 @@ mod winhelper;
 /// World snapshot helpers backed by hotki-world.
 mod world;
 
-use std::{cmp::max, env, path::Path, process::exit, sync::mpsc, thread, time::Duration};
+use std::{
+    cmp::max,
+    env,
+    path::Path,
+    process::exit,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use cli::{Cli, Commands, FsState, SeqTest};
 use error::print_hints;
 use hotki_protocol::Toggle;
 use tests::*;
+
+/// Tracks whether hotki was already built during this smoketest invocation.
+static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
 
 /// Print a standardized heading for a smoketest section.
 pub(crate) fn heading(title: &str) {
@@ -327,6 +341,9 @@ fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus, fake_mode:
 
 /// Build the hotki binary once up-front to avoid stale binaries.
 fn build_hotki_or_exit(cli: &Cli) {
+    if env::var_os("HOTKI_SKIP_BUILD").is_some() || HOTKI_BUILT.load(Ordering::SeqCst) {
+        return;
+    }
     if !cli.quiet {
         heading("Building hotki");
     }
@@ -335,6 +352,7 @@ fn build_hotki_or_exit(cli: &Cli) {
         eprintln!("Try: cargo build -p hotki");
         exit(1);
     }
+    HOTKI_BUILT.store(true, Ordering::SeqCst);
 }
 
 /// Dispatch to the concrete smoketest command handlers.

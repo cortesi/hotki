@@ -248,6 +248,7 @@ impl HelperWindowBuilder {
     fn configure_command(&self) -> Result<Command> {
         let exe = env::current_exe()?;
         let mut cmd = Command::new(exe);
+        cmd.env("HOTKI_SKIP_BUILD", "1");
         cmd.arg("focus-winhelper")
             .arg("--title")
             .arg(&self.title)

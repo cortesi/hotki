@@ -20,6 +20,7 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let status_path = overlay_status_path_for_current_run();
     let info_path = overlay_info_path_for_current_run();
     let child = Command::new(exe)
+        .env("HOTKI_SKIP_BUILD", "1")
         .arg("warn-overlay")
         .arg("--status-path")
         .arg(status_path)
@@ -35,12 +36,25 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
 
 /// Spawn the warning overlay and wait the standard initial delay.
 pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
+    reset_overlay_text();
     match spawn_warn_overlay() {
         Ok(child) => {
             thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
             Some(child)
         }
         Err(_) => None,
+    }
+}
+
+/// Clear overlay text files so a fresh overlay starts without stale content.
+pub fn reset_overlay_text() {
+    let status_path = overlay_status_path_for_current_run();
+    if fs::write(&status_path, b"").is_err() {
+        // best effort, ignore failure
+    }
+    let info_path = overlay_info_path_for_current_run();
+    if fs::write(&info_path, b"").is_err() {
+        // best effort, ignore failure
     }
 }
 

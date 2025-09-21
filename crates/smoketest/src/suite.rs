@@ -524,6 +524,45 @@ const PLACE_HELPERS: &[HelperDoc] = &[
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
     CaseEntry {
+        name: "repeat-relay",
+        info: Some("Relay repeat throughput over the mimic harness"),
+        main_thread: true,
+        extra_timeout_ms: 5_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 1_600,
+            settle_ms: 600,
+        },
+        helpers: &[],
+        run: cases::repeat_relay_throughput,
+    },
+    CaseEntry {
+        name: "repeat-shell",
+        info: Some("Shell repeat throughput using the registry runner"),
+        main_thread: false,
+        extra_timeout_ms: 5_000,
+        budget: Budget {
+            setup_ms: 1_000,
+            action_ms: 1_600,
+            settle_ms: 600,
+        },
+        helpers: &[],
+        run: cases::repeat_shell_throughput,
+    },
+    CaseEntry {
+        name: "repeat-volume",
+        info: Some("Volume repeat throughput with restore-on-exit"),
+        main_thread: false,
+        extra_timeout_ms: 6_000,
+        budget: Budget {
+            setup_ms: 1_000,
+            action_ms: 2_600,
+            settle_ms: 600,
+        },
+        helpers: &[],
+        run: cases::repeat_volume_throughput,
+    },
+    CaseEntry {
         name: "place.minimized.defer",
         info: Some("Auto-unminimize minimized helper window before placement"),
         main_thread: true,
