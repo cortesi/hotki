@@ -127,7 +127,7 @@ No second data channel; hotki-world is the single assertion surface.
 9. [x] Ensure `process_apply_ready` preserves `apply_after` until the window is available.
 10. [x] Reset or isolate the mimic event loop between helpers to avoid reusing an exited loop state.
 11. [x] Avoid calling `elwt.exit()` during normal helper shutdown so the shared loop stays reusable.
-12. [ ] Explicitly close helper NSWindows on shutdown and wait for AppKit confirmation before teardown.
+12. [x] Explicitly close helper NSWindows on shutdown and wait for AppKit confirmation before teardown.
 *Acceptance:* Runner artifacts include configured vs actual budgets, waits fail loudly on `lost_count`
              changes, quiescence failures surface diagnostic counts, and refactored cases run solely
              through the new helpers.

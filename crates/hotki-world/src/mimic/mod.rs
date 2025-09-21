@@ -776,6 +776,7 @@ mod helper_app {
     use hotki_world_ids::WorldWindowId;
     use mac_winops::{self, AxProps, Rect, screen};
     use objc2::rc::autoreleasepool;
+    use objc2_app_kit::NSWindow;
     use tracing::{debug, info};
     use winit::{
         application::ApplicationHandler,
@@ -1045,8 +1046,58 @@ mod helper_app {
             if let Some(window) = self.window.take() {
                 window.set_visible(false);
             }
+            self.close_helper_nswindow();
             self.should_exit = true;
             elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
+        }
+
+        /// Request AppKit to close the helper NSWindow and wait for teardown.
+        fn close_helper_nswindow(&self) {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                let mut close_requested = false;
+                let windows = app.windows();
+                for window in windows.iter() {
+                    if self.matches_helper_title(&window) {
+                        window.close();
+                        close_requested = true;
+                    }
+                }
+                drop(windows);
+                if close_requested {
+                    self.wait_for_appkit_teardown(&app);
+                }
+            }
+        }
+
+        /// Return true when the candidate window title matches the helper title.
+        fn matches_helper_title(&self, window: &NSWindow) -> bool {
+            let title = window.title();
+            autoreleasepool(|pool| unsafe { title.to_str(pool) == self.title })
+        }
+
+        /// Poll AppKit until the helper window is confirmed closed or the timeout expires.
+        fn wait_for_appkit_teardown(&self, app: &objc2_app_kit::NSApplication) {
+            let timeout = Duration::from_millis(500);
+            let start = Instant::now();
+            loop {
+                let windows = app.windows();
+                let still_open = windows
+                    .iter()
+                    .any(|window| self.matches_helper_title(&window));
+                drop(windows);
+                if !still_open {
+                    break;
+                }
+                if start.elapsed() >= timeout {
+                    debug!(
+                        "winhelper: timed out waiting for helper window '{}' to close",
+                        self.title
+                    );
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
         /// Lazily create the helper window when the event loop is ready.
