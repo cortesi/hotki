@@ -46,6 +46,34 @@ pub fn start_warn_overlay_with_delay() -> Option<ManagedChild> {
     }
 }
 
+/// Long-lived overlay instance used for multi-case smoketest runs.
+pub struct OverlaySession {
+    /// Child process hosting the hands-off overlay window.
+    child: ManagedChild,
+}
+
+impl OverlaySession {
+    /// Start the overlay and wait for the initial countdown to complete.
+    pub fn start() -> Option<Self> {
+        start_warn_overlay_with_delay().map(|child| Self { child })
+    }
+
+    /// Update the status line shown in the overlay window. Best-effort.
+    pub fn set_status(&self, name: &str) {
+        write_overlay_status(name);
+    }
+
+    /// Update the auxiliary info line in the overlay window. Best-effort.
+    pub fn set_info(&self, info: &str) {
+        write_overlay_info(info);
+    }
+
+    /// Shut down the overlay process.
+    pub fn shutdown(mut self) -> Result<()> {
+        self.child.kill_and_wait()
+    }
+}
+
 /// Clear overlay text files so a fresh overlay starts without stale content.
 pub fn reset_overlay_text() {
     let status_path = overlay_status_path_for_current_run();

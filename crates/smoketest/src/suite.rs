@@ -245,6 +245,39 @@ pub struct RunnerConfig<'a> {
     pub overlay_info: Option<&'a str>,
 }
 
+/// Helper that keeps a single overlay instance alive across multiple cases.
+struct SuiteOverlay<'a> {
+    /// Shared overlay session reused across the suite run.
+    session: process::OverlaySession,
+    /// Runner configuration that informs overlay content updates.
+    config: &'a RunnerConfig<'a>,
+}
+
+impl<'a> SuiteOverlay<'a> {
+    /// Start the overlay if the configuration requires it.
+    fn start(config: &'a RunnerConfig<'a>) -> Option<Self> {
+        if config.warn_overlay && !config.quiet {
+            process::OverlaySession::start().map(|session| Self { session, config })
+        } else {
+            None
+        }
+    }
+
+    /// Update overlay labels before each case begins execution.
+    fn before_case(&self, entry: &CaseEntry) {
+        let info = self.config.overlay_info.or(entry.info).unwrap_or("");
+        self.session.set_info(info);
+        self.session.set_status(entry.name);
+    }
+
+    /// Shut down the overlay process once the suite is finished.
+    fn finish(self) {
+        if let Err(e) = self.session.shutdown() {
+            eprintln!("suite: failed to stop overlay: {}", e);
+        }
+    }
+}
+
 /// Summary of a single case run emitted by the registry runner.
 pub struct CaseRunOutcome {
     /// Registry entry executed for the case.
@@ -263,10 +296,14 @@ pub struct CaseRunOutcome {
 pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
     ensure_helper_limit()?;
     let artifact_root = create_artifact_root()?;
+    let overlay = SuiteOverlay::start(config);
     let mut failures: Vec<CaseRunOutcome> = Vec::new();
     for (idx, entry) in CASES.iter().enumerate() {
         if !config.quiet {
             crate::heading(&format!("Test: {}", entry.name));
+        }
+        if let Some(ref overlay_session) = overlay {
+            overlay_session.before_case(entry);
         }
         let world_handle = world::world_handle()?;
         world_handle.reset();
@@ -278,6 +315,9 @@ pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
                 break;
             }
         }
+    }
+    if let Some(overlay_session) = overlay {
+        overlay_session.finish();
     }
     if failures.is_empty() {
         if !config.quiet {
@@ -300,6 +340,7 @@ pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
 pub fn run_sequence(names: &[&str], config: &RunnerConfig<'_>) -> Result<()> {
     ensure_helper_limit()?;
     let artifact_root = create_artifact_root()?;
+    let overlay = SuiteOverlay::start(config);
     let mut failures = Vec::new();
     for (idx, name) in names.iter().enumerate() {
         let entry = CASES
@@ -308,6 +349,9 @@ pub fn run_sequence(names: &[&str], config: &RunnerConfig<'_>) -> Result<()> {
             .ok_or_else(|| Error::InvalidState(format!("unknown smoketest case: {name}")))?;
         if !config.quiet {
             crate::heading(&format!("Test: {}", entry.name));
+        }
+        if let Some(ref overlay_session) = overlay {
+            overlay_session.before_case(entry);
         }
         let world_handle = world::world_handle()?;
         world_handle.reset();
@@ -319,6 +363,9 @@ pub fn run_sequence(names: &[&str], config: &RunnerConfig<'_>) -> Result<()> {
                 break;
             }
         }
+    }
+    if let Some(overlay_session) = overlay {
+        overlay_session.finish();
     }
     if failures.is_empty() {
         Ok(())
@@ -344,13 +391,6 @@ fn run_entry(
     let timeout_ms = config
         .base_timeout_ms
         .saturating_add(entry.extra_timeout_ms);
-    let overlay_info = config.overlay_info.or(entry.info).unwrap_or("");
-    let mut overlay = None;
-    if config.warn_overlay && !config.quiet {
-        overlay = process::start_warn_overlay_with_delay();
-        process::write_overlay_status(entry.name);
-        process::write_overlay_info(overlay_info);
-    }
 
     let case_dir = create_case_dir(artifact_root, index, entry.name)?;
     let start = Instant::now();
@@ -373,12 +413,6 @@ fn run_entry(
         })
     };
     let elapsed = start.elapsed();
-
-    if let Some(mut child) = overlay
-        && let Err(e) = child.kill_and_wait()
-    {
-        eprintln!("suite: failed to stop overlay for {}: {}", entry.name, e);
-    }
 
     let run_error = run_result.err();
     let world_for_reset = ctx.world_clone();
