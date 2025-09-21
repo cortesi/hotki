@@ -203,9 +203,12 @@ pub fn spawn_scenario(
         spawn_ms, subscribe_ms, resolve_ms, spin_ms, settle_ms, "spawn_scenario_timing"
     );
 
+    // Drain any queued events so we start the case with a quiet cursor.
+    let mut _drained_events: u32 = 0;
     while world.next_event_now(&mut cursor).is_some() {
-        pump_active_mimics();
+        _drained_events = _drained_events.saturating_add(1);
     }
+    pump_active_mimics();
 
     Ok(ScenarioState {
         slug,

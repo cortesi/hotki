@@ -20,6 +20,7 @@ use crate::{
 
 /// Verify that `request_raise` selects windows by title and updates focus ordering.
 pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let _fast_raise_guard = mac_winops::override_ensure_frontmost_config(3, 40, 160);
     let mut scenario: Option<ScenarioState> = None;
     let setup_start = Instant::now();
     ctx.setup(|stage| {

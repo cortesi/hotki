@@ -25,7 +25,9 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
-    ptr, thread,
+    ptr,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -98,6 +100,49 @@ pub use place::{
 };
 pub use raise::raise_window;
 pub use window::{Pos, SpaceId, WindowInfo, active_space_ids};
+
+const ENSURE_ATTEMPTS_DEFAULT: usize = usize::MAX;
+const ENSURE_DELAY_MS_DEFAULT: u64 = u64::MAX;
+const ENSURE_HOLD_MS_DEFAULT: u64 = u64::MAX;
+
+static ENSURE_FRONTMOST_ATTEMPTS: AtomicUsize = AtomicUsize::new(ENSURE_ATTEMPTS_DEFAULT);
+static ENSURE_FRONTMOST_DELAY_MS: AtomicU64 = AtomicU64::new(ENSURE_DELAY_MS_DEFAULT);
+static ENSURE_FRONTMOST_HOLD_MS: AtomicU64 = AtomicU64::new(ENSURE_HOLD_MS_DEFAULT);
+
+/// Guard that restores the previous ensure-frontmost tuning when dropped.
+pub struct EnsureFrontmostConfigGuard {
+    prev_attempts: usize,
+    prev_delay_ms: u64,
+    prev_hold_ms: u64,
+}
+
+impl Drop for EnsureFrontmostConfigGuard {
+    fn drop(&mut self) {
+        ENSURE_FRONTMOST_ATTEMPTS.store(self.prev_attempts, Ordering::SeqCst);
+        ENSURE_FRONTMOST_DELAY_MS.store(self.prev_delay_ms, Ordering::SeqCst);
+        ENSURE_FRONTMOST_HOLD_MS.store(self.prev_hold_ms, Ordering::SeqCst);
+    }
+}
+
+/// Override the global ensure-frontmost tuning until the returned guard is dropped.
+#[must_use]
+pub fn override_ensure_frontmost_config(
+    attempts: usize,
+    delay_ms: u64,
+    hold_ms: u64,
+) -> EnsureFrontmostConfigGuard {
+    let new_attempts = attempts.max(1);
+    let new_delay = delay_ms.max(1);
+    let new_hold = hold_ms.max(1);
+    let prev_attempts = ENSURE_FRONTMOST_ATTEMPTS.swap(new_attempts, Ordering::SeqCst);
+    let prev_delay_ms = ENSURE_FRONTMOST_DELAY_MS.swap(new_delay, Ordering::SeqCst);
+    let prev_hold_ms = ENSURE_FRONTMOST_HOLD_MS.swap(new_hold, Ordering::SeqCst);
+    EnsureFrontmostConfigGuard {
+        prev_attempts,
+        prev_delay_ms,
+        prev_hold_ms,
+    }
+}
 
 // ===== Observer wiring =====
 thread_local! {
@@ -342,8 +387,19 @@ pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_m
     if attempts == 0 {
         return false;
     }
+    let tuned_attempts = ENSURE_FRONTMOST_ATTEMPTS.load(Ordering::SeqCst).max(1);
+    let attempts = attempts.max(1).min(tuned_attempts);
+    if attempts == 0 {
+        return false;
+    }
+    let tuned_delay_ms = ENSURE_FRONTMOST_DELAY_MS.load(Ordering::SeqCst).max(1);
+    let delay_ms = delay_ms.max(1).min(tuned_delay_ms);
     let step_ms = delay_ms.clamp(10, 40);
-    let hold_target_ms = delay_ms.max(400);
+    let base_hold_ms = delay_ms.max(400);
+    let tuned_hold_ms = ENSURE_FRONTMOST_HOLD_MS
+        .load(Ordering::SeqCst)
+        .max(delay_ms);
+    let hold_target_ms = base_hold_ms.min(tuned_hold_ms);
     let mut cg_hold_ms: u64 = 0;
     let mut focus_hold_ms: u64 = 0;
     for attempt in 0..attempts {

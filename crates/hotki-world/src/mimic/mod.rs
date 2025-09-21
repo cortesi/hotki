@@ -1078,7 +1078,7 @@ mod helper_app {
 
         /// Poll AppKit until the helper window is confirmed closed or the timeout expires.
         fn wait_for_appkit_teardown(&self, app: &objc2_app_kit::NSApplication) {
-            let timeout = Duration::from_millis(500);
+            let timeout = Duration::from_millis(200);
             let start = Instant::now();
             loop {
                 let windows = app.windows();
