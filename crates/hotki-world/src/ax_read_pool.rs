@@ -81,6 +81,10 @@ impl Cache {
         self.focus_by_pid.insert(pid, id);
     }
 
+    fn invalidate_focus(&mut self, pid: i32) {
+        self.focus_by_pid.remove(&pid);
+    }
+
     fn get_title(&mut self, pid: i32, id: WindowId, now: Instant) -> Option<String> {
         self.prune_titles(now);
         self.title_by_key
@@ -480,6 +484,27 @@ pub fn focused_id(pid: i32) -> Option<WindowId> {
         deadline: Instant::now() + Duration::from_millis(READ_DEADLINE_MS),
     });
     None
+}
+
+/// Drop any cached focus entry for the process and nudge the world to refresh.
+pub fn invalidate_focus(pid: i32) {
+    invalidate_focus_inner(pid, true);
+}
+
+/// Drop any cached focus entry for the process without hinting.
+pub fn invalidate_focus_silent(pid: i32) {
+    invalidate_focus_inner(pid, false);
+}
+
+fn invalidate_focus_inner(pid: i32, send_hint: bool) {
+    let pool = AxReadPool::get();
+    {
+        let mut cache = pool.cache.write();
+        cache.invalidate_focus(pid);
+    }
+    if send_hint {
+        pool.world_tx.send(super::Command::HintRefresh);
+    }
 }
 
 /// Get last cached AX title for (pid, id); schedule background refresh if missing.

@@ -26,6 +26,9 @@ use crate::{
     suite::StageHandle,
 };
 
+/// Initial number of mimic pump iterations to let helper windows settle.
+const INITIAL_SPIN_ITERS: usize = 80;
+
 /// Run `fut` on the shared runtime while continuing to pump mimic event loops.
 pub fn block_on_with_pump<F>(fut: F) -> Result<F::Output>
 where
@@ -128,6 +131,7 @@ pub fn spawn_scenario(
     slug: &'static str,
     specs: Vec<WindowSpawnSpec>,
 ) -> Result<ScenarioState> {
+    let total_start = Instant::now();
     let world = stage.world_clone();
     let mut descriptors = Vec::with_capacity(specs.len());
     let mut mimic_specs = Vec::with_capacity(specs.len());
@@ -153,15 +157,20 @@ pub fn spawn_scenario(
         });
     }
 
+    let spawn_start = Instant::now();
     let scenario = MimicScenario::new(Arc::from(slug), mimic_specs);
     let mimic = spawn_mimic_handle(slug, scenario)?;
+    let spawn_ms = spawn_start.elapsed().as_millis();
     pump_active_mimics();
 
+    let subscribe_start = Instant::now();
     let world_for_subscribe = world.clone();
     let (mut cursor, mut snapshot, _) =
         block_on_with_pump(async move { world_for_subscribe.subscribe_with_snapshot().await })?;
+    let subscribe_ms = subscribe_start.elapsed().as_millis();
 
     let mut windows: HashMap<&'static str, ScenarioWindow> = HashMap::new();
+    let resolve_start = Instant::now();
     let mut attempts = 0u32;
     while windows.len() < descriptors.len() {
         attempt_resolve_windows(&world, &descriptors, &snapshot, &mut windows)?;
@@ -179,12 +188,20 @@ pub fn spawn_scenario(
         let world_for_snapshot = world.clone();
         snapshot = block_on_with_pump(async move { world_for_snapshot.snapshot().await })?;
     }
+    let resolve_ms = resolve_start.elapsed().as_millis();
 
     // Allow mimic timers to run before issuing actions.
-    for _ in 0..200 {
+    let pre_spin_start = Instant::now();
+    for _ in 0..INITIAL_SPIN_ITERS {
         pump_active_mimics();
         thread::sleep(Duration::from_millis(5));
     }
+    let spin_ms = pre_spin_start.elapsed().as_millis();
+    let settle_ms = total_start.elapsed().as_millis();
+    debug!(
+        slug,
+        spawn_ms, subscribe_ms, resolve_ms, spin_ms, settle_ms, "spawn_scenario_timing"
+    );
 
     while world.next_event_now(&mut cursor).is_some() {
         pump_active_mimics();

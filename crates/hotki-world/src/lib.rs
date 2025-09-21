@@ -1246,6 +1246,7 @@ struct WorldState {
     frames: HashMap<WindowKey, Frames>,
     frame_history: HashMap<WindowKey, FrameHistory>,
     focused: Option<WindowKey>,
+    pending_focus: Option<PendingFocus>,
     capabilities: Capabilities,
     seen_seq: u64,
     /// Pending coalesced Updated events keyed by window id.
@@ -1268,6 +1269,7 @@ impl WorldState {
             frames: HashMap::new(),
             frame_history: HashMap::new(),
             focused: None,
+            pending_focus: None,
             capabilities: Capabilities::default(),
             seen_seq: 0,
             coalesce: HashMap::new(),
@@ -1306,6 +1308,27 @@ impl PendingUpdate {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingFocus {
+    key: WindowKey,
+    expires_at: Instant,
+}
+
+impl PendingFocus {
+    const TTL: Duration = Duration::from_millis(1_500);
+
+    fn new(key: WindowKey, now: Instant) -> Self {
+        Self {
+            key,
+            expires_at: now + Self::TTL,
+        }
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        now >= self.expires_at
+    }
+}
+
 impl WorldState {
     fn queue_update(&mut self, key: WindowKey, delta: WindowDelta, now: Instant) {
         let entry = self
@@ -1314,6 +1337,11 @@ impl WorldState {
             .or_insert_with(|| PendingUpdate::new(now));
         entry.delta.merge(delta);
         entry.reschedule(now);
+    }
+
+    fn expect_focus(&mut self, key: WindowKey) {
+        let now = Instant::now();
+        self.pending_focus = Some(PendingFocus::new(key, now));
     }
 }
 
@@ -1509,6 +1537,18 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
     let wins: Vec<WindowInfo> = winops.list_windows_for_spaces(&[]);
     let mut had_changes = false;
 
+    let mut pending_focus_key = None;
+    if let Some(pending) = state.pending_focus {
+        if pending.is_expired(now) {
+            state.pending_focus = None;
+        } else if wins
+            .iter()
+            .any(|w| w.pid == pending.key.pid && w.id == pending.key.id)
+        {
+            pending_focus_key = Some(pending.key);
+        }
+    }
+
     // Focus: prefer AX/system snapshot when available; fall back to CG-derived focus flag.
     let cg_focus_key = wins
         .iter()
@@ -1533,24 +1573,60 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
         .map(|w| w.pid)
         .or_else(|| wins.first().map(|w| w.pid));
 
+    const AX_FOCUS_ACCEPT_MAX_INDEX: usize = 16;
+
     if let Some(pid) = front_pid
         && acc_ok()
         && let Some(ax_id) = ax_read_pool::focused_id(pid)
     {
         let candidate = WindowKey { pid, id: ax_id };
-        if wins.iter().any(|w| w.pid == pid && w.id == ax_id) {
-            ax_focus_title = ax_read_pool::title(pid, ax_id);
-            ax_focus_key = Some(candidate);
+        if let Some((index, info)) = wins
+            .iter()
+            .enumerate()
+            .find(|(_, w)| w.pid == pid && w.id == ax_id)
+        {
+            let matches_expectation = pending_focus_key == Some(candidate);
+            let cg_consistent = if matches_expectation {
+                true
+            } else {
+                info.layer == 0
+                    && info.is_on_screen
+                    && (info.focused || index <= AX_FOCUS_ACCEPT_MAX_INDEX)
+            };
+            if cg_consistent {
+                ax_focus_title = ax_read_pool::title(pid, ax_id);
+                ax_focus_key = Some(candidate);
+                tracing::debug!(
+                    pid,
+                    ax_id,
+                    title = ax_focus_title.as_deref().unwrap_or(""),
+                    index,
+                    "reconcile: accepted ax focus candidate"
+                );
+            } else {
+                tracing::debug!(
+                    pid,
+                    ax_id,
+                    layer = info.layer,
+                    is_on_screen = info.is_on_screen,
+                    on_active_space = info.on_active_space,
+                    focused = info.focused,
+                    index,
+                    "reconcile: rejected ax focus candidate due to cg mismatch"
+                );
+                ax_read_pool::invalidate_focus_silent(pid);
+            }
+        } else {
             tracing::debug!(
                 pid,
                 ax_id,
-                title = ax_focus_title.as_deref().unwrap_or(""),
-                "reconcile: accepted ax focus candidate"
+                "reconcile: rejected ax focus candidate absent from cg list"
             );
+            ax_read_pool::invalidate_focus_silent(pid);
         }
     }
 
-    let new_focused = ax_focus_key.or(cg_focus_key);
+    let new_focused = pending_focus_key.or(ax_focus_key).or(cg_focus_key);
 
     // Build key set and additions/updates
     let mut seen_keys: Vec<WindowKey> = Vec::with_capacity(wins.len());
@@ -1743,6 +1819,12 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
                 }
             }
         }
+    }
+
+    if let Some(pending) = state.pending_focus
+        && Some(pending.key) == new_focused
+    {
+        state.pending_focus = None;
     }
 
     // Focus changes
@@ -2308,6 +2390,13 @@ fn handle_raise(
                 return Err(CommandError::backend(kind, e));
             }
         }
+
+        let focus_key = WindowKey {
+            pid: target.pid,
+            id: target.id,
+        };
+        state.expect_focus(focus_key);
+        ax_read_pool::invalidate_focus(target.pid);
 
         Ok(issue_receipt(
             state,

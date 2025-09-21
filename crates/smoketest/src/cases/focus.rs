@@ -21,6 +21,7 @@ use crate::{
 /// Verify that `request_raise` selects windows by title and updates focus ordering.
 pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut scenario: Option<ScenarioState> = None;
+    let setup_start = Instant::now();
     ctx.setup(|stage| {
         let specs = vec![
             WindowSpawnSpec::new("primary", "raise-primary").configure(|config| {
@@ -39,7 +40,13 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
         scenario = Some(spawn_scenario(stage, "raise", specs)?);
         Ok(())
     })?;
+    debug!(
+        case = "raise",
+        setup_ms = setup_start.elapsed().as_millis(),
+        "raise_setup_timing"
+    );
 
+    let action_start = Instant::now();
     ctx.action(|stage| {
         let state = scenario
             .as_mut()
@@ -47,7 +54,13 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
         run_raise_sequence(stage, state)?;
         Ok(())
     })?;
+    debug!(
+        case = "raise",
+        action_ms = action_start.elapsed().as_millis(),
+        "raise_action_timing"
+    );
 
+    let settle_start = Instant::now();
     ctx.settle(|stage| {
         let state = scenario
             .take()
@@ -56,6 +69,11 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
         shutdown_mimic(state.mimic)?;
         Ok(())
     })?;
+    debug!(
+        case = "raise",
+        settle_ms = settle_start.elapsed().as_millis(),
+        "raise_settle_timing"
+    );
 
     Ok(())
 }
@@ -69,6 +87,7 @@ fn run_raise_sequence(stage: &StageHandle<'_>, state: &mut ScenarioState) -> Res
 
 /// Raise a helper window identified by `label`, asserting focus updates.
 fn raise_window(stage: &StageHandle<'_>, state: &mut ScenarioState, label: &str) -> Result<()> {
+    let start_all = Instant::now();
     let window = state.window(label)?;
     let world = stage.world_clone();
     let window_title = window.title.clone();
@@ -82,8 +101,10 @@ fn raise_window(stage: &StageHandle<'_>, state: &mut ScenarioState, label: &str)
     };
 
     let request_world = world.clone();
+    let request_start = Instant::now();
     let receipt = block_on_with_pump(async move { request_world.request_raise(intent).await })?
         .map_err(|err| Error::InvalidState(format!("raise request failed: {err}")))?;
+    let request_ms = request_start.elapsed().as_millis();
 
     let target_id = receipt.target_id().ok_or_else(|| {
         Error::InvalidState(format!(
@@ -101,7 +122,18 @@ fn raise_window(stage: &StageHandle<'_>, state: &mut ScenarioState, label: &str)
         )));
     }
 
+    let wait_start = Instant::now();
     wait_for_focus(stage, state, &world, expected_id)?;
+    let wait_ms = wait_start.elapsed().as_millis();
+    let total_ms = start_all.elapsed().as_millis();
+    debug!(
+        case = %stage.case_name(),
+        label,
+        request_ms,
+        wait_ms,
+        total_ms,
+        "raise_window_timing"
+    );
     Ok(())
 }
 
