@@ -19,7 +19,6 @@ pub mod place_move_nonresizable;
 pub mod place_skip;
 pub mod place_state;
 pub mod place_term;
-pub mod raise;
 pub mod repeat;
 pub mod ui;
 pub mod world_ax;

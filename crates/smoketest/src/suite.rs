@@ -563,6 +563,19 @@ static CASES: &[CaseEntry] = &[
         run: cases::repeat_volume_throughput,
     },
     CaseEntry {
+        name: "raise",
+        info: Some("Raise windows by title using world focus APIs"),
+        main_thread: true,
+        extra_timeout_ms: 10_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 800,
+            settle_ms: 1_600,
+        },
+        helpers: &[],
+        run: cases::raise,
+    },
+    CaseEntry {
         name: "place.minimized.defer",
         info: Some("Auto-unminimize minimized helper window before placement"),
         main_thread: true,

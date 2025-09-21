@@ -107,8 +107,6 @@ pub struct HelperWindowBuilder {
     grid: Option<(u32, u32, u32, u32)>,
     /// Requested window size `(w, h)`.
     size: Option<(f64, f64)>,
-    /// Requested window position `(x, y)`.
-    pos: Option<(f64, f64)>,
     /// Optional label text rendered in the window.
     label_text: Option<String>,
     /// Minimum content size `(w, h)` enforced by the helper.
@@ -140,7 +138,6 @@ impl HelperWindowBuilder {
             apply_grid: None,
             grid: None,
             size: None,
-            pos: None,
             label_text: None,
             min_size: None,
             start_minimized: false,
@@ -167,12 +164,6 @@ impl HelperWindowBuilder {
     /// Set requested window size
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
         self.size = Some((width, height));
-        self
-    }
-
-    /// Set requested window position (x, y)
-    pub fn with_position(mut self, x: f64, y: f64) -> Self {
-        self.pos = Some((x, y));
         self
     }
 
@@ -289,9 +280,6 @@ impl HelperWindowBuilder {
         }
         if let Some((w, h)) = self.size {
             cmd.arg("--size").args([w.to_string(), h.to_string()]);
-        }
-        if let Some((x, y)) = self.pos {
-            cmd.arg("--pos").args([x.to_string(), y.to_string()]);
         }
         if let Some(ref txt) = self.label_text {
             cmd.arg("--label-text").arg(txt);
@@ -478,7 +466,7 @@ impl HelperWindow {
         Ok(Self { child, pid })
     }
 
-    /// Spawn using a preconfigured builder (for custom size/position), then ensure frontmost.
+    /// Spawn using a preconfigured builder (for custom geometry), then ensure frontmost.
     pub fn spawn_frontmost_with_builder(
         builder: HelperWindowBuilder,
         expected_title: &str,

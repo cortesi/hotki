@@ -572,28 +572,23 @@ fn handle_place_increments(cli: &Cli) {
 
 /// Handle `raise` test case.
 fn handle_raise(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "raise",
-        "raise",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        false,
-        move || raise::run_raise_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("raise: OK (raised by title twice)");
-            }
-        }
-        Err(e) => {
-            eprintln!("raise: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    if !cli.quiet {
+        heading("Test: raise");
+    }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["raise"], &runner_cfg) {
+        eprintln!("raise: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("raise: OK (raised by title twice)");
     }
 }
 

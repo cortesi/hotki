@@ -1,27 +1,23 @@
 //! Placement smoketest cases implemented against the mimic harness.
 use std::{
     fs,
-    future::Future,
-    path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
 use hotki_world::{
     EventCursor, MinimizedPolicy, PlaceOptions, RaiseStrategy, RectPx, WindowKey, WorldHandle,
-    mimic::{
-        HelperConfig, MimicHandle, MimicScenario, MimicSpec, kill_mimic, pump_active_mimics,
-        spawn_mimic,
-    },
+    mimic::{HelperConfig, MimicHandle, MimicScenario, MimicSpec, pump_active_mimics, spawn_mimic},
 };
 use hotki_world_ids::WorldWindowId;
 use mac_winops;
 use tracing::debug;
 
+use super::support::{block_on_with_pump, record_mimic_diagnostics, shutdown_mimic};
 use crate::{
     error::{Error, Result},
-    helpers, runtime,
+    helpers,
     suite::{CaseCtx, StageHandle},
 };
 
@@ -39,30 +35,6 @@ struct PlaceState {
     cursor: EventCursor,
     /// Registry slug used when emitting diagnostics and artifacts.
     slug: &'static str,
-}
-
-/// Run `fut` on the shared runtime while continuing to pump mimic event loops.
-fn block_on_with_pump<F, Output>(fut: F) -> Result<Output>
-where
-    F: Future<Output = Output> + Send + 'static,
-    Output: Send + 'static,
-{
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let result = runtime::block_on(fut);
-        tx.send(result)
-            .expect("block_on_with_pump: failed to send runtime result");
-    });
-    loop {
-        pump_active_mimics();
-        match rx.try_recv() {
-            Ok(value) => return value,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(Error::InvalidState("async task dropped".into()));
-            }
-            Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(1)),
-        }
-    }
 }
 
 /// Verify placement converges when the helper begins minimized and must be restored first.
@@ -107,7 +79,7 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
         let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(2_000), 2)?;
-        let diag_path = write_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -116,8 +88,7 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
             2,
             &artifacts,
         )?;
-        kill_mimic(state_data.mimic)
-            .map_err(|e| Error::InvalidState(format!("mimic shutdown failed: {e}")))?;
+        shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
 
@@ -167,7 +138,7 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
         let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(3_000), 2)?;
-        let diag_path = write_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -176,8 +147,7 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
             2,
             &artifacts,
         )?;
-        kill_mimic(state_data.mimic)
-            .map_err(|e| Error::InvalidState(format!("mimic shutdown failed: {e}")))?;
+        shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
 
@@ -226,7 +196,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
         let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(3_500), 2)?;
-        let diag_path = write_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -235,8 +205,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             2,
             &artifacts,
         )?;
-        kill_mimic(state_data.mimic)
-            .map_err(|e| Error::InvalidState(format!("mimic shutdown failed: {e}")))?;
+        shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
 
@@ -416,20 +385,6 @@ fn wait_for_expected(
     let world_for_final = world.clone();
     block_on_with_pump(async move { world_for_final.frames(target_key).await })?
         .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))
-}
-
-/// Persist mimic diagnostics to the artifact directory and return the recorded path.
-fn write_mimic_diagnostics(
-    stage: &mut StageHandle<'_>,
-    slug: &str,
-    mimic: &MimicHandle,
-) -> Result<PathBuf> {
-    let diag_path = stage
-        .artifacts_dir()
-        .join(format!("{}_mimic.txt", slug.replace('.', "_")));
-    fs::write(&diag_path, mimic.diagnostics().join("\n"))?;
-    stage.record_artifact(&diag_path);
-    Ok(diag_path)
 }
 
 /// Convert an integer rectangle into a float tuple consumed by helper configuration.

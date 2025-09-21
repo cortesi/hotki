@@ -136,7 +136,7 @@ No second data channel; hotki-world is the single assertion surface.
 1. [x] repeat-relay
 2. [x] repeat-shell
 3. [x] repeat-volume
-4. [ ] raise
+4. [x] raise
 5. [ ] focus-nav
 6. [ ] focus-tracking
 7. [ ] hide
@@ -170,7 +170,7 @@ No second data channel; hotki-world is the single assertion surface.
 6. [ ] Update docs and configs to remove references to the legacy smoketest harness.
 
 6. Stage Six: Coverage Pack and Capture Importers
-1. [ ] Seed 6-10 mimic scenarios under `crates/smoketest/src/cases` with budgets, standardized skip
+1. [x] Seed 6-10 mimic scenarios under `crates/smoketest/src/cases` with budgets, standardized skip
        reasons, and consistent `scenario_slug/window_label` labels mirrored in artifacts.
 2. [ ] Implement `--repeat`, `--stress`, and `--seed` flags in `cli.rs`, piping the realized seed into
        mimic harnesses and artifacts (`seed=<n> scenario=<slug>`).
@@ -204,9 +204,9 @@ No second data channel; hotki-world is the single assertion surface.
        per-case timings.
 6. [ ] Update the PR template with LOC delta, helper surface counts, stats invocation guidance, and an
        artifact checklist.
-7. [ ] `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples`.
-8. [ ] `cargo +nightly fmt --all -- --config-path ./rustfmt-nightly.toml`.
-9. [ ] Run `cargo test --all` and `cargo run --bin smoketest -- all` (extended timeout) to confirm
+7. [x] `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples`.
+8. [x] `cargo +nightly fmt --all -- --config-path ./rustfmt-nightly.toml`.
+9. [x] Run `cargo test --all` and `cargo run --bin smoketest -- all` (extended timeout) to confirm
        stability goals.
 *Acceptance:* CI fails fast on stray platform imports, sleeps, or async test attrs; stats output and
              summary tables surface the required metrics; and final tooling runs stay green.

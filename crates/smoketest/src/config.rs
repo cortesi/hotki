@@ -34,8 +34,6 @@ pub struct InputDelays {
     pub ui_action_delay_ms: u64,
     /// Delay between retry attempts.
     pub retry_delay_ms: u64,
-    /// Delay for window registration.
-    pub window_registration_delay_ms: u64,
 }
 
 /// Default input-event timings.
@@ -44,7 +42,6 @@ pub const INPUT_DELAYS: InputDelays = InputDelays {
     key_event_delay_ms: 25,
     ui_action_delay_ms: 50,
     retry_delay_ms: 80,
-    window_registration_delay_ms: 80,
 };
 
 /// Wait-time bounds shared across tests.
@@ -139,24 +136,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
     eps: 2.0,
     poll_ms: 50,
     step_timeout_ms: 3000,
-};
-
-/// Raise test tunables.
-#[derive(Debug, Clone, Copy)]
-pub struct RaiseConfig {
-    /// Extra lifetime added to helper windows beyond overall timeout.
-    pub helper_extra_time_ms: u64,
-    /// Max wait for the first helper window to appear.
-    pub first_window_max_ms: u64,
-    /// Binding gate timeout for RPC identifier readiness.
-    pub binding_gate_ms: u64,
-}
-
-/// Default raise test timing.
-pub const RAISE: RaiseConfig = RaiseConfig {
-    helper_extra_time_ms: 2500,
-    first_window_max_ms: 2000,
-    binding_gate_ms: 1200,
 };
 
 /// Focus navigation timing.

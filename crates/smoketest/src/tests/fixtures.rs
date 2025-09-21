@@ -14,7 +14,6 @@ use crate::{
     config,
     error::{Error, Result},
     helper_window::{self, FRONTMOST_IGNORE_TITLES},
-    server_drive,
 };
 
 /// Approximate float equality within `eps` tolerance.
@@ -31,13 +30,6 @@ pub fn wait_for_windows_visible(entries: &[(i32, &str)], timeout_ms: u64) -> boo
         config::ms(timeout_ms),
         config::ms(config::INPUT_DELAYS.poll_interval_ms),
     )
-}
-
-/// Wait until the backend focus reporter sees `expected_title`.
-#[inline]
-pub fn wait_for_backend_focused_title(expected_title: &str, timeout_ms: u64) -> Result<()> {
-    server_drive::wait_for_focused_title(expected_title, timeout_ms)?;
-    Ok(())
 }
 
 /// Resolve the visible frame containing the current AX position of `(pid, title)`.
