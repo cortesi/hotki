@@ -137,8 +137,8 @@ No second data channel; hotki-world is the single assertion surface.
 2. [x] repeat-shell
 3. [x] repeat-volume
 4. [x] raise
-5. [ ] focus-nav
-6. [ ] focus-tracking
+5. [x] focus-nav
+6. [x] focus-tracking
 7. [ ] hide
 8. [ ] place (legacy grid cycle)
 9. [ ] place-async

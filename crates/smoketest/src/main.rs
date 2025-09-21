@@ -767,55 +767,39 @@ fn handle_place_skip(cli: &Cli) {
 
 /// Handle `focus-nav` test case.
 fn handle_focus_nav(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "focus-nav",
-        "focus-nav",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || tests::focus_nav::run_focus_nav_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("focus-nav: OK (navigated right, down, left, up)");
-            }
-        }
-        Err(e) => {
-            eprintln!("focus-nav: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["focus.nav"], &runner_cfg) {
+        eprintln!("focus-nav: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("focus-nav: OK (focus navigation sequence)");
     }
 }
 
 /// Handle `focus-tracking` test case.
 fn handle_focus(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "focus-tracking",
-        "focus-tracking",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        false,
-        move || focus::run_focus_test(timeout, logs),
-    ) {
-        Ok(out) => {
-            if !cli.quiet {
-                println!("{}", out.format_status("focus-tracking"));
-            }
-        }
-        Err(e) => {
-            eprintln!("focus-tracking: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["focus.tracking"], &runner_cfg) {
+        eprintln!("focus-tracking: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("focus-tracking: OK");
     }
 }
 

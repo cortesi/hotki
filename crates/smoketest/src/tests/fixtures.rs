@@ -10,26 +10,10 @@ use std::{
 pub use mac_winops::{Rect, WindowId};
 use mac_winops::{approx_eq_eps, cell_rect as win_cell_rect, screen, wait};
 
-use crate::{
-    config,
-    error::{Error, Result},
-    helper_window::{self, FRONTMOST_IGNORE_TITLES},
-};
-
 /// Approximate float equality within `eps` tolerance.
 #[inline]
 pub fn approx(a: f64, b: f64, eps: f64) -> bool {
     approx_eq_eps(a, b, eps)
-}
-
-/// Wait until all `(pid, title)` pairs are visible via CG or AX.
-#[inline]
-pub fn wait_for_windows_visible(entries: &[(i32, &str)], timeout_ms: u64) -> bool {
-    wait::wait_for_windows_visible(
-        entries,
-        config::ms(timeout_ms),
-        config::ms(config::INPUT_DELAYS.poll_interval_ms),
-    )
 }
 
 /// Resolve the visible frame containing the current AX position of `(pid, title)`.
@@ -88,41 +72,6 @@ pub fn wait_for_expected_frame(
 #[inline]
 pub fn visible_frame_containing_point(x: f64, y: f64) -> Option<Rect> {
     screen::visible_frame_containing_point(x, y)
-}
-
-/// Assert that the frontmost window matches `expected_title` and occupies the grid cell.
-pub fn assert_frontmost_cell(
-    expected_title: &str,
-    vf: Rect,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-    eps: f64,
-) -> Result<()> {
-    let front = helper_window::frontmost_app_window(FRONTMOST_IGNORE_TITLES)
-        .ok_or_else(|| Error::InvalidState("No frontmost app window".into()))?;
-    if front.title != expected_title {
-        return Err(Error::FocusNotObserved {
-            timeout_ms: 1000,
-            expected: format!("{} (frontmost: {})", expected_title, front.title),
-        });
-    }
-    let ((x, y), (w, h)) = mac_winops::ax_window_frame(front.pid, &front.title)
-        .ok_or_else(|| Error::InvalidState("AX frame for frontmost not available".into()))?;
-    let expected = win_cell_rect(vf, cols, rows, col, row);
-    let actual = Rect::new(x, y, w, h);
-    if !actual.approx_eq(&expected, eps) {
-        let case = format!(
-            "frontmost_cell[title={},col={},row={}]",
-            expected_title, col, row
-        );
-        let mismatch = FrameMismatch::new(expected, Some(actual), eps);
-        return Err(Error::InvalidState(
-            mismatch.failure_line::<&str>(&case, &[]),
-        ));
-    }
-    Ok(())
 }
 
 /// Structured comparison data for mismatched frames.

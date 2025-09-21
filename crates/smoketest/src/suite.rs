@@ -610,6 +610,32 @@ static CASES: &[CaseEntry] = &[
         run: cases::raise,
     },
     CaseEntry {
+        name: "focus.tracking",
+        info: Some("Track focus transitions for helper windows"),
+        main_thread: true,
+        extra_timeout_ms: 60_000,
+        budget: Budget {
+            setup_ms: 2_000,
+            action_ms: 3_000,
+            settle_ms: 1_000,
+        },
+        helpers: &[],
+        run: cases::focus_tracking,
+    },
+    CaseEntry {
+        name: "focus.nav",
+        info: Some("Navigate focus across helper windows via focus actions"),
+        main_thread: true,
+        extra_timeout_ms: 60_000,
+        budget: Budget {
+            setup_ms: 2_000,
+            action_ms: 4_000,
+            settle_ms: 1_000,
+        },
+        helpers: &[],
+        run: cases::focus_nav,
+    },
+    CaseEntry {
         name: "place.minimized.defer",
         info: Some("Auto-unminimize minimized helper window before placement"),
         main_thread: true,

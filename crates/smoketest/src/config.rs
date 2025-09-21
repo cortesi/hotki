@@ -47,15 +47,12 @@ pub const INPUT_DELAYS: InputDelays = InputDelays {
 /// Wait-time bounds shared across tests.
 #[derive(Debug, Clone, Copy)]
 pub struct Waits {
-    /// Timeout for waiting for both windows to appear.
-    pub both_windows_ms: u64,
     /// Timeout for waiting for the first window.
     pub first_window_ms: u64,
 }
 
 /// Standard wait budgets.
 pub const WAITS: Waits = Waits {
-    both_windows_ms: 15000,
     first_window_ms: 6000,
 };
 
@@ -136,18 +133,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
     eps: 2.0,
     poll_ms: 50,
     step_timeout_ms: 3000,
-};
-
-/// Focus navigation timing.
-#[derive(Debug, Clone, Copy)]
-pub struct FocusNavConfig {
-    /// Per-step wait for focus-nav frontmost checks and transitions.
-    pub step_timeout_ms: u64,
-}
-
-/// Default focus navigation timing.
-pub const FOCUS_NAV: FocusNavConfig = FocusNavConfig {
-    step_timeout_ms: 2000,
 };
 
 /// Session-level defaults.
@@ -235,21 +220,6 @@ pub const HIDE: HideConfig = HideConfig {
     poll_ms: 50,
     activate_post_delay_ms: 100,
     restore_max_ms: 1200,
-};
-
-/// Focus test tunables.
-#[derive(Debug, Clone, Copy)]
-pub struct FocusConfig {
-    /// Poll interval for receiving focus HudUpdate events.
-    pub event_poll_ms: u64,
-    /// Poll interval for the outer wait loop.
-    pub poll_ms: u64,
-}
-
-/// Default focus test timing.
-pub const FOCUS: FocusConfig = FocusConfig {
-    event_poll_ms: 150,
-    poll_ms: 100,
 };
 
 /// Warn overlay tuning.
