@@ -777,7 +777,7 @@ mod helper_app {
     use mac_winops::{self, AxProps, Rect, screen};
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSWindow;
-    use tracing::{debug, info};
+    use tracing::debug;
     use winit::{
         application::ApplicationHandler,
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
@@ -1716,7 +1716,7 @@ mod helper_app {
 
         /// Handle a `WindowEvent::Focused`.
         fn on_focused(&self, focused: bool) {
-            info!(title = %self.title, focused, "winhelper: focus event");
+            debug!(title = %self.title, focused, "winhelper: focus event");
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
                 let windows = app.windows();

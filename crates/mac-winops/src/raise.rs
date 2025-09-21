@@ -30,7 +30,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
     ax_check()?;
     let _mtm = MainThreadMarker::new().ok_or(Error::MainThread)?;
 
-    info!(
+    debug!(
         "raise_window: pid={} id={} (prefer window AXRaise)",
         pid, id
     );
@@ -44,7 +44,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         .into_iter()
         .any(|w| w.pid == pid && w.id == id)
     {
-        info!(
+        debug!(
             "raise_window: window pid={} id={} not found on-screen; skipping",
             pid, id
         );
@@ -67,21 +67,21 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> bool;
     }
 
-    info!("raise_window: creating AX app element for pid={}", pid);
+    debug!("raise_window: creating AX app element for pid={}", pid);
     let Some(app) = (unsafe { crate::AXElem::from_create(AXUIElementCreateApplication(pid)) })
     else {
         return Err(Error::AppElement);
     };
 
     let mut wins_ref: CFTypeRef = null_mut();
-    info!("raise_window: copying AXWindows for pid={}", pid);
+    debug!("raise_window: copying AXWindows for pid={}", pid);
     let err =
         unsafe { AXUIElementCopyAttributeValue(app.as_ptr(), cfstr("AXWindows"), &mut wins_ref) };
     if err != 0 || wins_ref.is_null() {
         warn!("AXUIElementCopyAttributeValue(AXWindows) failed: {}", err);
         return Err(Error::AxCode(err));
     }
-    info!("raise_window: AXWindows copied");
+    debug!("raise_window: AXWindows copied");
 
     // Locate matching AX window by AXWindowNumber
     let mut found: *mut c_void = null_mut();
@@ -97,10 +97,10 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
         }
         // Prefer private id; fallback to AXWindowNumber.
         if let Some(pid_id) = crate::ax_private::window_id_for_ax_element(wref) {
-            info!("raise_window: candidate i={} wid={} (private)", i, pid_id);
+            debug!("raise_window: candidate i={} wid={} (private)", i, pid_id);
             if pid_id == id {
                 found = wref;
-                info!(
+                debug!(
                     "raise_window: matched AX window at i={} wid={} (private)",
                     i, pid_id
                 );
@@ -117,10 +117,10 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             let cfnum =
                 unsafe { core_foundation::number::CFNumber::wrap_under_create_rule(num_ref as _) };
             let wid = cfnum.to_i64().unwrap_or(0) as u32;
-            info!("raise_window: candidate i={} wid={}", i, wid);
+            debug!("raise_window: candidate i={} wid={}", i, wid);
             if wid == id {
                 found = wref;
-                info!("raise_window: matched AX window at i={} wid={}", i, wid);
+                debug!("raise_window: matched AX window at i={} wid={}", i, wid);
                 break;
             }
         }
@@ -138,7 +138,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                     pid
                 );
             } else {
-                info!("Activated app (all windows) for pid={}", pid);
+                debug!("Activated app (all windows) for pid={}", pid);
             }
         } else {
             warn!("NSRunningApplication not found for pid={}", pid);
@@ -147,13 +147,13 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
 
     // Prefer: if we are moving across apps, bring the app forward first, then raise.
     if crossing_app_boundary {
-        info!("raise_window: crossing app boundary → activating app first");
+        debug!("raise_window: crossing app boundary → activating app first");
         activate_app(pid);
     }
 
     let mut raised = false;
     if found.is_null() {
-        info!(
+        debug!(
             "raise_window: did not find AX window with id={} for pid={}",
             id, pid
         );
@@ -164,7 +164,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
             && !winfo.title.is_empty()
             && let Some(elem) = crate::ax::ax_find_window_by_title(pid, &winfo.title)
         {
-            info!("raise_window: matched by title via AX: '{}'", winfo.title);
+            debug!("raise_window: matched by title via AX: '{}'", winfo.title);
             found = elem.as_ptr();
             _found_guard = Some(elem);
         }
@@ -265,7 +265,7 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
 
     // If not raised (no AX support or not found), fall back to app activation.
     if !raised && !crossing_app_boundary {
-        info!(
+        debug!(
             "raise_window: falling back to NSRunningApplication activation for pid={}",
             pid
         );

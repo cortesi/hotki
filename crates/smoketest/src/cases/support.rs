@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// Initial number of mimic pump iterations to let helper windows settle.
-const INITIAL_SPIN_ITERS: usize = 80;
+const INITIAL_SPIN_ITERS: usize = 24;
 
 /// Run `fut` on the shared runtime while continuing to pump mimic event loops.
 pub fn block_on_with_pump<F>(fut: F) -> Result<F::Output>

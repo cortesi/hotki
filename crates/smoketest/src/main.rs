@@ -572,9 +572,6 @@ fn handle_place_increments(cli: &Cli) {
 
 /// Handle `raise` test case.
 fn handle_raise(cli: &Cli) {
-    if !cli.quiet {
-        heading("Test: raise");
-    }
     let runner_cfg = suite::RunnerConfig {
         quiet: cli.quiet,
         warn_overlay: !cli.no_warn,
@@ -586,9 +583,6 @@ fn handle_raise(cli: &Cli) {
         eprintln!("raise: ERROR: {}", err);
         print_hints(&err);
         exit(1);
-    }
-    if !cli.quiet {
-        println!("raise: OK (raised by title twice)");
     }
 }
 
