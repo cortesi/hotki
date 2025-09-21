@@ -108,24 +108,66 @@ No second data channel; hotki-world is the single assertion surface.
              scheme and `RaiseStrategy` behavior, and feature gates align with CI profiles.
 
 5. Stage Five: Rebuild Smoketest Runner and Helpers
-1. [ ] Delete `orchestrator.rs`; replace it with a registry-driven `run_case` loop that owns
+1. [x] Delete `orchestrator.rs`; replace it with a registry-driven `run_case` loop that owns
        `{ name, info, main_thread, extra_timeout_ms, budget }` entries.
-2. [ ] Introduce a `Budget` struct and log both configured budgets and actual
+2. [x] Introduce a `Budget` struct and log both configured budgets and actual
        `{setup_ms, action_ms, settle_ms}` per run into artifacts.
-3. [ ] Implement `wait_for_events_or` that pumps the main thread via `world.pump_main_until`, uses
+3. [x] Implement `wait_for_events_or` that pumps the main thread via `world.pump_main_until`, uses
        event cursors for ordering, and fails with the standardized message when `lost_count` increases.
-4. [ ] Rebuild `assert_frame_matches` to operate on scaled integer pixels, prefer authoritative frames,
+4. [x] Rebuild `assert_frame_matches` to operate on scaled integer pixels, prefer authoritative frames,
        include raw AX/CG deltas when available, and emit single-line diffs matching the message
        template.
-5. [ ] Port high-value smoketests to the new runner, removing direct `mac_winops` usage, relying on
+5. [x] Port high-value smoketests to the new runner, removing direct `mac_winops` usage, relying on
        mimic scenarios, and naming cases like `place.minimized.defer`.
-6. [ ] Keep the exported helper API ≤12 functions, document each in registry metadata, and add the case
+6. [x] Keep the exported helper API ≤12 functions, document each in registry metadata, and add the case
        naming and failure message style guide to contributor docs.
-7. [ ] After each `run_case`, call `world.reset()` and fail if `!world.is_quiescent()`, including
+7. [x] After each `run_case`, call `world.reset()` and fail if `!world.is_quiescent()`, including
        `quiescence_report()` and artifact paths in the error.
+8. [x] Update the mimic runtime pump to honor helper wakeups instead of polling with a zero timeout.
+9. [x] Ensure `process_apply_ready` preserves `apply_after` until the window is available.
+10. [x] Reset or isolate the mimic event loop between helpers to avoid reusing an exited loop state.
+11. [x] Avoid calling `elwt.exit()` during normal helper shutdown so the shared loop stays reusable.
+12. [ ] Explicitly close helper NSWindows on shutdown and wait for AppKit confirmation before teardown.
 *Acceptance:* Runner artifacts include configured vs actual budgets, waits fail loudly on `lost_count`
              changes, quiescence failures surface diagnostic counts, and refactored cases run solely
              through the new helpers.
+
+1. Unported Smoketests
+1. [ ] repeat-relay
+2. [ ] repeat-shell
+3. [ ] repeat-volume
+4. [ ] raise
+5. [ ] focus-nav
+6. [ ] focus-tracking
+7. [ ] hide
+8. [ ] place (legacy grid cycle)
+9. [ ] place-async
+10. [ ] place-animated
+11. [ ] place-term
+12. [ ] place-increments
+13. [ ] place-fake
+14. [ ] place-fallback
+15. [ ] place-smg
+16. [ ] place-flex
+17. [ ] place-skip
+18. [ ] place-move-min
+19. [ ] place-move-nonresizable
+20. [ ] place-minimized
+21. [ ] place-zoomed
+22. [ ] ui
+23. [ ] minui
+24. [ ] fullscreen
+25. [ ] world-status
+26. [ ] world-ax
+27. [ ] world-spaces
+
+2. Post-Port Cleanup
+1. [ ] Remove `crates/smoketest/src/tests` once all scenarios live under `cases/`.
+2. [ ] Delete `crates/smoketest/src/test_runner.rs` after migrating remaining call sites.
+3. [ ] Replace per-command handlers in `main.rs` with suite-driven case dispatch only.
+4. [ ] Trim CLI enums (`Commands`, `SeqTest`) to map directly onto the registry cases.
+5. [ ] Drop legacy helper plumbing (`run_case`, watchdog wrappers) once unused by the CLI.
+6. [ ] Update docs and configs to remove references to the legacy smoketest harness.
 
 6. Stage Six: Coverage Pack and Capture Importers
 1. [ ] Seed 6-10 mimic scenarios under `crates/smoketest/src/cases` with budgets, standardized skip

@@ -525,6 +525,17 @@ impl AxObserverRegistry {
         }
     }
 
+    /// Drop all tracked observers, returning the number removed.
+    pub fn remove_all(&self) -> usize {
+        let mut guard = self.inner.lock();
+        let removed = guard.len();
+        guard.clear();
+        if removed > 0 {
+            OBSERVER_COUNT.fetch_sub(removed, Ordering::SeqCst);
+        }
+        removed
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.lock().is_empty()

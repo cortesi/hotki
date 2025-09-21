@@ -1,6 +1,7 @@
 //! Shared trait-backed window snapshot helpers for smoketests.
 
 use std::{
+    future::Future,
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -8,7 +9,7 @@ use std::{
 
 use hotki_world::{
     CommandError, CommandReceipt, MoveDirection, PlaceAttemptOptions, RaiseIntent, World,
-    WorldView, WorldWindow,
+    WorldHandle, WorldWindow,
 };
 use hotki_world_ids::WorldWindowId;
 use mac_winops::{self, WindowInfo, active_space_ids, ops::RealWinOps};
@@ -21,23 +22,28 @@ use crate::{
     runtime,
 };
 
-/// Lazily constructed world view shared across smoketest helpers.
-static WORLD: OnceCell<Arc<dyn WorldView>> = OnceCell::new();
+/// Lazily constructed world handle shared across smoketest helpers.
+static WORLD_HANDLE: OnceCell<WorldHandle> = OnceCell::new();
 
 /// Ensure the shared world instance exists and return a cloned handle.
-fn ensure_world() -> Result<Arc<dyn WorldView>> {
-    if let Some(w) = WORLD.get() {
-        return Ok(w.clone());
+fn ensure_world_handle() -> Result<WorldHandle> {
+    if let Some(handle) = WORLD_HANDLE.get() {
+        return Ok(handle.clone());
     }
     let rt = runtime::shared_runtime()?;
     let runtime = rt.lock();
     let guard = runtime.enter();
-    let world = World::spawn_view(Arc::new(RealWinOps), hotki_world::WorldCfg::default());
+    let handle = World::spawn(Arc::new(RealWinOps), hotki_world::WorldCfg::default());
     drop(guard);
-    WORLD
-        .set(world.clone())
+    WORLD_HANDLE
+        .set(handle.clone())
         .map_err(|_| Error::InvalidState("world already initialized".into()))?;
-    Ok(world)
+    Ok(handle)
+}
+
+/// Clone the shared world handle for callers that need direct access.
+pub fn world_handle() -> Result<WorldHandle> {
+    ensure_world_handle()
 }
 
 /// Convert a `WorldWindow` into the `mac_winops` data structure used by tests.
@@ -78,7 +84,7 @@ pub fn place_window(
     row: u32,
     options: Option<PlaceAttemptOptions>,
 ) -> Result<CommandReceipt> {
-    let world = ensure_world()?;
+    let world = ensure_world_handle()?;
     let receipt = world_block_on(async move {
         world
             .request_place_for_window(target, cols, rows, col, row, options)
@@ -97,7 +103,7 @@ pub fn move_window(
     dir: MoveDirection,
     options: Option<PlaceAttemptOptions>,
 ) -> Result<CommandReceipt> {
-    let world = ensure_world()?;
+    let world = ensure_world_handle()?;
     let receipt = world_block_on(async move {
         world
             .request_place_move_for_window(target, cols, rows, dir, options)
@@ -118,7 +124,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
     };
 
     for attempt in 0..attempts {
-        let world = ensure_world()?;
+        let world = ensure_world_handle()?;
         let receipt = world_block_on(async { world.request_raise(intent.clone()).await })?;
         match receipt {
             Ok(receipt) => {
@@ -147,13 +153,13 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
 
 /// Fetch a complete snapshot via the [`WorldView`].
 pub fn list_windows() -> Result<Vec<WindowInfo>> {
-    let world = ensure_world()?;
+    let world = ensure_world_handle()?;
     let sweep_start = Instant::now();
     let active_spaces = active_space_ids();
     world.hint_refresh();
     let windows: Vec<WindowInfo> = runtime::block_on(async move {
         world
-            .list_windows()
+            .snapshot()
             .await
             .into_iter()
             .map(convert_window)

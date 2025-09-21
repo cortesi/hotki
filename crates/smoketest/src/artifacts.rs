@@ -9,10 +9,12 @@ use std::{
 
 use hotki_world::{EventRecord, RectPx, WorldEvent, WorldHandle, WorldWindow};
 use image::{ImageBuffer, Rgba};
+use serde_json::json;
 
 use crate::{
     error::{Error, Result},
     runtime,
+    suite::{Budget, StageDurationsOptional},
 };
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -30,8 +32,14 @@ pub fn capture_failure_artifacts(
 ) -> Result<Vec<PathBuf>> {
     fs::create_dir_all(output_dir)?;
 
-    let snapshot = runtime::block_on(world.snapshot())?;
-    let frames = runtime::block_on(world.frames_snapshot())?;
+    let snapshot = runtime::block_on({
+        let world = world.clone();
+        async move { world.snapshot().await }
+    })?;
+    let frames = runtime::block_on({
+        let world = world.clone();
+        async move { world.frames_snapshot().await }
+    })?;
     let events = world.recent_events(50);
     let commit = repo_commit().unwrap_or_else(|| "unknown".to_string());
     let generated_at = SystemTime::now();
@@ -63,6 +71,31 @@ pub fn capture_failure_artifacts(
     }
 
     Ok(artifacts)
+}
+
+/// Write configured/actual budget metadata for a case and return the emitted path.
+pub fn write_budget_report(
+    case: &str,
+    budget: &Budget,
+    actual: &StageDurationsOptional,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    fs::create_dir_all(output_dir)?;
+    let path = output_dir.join(format!("{case}.budget.json"));
+    let payload = json!({
+        "case": case,
+        "configured": {
+            "setup_ms": budget.setup_ms,
+            "action_ms": budget.action_ms,
+            "settle_ms": budget.settle_ms,
+        },
+        "actual": actual,
+    });
+    let mut file = File::create(&path)?;
+    serde_json::to_writer_pretty(&mut file, &payload)
+        .map_err(|e| Error::InvalidState(format!("failed to serialize budget: {}", e)))?;
+    file.write_all(b"\n")?;
+    Ok(path)
 }
 
 /// Write the world snapshot metadata to disk.

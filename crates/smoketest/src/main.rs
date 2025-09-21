@@ -7,13 +7,15 @@ use tracing_subscriber::{fmt, prelude::*};
 
 /// Artifact capture utilities for failure diagnostics.
 mod artifacts;
+/// Scenario-specific smoketest cases and mimic harness helpers.
+mod cases;
 mod cli;
 mod config;
 /// Error definitions and hint helpers used by smoketest.
 mod error;
 mod helper_window;
-// no local logging module; use shared crate
-mod orchestrator;
+/// Shared helper utilities for new smoketest cases.
+mod helpers;
 /// Registry of helper process IDs for cleanup.
 mod proc_registry;
 mod process;
@@ -25,6 +27,8 @@ mod server_drive;
 mod session;
 /// Mission Control capture helpers.
 mod space_probe;
+/// Smoketest case registry and runner.
+mod suite;
 mod test_runner;
 mod tests;
 mod ui_interaction;
@@ -39,14 +43,18 @@ mod world;
 
 use std::{cmp::max, env, path::Path, process::exit, sync::mpsc, thread, time::Duration};
 
-use cli::{Cli, Commands, FsState};
+use cli::{Cli, Commands, FsState, SeqTest};
 use error::print_hints;
 use hotki_protocol::Toggle;
-use orchestrator::{heading, run_all_tests};
 use tests::*;
 
+/// Print a standardized heading for a smoketest section.
+pub(crate) fn heading(title: &str) {
+    println!("\n==> {}", title);
+}
+
 /// Run `f` on a background thread and enforce a timeout via watchdog.
-fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+pub(crate) fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -79,7 +87,7 @@ where
 // main thread on macOS. This variant keeps the test on the main thread and
 // enforces a timeout via a background watchdog.
 /// Run `f` on the main thread with a watchdog that force-exits on timeout.
-fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+pub(crate) fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
 where
     F: FnOnce() -> T,
 {
@@ -335,17 +343,40 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
         Commands::Relay => handle_relay(cli),
         Commands::Shell => handle_shell(cli),
         Commands::Volume => handle_volume(cli),
-        Commands::All => run_all_tests(
-            cli.duration,
-            cli.timeout,
-            true,
-            !cli.no_warn,
-            fake_mode,
-            !cli.no_fail_fast,
-        ),
+        Commands::All => {
+            if fake_mode {
+                if !cli.quiet {
+                    heading("Test: place-fake");
+                }
+                handle_place_fake(cli);
+            } else {
+                let runner_cfg = suite::RunnerConfig {
+                    quiet: cli.quiet,
+                    warn_overlay: !cli.no_warn,
+                    base_timeout_ms: cli.timeout,
+                    fail_fast: !cli.no_fail_fast,
+                    overlay_info: cli.info.as_deref(),
+                };
+                if let Err(err) = suite::run_all(&runner_cfg) {
+                    eprintln!("smoketest all failed: {}", err);
+                    exit(1);
+                }
+            }
+        }
         Commands::PlaceIncrements => handle_place_increments(cli),
         Commands::Seq { tests } => {
-            orchestrator::run_sequence_tests(tests, cli.duration, cli.timeout, true)
+            let names: Vec<&'static str> = tests.iter().map(seq_case_name).collect();
+            let runner_cfg = suite::RunnerConfig {
+                quiet: cli.quiet,
+                warn_overlay: !cli.no_warn,
+                base_timeout_ms: cli.timeout,
+                fail_fast: !cli.no_fail_fast,
+                overlay_info: cli.info.as_deref(),
+            };
+            if let Err(err) = suite::run_sequence(&names, &runner_cfg) {
+                eprintln!("smoketest seq failed: {}", err);
+                exit(1);
+            }
         }
         Commands::Raise => handle_raise(cli),
         Commands::PlaceFlex {
@@ -403,6 +434,26 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
             interval_ms,
             output,
         } => handle_space_probe(cli, *samples, *interval_ms, output.as_deref()),
+    }
+}
+
+/// Map legacy `seq` invocations onto registry-backed case names.
+fn seq_case_name(test: &SeqTest) -> &'static str {
+    match test {
+        SeqTest::RepeatRelay => "repeat-relay",
+        SeqTest::RepeatShell => "repeat-shell",
+        SeqTest::RepeatVolume => "repeat-volume",
+        SeqTest::Focus => "focus-tracking",
+        SeqTest::Raise => "raise",
+        SeqTest::Hide => "hide",
+        SeqTest::Place => "place.minimized.defer",
+        SeqTest::PlaceAsync => "place.async.delay",
+        SeqTest::PlaceAnimated => "place.animated.tween",
+        SeqTest::Fullscreen => "fullscreen",
+        SeqTest::Ui => "ui",
+        SeqTest::Minui => "minui",
+        SeqTest::PlaceFake => "place-fake",
+        SeqTest::WorldSpaces => "world-spaces",
     }
 }
 

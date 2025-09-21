@@ -37,6 +37,17 @@ and debuggable.
 - Prefer fine-grained budgets (per placement step) over long global sleeps; this yields better
   diagnostics and tighter CI predictability.
 
+## Case Naming
+- Registry entries follow a dotted hierarchy: `<domain>.<scenario>.<variant>` (for example
+  `place.minimized.defer`). Keep segments short and deterministic so artifact paths and CLI invocations
+  stay discoverable.
+- Reuse the registry slug when spawning mimic windows. Helper titles adopt the
+  `[{slug}::{window_label}]` convention so diagnostics line up without additional parsing.
+- If a case owns multiple helpers, add a fourth segment (for example
+  `focus.swap.sibling.primary`) or annotate individual failure lines via the `case=<>` field.
+- Document every helper used by a case inside the registry metadata. The registry enforces the
+  ≤12 helper contract and feeds contributor docs automatically.
+
 ## Skip Semantics
 - Gate environment-sensitive cases with the shared `assume!` macro. Record skips as
   `SKIP: <case> -- <reason>` and exit early with `Ok(())` so stats remain accurate.
@@ -80,8 +91,8 @@ case=<name> scale=<n> eps=<px> expected=<x,y,w,h> got=<x,y,w,h> delta=<dx,dy,dw,
 - `eps` is the comparison tolerance in pixels.
 - `delta` is the signed difference (`actual - expected`).
 - `artifacts` lists comma-separated relative paths or `[]` when none exist.
-- Prefer helper functions (see `tests::fixtures::frame_failure_line`) over open-coded formats so new
-  cases inherit the template automatically.
+- Prefer helper functions (see `helpers::assert_frame_matches`) over open-coded formats so new cases
+  inherit the template automatically.
 
 ## Do Not Do
 - **No direct AX/CG in tests.** Extend `hotki-world` or smoketest helpers; do not import platform

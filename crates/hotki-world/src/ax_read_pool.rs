@@ -33,6 +33,7 @@ enum Job {
     FocusForPid { pid: i32 },
     TitleForId { pid: i32, id: WindowId },
     PropsForId { pid: i32, id: WindowId },
+    DropObservers,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -292,6 +293,25 @@ impl AxReadPool {
         );
         tx
     }
+
+    fn reset(&self) {
+        {
+            let mut cache = self.cache.write();
+            *cache = Cache::default();
+        }
+        let workers = self.workers.read();
+        for worker in workers.values() {
+            let _ = worker.tx.send(TimedJob {
+                job: Job::DropObservers,
+                deadline: Instant::now() + Duration::from_millis(READ_DEADLINE_MS),
+            });
+        }
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_millis(READ_DEADLINE_MS);
+        while mac_winops::active_ax_observer_count() > 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 
 fn worker_loop(
@@ -305,6 +325,10 @@ fn worker_loop(
     let min_nudge_gap = Duration::from_millis(16);
     let mut last_nudge = std::time::Instant::now() - min_nudge_gap;
     while let Ok(tj) = rx.recv() {
+        if matches!(tj.job, Job::DropObservers) {
+            let _ = mac_winops::remove_ax_observer(pid);
+            continue;
+        }
         // Drop immediately if already stale
         if Instant::now() >= tj.deadline {
             STALE_DROPS.fetch_add(1, Ordering::SeqCst);
@@ -396,6 +420,7 @@ fn worker_loop(
                     c.set_props(pid, id, props, Instant::now());
                 }
             }
+            Job::DropObservers => {}
         }
         // Nudge world to refresh, lightly throttled
         let now = std::time::Instant::now();
@@ -513,6 +538,13 @@ pub fn props(pid: i32, id: WindowId) -> Option<AxProps> {
         deadline: Instant::now() + Duration::from_millis(READ_DEADLINE_MS),
     });
     None
+}
+
+/// Reset the worker pool, clearing caches and dropping AX observers.
+pub fn reset() {
+    if let Some(pool) = POOL.get() {
+        pool.reset();
+    }
 }
 
 // ===== Test helpers (exposed via crate::test_api) =====

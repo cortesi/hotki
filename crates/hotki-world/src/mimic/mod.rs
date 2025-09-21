@@ -3,16 +3,19 @@
 #![allow(clippy::module_name_repetitions)]
 
 use std::{
+    cell::RefCell,
     fmt,
+    rc::{Rc, Weak},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use once_cell::sync::OnceCell;
 use tracing::{debug, warn};
+use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 
 use crate::{PlaceOptions, RaiseStrategy};
 
@@ -22,6 +25,46 @@ static REGISTRY: OnceCell<Mutex<MimicRegistry>> = OnceCell::new();
 
 fn registry() -> &'static Mutex<MimicRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(MimicRegistry::default()))
+}
+
+thread_local! {
+    static ACTIVE_MIMICS: RefCell<Vec<Weak<MimicRuntime>>> = const { RefCell::new(Vec::new()) };
+    static SHARED_EVENT_LOOP: RefCell<Option<Rc<RefCell<winit::event_loop::EventLoop<()>>>>> =
+        const { RefCell::new(None) };
+}
+
+fn register_active_mimic(runtime: &Rc<MimicRuntime>) {
+    ACTIVE_MIMICS.with(|list| list.borrow_mut().push(Rc::downgrade(runtime)));
+}
+
+fn shared_event_loop() -> Rc<RefCell<winit::event_loop::EventLoop<()>>> {
+    SHARED_EVENT_LOOP.with(|cell| {
+        let mut borrowed = cell.borrow_mut();
+        if let Some(existing) = borrowed.as_ref() {
+            existing.clone()
+        } else {
+            let event_loop = Rc::new(RefCell::new(
+                winit::event_loop::EventLoop::new().expect("failed to construct mimic event loop"),
+            ));
+            *borrowed = Some(event_loop.clone());
+            event_loop
+        }
+    })
+}
+
+/// Pump all active mimic runtimes once. Call from main-thread wait loops.
+pub fn pump_active_mimics() {
+    ACTIVE_MIMICS.with(|list| {
+        let mut entries = list.borrow_mut();
+        entries.retain(|weak| {
+            if let Some(runtime) = weak.upgrade() {
+                runtime.pump();
+                !runtime.is_finished()
+            } else {
+                false
+            }
+        });
+    });
 }
 
 fn format_quirks(quirks: &[Quirk]) -> String {
@@ -205,53 +248,136 @@ impl MimicHandle {
     }
 }
 
+struct MimicRuntime {
+    event_loop: Rc<RefCell<winit::event_loop::EventLoop<()>>>,
+    app: RefCell<helper_app::HelperApp>,
+    shutdown: Arc<AtomicBool>,
+    finished: RefCell<bool>,
+    result: RefCell<Option<Result<(), String>>>,
+}
+
+impl MimicRuntime {
+    fn new(
+        event_loop: Rc<RefCell<winit::event_loop::EventLoop<()>>>,
+        app: helper_app::HelperApp,
+        shutdown: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            event_loop,
+            app: RefCell::new(app),
+            shutdown,
+            finished: RefCell::new(false),
+            result: RefCell::new(None),
+        }
+    }
+
+    fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    fn pump(&self) {
+        if *self.finished.borrow() {
+            return;
+        }
+        let timeout = {
+            let app = self.app.borrow();
+            app.next_wakeup_timeout()
+        };
+        let mut event_loop = self.event_loop.borrow_mut();
+        let status = {
+            let mut app = self.app.borrow_mut();
+            event_loop.pump_app_events(Some(timeout), &mut *app)
+        };
+        match status {
+            PumpStatus::Continue => {
+                let should_finish = {
+                    let app = self.app.borrow();
+                    app.should_finish()
+                };
+                if should_finish {
+                    self.finish_with(0);
+                }
+            }
+            PumpStatus::Exit(code) => {
+                self.finish_with(code);
+            }
+        }
+    }
+
+    fn finish_with(&self, code: i32) {
+        if *self.finished.borrow() {
+            return;
+        }
+        *self.finished.borrow_mut() = true;
+        let error = self.app.borrow_mut().take_error();
+        let result = match (code, error) {
+            (_, Some(err)) => Err(err),
+            (0, None) => Ok(()),
+            (status, None) => Err(format!("mimic exited with status {}", status)),
+        };
+        *self.result.borrow_mut() = Some(result);
+    }
+
+    fn is_finished(&self) -> bool {
+        *self.finished.borrow()
+    }
+
+    fn take_result(&self) -> Option<Result<(), String>> {
+        self.result.borrow_mut().take()
+    }
+}
+
 struct MimicWindowHandle {
     label: Arc<str>,
     quirks: Vec<Quirk>,
     place: PlaceOptions,
-    shutdown: Arc<AtomicBool>,
-    join: Mutex<Option<JoinHandle<Result<(), String>>>>,
+    runtime: Rc<MimicRuntime>,
 }
 
 impl MimicWindowHandle {
     fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.runtime.request_shutdown();
     }
 
     fn join(&self) -> Result<(), MimicError> {
-        if let Some(handle) = self.join.lock().unwrap().take() {
-            handle
-                .join()
-                .map_err(|_| MimicError::JoinPanic(self.label.to_string()))?
-                .map_err(|e| MimicError::HelperFailure(self.label.to_string(), e))?
+        loop {
+            self.runtime.pump();
+            if self.runtime.is_finished() {
+                if let Some(result) = self.runtime.take_result() {
+                    return result
+                        .map_err(|e| MimicError::HelperFailure(self.label.to_string(), e));
+                }
+                return Ok(());
+            }
+            pump_active_mimics();
+            std::thread::sleep(Duration::from_millis(1));
         }
-        Ok(())
     }
 }
 
 /// Errors surfaced by mimic helper management.
 #[derive(Debug)]
 pub enum MimicError {
-    /// Helper thread panicked while exiting.
-    JoinPanic(String),
     /// Helper reported a recoverable failure.
     HelperFailure(String, String),
-    /// Failed to spawn the helper thread.
-    SpawnFailed(String),
+    /// Failed to initialize the helper runtime.
+    SpawnFailed {
+        /// Label identifying the helper window that failed to start.
+        label: String,
+        /// Reason reported by the underlying windowing layer.
+        reason: String,
+    },
 }
 
 impl fmt::Display for MimicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::JoinPanic(label) => write!(f, "mimic window '{}' panicked", label),
             Self::HelperFailure(label, err) => {
                 write!(f, "mimic window '{}' failed: {}", label, err)
             }
-            Self::SpawnFailed(label) => write!(
-                f,
-                "failed to spawn mimic window '{}': thread start error",
-                label
-            ),
+            Self::SpawnFailed { label, reason } => {
+                write!(f, "failed to spawn mimic window '{}': {}", label, reason)
+            }
         }
     }
 }
@@ -278,7 +404,6 @@ pub fn spawn_mimic(scenario: MimicScenario) -> Result<MimicHandle, MimicError> {
         let helper_config = helper_config
             .with_shutdown(shutdown.clone())
             .with_quirks(quirks.clone());
-        let thread_name = format!("mimic-{}-{}", slug, label);
         let decorated_title = format!(
             "{} [{}::{}]",
             spec.title, spec.scenario_slug, spec.window_label
@@ -295,10 +420,15 @@ pub fn spawn_mimic(scenario: MimicScenario) -> Result<MimicHandle, MimicError> {
             animate = place.animate,
             "spawning mimic window"
         );
-        let join = thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || run_helper_window(decorated_title, helper_config))
-            .map_err(|_| MimicError::SpawnFailed(thread_name.clone()))?;
+
+        let event_loop = shared_event_loop();
+        let app = helper_app::HelperApp::new(helper_app::HelperParams::from_config(
+            decorated_title,
+            helper_config,
+        ));
+        let runtime = Rc::new(MimicRuntime::new(event_loop.clone(), app, shutdown.clone()));
+        register_active_mimic(&runtime);
+        runtime.pump();
 
         registry()
             .lock()
@@ -309,8 +439,7 @@ pub fn spawn_mimic(scenario: MimicScenario) -> Result<MimicHandle, MimicError> {
             label,
             quirks,
             place,
-            shutdown,
-            join: Mutex::new(Some(join)),
+            runtime: runtime.clone(),
         });
     }
 
@@ -660,7 +789,7 @@ mod helper_app {
         HelperConfig, PlaceOptions, Quirk, RaiseStrategy, TargetRect, config, format_quirks,
         parse_decorated_label, select_sibling_for_cycle, should_skip_apply_for_minimized, world,
     };
-    use crate::PlaceAttemptOptions;
+    use crate::{MinimizedPolicy, PlaceAttemptOptions};
 
     /// Parameter bundle for constructing a [`HelperApp`].
     pub(super) struct HelperParams {
@@ -764,6 +893,8 @@ mod helper_app {
         tween_to_size: Option<(f64, f64)>,
         /// Suppress processing of window events while applying changes.
         suppress_events: bool,
+        /// Number of upcoming window events triggered by helper writes to ignore.
+        pending_suppressed_events: u8,
         /// Optional 2x2 slot for placement.
         slot: Option<u8>,
         /// Optional grid spec for placement.
@@ -795,6 +926,8 @@ mod helper_app {
         step_h: f64,
         /// Shutdown flag toggled by the harness to request exit.
         shutdown: Arc<AtomicBool>,
+        /// Whether the helper requested termination.
+        should_exit: bool,
         /// Active quirk list applied to this helper window.
         quirks: Vec<Quirk>,
         /// Placement options for raise/minimize behaviour.
@@ -804,6 +937,11 @@ mod helper_app {
     impl HelperApp {
         fn has_quirk(&self, quirk: Quirk) -> bool {
             self.quirks.contains(&quirk)
+        }
+
+        /// Ensure the next `count` window events triggered by helper writes are ignored.
+        fn queue_suppressed_events(&mut self, count: u8) {
+            self.pending_suppressed_events = self.pending_suppressed_events.saturating_add(count);
         }
 
         fn diag_tag(&self) -> String {
@@ -867,6 +1005,7 @@ mod helper_app {
                 tween_to_pos: None,
                 tween_to_size: None,
                 suppress_events: false,
+                pending_suppressed_events: 0,
                 slot,
                 grid,
                 size,
@@ -882,6 +1021,7 @@ mod helper_app {
                 step_w: step_size.map(|s| s.0).unwrap_or(0.0),
                 step_h: step_size.map(|s| s.1).unwrap_or(0.0),
                 shutdown,
+                should_exit: false,
                 quirks,
                 place,
             }
@@ -890,6 +1030,68 @@ mod helper_app {
         /// Return any captured fatal error and clear it from state.
         pub(super) fn take_error(&mut self) -> Option<String> {
             self.error.take()
+        }
+
+        /// Whether the helper has requested termination.
+        pub(super) fn should_finish(&self) -> bool {
+            self.should_exit
+        }
+
+        /// Request termination without tearing down the shared event loop.
+        fn request_exit(&mut self, elwt: &ActiveEventLoop) {
+            if self.should_exit {
+                return;
+            }
+            if let Some(window) = self.window.take() {
+                window.set_visible(false);
+            }
+            self.should_exit = true;
+            elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
+        }
+
+        /// Lazily create the helper window when the event loop is ready.
+        fn ensure_window(&mut self, elwt: &ActiveEventLoop) -> Result<(), ()> {
+            if self.window.is_some() {
+                return Ok(());
+            }
+            let win = match self.try_create_window(elwt) {
+                Ok(w) => w,
+                Err(e) => {
+                    self.error = Some(format!("winhelper: failed to create window: {}", e));
+                    self.request_exit(elwt);
+                    return Err(());
+                }
+            };
+            self.activate_app();
+            self.apply_min_size_if_requested();
+            self.apply_nonmovable_if_requested();
+            self.initial_placement(&win);
+            // Allow registration to settle before adding label.
+            thread::sleep(config::ms(
+                config::INPUT_DELAYS.window_registration_delay_ms,
+            ));
+            self.capture_initial_geometry(&win);
+            self.arm_delayed_apply_if_configured();
+            let _ = self.attach_sheet; // placeholder hook
+            self.apply_initial_state_options();
+            self.add_centered_label();
+            self.window = Some(win);
+            self.ensure_auto_unminimize();
+            if let Some(active) = self.window.as_ref() {
+                active.set_visible(true);
+                active.focus_window();
+            }
+            Ok(())
+        }
+
+        /// Duration until the next scheduled helper wake-up.
+        pub(super) fn next_wakeup_timeout(&self) -> Duration {
+            let next = self.apply_after.unwrap_or(self.deadline);
+            let max_slice = Duration::from_millis(16);
+            match next.checked_duration_since(Instant::now()) {
+                Some(duration) if !duration.is_zero() => duration.min(max_slice),
+                _ => Duration::ZERO,
+            }
         }
 
         /// Create the helper window with initial attributes.
@@ -914,7 +1116,10 @@ mod helper_app {
         fn activate_app(&self) {
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                unsafe { app.activate() };
+                unsafe {
+                    app.activate();
+                    app.unhide(None);
+                }
             }
         }
 
@@ -1156,6 +1361,19 @@ mod helper_app {
             false
         }
 
+        fn ensure_auto_unminimize(&mut self) {
+            if self.place.minimized != MinimizedPolicy::AutoUnminimize {
+                return;
+            }
+            if !self.window_is_minimized() {
+                return;
+            }
+            if let Some(win) = self.window.as_ref() {
+                win.set_minimized(false);
+                win.focus_window();
+            }
+        }
+
         fn apply_ax_rounding_override(&self) {
             if !self.has_quirk(Quirk::AxRounding) {
                 return;
@@ -1236,9 +1454,19 @@ mod helper_app {
         fn on_moved(&mut self, new_pos: PhysicalPosition<i32>) {
             use winit::dpi::LogicalPosition;
             debug!("winhelper: moved event: x={} y={}", new_pos.x, new_pos.y);
-            let intercept =
-                (self.delay_setframe_ms > 0 || self.delay_apply_ms > 0 || self.tween_ms > 0)
-                    && !self.suppress_events;
+            if self.pending_suppressed_events > 0 {
+                self.pending_suppressed_events -= 1;
+                if let Some(win) = self.window.as_ref() {
+                    let scale = win.scale_factor();
+                    let lp = new_pos.to_logical::<f64>(scale);
+                    self.last_pos = Some((lp.x, lp.y));
+                }
+                return;
+            }
+            let intercept = (self.delay_setframe_ms > 0
+                || self.delay_apply_ms > 0
+                || (self.tween_ms > 0 && !self.tween_active))
+                && !self.suppress_events;
             if intercept {
                 if let Some(win) = self.window.as_ref() {
                     let scale = win.scale_factor();
@@ -1256,8 +1484,15 @@ mod helper_app {
                     );
                     if let Some((x, y)) = self.last_pos {
                         self.suppress_events = true;
-                        win.set_outer_position(LogicalPosition::new(x, y));
+                        let mut reverted = false;
+                        if let Some(win_ref) = self.window.as_ref() {
+                            win_ref.set_outer_position(LogicalPosition::new(x, y));
+                            reverted = true;
+                        }
                         self.suppress_events = false;
+                        if reverted {
+                            self.queue_suppressed_events(1);
+                        }
                     }
                     if self.tween_ms > 0 {
                         if self.delay_apply_ms > 0
@@ -1350,9 +1585,19 @@ mod helper_app {
                 "winhelper: resized event: w={} h={}",
                 new_size.width, new_size.height
             );
-            let intercept =
-                (self.delay_setframe_ms > 0 || self.delay_apply_ms > 0 || self.tween_ms > 0)
-                    && !self.suppress_events;
+            if self.pending_suppressed_events > 0 {
+                self.pending_suppressed_events -= 1;
+                if let Some(win) = self.window.as_ref() {
+                    let scale = win.scale_factor();
+                    let lsz = new_size.to_logical::<f64>(scale);
+                    self.last_size = Some((lsz.width, lsz.height));
+                }
+                return;
+            }
+            let intercept = (self.delay_setframe_ms > 0
+                || self.delay_apply_ms > 0
+                || (self.tween_ms > 0 && !self.tween_active))
+                && !self.suppress_events;
             if intercept {
                 if let Some(win) = self.window.as_ref() {
                     let scale = win.scale_factor();
@@ -1368,8 +1613,15 @@ mod helper_app {
                     );
                     if let Some((w, h)) = self.last_size {
                         self.suppress_events = true;
-                        let _maybe_size = win.request_inner_size(LogicalSize::new(w, h));
+                        let mut reverted = false;
+                        if let Some(win_ref) = self.window.as_ref() {
+                            let _ = win_ref.request_inner_size(LogicalSize::new(w, h));
+                            reverted = true;
+                        }
                         self.suppress_events = false;
+                        if reverted {
+                            self.queue_suppressed_events(1);
+                        }
                     }
                     if self.tween_ms > 0 {
                         if self.delay_apply_ms > 0
@@ -1629,14 +1881,15 @@ mod helper_app {
 
         /// Revert minor drift that may occur while testing async placement.
         fn revert_drift_if_needed(&mut self) {
-            if let Some(win) = self.window.as_ref()
-                && let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
+            let mut suppressed = 0u8;
+            if let (Some((lx, ly)), Some((lw, lh))) = (self.last_pos, self.last_size)
+                && let Some(win) = self.window.as_ref()
             {
                 let scale = win.scale_factor();
                 let p = win
                     .outer_position()
                     .ok()
-                    .map(|p| p.to_logical::<f64>(scale));
+                    .map(|pos| pos.to_logical::<f64>(scale));
                 let s = win.inner_size().to_logical::<f64>(scale);
                 if let Some(p) = p {
                     let dx = (p.x - lx).abs();
@@ -1649,16 +1902,21 @@ mod helper_app {
                             dx, dy, dw, dh
                         );
                         self.suppress_events = true;
-                        let _maybe_size = win.request_inner_size(LogicalSize::new(lw, lh));
+                        let _ = win.request_inner_size(LogicalSize::new(lw, lh));
                         win.set_outer_position(LogicalPosition::new(lx, ly));
                         self.suppress_events = false;
+                        suppressed = suppressed.saturating_add(2);
                     }
                 }
+            }
+            if suppressed > 0 {
+                self.queue_suppressed_events(suppressed);
             }
         }
 
         /// Apply a single tween step, updating window position/size.
         fn apply_tween_step(&mut self) {
+            self.ensure_auto_unminimize();
             if should_skip_apply_for_minimized(&self.quirks, self.window_is_minimized()) {
                 debug!("winhelper: skip tween apply while minimized");
                 self.apply_after = None;
@@ -1666,6 +1924,7 @@ mod helper_app {
             }
             let now = Instant::now();
             if let Some(win) = self.window.as_ref() {
+                debug!("winhelper: apply_tween_step start");
                 let target = self.select_apply_target(win);
                 if !self.tween_active {
                     self.tween_active = true;
@@ -1678,12 +1937,24 @@ mod helper_app {
                     }
                 }
             }
+            let mut size_applied = false;
+            let mut pos_applied = false;
             if let Some(win2) = self.window.as_ref() {
                 let t = self.tween_progress(now);
                 let (nx, ny, nw, nh) = self.tween_interpolate(t);
                 let (rw, rh) = self.rounded_size(nw, nh);
-                let _maybe_size = win2.request_inner_size(LogicalSize::new(rw, rh));
+                let _ = win2.request_inner_size(LogicalSize::new(rw, rh));
                 win2.set_outer_position(LogicalPosition::new(nx, ny));
+                self.last_size = Some((rw, rh));
+                self.last_pos = Some((nx, ny));
+                size_applied = true;
+                pos_applied = true;
+            }
+            if size_applied {
+                self.queue_suppressed_events(1);
+            }
+            if pos_applied {
+                self.queue_suppressed_events(1);
             }
             if self.tween_start.is_some() && self.tween_end.is_some() {
                 let t_done = self.tween_progress(Instant::now());
@@ -1710,19 +1981,22 @@ mod helper_app {
 
         /// Apply target geometry immediately without tweening.
         fn apply_immediate(&mut self) {
+            self.ensure_auto_unminimize();
             if should_skip_apply_for_minimized(&self.quirks, self.window_is_minimized()) {
                 debug!("winhelper: skip immediate apply while minimized");
                 self.apply_after = None;
                 return;
             }
+            let mut suppressed = 0u8;
             if let Some(win) = self.window.as_ref() {
                 if let Some((x, y, w, h)) = self.apply_target {
                     let (rw, rh) = self.rounded_size(w, h);
                     // Ignore the returned size; it is advisory for winit.
-                    let _maybe_size = win.request_inner_size(LogicalSize::new(rw, rh));
+                    let _ = win.request_inner_size(LogicalSize::new(rw, rh));
                     win.set_outer_position(LogicalPosition::new(x, y));
                     self.last_pos = Some((x, y));
                     self.last_size = Some((rw, rh));
+                    suppressed = suppressed.saturating_add(2);
                     debug!(
                         "winhelper: explicit apply (explicit) -> ({:.1},{:.1},{:.1},{:.1})",
                         x, y, rw, rh
@@ -1730,10 +2004,11 @@ mod helper_app {
                 } else if let Some((cols, rows, col, row)) = self.apply_grid {
                     let (tx, ty, tw, th) = self.grid_rect(win, cols, rows, col, row);
                     let (rw, rh) = self.rounded_size(tw, th);
-                    let _maybe_size = win.request_inner_size(LogicalSize::new(rw, rh));
+                    let _ = win.request_inner_size(LogicalSize::new(rw, rh));
                     win.set_outer_position(LogicalPosition::new(tx, ty));
                     self.last_pos = Some((tx, ty));
                     self.last_size = Some((rw, rh));
+                    suppressed = suppressed.saturating_add(2);
                     debug!(
                         "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
                         tx, ty, rw, rh
@@ -1741,21 +2016,26 @@ mod helper_app {
                 } else {
                     let desired_size_val = self.desired_size;
                     let desired_pos_val = self.desired_pos;
-                    if let Some(win2) = self.window.as_ref() {
-                        if let Some((w, h)) = desired_size_val {
-                            let (rw, rh) = self.rounded_size(w, h);
-                            let _maybe_size = win2.request_inner_size(LogicalSize::new(rw, rh));
-                            self.last_size = Some((rw, rh));
-                            self.desired_size = None;
-                        }
-                        if let Some((x, y)) = desired_pos_val {
-                            win2.set_outer_position(LogicalPosition::new(x, y));
-                            self.last_pos = Some((x, y));
-                            self.desired_pos = None;
-                        }
+                    if let Some((w, h)) = desired_size_val {
+                        let (rw, rh) = self.rounded_size(w, h);
+                        let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                        self.last_size = Some((rw, rh));
+                        self.desired_size = None;
+                        suppressed = suppressed.saturating_add(1);
+                    }
+                    if let Some((x, y)) = desired_pos_val {
+                        win.set_outer_position(LogicalPosition::new(x, y));
+                        self.last_pos = Some((x, y));
+                        self.desired_pos = None;
+                        suppressed = suppressed.saturating_add(1);
+                    }
+                    if desired_size_val.is_some() || desired_pos_val.is_some() {
                         debug!("winhelper: applied desired pos/size");
                     }
                 }
+            }
+            if suppressed > 0 {
+                self.queue_suppressed_events(suppressed);
             }
             // Ensure we clear any pending apply-after state after applying.
             self.apply_after = None;
@@ -1765,9 +2045,12 @@ mod helper_app {
         /// Apply placement when the apply deadline has been reached.
         fn process_apply_ready(&mut self) {
             if self.window.is_none() {
-                self.apply_after = None;
                 return;
             }
+            debug!(
+                "winhelper: process_apply_ready apply_after={:?}",
+                self.apply_after
+            );
             self.suppress_events = true;
             if self.tween_ms > 0 {
                 self.apply_tween_step();
@@ -1780,35 +2063,11 @@ mod helper_app {
 
     impl ApplicationHandler for HelperApp {
         fn resumed(&mut self, elwt: &ActiveEventLoop) {
-            if self.window.is_some() {
-                return;
-            }
-            let win = match self.try_create_window(elwt) {
-                Ok(w) => w,
-                Err(e) => {
-                    self.error = Some(format!("winhelper: failed to create window: {}", e));
-                    elwt.exit();
-                    return;
-                }
-            };
-            self.activate_app();
-            self.apply_min_size_if_requested();
-            self.apply_nonmovable_if_requested();
-            self.initial_placement(&win);
-            // Allow registration to settle before adding label.
-            thread::sleep(config::ms(
-                config::INPUT_DELAYS.window_registration_delay_ms,
-            ));
-            self.capture_initial_geometry(&win);
-            self.arm_delayed_apply_if_configured();
-            let _ = self.attach_sheet; // placeholder hook
-            self.apply_initial_state_options();
-            self.add_centered_label();
-            self.window = Some(win);
+            let _ = self.ensure_window(elwt);
         }
         fn window_event(&mut self, elwt: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
             match event {
-                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::CloseRequested => self.request_exit(elwt),
                 WindowEvent::Moved(pos) => self.on_moved(pos),
                 WindowEvent::Resized(sz) => self.on_resized(sz),
                 WindowEvent::Focused(f) => self.on_focused(f),
@@ -1817,12 +2076,15 @@ mod helper_app {
         }
         fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
             if self.shutdown.load(Ordering::SeqCst) {
-                elwt.exit();
+                self.request_exit(elwt);
                 return;
             }
             let now = Instant::now();
             if now >= self.deadline {
-                elwt.exit();
+                self.request_exit(elwt);
+                return;
+            }
+            if self.window.is_none() && self.ensure_window(elwt).is_err() {
                 return;
             }
             match self.apply_after {

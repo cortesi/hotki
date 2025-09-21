@@ -134,6 +134,24 @@ pub fn remove_ax_observer(pid: i32) -> bool {
     })
 }
 
+/// Drop all registered AX observers, returning the number removed.
+pub fn clear_ax_observers() -> usize {
+    OBSERVERS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            return 0;
+        }
+        let removed = slot
+            .as_ref()
+            .map(|reg| reg.remove_all())
+            .unwrap_or_default();
+        if removed > 0 {
+            *slot = None;
+        }
+        removed
+    })
+}
+
 /// Number of active AX observers currently installed.
 pub fn active_ax_observer_count() -> usize {
     ax_observer::observer_count()

@@ -47,6 +47,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -763,6 +764,14 @@ impl WorldHandle {
         mac_winops::close_mimic_windows();
         while mac_winops::pending_main_ops() {
             mac_winops::drain_main_ops();
+        }
+        crate::ax_read_pool::reset();
+        let _ = mac_winops::clear_ax_observers();
+        if mac_winops::active_ax_observer_count() > 0 {
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while mac_winops::active_ax_observer_count() > 0 && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
         }
         self.quiescence_report()
     }
@@ -2443,7 +2452,7 @@ fn placement_mode_guard(
         return Ok(());
     };
     match frames.mode {
-        WindowMode::Normal => Ok(()),
+        WindowMode::Normal | WindowMode::Hidden => Ok(()),
         blocked => Err(CommandError::InvalidRequest {
             message: format!(
                 "Cannot perform {:?} while window mode={:?}. Exit this mode or adjust placement options.",
