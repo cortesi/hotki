@@ -1820,7 +1820,9 @@ mod helper_app {
                         _ => "BR".into(),
                     };
                 }
-                return self.title.clone();
+                return self
+                    .clean_title_label()
+                    .unwrap_or_else(|| self.fallback_label_letter());
             }
             if let Some(slot) = self.slot {
                 return match slot {
@@ -1830,7 +1832,38 @@ mod helper_app {
                     _ => "BR".into(),
                 };
             }
-            self.title.clone()
+            self.clean_title_label()
+                .unwrap_or_else(|| self.fallback_label_letter())
+        }
+
+        fn clean_title_label(&self) -> Option<String> {
+            let raw = self.title.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let base = raw
+                .split_once('[')
+                .map(|(head, _)| head.trim())
+                .unwrap_or(raw);
+            let normalized = base
+                .trim()
+                .trim_end_matches([':', '['])
+                .replace(['_', '-'], " ");
+            if normalized.trim().is_empty() {
+                None
+            } else {
+                Some(normalized.trim().to_string())
+            }
+        }
+
+        fn fallback_label_letter(&self) -> String {
+            let label = self.window_label.as_ref();
+            let fallback_char = label
+                .chars()
+                .find(|c| c.is_ascii_alphabetic())
+                .map(|c| c.to_ascii_uppercase())
+                .unwrap_or('A');
+            fallback_char.to_string()
         }
 
         /// Ensure tween state is initialized for position changes.
