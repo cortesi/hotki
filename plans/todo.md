@@ -141,19 +141,19 @@ No second data channel; hotki-world is the single assertion surface.
 6. [x] focus-tracking
 7. [x] hide
 8. [x] place (legacy grid cycle)
-9. [ ] place-async
-10. [ ] place-animated
+9. [x] place-async
+10. [x] place-animated
 11. [x] place-term
 12. [x] place-increments
-13. [ ] place-fake
-14. [ ] place-fallback
-15. [ ] place-smg
-16. [ ] place-flex
+13. [x] place-fake
+14. [x] place-fallback
+15. [x] place-smg
+16. [x] place-flex
 17. [x] place-skip
 18. [x] place-move-min
 19. [x] place-move-nonresizable
-20. [ ] place-minimized
-21. [ ] place-zoomed
+20. [x] place-minimized
+21. [x] place-zoomed
 22. [ ] ui
 23. [ ] minui
 24. [ ] fullscreen

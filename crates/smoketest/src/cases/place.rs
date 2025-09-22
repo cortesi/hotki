@@ -8,12 +8,17 @@ use std::{
 };
 
 use hotki_world::{
-    EventCursor, Frames, MinimizedPolicy, MoveDirection, PlaceOptions, RaiseStrategy, RectDelta,
-    RectPx, WindowKey, WorldHandle,
+    EventCursor, Frames, MinimizedPolicy, MoveDirection, PlaceAttemptOptions, PlaceOptions,
+    RaiseStrategy, RectDelta, RectPx, WindowKey, WorldHandle,
     mimic::{HelperConfig, MimicHandle, MimicScenario, MimicSpec, pump_active_mimics, spawn_mimic},
 };
 use hotki_world_ids::WorldWindowId;
-use mac_winops::{self, screen};
+use mac_winops::{
+    self, AxAdapterHandle, FakeApplyResponse, FakeAxAdapter, FakeOp, FakeWindowConfig,
+    FallbackTrigger, PlacementContext, PlacementCountersSnapshot, PlacementEngine,
+    PlacementEngineConfig, PlacementGrid, PlacementOutcome, Rect, RetryLimits, screen,
+};
+use objc2_foundation::MainThreadMarker;
 use serde_json::json;
 use tracing::debug;
 
@@ -77,6 +82,38 @@ struct MoveCaseState {
     budget: MoveCaseBudget,
 }
 
+/// Verify fake adapter flows exercise apply, nudge, and fallback paths.
+pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    ctx.setup(|stage| {
+        let summaries = run_fake_adapter_scenarios()?;
+        let slug = "place.fake.adapter";
+        let ops_path = stage
+            .artifacts_dir()
+            .join(format!("{}_ops.json", slug.replace('.', "_")));
+        let entries: Vec<_> = summaries
+            .iter()
+            .map(|(label, ops)| {
+                json!({
+                    "label": label,
+                    "ops": ops.iter().map(|op| format!("{op:?}")).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let payload = json!({ "scenarios": entries });
+        let mut data = serde_json::to_string_pretty(&payload).map_err(|e| {
+            Error::InvalidState(format!("failed to serialize fake adapter ops: {e}"))
+        })?;
+        data.push('\n');
+        fs::write(&ops_path, data)?;
+        stage.record_artifact(&ops_path);
+        Ok(())
+    })?;
+
+    ctx.action(|_| Ok(()))?;
+    ctx.settle(|_| Ok(()))?;
+    Ok(())
+}
+
 /// Verify placement converges when the helper begins minimized and must be restored first.
 pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<PlaceState> = None;
@@ -126,6 +163,83 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
             state_data.expected,
             &frames,
             2,
+            &artifacts,
+        )?;
+        shutdown_mimic(state_data.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Verify placement normalizes geometry after starting from a zoomed window state.
+pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    const SLUG: &str = "place.zoomed.normalize";
+    let grid = (config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0);
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+            config.time_ms = 25_000;
+            config.label_text = Some("ZOOM".into());
+            config.start_zoomed = true;
+            config.grid = Some(grid);
+            config.place = PlaceOptions {
+                raise: RaiseStrategy::AppActivate,
+                minimized: MinimizedPolicy::DeferUntilUnminimized,
+                animate: false,
+            };
+        })?);
+        if let Some(place) = state.as_mut() {
+            let world = stage.world_clone();
+            refresh_cursor(place, &world)?;
+            let frames = wait_for_initial_frames(
+                stage.case_name(),
+                &world,
+                &mut place.cursor,
+                place.target_key,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+            )?;
+            let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
+            rewrite_expected_artifact(stage, place.slug, expected)?;
+            place.expected = expected;
+        }
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let state_ref = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        promote_helper_frontmost(stage.case_name(), state_ref);
+        refresh_cursor(state_ref, &world)?;
+        request_grid(&world, state_ref.target_id, grid)?;
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let mut state_data = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let frames = wait_for_expected(
+            stage,
+            &mut state_data,
+            Duration::from_millis(2_400),
+            config::PLACE.eps.round() as i32,
+        )?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            state_data.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
             &artifacts,
         )?;
         shutdown_mimic(state_data.mimic)?;
@@ -634,6 +748,88 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+/// Exercise flexible placement with default attempt ordering.
+pub fn place_flex_default(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let grid = (config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0);
+    run_flex_case(
+        ctx,
+        "place.flex.default",
+        grid,
+        "FLEX",
+        |_| {},
+        |snapshot| {
+            if snapshot.retry_opposite.attempts != 0 || snapshot.fallback_smg.attempts != 0 {
+                return Err(Error::InvalidState(format!(
+                    "unexpected fallback attempts (retry_opposite={}, fallback_smg={})",
+                    snapshot.retry_opposite.attempts, snapshot.fallback_smg.attempts
+                )));
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Force size→pos retry ordering to verify opposite-order attempts are recorded.
+pub fn place_flex_force_size_pos(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let grid = (config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0);
+    run_flex_case(
+        ctx,
+        "place.flex.force_size_pos",
+        grid,
+        "FSP",
+        |opts| {
+            *opts = opts
+                .clone()
+                .with_force_second_attempt(true)
+                .with_retry_limits(RetryLimits::new(0, 0, 0, 1));
+        },
+        |snapshot| {
+            if snapshot.retry_opposite.attempts == 0 {
+                return Err(Error::InvalidState(
+                    "expected opposite-order retry when force_second_attempt=true".into(),
+                ));
+            }
+            if snapshot.fallback_smg.attempts != 0 {
+                return Err(Error::InvalidState(format!(
+                    "unexpected shrink-move-grow fallback attempts: {}",
+                    snapshot.fallback_smg.attempts
+                )));
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Force shrink→move→grow fallback sequencing.
+pub fn place_flex_smg(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let grid = (config::PLACE.grid_cols, config::PLACE.grid_rows, 1, 1);
+    run_flex_case(
+        ctx,
+        "place.flex.smg",
+        grid,
+        "SMG",
+        |opts| {
+            *opts = opts
+                .clone()
+                .with_force_second_attempt(true)
+                .with_fallback_hook(|invocation| {
+                    matches!(
+                        invocation.trigger,
+                        FallbackTrigger::Forced | FallbackTrigger::Final
+                    )
+                });
+        },
+        |snapshot| {
+            if snapshot.fallback_smg.attempts == 0 {
+                return Err(Error::InvalidState(
+                    "expected shrink-move-grow fallback attempt to be recorded".into(),
+                ));
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Verify placement skips when the helper window is non-movable.
@@ -1477,24 +1673,173 @@ fn write_move_budget(
     Ok(path)
 }
 
-/// Issue a world placement command for the supplied window and grid cell.
-fn request_grid(
+/// Persist placement counter snapshots for diagnostics.
+fn record_counters_artifact(
+    stage: &mut StageHandle<'_>,
+    slug: &str,
+    snapshot: &PlacementCountersSnapshot,
+) -> Result<PathBuf> {
+    let path = stage
+        .artifacts_dir()
+        .join(format!("{}_counters.json", slug.replace('.', "_")));
+    let payload = json!({
+        "primary": {
+            "attempts": snapshot.primary.attempts,
+            "verified": snapshot.primary.verified,
+            "settle_ms_total": snapshot.primary.settle_ms_total,
+        },
+        "axis_nudge": {
+            "attempts": snapshot.axis_nudge.attempts,
+            "verified": snapshot.axis_nudge.verified,
+            "settle_ms_total": snapshot.axis_nudge.settle_ms_total,
+        },
+        "retry_opposite": {
+            "attempts": snapshot.retry_opposite.attempts,
+            "verified": snapshot.retry_opposite.verified,
+            "settle_ms_total": snapshot.retry_opposite.settle_ms_total,
+        },
+        "size_only": {
+            "attempts": snapshot.size_only.attempts,
+            "verified": snapshot.size_only.verified,
+            "settle_ms_total": snapshot.size_only.settle_ms_total,
+        },
+        "anchor_size_only": {
+            "attempts": snapshot.anchor_size_only.attempts,
+            "verified": snapshot.anchor_size_only.verified,
+            "settle_ms_total": snapshot.anchor_size_only.settle_ms_total,
+        },
+        "anchor_legal": {
+            "attempts": snapshot.anchor_legal.attempts,
+            "verified": snapshot.anchor_legal.verified,
+            "settle_ms_total": snapshot.anchor_legal.settle_ms_total,
+        },
+        "fallback_smg": {
+            "attempts": snapshot.fallback_smg.attempts,
+            "verified": snapshot.fallback_smg.verified,
+            "settle_ms_total": snapshot.fallback_smg.settle_ms_total,
+        },
+        "safe_park": snapshot.safe_park,
+        "failures": snapshot.failures,
+    });
+    let mut data = serde_json::to_string_pretty(&payload)
+        .map_err(|e| Error::InvalidState(format!("failed to serialize placement counters: {e}")))?;
+    data.push('\n');
+    fs::write(&path, data)?;
+    stage.record_artifact(&path);
+    Ok(path)
+}
+
+/// Shared implementation for flexible placement cases.
+fn run_flex_case<F, V>(
+    ctx: &mut CaseCtx<'_>,
+    slug: &'static str,
+    grid: (u32, u32, u32, u32),
+    label: &str,
+    configure_options: F,
+    verify_snapshot: V,
+) -> Result<()>
+where
+    F: FnOnce(&mut PlaceAttemptOptions),
+    V: Fn(&PlacementCountersSnapshot) -> Result<()>,
+{
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        mac_winops::placement_counters_reset();
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(stage, slug, placeholder, |config, _| {
+            config.time_ms = 25_000;
+            config.label_text = Some(label.into());
+        })?);
+        if let Some(place) = state.as_mut() {
+            let world = stage.world_clone();
+            refresh_cursor(place, &world)?;
+            let frames = wait_for_initial_frames(
+                stage.case_name(),
+                &world,
+                &mut place.cursor,
+                place.target_key,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+            )?;
+            let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
+            rewrite_expected_artifact(stage, place.slug, expected)?;
+            place.expected = expected;
+        }
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let state_ref = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        promote_helper_frontmost(stage.case_name(), state_ref);
+        refresh_cursor(state_ref, &world)?;
+        let mut options = PlaceAttemptOptions::default();
+        configure_options(&mut options);
+        request_grid_with_options(&world, state_ref.target_id, grid, Some(&options))?;
+        refresh_cursor(state_ref, &world)?;
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let mut state_data = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let frames = wait_for_expected(
+            stage,
+            &mut state_data,
+            Duration::from_millis(config::PLACE.step_timeout_ms),
+            config::PLACE.eps.round() as i32,
+        )?;
+        let snapshot = mac_winops::placement_counters_snapshot();
+        if snapshot.primary.attempts == 0 {
+            return Err(Error::InvalidState(
+                "expected at least one primary placement attempt".into(),
+            ));
+        }
+        let counters_path = record_counters_artifact(stage, state_data.slug, &snapshot)?;
+        verify_snapshot(&snapshot)?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let artifacts = [diag_path, counters_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            state_data.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        shutdown_mimic(state_data.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Issue a world placement command with optional attempt configuration.
+fn request_grid_with_options(
     world: &WorldHandle,
     target: WorldWindowId,
     grid: (u32, u32, u32, u32),
+    options: Option<&PlaceAttemptOptions>,
 ) -> Result<()> {
     let (cols, rows, col, row) = grid;
     let mut attempts = 0;
     loop {
         let request_world = world.clone();
+        let opts = options.cloned();
         let receipt_result = block_on_with_pump(async move {
             request_world
-                .request_place_for_window(target, cols, rows, col, row, None)
+                .request_place_for_window(target, cols, rows, col, row, opts)
                 .await
         })?;
         match receipt_result {
             Ok(receipt) => {
-                let _target = receipt.target.ok_or_else(|| {
+                receipt.target.ok_or_else(|| {
                     Error::InvalidState("placement did not select a target".into())
                 })?;
                 return Ok(());
@@ -1513,6 +1858,15 @@ fn request_grid(
             }
         }
     }
+}
+
+/// Issue a world placement command for the supplied window and grid cell.
+fn request_grid(
+    world: &WorldHandle,
+    target: WorldWindowId,
+    grid: (u32, u32, u32, u32),
+) -> Result<()> {
+    request_grid_with_options(world, target, grid, None)
 }
 
 /// Issue a move command for the supplied window across the placement grid.
@@ -1551,6 +1905,141 @@ fn request_move(
                 )));
             }
         }
+    }
+}
+
+/// Target rectangle used when exercising the fake placement adapter.
+const FAKE_TARGET: Rect = Rect {
+    x: 100.0,
+    y: 200.0,
+    w: 640.0,
+    h: 480.0,
+};
+
+/// Visible frame used when constructing fake placement scenarios.
+const FAKE_VISIBLE: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    w: 1_440.0,
+    h: 900.0,
+};
+
+/// Execute the set of fake adapter scenarios and capture their observed operations.
+fn run_fake_adapter_scenarios() -> Result<Vec<(&'static str, Vec<FakeOp>)>> {
+    let mut results = Vec::new();
+
+    let ops = run_fake_flow(
+        "place_grid_focused",
+        FakeWindowConfig::default(),
+        PlaceAttemptOptions::default(),
+        |ops| ensure_fake_op(ops, |op| matches!(op, FakeOp::Apply { .. }), "apply"),
+    )?;
+    results.push(("place_grid_focused", ops));
+
+    let mut axis_cfg = FakeWindowConfig::default();
+    axis_cfg
+        .apply_script
+        .push(FakeApplyResponse::new(Rect::new(100.0, 210.0, 640.0, 480.0)).with_persist(true));
+    axis_cfg.nudge_script.push(FakeApplyResponse::new(Rect::new(
+        100.0, 200.0, 640.0, 480.0,
+    )));
+    let ops = run_fake_flow(
+        "place_grid",
+        axis_cfg,
+        PlaceAttemptOptions::default(),
+        |ops| ensure_fake_op(ops, |op| matches!(op, FakeOp::Nudge { .. }), "nudge"),
+    )?;
+    results.push(("place_grid", ops));
+
+    let mut fallback_cfg = FakeWindowConfig::default();
+    fallback_cfg
+        .apply_script
+        .push(FakeApplyResponse::new(Rect::new(320.0, 420.0, 640.0, 480.0)).with_persist(true));
+    fallback_cfg
+        .fallback_script
+        .push(FakeApplyResponse::new(FAKE_TARGET));
+    let fallback_opts =
+        PlaceAttemptOptions::default().with_retry_limits(RetryLimits::new(0, 0, 0, 1));
+    let ops = run_fake_flow("place_move_grid", fallback_cfg, fallback_opts, |ops| {
+        ensure_fake_op(ops, |op| matches!(op, FakeOp::Fallback { .. }), "fallback")
+    })?;
+    results.push(("place_move_grid", ops));
+
+    Ok(results)
+}
+
+/// Drive a fake placement flow and return the recorded fake operations.
+fn run_fake_flow<F>(
+    label: &'static str,
+    config: FakeWindowConfig,
+    opts: PlaceAttemptOptions,
+    verify_ops: F,
+) -> Result<Vec<FakeOp>>
+where
+    F: Fn(&[FakeOp]) -> Result<()>,
+{
+    let fake = Arc::new(FakeAxAdapter::new());
+    let win = fake.new_window(config);
+    let adapter_handle: AxAdapterHandle = fake.clone() as AxAdapterHandle;
+    let ctx = PlacementContext::with_adapter(
+        win.clone(),
+        FAKE_TARGET,
+        FAKE_VISIBLE,
+        opts,
+        adapter_handle,
+    );
+    let engine = PlacementEngine::new(
+        &ctx,
+        PlacementEngineConfig {
+            label,
+            attr_pos: mac_winops::cfstr("AXPosition"),
+            attr_size: mac_winops::cfstr("AXSize"),
+            grid: PlacementGrid {
+                cols: 3,
+                rows: 2,
+                col: 1,
+                row: 1,
+            },
+            role: "AXWindow",
+            subrole: "AXStandardWindow",
+        },
+    );
+    let mtm =
+        MainThreadMarker::new().unwrap_or_else(|| unsafe { MainThreadMarker::new_unchecked() });
+    let outcome = engine
+        .execute(mtm)
+        .map_err(|e| Error::InvalidState(format!("{label}: engine error {e}")))?;
+    match outcome {
+        PlacementOutcome::Verified(success) => {
+            if success.final_rect != FAKE_TARGET {
+                return Err(Error::InvalidState(format!(
+                    "{label}: expected {:?} got {:?}",
+                    FAKE_TARGET, success.final_rect
+                )));
+            }
+        }
+        other => {
+            return Err(Error::InvalidState(format!(
+                "{label}: unexpected outcome {other:?}"
+            )));
+        }
+    }
+    let ops = fake.operations(&win);
+    verify_ops(&ops)?;
+    Ok(ops)
+}
+
+/// Ensure an expected fake adapter operation was recorded.
+fn ensure_fake_op<F>(ops: &[FakeOp], predicate: F, label: &str) -> Result<()>
+where
+    F: Fn(&FakeOp) -> bool,
+{
+    if ops.iter().any(predicate) {
+        Ok(())
+    } else {
+        Err(Error::InvalidState(format!(
+            "expected {label} operation to be recorded (got {ops:?})"
+        )))
     }
 }
 

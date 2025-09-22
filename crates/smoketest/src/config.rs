@@ -120,8 +120,6 @@ pub struct PlaceConfig {
     pub grid_rows: u32,
     /// Epsilon in pixels for frame comparisons in placement checks.
     pub eps: f64,
-    /// Poll interval while waiting for placement to settle.
-    pub poll_ms: u64,
     /// Per-cell timeout while waiting for the expected frame.
     pub step_timeout_ms: u64,
 }
@@ -131,7 +129,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
     grid_cols: 3,
     grid_rows: 2,
     eps: 2.0,
-    poll_ms: 50,
     step_timeout_ms: 3000,
 };
 

@@ -3,8 +3,6 @@
 use std::{
     env,
     process::{Child, Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
 
 use mac_winops::{
@@ -334,46 +332,6 @@ fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     Ok(ManagedChild::new(child))
 }
 
-/// Wait until the frontmost CG window has the given title.
-pub fn wait_for_frontmost_title(expected: &str, timeout_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        let focus_snap = focus::poll_now();
-        if focus_snap.title == expected {
-            return true;
-        }
-        if let Some(win) = frontmost_app_window(FRONTMOST_IGNORE_TITLES) {
-            if win.title == expected {
-                let ax_match = mac_winops::ax_has_window_title(win.pid, expected);
-                let frame_present = mac_winops::ax_window_frame(win.pid, expected).is_some();
-                if ax_match && frame_present {
-                    return true;
-                }
-                tracing::debug!(
-                    "wait_for_frontmost_title: CG matched '{}' (pid={}); AX match={} frame_present={}",
-                    expected,
-                    win.pid,
-                    ax_match,
-                    frame_present
-                );
-            }
-            if focus_snap.pid == win.pid
-                && mac_winops::ax_has_window_title(win.pid, expected)
-                && mac_winops::ax_window_frame(win.pid, expected).is_some()
-            {
-                tracing::debug!(
-                    "wait_for_frontmost_title: focus pid matched pid={} with AX title '{}'",
-                    win.pid,
-                    expected
-                );
-                return true;
-            }
-        }
-        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
-    }
-    false
-}
-
 /// Wait until a window with `(pid,title)` is visible via CG or AX.
 pub fn wait_for_window_visible(pid: i32, title: &str, timeout_ms: u64, poll_ms: u64) -> bool {
     wait_for_windows_visible_ms(&[(pid, title)], timeout_ms, poll_ms)
@@ -408,31 +366,6 @@ pub fn spawn_helper_visible(
     let helper = HelperWindowBuilder::new(title.to_string())
         .with_time_ms(lifetime_ms)
         .with_label_text(label_text)
-        .spawn()?;
-    if !wait_for_window_visible(helper.pid, title, visible_timeout_ms, poll_ms) {
-        return Err(Error::FocusNotObserved {
-            timeout_ms: visible_timeout_ms,
-            expected: format!("helper window '{}' not visible", title),
-        });
-    }
-    Ok(helper)
-}
-
-/// Variant allowing initial window state options.
-pub fn spawn_helper_with_options(
-    title: &str,
-    lifetime_ms: u64,
-    visible_timeout_ms: u64,
-    poll_ms: u64,
-    label_text: &str,
-    start_minimized: bool,
-    start_zoomed: bool,
-) -> Result<ManagedChild> {
-    let helper = HelperWindowBuilder::new(title.to_string())
-        .with_time_ms(lifetime_ms)
-        .with_label_text(label_text)
-        .with_start_minimized(start_minimized)
-        .with_start_zoomed(start_zoomed)
         .spawn()?;
     if !wait_for_window_visible(helper.pid, title, visible_timeout_ms, poll_ms) {
         return Err(Error::FocusNotObserved {

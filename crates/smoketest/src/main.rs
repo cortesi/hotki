@@ -333,7 +333,7 @@ fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus, fake_mode:
             perms.accessibility_ok, perms.input_ok
         );
         eprintln!(
-            "Grant Accessibility and Input Monitoring to your terminal under System Settings → Privacy & Security."
+            "Grant Accessibility and Input Monitoring to your terminal under System Settings -> Privacy & Security."
         );
         exit(1);
     }
@@ -472,7 +472,7 @@ fn seq_case_name(test: &SeqTest) -> &'static str {
         SeqTest::Fullscreen => "fullscreen",
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",
-        SeqTest::PlaceFake => "place-fake",
+        SeqTest::PlaceFake => "place.fake.adapter",
         SeqTest::WorldSpaces => "world-spaces",
     }
 }
@@ -547,28 +547,20 @@ fn handle_volume(cli: &Cli) {
 
 /// Handle `place-increments` test case.
 fn handle_place_increments(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-increments",
-        "place-increments",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || tests::place_increments::run_place_increments_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-increments: OK (anchored edges verified)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-increments: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.increments.anchor"], &runner_cfg) {
+        eprintln!("place-increments: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-increments: OK (anchored edges verified)");
     }
 }
 
@@ -603,7 +595,7 @@ struct PlaceFlexArgs {
     force_size_pos: bool,
     /// Whether to set the position first only.
     pos_first_only: bool,
-    /// Whether to force the shrink→move→grow path.
+    /// Whether to force the shrink->move->grow path.
     force_shrink_move_grow: bool,
 }
 
@@ -612,120 +604,89 @@ fn handle_place_flex(cli: &Cli, args: &PlaceFlexArgs) {
     if !cli.quiet {
         heading("Test: place-flex");
     }
-    let timeout = cli.timeout;
-    let logs = true;
-    let mut overlay = None;
-    if !cli.no_warn {
-        overlay = process::start_warn_overlay_with_delay();
-        process::write_overlay_status("place-flex");
-        if let Some(info) = &cli.info {
-            process::write_overlay_info(info);
-        }
-    }
-    match run_on_main_with_watchdog("place-flex", timeout, move || {
-        if logs {
-            // logging already configured
-        }
-        tests::place_flex::run_place_flex(
-            args.cols,
-            args.rows,
-            args.col,
-            args.row,
-            args.force_size_pos,
-            args.pos_first_only,
-            args.force_shrink_move_grow,
-        )
-    }) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!(
-                    "place-flex: OK (cols={} rows={} cell=({},{}), force_size_pos={}, pos_first_only={})",
-                    args.cols,
-                    args.rows,
-                    args.col,
-                    args.row,
-                    args.force_size_pos,
-                    args.pos_first_only
-                );
-            }
-        }
-        Err(e) => {
-            eprintln!("place-flex: ERROR: {}", e);
-            print_hints(&e);
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-            exit(1);
-        }
-    }
-    if let Some(mut o) = overlay
-        && let Err(e) = o.kill_and_wait()
+    if args.pos_first_only
+        || args.cols != config::PLACE.grid_cols
+        || args.rows != config::PLACE.grid_rows
+        || args.col != 0
+        || args.row != 0
     {
-        eprintln!("smoketest: failed to stop overlay: {}", e);
+        eprintln!(
+            "place-flex: only default grid (cols={} rows={} col=0 row=0) is supported; use place-fallback or place-smg for specialized flows",
+            config::PLACE.grid_cols,
+            config::PLACE.grid_rows
+        );
+        exit(1);
+    }
+
+    let (slug, message) = if args.force_shrink_move_grow {
+        (
+            "place.flex.smg",
+            "place-flex: OK (forced shrink->move->grow fallback)",
+        )
+    } else if args.force_size_pos {
+        (
+            "place.flex.force_size_pos",
+            "place-flex: OK (forced size->pos retry)",
+        )
+    } else {
+        (
+            "place.flex.default",
+            "place-flex: OK (default configuration)",
+        )
+    };
+
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&[slug], &runner_cfg) {
+        eprintln!("place-flex: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("{message}");
     }
 }
 
 /// Handle `place-fallback` test case.
 fn handle_place_fallback(cli: &Cli) {
-    let timeout = cli.timeout;
-    match run_case(
-        "place-fallback",
-        "place-fallback",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || {
-            tests::place_flex::run_place_flex(
-                config::PLACE.grid_cols,
-                config::PLACE.grid_rows,
-                0,
-                0,
-                true,
-                false,
-                false,
-            )
-        },
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-fallback: OK (forced size->pos path)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-fallback: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.flex.force_size_pos"], &runner_cfg) {
+        eprintln!("place-fallback: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-fallback: OK (forced size->pos path)");
     }
 }
 
 /// Handle `place-smg` test case.
 fn handle_place_smg(cli: &Cli) {
-    let timeout = cli.timeout;
-    match run_case(
-        "place-smg (shrink→move→grow)",
-        "place-smg",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        None,
-        true,
-        move || tests::place_flex::run_place_flex(2, 2, 1, 1, false, false, true),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-smg: OK (forced shrink→move→grow path)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-smg: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.flex.smg"], &runner_cfg) {
+        eprintln!("place-smg: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-smg: OK (forced shrink->move->grow path)");
     }
 }
 
@@ -734,36 +695,20 @@ fn handle_place_skip(cli: &Cli) {
     if !cli.quiet {
         heading("Test: place-skip (non-movable)");
     }
-    let timeout = cli.timeout;
-    let logs = true;
-    let mut overlay = None;
-    if !cli.no_warn {
-        overlay = process::start_warn_overlay_with_delay();
-        process::write_overlay_status("place-skip");
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.skip.nonmovable"], &runner_cfg) {
+        eprintln!("place-skip: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
     }
-    match run_on_main_with_watchdog("place-skip", timeout, move || {
-        tests::place_skip::run_place_skip_test(timeout, logs)
-    }) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-skip: OK (engine skipped non-movable)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-skip: ERROR: {}", e);
-            print_hints(&e);
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-            exit(1);
-        }
-    }
-    if let Some(mut o) = overlay
-        && let Err(e) = o.kill_and_wait()
-    {
-        eprintln!("smoketest: failed to stop overlay: {}", e);
+    if !cli.quiet {
+        println!("place-skip: OK (engine skipped non-movable)");
     }
 }
 
@@ -834,135 +779,96 @@ fn handle_hide(cli: &Cli) {
 
 /// Handle `place` test case.
 fn handle_place(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place",
-        "place",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        None,
-        true,
-        move || tests::place::run_place_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place: OK (cycled all grid cells)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.grid.cycle"], &runner_cfg) {
+        eprintln!("place: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place: OK (cycled all grid cells)");
     }
 }
 
 /// Handle the fake placement test harness.
 fn handle_place_fake(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-fake",
-        "place-fake",
-        timeout,
-        cli.quiet,
-        false,
-        cli.info.as_deref(),
-        false,
-        move || tests::place_fake::run_fake_place_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-fake: OK (fake adapter flows)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-fake: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: false,
+        base_timeout_ms: cli.timeout,
+        fail_fast: true,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.fake.adapter"], &runner_cfg) {
+        eprintln!("place-fake: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-fake: OK (fake adapter flows)");
     }
 }
 
 /// Handle `place-async` test case.
 fn handle_place_async(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-async",
-        "place-async",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        None,
-        true,
-        move || tests::place_async::run_place_async_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-async: OK (converged within default budget)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-async: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.async.delay"], &runner_cfg) {
+        eprintln!("place-async: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-async: OK (converged within default budget)");
     }
 }
 
 /// Handle `place-animated` test case.
 fn handle_place_animated(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-animated",
-        "place-animated",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        None,
-        true,
-        move || tests::place_animated::run_place_animated_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-animated: OK (converged with tween)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-animated: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.animated.tween"], &runner_cfg) {
+        eprintln!("place-animated: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-animated: OK (converged with tween)");
     }
 }
 
 /// Handle `place-term` test case.
 fn handle_place_term(cli: &Cli) {
-    let timeout = cli.timeout;
-    match run_case(
-        "place-term",
-        "place-term",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || tests::place_term::run_place_term_test(timeout, true),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-term: OK (latched origin; no thrash)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-term: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.term.anchor"], &runner_cfg) {
+        eprintln!("place-term: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-term: OK (latched origin; no thrash)");
     }
 }
 
@@ -1009,21 +915,20 @@ fn handle_place_minimized(cli: &Cli) {
     if !cli.quiet {
         heading("Test: place-minimized");
     }
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_on_main_with_watchdog("place-minimized", timeout, move || {
-        tests::place_state::run_place_minimized_test(timeout, logs)
-    }) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-minimized: OK (normalized minimized -> placed)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-minimized: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.minimized.defer"], &runner_cfg) {
+        eprintln!("place-minimized: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-minimized: OK (normalized minimized -> placed)");
     }
 }
 
@@ -1032,21 +937,20 @@ fn handle_place_zoomed(cli: &Cli) {
     if !cli.quiet {
         heading("Test: place-zoomed");
     }
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_on_main_with_watchdog("place-zoomed", timeout, move || {
-        tests::place_state::run_place_zoomed_test(timeout, logs)
-    }) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-zoomed: OK (normalized zoomed -> placed)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-zoomed: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.zoomed.normalize"], &runner_cfg) {
+        eprintln!("place-zoomed: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-zoomed: OK (normalized zoomed -> placed)");
     }
 }
 

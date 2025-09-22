@@ -7,10 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_world::{
-    CommandError, CommandReceipt, MoveDirection, PlaceAttemptOptions, RaiseIntent, World,
-    WorldHandle, WorldWindow,
-};
+use hotki_world::{CommandError, RaiseIntent, World, WorldHandle, WorldWindow};
 use hotki_world_ids::WorldWindowId;
 use mac_winops::{self, WindowInfo, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
@@ -73,46 +70,6 @@ where
     F: Future<Output = T>,
 {
     runtime::block_on(fut)
-}
-
-/// Request placement for a specific window via the world service.
-pub fn place_window(
-    target: WorldWindowId,
-    cols: u32,
-    rows: u32,
-    col: u32,
-    row: u32,
-    options: Option<PlaceAttemptOptions>,
-) -> Result<CommandReceipt> {
-    let world = ensure_world_handle()?;
-    let receipt = world_block_on(async move {
-        world
-            .request_place_for_window(target, cols, rows, col, row, options)
-            .await
-    })?;
-    let receipt = receipt.map_err(|err| map_world_error("place_window", &err))?;
-    mac_winops::drain_main_ops();
-    Ok(receipt)
-}
-
-/// Request a grid-relative move for a specific window via the world service.
-#[allow(dead_code)]
-pub fn move_window(
-    target: WorldWindowId,
-    cols: u32,
-    rows: u32,
-    dir: MoveDirection,
-    options: Option<PlaceAttemptOptions>,
-) -> Result<CommandReceipt> {
-    let world = ensure_world_handle()?;
-    let receipt = world_block_on(async move {
-        world
-            .request_place_move_for_window(target, cols, rows, dir, options)
-            .await
-    })?;
-    let receipt = receipt.map_err(|err| map_world_error("move_window", &err))?;
-    mac_winops::drain_main_ops();
-    Ok(receipt)
 }
 
 /// Raise a window matching the provided title and best-effort ensure it is frontmost.
