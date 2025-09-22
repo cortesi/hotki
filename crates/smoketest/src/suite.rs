@@ -543,7 +543,7 @@ fn format_artifacts(paths: &[PathBuf]) -> String {
     }
 }
 
-/// Helper functions used by placement-focused smoketest cases.
+/// Helper functions shared by hide and placement-focused smoketest cases.
 const PLACE_HELPERS: &[HelperDoc] = &[
     HelperDoc {
         name: "wait_for_events_or",
@@ -554,6 +554,9 @@ const PLACE_HELPERS: &[HelperDoc] = &[
         summary: "Emit standardized frame diffs comparing expected geometry with world data.",
     },
 ];
+
+/// Alias for hide cases since they rely on the same helper set as placement cases.
+const HIDE_HELPERS: &[HelperDoc] = PLACE_HELPERS;
 
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
@@ -636,6 +639,19 @@ static CASES: &[CaseEntry] = &[
         run: cases::focus_nav,
     },
     CaseEntry {
+        name: "hide.toggle.roundtrip",
+        info: Some("Toggle hide on/off via world hide intents and verify window restoration"),
+        main_thread: true,
+        extra_timeout_ms: 20_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 800,
+            settle_ms: 1_800,
+        },
+        helpers: HIDE_HELPERS,
+        run: cases::hide_toggle_roundtrip,
+    },
+    CaseEntry {
         name: "place.minimized.defer",
         info: Some("Auto-unminimize minimized helper window before placement"),
         main_thread: true,
@@ -673,6 +689,32 @@ static CASES: &[CaseEntry] = &[
         },
         helpers: PLACE_HELPERS,
         run: cases::place_async_delay,
+    },
+    CaseEntry {
+        name: "place.term.anchor",
+        info: Some("Terminal-style placement honors step-size anchors without post-move drift"),
+        main_thread: true,
+        extra_timeout_ms: 10_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 500,
+            settle_ms: 2_000,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_term_anchor,
+    },
+    CaseEntry {
+        name: "place.increments.anchor",
+        info: Some("Placement with resize increments anchors both 2x2 and 3x1 scenarios"),
+        main_thread: true,
+        extra_timeout_ms: 12_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 800,
+            settle_ms: 2_400,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_increments_anchor,
     },
     CaseEntry {
         name: "place.move.min",

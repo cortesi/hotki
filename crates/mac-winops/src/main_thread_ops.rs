@@ -56,6 +56,10 @@ pub enum MainOp {
         row: u32,
         opts: PlaceAttemptOptions,
     },
+    Hide {
+        pid: i32,
+        desired: Desired,
+    },
     /// Best-effort app activation for a pid (fallback for raise).
     ActivatePid {
         pid: i32,
@@ -251,6 +255,13 @@ pub fn request_place_grid_focused_opts(
         row,
         opts,
     });
+    let _ = crate::focus::post_user_event();
+    Ok(())
+}
+
+/// Schedule a hide/show request on the AppKit main thread.
+pub fn request_hide_bottom_left(pid: i32, desired: Desired) -> Result<()> {
+    enqueue_with_coalescing(MainOp::Hide { pid, desired });
     let _ = crate::focus::post_user_event();
     Ok(())
 }

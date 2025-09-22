@@ -8,7 +8,7 @@ use hotki_world::{EventCursor, Frames, RectDelta, RectPx, WorldHandle, mimic::pu
 use crate::error::{Error, Result};
 
 /// Duration in milliseconds for each runloop pump step while waiting on events.
-const PUMP_STEP_MS: u64 = 10;
+const PUMP_STEP_MS: u64 = 5;
 
 /// Wait until `confirm` returns true or `timeout` elapses, pumping the main thread and draining
 /// events while ensuring world event ordering remains intact.

@@ -948,6 +948,16 @@ mod helper_app {
             self.pending_suppressed_events = self.pending_suppressed_events.saturating_add(count);
         }
 
+        /// Suppress downstream events after issuing geometry writes.
+        fn queue_apply_events(&mut self, writes: u8) {
+            if writes == 0 {
+                return;
+            }
+            const SUPPRESSED_EVENT_FANOUT: u8 = 2;
+            let scaled = writes.saturating_mul(SUPPRESSED_EVENT_FANOUT);
+            self.queue_suppressed_events(scaled);
+        }
+
         fn diag_tag(&self) -> String {
             format!(
                 "{}/{} quirks=[{}]",
@@ -1992,6 +2002,17 @@ mod helper_app {
             );
         }
 
+        /// Reset tween bookkeeping when abandoning an animation.
+        fn clear_tween_state(&mut self) {
+            self.tween_active = false;
+            self.tween_start = None;
+            self.tween_end = None;
+            self.tween_from_pos = None;
+            self.tween_from_size = None;
+            self.tween_to_pos = None;
+            self.tween_to_size = None;
+        }
+
         /// Compute tween progress in the range [0.0, 1.0].
         fn tween_progress(&self, now: Instant) -> f64 {
             let start = match self.tween_start {
@@ -2046,6 +2067,28 @@ mod helper_app {
                     let dy = (p.y - ly).abs();
                     let dw = (s.width - lw).abs();
                     let dh = (s.height - lh).abs();
+                    let width_span = lw.abs().max(1.0);
+                    let height_span = lh.abs().max(1.0);
+                    let has_explicit_target =
+                        self.apply_target.is_some() || self.apply_grid.is_some();
+                    let big_pos_shift = dx >= width_span / 2.0 || dy >= height_span / 2.0;
+                    let big_size_shift = dw >= width_span / 2.0 || dh >= height_span / 2.0;
+                    let adopt_external = (big_pos_shift || big_size_shift) && !has_explicit_target;
+                    if adopt_external {
+                        debug!(
+                            "winhelper: adopt external geometry dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
+                            dx, dy, dw, dh
+                        );
+                        self.last_pos = Some((p.x, p.y));
+                        self.last_size = Some((s.width, s.height));
+                        self.desired_pos = None;
+                        self.desired_size = None;
+                        self.apply_target = None;
+                        self.apply_grid = None;
+                        self.apply_after = None;
+                        self.clear_tween_state();
+                        return;
+                    }
                     if dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 {
                         debug!(
                             "winhelper: revert drift dx={:.1} dy={:.1} dw={:.1} dh={:.1}",
@@ -2059,9 +2102,7 @@ mod helper_app {
                     }
                 }
             }
-            if suppressed > 0 {
-                self.queue_suppressed_events(suppressed);
-            }
+            self.queue_apply_events(suppressed);
         }
 
         /// Apply a single tween step, updating window position/size.
@@ -2101,10 +2142,10 @@ mod helper_app {
                 pos_applied = true;
             }
             if size_applied {
-                self.queue_suppressed_events(1);
+                self.queue_apply_events(1);
             }
             if pos_applied {
-                self.queue_suppressed_events(1);
+                self.queue_apply_events(1);
             }
             if self.tween_start.is_some() && self.tween_end.is_some() {
                 let t_done = self.tween_progress(Instant::now());
@@ -2154,6 +2195,10 @@ mod helper_app {
                         "winhelper: explicit apply (explicit) -> ({:.1},{:.1},{:.1},{:.1})",
                         x, y, rw, rh
                     );
+                    // Clear explicit targets after applying so we don't re-issue
+                    // redundant AX operations every event loop tick.
+                    self.apply_target = None;
+                    self.apply_grid = None;
                 } else if let Some((cols, rows, col, row)) = self.apply_grid {
                     let (tx, ty, tw, th) = self.grid_rect(win, cols, rows, col, row);
                     let (rw, rh) = self.rounded_size(tw, th);
@@ -2169,6 +2214,10 @@ mod helper_app {
                         "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
                         tx, ty, rw, rh
                     );
+                    // Grid-driven targets only need a single apply; subsequent
+                    // drift corrections rely on `last_pos`/`last_size`.
+                    self.apply_grid = None;
+                    self.apply_target = None;
                 } else {
                     let desired_size = self.desired_size.take();
                     let desired_pos = self.desired_pos.take();
@@ -2190,9 +2239,7 @@ mod helper_app {
                     }
                 }
             }
-            if suppressed > 0 {
-                self.queue_suppressed_events(suppressed);
-            }
+            self.queue_apply_events(suppressed);
             // Ensure we clear any pending apply-after state after applying.
             self.apply_after = None;
             self.apply_ax_rounding_override();

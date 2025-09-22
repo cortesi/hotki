@@ -2,12 +2,15 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::{CStr, c_void},
-    ptr, thread_local,
+    ptr,
+    sync::atomic::{AtomicBool, Ordering},
+    thread_local,
 };
 
 use core_foundation::{
     base::{CFRelease, CFTypeRef, TCFType},
     boolean::{kCFBooleanFalse, kCFBooleanTrue},
+    number::CFNumber,
     string::{CFString, CFStringRef},
 };
 use objc2_app_kit::NSRunningApplication;
@@ -122,8 +125,47 @@ pub fn ax_check() -> Result<()> {
 fn assert_main_thread_debug() {
     #[cfg(debug_assertions)]
     {
+        if ALLOW_AX_OFF_MAIN.load(Ordering::SeqCst) {
+            return;
+        }
         let is_main = MainThreadMarker::new().is_some();
         debug_assert!(is_main, "AX mutation must run on the AppKit main thread");
+    }
+}
+
+#[cfg(debug_assertions)]
+static ALLOW_AX_OFF_MAIN: AtomicBool = AtomicBool::new(false);
+
+/// Guard that temporarily disables the debug-time AX main thread assertion.
+pub struct AxAllowOffMainGuard {
+    #[cfg(debug_assertions)]
+    prev: bool,
+}
+
+impl Drop for AxAllowOffMainGuard {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            ALLOW_AX_OFF_MAIN.store(self.prev, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Allow AX mutations to run off the main thread while the returned guard lives.
+///
+/// This is intended solely for test environments where the world service executes
+/// commands on a background Tokio worker while debug assertions would otherwise
+/// panic.
+#[must_use]
+pub fn allow_ax_off_main() -> AxAllowOffMainGuard {
+    #[cfg(debug_assertions)]
+    {
+        let prev = ALLOW_AX_OFF_MAIN.swap(true, Ordering::SeqCst);
+        AxAllowOffMainGuard { prev }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        AxAllowOffMainGuard {}
     }
 }
 
@@ -311,6 +353,39 @@ pub fn ax_get_size(element: *mut c_void, attr: CFStringRef) -> Result<Size> {
         return Err(Error::Unsupported);
     }
     Ok(s)
+}
+
+pub fn ax_get_i64(element: *mut c_void, attr: CFStringRef) -> Result<i64> {
+    unsafe extern "C" {
+        fn CFGetTypeID(cf: CFTypeRef) -> u64;
+        fn CFNumberGetTypeID() -> u64;
+    }
+
+    let mut v: CFTypeRef = ptr::null_mut();
+    let err = unsafe { AXUIElementCopyAttributeValue(element, attr, &mut v) };
+    if err != 0 {
+        if err == K_AX_ERROR_INVALID_UI_ELEMENT {
+            return Err(Error::WindowGone);
+        }
+        if err == -25205 {
+            return Err(Error::Unsupported);
+        }
+        debug!(
+            "AXUIElementCopyAttributeValue(i64) failed: code={} ({})",
+            err,
+            ax_error_name(err)
+        );
+        return Err(Error::AxCode(err));
+    }
+    if v.is_null() {
+        return Err(Error::Unsupported);
+    }
+    if unsafe { CFGetTypeID(v) != CFNumberGetTypeID() } {
+        unsafe { CFRelease(v) };
+        return Err(Error::Unsupported);
+    }
+    let n = unsafe { CFNumber::wrap_under_create_rule(v as _) };
+    n.to_i64().ok_or(Error::Unsupported)
 }
 
 pub fn ax_get_string(element: *mut c_void, attr: CFStringRef) -> Option<String> {

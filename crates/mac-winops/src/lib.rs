@@ -73,7 +73,7 @@ use std::sync::{Arc, RwLock};
 
 use ax::*;
 pub use ax::{
-    AxProps, ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed,
+    AxProps, allow_ax_off_main, ax_get_bool_by_title, ax_is_window_minimized, ax_is_window_zoomed,
     ax_props_for_window_id, ax_set_bool_by_title, ax_set_window_minimized, ax_set_window_zoomed,
     ax_window_frame, ax_window_position, ax_window_size, cfstr,
 };
@@ -84,10 +84,32 @@ pub use hide::{hide_bottom_left, hide_corner};
 use main_thread_ops::{MAIN_OPS, MainOp};
 pub use main_thread_ops::{
     MoveDir, request_activate_pid, request_focus_dir, request_fullscreen_native,
-    request_fullscreen_nonnative, request_place_grid, request_place_grid_focused,
-    request_place_grid_focused_opts, request_place_grid_opts, request_place_move_grid,
-    request_place_move_grid_opts, request_raise_window,
+    request_fullscreen_nonnative, request_hide_bottom_left, request_place_grid,
+    request_place_grid_focused, request_place_grid_focused_opts, request_place_grid_opts,
+    request_place_move_grid, request_place_move_grid_opts, request_raise_window,
 };
+/// Return true if the hide cache tracks `(pid, id)`.
+#[must_use]
+pub fn is_window_hidden(pid: i32, id: WindowId) -> bool {
+    frame_storage::is_hidden(pid, id)
+}
+
+/// Retrieve the stored frame for a hidden window, if available.
+#[must_use]
+pub fn hidden_window_frame(pid: i32, id: WindowId) -> Option<(geom::Point, geom::Size)> {
+    frame_storage::hidden_frame(pid, id)
+}
+
+/// Retrieve the overshoot target recorded when the window was hidden.
+#[must_use]
+pub fn hidden_window_target(pid: i32, id: WindowId) -> Option<geom::Point> {
+    frame_storage::hidden_target(pid, id)
+}
+
+/// Clear any cached hidden frame for `(pid, id)`.
+pub fn clear_hidden_window(pid: i32, id: WindowId) {
+    frame_storage::clear_hidden(pid, id);
+}
 pub use observability::{focused_fallback_count, reset_focused_fallback_count};
 use once_cell::sync::Lazy;
 pub use place::{
@@ -884,6 +906,12 @@ pub fn drain_main_ops() {
                         row,
                         e
                     );
+                }
+            }
+            MainOp::Hide { pid, desired } => {
+                tracing::info!("MainOps: drain Hide pid={} desired={:?}", pid, desired);
+                if let Err(e) = hide_bottom_left(pid, desired) {
+                    tracing::warn!("Hide failed: pid={} err={}", pid, e);
                 }
             }
             MainOp::ActivatePid { pid } => {

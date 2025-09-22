@@ -463,7 +463,7 @@ fn seq_case_name(test: &SeqTest) -> &'static str {
         SeqTest::RepeatVolume => "repeat-volume",
         SeqTest::Focus => "focus-tracking",
         SeqTest::Raise => "raise",
-        SeqTest::Hide => "hide",
+        SeqTest::Hide => "hide.toggle.roundtrip",
         SeqTest::Place => "place.minimized.defer",
         SeqTest::PlaceAsync => "place.async.delay",
         SeqTest::PlaceAnimated => "place.animated.tween",

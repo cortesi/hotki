@@ -2,8 +2,8 @@ use hotki_world_ids::WorldWindowId;
 
 use crate::{
     MoveDir, PlaceAttemptOptions, Result as WinResult, SpaceId, WindowId, WindowInfo,
-    hide_bottom_left, observability, request_activate_pid, request_focus_dir,
-    request_fullscreen_native, request_fullscreen_nonnative, request_place_grid,
+    observability, request_activate_pid, request_focus_dir, request_fullscreen_native,
+    request_fullscreen_nonnative, request_hide_bottom_left, request_place_grid,
     request_place_grid_focused, request_place_grid_focused_opts, request_place_grid_opts,
     request_place_move_grid, request_place_move_grid_opts,
     window::{frontmost_window, frontmost_window_for_pid, list_windows, list_windows_for_spaces},
@@ -190,7 +190,7 @@ impl WinOps for RealWinOps {
         frontmost_window_for_pid(pid)
     }
     fn hide_bottom_left(&self, pid: i32, desired: crate::Desired) -> WinResult<()> {
-        hide_bottom_left(pid, desired)
+        request_hide_bottom_left(pid, desired)
     }
 }
 

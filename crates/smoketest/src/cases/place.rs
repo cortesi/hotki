@@ -262,6 +262,245 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Verify terminal-style placements remain anchored after rounding to window increments.
+pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(
+            stage,
+            "place.term.anchor",
+            placeholder,
+            |config, _expected| {
+                config.time_ms = 25_000;
+                config.label_text = Some("TM".into());
+                config.step_size = Some((9.0, 18.0));
+            },
+        )?);
+        if let Some(place) = state.as_mut() {
+            let world = stage.world_clone();
+            refresh_cursor(place, &world)?;
+            let frames = wait_for_initial_frames(
+                stage.case_name(),
+                &world,
+                &mut place.cursor,
+                place.target_key,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+            )?;
+            let expected = grid_rect_from_frames(&frames, 3, 1, 0, 0)?;
+            rewrite_expected_artifact(stage, place.slug, expected)?;
+            place.expected = expected;
+        }
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let place = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        refresh_cursor(place, &world)?;
+        request_grid(&world, place.target_id, (3, 1, 0, 0))?;
+        let eps = config::PLACE.eps.round() as i32;
+        let frames = wait_for_expected(
+            stage,
+            place,
+            Duration::from_millis(config::PLACE.step_timeout_ms),
+            eps,
+        )?;
+        debug!(
+            case = %stage.case_name(),
+            frame = ?frames.authoritative,
+            "place_term_anchor_settled"
+        );
+        let world_ref = stage.world_clone();
+        ensure_frame_stability(
+            stage.case_name(),
+            &world_ref,
+            place.target_key,
+            place.expected,
+            eps,
+            Duration::from_millis(320),
+        )?;
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let place = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let target_key = WindowKey {
+            pid: place.target_key.pid,
+            id: place.target_key.id,
+        };
+        let world_clone = world;
+        let frames = block_on_with_pump(async move { world_clone.frames(target_key).await })?
+            .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+        let diag_path = record_mimic_diagnostics(stage, place.slug, &place.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            place.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        shutdown_mimic(place.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Verify placement with resize increments across multiple grid scenarios.
+pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(
+            stage,
+            "place.increments.anchor",
+            placeholder,
+            |config, _expected| {
+                config.time_ms = 25_000;
+                config.label_text = Some("INC".into());
+                config.step_size = Some((9.0, 18.0));
+            },
+        )?);
+        if let Some(place) = state.as_mut() {
+            let world = stage.world_clone();
+            refresh_cursor(place, &world)?;
+        }
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let place = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        let eps = config::PLACE.eps.round() as i32;
+
+        // Scenario A: 2x2 grid bottom-right cell.
+        {
+            let key = WindowKey {
+                pid: place.target_key.pid,
+                id: place.target_key.id,
+            };
+            let world_clone = world.clone();
+            let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
+                .ok_or_else(|| {
+                    Error::InvalidState("frames unavailable before scenario A".into())
+                })?;
+            let expected = grid_rect_from_frames(&frames, 2, 2, 1, 1)?;
+            place.expected = expected;
+            rewrite_expected_artifact(stage, place.slug, expected)?;
+            refresh_cursor(place, &world)?;
+            request_grid(&world, place.target_id, (2, 2, 1, 1))?;
+            let settled = wait_for_expected(
+                stage,
+                place,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+                eps,
+            )?;
+            debug!(
+                case = %stage.case_name(),
+                scenario = "2x2.br",
+                frame = ?settled.authoritative,
+                "place_increments_scenario_a"
+            );
+            let world_ref = stage.world_clone();
+            ensure_frame_stability(
+                stage.case_name(),
+                &world_ref,
+                place.target_key,
+                expected,
+                eps,
+                Duration::from_millis(240),
+            )?;
+        }
+
+        // Scenario B: 3x1 grid middle cell.
+        {
+            let key = WindowKey {
+                pid: place.target_key.pid,
+                id: place.target_key.id,
+            };
+            let world_clone = world.clone();
+            let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
+                .ok_or_else(|| {
+                    Error::InvalidState("frames unavailable before scenario B".into())
+                })?;
+            let expected = grid_rect_from_frames(&frames, 3, 1, 1, 0)?;
+            place.expected = expected;
+            rewrite_expected_artifact(stage, place.slug, expected)?;
+            refresh_cursor(place, &world)?;
+            request_grid(&world, place.target_id, (3, 1, 1, 0))?;
+            let settled = wait_for_expected(
+                stage,
+                place,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+                eps,
+            )?;
+            debug!(
+                case = %stage.case_name(),
+                scenario = "3x1.mid",
+                frame = ?settled.authoritative,
+                "place_increments_scenario_b"
+            );
+            let world_ref = stage.world_clone();
+            ensure_frame_stability(
+                stage.case_name(),
+                &world_ref,
+                place.target_key,
+                expected,
+                eps,
+                Duration::from_millis(240),
+            )?;
+        }
+
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let place = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let key = WindowKey {
+            pid: place.target_key.pid,
+            id: place.target_key.id,
+        };
+        let world_clone = world;
+        let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
+            .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+        let diag_path = record_mimic_diagnostics(stage, place.slug, &place.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            place.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        shutdown_mimic(place.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
 /// Verify grid-relative moves when the helper enforces a taller minimum height.
 pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<MoveCaseState> = None;
@@ -629,6 +868,44 @@ where
     let world_clone = world.clone();
     block_on_with_pump(async move { world_clone.frames(key).await })?
         .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))
+}
+
+/// Ensure the authoritative frame remains within `eps` for the supplied duration.
+fn ensure_frame_stability(
+    case: &str,
+    world: &WorldHandle,
+    key: WindowKey,
+    expected: RectPx,
+    eps: i32,
+    duration: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        pump_active_mimics();
+        thread::sleep(Duration::from_millis(40));
+        let world_clone = world.clone();
+        let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
+            .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+        let delta = expected.delta(&frames.authoritative);
+        if delta.dx.abs() > eps
+            || delta.dy.abs() > eps
+            || delta.dw.abs() > eps
+            || delta.dh.abs() > eps
+        {
+            let info = format!("check=stability duration_ms={}", duration.as_millis());
+            let message = format_frame_failure(
+                case,
+                expected,
+                Some(frames.authoritative),
+                frames.scale,
+                eps,
+                &[],
+                &info,
+            );
+            return Err(Error::InvalidState(message));
+        }
+    }
+    Ok(())
 }
 
 /// Extract the authoritative rectangle and scale factor from optional frames.

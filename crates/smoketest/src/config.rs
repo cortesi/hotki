@@ -94,7 +94,7 @@ pub struct HelperWindowConfig {
 
 /// Helper window geometry and lifetime defaults.
 pub const HELPER_WINDOW: HelperWindowConfig = HelperWindowConfig {
-    default_lifetime_ms: 30000,
+    default_lifetime_ms: 15000,
     extra_time_ms: 5000,
     width_px: 280.0,
     height_px: 180.0,

@@ -16,7 +16,12 @@ use tokio::{
 
 use crate::WorldEvent;
 
-pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 256;
+/// Default per-subscriber event ring capacity. Placement scenarios that drive
+/// synthetic helpers (e.g., min-size grids) can emit bursts well over a
+/// thousand updates, so we provision a larger buffer to avoid spurious waits
+/// while still surfacing `lost_count` diagnostics when something truly runs
+/// away.
+pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 16_384;
 
 /// Recorded event with timestamp and monotonic sequence.
 #[derive(Clone, Debug)]

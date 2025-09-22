@@ -139,12 +139,12 @@ No second data channel; hotki-world is the single assertion surface.
 4. [x] raise
 5. [x] focus-nav
 6. [x] focus-tracking
-7. [ ] hide
+7. [x] hide
 8. [ ] place (legacy grid cycle)
 9. [ ] place-async
 10. [ ] place-animated
-11. [ ] place-term
-12. [ ] place-increments
+11. [x] place-term
+12. [x] place-increments
 13. [ ] place-fake
 14. [ ] place-fallback
 15. [ ] place-smg

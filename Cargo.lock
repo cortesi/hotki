@@ -2893,11 +2893,12 @@ dependencies = [
 
 [[package]]
 name = "mac-keycode"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "proc-macro2",
  "quote",
+ "serde",
  "syn 2.0.106",
 ]
 

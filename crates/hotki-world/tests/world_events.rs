@@ -4,7 +4,7 @@ use hotki_world::{FocusChange, TestWorld, World, WorldEvent, WorldView};
 fn event_ring_overflow_tracks_lost_count() {
     let world = TestWorld::new();
     let mut cursor = world.subscribe();
-    for _ in 0..300 {
+    for _ in 0..20_000 {
         world.push_event(WorldEvent::FocusChanged(FocusChange::default()));
     }
     let rt = tokio::runtime::Runtime::new().expect("runtime");
