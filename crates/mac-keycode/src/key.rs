@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 #[allow(missing_docs)]
 #[repr(u16)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Key {
     A = 0x0,
     S = 0x1,

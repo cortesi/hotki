@@ -1,9 +1,11 @@
 use std::{collections::HashSet, convert::TryFrom};
 
+use serde::{Deserialize, Serialize};
+
 use crate::Key;
 
 /// Modifier keys available on macOS keyboards.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub enum Modifier {
     Command,

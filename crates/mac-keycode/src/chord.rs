@@ -1,9 +1,11 @@
 use std::{collections::HashSet, fmt};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{Key, Modifier};
 
 /// A key chord: a set of modifiers plus a single key.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Chord {
     /// Set of modifier keys held down for this chord.
     pub modifiers: HashSet<Modifier>,
