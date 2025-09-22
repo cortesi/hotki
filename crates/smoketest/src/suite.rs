@@ -683,8 +683,8 @@ static CASES: &[CaseEntry] = &[
         main_thread: true,
         extra_timeout_ms: 35_000,
         budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 500,
+            setup_ms: 3_000,
+            action_ms: 1_000,
             settle_ms: 2_800,
         },
         helpers: PLACE_HELPERS,

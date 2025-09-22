@@ -201,21 +201,22 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
 
 /// Exercise delayed geometry application to mimic asynchronous placement behaviour.
 pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    const GRID: (u32, u32, u32, u32) = (3, 2, 0, 1);
     let mut state: Option<PlaceState> = None;
     ctx.setup(|stage| {
-        let expected = RectPx {
-            x: 200,
-            y: 180,
-            w: 500,
-            h: 300,
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
         };
         state = Some(spawn_place_state(
             stage,
             "place.async.delay",
-            expected,
-            |config, expected| {
+            placeholder,
+            |config, _expected| {
                 config.delay_apply_ms = 220;
-                config.apply_target = Some(rect_to_f64(expected));
+                config.apply_grid = Some(GRID);
                 config.place = PlaceOptions {
                     raise: RaiseStrategy::AppActivate,
                     minimized: MinimizedPolicy::DeferUntilUnminimized,
@@ -225,8 +226,19 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?);
         if let Some(place_state) = state.as_mut() {
+            promote_helper_frontmost(stage.case_name(), place_state);
             let world = stage.world_clone();
             refresh_cursor(place_state, &world)?;
+            let frames = wait_for_initial_frames(
+                stage.case_name(),
+                &world,
+                &mut place_state.cursor,
+                place_state.target_key,
+                Duration::from_millis(config::PLACE.step_timeout_ms),
+            )?;
+            let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
+            rewrite_expected_artifact(stage, place_state.slug, expected)?;
+            place_state.expected = expected;
         }
         Ok(())
     })?;
@@ -236,8 +248,10 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
+        promote_helper_frontmost(stage.case_name(), state_ref);
         refresh_cursor(state_ref, &world)?;
-        request_grid(&world, state_ref.target_id, (3, 2, 0, 1))?;
+        request_grid(&world, state_ref.target_id, GRID)?;
+        refresh_cursor(state_ref, &world)?;
         Ok(())
     })?;
 
