@@ -272,6 +272,14 @@ fn wait_for_rect(
             Some(frames) => frames,
             None => return Ok(false),
         };
+        if frames.mode != WindowMode::Normal {
+            debug!(
+                case = %stage.case_name(),
+                current_mode = ?frames.mode,
+                "hide_wait_for_rect_mode_pending"
+            );
+            return Ok(false);
+        }
         let delta = expected.delta(&frames.authoritative);
         Ok(delta.dx.abs() <= eps
             && delta.dy.abs() <= eps

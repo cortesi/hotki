@@ -190,7 +190,14 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             config.start_zoomed = true;
             config.grid = Some(grid);
             config.place = PlaceOptions {
-                raise: RaiseStrategy::AppActivate,
+                raise: RaiseStrategy::SmartRaise {
+                    deadline: Duration::from_millis(
+                        config::INPUT_DELAYS
+                            .ui_action_delay_ms
+                            .saturating_mul(20)
+                            .max(2_000),
+                    ),
+                },
                 minimized: MinimizedPolicy::DeferUntilUnminimized,
                 animate: false,
             };
@@ -218,6 +225,12 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
         promote_helper_frontmost(stage.case_name(), state_ref);
+        ensure_window_on_active_space(
+            stage.case_name(),
+            state_ref,
+            &world,
+            Duration::from_millis(1_600),
+        )?;
         refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, grid)?;
         Ok(())
@@ -644,7 +657,14 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
             config.time_ms = 25_000;
             config.grid = Some((config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0));
             config.place = PlaceOptions {
-                raise: RaiseStrategy::AppActivate,
+                raise: RaiseStrategy::SmartRaise {
+                    deadline: Duration::from_millis(
+                        config::INPUT_DELAYS
+                            .ui_action_delay_ms
+                            .saturating_mul(18)
+                            .max(1_800),
+                    ),
+                },
                 minimized: MinimizedPolicy::AutoUnminimize,
                 animate: false,
             };
@@ -666,6 +686,12 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
         for row in 0..rows {
             for col in 0..cols {
                 promote_helper_frontmost(stage.case_name(), state_ref);
+                ensure_window_on_active_space(
+                    stage.case_name(),
+                    state_ref,
+                    &world,
+                    Duration::from_millis(1_400),
+                )?;
                 let world_for_frames = world.clone();
                 let target_key = state_ref.target_key;
                 let frames_before = block_on_with_pump(async move {
@@ -1478,6 +1504,16 @@ where
         target.ok_or_else(|| Error::InvalidState(format!("mimic window {} not observed", slug)))?;
     let title = target.title.clone();
 
+    let initial_raise_deadline = Duration::from_millis(
+        config::INPUT_DELAYS
+            .ui_action_delay_ms
+            .saturating_mul(12)
+            .max(1200),
+    );
+    if let Err(err) = world::smart_raise(target.world_id(), &title, initial_raise_deadline) {
+        debug!(case = slug, error = %err, "spawn_place_state_initial_raise_failed");
+    }
+
     if !target.is_on_screen {
         let wait_until = Instant::now() + Duration::from_millis(750);
         while !target.is_on_screen && Instant::now() < wait_until {
@@ -1581,6 +1617,7 @@ where
 
 /// Best-effort ensure the helper window is frontmost before issuing commands.
 fn promote_helper_frontmost(case: &str, state: &PlaceState) {
+    debug!(case = %case, strategy = ?state.raise, "promote_helper_frontmost_start");
     match state.raise {
         RaiseStrategy::SmartRaise { deadline } => {
             if let Err(err) = world::smart_raise(state.target_id, &state.title, deadline) {
@@ -1588,17 +1625,68 @@ fn promote_helper_frontmost(case: &str, state: &PlaceState) {
             }
         }
         RaiseStrategy::AppActivate => {
+            let pid = state.target_id.pid();
             if let Err(err) = world::ensure_frontmost(
-                state.target_id.pid(),
+                pid,
                 &state.title,
                 6,
                 config::INPUT_DELAYS.ui_action_delay_ms,
             ) {
                 debug!(case = %case, error = %err, "ensure_frontmost_failed");
             }
+            let deadline = Duration::from_millis(
+                config::INPUT_DELAYS
+                    .ui_action_delay_ms
+                    .saturating_mul(10)
+                    .max(400),
+            );
+            match world::smart_raise(state.target_id, &state.title, deadline) {
+                Ok(()) => debug!(case = %case, "smart_raise_followup_ok"),
+                Err(err) => debug!(case = %case, error = %err, "smart_raise_followup_failed"),
+            }
         }
         _ => {}
     }
+}
+
+/// Wait for the helper window to report on-screen and on the active space.
+fn ensure_window_on_active_space(
+    case: &str,
+    state: &PlaceState,
+    world: &WorldHandle,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last_log: Option<Instant> = None;
+    while Instant::now() < deadline {
+        pump_active_mimics();
+        let world_clone = world.clone();
+        let target_key = state.target_key;
+        if let Some(window) = block_on_with_pump(async move { world_clone.get(target_key).await })?
+        {
+            if window.on_active_space && window.is_on_screen {
+                return Ok(());
+            }
+            if last_log
+                .map(|ts| ts.elapsed() >= Duration::from_millis(400))
+                .unwrap_or(true)
+            {
+                debug!(
+                    case = %case,
+                    pid = window.pid,
+                    id = window.id,
+                    on_active_space = window.on_active_space,
+                    is_on_screen = window.is_on_screen,
+                    "ensure_window_on_active_space_pending"
+                );
+                last_log = Some(Instant::now());
+            }
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
+    Err(Error::InvalidState(format!(
+        "{case}: target window never reached active space"
+    )))
 }
 
 /// Wait until the world reports authoritative frames for the supplied key.

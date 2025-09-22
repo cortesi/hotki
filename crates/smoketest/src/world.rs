@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_world::{CommandError, RaiseIntent, World, WorldHandle, WorldWindow};
+use hotki_world::{CommandError, RaiseIntent, WindowKey, World, WorldHandle, WorldWindow};
 use hotki_world_ids::WorldWindowId;
 use mac_winops::{self, WindowInfo, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
@@ -90,7 +90,16 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
                     && target.pid == pid
                     && target.title == title
                 {
-                    return Ok(());
+                    let key = WindowKey {
+                        pid: target.pid,
+                        id: target.id,
+                    };
+                    if let Ok(Some(window)) = world_block_on(async { world.get(key).await })
+                        && window.on_active_space
+                        && window.is_on_screen
+                    {
+                        return Ok(());
+                    }
                 }
             }
             Err(err) => {

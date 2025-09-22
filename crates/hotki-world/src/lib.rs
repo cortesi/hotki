@@ -41,7 +41,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{
         Arc, OnceLock,
@@ -1269,6 +1269,8 @@ struct WorldState {
     hidden_targets: HashMap<i32, WorldWindowId>,
     /// Most recently hidden window identifier, used for toggle semantics.
     last_hidden_target: Option<WorldWindowId>,
+    /// Pending hide operations awaiting the window entering Hidden mode.
+    pending_hide: HashSet<WorldWindowId>,
 }
 
 impl WorldState {
@@ -1290,6 +1292,7 @@ impl WorldState {
             next_command_id: 1,
             hidden_targets: HashMap::new(),
             last_hidden_target: None,
+            pending_hide: HashSet::new(),
         }
     }
 }
@@ -1683,8 +1686,10 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
             scale,
             mode,
         };
-        if mode != WindowMode::Hidden {
-            let world_id = WorldWindowId::new(w.pid, w.id);
+        let world_id = WorldWindowId::new(w.pid, w.id);
+        if mode == WindowMode::Hidden {
+            state.pending_hide.remove(&world_id);
+        } else if !state.pending_hide.contains(&world_id) {
             if state.hidden_targets.get(&w.pid) == Some(&world_id) {
                 tracing::trace!(
                     pid = w.pid,
@@ -1857,6 +1862,7 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
                         );
                         state.last_hidden_target = None;
                     }
+                    state.pending_hide.remove(&world_id);
                     mac_winops::clear_hidden_window(key.pid, key.id);
                     state.store.remove(&key);
                     state.coalesce.remove(&key);
@@ -1938,7 +1944,7 @@ fn handle_place_grid(
     }
 
     if let Some(target_id) = target {
-        let target_window = snapshot
+        let mut target_window = snapshot
             .iter()
             .find(|w| w.pid == target_id.pid() && w.id == target_id.window_id())
             .cloned()
@@ -1949,6 +1955,33 @@ fn handle_place_grid(
                     target_id.window_id()
                 ),
             })?;
+
+        if !target_window.on_active_space || !target_window.is_on_screen {
+            tracing::debug!(
+                pid = target_window.pid,
+                id = target_window.id,
+                on_active_space = target_window.on_active_space,
+                is_on_screen = target_window.is_on_screen,
+                "Place(World): target off active space prior to refresh"
+            );
+            let listing = winops.list_windows_for_spaces(&[]);
+            if let Some(fresh) = listing
+                .into_iter()
+                .find(|w| w.pid == target_window.pid && w.id == target_window.id)
+                && fresh.on_active_space
+                && fresh.is_on_screen
+            {
+                tracing::debug!(
+                    pid = fresh.pid,
+                    id = fresh.id,
+                    "Place(World): refreshed target from CG listing to active space"
+                );
+                target_window.on_active_space = true;
+                target_window.is_on_screen = true;
+                target_window.space = fresh.space;
+                target_window.layer = fresh.layer;
+            }
+        }
 
         placement_mode_guard(
             state,
@@ -1965,6 +1998,7 @@ fn handle_place_grid(
                 target_window.pid,
                 target_window.title
             );
+            let _ = winops.request_raise_window(target_window.pid, target_window.id);
         }
 
         let _ = winops.request_activate_pid(target_window.pid);
@@ -2294,12 +2328,27 @@ fn handle_hide(
     let will_show = matches!(intent.desired, CommandToggle::Off)
         || (matches!(intent.desired, CommandToggle::Toggle) && last_hidden.is_some());
 
+    tracing::debug!(
+        "Hide(World): pre-select pid={} desired={:?} focused_pid={:?} last_hidden_pid={:?}",
+        pid,
+        intent.desired,
+        focused.as_ref().map(|w| w.pid),
+        last_hidden.map(|id| id.pid()),
+    );
+
     if will_show && let Some(hidden_id) = last_hidden {
         pid = hidden_id.pid();
     }
 
     let desired = convert_toggle(intent.desired);
     let stored_hidden = state.hidden_targets.get(&pid).copied();
+    let mut hidden_receipt = stored_hidden;
+
+    tracing::debug!(
+        "Hide(World): post-select pid={} stored_hidden_pid={:?}",
+        pid,
+        stored_hidden.map(|id| id.pid()),
+    );
 
     if let Some(top) = snapshot.first() {
         tracing::debug!(
@@ -2324,8 +2373,11 @@ fn handle_hide(
     }
 
     let mut target_window = focused.clone();
+    if will_show && hidden_receipt.is_none() && last_hidden.is_some() {
+        hidden_receipt = last_hidden;
+    }
     if will_show
-        && let Some(hidden_id) = stored_hidden
+        && let Some(hidden_id) = hidden_receipt
         && let Some(found) = snapshot.iter().find(|w| w.world_id() == hidden_id)
     {
         target_window = Some(found.clone());
@@ -2338,10 +2390,15 @@ fn handle_hide(
 
     if will_hide {
         if let Some(ref win) = target_window {
-            state.hidden_targets.insert(pid, win.world_id());
-            state.last_hidden_target = Some(win.world_id());
+            let world_id = win.world_id();
+            state.pending_hide.insert(world_id);
+            state.hidden_targets.insert(pid, world_id);
+            state.last_hidden_target = Some(world_id);
         }
     } else if will_show {
+        if let Some(hidden_id) = hidden_receipt {
+            state.pending_hide.remove(&hidden_id);
+        }
         state.hidden_targets.remove(&pid);
         if state.last_hidden_target.is_some_and(|id| id.pid() == pid) {
             state.last_hidden_target = None;
