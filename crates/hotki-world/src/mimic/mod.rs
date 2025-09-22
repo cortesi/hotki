@@ -422,18 +422,21 @@ pub fn spawn_mimic(scenario: MimicScenario) -> Result<MimicHandle, MimicError> {
         );
 
         let event_loop = shared_event_loop();
+        debug!(slug = %slug, label = %spec.window_label, "helper_app_construct_begin");
         let app = helper_app::HelperApp::new(helper_app::HelperParams::from_config(
             decorated_title,
             helper_config,
         ));
+        debug!(slug = %slug, label = %spec.window_label, "helper_app_construct_end");
         let runtime = Rc::new(MimicRuntime::new(event_loop.clone(), app, shutdown.clone()));
         register_active_mimic(&runtime);
-        runtime.pump();
+        debug!(slug = %slug, label = %spec.window_label, "helper_runtime_registered");
 
         registry()
             .lock()
             .unwrap()
             .register(slug.clone(), label.clone(), quirks.clone(), place);
+        debug!(slug = %slug, label = %spec.window_label, "helper_registry_registered");
 
         handles.push(MimicWindowHandle {
             label,
@@ -1167,8 +1170,9 @@ mod helper_app {
         fn activate_app(&self) {
             if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
                 let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
                 unsafe {
-                    app.activate();
                     app.unhide(None);
                 }
             }
@@ -1227,11 +1231,70 @@ mod helper_app {
                     if is_match {
                         let mut mask = w.styleMask();
                         mask.remove(NSWindowStyleMask::Resizable);
+                        mask.insert(NSWindowStyleMask::Titled);
+                        mask.insert(NSWindowStyleMask::Closable);
+                        mask.insert(NSWindowStyleMask::Miniaturizable);
                         w.setStyleMask(mask);
+                        unsafe {
+                            w.setHidesOnDeactivate(false);
+                        }
+                        w.makeKeyAndOrderFront(None);
                         break;
                     }
                 }
             }
+        }
+
+        fn smart_raise_window(&self, deadline: Duration) {
+            let pid = id() as i32;
+            let start = Instant::now();
+            let mut click_attempted = false;
+            let mut last_raise: Option<Instant> = None;
+
+            while start.elapsed() < deadline {
+                if let Some(target) = self.resolve_world_window() {
+                    let wid = target.window_id();
+                    let now = Instant::now();
+                    let should_raise = last_raise
+                        .map(|ts| now.duration_since(ts) >= Duration::from_millis(160))
+                        .unwrap_or(true);
+                    if should_raise {
+                        match mac_winops::raise_window(pid, wid) {
+                            Ok(()) => {}
+                            Err(mac_winops::Error::MainThread) => {
+                                let _ = mac_winops::request_raise_window(pid, wid);
+                            }
+                            Err(err) => debug!(
+                                tag = %self.diag_tag(),
+                                pid,
+                                id = wid,
+                                error = %err,
+                                "smart_raise_raise_failed"
+                            ),
+                        }
+                        last_raise = Some(now);
+                    }
+
+                    if let Ok(windows) = world::list_windows()
+                        && windows.iter().any(|w| {
+                            w.pid == pid && w.id == wid && w.is_on_screen && w.on_active_space
+                        })
+                    {
+                        debug!(tag = %self.diag_tag(), "smart_raise_visible_confirmed");
+                        return;
+                    }
+
+                    if !click_attempted && now.duration_since(start) >= Duration::from_millis(200) {
+                        click_attempted = mac_winops::click_window_center(pid, &self.title);
+                        if click_attempted {
+                            debug!(tag = %self.diag_tag(), "smart_raise_click_issued");
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+
+            debug!(tag = %self.diag_tag(), "smart_raise_deadline_elapsed");
         }
 
         /// Poll the world snapshot to resolve the helper window's identifier.
@@ -1272,6 +1335,9 @@ mod helper_app {
                             pid, self.title, err
                         );
                     }
+                }
+                RaiseStrategy::SmartRaise { deadline } => {
+                    self.smart_raise_window(deadline);
                 }
             }
             if let Some((cols, rows, col, row)) = self.grid {
@@ -2073,14 +2139,17 @@ mod helper_app {
             }
             let mut suppressed = 0u8;
             if let Some(win) = self.window.as_ref() {
+                use winit::dpi::{LogicalPosition, LogicalSize};
                 if let Some((x, y, w, h)) = self.apply_target {
                     let (rw, rh) = self.rounded_size(w, h);
-                    // Ignore the returned size; it is advisory for winit.
-                    let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                    if !self.panel_nonresizable {
+                        let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                        suppressed = suppressed.saturating_add(1);
+                    }
                     win.set_outer_position(LogicalPosition::new(x, y));
                     self.last_pos = Some((x, y));
                     self.last_size = Some((rw, rh));
-                    suppressed = suppressed.saturating_add(2);
+                    suppressed = suppressed.saturating_add(1);
                     debug!(
                         "winhelper: explicit apply (explicit) -> ({:.1},{:.1},{:.1},{:.1})",
                         x, y, rw, rh
@@ -2088,32 +2157,35 @@ mod helper_app {
                 } else if let Some((cols, rows, col, row)) = self.apply_grid {
                     let (tx, ty, tw, th) = self.grid_rect(win, cols, rows, col, row);
                     let (rw, rh) = self.rounded_size(tw, th);
-                    let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                    if !self.panel_nonresizable {
+                        let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                        suppressed = suppressed.saturating_add(1);
+                    }
                     win.set_outer_position(LogicalPosition::new(tx, ty));
                     self.last_pos = Some((tx, ty));
                     self.last_size = Some((rw, rh));
-                    suppressed = suppressed.saturating_add(2);
+                    suppressed = suppressed.saturating_add(1);
                     debug!(
                         "winhelper: explicit apply (grid) -> ({:.1},{:.1},{:.1},{:.1})",
                         tx, ty, rw, rh
                     );
                 } else {
-                    let desired_size_val = self.desired_size;
-                    let desired_pos_val = self.desired_pos;
-                    if let Some((w, h)) = desired_size_val {
+                    let desired_size = self.desired_size.take();
+                    let desired_pos = self.desired_pos.take();
+                    if let Some((w, h)) = desired_size {
                         let (rw, rh) = self.rounded_size(w, h);
-                        let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                        if !self.panel_nonresizable {
+                            let _ = win.request_inner_size(LogicalSize::new(rw, rh));
+                            suppressed = suppressed.saturating_add(1);
+                        }
                         self.last_size = Some((rw, rh));
-                        self.desired_size = None;
-                        suppressed = suppressed.saturating_add(1);
                     }
-                    if let Some((x, y)) = desired_pos_val {
+                    if let Some((x, y)) = desired_pos {
                         win.set_outer_position(LogicalPosition::new(x, y));
                         self.last_pos = Some((x, y));
-                        self.desired_pos = None;
                         suppressed = suppressed.saturating_add(1);
                     }
-                    if desired_size_val.is_some() || desired_pos_val.is_some() {
+                    if desired_size.is_some() || desired_pos.is_some() {
                         debug!("winhelper: applied desired pos/size");
                     }
                 }

@@ -150,8 +150,8 @@ No second data channel; hotki-world is the single assertion surface.
 15. [ ] place-smg
 16. [ ] place-flex
 17. [ ] place-skip
-18. [ ] place-move-min
-19. [ ] place-move-nonresizable
+18. [x] place-move-min
+19. [x] place-move-nonresizable
 20. [ ] place-minimized
 21. [ ] place-zoomed
 22. [ ] ui

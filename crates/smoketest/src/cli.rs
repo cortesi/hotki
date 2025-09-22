@@ -66,6 +66,10 @@ pub enum SeqTest {
     PlaceAsync,
     /// Animated placement behavior
     PlaceAnimated,
+    /// Move with minimum size constraint
+    PlaceMoveMin,
+    /// Move with non-resizable constraint
+    PlaceMoveNonresizable,
     /// Fullscreen behavior
     Fullscreen,
     /// Full UI smoke
@@ -153,11 +157,6 @@ pub enum Commands {
     #[command(name = "place-term")]
     PlaceTerm,
 
-    /// Repro: move-within-grid when the window has a minimum height larger than the grid cell.
-    /// Ensures we still move horizontally by anchoring the legal size.
-    #[command(name = "place-move-min")]
-    PlaceMoveMin,
-
     /// Verify placement when the app enforces discrete resize increments. This
     /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and
     /// checks that anchored edges are flush to the grid.
@@ -171,6 +170,14 @@ pub enum Commands {
     /// Verify placement after normalizing a zoomed window
     #[command(name = "place-zoomed")]
     PlaceZoomed,
+
+    /// Repro for move-with-grid when minimum height exceeds cell size
+    #[command(name = "place-move-min")]
+    PlaceMoveMin,
+
+    /// Repro for move-with-grid when window is non-resizable
+    #[command(name = "place-move-nonresizable")]
+    PlaceMoveNonresizable,
 
     /// Flexible placement harness for Stage-8 variants (direct mac-winops calls)
     #[command(name = "place-flex")]
@@ -335,7 +342,4 @@ pub enum Commands {
     /// Focused test: attempt placement on a non-movable window and assert skip
     #[command(name = "place-skip")]
     PlaceSkip,
-    /// Repro: move within grid when window is non-resizable; expect anchored fallback
-    #[command(name = "place-move-nonresizable")]
-    PlaceMoveNonresizable,
 }

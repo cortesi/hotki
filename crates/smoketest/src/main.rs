@@ -467,6 +467,8 @@ fn seq_case_name(test: &SeqTest) -> &'static str {
         SeqTest::Place => "place.minimized.defer",
         SeqTest::PlaceAsync => "place.async.delay",
         SeqTest::PlaceAnimated => "place.animated.tween",
+        SeqTest::PlaceMoveMin => "place.move.min",
+        SeqTest::PlaceMoveNonresizable => "place.move.nonresizable",
         SeqTest::Fullscreen => "fullscreen",
         SeqTest::Ui => "ui",
         SeqTest::Minui => "minui",
@@ -966,55 +968,39 @@ fn handle_place_term(cli: &Cli) {
 
 /// Handle `place-move-min` test case.
 fn handle_place_move_min(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-move-min",
-        "place-move-min",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || tests::place_move_min::run_place_move_min_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-move-min: OK (moved with min-height anchored)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-move-min: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.move.min"], &runner_cfg) {
+        eprintln!("place-move-min: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-move-min: OK (moved with min-height anchored)");
     }
 }
 
 /// Handle `place-move-nonresizable` test case.
 fn handle_place_move_nonresizable(cli: &Cli) {
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "place-move-nonresizable",
-        "place-move-nonresizable",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        true,
-        move || tests::place_move_nonresizable::run_place_move_nonresizable_test(timeout, logs),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("place-move-nonresizable: OK (moved with anchored fallback)");
-            }
-        }
-        Err(e) => {
-            eprintln!("place-move-nonresizable: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["place.move.nonresizable"], &runner_cfg) {
+        eprintln!("place-move-nonresizable: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("place-move-nonresizable: OK (moved with anchored fallback)");
     }
 }
 

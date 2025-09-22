@@ -125,6 +125,7 @@ pub struct HelperWindowBuilder {
     step_size: Option<(f64, f64)>,
 }
 
+#[allow(dead_code)]
 impl HelperWindowBuilder {
     /// Create a new helper window builder.
     pub fn new(title: impl Into<String>) -> Self {
@@ -155,15 +156,27 @@ impl HelperWindowBuilder {
         self
     }
 
-    /// Place into an arbitrary grid cell (top-left origin)
+    /// Place into an arbitrary grid cell (top-left origin).
     pub fn with_grid(mut self, cols: u32, rows: u32, col: u32, row: u32) -> Self {
         self.grid = Some((cols, rows, col, row));
         self
     }
 
-    /// Set requested window size
+    /// Set the requested window size before showing the helper.
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
         self.size = Some((width, height));
+        self
+    }
+
+    /// Enforce a minimum content size for the helper window.
+    pub fn with_min_size(mut self, width: f64, height: f64) -> Self {
+        self.min_size = Some((width.max(1.0), height.max(1.0)));
+        self
+    }
+
+    /// Make the helper window non-resizable.
+    pub fn with_nonresizable(mut self, v: bool) -> Self {
+        self.nonresizable = v;
         self
     }
 
@@ -193,12 +206,6 @@ impl HelperWindowBuilder {
         self
     }
 
-    /// Enforce a minimum content size for the helper window.
-    pub fn with_min_size(mut self, width: f64, height: f64) -> Self {
-        self.min_size = Some((width.max(1.0), height.max(1.0)));
-        self
-    }
-
     /// Round requested sizes to nearest multiples of `(w, h)` in the helper.
     pub fn with_step_size(mut self, w: f64, h: f64) -> Self {
         self.step_size = Some((w, h));
@@ -220,12 +227,6 @@ impl HelperWindowBuilder {
     /// Make the helper window non-movable (sets NSWindow.movable=false).
     pub fn with_nonmovable(mut self, v: bool) -> Self {
         self.nonmovable = v;
-        self
-    }
-
-    /// Make the helper window non-resizable.
-    pub fn with_nonresizable(mut self, v: bool) -> Self {
-        self.nonresizable = v;
         self
     }
 
@@ -450,6 +451,7 @@ pub struct HelperWindow {
     pub pid: i32,
 }
 
+#[allow(dead_code)]
 impl HelperWindow {
     /// Spawn a helper window and ensure it becomes frontmost. Kills on drop.
     pub fn spawn_frontmost(

@@ -29,6 +29,9 @@ use crate::{
 /// Initial number of mimic pump iterations to let helper windows settle.
 const INITIAL_SPIN_ITERS: usize = 24;
 
+/// Maximum number of events drained while priming a fresh cursor.
+const DRAIN_LIMIT: u32 = 5_000;
+
 /// Run `fut` on the shared runtime while continuing to pump mimic event loops.
 pub fn block_on_with_pump<F>(fut: F) -> Result<F::Output>
 where
@@ -96,6 +99,8 @@ pub struct ScenarioWindow {
     pub(crate) world_id: WorldWindowId,
 }
 
+impl ScenarioWindow {}
+
 /// State captured after spawning a mimic scenario.
 pub struct ScenarioState {
     /// Scenario slug recorded across artifacts and helper labels.
@@ -160,14 +165,14 @@ pub fn spawn_scenario(
     let spawn_start = Instant::now();
     let scenario = MimicScenario::new(Arc::from(slug), mimic_specs);
     let mimic = spawn_mimic_handle(slug, scenario)?;
-    let spawn_ms = spawn_start.elapsed().as_millis();
+    let _spawn_ms = spawn_start.elapsed().as_millis();
     pump_active_mimics();
 
     let subscribe_start = Instant::now();
     let world_for_subscribe = world.clone();
     let (mut cursor, mut snapshot, _) =
         block_on_with_pump(async move { world_for_subscribe.subscribe_with_snapshot().await })?;
-    let subscribe_ms = subscribe_start.elapsed().as_millis();
+    let _subscribe_ms = subscribe_start.elapsed().as_millis();
 
     let mut windows: HashMap<&'static str, ScenarioWindow> = HashMap::new();
     let resolve_start = Instant::now();
@@ -188,7 +193,7 @@ pub fn spawn_scenario(
         let world_for_snapshot = world.clone();
         snapshot = block_on_with_pump(async move { world_for_snapshot.snapshot().await })?;
     }
-    let resolve_ms = resolve_start.elapsed().as_millis();
+    let _resolve_ms = resolve_start.elapsed().as_millis();
 
     // Allow mimic timers to run before issuing actions.
     let pre_spin_start = Instant::now();
@@ -196,19 +201,34 @@ pub fn spawn_scenario(
         pump_active_mimics();
         thread::sleep(Duration::from_millis(5));
     }
-    let spin_ms = pre_spin_start.elapsed().as_millis();
-    let settle_ms = total_start.elapsed().as_millis();
-    debug!(
-        slug,
-        spawn_ms, subscribe_ms, resolve_ms, spin_ms, settle_ms, "spawn_scenario_timing"
-    );
+    let _spin_ms = pre_spin_start.elapsed().as_millis();
+    let _settle_ms = total_start.elapsed().as_millis();
 
     // Drain any queued events so we start the case with a quiet cursor.
-    let mut _drained_events: u32 = 0;
-    while world.next_event_now(&mut cursor).is_some() {
-        _drained_events = _drained_events.saturating_add(1);
+    // Cap draining so continual event streams do not stall case setup.
+    let mut drained_events: u32 = 0;
+    let drain_deadline = Instant::now() + Duration::from_millis(750);
+    loop {
+        let mut drained_this_round = 0;
+        while world.next_event_now(&mut cursor).is_some() {
+            drained_events = drained_events.saturating_add(1);
+            drained_this_round += 1;
+            if drained_events >= DRAIN_LIMIT {
+                break;
+            }
+        }
+        if drained_this_round == 0 || drained_events >= DRAIN_LIMIT {
+            break;
+        }
+        if Instant::now() >= drain_deadline {
+            debug!(slug, drained_events, "spawn_scenario_drain_capped");
+            break;
+        }
+        pump_active_mimics();
+        thread::sleep(Duration::from_millis(5));
     }
     pump_active_mimics();
+    debug!(slug, drained_events, "spawn_scenario_drain_done");
 
     Ok(ScenarioState {
         slug,
@@ -220,8 +240,11 @@ pub fn spawn_scenario(
 
 /// Spawn the supplied mimic scenario, mapping any failure into a smoketest error.
 fn spawn_mimic_handle(slug: &str, scenario: MimicScenario) -> Result<MimicHandle> {
-    spawn_mimic(scenario)
-        .map_err(|e| Error::InvalidState(format!("spawn mimic failed for {}: {}", slug, e)))
+    debug!(slug, "spawn_mimic_handle_start");
+    let handle = spawn_mimic(scenario)
+        .map_err(|e| Error::InvalidState(format!("spawn mimic failed for {}: {}", slug, e)))?;
+    debug!(slug, "spawn_mimic_handle_done");
+    Ok(handle)
 }
 
 /// Attempt to resolve helper windows within the current world snapshot.

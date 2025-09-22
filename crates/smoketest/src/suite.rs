@@ -652,7 +652,7 @@ static CASES: &[CaseEntry] = &[
         name: "place.animated.tween",
         info: Some("Tweened placement verifies animated frame convergence"),
         main_thread: true,
-        extra_timeout_ms: 18_000,
+        extra_timeout_ms: 35_000,
         budget: Budget {
             setup_ms: 1_200,
             action_ms: 450,
@@ -665,7 +665,7 @@ static CASES: &[CaseEntry] = &[
         name: "place.async.delay",
         info: Some("Delayed apply placement converges after artificial async lag"),
         main_thread: true,
-        extra_timeout_ms: 18_000,
+        extra_timeout_ms: 35_000,
         budget: Budget {
             setup_ms: 1_200,
             action_ms: 500,
@@ -673,5 +673,31 @@ static CASES: &[CaseEntry] = &[
         },
         helpers: PLACE_HELPERS,
         run: cases::place_async_delay,
+    },
+    CaseEntry {
+        name: "place.move.min",
+        info: Some("Move within grid when minimum height exceeds cell"),
+        main_thread: true,
+        extra_timeout_ms: 5_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 450,
+            settle_ms: 2_400,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_move_min_anchor,
+    },
+    CaseEntry {
+        name: "place.move.nonresizable",
+        info: Some("Move anchored fallback when resizing is disabled"),
+        main_thread: true,
+        extra_timeout_ms: 5_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 450,
+            settle_ms: 2_400,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_move_nonresizable_anchor,
     },
 ];

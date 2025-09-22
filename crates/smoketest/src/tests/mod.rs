@@ -12,8 +12,6 @@ pub mod place_flex;
 pub mod place_increments;
 #[cfg(test)]
 pub mod place_metrics;
-pub mod place_move_min;
-pub mod place_move_nonresizable;
 pub mod place_skip;
 pub mod place_state;
 pub mod place_term;

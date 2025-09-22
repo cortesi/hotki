@@ -72,6 +72,11 @@ pub enum RaiseStrategy {
     AppActivate,
     /// Keep the currently frontmost window ahead of the target during placement.
     KeepFrontWindow,
+    /// Time-boxed raise that prefers AX/CG ordering over app activation.
+    SmartRaise {
+        /// Overall deadline allowed for the raise attempt.
+        deadline: Duration,
+    },
 }
 
 /// Policy applied when the target window is minimized during placement.

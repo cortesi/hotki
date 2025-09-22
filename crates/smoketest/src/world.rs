@@ -15,7 +15,7 @@ use hotki_world_ids::WorldWindowId;
 use mac_winops::{self, WindowInfo, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
 use regex::Regex;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     error::{Error, Result},
@@ -96,6 +96,7 @@ pub fn place_window(
 }
 
 /// Request a grid-relative move for a specific window via the world service.
+#[allow(dead_code)]
 pub fn move_window(
     target: WorldWindowId,
     cols: u32,
@@ -148,6 +149,61 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
     Err(Error::InvalidState(format!(
         "failed to raise window pid={} title='{}' after {} attempts",
         pid, title, attempts
+    )))
+}
+
+/// Attempt to raise a window without waiting for focus notifications.
+pub fn smart_raise(target: WorldWindowId, title: &str, deadline: Duration) -> Result<()> {
+    let pid = target.pid();
+    let wid = target.window_id();
+    let start = Instant::now();
+    let mut click_attempted = false;
+    let mut last_raise: Option<Instant> = None;
+
+    while start.elapsed() < deadline {
+        let now = Instant::now();
+        let should_raise = last_raise
+            .map(|ts| now.duration_since(ts) >= Duration::from_millis(160))
+            .unwrap_or(true);
+        if should_raise {
+            match mac_winops::raise_window(pid, wid) {
+                Ok(()) => {}
+                Err(mac_winops::Error::MainThread) => {
+                    mac_winops::request_raise_window(pid, wid).map_err(|err| {
+                        Error::InvalidState(format!(
+                            "smart raise queue failed for pid={} id={}: {}",
+                            pid, wid, err
+                        ))
+                    })?;
+                }
+                Err(err) => {
+                    debug!(pid, id = wid, error = %err, "smart_raise_raise_failed");
+                }
+            }
+            last_raise = Some(now);
+        }
+
+        if let Ok(windows) = list_windows()
+            && windows
+                .iter()
+                .any(|w| w.pid == pid && w.id == wid && w.is_on_screen && w.on_active_space)
+        {
+            return Ok(());
+        }
+
+        if !click_attempted && now.duration_since(start) >= Duration::from_millis(200) {
+            click_attempted = mac_winops::click_window_center(pid, title);
+            if click_attempted {
+                debug!(pid, title, "smart_raise_click_issued");
+            }
+        }
+
+        thread::sleep(Duration::from_millis(40));
+    }
+
+    Err(Error::InvalidState(format!(
+        "smart raise timed out for pid={} title='{}'",
+        pid, title
     )))
 }
 

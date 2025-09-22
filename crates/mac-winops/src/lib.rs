@@ -362,7 +362,8 @@ fn post_mouse_event(point: CGPoint, event_type: CGEventType) -> bool {
     true
 }
 
-fn nudge_frontmost_with_click(pid: i32, title: &str) -> bool {
+/// Synthesize a click at the window's center to encourage activation.
+pub fn click_window_center(pid: i32, title: &str) -> bool {
     if !permissions::accessibility_ok() {
         return false;
     }
@@ -469,7 +470,7 @@ pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_m
                         attempt + 1,
                         cg_hold_ms
                     );
-                    if nudge_frontmost_with_click(pid, title) {
+                    if click_window_center(pid, title) {
                         debug!(
                             "ensure_frontmost_by_title: post-stabilize synthetic click pid={} title='{}'",
                             pid, title
@@ -522,7 +523,7 @@ pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_m
                     let should_nudge = last_nudge
                         .map(|ts| ts.elapsed() >= Duration::from_millis(120))
                         .unwrap_or(true);
-                    if should_nudge && nudge_frontmost_with_click(pid, title) {
+                    if should_nudge && click_window_center(pid, title) {
                         last_nudge = Some(Instant::now());
                         debug!(
                             "ensure_frontmost_by_title: issued synthetic click nudge pid={} title='{}'",
