@@ -489,7 +489,7 @@ impl Default for WorldCfg {
             poll_ms_max: 1000,
             include_offscreen: false,
             ax_watch_frontmost: false,
-            events_buffer: 256,
+            events_buffer: DEFAULT_EVENT_CAPACITY,
         }
     }
 }
@@ -709,7 +709,7 @@ impl WorldHandle {
     ///
     /// The stream includes Added/Updated/Removed and FocusChanged events. Callers
     /// should drain events promptly to avoid overrunning the per-subscription ring buffer
-    /// (capacity configured via [`WorldCfg::events_buffer`], default 256 entries).
+    /// (capacity configured via [`WorldCfg::events_buffer`], default 16,384 entries).
     pub fn subscribe(&self) -> EventCursor {
         self.events.subscribe(None)
     }
