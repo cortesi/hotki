@@ -515,6 +515,244 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Cycle a helper window through every cell of the configured placement grid.
+pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    const SLUG: &str = "place.grid.cycle";
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+            config.time_ms = 25_000;
+            config.grid = Some((config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0));
+            config.place = PlaceOptions {
+                raise: RaiseStrategy::AppActivate,
+                minimized: MinimizedPolicy::AutoUnminimize,
+                animate: false,
+            };
+        })?);
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let state_ref = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        let cols = config::PLACE.grid_cols;
+        let rows = config::PLACE.grid_rows;
+        let eps = config::PLACE.eps.round() as i32;
+        let timeout = Duration::from_millis(1_800);
+        let mut entries = Vec::new();
+
+        for row in 0..rows {
+            for col in 0..cols {
+                promote_helper_frontmost(stage.case_name(), state_ref);
+                let world_for_frames = world.clone();
+                let target_key = state_ref.target_key;
+                let frames_before = block_on_with_pump(async move {
+                    world_for_frames.frames(target_key).await
+                })?
+                .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+                let expected = grid_rect_from_frames(&frames_before, cols, rows, col, row)?;
+                state_ref.expected = expected;
+                rewrite_expected_artifact(stage, state_ref.slug, expected)?;
+                refresh_cursor(state_ref, &world)?;
+                request_grid(&world, state_ref.target_id, (cols, rows, col, row))?;
+                let frames = wait_for_expected(stage, state_ref, timeout, eps)?;
+                let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
+                let artifacts = [diag_path.clone()];
+                helpers::assert_frame_matches(
+                    stage.case_name(),
+                    expected,
+                    &frames,
+                    eps,
+                    &artifacts,
+                )?;
+                let delta = expected.delta(&frames.authoritative);
+                entries.push(json!({
+                    "grid": { "cols": cols, "rows": rows, "col": col, "row": row },
+                    "expected": {
+                        "x": expected.x,
+                        "y": expected.y,
+                        "w": expected.w,
+                        "h": expected.h,
+                    },
+                    "actual": {
+                        "x": frames.authoritative.x,
+                        "y": frames.authoritative.y,
+                        "w": frames.authoritative.w,
+                        "h": frames.authoritative.h,
+                    },
+                    "delta": {
+                        "dx": delta.dx,
+                        "dy": delta.dy,
+                        "dw": delta.dw,
+                        "dh": delta.dh,
+                    },
+                    "scale": frames.scale,
+                }));
+            }
+        }
+
+        let cells_path = stage
+            .artifacts_dir()
+            .join(format!("{}_cells.json", SLUG.replace('.', "_")));
+        let payload = json!({ "cells": entries });
+        let mut data = serde_json::to_string_pretty(&payload)
+            .map_err(|e| Error::InvalidState(format!("failed to serialize cells log: {e}")))?;
+        data.push('\n');
+        fs::write(&cells_path, data)?;
+        stage.record_artifact(&cells_path);
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let state_data = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let world_for_final = world;
+        let frames =
+            block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
+                .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            state_data.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        shutdown_mimic(state_data.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Verify placement skips when the helper window is non-movable.
+pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    const SLUG: &str = "place.skip.nonmovable";
+    const GRID: (u32, u32, u32, u32) = (2, 2, 0, 0);
+    let mut state: Option<PlaceState> = None;
+    ctx.setup(|stage| {
+        let placeholder = RectPx {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+            config.time_ms = 20_000;
+            config.panel_nonmovable = true;
+            config.attach_sheet = true;
+            config.place = PlaceOptions {
+                raise: RaiseStrategy::AppActivate,
+                minimized: MinimizedPolicy::AutoUnminimize,
+                animate: false,
+            };
+        })?);
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let state_ref = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
+        let world = stage.world_clone();
+        refresh_cursor(state_ref, &world)?;
+        let frames = wait_for_initial_frames(
+            stage.case_name(),
+            &world,
+            &mut state_ref.cursor,
+            state_ref.target_key,
+            Duration::from_millis(config::PLACE.step_timeout_ms),
+        )?;
+        let initial = frames.authoritative;
+        state_ref.expected = initial;
+        rewrite_expected_artifact(stage, state_ref.slug, initial)?;
+        promote_helper_frontmost(stage.case_name(), state_ref);
+        refresh_cursor(state_ref, &world)?;
+        request_grid(&world, state_ref.target_id, GRID)?;
+        let frames_after = wait_for_expected(
+            stage,
+            state_ref,
+            Duration::from_millis(800),
+            config::PLACE.eps.round() as i32,
+        )?;
+        let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            initial,
+            &frames_after,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        let delta = initial.delta(&frames_after.authoritative);
+        let comparison_path = stage
+            .artifacts_dir()
+            .join(format!("{}_comparison.json", SLUG.replace('.', "_")));
+        let payload = json!({
+            "grid": { "cols": GRID.0, "rows": GRID.1, "col": GRID.2, "row": GRID.3 },
+            "expected": {
+                "x": initial.x,
+                "y": initial.y,
+                "w": initial.w,
+                "h": initial.h,
+            },
+            "actual": {
+                "x": frames_after.authoritative.x,
+                "y": frames_after.authoritative.y,
+                "w": frames_after.authoritative.w,
+                "h": frames_after.authoritative.h,
+            },
+            "delta": {
+                "dx": delta.dx,
+                "dy": delta.dy,
+                "dw": delta.dw,
+                "dh": delta.dh,
+            },
+        });
+        let mut data = serde_json::to_string_pretty(&payload)
+            .map_err(|e| Error::InvalidState(format!("failed to serialize skip report: {e}")))?;
+        data.push('\n');
+        fs::write(&comparison_path, data)?;
+        stage.record_artifact(&comparison_path);
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let state_data = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let world_for_final = world;
+        let frames =
+            block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
+                .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
+        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let artifacts = [diag_path];
+        helpers::assert_frame_matches(
+            stage.case_name(),
+            state_data.expected,
+            &frames,
+            config::PLACE.eps.round() as i32,
+            &artifacts,
+        )?;
+        shutdown_mimic(state_data.mimic)?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
 /// Verify grid-relative moves when the helper enforces a taller minimum height.
 pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<MoveCaseState> = None;

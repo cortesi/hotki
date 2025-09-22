@@ -558,6 +558,18 @@ const PLACE_HELPERS: &[HelperDoc] = &[
 /// Alias for hide cases since they rely on the same helper set as placement cases.
 const HIDE_HELPERS: &[HelperDoc] = PLACE_HELPERS;
 
+/// Helper functions consumed by world-centric smoketests.
+const WORLD_HELPERS: &[HelperDoc] = &[
+    HelperDoc {
+        name: "spawn_scenario",
+        summary: "Launch mimic helpers and resolve their world identifiers for assertions.",
+    },
+    HelperDoc {
+        name: "raise_window",
+        summary: "Raise helper windows by label using world raise intents.",
+    },
+];
+
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
     CaseEntry {
@@ -741,5 +753,57 @@ static CASES: &[CaseEntry] = &[
         },
         helpers: PLACE_HELPERS,
         run: cases::place_move_nonresizable_anchor,
+    },
+    CaseEntry {
+        name: "place.grid.cycle",
+        info: Some("Cycle helper placement across every grid cell"),
+        main_thread: true,
+        extra_timeout_ms: 30_000,
+        budget: Budget {
+            setup_ms: 1_800,
+            action_ms: 12_000,
+            settle_ms: 3_000,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_grid_cycle,
+    },
+    CaseEntry {
+        name: "place.skip.nonmovable",
+        info: Some("Placement skips non-movable helper windows"),
+        main_thread: true,
+        extra_timeout_ms: 8_000,
+        budget: Budget {
+            setup_ms: 1_200,
+            action_ms: 700,
+            settle_ms: 1_400,
+        },
+        helpers: PLACE_HELPERS,
+        run: cases::place_skip_nonmovable,
+    },
+    CaseEntry {
+        name: "world.status.permissions",
+        info: Some("World status reports granted capabilities and sane polling budgets"),
+        main_thread: true,
+        extra_timeout_ms: 6_000,
+        budget: Budget {
+            setup_ms: 900,
+            action_ms: 600,
+            settle_ms: 900,
+        },
+        helpers: WORLD_HELPERS,
+        run: cases::world_status_permissions,
+    },
+    CaseEntry {
+        name: "world.ax.focus_props",
+        info: Some("Focused window exposes AX props through world snapshots"),
+        main_thread: true,
+        extra_timeout_ms: 8_000,
+        budget: Budget {
+            setup_ms: 900,
+            action_ms: 1_000,
+            settle_ms: 900,
+        },
+        helpers: WORLD_HELPERS,
+        run: cases::world_ax_focus_props,
     },
 ];

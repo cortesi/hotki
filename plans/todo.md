@@ -140,7 +140,7 @@ No second data channel; hotki-world is the single assertion surface.
 5. [x] focus-nav
 6. [x] focus-tracking
 7. [x] hide
-8. [ ] place (legacy grid cycle)
+8. [x] place (legacy grid cycle)
 9. [ ] place-async
 10. [ ] place-animated
 11. [x] place-term
@@ -149,7 +149,7 @@ No second data channel; hotki-world is the single assertion surface.
 14. [ ] place-fallback
 15. [ ] place-smg
 16. [ ] place-flex
-17. [ ] place-skip
+17. [x] place-skip
 18. [x] place-move-min
 19. [x] place-move-nonresizable
 20. [ ] place-minimized
@@ -157,8 +157,8 @@ No second data channel; hotki-world is the single assertion surface.
 22. [ ] ui
 23. [ ] minui
 24. [ ] fullscreen
-25. [ ] world-status
-26. [ ] world-ax
+25. [x] world-status
+26. [x] world-ax
 27. [ ] world-spaces
 
 2. Post-Port Cleanup
