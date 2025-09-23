@@ -977,7 +977,7 @@ pub fn drain_main_ops() {
 
         // Accumulate within the deadline or until the queue runs dry.
         loop {
-            let op_opt = MAIN_OPS.lock().pop_front();
+            let op_opt = main_thread_ops::pop_front_op();
             let Some(op) = op_opt else { break };
             any = true;
 
@@ -1106,6 +1106,16 @@ pub fn pending_main_ops_len() -> usize {
     MAIN_OPS.lock().len()
 }
 
+/// Drop any queued main-thread operations without executing them.
+pub fn drop_pending_main_ops() {
+    main_thread_ops::clear_pending();
+}
+
+/// Block until the main-thread operation queue becomes empty or the deadline expires.
+pub fn wait_main_ops_idle(deadline: Instant) -> bool {
+    main_thread_ops::wait_idle(deadline)
+}
+
 /// Close any active mimic windows. Placeholder until the mimic harness is wired up.
 pub fn close_mimic_windows() -> usize {
     0
@@ -1192,7 +1202,7 @@ mod tests {
     use once_cell::sync::Lazy;
 
     use super::*;
-    use crate::geom::Rect;
+    use crate::{geom::Rect, main_thread_ops::MAIN_OPS_COND};
 
     static PLACE_ID_CALLS: AtomicUsize = AtomicUsize::new(0);
     static PLACE_FOCUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -1457,6 +1467,7 @@ mod tests {
             let mut q = MAIN_OPS.lock();
             q.clear();
         }
+        MAIN_OPS_COND.notify_all();
         let _ = crate::main_thread_ops::request_place_grid_focused(pid, 2, 2, 0, 0);
         let _ = crate::main_thread_ops::request_place_grid(target, 2, 2, 1, 1);
         {

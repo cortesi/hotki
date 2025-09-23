@@ -848,18 +848,71 @@ impl WorldHandle {
     /// Returns `true` when all operations completed before the deadline, `false`
     /// otherwise.
     pub fn pump_main_until(&self, deadline: Instant) -> bool {
-        const STEP_MS: u64 = 5;
         loop {
             mac_winops::drain_main_ops();
             if !mac_winops::pending_main_ops() {
                 return true;
             }
             if Instant::now() >= deadline {
-                break;
+                return false;
             }
-            std::thread::sleep(Duration::from_millis(STEP_MS));
+            if let Err(err) = mac_winops::focus::post_user_event() {
+                tracing::trace!(?err, "pump_main_until: post_user_event failed");
+            }
+            if Instant::now() >= deadline {
+                tracing::trace!("pump_main_until: deadline reached before wait");
+                return false;
+            }
+            if !mac_winops::wait_main_ops_idle(deadline) {
+                tracing::trace!(
+                    pending = mac_winops::pending_main_ops_len(),
+                    "pump_main_until: wait_main_ops_idle timed out"
+                );
+                return false;
+            }
         }
-        false
+    }
+
+    /// Construct an observer that waits for events on `key` using the default configuration.
+    #[must_use]
+    pub fn window_observer(&self, key: WindowKey) -> WindowObserver {
+        self.window_observer_with_config(key, WaitConfig::default())
+    }
+
+    /// Construct an observer that waits for events on `key` using the supplied configuration.
+    #[must_use]
+    pub fn window_observer_with_config(
+        &self,
+        key: WindowKey,
+        config: WaitConfig,
+    ) -> WindowObserver {
+        wait::make_window_observer(self, key, config)
+    }
+
+    /// Await the appearance of a window satisfying `predicate` with the default wait configuration.
+    pub async fn await_window_where<F>(
+        &self,
+        condition: &'static str,
+        predicate: F,
+    ) -> Result<WorldWindow, WaitError>
+    where
+        F: Fn(&WorldWindow) -> bool + Send + Sync + 'static,
+    {
+        self.await_window_where_with_config(condition, predicate, WaitConfig::default())
+            .await
+    }
+
+    /// Await the appearance of a window satisfying `predicate` using the supplied configuration.
+    pub async fn await_window_where_with_config<F>(
+        &self,
+        condition: &'static str,
+        predicate: F,
+        config: WaitConfig,
+    ) -> Result<WorldWindow, WaitError>
+    where
+        F: Fn(&WorldWindow) -> bool + Send + Sync + 'static,
+    {
+        wait::await_window_matching(self, Arc::new(predicate), condition, config).await
     }
 
     /// Lookup a window by key.
@@ -1074,11 +1127,13 @@ mod frames;
 #[cfg(feature = "world-mimic")]
 pub mod mimic;
 mod view;
+mod wait;
 
 pub use events::{EventCursor, EventFilter, EventRecord};
 pub use frames::{
     FrameKind, Frames, RectDelta, RectPx, WindowMode, default_eps, reconcile_authoritative,
 };
+pub use wait::{VisibilityPolicy, WaitConfig, WaitError, WindowObserver};
 
 #[derive(Debug, Default)]
 struct WorldMetrics {

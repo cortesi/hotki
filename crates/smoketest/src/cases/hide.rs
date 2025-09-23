@@ -1,7 +1,6 @@
 //! Hide/show smoketest cases executed with the mimic harness.
-use std::time::Duration;
 
-use hotki_world::{CommandToggle, HideIntent, RectPx, WindowKey, WindowMode, WorldHandle};
+use hotki_world::{CommandToggle, HideIntent, RectPx, WindowKey, WindowMode, WindowObserver};
 use hotki_world_ids::WorldWindowId;
 use mac_winops::drain_main_ops;
 use tracing::debug;
@@ -82,14 +81,9 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
 
         raise_window(stage, scenario, state_ref.target_label)?;
 
-        let normal_frames = wait_for_mode(
-            stage,
-            scenario,
-            &world,
-            state_ref.target_key,
-            WindowMode::Normal,
-            Duration::from_millis(config::HIDE.restore_max_ms),
-        )?;
+        let ready_observer =
+            world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
+        let normal_frames = wait_for_mode(stage, ready_observer, WindowMode::Normal)?;
         debug!(
             case = %stage.case_name(),
             mode = ?normal_frames.mode,
@@ -98,6 +92,8 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
         );
 
         let hide_world = world.clone();
+        let hide_observer =
+            world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
         let receipt = runtime::block_on(async move {
             hide_world
                 .request_hide(HideIntent {
@@ -118,14 +114,7 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
             )));
         }
         drain_main_ops();
-        let hidden_frames = wait_for_mode(
-            stage,
-            scenario,
-            &world,
-            state_ref.target_key,
-            WindowMode::Hidden,
-            Duration::from_millis(config::HIDE.restore_max_ms.saturating_add(800)),
-        )?;
+        let hidden_frames = wait_for_mode(stage, hide_observer, WindowMode::Hidden)?;
         state_ref.hidden_observed = true;
         debug!(
             case = %stage.case_name(),
@@ -135,6 +124,8 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
         );
 
         let show_world = world.clone();
+        let restore_observer =
+            world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
         let receipt = runtime::block_on(async move {
             show_world
                 .request_hide(HideIntent {
@@ -155,15 +146,8 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
             )));
         }
         drain_main_ops();
-        let restored_frames = wait_for_rect(
-            stage,
-            scenario,
-            &world,
-            state_ref.target_key,
-            state_ref.expected,
-            state_ref.eps,
-            Duration::from_millis(config::HIDE.restore_max_ms.saturating_add(1_200)),
-        )?;
+        let restored_frames =
+            wait_for_rect(stage, restore_observer, state_ref.expected, state_ref.eps)?;
         debug!(
             case = %stage.case_name(),
             frame = ?restored_frames.authoritative,
@@ -213,80 +197,68 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Wait until the helper window reports the expected mode.
 fn wait_for_mode(
     stage: &StageHandle<'_>,
-    state: &mut ScenarioState,
-    world: &WorldHandle,
-    target: WindowKey,
+    observer: WindowObserver,
     expected_mode: WindowMode,
-    timeout: Duration,
 ) -> Result<hotki_world::Frames> {
-    helpers::wait_for_events_or(stage.case_name(), world, &mut state.cursor, timeout, || {
-        let world_clone = world.clone();
-        let maybe_frames = block_on_with_pump(async move { world_clone.frames(target).await })?;
-        let frames = match maybe_frames {
-            Some(frames) => frames,
-            None => {
-                debug!(
-                    case = %stage.case_name(),
-                    "hide_wait_for_mode_missing_frames"
-                );
-                return Ok(false);
-            }
-        };
-        let matches = frames.mode == expected_mode;
-        if matches {
-            debug!(
-                case = %stage.case_name(),
-                current_mode = ?frames.mode,
-                expected = ?expected_mode,
-                "hide_wait_for_mode_match"
-            );
-        } else {
-            debug!(
-                case = %stage.case_name(),
-                current_mode = ?frames.mode,
-                expected = ?expected_mode,
-                "hide_wait_for_mode_poll"
-            );
-        }
-        Ok(matches)
+    let wait_result = block_on_with_pump(async move {
+        let mut observer = observer;
+        observer
+            .wait_for_frames("hide-mode", move |frames| {
+                let matches = frames.mode == expected_mode;
+                if matches {
+                    debug!(
+                        current_mode = ?frames.mode,
+                        expected = ?expected_mode,
+                        "hide_wait_for_mode_match"
+                    );
+                } else {
+                    debug!(
+                        current_mode = ?frames.mode,
+                        expected = ?expected_mode,
+                        "hide_wait_for_mode_poll"
+                    );
+                }
+                matches
+            })
+            .await
     })?;
-    let world_clone = world.clone();
-    block_on_with_pump(async move { world_clone.frames(target).await })?
-        .ok_or_else(|| Error::InvalidState("hide: frames unavailable after wait".into()))
+    match wait_result {
+        Ok(frames) => Ok(frames),
+        Err(err) => Err(helpers::wait_failure(stage.case_name(), &err)),
+    }
 }
 
 /// Wait until the authoritative frame matches the expected rectangle within the provided epsilon.
 fn wait_for_rect(
     stage: &StageHandle<'_>,
-    state: &mut ScenarioState,
-    world: &WorldHandle,
-    target: WindowKey,
+    observer: WindowObserver,
     expected: RectPx,
     eps: i32,
-    timeout: Duration,
 ) -> Result<hotki_world::Frames> {
-    helpers::wait_for_events_or(stage.case_name(), world, &mut state.cursor, timeout, || {
-        let world_clone = world.clone();
-        let maybe_frames = block_on_with_pump(async move { world_clone.frames(target).await })?;
-        let frames = match maybe_frames {
-            Some(frames) => frames,
-            None => return Ok(false),
-        };
-        if frames.mode != WindowMode::Normal {
-            debug!(
-                case = %stage.case_name(),
-                current_mode = ?frames.mode,
-                "hide_wait_for_rect_mode_pending"
-            );
-            return Ok(false);
-        }
-        let delta = expected.delta(&frames.authoritative);
-        Ok(delta.dx.abs() <= eps
-            && delta.dy.abs() <= eps
-            && delta.dw.abs() <= eps
-            && delta.dh.abs() <= eps)
+    let wait_result = block_on_with_pump(async move {
+        let mut observer = observer;
+        observer
+            .wait_for_frames("hide-rect", move |frames| {
+                if frames.mode != WindowMode::Normal {
+                    debug!(current_mode = ?frames.mode, "hide_wait_for_rect_mode_pending");
+                    return false;
+                }
+                let matches = rect_within_eps(frames.authoritative, expected, eps);
+                if !matches {
+                    debug!(actual = ?frames.authoritative, expected = ?expected, "hide_wait_for_rect_poll");
+                }
+                matches
+            })
+            .await
     })?;
-    let world_clone = world.clone();
-    block_on_with_pump(async move { world_clone.frames(target).await })?
-        .ok_or_else(|| Error::InvalidState("hide: frames unavailable after wait".into()))
+    match wait_result {
+        Ok(frames) => Ok(frames),
+        Err(err) => Err(helpers::wait_failure(stage.case_name(), &err)),
+    }
+}
+
+/// Return `true` when `actual` matches `expected` within `eps` pixels on all sides.
+fn rect_within_eps(actual: RectPx, expected: RectPx, eps: i32) -> bool {
+    let delta = expected.delta(&actual);
+    delta.dx.abs() <= eps && delta.dy.abs() <= eps && delta.dw.abs() <= eps && delta.dh.abs() <= eps
 }

@@ -1,6 +1,7 @@
 //! Shared helpers for mimic-driven smoketest cases.
 
 use std::{
+    cell::Cell,
     collections::HashMap,
     fs,
     future::Future,
@@ -11,21 +12,51 @@ use std::{
 };
 
 use hotki_world::{
-    EventCursor, PlaceOptions, RaiseIntent, WindowKey, WorldEvent, WorldHandle, WorldWindow,
+    EventCursor, PlaceOptions, RaiseIntent, VisibilityPolicy, WindowKey, WorldEvent, WorldHandle,
+    WorldWindow,
     mimic::{
         HelperConfig, MimicHandle, MimicScenario, MimicSpec, Quirk, kill_mimic, pump_active_mimics,
         spawn_mimic,
     },
 };
 use hotki_world_ids::WorldWindowId;
+use mac_winops;
 use regex::Regex;
 use tracing::{debug, warn};
 
 use crate::{
     error::{Error, Result},
-    runtime,
+    helpers, runtime,
     suite::StageHandle,
 };
+
+thread_local! {
+    static DRAIN_MAIN_OPS: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Guard that temporarily stops draining main-thread operations while active.
+pub struct MainOpsDrainGuard {
+    /// Previous drain flag restored when the guard is dropped.
+    prev: bool,
+}
+
+impl MainOpsDrainGuard {
+    /// Disable draining and return a guard that restores the prior state on drop.
+    pub fn disable() -> Self {
+        let prev = DRAIN_MAIN_OPS.with(|cell| {
+            let prev = cell.get();
+            cell.set(false);
+            prev
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for MainOpsDrainGuard {
+    fn drop(&mut self) {
+        DRAIN_MAIN_OPS.with(|cell| cell.set(self.prev));
+    }
+}
 
 /// Initial number of mimic pump iterations to let helper windows settle.
 const INITIAL_SPIN_ITERS: usize = 24;
@@ -47,7 +78,12 @@ where
         }
     });
     loop {
+        if DRAIN_MAIN_OPS.with(|cell| cell.get()) {
+            mac_winops::drain_main_ops();
+        }
         pump_active_mimics();
+        let pump_deadline = Instant::now() + Duration::from_millis(5);
+        mac_winops::wait_main_ops_idle(pump_deadline);
         match rx.try_recv() {
             Ok(result) => return result,
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -303,31 +339,39 @@ fn attempt_resolve_windows(
 }
 
 /// Ensure the helper window is visible before returning its metadata.
-fn ensure_window_ready(
+pub fn ensure_window_ready(
     world: &WorldHandle,
     marker: &str,
-    mut window: WorldWindow,
+    window: WorldWindow,
 ) -> Result<WorldWindow> {
     if window.is_on_screen {
         return Ok(window);
     }
-    let deadline = Instant::now() + Duration::from_millis(750);
-    while !window.is_on_screen && Instant::now() < deadline {
-        pump_active_mimics();
-        thread::sleep(Duration::from_millis(10));
-        let world_for_snapshot = world.clone();
-        let refreshed = block_on_with_pump(async move { world_for_snapshot.snapshot().await })?;
-        if let Some(updated) = refreshed
-            .into_iter()
-            .find(|candidate| candidate.title.contains(marker))
-        {
-            window = updated;
-            if window.is_on_screen {
-                break;
-            }
+    let key = WindowKey {
+        pid: window.pid,
+        id: window.id,
+    };
+    let config = helpers::default_wait_config();
+    let wait_result = block_on_with_pump({
+        let world = world.clone();
+        async move {
+            let mut observer = world.window_observer_with_config(key, config);
+            observer
+                .wait_for_visibility(VisibilityPolicy::OnScreen)
+                .await
+        }
+    });
+    match wait_result {
+        Ok(Ok(updated)) => Ok(updated),
+        Ok(Err(err)) => {
+            debug!(marker, error = %err, "ensure_window_ready_wait_failed");
+            Ok(window)
+        }
+        Err(err) => {
+            debug!(marker, error = %err, "ensure_window_ready_runtime_failed");
+            Ok(window)
         }
     }
-    Ok(window)
 }
 
 /// Record mimic diagnostics to the artifact directory and return the recorded path.

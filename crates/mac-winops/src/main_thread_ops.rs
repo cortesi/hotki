@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 use hotki_world_ids::WorldWindowId;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 use crate::{
     Desired, PlaceAttemptOptions, WindowId,
@@ -76,6 +76,7 @@ pub enum MainOp {
 }
 
 pub static MAIN_OPS: Lazy<Mutex<VecDeque<MainOp>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+pub static MAIN_OPS_COND: Lazy<Condvar> = Lazy::new(Condvar::new);
 
 /// Return true if `existing` and `incoming` target the same logical window and
 /// should be coalesced (i.e., keep only the `incoming`).
@@ -125,6 +126,46 @@ fn enqueue_with_coalescing(op: MainOp) {
         *q = new_q;
     }
     q.push_back(op);
+    if q.len() == 1 {
+        MAIN_OPS_COND.notify_all();
+    }
+}
+
+pub(crate) fn pop_front_op() -> Option<MainOp> {
+    let mut q = MAIN_OPS.lock();
+    let op = q.pop_front();
+    if q.is_empty() {
+        MAIN_OPS_COND.notify_all();
+    }
+    op
+}
+
+pub(crate) fn wait_idle(deadline: Instant) -> bool {
+    let mut guard = MAIN_OPS.lock();
+    if guard.is_empty() {
+        return true;
+    }
+    loop {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        let result = MAIN_OPS_COND.wait_until(&mut guard, deadline);
+        if guard.is_empty() {
+            return true;
+        }
+        if result.timed_out() {
+            return false;
+        }
+    }
+}
+
+pub(crate) fn clear_pending() {
+    let mut guard = MAIN_OPS.lock();
+    if guard.is_empty() {
+        return;
+    }
+    guard.clear();
+    MAIN_OPS_COND.notify_all();
 }
 
 /// Schedule a non‑native fullscreen operation to be executed on the AppKit main

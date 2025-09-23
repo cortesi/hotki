@@ -1,66 +1,24 @@
-use std::{
-    path::Path,
-    time::{Duration, Instant},
+use std::{path::Path, time::Duration};
+
+use hotki_world::{Frames, RectDelta, RectPx, WaitConfig, WaitError};
+
+use crate::{
+    config,
+    error::{Error, Result},
 };
 
-use hotki_world::{EventCursor, Frames, RectDelta, RectPx, WorldHandle, mimic::pump_active_mimics};
-
-use crate::error::{Error, Result};
-
-/// Duration in milliseconds for each runloop pump step while waiting on events.
-const PUMP_STEP_MS: u64 = 5;
-
-/// Wait until `confirm` returns true or `timeout` elapses, pumping the main thread and draining
-/// events while ensuring world event ordering remains intact.
-pub fn wait_for_events_or<F>(
-    case: &str,
-    world: &WorldHandle,
-    cursor: &mut EventCursor,
-    timeout: Duration,
-    mut confirm: F,
-) -> Result<()>
-where
-    F: FnMut() -> Result<bool>,
-{
-    let deadline = Instant::now() + timeout;
-    let baseline_lost = cursor.lost_count;
-    loop {
-        pump_active_mimics();
-        if confirm()? {
-            ensure_no_event_loss(cursor, baseline_lost)?;
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::InvalidState(format!(
-                "timeout waiting for {case} (lost_count={} next_index={})",
-                cursor.lost_count, cursor.next_index
-            )));
-        }
-        let pump_until = Instant::now() + Duration::from_millis(PUMP_STEP_MS);
-        world.pump_main_until(pump_until);
-        pump_active_mimics();
-        while world.next_event_now(cursor).is_some() {
-            ensure_no_event_loss(cursor, baseline_lost)?;
-            pump_active_mimics();
-            if confirm()? {
-                ensure_no_event_loss(cursor, baseline_lost)?;
-                return Ok(());
-            }
-        }
-        pump_active_mimics();
-        ensure_no_event_loss(cursor, baseline_lost)?;
-    }
+/// Standard wait configuration used for world-driven assertions.
+#[must_use]
+pub fn default_wait_config() -> WaitConfig {
+    let overall = Duration::from_millis(config::DEFAULTS.timeout_ms);
+    let idle = Duration::from_millis(config::INPUT_DELAYS.poll_interval_ms.max(5));
+    WaitConfig::new(overall, idle, 512)
 }
 
-/// Return an error if the subscription lost events while the wait condition was evaluated.
-fn ensure_no_event_loss(cursor: &EventCursor, baseline: u64) -> Result<()> {
-    if cursor.lost_count > baseline {
-        return Err(Error::InvalidState(format!(
-            "events lost during wait (lost_count={}): see artifacts",
-            cursor.lost_count
-        )));
-    }
-    Ok(())
+/// Map a world wait error into the smoketest error domain.
+#[must_use]
+pub fn wait_failure(case: &str, err: &WaitError) -> Error {
+    Error::InvalidState(format!("case={case} wait_error={err}"))
 }
 
 /// Assert that the authoritative frame in `frames` matches `expected` within `eps` pixels.

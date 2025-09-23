@@ -619,8 +619,8 @@ fn format_artifacts(paths: &[PathBuf]) -> String {
 /// Helper functions shared by hide and placement-focused smoketest cases.
 const PLACE_HELPERS: &[HelperDoc] = &[
     HelperDoc {
-        name: "wait_for_events_or",
-        summary: "Pump main-thread events until world state matches the confirmation closure.",
+        name: "WorldHandle::window_observer",
+        summary: "Create per-window observers that block on deterministic frame and mode waits.",
     },
     HelperDoc {
         name: "assert_frame_matches",

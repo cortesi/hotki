@@ -8,8 +8,9 @@ use std::{
 };
 
 use hotki_world::{
-    EventCursor, Frames, MinimizedPolicy, MoveDirection, PlaceAttemptOptions, PlaceOptions,
-    RaiseStrategy, RectDelta, RectPx, WindowKey, WorldHandle,
+    Frames, MinimizedPolicy, MoveDirection, PlaceAttemptOptions, PlaceOptions, RaiseStrategy,
+    RectDelta, RectPx, VisibilityPolicy, WaitConfig, WindowKey, WindowMode, WindowObserver,
+    WorldHandle,
     mimic::{HelperConfig, MimicHandle, MimicScenario, MimicSpec, pump_active_mimics, spawn_mimic},
 };
 use hotki_world_ids::WorldWindowId;
@@ -22,7 +23,10 @@ use objc2_foundation::MainThreadMarker;
 use serde_json::json;
 use tracing::debug;
 
-use super::support::{block_on_with_pump, record_mimic_diagnostics, shutdown_mimic};
+use super::support::{
+    MainOpsDrainGuard, block_on_with_pump, ensure_window_ready, record_mimic_diagnostics,
+    shutdown_mimic,
+};
 use crate::{
     config,
     error::{Error, Result},
@@ -42,8 +46,6 @@ struct PlaceState {
     target_key: WindowKey,
     /// Expected authoritative rectangle after placement settles.
     expected: RectPx,
-    /// Event cursor that enforces ordering and lost-count checks.
-    cursor: EventCursor,
     /// Registry slug used when emitting diagnostics and artifacts.
     slug: &'static str,
     /// Title assigned to the helper window for focus operations.
@@ -77,8 +79,6 @@ struct MoveCaseState {
     expected: RectPx,
     /// Pixel tolerance applied when validating the final frame.
     eps: i32,
-    /// Maximum duration permitted for the wait loop.
-    timeout: Duration,
     /// Timing breakdown captured across stages.
     budget: MoveCaseBudget,
 }
@@ -153,10 +153,13 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(2_000), 2)?;
+        let world = stage.world_clone();
+        let observer = world
+            .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
+        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
         let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
@@ -186,7 +189,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 0,
         };
         state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
-            config.time_ms = 25_000;
+            config.time_ms = 10_000;
             config.label_text = Some("ZOOM".into());
             config.start_zoomed = true;
             config.grid = Some(grid);
@@ -205,14 +208,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
         })?);
         if let Some(place) = state.as_mut() {
             let world = stage.world_clone();
-            refresh_cursor(place, &world)?;
-            let frames = wait_for_initial_frames(
-                stage.case_name(),
-                &world,
-                &mut place.cursor,
-                place.target_key,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-            )?;
+            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
             rewrite_expected_artifact(stage, place.slug, expected)?;
             place.expected = expected;
@@ -232,20 +228,22 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             &world,
             Duration::from_millis(1_600),
         )?;
-        refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, grid)?;
         focus_guard.reassert()?;
         Ok(())
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let observer = world
+            .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
         let frames = wait_for_expected(
             stage,
-            &mut state_data,
-            Duration::from_millis(2_400),
+            &state_data,
+            observer,
             config::PLACE.eps.round() as i32,
         )?;
         let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
@@ -290,10 +288,6 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 config.time_ms = 25_000;
             },
         )?);
-        if let Some(place) = state.as_mut() {
-            let world = stage.world_clone();
-            refresh_cursor(place, &world)?;
-        }
         Ok(())
     })?;
 
@@ -302,16 +296,18 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, (3, 2, 2, 0))?;
         Ok(())
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(3_000), 2)?;
+        let world = stage.world_clone();
+        let observer = world
+            .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
+        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
         let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
@@ -357,14 +353,8 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
         if let Some(place_state) = state.as_mut() {
             let focus_guard = promote_helper_frontmost(stage.case_name(), place_state)?;
             let world = stage.world_clone();
-            refresh_cursor(place_state, &world)?;
-            let frames = wait_for_initial_frames(
-                stage.case_name(),
-                &world,
-                &mut place_state.cursor,
-                place_state.target_key,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-            )?;
+            let frames =
+                wait_for_initial_frames(stage.case_name(), &world, place_state.target_key)?;
             let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
             rewrite_expected_artifact(stage, place_state.slug, expected)?;
             place_state.expected = expected;
@@ -379,18 +369,19 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
         let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
-        refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, GRID)?;
-        refresh_cursor(state_ref, &world)?;
         focus_guard.reassert()?;
         Ok(())
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let frames = wait_for_expected(stage, &mut state_data, Duration::from_millis(3_500), 2)?;
+        let world = stage.world_clone();
+        let observer = world
+            .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
+        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
         let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
@@ -429,14 +420,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         )?);
         if let Some(place) = state.as_mut() {
             let world = stage.world_clone();
-            refresh_cursor(place, &world)?;
-            let frames = wait_for_initial_frames(
-                stage.case_name(),
-                &world,
-                &mut place.cursor,
-                place.target_key,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-            )?;
+            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, 3, 1, 0, 0)?;
             rewrite_expected_artifact(stage, place.slug, expected)?;
             place.expected = expected;
@@ -449,15 +433,11 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        refresh_cursor(place, &world)?;
+        let observer =
+            world.window_observer_with_config(place.target_key, helpers::default_wait_config());
         request_grid(&world, place.target_id, (3, 1, 0, 0))?;
         let eps = config::PLACE.eps.round() as i32;
-        let frames = wait_for_expected(
-            stage,
-            place,
-            Duration::from_millis(config::PLACE.step_timeout_ms),
-            eps,
-        )?;
+        let frames = wait_for_expected(stage, place, observer, eps)?;
         debug!(
             case = %stage.case_name(),
             frame = ?frames.authoritative,
@@ -523,10 +503,6 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 config.step_size = Some((9.0, 18.0));
             },
         )?);
-        if let Some(place) = state.as_mut() {
-            let world = stage.world_clone();
-            refresh_cursor(place, &world)?;
-        }
         Ok(())
     })?;
 
@@ -551,14 +527,10 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let expected = grid_rect_from_frames(&frames, 2, 2, 1, 1)?;
             place.expected = expected;
             rewrite_expected_artifact(stage, place.slug, expected)?;
-            refresh_cursor(place, &world)?;
+            let observer =
+                world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (2, 2, 1, 1))?;
-            let settled = wait_for_expected(
-                stage,
-                place,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-                eps,
-            )?;
+            let settled = wait_for_expected(stage, place, observer, eps)?;
             debug!(
                 case = %stage.case_name(),
                 scenario = "2x2.br",
@@ -590,14 +562,10 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let expected = grid_rect_from_frames(&frames, 3, 1, 1, 0)?;
             place.expected = expected;
             rewrite_expected_artifact(stage, place.slug, expected)?;
-            refresh_cursor(place, &world)?;
+            let observer =
+                world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (3, 1, 1, 0))?;
-            let settled = wait_for_expected(
-                stage,
-                place,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-                eps,
-            )?;
+            let settled = wait_for_expected(stage, place, observer, eps)?;
             debug!(
                 case = %stage.case_name(),
                 scenario = "3x1.mid",
@@ -684,7 +652,6 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let cols = config::PLACE.grid_cols;
         let rows = config::PLACE.grid_rows;
         let eps = config::PLACE.eps.round() as i32;
-        let timeout = Duration::from_millis(1_800);
         let mut entries = Vec::new();
 
         for row in 0..rows {
@@ -705,9 +672,12 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 let expected = grid_rect_from_frames(&frames_before, cols, rows, col, row)?;
                 state_ref.expected = expected;
                 rewrite_expected_artifact(stage, state_ref.slug, expected)?;
-                refresh_cursor(state_ref, &world)?;
+                let observer = world.window_observer_with_config(
+                    state_ref.target_key,
+                    helpers::default_wait_config(),
+                );
                 request_grid(&world, state_ref.target_id, (cols, rows, col, row))?;
-                let frames = wait_for_expected(stage, state_ref, timeout, eps)?;
+                let frames = wait_for_expected(stage, state_ref, observer, eps)?;
                 let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
                 let artifacts = [diag_path.clone()];
                 helpers::assert_frame_matches(
@@ -893,26 +863,19 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        refresh_cursor(state_ref, &world)?;
-        let frames = wait_for_initial_frames(
-            stage.case_name(),
-            &world,
-            &mut state_ref.cursor,
-            state_ref.target_key,
-            Duration::from_millis(config::PLACE.step_timeout_ms),
-        )?;
+        let frames = wait_for_initial_frames(stage.case_name(), &world, state_ref.target_key)?;
         let initial = frames.authoritative;
         state_ref.expected = initial;
         rewrite_expected_artifact(stage, state_ref.slug, initial)?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
-        refresh_cursor(state_ref, &world)?;
+        let observer =
+            world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
+        let _drain_guard = MainOpsDrainGuard::disable();
         request_grid(&world, state_ref.target_id, GRID)?;
-        let frames_after = wait_for_expected(
-            stage,
-            state_ref,
-            Duration::from_millis(800),
-            config::PLACE.eps.round() as i32,
-        )?;
+        mac_winops::drop_pending_main_ops();
+        let frames_after =
+            wait_for_expected(stage, state_ref, observer, config::PLACE.eps.round() as i32)?;
+        mac_winops::drop_pending_main_ops();
         let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
@@ -1007,14 +970,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             })?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         let world = stage.world_clone();
-        refresh_cursor(&mut place, &world)?;
-        let frames = wait_for_initial_frames(
-            stage.case_name(),
-            &world,
-            &mut place.cursor,
-            place.target_key,
-            Duration::from_millis(config::PLACE.step_timeout_ms),
-        )?;
+        let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
         debug!(
             case = %stage.case_name(),
             initial = ?frames.authoritative,
@@ -1026,13 +982,11 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         place.expected = expected;
         focus_guard.reassert()?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
-        refresh_cursor(&mut place, &world)?;
         focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
             expected,
             eps: config::PLACE.eps.round() as i32,
-            timeout: Duration::from_millis(config::PLACE.step_timeout_ms),
             budget: MoveCaseBudget::default(),
         });
         Ok(())
@@ -1050,35 +1004,28 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             (4, 4),
             MoveDirection::Right,
         )?;
-        refresh_cursor(&mut state_ref.place, &world)?;
         debug!(case = %stage.case_name(), "place_move_min_move_requested");
         focus_guard.reassert()?;
         Ok(())
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("move-min state missing during settle".into()))?;
         let world = stage.world_clone();
         let target_key = state_data.place.target_key;
-        let wait_result = wait_for_frame_condition(
-            stage.case_name(),
-            &world,
-            &mut state_data.place.cursor,
-            target_key,
-            state_data.timeout,
-            |frames| {
+        let expected = state_data.expected;
+        let eps = state_data.eps;
+        let wait_result =
+            wait_for_frame_condition(stage.case_name(), &world, target_key, move |frames| {
                 let actual = frames.authoritative;
-                let expected = state_data.expected;
-                let eps = state_data.eps;
                 let width_ok = (actual.w - expected.w).abs() <= eps;
                 let height_ok = actual.h >= expected.h - eps;
                 let left_ok = (actual.x - expected.x).abs() <= eps;
                 let bottom_ok = (actual.y - expected.y).abs() <= eps;
-                Ok(width_ok && height_ok && left_ok && bottom_ok)
-            },
-        );
+                width_ok && height_ok && left_ok && bottom_ok
+            });
         let diag_path =
             record_mimic_diagnostics(stage, state_data.place.slug, &state_data.place.mimic)?;
         let artifacts = [diag_path];
@@ -1174,15 +1121,8 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         budget.spawn_ms = spawn_start.elapsed().as_millis() as u64;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         let world = stage.world_clone();
-        refresh_cursor(&mut place, &world)?;
         let frames_start = Instant::now();
-        let frames = wait_for_initial_frames(
-            stage.case_name(),
-            &world,
-            &mut place.cursor,
-            place.target_key,
-            Duration::from_millis(1_500),
-        )?;
+        let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
         budget.initial_frames_ms = frames_start.elapsed().as_millis() as u64;
         debug!(
             case = %stage.case_name(),
@@ -1199,13 +1139,11 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         place.expected = expected;
         focus_guard.reassert()?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
-        refresh_cursor(&mut place, &world)?;
         focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
             expected,
             eps: config::PLACE.eps.round() as i32,
-            timeout: Duration::from_millis(2_400),
             budget,
         });
         Ok(())
@@ -1226,7 +1164,6 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             (4, 4),
             MoveDirection::Right,
         )?;
-        refresh_cursor(&mut state_ref.place, &world)?;
         state_ref.budget.move_request_ms = move_start.elapsed().as_millis() as u64;
         debug!(case = %stage.case_name(), "place_move_nonres_move_requested");
         focus_guard.reassert()?;
@@ -1240,23 +1177,17 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let world = stage.world_clone();
         let target_key = state_data.place.target_key;
         let settle_start = Instant::now();
-        let wait_result = wait_for_frame_condition(
-            stage.case_name(),
-            &world,
-            &mut state_data.place.cursor,
-            target_key,
-            state_data.timeout,
-            |frames| {
+        let expected = state_data.expected;
+        let eps = state_data.eps;
+        let wait_result =
+            wait_for_frame_condition(stage.case_name(), &world, target_key, move |frames| {
                 let actual = frames.authoritative;
-                let expected = state_data.expected;
-                let eps = state_data.eps;
                 let left_ok = (actual.x - expected.x).abs() <= eps;
                 let bottom_ok = (actual.y - expected.y).abs() <= eps;
                 let width_ok = actual.w >= expected.w - eps;
                 let height_ok = actual.h >= expected.h - eps;
-                Ok(left_ok && bottom_ok && width_ok && height_ok)
-            },
-        );
+                left_ok && bottom_ok && width_ok && height_ok
+            });
         state_data.budget.settle_wait_ms = settle_start.elapsed().as_millis() as u64;
         let budget_path = write_move_budget(stage, state_data.place.slug, &state_data.budget)?;
         let diag_path =
@@ -1335,25 +1266,21 @@ fn grid_rect_from_frames(
 fn wait_for_frame_condition<F>(
     case: &str,
     world: &WorldHandle,
-    cursor: &mut EventCursor,
     key: WindowKey,
-    timeout: Duration,
     mut predicate: F,
 ) -> Result<Frames>
 where
-    F: FnMut(&Frames) -> Result<bool>,
+    F: FnMut(&Frames) -> bool + Send + 'static,
 {
-    helpers::wait_for_events_or(case, world, cursor, timeout, || {
-        let world_clone = world.clone();
-        let frames = block_on_with_pump(async move { world_clone.frames(key).await })?;
-        match frames {
-            Some(ref frames) => predicate(frames),
-            None => Ok(false),
-        }
-    })?;
+    let config = helpers::default_wait_config();
     let world_clone = world.clone();
-    block_on_with_pump(async move { world_clone.frames(key).await })?
-        .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))
+    let wait_result = block_on_with_pump(async move {
+        let mut observer = world_clone.window_observer_with_config(key, config);
+        observer
+            .wait_for_frames("frame-condition", move |frames| predicate(frames))
+            .await
+    })?;
+    wait_result.map_err(|err| helpers::wait_failure(case, &err))
 }
 
 /// Ensure the authoritative frame remains within `eps` for the supplied duration.
@@ -1491,29 +1418,25 @@ where
     pump_active_mimics();
     debug!(case = slug, "spawn_place_state_mimic_spawned");
 
-    let world_for_subscribe = world.clone();
-    let (cursor, snapshot, _) =
-        block_on_with_pump(async move { world_for_subscribe.subscribe_with_snapshot().await })?;
-    debug!(case = slug, "spawn_place_state_subscribed");
     let marker = format!("[{slug}::primary]");
-    let mut target = snapshot.into_iter().find(|win| win.title.contains(&marker));
-    if target.is_none() {
-        for _ in 0..20 {
-            pump_active_mimics();
-            thread::sleep(Duration::from_millis(5));
-            let world_for_snapshot = world.clone();
-            let refreshed = block_on_with_pump(async move { world_for_snapshot.snapshot().await })?;
-            target = refreshed
-                .into_iter()
-                .find(|win| win.title.contains(&marker));
-            if target.is_some() {
-                debug!(case = slug, "spawn_place_state_target_resolved_retry");
-                break;
-            }
+    let wait_result = block_on_with_pump({
+        let world = world.clone();
+        let marker = marker.clone();
+        async move {
+            world
+                .await_window_where_with_config(
+                    "spawn_place_state",
+                    move |win| win.title.contains(&marker),
+                    helpers::default_wait_config(),
+                )
+                .await
         }
-    }
-    let mut target =
-        target.ok_or_else(|| Error::InvalidState(format!("mimic window {} not observed", slug)))?;
+    })?;
+    let mut target = match wait_result {
+        Ok(window) => window,
+        Err(err) => return Err(helpers::wait_failure(slug, &err)),
+    };
+    target = ensure_window_ready(&world, &marker, target)?;
     let title = target.title.clone();
 
     let initial_raise_deadline = Duration::from_millis(
@@ -1524,27 +1447,6 @@ where
     );
     if let Err(err) = world::smart_raise(target.world_id(), &title, initial_raise_deadline) {
         debug!(case = slug, error = %err, "spawn_place_state_initial_raise_failed");
-    }
-
-    if !target.is_on_screen {
-        let wait_until = Instant::now() + Duration::from_millis(750);
-        while !target.is_on_screen && Instant::now() < wait_until {
-            pump_active_mimics();
-            thread::sleep(Duration::from_millis(10));
-            let world_for_snapshot = world.clone();
-            let refreshed = block_on_with_pump(async move { world_for_snapshot.snapshot().await })?;
-            if let Some(updated) = refreshed
-                .into_iter()
-                .find(|win| win.title.contains(&marker))
-            {
-                target = updated;
-                debug!(
-                    case = slug,
-                    on_screen = target.is_on_screen,
-                    "spawn_place_state_target_visibility_update"
-                );
-            }
-        }
     }
 
     let cg_pid = match world::list_windows() {
@@ -1601,18 +1503,27 @@ where
     fs::write(&expected_path, format!("expected={:?}\n", expected))?;
     stage.record_artifact(&expected_path);
 
-    let warmup_deadline = Instant::now() + Duration::from_millis(1_200);
-    let world_for_frames = world;
-    while Instant::now() < warmup_deadline {
-        pump_active_mimics();
-        let frames_ready = block_on_with_pump({
-            let world_clone = world_for_frames.clone();
-            async move { world_clone.frames(target_key).await }
-        })?;
-        if frames_ready.is_some() {
-            break;
+    let warmup_config = WaitConfig::new(
+        Duration::from_millis(1_200),
+        Duration::from_millis(config::INPUT_DELAYS.poll_interval_ms.max(5)),
+        128,
+    );
+    let warmup_result = block_on_with_pump({
+        let world_clone = world;
+        async move {
+            let mut observer = world_clone.window_observer_with_config(target_key, warmup_config);
+            observer
+                .wait_for_visibility(VisibilityPolicy::OnScreen)
+                .await
         }
-        thread::sleep(Duration::from_millis(10));
+    })?;
+    if let Err(err) = warmup_result {
+        debug!(
+            pid = resolved_pid,
+            id = target.id,
+            error = %err,
+            "spawn_place_state_visibility_wait_failed"
+        );
     }
 
     Ok(PlaceState {
@@ -1620,7 +1531,6 @@ where
         target_id,
         target_key,
         expected,
-        cursor,
         slug,
         title,
         raise: raise_strategy,
@@ -1670,64 +1580,41 @@ fn ensure_window_on_active_space(
     world: &WorldHandle,
     timeout: Duration,
 ) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last_log: Option<Instant> = None;
-    while Instant::now() < deadline {
-        pump_active_mimics();
+    let idle = Duration::from_millis(config::INPUT_DELAYS.poll_interval_ms.max(5));
+    let wait_config = WaitConfig::new(timeout, idle, 512);
+    let target_key = state.target_key;
+    let wait_result = block_on_with_pump({
         let world_clone = world.clone();
-        let target_key = state.target_key;
-        if let Some(window) = block_on_with_pump(async move { world_clone.get(target_key).await })?
-        {
-            if window.on_active_space && window.is_on_screen {
-                return Ok(());
-            }
-            if last_log
-                .map(|ts| ts.elapsed() >= Duration::from_millis(400))
-                .unwrap_or(true)
-            {
-                debug!(
-                    case = %case,
-                    pid = window.pid,
-                    id = window.id,
-                    on_active_space = window.on_active_space,
-                    is_on_screen = window.is_on_screen,
-                    "ensure_window_on_active_space_pending"
-                );
-                last_log = Some(Instant::now());
-            }
+        async move {
+            let mut observer = world_clone.window_observer_with_config(target_key, wait_config);
+            observer
+                .wait_for_visibility(VisibilityPolicy::OnScreenAndActive)
+                .await
         }
-        thread::sleep(Duration::from_millis(40));
+    })?;
+    match wait_result {
+        Ok(window) => {
+            debug!(
+                case = %case,
+                pid = window.pid,
+                id = window.id,
+                "ensure_window_on_active_space_ready"
+            );
+            Ok(())
+        }
+        Err(err) => Err(helpers::wait_failure(case, &err)),
     }
-    Err(Error::InvalidState(format!(
-        "{case}: target window never reached active space"
-    )))
 }
 
 /// Wait until the world reports authoritative frames for the supplied key.
-fn wait_for_initial_frames(
-    case: &str,
-    world: &WorldHandle,
-    cursor: &mut EventCursor,
-    key: WindowKey,
-    timeout: Duration,
-) -> Result<Frames> {
-    helpers::wait_for_events_or(case, world, cursor, timeout, || {
-        let world_clone = world.clone();
-        let frames = block_on_with_pump(async move { world_clone.frames(key).await })?;
-        Ok(frames.is_some())
+fn wait_for_initial_frames(case: &str, world: &WorldHandle, key: WindowKey) -> Result<Frames> {
+    let config = helpers::default_wait_config();
+    let world_clone = world.clone();
+    let wait_result = block_on_with_pump(async move {
+        let mut observer = world_clone.window_observer_with_config(key, config);
+        observer.wait_for_frames("initial-frames", |_| true).await
     })?;
-    let world_clone = world.clone();
-    block_on_with_pump(async move { world_clone.frames(key).await })?
-        .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))
-}
-
-/// Re-subscribe to world events so subsequent waits start from a fresh cursor.
-fn refresh_cursor(place: &mut PlaceState, world: &WorldHandle) -> Result<()> {
-    let world_clone = world.clone();
-    let (cursor, _snapshot, _events) =
-        block_on_with_pump(async move { world_clone.subscribe_with_snapshot().await })?;
-    place.cursor = cursor;
-    Ok(())
+    wait_result.map_err(|err| helpers::wait_failure(case, &err))
 }
 
 /// Update the persisted expected rectangle artifact for a scenario.
@@ -1859,14 +1746,7 @@ where
         })?);
         if let Some(place) = state.as_mut() {
             let world = stage.world_clone();
-            refresh_cursor(place, &world)?;
-            let frames = wait_for_initial_frames(
-                stage.case_name(),
-                &world,
-                &mut place.cursor,
-                place.target_key,
-                Duration::from_millis(config::PLACE.step_timeout_ms),
-            )?;
+            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
             rewrite_expected_artifact(stage, place.slug, expected)?;
             place.expected = expected;
@@ -1880,23 +1760,24 @@ where
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
         let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
-        refresh_cursor(state_ref, &world)?;
         let mut options = PlaceAttemptOptions::default();
         configure_options(&mut options);
         request_grid_with_options(&world, state_ref.target_id, grid, Some(&options))?;
-        refresh_cursor(state_ref, &world)?;
         focus_guard.reassert()?;
         Ok(())
     })?;
 
     ctx.settle(|stage| {
-        let mut state_data = state
+        let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
+        let world = stage.world_clone();
+        let observer = world
+            .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
         let frames = wait_for_expected(
             stage,
-            &mut state_data,
-            Duration::from_millis(config::PLACE.step_timeout_ms),
+            &state_data,
+            observer,
             config::PLACE.eps.round() as i32,
         )?;
         let snapshot = mac_winops::placement_counters_snapshot();
@@ -1932,6 +1813,16 @@ fn request_grid_with_options(
 ) -> Result<()> {
     let (cols, rows, col, row) = grid;
     let mut attempts = 0;
+    let target_key = WindowKey {
+        pid: target.pid(),
+        id: target.window_id(),
+    };
+    let wait_idle = Duration::from_millis(config::INPUT_DELAYS.poll_interval_ms.max(5));
+    let wait_config = WaitConfig::new(
+        Duration::from_millis(config::DEFAULTS.timeout_ms),
+        wait_idle,
+        512,
+    );
     loop {
         let request_world = world.clone();
         let opts = options.cloned();
@@ -1951,9 +1842,30 @@ fn request_grid_with_options(
                 let message = err.to_string();
                 if attempts < 3 && message.contains("mode=") {
                     attempts += 1;
-                    pump_active_mimics();
-                    thread::sleep(Duration::from_millis(50));
-                    continue;
+                    let wait_result = block_on_with_pump({
+                        let world_clone = world.clone();
+                        async move {
+                            let mut observer =
+                                world_clone.window_observer_with_config(target_key, wait_config);
+                            observer.wait_for_mode(WindowMode::Normal).await
+                        }
+                    })?;
+                    match wait_result {
+                        Ok(_) => {
+                            debug!(
+                                pid = target.pid(),
+                                id = target.window_id(),
+                                attempts,
+                                "request_grid_retry_after_mode_wait"
+                            );
+                            continue;
+                        }
+                        Err(wait_err) => {
+                            return Err(Error::InvalidState(format!(
+                                "placement request failed: {message}; wait_error={wait_err}"
+                            )));
+                        }
+                    }
                 }
                 return Err(Error::InvalidState(format!(
                     "placement request failed: {message}"
@@ -2150,41 +2062,23 @@ where
 /// Wait until world reports the expected authoritative frame for the helper window.
 fn wait_for_expected(
     stage: &StageHandle<'_>,
-    state: &mut PlaceState,
-    timeout: Duration,
+    state: &PlaceState,
+    observer: WindowObserver,
     eps: i32,
 ) -> Result<hotki_world::Frames> {
-    let world = stage.world_clone();
-    let target_key = state.target_key;
-    let expected_rect = state.expected;
-    helpers::wait_for_events_or(
-        stage.case_name(),
-        &world,
-        &mut state.cursor,
-        timeout,
-        || {
-            let world_for_frames = world.clone();
-            let maybe_frames =
-                block_on_with_pump(async move { world_for_frames.frames(target_key).await })?;
-            let frames = match maybe_frames {
-                Some(f) => f,
-                None => return Ok(false),
-            };
-            let matches = rect_matches(frames.authoritative, expected_rect, eps);
-            if !matches {
-                debug!(
-                    case = %stage.case_name(),
-                    actual = ?frames.authoritative,
-                    expected = ?expected_rect,
-                    "wait_for_expected_mismatch"
-                );
-            }
-            Ok(matches)
-        },
-    )?;
-    let world_for_final = world.clone();
-    block_on_with_pump(async move { world_for_final.frames(target_key).await })?
-        .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))
+    let expected = state.expected;
+    let wait_result = block_on_with_pump(async move {
+        let mut observer = observer;
+        observer
+            .wait_for_frames("placement-frame", move |frames| {
+                rect_matches(frames.authoritative, expected, eps)
+            })
+            .await
+    })?;
+    match wait_result {
+        Ok(frames) => Ok(frames),
+        Err(err) => Err(helpers::wait_failure(stage.case_name(), &err)),
+    }
 }
 
 /// Convert an integer rectangle into a float tuple consumed by helper configuration.

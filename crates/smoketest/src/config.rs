@@ -88,8 +88,6 @@ pub struct PlaceConfig {
     pub grid_rows: u32,
     /// Epsilon in pixels for frame comparisons in placement checks.
     pub eps: f64,
-    /// Per-cell timeout while waiting for the expected frame.
-    pub step_timeout_ms: u64,
 }
 
 /// Default placement grid tuning.
@@ -97,7 +95,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
     grid_cols: 3,
     grid_rows: 2,
     eps: 2.0,
-    step_timeout_ms: 3000,
 };
 
 /// Session-level defaults.
@@ -135,14 +132,11 @@ pub const FULLSCREEN: FullscreenConfig = FullscreenConfig {
 pub struct HideConfig {
     /// Max wait for the helper window to appear initially.
     pub first_window_max_ms: u64,
-    /// Max wait for the window to restore frame on hide(off).
-    pub restore_max_ms: u64,
 }
 
 /// Default hide test timing and geometry.
 pub const HIDE: HideConfig = HideConfig {
     first_window_max_ms: 2000,
-    restore_max_ms: 1200,
 };
 
 /// Warn overlay tuning.
