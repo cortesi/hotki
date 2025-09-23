@@ -201,8 +201,3 @@ pub fn list_windows() -> Result<Vec<WindowInfo>> {
     );
     Ok(windows)
 }
-
-/// Resolve a window snapshot or return an empty list if the world is unavailable.
-pub fn list_windows_or_empty() -> Vec<WindowInfo> {
-    list_windows().unwrap_or_default()
-}

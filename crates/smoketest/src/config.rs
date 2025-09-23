@@ -47,23 +47,12 @@ pub const INPUT_DELAYS: InputDelays = InputDelays {
 /// Connection retry tuning.
 #[derive(Debug, Clone, Copy)]
 pub struct Retry {
-    /// Initial delay for connection retry (increases after first attempts).
-    pub initial_delay_ms: u64,
     /// Fast retry delay after initial attempts.
     pub fast_delay_ms: u64,
-    /// Number of initial connection attempts before switching to fast retry.
-    pub initial_attempts: u32,
-    /// Delay for waiting between event checks.
-    pub event_check_interval_ms: u64,
 }
 
 /// Default connection retry pacing.
-pub const RETRY: Retry = Retry {
-    initial_delay_ms: 200,
-    fast_delay_ms: 50,
-    initial_attempts: 3,
-    event_check_interval_ms: 80,
-};
+pub const RETRY: Retry = Retry { fast_delay_ms: 50 };
 
 /// Helper window defaults shared across tests.
 #[derive(Debug, Clone, Copy)]

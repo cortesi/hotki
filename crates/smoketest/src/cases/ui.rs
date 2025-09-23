@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::{
-    binding_watcher::BindingWatcher,
+    binding_watcher::{ActivationOutcome, BindingWatcher},
     config,
     error::{Error, Result},
     server_drive,
@@ -94,6 +94,8 @@ struct UiCaseState {
     time_to_hud_ms: Option<u64>,
     /// Snapshot of HUD-related windows after activation.
     hud_windows: Option<Vec<HudWindowSnapshot>>,
+    /// Detailed activation diagnostics for the HUD.
+    hud_activation: Option<ActivationOutcome>,
 }
 
 /// Core implementation that runs a HUD-focused UI smoketest.
@@ -119,6 +121,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             slug: spec.slug,
             time_to_hud_ms: None,
             hud_windows: None,
+            hud_activation: None,
         });
 
         Ok(())
@@ -133,10 +136,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         server_drive::ensure_init(&socket, 3_000)?;
         let gate_ms = config::BINDING_GATES.default_ms * 3;
         let mut watcher = BindingWatcher::connect(&socket, state_ref.session.pid() as i32)?;
-        watcher.activate_until_ready(gate_ms)?;
-
-        let hud_deadline = config::DEFAULTS.timeout_ms;
-        let time_to_hud = state_ref.session.wait_for_hud_checked(hud_deadline)?;
+        let activation = watcher.activate_until_ready(gate_ms)?;
 
         send_key_sequence(UI_DEMO_SEQUENCE)?;
         watcher.await_nested(UI_DEMO_SEQUENCE, gate_ms)?;
@@ -148,7 +148,8 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             ));
         }
 
-        state_ref.time_to_hud_ms = Some(time_to_hud);
+        state_ref.time_to_hud_ms = activation.hud_visible_ms();
+        state_ref.hud_activation = Some(activation);
         state_ref.hud_windows = Some(hud_windows);
 
         // Close the HUD after capturing window diagnostics to leave the session cleanly.
@@ -170,6 +171,10 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             "hud_seen": state_inner.time_to_hud_ms.is_some(),
             "time_to_hud_ms": state_inner.time_to_hud_ms,
             "hud_windows": state_inner.hud_windows,
+            "hud_activation": state_inner
+                .hud_activation
+                .as_ref()
+                .map(ActivationOutcome::to_summary_json),
         });
         let mut data = serde_json::to_string_pretty(&payload)
             .map_err(|err| Error::InvalidState(format!("failed to serialize ui outcome: {err}")))?;
