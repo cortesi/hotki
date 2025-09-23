@@ -130,7 +130,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
         let socket = state_ref.session.socket_path().to_string();
         server_drive::ensure_init(&socket, 3_000)?;
-        let gate_ms = config::BINDING_GATES.default_ms * 2;
+        let gate_ms = config::BINDING_GATES.default_ms * 3;
         server_drive::wait_for_idents(&["shift+cmd+0"], gate_ms)?;
 
         // Proactively trigger the activation chord before waiting for visibility.

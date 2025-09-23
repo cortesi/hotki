@@ -38,21 +38,25 @@ behaviour.
 Additional command:
 
 - `repeat-shell`: Repeats a shell command and counts actual invocations.
-  - Example: `cargo run --bin smoketest -- repeat-shell --time 2000`
+  - Example: `cargo run --bin smoketest -- repeat-shell --duration 2000`
   - Implementation: The test command appends to a unique temp file on each
     invocation; the tool reads the file to count invocations and reports
     repeats (total minus the initial run).
 
 - `repeat-volume`: Sets volume to 0, repeats a +1 volume change, and measures
   the resulting volume.
-  - Example: `cargo run --bin smoketest -- repeat-volume --time 2000`
+  - Example: `cargo run --bin smoketest -- repeat-volume --duration 2000`
   - The final volume minus one (initial run) is reported as repeats.
 
 Test runner:
 
-- `all`: Runs repeat tests (1s each; volume 2s, expect ≥3 repeats) and UI demos (ui + miniui) that verify the HUD appears and a short theme cycle works.
+- `all`: Executes every registered smoketest case (repeat throughput, placement, UI, world probes)
+  through the registry runner.
   - Example: `cargo run --bin smoketest -- all`
-  - Prints per-test counts, runs UI checks, and exits non‑zero on failure.
+  - Output is slug-oriented (`repeat-shell... OK`) and the command exits non-zero on failure.
+- `seq`: Runs a subset of registry slugs in order when you need a faster cycle.
+  - Example: `cargo run --bin smoketest -- seq repeat-relay hide.toggle.roundtrip ui`
+  - Use the case names emitted by `cargo run --bin smoketest -- all --quiet` for sequencing.
 
 ## Placement Engine
 

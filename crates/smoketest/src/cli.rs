@@ -46,53 +46,126 @@ pub struct Cli {
 
 /// Named tests that can be run in sequence via `seq`.
 #[derive(Copy, Clone, Debug, ValueEnum)]
-#[value(rename_all = "kebab-case")]
 pub enum SeqTest {
     /// Relay repeat performance
+    #[value(name = "repeat-relay")]
     RepeatRelay,
     /// Shell repeat performance
+    #[value(name = "repeat-shell")]
     RepeatShell,
     /// Volume repeat performance
+    #[value(name = "repeat-volume")]
     RepeatVolume,
-    /// Focus handling
-    Focus,
+    /// Focus tracking flow
+    #[value(name = "focus.tracking", alias = "focus", alias = "focus-tracking")]
+    FocusTracking,
+    /// Focus navigation flow
+    #[value(name = "focus.nav", alias = "focus-nav")]
+    FocusNav,
     /// Raise operation
+    #[value(name = "raise")]
     Raise,
-    /// Hide operation
-    Hide,
-    /// Grid placement
-    Place,
+    /// Hide toggle behavior
+    #[value(name = "hide.toggle.roundtrip", alias = "hide", alias = "hide-toggle")]
+    HideToggle,
+    /// Grid placement cycle
+    #[value(name = "place.grid.cycle", alias = "place", alias = "place-grid-cycle")]
+    PlaceGrid,
     /// Async placement behavior
+    #[value(name = "place.async.delay", alias = "place-async")]
     PlaceAsync,
     /// Animated placement behavior
+    #[value(name = "place.animated.tween", alias = "place-animated")]
     PlaceAnimated,
+    /// Terminal placement guard
+    #[value(name = "place.term.anchor", alias = "place-term")]
+    PlaceTerm,
+    /// Placement with increments
+    #[value(name = "place.increments.anchor", alias = "place-increments")]
+    PlaceIncrements,
     /// Move with minimum size constraint
+    #[value(name = "place.move.min", alias = "place-move-min")]
     PlaceMoveMin,
     /// Move with non-resizable constraint
+    #[value(name = "place.move.nonresizable", alias = "place-move-nonresizable")]
     PlaceMoveNonresizable,
-    /// Fullscreen behavior
+    /// Placement skip behavior
+    #[value(name = "place.skip.nonmovable", alias = "place-skip")]
+    PlaceSkip,
+    /// Fake placement harness (no GUI required)
+    #[value(name = "place.fake.adapter", alias = "place-fake")]
+    PlaceFake,
+    /// Minimized placement restore
+    #[value(name = "place.minimized.defer", alias = "place-minimized")]
+    PlaceMinimized,
+    /// Zoomed placement normalize
+    #[value(name = "place.zoomed.normalize", alias = "place-zoomed")]
+    PlaceZoomed,
+    /// Flexible placement default path
+    #[value(name = "place.flex.default", alias = "place-flex")]
+    PlaceFlex,
+    /// Shrink-move-grow placement
+    #[value(name = "place.flex.smg", alias = "place-smg")]
+    PlaceFlexSmg,
+    /// Size->pos placement fallback
+    #[value(name = "place.flex.force_size_pos", alias = "place-fallback")]
+    PlaceFlexFallback,
+    /// Fullscreen toggle behavior
+    #[value(name = "fullscreen.toggle.nonnative", alias = "fullscreen")]
     Fullscreen,
     /// Full UI smoke
+    #[value(name = "ui.demo.standard", alias = "ui")]
     Ui,
     /// Mini UI smoke
+    #[value(name = "ui.demo.mini", alias = "minui")]
     Minui,
-    /// Fake placement harness (no GUI required)
-    PlaceFake,
     /// Simulated multi-space adoption/performance check
+    #[value(name = "world.spaces.adoption", alias = "world-spaces")]
     WorldSpaces,
+    /// World status surface check
+    #[value(name = "world.status.permissions", alias = "world-status")]
+    WorldStatus,
+    /// World AX focus props
+    #[value(name = "world.ax.focus_props", alias = "world-ax")]
+    WorldAx,
 }
 
-/// Desired fullscreen state for tests.
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum FsState {
-    /// Toggle fullscreen
-    Toggle,
-    /// Force fullscreen on
-    On,
-    /// Force fullscreen off
-    Off,
+impl SeqTest {
+    /// Return the registry slug corresponding to this sequence entry.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::RepeatRelay => "repeat-relay",
+            Self::RepeatShell => "repeat-shell",
+            Self::RepeatVolume => "repeat-volume",
+            Self::FocusTracking => "focus.tracking",
+            Self::FocusNav => "focus.nav",
+            Self::Raise => "raise",
+            Self::HideToggle => "hide.toggle.roundtrip",
+            Self::PlaceGrid => "place.grid.cycle",
+            Self::PlaceAsync => "place.async.delay",
+            Self::PlaceAnimated => "place.animated.tween",
+            Self::PlaceTerm => "place.term.anchor",
+            Self::PlaceIncrements => "place.increments.anchor",
+            Self::PlaceMoveMin => "place.move.min",
+            Self::PlaceMoveNonresizable => "place.move.nonresizable",
+            Self::PlaceSkip => "place.skip.nonmovable",
+            Self::PlaceFake => "place.fake.adapter",
+            Self::PlaceMinimized => "place.minimized.defer",
+            Self::PlaceZoomed => "place.zoomed.normalize",
+            Self::PlaceFlex => "place.flex.default",
+            Self::PlaceFlexSmg => "place.flex.smg",
+            Self::PlaceFlexFallback => "place.flex.force_size_pos",
+            Self::Fullscreen => "fullscreen.toggle.nonnative",
+            Self::Ui => "ui.demo.standard",
+            Self::Minui => "ui.demo.mini",
+            Self::WorldSpaces => "world.spaces.adoption",
+            Self::WorldStatus => "world.status.permissions",
+            Self::WorldAx => "world.ax.focus_props",
+        }
+    }
 }
 
+/// CLI commands for the smoketest runner.
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
@@ -114,7 +187,7 @@ pub enum Commands {
 
     /// Run a sequence of smoketests in order
     ///
-    /// Example: smoketest seq repeat-relay focus-tracking ui
+    /// Example: smoketest seq repeat-relay focus.tracking ui.demo.standard
     #[command(name = "seq")]
     Seq {
         /// One or more test names to run in order
@@ -126,91 +199,78 @@ pub enum Commands {
     Raise,
 
     /// Verify focus(dir) by navigating between arranged helper windows
-    #[command(name = "focus-nav")]
+    #[command(name = "focus.nav", alias = "focus-nav")]
     FocusNav,
 
     /// Verify focus tracking by activating a test window
-    #[command(name = "focus-tracking")]
+    #[command(name = "focus.tracking", alias = "focus-tracking")]
     Focus,
 
     /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
+    #[command(name = "hide.toggle.roundtrip", alias = "hide")]
     Hide,
 
     /// Verify window placement into a grid by cycling a helper window through all cells
+    #[command(name = "place.grid.cycle", alias = "place")]
     Place,
 
     /// Exercise placement flows with a fake AX adapter (no GUI required)
-    #[command(name = "place-fake")]
+    #[command(name = "place.fake.adapter", alias = "place-fake")]
     PlaceFake,
 
     /// Verify placement convergence when the target app applies geometry with a small delay
-    #[command(name = "place-async")]
+    #[command(name = "place.async.delay", alias = "place-async")]
     PlaceAsync,
 
     /// Verify placement while the target window animates to the requested frame
-    #[command(name = "place-animated")]
+    #[command(name = "place.animated.tween", alias = "place-animated")]
     PlaceAnimated,
 
     /// Exercise placement under terminal-style resize increments with a
     /// timeline check that ensures we never thrash position after origin is
     /// correct (terminal guard).
-    #[command(name = "place-term")]
+    #[command(name = "place.term.anchor", alias = "place-term")]
     PlaceTerm,
 
     /// Verify placement when the app enforces discrete resize increments. This
     /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and
     /// checks that anchored edges are flush to the grid.
-    #[command(name = "place-increments")]
+    #[command(name = "place.increments.anchor", alias = "place-increments")]
     PlaceIncrements,
 
     /// Verify placement after normalizing a minimized window
-    #[command(name = "place-minimized")]
+    #[command(name = "place.minimized.defer", alias = "place-minimized")]
     PlaceMinimized,
 
     /// Verify placement after normalizing a zoomed window
-    #[command(name = "place-zoomed")]
+    #[command(name = "place.zoomed.normalize", alias = "place-zoomed")]
     PlaceZoomed,
 
     /// Repro for move-with-grid when minimum height exceeds cell size
-    #[command(name = "place-move-min")]
+    #[command(name = "place.move.min", alias = "place-move-min")]
     PlaceMoveMin,
 
     /// Repro for move-with-grid when window is non-resizable
-    #[command(name = "place-move-nonresizable")]
+    #[command(name = "place.move.nonresizable", alias = "place-move-nonresizable")]
     PlaceMoveNonresizable,
 
     /// Flexible placement harness for Stage-8 variants (direct mac-winops calls)
     #[command(name = "place-flex")]
     PlaceFlex {
-        /// Grid columns
-        #[arg(long, default_value_t = config::PLACE.grid_cols)]
-        cols: u32,
-        /// Grid rows
-        #[arg(long, default_value_t = config::PLACE.grid_rows)]
-        rows: u32,
-        /// Target column (0-based)
-        #[arg(long, default_value_t = 0)]
-        col: u32,
-        /// Target row (0-based)
-        #[arg(long, default_value_t = 0)]
-        row: u32,
         /// Force size->pos fallback even if pos->size succeeds
         #[arg(long, default_value_t = false)]
         force_size_pos: bool,
-        /// Disable size->pos fallback; only attempt pos->size
-        #[arg(long, default_value_t = false)]
-        pos_first_only: bool,
         /// Force shrink->move->grow fallback even if dual-order attempts succeed (smoketest only)
         #[arg(long, default_value_t = false)]
         force_shrink_move_grow: bool,
     },
 
     /// Convenience: exercise size->pos fallback path explicitly
-    #[command(name = "place-fallback")]
+    #[command(name = "place.flex.force_size_pos", alias = "place-fallback")]
     PlaceFallback,
 
     /// Focused test: exercise shrink->move->grow fallback deterministically
-    #[command(name = "place-smg")]
+    #[command(name = "place.flex.smg", alias = "place-smg")]
     PlaceSmg,
 
     /// Internal helper: create a foreground window with a title for focus testing
@@ -299,31 +359,27 @@ pub enum Commands {
     },
 
     /// Launch UI with test config and drive a short HUD + theme cycle
+    #[command(name = "ui.demo.standard", alias = "ui")]
     Ui,
 
     /// Take HUD-only screenshots for a theme
     // Screenshots extracted to separate tool: hotki-shots
 
     /// Launch UI in mini HUD mode and cycle themes
+    #[command(name = "ui.demo.mini", alias = "minui")]
     Minui,
 
-    /// Control fullscreen on a helper window (toggle/on/off; native or non-native)
-    Fullscreen {
-        /// Desired state (toggle/on/off)
-        #[arg(long, value_enum, default_value_t = FsState::Toggle)]
-        state: FsState,
-        /// Use native system fullscreen instead of non-native
-        #[arg(long, default_value_t = false)]
-        native: bool,
-    },
+    /// Control fullscreen on a helper window (non-native registry case)
+    #[command(name = "fullscreen.toggle.nonnative", alias = "fullscreen")]
+    Fullscreen,
     /// Query world status via RPC and verify basic invariants
-    #[command(name = "world-status")]
+    #[command(name = "world.status.permissions", alias = "world-status")]
     WorldStatus,
     /// Query AX props for the frontmost helper via WorldHandle
-    #[command(name = "world-ax")]
+    #[command(name = "world.ax.focus_props", alias = "world-ax")]
     WorldAx,
     /// Simulate multi-space navigation and verify adoption performance.
-    #[command(name = "world-spaces")]
+    #[command(name = "world.spaces.adoption", alias = "world-spaces")]
     WorldSpaces,
     /// Capture raw CoreGraphics window listings for Mission Control analysis.
     #[command(name = "space-probe")]
@@ -340,6 +396,6 @@ pub enum Commands {
     },
     // Preflight smoketest removed.
     /// Focused test: attempt placement on a non-movable window and assert skip
-    #[command(name = "place-skip")]
+    #[command(name = "place.skip.nonmovable", alias = "place-skip")]
     PlaceSkip,
 }

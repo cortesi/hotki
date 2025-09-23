@@ -162,12 +162,12 @@ No second data channel; hotki-world is the single assertion surface.
 27. [x] world-spaces
 
 2. Post-Port Cleanup
-1. [ ] Remove `crates/smoketest/src/tests` once all scenarios live under `cases/`.
-2. [ ] Delete `crates/smoketest/src/test_runner.rs` after migrating remaining call sites.
-3. [ ] Replace per-command handlers in `main.rs` with suite-driven case dispatch only.
-4. [ ] Trim CLI enums (`Commands`, `SeqTest`) to map directly onto the registry cases.
-5. [ ] Drop legacy helper plumbing (`run_case`, watchdog wrappers) once unused by the CLI.
-6. [ ] Update docs and configs to remove references to the legacy smoketest harness.
+1. [x] Remove `crates/smoketest/src/tests` once all scenarios live under `cases/`.
+2. [x] Delete `crates/smoketest/src/test_runner.rs` after migrating remaining call sites.
+3. [x] Replace per-command handlers in `main.rs` with suite-driven case dispatch only.
+4. [x] Trim CLI enums (`Commands`, `SeqTest`) to map directly onto the registry cases.
+5. [x] Drop legacy helper plumbing (`run_case`, watchdog wrappers) once unused by the CLI.
+6. [x] Update docs and configs to remove references to the legacy smoketest harness.
 
 6. Stage Six: Coverage Pack and Capture Importers
 1. [x] Seed 6-10 mimic scenarios under `crates/smoketest/src/cases` with budgets, standardized skip

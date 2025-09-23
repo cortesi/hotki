@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf, result::Result as StdResult};
+use std::{io, result::Result as StdResult};
 
 use thiserror::Error;
 
@@ -7,10 +7,6 @@ use crate::server_drive::DriverError;
 /// Errors that can occur during smoketest execution.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// Configuration file is missing or invalid.
-    #[error("missing config: {}", .0.display())]
-    MissingConfig(PathBuf),
-
     /// The hotki binary could not be found.
     #[error("could not locate 'hotki' binary (set HOTKI_BIN or `cargo build --bin hotki`)")]
     HotkiBinNotFound,
@@ -76,11 +72,6 @@ pub fn print_hints(err: &Error) {
             eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
         }
 
-        Error::MissingConfig(_) => {
-            eprintln!(
-                "hint: expected examples/test.ron relative to repo root (or pass a valid config)"
-            );
-        }
         Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {
             // No specific hints for these errors
         }

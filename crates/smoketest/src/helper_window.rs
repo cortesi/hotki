@@ -5,47 +5,13 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-use mac_winops::{
-    WindowInfo, focus,
-    ops::{RealWinOps, WinOps},
-    wait::wait_for_windows_visible_ms,
-};
+use mac_winops::wait::wait_for_windows_visible_ms;
 
 use crate::{
     config,
     error::{Error, Result},
     proc_registry, world,
 };
-
-/// Titles of internal smoketest windows that should be ignored when checking focus.
-pub const FRONTMOST_IGNORE_TITLES: &[&str] = &["hotki smoketest: hands-off", "Cursor"];
-
-/// Returns true if `title` should be ignored when evaluating frontmost windows.
-fn is_ignored_title(title: &str, ignore_titles: &[&str]) -> bool {
-    ignore_titles.iter().any(|candidate| candidate == &title)
-}
-
-/// Resolve the frontmost application window while skipping known helper overlays.
-pub fn frontmost_app_window(ignore_titles: &[&str]) -> Option<WindowInfo> {
-    let windows = RealWinOps.list_windows();
-    let snap = focus::poll_now();
-    if snap.pid >= 0
-        && !snap.title.is_empty()
-        && let Some(win) = windows.iter().find(|w| {
-            w.pid == snap.pid
-                && w.title == snap.title
-                && w.layer == 0
-                && !is_ignored_title(&w.title, ignore_titles)
-        })
-    {
-        return Some(win.clone());
-    }
-    windows.into_iter().find(|win| {
-        win.layer == 0
-            && !is_ignored_title(&win.title, ignore_titles)
-            && !win.title.trim().is_empty()
-    })
-}
 
 /// Managed child process that cleans up on drop.
 pub struct ManagedChild {

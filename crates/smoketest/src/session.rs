@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Child, Command},
     thread,
     time::{Duration, Instant},
@@ -100,15 +100,6 @@ impl HotkiSession {
     /// Create a new session builder.
     pub fn builder(binary_path: impl Into<PathBuf>) -> HotkiSessionBuilder {
         HotkiSessionBuilder::new(binary_path)
-    }
-
-    /// Legacy constructor for compatibility
-    /// Convenience constructor that builds and launches in one call.
-    pub fn launch_with_config(hotki_bin: &Path, cfg_path: &Path, with_logs: bool) -> Result<Self> {
-        Self::builder(hotki_bin)
-            .with_config(cfg_path)
-            .with_logs(with_logs)
-            .spawn()
     }
 
     /// Return the OS process id for the hotki child.

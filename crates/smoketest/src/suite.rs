@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    process::exit,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -11,7 +12,7 @@ use serde::Serialize;
 use crate::{
     artifacts, cases,
     error::{Error, Result, print_hints},
-    process, world,
+    proc_registry, process, world,
 };
 
 /// Configured time budget for a smoketest case.
@@ -398,7 +399,7 @@ fn run_entry(
     let (ctx, run_result) = if entry.main_thread {
         let world_clone = world;
         let case_dir_clone = case_dir;
-        crate::run_on_main_with_watchdog(entry.name, timeout_ms, move || {
+        run_on_main_with_watchdog(entry.name, timeout_ms, move || {
             let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
             let res = (entry.run)(&mut ctx);
             (ctx, res)
@@ -406,7 +407,7 @@ fn run_entry(
     } else {
         let world_clone = world;
         let case_dir_clone = case_dir;
-        crate::run_with_watchdog(entry.name, timeout_ms, move || {
+        run_with_watchdog(entry.name, timeout_ms, move || {
             let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
             let res = (entry.run)(&mut ctx);
             (ctx, res)
@@ -462,6 +463,78 @@ fn report_outcome(outcome: &CaseRunOutcome, quiet: bool) {
             eprintln!("  artifact: {}", path.display());
         }
     }
+}
+
+/// Run `f` on a background thread and bail out if the timeout expires.
+fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    use std::{sync::mpsc, thread};
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let value = f();
+        if tx.send(value).is_err() {
+            // Receiver dropped due to timeout; nothing else to do.
+        }
+    });
+
+    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!(
+                "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
+                timeout_ms, name
+            );
+            proc_registry::kill_all();
+            exit(2);
+        }
+    }
+}
+
+/// Run `f` on the current thread while a watchdog enforces the deadline.
+fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Instant,
+    };
+
+    let canceled = Arc::new(AtomicBool::new(false));
+    let watchdog_flag = Arc::clone(&canceled);
+    let name_owned = name.to_string();
+    let watchdog = thread::spawn(move || {
+        let start = Instant::now();
+        loop {
+            if watchdog_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            if start.elapsed() >= Duration::from_millis(timeout_ms) {
+                eprintln!(
+                    "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
+                    timeout_ms, name_owned
+                );
+                proc_registry::kill_all();
+                exit(2);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    });
+
+    let value = f();
+    canceled.store(true, Ordering::SeqCst);
+    if watchdog.join().is_err() {
+        // Watchdog thread panicked; treat it as best-effort cleanup.
+    }
+    value
 }
 
 /// Verify helper metadata and enforce the shared helper catalog limit.

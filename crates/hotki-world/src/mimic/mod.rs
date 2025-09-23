@@ -15,7 +15,10 @@ use std::{
 
 use once_cell::sync::OnceCell;
 use tracing::{debug, warn};
-use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
+use winit::{
+    application::ApplicationHandler,
+    platform::pump_events::{EventLoopExtPumpEvents, PumpStatus},
+};
 
 use crate::{PlaceOptions, RaiseStrategy};
 
@@ -37,17 +40,34 @@ fn register_active_mimic(runtime: &Rc<MimicRuntime>) {
     ACTIVE_MIMICS.with(|list| list.borrow_mut().push(Rc::downgrade(runtime)));
 }
 
-fn shared_event_loop() -> Rc<RefCell<winit::event_loop::EventLoop<()>>> {
+/// Handle for the shared winit event loop used by mimic helpers and smoketests.
+#[derive(Clone)]
+pub struct EventLoopHandle(Rc<RefCell<winit::event_loop::EventLoop<()>>>);
+
+impl EventLoopHandle {
+    /// Pump application events with the provided timeout, returning the loop status.
+    pub fn pump_app<A: ApplicationHandler>(
+        &self,
+        timeout: Option<Duration>,
+        app: &mut A,
+    ) -> PumpStatus {
+        let mut event_loop = self.0.borrow_mut();
+        event_loop.pump_app_events(timeout, app)
+    }
+}
+
+/// Borrow the shared event loop, creating it on first use.
+pub fn shared_event_loop() -> EventLoopHandle {
     SHARED_EVENT_LOOP.with(|cell| {
         let mut borrowed = cell.borrow_mut();
         if let Some(existing) = borrowed.as_ref() {
-            existing.clone()
+            EventLoopHandle(existing.clone())
         } else {
             let event_loop = Rc::new(RefCell::new(
                 winit::event_loop::EventLoop::new().expect("failed to construct mimic event loop"),
             ));
             *borrowed = Some(event_loop.clone());
-            event_loop
+            EventLoopHandle(event_loop)
         }
     })
 }
@@ -249,7 +269,7 @@ impl MimicHandle {
 }
 
 struct MimicRuntime {
-    event_loop: Rc<RefCell<winit::event_loop::EventLoop<()>>>,
+    event_loop: EventLoopHandle,
     app: RefCell<helper_app::HelperApp>,
     shutdown: Arc<AtomicBool>,
     finished: RefCell<bool>,
@@ -258,7 +278,7 @@ struct MimicRuntime {
 
 impl MimicRuntime {
     fn new(
-        event_loop: Rc<RefCell<winit::event_loop::EventLoop<()>>>,
+        event_loop: EventLoopHandle,
         app: helper_app::HelperApp,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
@@ -283,10 +303,9 @@ impl MimicRuntime {
             let app = self.app.borrow();
             app.next_wakeup_timeout()
         };
-        let mut event_loop = self.event_loop.borrow_mut();
         let status = {
             let mut app = self.app.borrow_mut();
-            event_loop.pump_app_events(Some(timeout), &mut *app)
+            self.event_loop.pump_app(Some(timeout), &mut *app)
         };
         match status {
             PumpStatus::Continue => {

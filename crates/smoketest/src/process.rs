@@ -155,26 +155,3 @@ pub fn build_hotki_quiet() -> Result<()> {
         }
     }
 }
-
-/// Run a shell command and capture its output.
-pub fn run_command(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(Error::Io)?;
-
-    if !output.status.success() {
-        return Err(Error::SpawnFailed(format!(
-            "Command failed: {} {}",
-            program,
-            args.join(" ")
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Execute osascript (AppleScript) command.
-pub fn osascript(script: &str) -> Result<String> {
-    run_command("osascript", &["-e", script])
-}
