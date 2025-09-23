@@ -154,12 +154,12 @@ No second data channel; hotki-world is the single assertion surface.
 19. [x] place-move-nonresizable
 20. [x] place-minimized
 21. [x] place-zoomed
-22. [ ] ui
-23. [ ] minui
-24. [ ] fullscreen
+22. [x] ui
+23. [x] minui
+24. [x] fullscreen
 25. [x] world-status
 26. [x] world-ax
-27. [ ] world-spaces
+27. [x] world-spaces
 
 2. Post-Port Cleanup
 1. [ ] Remove `crates/smoketest/src/tests` once all scenarios live under `cases/`.

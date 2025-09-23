@@ -570,6 +570,30 @@ const WORLD_HELPERS: &[HelperDoc] = &[
     },
 ];
 
+/// Helper functions consumed by UI demo smoketests.
+const UI_HELPERS: &[HelperDoc] = &[
+    HelperDoc {
+        name: "HotkiSession::builder",
+        summary: "Launch a scoped hotki session backed by a temporary config.",
+    },
+    HelperDoc {
+        name: "send_key_sequence",
+        summary: "Drive HUD interactions through injected key chords.",
+    },
+];
+
+/// Helper functions consumed by fullscreen smoketests.
+const FULLSCREEN_HELPERS: &[HelperDoc] = &[
+    HelperDoc {
+        name: "HelperWindow::spawn_frontmost",
+        summary: "Spawn a helper window and ensure it becomes frontmost for assertions.",
+    },
+    HelperDoc {
+        name: "send_key",
+        summary: "Inject a single key chord via the server driver.",
+    },
+];
+
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
     CaseEntry {
@@ -846,6 +870,45 @@ static CASES: &[CaseEntry] = &[
         run: cases::place_skip_nonmovable,
     },
     CaseEntry {
+        name: "ui.demo.standard",
+        info: Some("HUD demo flows through activation, theme cycle, and exit"),
+        main_thread: true,
+        extra_timeout_ms: 45_000,
+        budget: Budget {
+            setup_ms: 2_000,
+            action_ms: 6_000,
+            settle_ms: 2_000,
+        },
+        helpers: UI_HELPERS,
+        run: cases::ui_demo_standard,
+    },
+    CaseEntry {
+        name: "ui.demo.mini",
+        info: Some("Mini HUD demo mirrors the standard flow in compact mode"),
+        main_thread: true,
+        extra_timeout_ms: 45_000,
+        budget: Budget {
+            setup_ms: 2_000,
+            action_ms: 5_000,
+            settle_ms: 2_000,
+        },
+        helpers: UI_HELPERS,
+        run: cases::ui_demo_mini,
+    },
+    CaseEntry {
+        name: "fullscreen.toggle.nonnative",
+        info: Some("Toggle non-native fullscreen via injected chords and AX validation"),
+        main_thread: true,
+        extra_timeout_ms: 20_000,
+        budget: Budget {
+            setup_ms: 1_500,
+            action_ms: 3_000,
+            settle_ms: 1_500,
+        },
+        helpers: FULLSCREEN_HELPERS,
+        run: cases::fullscreen_toggle_nonnative,
+    },
+    CaseEntry {
         name: "world.status.permissions",
         info: Some("World status reports granted capabilities and sane polling budgets"),
         main_thread: true,
@@ -870,5 +933,18 @@ static CASES: &[CaseEntry] = &[
         },
         helpers: WORLD_HELPERS,
         run: cases::world_ax_focus_props,
+    },
+    CaseEntry {
+        name: "world.spaces.adoption",
+        info: Some("World adopts mock Mission Control spaces within budget"),
+        main_thread: false,
+        extra_timeout_ms: 6_000,
+        budget: Budget {
+            setup_ms: 400,
+            action_ms: 1_200,
+            settle_ms: 400,
+        },
+        helpers: &[],
+        run: cases::world_spaces_adoption,
     },
 ];

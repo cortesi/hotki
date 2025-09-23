@@ -469,11 +469,11 @@ fn seq_case_name(test: &SeqTest) -> &'static str {
         SeqTest::PlaceAnimated => "place.animated.tween",
         SeqTest::PlaceMoveMin => "place.move.min",
         SeqTest::PlaceMoveNonresizable => "place.move.nonresizable",
-        SeqTest::Fullscreen => "fullscreen",
-        SeqTest::Ui => "ui",
-        SeqTest::Minui => "minui",
+        SeqTest::Fullscreen => "fullscreen.toggle.nonnative",
+        SeqTest::Ui => "ui.demo.standard",
+        SeqTest::Minui => "ui.demo.mini",
         SeqTest::PlaceFake => "place.fake.adapter",
-        SeqTest::WorldSpaces => "world-spaces",
+        SeqTest::WorldSpaces => "world.spaces.adoption",
     }
 }
 
@@ -959,36 +959,20 @@ fn handle_ui(cli: &Cli) {
     if !cli.quiet {
         heading("Test: ui");
     }
-    let timeout = cli.timeout;
-    let mut overlay = None;
-    if !cli.no_warn {
-        overlay = process::start_warn_overlay_with_delay();
-        process::write_overlay_status("ui");
-        if let Some(info) = &cli.info {
-            process::write_overlay_info(info);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["ui.demo.standard"], &runner_cfg) {
+        eprintln!("ui: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
     }
-    match run_with_watchdog("ui", timeout, move || ui::run_ui_demo(timeout)) {
-        Ok(out) => {
-            if !cli.quiet {
-                println!("{}", out.format_status("ui"));
-            }
-        }
-        Err(e) => {
-            eprintln!("ui: ERROR: {}", e);
-            print_hints(&e);
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-            exit(1);
-        }
-    }
-    if let Some(mut o) = overlay
-        && let Err(e) = o.kill_and_wait()
-    {
-        eprintln!("smoketest: failed to stop overlay: {}", e);
+    if !cli.quiet {
+        println!("ui: OK (HUD demo flow completed)");
     }
 }
 
@@ -997,67 +981,72 @@ fn handle_minui(cli: &Cli) {
     if !cli.quiet {
         heading("Test: minui");
     }
-    let timeout = cli.timeout;
-    let mut overlay = None;
-    if !cli.no_warn {
-        overlay = process::start_warn_overlay_with_delay();
-        process::write_overlay_status("minui");
-        if let Some(info) = &cli.info {
-            process::write_overlay_info(info);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["ui.demo.mini"], &runner_cfg) {
+        eprintln!("minui: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
     }
-    match run_with_watchdog("minui", timeout, move || ui::run_minui_demo(timeout)) {
-        Ok(out) => {
-            if !cli.quiet {
-                println!("{}", out.format_status("minui"));
-            }
-        }
-        Err(e) => {
-            eprintln!("minui: ERROR: {}", e);
-            print_hints(&e);
-            if let Some(mut o) = overlay
-                && let Err(e) = o.kill_and_wait()
-            {
-                eprintln!("smoketest: failed to stop overlay: {}", e);
-            }
-            exit(1);
-        }
-    }
-    if let Some(mut o) = overlay
-        && let Err(e) = o.kill_and_wait()
-    {
-        eprintln!("smoketest: failed to stop overlay: {}", e);
+    if !cli.quiet {
+        println!("minui: OK (mini HUD demo flow completed)");
     }
 }
 
 /// Handle `fullscreen` test case.
 fn handle_fullscreen(cli: &Cli, state: FsState, native: bool) {
-    let toggle = match state {
-        FsState::Toggle => Toggle::Toggle,
-        FsState::On => Toggle::On,
-        FsState::Off => Toggle::Off,
-    };
-    let timeout = cli.timeout;
-    let logs = true;
-    match run_case(
-        "fullscreen",
-        "fullscreen",
-        timeout,
-        cli.quiet,
-        !cli.no_warn,
-        cli.info.as_deref(),
-        false,
-        move || tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native),
-    ) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("fullscreen: OK (toggled non-native fullscreen)");
-            }
+    if matches!(state, FsState::Toggle) && !native {
+        if !cli.quiet {
+            heading("Test: fullscreen");
         }
-        Err(e) => {
-            eprintln!("fullscreen: ERROR: {}", e);
-            print_hints(&e);
+        let runner_cfg = suite::RunnerConfig {
+            quiet: cli.quiet,
+            warn_overlay: !cli.no_warn,
+            base_timeout_ms: cli.timeout,
+            fail_fast: !cli.no_fail_fast,
+            overlay_info: cli.info.as_deref(),
+        };
+        if let Err(err) = suite::run_sequence(&["fullscreen.toggle.nonnative"], &runner_cfg) {
+            eprintln!("fullscreen: ERROR: {}", err);
+            print_hints(&err);
             exit(1);
+        }
+        if !cli.quiet {
+            println!("fullscreen: OK (toggled non-native fullscreen)");
+        }
+    } else {
+        let toggle = match state {
+            FsState::Toggle => Toggle::Toggle,
+            FsState::On => Toggle::On,
+            FsState::Off => Toggle::Off,
+        };
+        let timeout = cli.timeout;
+        let logs = true;
+        match run_case(
+            "fullscreen",
+            "fullscreen",
+            timeout,
+            cli.quiet,
+            !cli.no_warn,
+            cli.info.as_deref(),
+            false,
+            move || tests::fullscreen::run_fullscreen_test(timeout, logs, toggle, native),
+        ) {
+            Ok(()) => {
+                if !cli.quiet {
+                    println!("fullscreen: OK (legacy path)");
+                }
+            }
+            Err(e) => {
+                eprintln!("fullscreen: ERROR: {}", e);
+                print_hints(&e);
+                exit(1);
+            }
         }
     }
 }
@@ -1089,20 +1078,20 @@ fn handle_world_spaces(cli: &Cli) {
     if !cli.quiet {
         heading("Test: world-spaces");
     }
-    let timeout = cli.timeout;
-    match run_with_watchdog("world-spaces", timeout, move || {
-        tests::world_spaces::run_world_spaces_test(timeout, true)
-    }) {
-        Ok(()) => {
-            if !cli.quiet {
-                println!("world-spaces: OK (multi-space adoption within budget)");
-            }
-        }
-        Err(e) => {
-            eprintln!("world-spaces: ERROR: {}", e);
-            print_hints(&e);
-            exit(1);
-        }
+    let runner_cfg = suite::RunnerConfig {
+        quiet: cli.quiet,
+        warn_overlay: !cli.no_warn,
+        base_timeout_ms: cli.timeout,
+        fail_fast: !cli.no_fail_fast,
+        overlay_info: cli.info.as_deref(),
+    };
+    if let Err(err) = suite::run_sequence(&["world.spaces.adoption"], &runner_cfg) {
+        eprintln!("world-spaces: ERROR: {}", err);
+        print_hints(&err);
+        exit(1);
+    }
+    if !cli.quiet {
+        println!("world-spaces: OK (mock spaces adopted within budget)");
     }
 }
 

@@ -1,0 +1,223 @@
+//! Fullscreen smoketest case implemented on the registry runner.
+
+use std::{
+    cmp, fs, thread,
+    time::{Duration, Instant},
+};
+
+use serde_json::json;
+
+use crate::{
+    config,
+    error::{Error, Result},
+    helper_window::{HelperWindow, ensure_frontmost as helper_ensure_frontmost},
+    server_drive,
+    session::HotkiSession,
+    suite::CaseCtx,
+    ui_interaction::send_key,
+    util,
+};
+
+/// Registry slug recorded in artifacts for the fullscreen case.
+const FULLSCREEN_SLUG: &str = "fullscreen.toggle.nonnative";
+
+/// Toggle non-native fullscreen for a helper window and capture before/after diagnostics.
+pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let mut state: Option<FullscreenCaseState> = None;
+
+    ctx.setup(|stage| {
+        let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
+        let title = config::test_title("fullscreen");
+        let config_ron = build_fullscreen_config(&title);
+        let config_path = stage
+            .artifacts_dir()
+            .join(format!("{}_config.ron", FULLSCREEN_SLUG.replace('.', "_")));
+        fs::write(&config_path, &config_ron)?;
+        stage.record_artifact(&config_path);
+
+        let session = HotkiSession::builder(hotki_bin)
+            .with_config(&config_path)
+            .with_logs(true)
+            .spawn()?;
+
+        state = Some(FullscreenCaseState {
+            session,
+            title,
+            before: None,
+            after: None,
+        });
+        Ok(())
+    })?;
+
+    ctx.action(|stage| {
+        let state_ref = state
+            .as_mut()
+            .ok_or_else(|| Error::InvalidState("fullscreen state missing during action".into()))?;
+
+        let socket = state_ref.session.socket_path().to_string();
+        server_drive::ensure_init(&socket, 5_000)?;
+        server_drive::wait_for_idents(&["g", "shift+cmd+9"], 4_000)?;
+
+        let helper_lifetime = config::HELPER_WINDOW
+            .default_lifetime_ms
+            .saturating_add(config::HELPER_WINDOW.extra_time_ms);
+        let visible_timeout = cmp::max(5_000, config::HIDE.first_window_max_ms * 3);
+        let mut helper = HelperWindow::spawn_frontmost(
+            &state_ref.title,
+            helper_lifetime,
+            visible_timeout,
+            config::FULLSCREEN.helper_show_delay_ms,
+            "FS",
+        )?;
+
+        send_key("g")?;
+        ensure_helper_focus(helper.pid, &state_ref.title)?;
+        let before = read_ax_frame(helper.pid, &state_ref.title)?;
+
+        send_key("shift+cmd+9")?;
+        let after = wait_for_frame_update(
+            helper.pid,
+            &state_ref.title,
+            config::FULLSCREEN.wait_total_ms,
+        )?;
+        ensure_helper_focus(helper.pid, &state_ref.title)?;
+
+        helper.kill_and_wait()?;
+        state_ref.before = Some(before);
+        state_ref.after = Some(after);
+
+        let artifact_path = stage
+            .artifacts_dir()
+            .join(format!("{}_runtime.txt", FULLSCREEN_SLUG.replace('.', "_")));
+        fs::write(&artifact_path, b"fullscreen toggle executed\n")?;
+        stage.record_artifact(&artifact_path);
+
+        Ok(())
+    })?;
+
+    ctx.settle(|stage| {
+        let mut state_inner = state
+            .take()
+            .ok_or_else(|| Error::InvalidState("fullscreen state missing during settle".into()))?;
+
+        let before = state_inner
+            .before
+            .ok_or_else(|| Error::InvalidState("missing before frame".into()))?;
+        let after = state_inner
+            .after
+            .ok_or_else(|| Error::InvalidState("missing after frame".into()))?;
+        let area_delta = after.area() - before.area();
+
+        let payload = json!({
+            "helper_title": state_inner.title,
+            "before": before.to_json(),
+            "after": after.to_json(),
+            "area_delta": area_delta,
+        });
+        let mut data = serde_json::to_string_pretty(&payload).map_err(|err| {
+            Error::InvalidState(format!("failed to serialize fullscreen outcome: {err}"))
+        })?;
+        data.push('\n');
+        let outcome_path = stage.artifacts_dir().join(format!(
+            "{}_outcome.json",
+            FULLSCREEN_SLUG.replace('.', "_")
+        ));
+        fs::write(&outcome_path, data)?;
+        stage.record_artifact(&outcome_path);
+
+        state_inner.session.shutdown();
+        state_inner.session.kill_and_wait();
+        server_drive::reset();
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Case state retained across stages for the fullscreen scenario.
+struct FullscreenCaseState {
+    /// Running Hotki session used to drive the toggle.
+    session: HotkiSession,
+    /// Title assigned to the helper window.
+    title: String,
+    /// Frame captured before toggling fullscreen.
+    before: Option<AxFrame>,
+    /// Frame captured after toggling fullscreen.
+    after: Option<AxFrame>,
+}
+
+/// Compose a fullscreen configuration embedding the helper title.
+fn build_fullscreen_config(title: &str) -> String {
+    format!(
+        "(\n        keys: [\n            (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen(toggle) , (global: true)),\n        ],\n        style: (hud: (mode: hide)),\n        server: (exit_if_no_clients: true),\n    )",
+        title
+    )
+}
+
+/// Ensure the helper window is frontmost across world and AX snapshots.
+fn ensure_helper_focus(pid: i32, title: &str) -> Result<()> {
+    helper_ensure_frontmost(pid, title, 6, config::INPUT_DELAYS.ui_action_delay_ms);
+    server_drive::wait_for_focused_pid(pid, config::WAITS.first_window_ms).map_err(Error::from)?;
+    server_drive::wait_for_focused_title(title, config::WAITS.first_window_ms)
+        .map_err(Error::from)?;
+    Ok(())
+}
+
+/// Read the current AX frame for `(pid, title)`.
+fn read_ax_frame(pid: i32, title: &str) -> Result<AxFrame> {
+    mac_winops::ax_window_frame(pid, title)
+        .map(AxFrame::from_tuple)
+        .ok_or_else(|| Error::InvalidState("failed to read initial window frame".into()))
+}
+
+/// Wait until the helper window reports an updated AX frame.
+fn wait_for_frame_update(pid: i32, title: &str, timeout_ms: u64) -> Result<AxFrame> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if let Some(frame) = mac_winops::ax_window_frame(pid, title) {
+            return Ok(AxFrame::from_tuple(frame));
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::InvalidState(
+                "failed to read window frame after fullscreen toggle".into(),
+            ));
+        }
+        if server_drive::check_alive().is_err() {
+            return Err(Error::IpcDisconnected {
+                during: "fullscreen toggle",
+            });
+        }
+        thread::sleep(Duration::from_millis(config::FULLSCREEN.wait_poll_ms));
+    }
+}
+
+/// Simplified representation of a helper window frame captured via AX.
+#[derive(Clone)]
+struct AxFrame {
+    /// Window origin X coordinate.
+    x: f64,
+    /// Window origin Y coordinate.
+    y: f64,
+    /// Window width in pixels.
+    w: f64,
+    /// Window height in pixels.
+    h: f64,
+}
+
+impl AxFrame {
+    /// Construct an [`AxFrame`] from the tuple returned by `ax_window_frame`.
+    fn from_tuple(raw: ((f64, f64), (f64, f64))) -> Self {
+        let ((x, y), (w, h)) = raw;
+        Self { x, y, w, h }
+    }
+
+    /// Compute the frame area in pixels.
+    fn area(&self) -> f64 {
+        self.w * self.h
+    }
+
+    /// Convert the frame into a JSON-friendly structure.
+    fn to_json(&self) -> serde_json::Value {
+        json!({ "x": self.x, "y": self.y, "w": self.w, "h": self.h })
+    }
+}
