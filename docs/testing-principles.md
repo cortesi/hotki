@@ -52,7 +52,7 @@ and debuggable.
 - Gate environment-sensitive cases with the shared `assume!` macro. Record skips as
   `SKIP: <case> -- <reason>` and exit early with `Ok(())` so stats remain accurate.
 - Keep skip probes centralized. Use canonical helpers such as `world::list_windows`,
-  `world::ensure_frontmost`, or `server_drive::wait_for_ident` instead of ad-hoc environment checks.
+  `world::ensure_frontmost`, or `server_drive::wait_for_idents` instead of ad-hoc environment checks.
 - Never sprinkle test-specific environment variables. If a scenario needs configuration, extend the
   smoketest CLI surface.
 

@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::{
+    binding_watcher::BindingWatcher,
     config,
     error::{Error, Result},
     server_drive,
@@ -131,16 +132,14 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         let socket = state_ref.session.socket_path().to_string();
         server_drive::ensure_init(&socket, 3_000)?;
         let gate_ms = config::BINDING_GATES.default_ms * 3;
-        server_drive::wait_for_idents(&["shift+cmd+0"], gate_ms)?;
-
-        // Proactively trigger the activation chord before waiting for visibility.
-        send_key_sequence(&["shift+cmd+0"])?;
+        let mut watcher = BindingWatcher::connect(&socket, state_ref.session.pid() as i32)?;
+        watcher.activate_until_ready(gate_ms)?;
 
         let hud_deadline = config::DEFAULTS.timeout_ms;
         let time_to_hud = state_ref.session.wait_for_hud_checked(hud_deadline)?;
-        server_drive::wait_for_ident("shift+cmd+0", gate_ms)?;
-        server_drive::wait_for_ident("t", gate_ms)?;
+
         send_key_sequence(UI_DEMO_SEQUENCE)?;
+        watcher.await_nested(UI_DEMO_SEQUENCE, gate_ms)?;
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
         if hud_windows.is_empty() {

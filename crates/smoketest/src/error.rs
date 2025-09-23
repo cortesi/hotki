@@ -111,35 +111,6 @@ pub fn print_hints(err: &Error) {
                         ident
                     );
                 }
-                DriverError::FocusPidTimeout {
-                    expected_pid,
-                    last_snapshot_pid,
-                    last_status_pid,
-                    ..
-                } => {
-                    eprintln!(
-                        "      backend never focused pid {}; confirm helper spawned and titles match.",
-                        expected_pid
-                    );
-                    if let Some(pid) = last_snapshot_pid {
-                        eprintln!(
-                            "      last snapshot pid observed via get_world_snapshot: {}.",
-                            pid
-                        );
-                    }
-                    if let Some(pid) = last_status_pid {
-                        eprintln!(
-                            "      last status pid observed via get_world_status: {}.",
-                            pid
-                        );
-                    }
-                }
-                DriverError::FocusTitleTimeout { expected_title, .. } => {
-                    eprintln!(
-                        "      backend never reported title '{}'; verify config and helper visibility.",
-                        expected_title
-                    );
-                }
                 DriverError::RuntimeFailure { .. } | DriverError::RpcFailure { .. } => {
                     eprintln!(
                         "      see logs above for runtime or RPC errors returned by hotki-server."

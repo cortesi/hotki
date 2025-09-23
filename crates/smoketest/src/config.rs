@@ -44,18 +44,6 @@ pub const INPUT_DELAYS: InputDelays = InputDelays {
     retry_delay_ms: 80,
 };
 
-/// Wait-time bounds shared across tests.
-#[derive(Debug, Clone, Copy)]
-pub struct Waits {
-    /// Timeout for waiting for the first window.
-    pub first_window_ms: u64,
-}
-
-/// Standard wait budgets.
-pub const WAITS: Waits = Waits {
-    first_window_ms: 6000,
-};
-
 /// Connection retry tuning.
 #[derive(Debug, Clone, Copy)]
 pub struct Retry {
@@ -84,21 +72,12 @@ pub struct HelperWindowConfig {
     pub default_lifetime_ms: u64,
     /// Extra time to add to helper window lifetime.
     pub extra_time_ms: u64,
-    /// Default helper window width in pixels for test helpers.
-    pub width_px: f64,
-    /// Default helper window height in pixels for test helpers.
-    pub height_px: f64,
-    /// Margin from screen edge when placing helper windows.
-    pub margin_px: f64,
 }
 
 /// Helper window geometry and lifetime defaults.
 pub const HELPER_WINDOW: HelperWindowConfig = HelperWindowConfig {
     default_lifetime_ms: 15000,
     extra_time_ms: 5000,
-    width_px: 280.0,
-    height_px: 180.0,
-    margin_px: 8.0,
 };
 
 /// Canonical RPC binding gate timings.
@@ -144,30 +123,6 @@ pub const SESSION: SessionConfig = SessionConfig {
     activation_resend_interval_ms: 500,
 };
 
-/// Repository-relative configuration paths.
-#[derive(Debug, Clone, Copy)]
-pub struct Paths {
-    /// Default test configuration file path relative to repo root.
-    pub test_config: &'static str,
-}
-
-/// Default smoketest configuration paths.
-pub const PATHS: Paths = Paths {
-    test_config: "examples/test.ron",
-};
-
-/// Titles used for helper windows.
-#[derive(Debug, Clone, Copy)]
-pub struct Titles {
-    /// Base title for relay repeat test window.
-    pub relay_test: &'static str,
-}
-
-/// Default helper window titles.
-pub const TITLES: Titles = Titles {
-    relay_test: "hotki smoketest: relayrepeat",
-};
-
 /// Fullscreen test timing.
 #[derive(Debug, Clone, Copy)]
 pub struct FullscreenConfig {
@@ -189,33 +144,15 @@ pub const FULLSCREEN: FullscreenConfig = FullscreenConfig {
 /// Hide test tunables.
 #[derive(Debug, Clone, Copy)]
 pub struct HideConfig {
-    /// Extra time for hide test helper windows.
-    pub helper_extra_time_ms: u64,
-    /// Offset for window positioning tests.
-    pub position_offset: f64,
-    /// Minimum timeout for hide operations (1/4 of main timeout).
-    pub min_timeout_ms: u64,
-    /// Minimum timeout for secondary hide operations (1/3 of main timeout).
-    pub secondary_min_timeout_ms: u64,
     /// Max wait for the helper window to appear initially.
     pub first_window_max_ms: u64,
-    /// Poll interval for hide position/frame checks.
-    pub poll_ms: u64,
-    /// Delay after activation before sending next hide keys.
-    pub activate_post_delay_ms: u64,
     /// Max wait for the window to restore frame on hide(off).
     pub restore_max_ms: u64,
 }
 
 /// Default hide test timing and geometry.
 pub const HIDE: HideConfig = HideConfig {
-    helper_extra_time_ms: 8000,
-    position_offset: 300.0,
-    min_timeout_ms: 800,
-    secondary_min_timeout_ms: 1000,
     first_window_max_ms: 2000,
-    poll_ms: 50,
-    activate_post_delay_ms: 100,
     restore_max_ms: 1200,
 };
 

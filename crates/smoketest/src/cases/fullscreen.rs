@@ -10,7 +10,8 @@ use serde_json::json;
 use crate::{
     config,
     error::{Error, Result},
-    helper_window::{HelperWindow, ensure_frontmost as helper_ensure_frontmost},
+    focus_guard::FocusGuard,
+    helper_window::HelperWindow,
     server_drive,
     session::HotkiSession,
     suite::CaseCtx,
@@ -70,8 +71,10 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             "FS",
         )?;
 
+        let focus_guard = FocusGuard::acquire(helper.pid, &state_ref.title, None)?;
+
         send_key("g")?;
-        ensure_helper_focus(helper.pid, &state_ref.title)?;
+        focus_guard.reassert()?;
         let before = read_ax_frame(helper.pid, &state_ref.title)?;
 
         send_key("shift+cmd+9")?;
@@ -80,7 +83,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             &state_ref.title,
             config::FULLSCREEN.wait_total_ms,
         )?;
-        ensure_helper_focus(helper.pid, &state_ref.title)?;
+        focus_guard.reassert()?;
 
         helper.kill_and_wait()?;
         state_ref.before = Some(before);
@@ -152,15 +155,6 @@ fn build_fullscreen_config(title: &str) -> String {
         "(\n        keys: [\n            (\"g\", \"raise\", raise(title: \"{}\"), (noexit: true)),\n            (\"shift+cmd+9\", \"Fullscreen\", fullscreen(toggle) , (global: true)),\n        ],\n        style: (hud: (mode: hide)),\n        server: (exit_if_no_clients: true),\n    )",
         title
     )
-}
-
-/// Ensure the helper window is frontmost across world and AX snapshots.
-fn ensure_helper_focus(pid: i32, title: &str) -> Result<()> {
-    helper_ensure_frontmost(pid, title, 6, config::INPUT_DELAYS.ui_action_delay_ms);
-    server_drive::wait_for_focused_pid(pid, config::WAITS.first_window_ms).map_err(Error::from)?;
-    server_drive::wait_for_focused_title(title, config::WAITS.first_window_ms)
-        .map_err(Error::from)?;
-    Ok(())
 }
 
 /// Read the current AX frame for `(pid, title)`.

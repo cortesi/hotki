@@ -163,7 +163,22 @@ fn count_relay(duration_ms: u64) -> Result<usize> {
     let handle = shared_event_loop();
     run_relay_loop(&handle, &mut app)?;
 
+    shutdown_repeater(&app.repeater, &app.id)?;
+
     Ok(counter.0.load(Ordering::SeqCst))
+}
+
+/// Stop a repeater ticker, clear observers, and verify it fully drained.
+fn shutdown_repeater(repeater: &Repeater, id: &str) -> Result<()> {
+    repeater.stop_sync(id);
+    repeater.clear_sync();
+    repeater.set_repeat_observer(Arc::new(NullRepeatObserver));
+    if repeater.is_ticking(id) {
+        return Err(Error::InvalidState(format!(
+            "repeat '{id}' still ticking after shutdown"
+        )));
+    }
+    Ok(())
 }
 
 /// Count shell repeats by tailing a temporary file.
@@ -215,6 +230,7 @@ fn count_shell(duration_ms: u64) -> Result<usize> {
             err
         );
     }
+    shutdown_repeater(&repeater, &id)?;
     Ok(repeats)
 }
 
@@ -248,11 +264,30 @@ fn count_volume(duration_ms: u64) -> Result<usize> {
     );
     thread::sleep(config::ms(duration_ms));
     repeater.stop_sync(&id);
+    shutdown_repeater(&repeater, &id)?;
 
     let volume = get_volume().unwrap_or(0);
     let repeats = volume.saturating_sub(1) as usize;
-    if let Err(err) = set_volume_abs(original_volume as u8) {
-        tracing::debug!("repeat-volume: failed to restore volume: {}", err);
+    match set_volume_abs(original_volume as u8) {
+        Ok(()) => match get_volume() {
+            Some(current) if current == original_volume => {}
+            Some(current) => {
+                return Err(Error::InvalidState(format!(
+                    "expected volume {} after restore, observed {}",
+                    original_volume, current
+                )));
+            }
+            None => {
+                return Err(Error::InvalidState(
+                    "failed to read volume after restoration".into(),
+                ));
+            }
+        },
+        Err(err) => {
+            return Err(Error::InvalidState(format!(
+                "failed to restore volume: {err}"
+            )));
+        }
     }
     Ok(repeats)
 }
@@ -307,6 +342,11 @@ impl RepeatObserver for RelayCounter {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
+
+/// No-op repeat observer used to clear out instrumentation hooks.
+struct NullRepeatObserver;
+
+impl RepeatObserver for NullRepeatObserver {}
 
 /// Minimal winit application used for relay repeat measurement.
 struct RelayApp {

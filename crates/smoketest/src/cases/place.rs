@@ -26,6 +26,7 @@ use super::support::{block_on_with_pump, record_mimic_diagnostics, shutdown_mimi
 use crate::{
     config,
     error::{Error, Result},
+    focus_guard::FocusGuard,
     helpers,
     suite::{CaseCtx, StageHandle},
     world,
@@ -224,7 +225,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        promote_helper_frontmost(stage.case_name(), state_ref);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
         ensure_window_on_active_space(
             stage.case_name(),
             state_ref,
@@ -233,6 +234,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
         )?;
         refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, grid)?;
+        focus_guard.reassert()?;
         Ok(())
     })?;
 
@@ -353,7 +355,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?);
         if let Some(place_state) = state.as_mut() {
-            promote_helper_frontmost(stage.case_name(), place_state);
+            let focus_guard = promote_helper_frontmost(stage.case_name(), place_state)?;
             let world = stage.world_clone();
             refresh_cursor(place_state, &world)?;
             let frames = wait_for_initial_frames(
@@ -366,6 +368,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
             rewrite_expected_artifact(stage, place_state.slug, expected)?;
             place_state.expected = expected;
+            focus_guard.reassert()?;
         }
         Ok(())
     })?;
@@ -375,10 +378,11 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        promote_helper_frontmost(stage.case_name(), state_ref);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
         refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, GRID)?;
         refresh_cursor(state_ref, &world)?;
+        focus_guard.reassert()?;
         Ok(())
     })?;
 
@@ -685,7 +689,7 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
 
         for row in 0..rows {
             for col in 0..cols {
-                promote_helper_frontmost(stage.case_name(), state_ref);
+                let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
                 ensure_window_on_active_space(
                     stage.case_name(),
                     state_ref,
@@ -713,6 +717,7 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                     eps,
                     &artifacts,
                 )?;
+                focus_guard.reassert()?;
                 let delta = expected.delta(&frames.authoritative);
                 entries.push(json!({
                     "grid": { "cols": cols, "rows": rows, "col": col, "row": row },
@@ -899,7 +904,7 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let initial = frames.authoritative;
         state_ref.expected = initial;
         rewrite_expected_artifact(stage, state_ref.slug, initial)?;
-        promote_helper_frontmost(stage.case_name(), state_ref);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
         refresh_cursor(state_ref, &world)?;
         request_grid(&world, state_ref.target_id, GRID)?;
         let frames_after = wait_for_expected(
@@ -917,6 +922,7 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
             config::PLACE.eps.round() as i32,
             &artifacts,
         )?;
+        focus_guard.reassert()?;
         let delta = initial.delta(&frames_after.authoritative);
         let comparison_path = stage
             .artifacts_dir()
@@ -999,7 +1005,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 config.min_size = Some((320.0, 380.0));
                 config.place.raise = RaiseStrategy::KeepFrontWindow;
             })?;
-        promote_helper_frontmost(stage.case_name(), &place);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         let world = stage.world_clone();
         refresh_cursor(&mut place, &world)?;
         let frames = wait_for_initial_frames(
@@ -1018,8 +1024,10 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         debug!(case = %stage.case_name(), expected = ?expected, "place_move_min_setup_ready");
         rewrite_expected_artifact(stage, place.slug, expected)?;
         place.expected = expected;
-        promote_helper_frontmost(stage.case_name(), &place);
+        focus_guard.reassert()?;
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         refresh_cursor(&mut place, &world)?;
+        focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
             expected,
@@ -1035,7 +1043,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("move-min state missing during action".into()))?;
         let world = stage.world_clone();
-        promote_helper_frontmost(stage.case_name(), &state_ref.place);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &state_ref.place)?;
         request_move(
             &world,
             state_ref.place.target_id,
@@ -1044,6 +1052,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         )?;
         refresh_cursor(&mut state_ref.place, &world)?;
         debug!(case = %stage.case_name(), "place_move_min_move_requested");
+        focus_guard.reassert()?;
         Ok(())
     })?;
 
@@ -1163,7 +1172,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?;
         budget.spawn_ms = spawn_start.elapsed().as_millis() as u64;
-        promote_helper_frontmost(stage.case_name(), &place);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         let world = stage.world_clone();
         refresh_cursor(&mut place, &world)?;
         let frames_start = Instant::now();
@@ -1188,8 +1197,10 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         );
         rewrite_expected_artifact(stage, place.slug, expected)?;
         place.expected = expected;
-        promote_helper_frontmost(stage.case_name(), &place);
+        focus_guard.reassert()?;
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         refresh_cursor(&mut place, &world)?;
+        focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
             expected,
@@ -1206,7 +1217,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         })?;
         let world = stage.world_clone();
         let raise_start = Instant::now();
-        promote_helper_frontmost(stage.case_name(), &state_ref.place);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), &state_ref.place)?;
         state_ref.budget.action_raise_ms = raise_start.elapsed().as_millis() as u64;
         let move_start = Instant::now();
         request_move(
@@ -1218,6 +1229,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         refresh_cursor(&mut state_ref.place, &world)?;
         state_ref.budget.move_request_ms = move_start.elapsed().as_millis() as u64;
         debug!(case = %stage.case_name(), "place_move_nonres_move_requested");
+        focus_guard.reassert()?;
         Ok(())
     })?;
 
@@ -1616,7 +1628,7 @@ where
 }
 
 /// Best-effort ensure the helper window is frontmost before issuing commands.
-fn promote_helper_frontmost(case: &str, state: &PlaceState) {
+fn promote_helper_frontmost(case: &str, state: &PlaceState) -> Result<FocusGuard> {
     debug!(case = %case, strategy = ?state.raise, "promote_helper_frontmost_start");
     match state.raise {
         RaiseStrategy::SmartRaise { deadline } => {
@@ -1647,6 +1659,8 @@ fn promote_helper_frontmost(case: &str, state: &PlaceState) {
         }
         _ => {}
     }
+
+    FocusGuard::acquire(state.target_id.pid(), &state.title, Some(state.target_id))
 }
 
 /// Wait for the helper window to report on-screen and on the active space.
@@ -1865,12 +1879,13 @@ where
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
         let world = stage.world_clone();
-        promote_helper_frontmost(stage.case_name(), state_ref);
+        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
         refresh_cursor(state_ref, &world)?;
         let mut options = PlaceAttemptOptions::default();
         configure_options(&mut options);
         request_grid_with_options(&world, state_ref.target_id, grid, Some(&options))?;
         refresh_cursor(state_ref, &world)?;
+        focus_guard.reassert()?;
         Ok(())
     })?;
 

@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    env,
     future::Future,
     result::Result as StdResult,
     sync::OnceLock,
@@ -10,6 +11,7 @@ use std::{
 use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::time::timeout;
+use tracing::debug;
 
 use crate::{config, error::Error as SmoketestError, runtime};
 
@@ -17,6 +19,13 @@ use crate::{config, error::Error as SmoketestError, runtime};
 static CONN: OnceLock<Mutex<Option<hotki_server::Connection>>> = OnceLock::new();
 /// Flag ensuring the drain loop starts only once.
 static DRAIN_STARTED: OnceLock<()> = OnceLock::new();
+/// Flag to enable verbose binding polling diagnostics.
+static LOG_BINDINGS: OnceLock<bool> = OnceLock::new();
+
+/// Return true when verbose binding diagnostics are enabled via env flag.
+fn log_bindings_enabled() -> bool {
+    *LOG_BINDINGS.get_or_init(|| env::var_os("SMOKETEST_LOG_BINDINGS").is_some())
+}
 
 /// Result alias for MRPC driver operations.
 pub type DriverResult<T> = StdResult<T, DriverError>;
@@ -68,29 +77,6 @@ pub enum DriverError {
     BindingTimeout {
         /// Identifier we were waiting for.
         ident: String,
-        /// Timeout duration in milliseconds.
-        timeout_ms: u64,
-    },
-    /// Waiting for a focus PID match timed out.
-    #[error(
-        "timed out after {timeout_ms} ms waiting for focused pid {expected_pid} \
-         (last snapshot pid: {last_snapshot_pid:?}, last status pid: {last_status_pid:?})"
-    )]
-    FocusPidTimeout {
-        /// Expected process identifier.
-        expected_pid: i32,
-        /// Timeout duration in milliseconds.
-        timeout_ms: u64,
-        /// Most recent pid reported by `get_world_snapshot`.
-        last_snapshot_pid: Option<i32>,
-        /// Most recent pid reported by `get_world_status`.
-        last_status_pid: Option<i32>,
-    },
-    /// Waiting for a focus title match timed out.
-    #[error("timed out after {timeout_ms} ms waiting for focused title '{expected_title}'")]
-    FocusTitleTimeout {
-        /// Expected window title.
-        expected_title: String,
         /// Timeout duration in milliseconds.
         timeout_ms: u64,
     },
@@ -291,11 +277,6 @@ pub fn get_bindings() -> DriverResult<Vec<String>> {
     with_connection_mut(|conn| block_on_rpc("get_bindings", async { conn.get_bindings().await }))
 }
 
-/// Wait until a specific identifier is present in the current bindings.
-pub fn wait_for_ident(ident: &str, timeout_ms: u64) -> DriverResult<()> {
-    wait_for_idents(&[ident], timeout_ms)
-}
-
 /// Wait until all identifiers are present in the current bindings.
 pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
     if idents.is_empty() {
@@ -307,14 +288,31 @@ pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
         .iter()
         .map(|ident| canonicalize_ident(ident))
         .collect();
+    let mut last_snapshot: Vec<String> = Vec::new();
+    let start = Instant::now();
 
     while Instant::now() < deadline {
         let binds = get_bindings()?;
+        let mut snapshot = Vec::with_capacity(binds.len());
         for binding in binds {
             let trimmed = binding.trim_matches('"');
             let normalized = canonicalize_ident(trimmed);
+            snapshot.push(normalized.clone());
             remaining.remove(&normalized);
         }
+
+        if log_bindings_enabled() {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let remaining_list = remaining.iter().cloned().collect::<Vec<_>>();
+            debug!(
+                elapsed_ms,
+                snapshot = ?snapshot,
+                remaining = ?remaining_list,
+                "wait_for_idents_poll"
+            );
+        }
+
+        last_snapshot = snapshot;
 
         if remaining.is_empty() {
             return Ok(());
@@ -324,6 +322,15 @@ pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
     }
 
     let missing = remaining.into_iter().collect::<Vec<_>>().join(", ");
+    if log_bindings_enabled() {
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            elapsed_ms,
+            snapshot = ?last_snapshot,
+            missing = %missing,
+            "wait_for_idents_timeout"
+        );
+    }
     Err(DriverError::BindingTimeout {
         ident: missing,
         timeout_ms,
@@ -344,84 +351,6 @@ pub fn get_world_snapshot() -> DriverResult<hotki_server::WorldSnapshotLite> {
         block_on_rpc("get_world_snapshot", async {
             conn.get_world_snapshot().await
         })
-    })
-}
-
-/// Fetch the currently focused PID from aggregated world status metrics.
-pub fn get_world_status_focused_pid() -> DriverResult<Option<i64>> {
-    with_connection_mut(|conn| {
-        block_on_rpc("get_world_status", async {
-            conn.get_world_status()
-                .await
-                .map(|status| status.focused_pid)
-        })
-    })
-}
-
-/// Wait until the backend reports the focused PID equals `expected_pid`.
-pub fn wait_for_focused_pid(expected_pid: i32, timeout_ms: u64) -> DriverResult<()> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let status_interval = Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms);
-    let mut last_status_query = Instant::now() - status_interval;
-    let mut last_snapshot_pid: Option<i32> = None;
-    let mut last_status_pid: Option<i32> = None;
-
-    while Instant::now() < deadline {
-        let snap = get_world_snapshot()?;
-        let snapshot_pid = snap
-            .focused
-            .as_ref()
-            .map(|app| app.pid)
-            .or_else(|| snap.windows.iter().find(|w| w.focused).map(|w| w.pid));
-        if let Some(pid) = snapshot_pid {
-            last_snapshot_pid = Some(pid);
-            if pid == expected_pid {
-                return Ok(());
-            }
-        }
-
-        let now = Instant::now();
-        if now.duration_since(last_status_query) >= status_interval {
-            if let Some(pid) = get_world_status_focused_pid()? {
-                if pid == i64::from(expected_pid) {
-                    return Ok(());
-                }
-                if pid >= i64::from(i32::MIN) && pid <= i64::from(i32::MAX) {
-                    last_status_pid = Some(pid as i32);
-                }
-            }
-            last_status_query = now;
-        }
-
-        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
-    }
-    Err(DriverError::FocusPidTimeout {
-        expected_pid,
-        timeout_ms,
-        last_snapshot_pid,
-        last_status_pid,
-    })
-}
-
-/// Wait until the backend reports the focused title equals `expected_title`.
-pub fn wait_for_focused_title(expected_title: &str, timeout_ms: u64) -> DriverResult<()> {
-    let want = expected_title;
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        let snap = get_world_snapshot()?;
-        if let Some(app) = snap.focused
-            && app.title == want
-        {
-            return Ok(());
-        }
-        if snap.windows.iter().any(|w| w.focused && w.title == want) {
-            return Ok(());
-        }
-        thread::sleep(config::ms(config::INPUT_DELAYS.poll_interval_ms));
-    }
-    Err(DriverError::FocusTitleTimeout {
-        expected_title: want.to_string(),
-        timeout_ms,
     })
 }
 
