@@ -55,7 +55,7 @@ Test runner:
   - Example: `cargo run --bin smoketest -- all`
   - Output is slug-oriented (`repeat-shell... OK`) and the command exits non-zero on failure.
 - `seq`: Runs a subset of registry slugs in order when you need a faster cycle.
-  - Example: `cargo run --bin smoketest -- seq repeat-relay hide.toggle.roundtrip ui`
+  - Example: `cargo run --bin smoketest -- seq repeat-relay hide.toggle.roundtrip ui.demo.standard`
   - Use the case names emitted by `cargo run --bin smoketest -- all --quiet` for sequencing.
 
 ## Placement Engine

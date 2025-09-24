@@ -14,6 +14,9 @@ use crate::{
     helper_window::ManagedChild,
 };
 
+/// Internal flag passed to the smoketest binary to start the warn overlay helper.
+pub const WARN_OVERLAY_STANDALONE_FLAG: &str = "--hotki-internal-warn-overlay";
+
 /// Spawn the hands-off warning overlay (returns a managed child to kill later).
 pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let exe = env::current_exe()?;
@@ -21,7 +24,7 @@ pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let info_path = overlay_info_path_for_current_run();
     let child = Command::new(exe)
         .env("HOTKI_SKIP_BUILD", "1")
-        .arg("warn-overlay")
+        .arg(WARN_OVERLAY_STANDALONE_FLAG)
         .arg("--status-path")
         .arg(status_path)
         .arg("--info-path")

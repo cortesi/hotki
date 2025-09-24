@@ -18,4 +18,6 @@ cargo run --bin smoketest -- all
 
 Pass `--logs` to surface tracing output or target a single scenario via its slug.
 Each CLI subcommand maps directly to a registered slug (e.g. `repeat-shell`,
-`place-animated`), and `seq` accepts the same names to run ad-hoc subsets.
+`place.animated.tween`), and `seq` accepts the same names to run ad-hoc subsets.
+Use `--repeat N` to re-run the selected tests multiple times when diagnosing
+flaky behavior.

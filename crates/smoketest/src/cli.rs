@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(long, default_value_t = config::DEFAULTS.timeout_ms)]
     pub timeout: u64,
 
+    /// Repeat the selected tests this many times
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    pub repeat: u32,
+
     /// Which subcommand to run
     #[command(subcommand)]
     pub command: Commands,
@@ -57,76 +61,76 @@ pub enum SeqTest {
     #[value(name = "repeat-volume")]
     RepeatVolume,
     /// Focus tracking flow
-    #[value(name = "focus.tracking", alias = "focus", alias = "focus-tracking")]
+    #[value(name = "focus.tracking")]
     FocusTracking,
     /// Focus navigation flow
-    #[value(name = "focus.nav", alias = "focus-nav")]
+    #[value(name = "focus.nav")]
     FocusNav,
     /// Raise operation
     #[value(name = "raise")]
     Raise,
     /// Hide toggle behavior
-    #[value(name = "hide.toggle.roundtrip", alias = "hide", alias = "hide-toggle")]
+    #[value(name = "hide.toggle.roundtrip")]
     HideToggle,
     /// Grid placement cycle
-    #[value(name = "place.grid.cycle", alias = "place", alias = "place-grid-cycle")]
+    #[value(name = "place.grid.cycle")]
     PlaceGrid,
     /// Async placement behavior
-    #[value(name = "place.async.delay", alias = "place-async")]
+    #[value(name = "place.async.delay")]
     PlaceAsync,
     /// Animated placement behavior
-    #[value(name = "place.animated.tween", alias = "place-animated")]
+    #[value(name = "place.animated.tween")]
     PlaceAnimated,
     /// Terminal placement guard
-    #[value(name = "place.term.anchor", alias = "place-term")]
+    #[value(name = "place.term.anchor")]
     PlaceTerm,
     /// Placement with increments
-    #[value(name = "place.increments.anchor", alias = "place-increments")]
+    #[value(name = "place.increments.anchor")]
     PlaceIncrements,
     /// Move with minimum size constraint
-    #[value(name = "place.move.min", alias = "place-move-min")]
+    #[value(name = "place.move.min")]
     PlaceMoveMin,
     /// Move with non-resizable constraint
-    #[value(name = "place.move.nonresizable", alias = "place-move-nonresizable")]
+    #[value(name = "place.move.nonresizable")]
     PlaceMoveNonresizable,
     /// Placement skip behavior
-    #[value(name = "place.skip.nonmovable", alias = "place-skip")]
+    #[value(name = "place.skip.nonmovable")]
     PlaceSkip,
     /// Fake placement harness (no GUI required)
-    #[value(name = "place.fake.adapter", alias = "place-fake")]
+    #[value(name = "place.fake.adapter")]
     PlaceFake,
     /// Minimized placement restore
-    #[value(name = "place.minimized.defer", alias = "place-minimized")]
+    #[value(name = "place.minimized.defer")]
     PlaceMinimized,
     /// Zoomed placement normalize
-    #[value(name = "place.zoomed.normalize", alias = "place-zoomed")]
+    #[value(name = "place.zoomed.normalize")]
     PlaceZoomed,
     /// Flexible placement default path
-    #[value(name = "place.flex.default", alias = "place-flex")]
+    #[value(name = "place.flex.default")]
     PlaceFlex,
     /// Shrink-move-grow placement
-    #[value(name = "place.flex.smg", alias = "place-smg")]
+    #[value(name = "place.flex.smg")]
     PlaceFlexSmg,
     /// Size->pos placement fallback
-    #[value(name = "place.flex.force_size_pos", alias = "place-fallback")]
+    #[value(name = "place.flex.force_size_pos")]
     PlaceFlexFallback,
     /// Fullscreen toggle behavior
-    #[value(name = "fullscreen.toggle.nonnative", alias = "fullscreen")]
+    #[value(name = "fullscreen.toggle.nonnative")]
     Fullscreen,
     /// Full UI smoke
-    #[value(name = "ui.demo.standard", alias = "ui")]
+    #[value(name = "ui.demo.standard")]
     Ui,
     /// Mini UI smoke
-    #[value(name = "ui.demo.mini", alias = "minui")]
+    #[value(name = "ui.demo.mini")]
     Minui,
     /// Simulated multi-space adoption/performance check
-    #[value(name = "world.spaces.adoption", alias = "world-spaces")]
+    #[value(name = "world.spaces.adoption")]
     WorldSpaces,
     /// World status surface check
-    #[value(name = "world.status.permissions", alias = "world-status")]
+    #[value(name = "world.status.permissions")]
     WorldStatus,
     /// World AX focus props
-    #[value(name = "world.ax.focus_props", alias = "world-ax")]
+    #[value(name = "world.ax.focus_props")]
     WorldAx,
 }
 
@@ -199,59 +203,59 @@ pub enum Commands {
     Raise,
 
     /// Verify focus(dir) by navigating between arranged helper windows
-    #[command(name = "focus.nav", alias = "focus-nav")]
+    #[command(name = "focus.nav")]
     FocusNav,
 
     /// Verify focus tracking by activating a test window
-    #[command(name = "focus.tracking", alias = "focus-tracking")]
+    #[command(name = "focus.tracking")]
     Focus,
 
     /// Verify hide(toggle)/on/off by moving a helper window off/on screen right
-    #[command(name = "hide.toggle.roundtrip", alias = "hide")]
+    #[command(name = "hide.toggle.roundtrip")]
     Hide,
 
     /// Verify window placement into a grid by cycling a helper window through all cells
-    #[command(name = "place.grid.cycle", alias = "place")]
+    #[command(name = "place.grid.cycle")]
     Place,
 
     /// Exercise placement flows with a fake AX adapter (no GUI required)
-    #[command(name = "place.fake.adapter", alias = "place-fake")]
+    #[command(name = "place.fake.adapter")]
     PlaceFake,
 
     /// Verify placement convergence when the target app applies geometry with a small delay
-    #[command(name = "place.async.delay", alias = "place-async")]
+    #[command(name = "place.async.delay")]
     PlaceAsync,
 
     /// Verify placement while the target window animates to the requested frame
-    #[command(name = "place.animated.tween", alias = "place-animated")]
+    #[command(name = "place.animated.tween")]
     PlaceAnimated,
 
     /// Exercise placement under terminal-style resize increments with a
     /// timeline check that ensures we never thrash position after origin is
     /// correct (terminal guard).
-    #[command(name = "place.term.anchor", alias = "place-term")]
+    #[command(name = "place.term.anchor")]
     PlaceTerm,
 
     /// Verify placement when the app enforces discrete resize increments. This
     /// uses a helper that rounds all requested sizes to multiples of `(W,H)` and
     /// checks that anchored edges are flush to the grid.
-    #[command(name = "place.increments.anchor", alias = "place-increments")]
+    #[command(name = "place.increments.anchor")]
     PlaceIncrements,
 
     /// Verify placement after normalizing a minimized window
-    #[command(name = "place.minimized.defer", alias = "place-minimized")]
+    #[command(name = "place.minimized.defer")]
     PlaceMinimized,
 
     /// Verify placement after normalizing a zoomed window
-    #[command(name = "place.zoomed.normalize", alias = "place-zoomed")]
+    #[command(name = "place.zoomed.normalize")]
     PlaceZoomed,
 
     /// Repro for move-with-grid when minimum height exceeds cell size
-    #[command(name = "place.move.min", alias = "place-move-min")]
+    #[command(name = "place.move.min")]
     PlaceMoveMin,
 
     /// Repro for move-with-grid when window is non-resizable
-    #[command(name = "place.move.nonresizable", alias = "place-move-nonresizable")]
+    #[command(name = "place.move.nonresizable")]
     PlaceMoveNonresizable,
 
     /// Flexible placement harness for Stage-8 variants (direct mac-winops calls)
@@ -266,11 +270,11 @@ pub enum Commands {
     },
 
     /// Convenience: exercise size->pos fallback path explicitly
-    #[command(name = "place.flex.force_size_pos", alias = "place-fallback")]
+    #[command(name = "place.flex.force_size_pos")]
     PlaceFallback,
 
     /// Focused test: exercise shrink->move->grow fallback deterministically
-    #[command(name = "place.flex.smg", alias = "place-smg")]
+    #[command(name = "place.flex.smg")]
     PlaceSmg,
 
     /// Internal helper: create a foreground window with a title for focus testing
@@ -347,39 +351,28 @@ pub enum Commands {
         attach_sheet: bool,
     },
 
-    /// Internal helper: show a borderless, always-on-top hands-off overlay (until killed)
-    #[command(hide = true, name = "warn-overlay")]
-    WarnOverlay {
-        /// Optional path from which the overlay reads status text to display
-        #[arg(long)]
-        status_path: Option<PathBuf>,
-        /// Optional path from which the overlay reads info text to display
-        #[arg(long)]
-        info_path: Option<PathBuf>,
-    },
-
     /// Launch UI with test config and drive a short HUD + theme cycle
-    #[command(name = "ui.demo.standard", alias = "ui")]
+    #[command(name = "ui.demo.standard")]
     Ui,
 
     /// Take HUD-only screenshots for a theme
     // Screenshots extracted to separate tool: hotki-shots
 
     /// Launch UI in mini HUD mode and cycle themes
-    #[command(name = "ui.demo.mini", alias = "minui")]
+    #[command(name = "ui.demo.mini")]
     Minui,
 
     /// Control fullscreen on a helper window (non-native registry case)
-    #[command(name = "fullscreen.toggle.nonnative", alias = "fullscreen")]
+    #[command(name = "fullscreen.toggle.nonnative")]
     Fullscreen,
     /// Query world status via RPC and verify basic invariants
-    #[command(name = "world.status.permissions", alias = "world-status")]
+    #[command(name = "world.status.permissions")]
     WorldStatus,
     /// Query AX props for the frontmost helper via WorldHandle
-    #[command(name = "world.ax.focus_props", alias = "world-ax")]
+    #[command(name = "world.ax.focus_props")]
     WorldAx,
     /// Simulate multi-space navigation and verify adoption performance.
-    #[command(name = "world.spaces.adoption", alias = "world-spaces")]
+    #[command(name = "world.spaces.adoption")]
     WorldSpaces,
     /// Capture raw CoreGraphics window listings for Mission Control analysis.
     #[command(name = "space-probe")]
@@ -396,6 +389,6 @@ pub enum Commands {
     },
     // Preflight smoketest removed.
     /// Focused test: attempt placement on a non-movable window and assert skip
-    #[command(name = "place.skip.nonmovable", alias = "place-skip")]
+    #[command(name = "place.skip.nonmovable")]
     PlaceSkip,
 }

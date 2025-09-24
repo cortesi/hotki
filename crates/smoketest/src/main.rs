@@ -43,19 +43,57 @@ mod world;
 
 use std::{
     env,
-    path::Path,
+    ffi::OsString,
+    path::{Path, PathBuf},
     process::exit,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use cli::{Cli, Commands};
 use error::print_hints;
+use process::WARN_OVERLAY_STANDALONE_FLAG;
 /// Tracks whether hotki was already built during this smoketest invocation.
 static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
 
 /// Print a standardized heading for a smoketest section.
 pub(crate) fn heading(title: &str) {
     println!("\n==> {}", title);
+}
+
+/// Arguments supported by the standalone warn overlay helper.
+#[derive(Parser, Debug)]
+struct WarnOverlayArgs {
+    /// Optional path from which the overlay reads status text to display
+    #[arg(long)]
+    status_path: Option<PathBuf>,
+    /// Optional path from which the overlay reads info text to display
+    #[arg(long)]
+    info_path: Option<PathBuf>,
+}
+
+/// Run the warn overlay helper when invoked directly and return whether it handled execution.
+fn maybe_run_warn_overlay_standalone() -> bool {
+    let mut args = env::args_os();
+    if args.next().is_none() {
+        return false;
+    }
+    let Some(flag) = args.next() else {
+        return false;
+    };
+    if flag != WARN_OVERLAY_STANDALONE_FLAG {
+        return false;
+    }
+    let mut overlay_args_input: Vec<OsString> = Vec::with_capacity(1);
+    overlay_args_input.push(OsString::from("warn-overlay"));
+    overlay_args_input.extend(args);
+    let overlay_args = WarnOverlayArgs::parse_from(overlay_args_input);
+    if let Err(err) =
+        warn_overlay::run_warn_overlay(overlay_args.status_path, overlay_args.info_path)
+    {
+        eprintln!("warn-overlay: ERROR: {}", err);
+        exit(2);
+    }
+    true
 }
 
 /// Optional overrides applied when running registry-backed cases.
@@ -102,6 +140,9 @@ fn run_case_by_slug(cli: &Cli, slug: &str, opts: CaseRunOpts) {
 }
 
 fn main() {
+    if maybe_run_warn_overlay_standalone() {
+        return;
+    }
     let cli = Cli::parse();
 
     init_tracing_from_cli(&cli);
@@ -189,42 +230,32 @@ fn handle_helper_commands_early(cli: &Cli) -> bool {
             .as_ref()
             .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
 
-        if let Err(e) = winhelper::run_focus_winhelper(
-            title,
-            *time,
-            delay_setframe_ms.unwrap_or(0),
-            delay_apply_ms.unwrap_or(0),
-            tween_ms.unwrap_or(0),
-            apply_target_tuple,
-            apply_grid_tuple,
-            *slot,
-            grid_tuple,
-            size_tuple,
-            pos_tuple,
-            label_text.clone(),
-            min_size_tuple,
-            step_size_tuple,
-            *start_minimized,
-            *start_zoomed,
-            *panel_nonmovable,
-            *non_resizable,
-            *attach_sheet,
-        ) {
-            eprintln!("focus-winhelper: ERROR: {}", e);
-            exit(2);
-        }
-        return true;
-    }
-
-    if let Commands::WarnOverlay {
-        status_path,
-        info_path,
-    } = &cli.command
-    {
-        match warn_overlay::run_warn_overlay(status_path.clone(), info_path.clone()) {
-            Ok(()) => {}
-            Err(e) => {
-                eprintln!("warn-overlay: ERROR: {}", e);
+        for iteration in 1..=cli.repeat {
+            if cli.repeat > 1 && !cli.quiet {
+                heading(&format!("Run {iteration}/{}", cli.repeat));
+            }
+            if let Err(e) = winhelper::run_focus_winhelper(
+                title,
+                *time,
+                delay_setframe_ms.unwrap_or(0),
+                delay_apply_ms.unwrap_or(0),
+                tween_ms.unwrap_or(0),
+                apply_target_tuple,
+                apply_grid_tuple,
+                *slot,
+                grid_tuple,
+                size_tuple,
+                pos_tuple,
+                label_text.clone(),
+                min_size_tuple,
+                step_size_tuple,
+                *start_minimized,
+                *start_zoomed,
+                *panel_nonmovable,
+                *non_resizable,
+                *attach_sheet,
+            ) {
+                eprintln!("focus-winhelper: ERROR: {}", e);
                 exit(2);
             }
         }
@@ -268,6 +299,17 @@ fn build_hotki_or_exit(cli: &Cli) {
 
 /// Dispatch to the concrete smoketest command handlers.
 fn dispatch_command(cli: &Cli, fake_mode: bool) {
+    let total = cli.repeat;
+    for iteration in 1..=total {
+        if total > 1 && !cli.quiet {
+            heading(&format!("Run {iteration}/{total}"));
+        }
+        dispatch_command_once(cli, fake_mode);
+    }
+}
+
+/// Execute one iteration of the smoketest command dispatch.
+fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
     match &cli.command {
         Commands::Relay => run_case_by_slug(cli, "repeat-relay", CaseRunOpts::default()),
         Commands::Shell => run_case_by_slug(cli, "repeat-shell", CaseRunOpts::default()),
@@ -369,7 +411,6 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
             output,
         } => handle_space_probe(cli, *samples, *interval_ms, output.as_deref()),
         Commands::FocusWinHelper { .. } => unreachable!(),
-        Commands::WarnOverlay { .. } => unreachable!(),
     }
 }
 
