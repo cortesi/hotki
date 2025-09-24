@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_world::test_api as world_test;
+use hotki_world::{test_api as world_test, test_support::test_serial_guard};
 
 fn wait_until(mut cond: impl FnMut() -> bool, timeout_ms: u64) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -20,6 +20,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, timeout_ms: u64) -> bool {
 
 #[test]
 fn cache_bounds_and_expires_entries() {
+    let _guard = test_serial_guard();
     world_test::clear();
     world_test::ensure_ax_pool_inited();
     world_test::ax_pool_reset_metrics_and_cache();

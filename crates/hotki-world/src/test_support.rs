@@ -21,6 +21,11 @@ pub fn override_scope() -> TestOverridesGuard {
     TestOverridesGuard
 }
 
+/// Acquire the global test lock to serialize tests that mutate shared overrides.
+pub fn test_serial_guard() -> parking_lot::MutexGuard<'static, ()> {
+    TEST_LOCK.get_or_init(|| Mutex::new(())).lock()
+}
+
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Run an async test body on a dedicated multi-threaded Tokio runtime and shut it down promptly.

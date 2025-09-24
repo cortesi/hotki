@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     env,
     future::Future,
+    path::Path,
     result::Result as StdResult,
     sync::OnceLock,
     thread,
@@ -243,24 +244,61 @@ fn drain_events_loop() {
 /// Inject a single key press (down + small delay + up) via MRPC.
 pub fn inject_key(seq: &str) -> DriverResult<()> {
     let ident = canonicalize_ident(seq);
+    let gate_ms = config::BINDING_GATES.default_ms.saturating_mul(3);
+    let deadline = Instant::now() + Duration::from_millis(gate_ms);
 
-    with_connection_mut(|conn| {
-        block_on_rpc("inject_key_down", async {
-            conn.inject_key_down(&ident).await
-        })?;
-        thread::sleep(config::ms(config::INPUT_DELAYS.key_event_delay_ms));
-        match block_on_rpc("inject_key_up", async { conn.inject_key_up(&ident).await }) {
-            Ok(_) => {}
+    loop {
+        match inject_key_down_once(&ident) {
+            Ok(()) => break,
             Err(DriverError::RpcFailure { action, source })
-                if action == "inject_key_up"
-                    && matches!(
-                        source,
-                        hotki_server::Error::Ipc(ref msg) if msg.contains("KeyNotBound")
-                    ) => {}
+                if action == "inject_key_down" && is_key_not_bound(&source) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(DriverError::BindingTimeout {
+                        ident: ident.clone(),
+                        timeout_ms: gate_ms,
+                    });
+                }
+                thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
+            }
             Err(err) => return Err(err),
         }
-        Ok(())
+    }
+
+    thread::sleep(config::ms(config::INPUT_DELAYS.key_event_delay_ms));
+
+    match inject_key_up_once(&ident) {
+        Ok(()) => {}
+        Err(DriverError::RpcFailure { action, source })
+            if action == "inject_key_up" && is_key_not_bound(&source) => {}
+        Err(err) => return Err(err),
+    }
+
+    Ok(())
+}
+
+/// Issue a single `inject_key_down` RPC for `ident` without retries.
+fn inject_key_down_once(ident: &str) -> DriverResult<()> {
+    with_connection_mut(|conn| {
+        block_on_rpc("inject_key_down", async {
+            conn.inject_key_down(ident).await
+        })
     })
+}
+
+/// Issue a single `inject_key_up` RPC for `ident` without retries.
+fn inject_key_up_once(ident: &str) -> DriverResult<()> {
+    with_connection_mut(|conn| {
+        block_on_rpc("inject_key_up", async { conn.inject_key_up(ident).await })
+    })
+}
+
+/// Returns true when the server error indicates the key has not been bound yet.
+fn is_key_not_bound(source: &hotki_server::Error) -> bool {
+    matches!(
+        source,
+        hotki_server::Error::Ipc(msg) if msg.contains("KeyNotBound")
+    )
 }
 
 /// Inject a sequence of key presses with UI delays.
@@ -275,6 +313,15 @@ pub fn inject_sequence(sequences: &[&str]) -> DriverResult<()> {
 /// Return current bindings if connected.
 pub fn get_bindings() -> DriverResult<Vec<String>> {
     with_connection_mut(|conn| block_on_rpc("get_bindings", async { conn.get_bindings().await }))
+}
+
+/// Load a configuration from disk and apply it to the running server.
+pub fn set_config_from_path(path: &Path) -> DriverResult<()> {
+    let cfg = ::config::load_from_path(path).map_err(|err| DriverError::RuntimeFailure {
+        action: "load_config",
+        cause: err.to_string(),
+    })?;
+    with_connection_mut(|conn| block_on_rpc("set_config", async { conn.set_config(cfg).await }))
 }
 
 /// Wait until all identifiers are present in the current bindings.

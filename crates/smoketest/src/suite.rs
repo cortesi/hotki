@@ -644,16 +644,10 @@ const WORLD_HELPERS: &[HelperDoc] = &[
 ];
 
 /// Helper functions consumed by UI demo smoketests.
-const UI_HELPERS: &[HelperDoc] = &[
-    HelperDoc {
-        name: "HotkiSession::builder",
-        summary: "Launch a scoped hotki session backed by a temporary config.",
-    },
-    HelperDoc {
-        name: "send_key_sequence",
-        summary: "Drive HUD interactions through injected key chords.",
-    },
-];
+const UI_HELPERS: &[HelperDoc] = &[HelperDoc {
+    name: "HotkiSession::builder",
+    summary: "Launch a scoped hotki session backed by a temporary config.",
+}];
 
 /// Helper functions consumed by fullscreen smoketests.
 const FULLSCREEN_HELPERS: &[HelperDoc] = &[

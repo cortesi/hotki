@@ -3055,6 +3055,7 @@ pub mod test_api {
     }
     pub fn ax_pool_reset_metrics_and_cache() {
         super::ax_read_pool::_test_reset_metrics_and_cache();
+        super::ax_read_pool::_test_clear_overrides();
     }
     pub fn ax_pool_metrics() -> (usize, usize) {
         super::ax_read_pool::_test_inflight_metrics()

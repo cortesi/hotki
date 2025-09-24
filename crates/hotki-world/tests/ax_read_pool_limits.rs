@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use hotki_world::test_api as world_test;
+use hotki_world::{test_api as world_test, test_support::test_serial_guard};
 
 // Helper: wait until `cond()` returns true or timeout
 fn wait_until(mut cond: impl FnMut() -> bool, timeout_ms: u64) -> bool {
@@ -18,6 +18,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, timeout_ms: u64) -> bool {
 
 #[test]
 fn deadline_drops_stale_title() {
+    let _guard = test_serial_guard();
     world_test::clear();
     world_test::ensure_ax_pool_inited();
     world_test::ax_pool_reset_metrics_and_cache();
@@ -42,6 +43,7 @@ fn deadline_drops_stale_title() {
 
 #[test]
 fn global_concurrency_is_bounded() {
+    let _guard = test_serial_guard();
     world_test::clear();
     world_test::ensure_ax_pool_inited();
     world_test::ax_pool_reset_metrics_and_cache();

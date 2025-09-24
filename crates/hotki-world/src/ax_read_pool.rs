@@ -626,6 +626,11 @@ pub fn _test_set_props_override(pid: i32, id: WindowId, props: AxProps) {
     o.props.insert(Key { pid, id }, props);
 }
 
+pub fn _test_clear_overrides() {
+    let mut o = test_overrides().lock();
+    *o = PoolTestOverrides::default();
+}
+
 pub fn _test_cache_usage() -> (usize, usize) {
     let pool = AxReadPool::get();
     let mut cache = pool.cache.write();

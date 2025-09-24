@@ -97,18 +97,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
     eps: 2.0,
 };
 
-/// Session-level defaults.
-#[derive(Debug, Clone, Copy)]
-pub struct SessionConfig {
-    /// Interval to resend activation chord while waiting for HUD.
-    pub activation_resend_interval_ms: u64,
-}
-
-/// Default session pacing.
-pub const SESSION: SessionConfig = SessionConfig {
-    activation_resend_interval_ms: 500,
-};
-
 /// Fullscreen test timing.
 #[derive(Debug, Clone, Copy)]
 pub struct FullscreenConfig {

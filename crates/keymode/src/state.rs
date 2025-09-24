@@ -506,4 +506,23 @@ mod tests {
         }
         assert_eq!(state2.depth(), 1);
     }
+
+    #[test]
+    fn test_demo_config_depth() {
+        let ron_text = r#"[
+            ("shift+cmd+0", "activate", keys([
+                ("t", "Theme tester", keys([
+                    ("h", "Theme Prev", theme_prev, (noexit: true)),
+                    ("l", "Theme Next", theme_next, (noexit: true)),
+                ])),
+            ])),
+            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
+            ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
+        ]"#;
+        let keys: Keys = ron::from_str(ron_text).unwrap();
+        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let mut state = State::new();
+        state.handle_key(&cfg, &chord("shift+cmd+0")).unwrap();
+        assert_eq!(state.depth(), 1);
+    }
 }

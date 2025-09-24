@@ -1,18 +1,17 @@
 //! UI-driven smoketest cases executed via the registry runner.
 
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use serde::Serialize;
 use serde_json::json;
 
 use crate::{
-    binding_watcher::{ActivationOutcome, BindingWatcher},
+    binding_watcher::{ACTIVATION_IDENT, ActivationOutcome, BindingWatcher},
     config,
     error::{Error, Result},
     server_drive,
     session::HotkiSession,
     suite::CaseCtx,
-    ui_interaction::{send_key, send_key_sequence},
     util, world,
 };
 
@@ -90,6 +89,8 @@ struct UiCaseState {
     session: HotkiSession,
     /// Registry slug mirrored in artifact file names.
     slug: &'static str,
+    /// Filesystem path to the RON configuration applied for this demo.
+    config_path: PathBuf,
     /// Observed time in milliseconds until the HUD became visible.
     time_to_hud_ms: Option<u64>,
     /// Snapshot of HUD-related windows after activation.
@@ -119,6 +120,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         state = Some(UiCaseState {
             session,
             slug: spec.slug,
+            config_path: config_path.clone(),
             time_to_hud_ms: None,
             hud_windows: None,
             hud_activation: None,
@@ -134,12 +136,18 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
         let socket = state_ref.session.socket_path().to_string();
         server_drive::ensure_init(&socket, 3_000)?;
-        let gate_ms = config::BINDING_GATES.default_ms * 3;
-        let mut watcher = BindingWatcher::connect(&socket, state_ref.session.pid() as i32)?;
-        let activation = watcher.activate_until_ready(gate_ms)?;
+        server_drive::set_config_from_path(&state_ref.config_path)?;
+        let gate_ms = config::BINDING_GATES.default_ms * 5;
+        let watcher = BindingWatcher::connect(&socket, state_ref.session.pid() as i32)?;
+        let ident_activate = UI_DEMO_SEQUENCE[0];
+        let activation =
+            watcher.activate_until_ready(ACTIVATION_IDENT, &[ident_activate], gate_ms)?;
 
-        send_key_sequence(UI_DEMO_SEQUENCE)?;
-        watcher.await_nested(UI_DEMO_SEQUENCE, gate_ms)?;
+        server_drive::inject_key(ident_activate)?;
+        server_drive::wait_for_idents(&["h", "l"], gate_ms)?;
+
+        let theme_steps = &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1];
+        server_drive::inject_sequence(theme_steps)?;
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
         if hud_windows.is_empty() {
@@ -153,7 +161,8 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         state_ref.hud_windows = Some(hud_windows);
 
         // Close the HUD after capturing window diagnostics to leave the session cleanly.
-        send_key("shift+cmd+0")?;
+        let ident_exit = UI_DEMO_SEQUENCE[UI_DEMO_SEQUENCE.len() - 1];
+        server_drive::inject_key(ident_exit)?;
         Ok(())
     })?;
 
