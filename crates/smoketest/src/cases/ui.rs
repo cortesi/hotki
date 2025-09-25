@@ -2,6 +2,7 @@
 
 use std::{fs, path::PathBuf};
 
+use hotki_world::WorldWindow;
 use serde::Serialize;
 use serde_json::json;
 
@@ -228,8 +229,8 @@ struct HudWindowSnapshot {
     layer: i32,
 }
 
-impl From<mac_winops::WindowInfo> for HudWindowSnapshot {
-    fn from(info: mac_winops::WindowInfo) -> Self {
+impl From<WorldWindow> for HudWindowSnapshot {
+    fn from(info: WorldWindow) -> Self {
         Self {
             pid: info.pid,
             id: info.id,

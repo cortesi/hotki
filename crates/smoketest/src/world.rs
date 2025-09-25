@@ -9,7 +9,7 @@ use std::{
 
 use hotki_world::{CommandError, RaiseIntent, WindowKey, World, WorldHandle, WorldWindow};
 use hotki_world_ids::WorldWindowId;
-use mac_winops::{self, WindowInfo, active_space_ids, ops::RealWinOps};
+use mac_winops::{self, active_space_ids, ops::RealWinOps};
 use once_cell::sync::OnceCell;
 use regex::Regex;
 use tracing::{debug, info};
@@ -23,7 +23,7 @@ use crate::{
 static WORLD_HANDLE: OnceCell<WorldHandle> = OnceCell::new();
 
 /// Ensure the shared world instance exists and return a cloned handle.
-fn ensure_world_handle() -> Result<WorldHandle> {
+pub fn world_handle() -> Result<WorldHandle> {
     if let Some(handle) = WORLD_HANDLE.get() {
         return Ok(handle.clone());
     }
@@ -36,27 +36,6 @@ fn ensure_world_handle() -> Result<WorldHandle> {
         .set(handle.clone())
         .map_err(|_| Error::InvalidState("world already initialized".into()))?;
     Ok(handle)
-}
-
-/// Clone the shared world handle for callers that need direct access.
-pub fn world_handle() -> Result<WorldHandle> {
-    ensure_world_handle()
-}
-
-/// Convert a `WorldWindow` into the `mac_winops` data structure used by tests.
-fn convert_window(w: WorldWindow) -> WindowInfo {
-    WindowInfo {
-        app: w.app,
-        title: w.title,
-        pid: w.pid,
-        id: w.id,
-        pos: w.pos,
-        space: w.space,
-        layer: w.layer,
-        focused: w.focused,
-        is_on_screen: w.is_on_screen,
-        on_active_space: w.on_active_space,
-    }
 }
 
 /// Convert a [`CommandError`] into a smoketest [`Error`] with context.
@@ -82,7 +61,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
     };
 
     for attempt in 0..attempts {
-        let world = ensure_world_handle()?;
+        let world = world_handle()?;
         let receipt = world_block_on(async { world.request_raise(intent.clone()).await })?;
         match receipt {
             Ok(receipt) => {
@@ -174,19 +153,13 @@ pub fn smart_raise(target: WorldWindowId, title: &str, deadline: Duration) -> Re
 }
 
 /// Fetch a complete snapshot via the [`WorldView`].
-pub fn list_windows() -> Result<Vec<WindowInfo>> {
-    let world = ensure_world_handle()?;
+pub fn list_windows() -> Result<Vec<WorldWindow>> {
+    let world = world_handle()?;
     let sweep_start = Instant::now();
     let active_spaces = active_space_ids();
     world.hint_refresh();
-    let windows: Vec<WindowInfo> = runtime::block_on(async move {
-        world
-            .snapshot()
-            .await
-            .into_iter()
-            .map(convert_window)
-            .collect::<Vec<_>>()
-    })?;
+    let windows: Vec<WorldWindow> =
+        runtime::block_on(async move { world.snapshot().await.into_iter().collect::<Vec<_>>() })?;
     let elapsed = sweep_start.elapsed();
     let active_count = windows.iter().filter(|w| w.on_active_space).count();
     let total = windows.len();
