@@ -1,26 +1,26 @@
 //! Fullscreen smoketest case implemented on the registry runner.
 
 use std::{
-    cmp, fs, thread,
+    cmp, env,
+    process::{Command, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
+use mac_winops::{self, wait::wait_for_windows_visible_ms};
 use serde_json::json;
+use tracing::warn;
 
 use crate::{
     config,
     error::{Error, Result},
     focus_guard::FocusGuard,
-    helper_window::HelperWindow,
+    process::spawn_managed,
     server_drive,
     session::HotkiSession,
     suite::CaseCtx,
-    ui_interaction::send_key,
-    util,
+    util, world,
 };
-
-/// Registry slug recorded in artifacts for the fullscreen case.
-const FULLSCREEN_SLUG: &str = "fullscreen.toggle.nonnative";
 
 /// Toggle non-native fullscreen for a helper window and capture before/after diagnostics.
 pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
@@ -30,11 +30,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
         let title = config::test_title("fullscreen");
         let config_ron = build_fullscreen_config(&title);
-        let config_path = stage
-            .artifacts_dir()
-            .join(format!("{}_config.ron", FULLSCREEN_SLUG.replace('.', "_")));
-        fs::write(&config_path, &config_ron)?;
-        stage.record_artifact(&config_path);
+        let config_path = stage.write_slug_artifact("config.ron", config_ron.as_bytes())?;
 
         let session = HotkiSession::builder(hotki_bin)
             .with_config(&config_path)
@@ -63,21 +59,62 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .default_lifetime_ms
             .saturating_add(config::HELPER_WINDOW.extra_time_ms);
         let visible_timeout = cmp::max(5_000, config::HIDE.first_window_max_ms * 3);
-        let mut helper = HelperWindow::spawn_frontmost(
-            &state_ref.title,
-            helper_lifetime,
+        let mut helper = {
+            let exe = env::current_exe()?;
+            let mut cmd = Command::new(exe);
+            cmd.env("HOTKI_SKIP_BUILD", "1")
+                .arg("focus-winhelper")
+                .arg("--title")
+                .arg(&state_ref.title)
+                .arg("--time")
+                .arg(helper_lifetime.to_string())
+                .arg("--label-text")
+                .arg("FS")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            spawn_managed(cmd)?
+        };
+        if !wait_for_windows_visible_ms(
+            &[(helper.pid, &state_ref.title)],
             visible_timeout,
             config::FULLSCREEN.helper_show_delay_ms,
-            "FS",
-        )?;
+        ) {
+            return Err(Error::FocusNotObserved {
+                timeout_ms: visible_timeout,
+                expected: format!("helper window '{}' not visible", state_ref.title),
+            });
+        }
+        if let Err(err) = world::ensure_frontmost(
+            helper.pid,
+            &state_ref.title,
+            3,
+            config::INPUT_DELAYS.ui_action_delay_ms,
+        ) {
+            warn!(
+                "ensure_frontmost: world mediation failed ({}); falling back to AX raise",
+                err
+            );
+            if !mac_winops::ensure_frontmost_by_title(
+                helper.pid,
+                &state_ref.title,
+                3,
+                config::INPUT_DELAYS.ui_action_delay_ms,
+            ) {
+                warn!(
+                    "ensure_frontmost: mac_winops fallback failed pid={} title='{}'",
+                    helper.pid, state_ref.title
+                );
+            }
+        }
 
         let focus_guard = FocusGuard::acquire(helper.pid, &state_ref.title, None)?;
 
-        send_key("g")?;
+        server_drive::inject_key("g")?;
         focus_guard.reassert()?;
         let before = read_ax_frame(helper.pid, &state_ref.title)?;
 
-        send_key("shift+cmd+9")?;
+        server_drive::inject_key("shift+cmd+9")?;
         let after = wait_for_frame_update(
             helper.pid,
             &state_ref.title,
@@ -89,11 +126,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         state_ref.before = Some(before);
         state_ref.after = Some(after);
 
-        let artifact_path = stage
-            .artifacts_dir()
-            .join(format!("{}_runtime.txt", FULLSCREEN_SLUG.replace('.', "_")));
-        fs::write(&artifact_path, b"fullscreen toggle executed\n")?;
-        stage.record_artifact(&artifact_path);
+        stage.write_slug_artifact("runtime.txt", b"fullscreen toggle executed\n".as_ref())?;
 
         Ok(())
     })?;
@@ -117,16 +150,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             "after": after.to_json(),
             "area_delta": area_delta,
         });
-        let mut data = serde_json::to_string_pretty(&payload).map_err(|err| {
-            Error::InvalidState(format!("failed to serialize fullscreen outcome: {err}"))
-        })?;
-        data.push('\n');
-        let outcome_path = stage.artifacts_dir().join(format!(
-            "{}_outcome.json",
-            FULLSCREEN_SLUG.replace('.', "_")
-        ));
-        fs::write(&outcome_path, data)?;
-        stage.record_artifact(&outcome_path);
+        stage.write_slug_json_artifact("outcome.json", &payload)?;
 
         state_inner.session.shutdown();
         state_inner.session.kill_and_wait();

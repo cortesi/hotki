@@ -3,7 +3,6 @@
 use std::{
     cell::Cell,
     collections::HashMap,
-    fs,
     future::Future,
     path::PathBuf,
     sync::{Arc, mpsc},
@@ -27,7 +26,7 @@ use tracing::{debug, warn};
 use crate::{
     error::{Error, Result},
     helpers, runtime,
-    suite::StageHandle,
+    suite::CaseStage,
 };
 
 thread_local! {
@@ -171,7 +170,7 @@ struct WindowDescriptor {
 
 /// Spawn a mimic scenario and wait for declared windows to surface in the world snapshot.
 pub fn spawn_scenario(
-    stage: &StageHandle<'_>,
+    stage: &CaseStage<'_, '_>,
     slug: &'static str,
     specs: Vec<WindowSpawnSpec>,
 ) -> Result<ScenarioState> {
@@ -376,17 +375,12 @@ pub fn ensure_window_ready(
 
 /// Record mimic diagnostics to the artifact directory and return the recorded path.
 pub fn record_mimic_diagnostics(
-    stage: &mut StageHandle<'_>,
+    stage: &mut CaseStage<'_, '_>,
     slug: &str,
     mimic: &MimicHandle,
 ) -> Result<PathBuf> {
-    let sanitized = slug.replace('.', "_");
-    let diag_path = stage
-        .artifacts_dir()
-        .join(format!("{}_mimic.txt", sanitized));
-    fs::write(&diag_path, mimic.diagnostics().join("\n"))?;
-    stage.record_artifact(&diag_path);
-    Ok(diag_path)
+    let contents = mimic.diagnostics().join("\n");
+    stage.write_named_artifact(slug, "mimic.txt", contents.as_bytes())
 }
 
 /// Kill the supplied mimic handle, converting errors into smoketest failures.
@@ -395,7 +389,11 @@ pub fn shutdown_mimic(handle: MimicHandle) -> Result<()> {
 }
 
 /// Raise a helper window identified by `label`, asserting focus updates.
-pub fn raise_window(stage: &StageHandle<'_>, state: &mut ScenarioState, label: &str) -> Result<()> {
+pub fn raise_window(
+    stage: &CaseStage<'_, '_>,
+    state: &mut ScenarioState,
+    label: &str,
+) -> Result<()> {
     let start_all = Instant::now();
     let window = state.window(label)?;
     let world = stage.world_clone();
@@ -448,7 +446,7 @@ pub fn raise_window(stage: &StageHandle<'_>, state: &mut ScenarioState, label: &
 
 /// Wait until the world reports focus on the expected helper window.
 fn wait_for_focus(
-    stage: &StageHandle<'_>,
+    stage: &CaseStage<'_, '_>,
     state: &mut ScenarioState,
     world: &WorldHandle,
     expected_id: WorldWindowId,

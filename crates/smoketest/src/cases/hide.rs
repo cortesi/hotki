@@ -13,7 +13,7 @@ use crate::{
     config,
     error::{Error, Result},
     helpers, runtime,
-    suite::{CaseCtx, StageHandle},
+    suite::{CaseCtx, CaseStage},
 };
 
 /// Shared state for the hide toggle smoketest.
@@ -196,7 +196,7 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Wait until the authoritative frame matches the expected rectangle within the provided epsilon.
 /// Wait until the helper window reports the expected mode.
 fn wait_for_mode(
-    stage: &StageHandle<'_>,
+    stage: &CaseStage<'_, '_>,
     observer: WindowObserver,
     expected_mode: WindowMode,
 ) -> Result<hotki_world::Frames> {
@@ -230,7 +230,7 @@ fn wait_for_mode(
 
 /// Wait until the authoritative frame matches the expected rectangle within the provided epsilon.
 fn wait_for_rect(
-    stage: &StageHandle<'_>,
+    stage: &CaseStage<'_, '_>,
     observer: WindowObserver,
     expected: RectPx,
     eps: i32,

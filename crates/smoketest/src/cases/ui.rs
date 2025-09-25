@@ -1,6 +1,6 @@
 //! UI-driven smoketest cases executed via the registry runner.
 
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use hotki_world::WorldWindow;
 use serde::Serialize;
@@ -106,12 +106,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
     ctx.setup(|stage| {
         let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
-        let sanitized = spec.slug.replace('.', "_");
-        let config_path = stage
-            .artifacts_dir()
-            .join(format!("{}_config.ron", sanitized));
-        fs::write(&config_path, spec.ron_config)?;
-        stage.record_artifact(&config_path);
+        let config_path = stage.write_slug_artifact("config.ron", spec.ron_config.as_bytes())?;
 
         let session = HotkiSession::builder(hotki_bin)
             .with_config(&config_path)
@@ -121,7 +116,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         state = Some(UiCaseState {
             session,
             slug: spec.slug,
-            config_path: config_path.clone(),
+            config_path,
             time_to_hud_ms: None,
             hud_windows: None,
             hud_activation: None,
@@ -172,10 +167,6 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("ui case state missing during settle".into()))?;
 
-        let sanitized = state_inner.slug.replace('.', "_");
-        let outcome_path = stage
-            .artifacts_dir()
-            .join(format!("{}_outcome.json", sanitized));
         let payload = json!({
             "slug": state_inner.slug,
             "hud_seen": state_inner.time_to_hud_ms.is_some(),
@@ -186,11 +177,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
                 .as_ref()
                 .map(ActivationOutcome::to_summary_json),
         });
-        let mut data = serde_json::to_string_pretty(&payload)
-            .map_err(|err| Error::InvalidState(format!("failed to serialize ui outcome: {err}")))?;
-        data.push('\n');
-        fs::write(&outcome_path, data)?;
-        stage.record_artifact(&outcome_path);
+        stage.write_slug_json_artifact("outcome.json", &payload)?;
 
         state_inner.session.shutdown();
         state_inner.session.kill_and_wait();

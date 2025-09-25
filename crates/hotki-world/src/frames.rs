@@ -10,8 +10,7 @@
 //!   minimize transition. The cached rectangle is marked with
 //!   [`FrameKind::Cached`].
 //!
-//! Raw AX/CG rectangles are exposed exclusively under the
-//! `test-introspection` feature flag to keep the default API surface lean.
+//! Raw AX/CG rectangles are always captured alongside the authoritative frame for diagnostics.
 use std::fmt;
 
 use mac_winops::{self, Pos, Rect};
@@ -141,10 +140,8 @@ pub struct Frames {
     pub authoritative: RectPx,
     /// Source that produced the authoritative frame.
     pub authoritative_kind: FrameKind,
-    #[cfg(feature = "test-introspection")]
     /// Raw AX frame (if available).
     pub ax: Option<RectPx>,
-    #[cfg(feature = "test-introspection")]
     /// Raw CG frame (if available).
     pub cg: Option<RectPx>,
     /// Identifier of the display containing the window.
@@ -164,9 +161,7 @@ impl Frames {
         Self {
             authoritative: RectPx::zero(),
             authoritative_kind: FrameKind::Unknown,
-            #[cfg(feature = "test-introspection")]
             ax: None,
-            #[cfg(feature = "test-introspection")]
             cg: None,
             display_id: None,
             space_id: None,

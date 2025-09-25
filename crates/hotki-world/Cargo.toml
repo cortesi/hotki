@@ -7,7 +7,6 @@ license = "MIT"
 
 [features]
 test-utils = []
-test-introspection = []
 world-mimic = ["dep:winit", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]

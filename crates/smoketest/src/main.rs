@@ -16,7 +16,6 @@ mod config;
 mod error;
 /// Focus guards that reconcile world and AX views for helper windows.
 mod focus_guard;
-mod helper_window;
 /// Shared helper utilities for new smoketest cases.
 mod helpers;
 /// Registry of helper process IDs for cleanup.
@@ -31,13 +30,11 @@ mod session;
 mod space_probe;
 /// Smoketest case registry and runner.
 mod suite;
-mod ui_interaction;
 /// Utility helpers for path resolution and minor tasks.
 mod util;
 /// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
 /// Helper window for UI-driven tests and animations.
-mod winhelper;
 /// World snapshot helpers backed by hotki-world.
 mod world;
 
@@ -51,7 +48,9 @@ use std::{
 
 use cli::{Cli, Commands};
 use error::print_hints;
+use hotki_world::mimic::run_focus_winhelper;
 use process::WARN_OVERLAY_STANDALONE_FLAG;
+use suite::CaseRunOpts;
 /// Tracks whether hotki was already built during this smoketest invocation.
 static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
 
@@ -94,15 +93,6 @@ fn maybe_run_warn_overlay_standalone() -> bool {
         exit(2);
     }
     true
-}
-
-/// Optional overrides applied when running registry-backed cases.
-#[derive(Clone, Copy, Default)]
-struct CaseRunOpts {
-    /// Override whether the warn overlay should be shown during the run.
-    warn_overlay: Option<bool>,
-    /// Override the fail-fast behavior for the runner configuration.
-    fail_fast: Option<bool>,
 }
 
 /// Build a runner configuration from the CLI flags with optional overrides applied.
@@ -234,7 +224,7 @@ fn handle_helper_commands_early(cli: &Cli) -> bool {
             if cli.repeat > 1 && !cli.quiet {
                 heading(&format!("Run {iteration}/{}", cli.repeat));
             }
-            if let Err(e) = winhelper::run_focus_winhelper(
+            if let Err(e) = run_focus_winhelper(
                 title,
                 *time,
                 delay_setframe_ms.unwrap_or(0),
@@ -310,10 +300,12 @@ fn dispatch_command(cli: &Cli, fake_mode: bool) {
 
 /// Execute one iteration of the smoketest command dispatch.
 fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
+    if let Some((slug, opts)) = cli.command.case_info(fake_mode) {
+        run_case_by_slug(cli, slug, opts);
+        return;
+    }
+
     match &cli.command {
-        Commands::Relay => run_case_by_slug(cli, "repeat-relay", CaseRunOpts::default()),
-        Commands::Shell => run_case_by_slug(cli, "repeat-shell", CaseRunOpts::default()),
-        Commands::Volume => run_case_by_slug(cli, "repeat-volume", CaseRunOpts::default()),
         Commands::All => {
             if fake_mode {
                 let fake_opts = CaseRunOpts {
@@ -333,84 +325,15 @@ fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
             let slugs: Vec<&str> = tests.iter().map(|test| test.slug()).collect();
             run_cases(cli, &slugs, CaseRunOpts::default());
         }
-        Commands::Raise => run_case_by_slug(cli, "raise", CaseRunOpts::default()),
-        Commands::FocusNav => run_case_by_slug(cli, "focus.nav", CaseRunOpts::default()),
-        Commands::Focus => run_case_by_slug(cli, "focus.tracking", CaseRunOpts::default()),
-        Commands::Hide => run_case_by_slug(cli, "hide.toggle.roundtrip", CaseRunOpts::default()),
-        Commands::Place => {
-            if fake_mode {
-                let fake_opts = CaseRunOpts {
-                    warn_overlay: Some(false),
-                    fail_fast: Some(true),
-                };
-                run_case_by_slug(cli, "place.fake.adapter", fake_opts);
-            } else {
-                run_case_by_slug(cli, "place.grid.cycle", CaseRunOpts::default());
-            }
-        }
-        Commands::PlaceFake => {
-            let opts = CaseRunOpts {
-                warn_overlay: Some(false),
-                fail_fast: Some(true),
-            };
-            run_case_by_slug(cli, "place.fake.adapter", opts);
-        }
-        Commands::PlaceAsync => run_case_by_slug(cli, "place.async.delay", CaseRunOpts::default()),
-        Commands::PlaceAnimated => {
-            run_case_by_slug(cli, "place.animated.tween", CaseRunOpts::default())
-        }
-        Commands::PlaceTerm => run_case_by_slug(cli, "place.term.anchor", CaseRunOpts::default()),
-        Commands::PlaceIncrements => {
-            run_case_by_slug(cli, "place.increments.anchor", CaseRunOpts::default())
-        }
-        Commands::PlaceMoveMin => run_case_by_slug(cli, "place.move.min", CaseRunOpts::default()),
-        Commands::PlaceMoveNonresizable => {
-            run_case_by_slug(cli, "place.move.nonresizable", CaseRunOpts::default())
-        }
-        Commands::PlaceMinimized => {
-            run_case_by_slug(cli, "place.minimized.defer", CaseRunOpts::default())
-        }
-        Commands::PlaceZoomed => {
-            run_case_by_slug(cli, "place.zoomed.normalize", CaseRunOpts::default())
-        }
-        Commands::PlaceFlex {
-            force_size_pos,
-            force_shrink_move_grow,
-        } => {
-            let slug = if *force_shrink_move_grow {
-                "place.flex.smg"
-            } else if *force_size_pos {
-                "place.flex.force_size_pos"
-            } else {
-                "place.flex.default"
-            };
-            run_case_by_slug(cli, slug, CaseRunOpts::default());
-        }
-        Commands::PlaceFallback => {
-            run_case_by_slug(cli, "place.flex.force_size_pos", CaseRunOpts::default())
-        }
-        Commands::PlaceSmg => run_case_by_slug(cli, "place.flex.smg", CaseRunOpts::default()),
-        Commands::PlaceSkip => {
-            run_case_by_slug(cli, "place.skip.nonmovable", CaseRunOpts::default())
-        }
-        Commands::Ui => run_case_by_slug(cli, "ui.demo.standard", CaseRunOpts::default()),
-        Commands::Minui => run_case_by_slug(cli, "ui.demo.mini", CaseRunOpts::default()),
-        Commands::Fullscreen => {
-            run_case_by_slug(cli, "fullscreen.toggle.nonnative", CaseRunOpts::default())
-        }
-        Commands::WorldStatus => {
-            run_case_by_slug(cli, "world.status.permissions", CaseRunOpts::default())
-        }
-        Commands::WorldAx => run_case_by_slug(cli, "world.ax.focus_props", CaseRunOpts::default()),
-        Commands::WorldSpaces => {
-            run_case_by_slug(cli, "world.spaces.adoption", CaseRunOpts::default())
-        }
         Commands::SpaceProbe {
             samples,
             interval_ms,
             output,
         } => handle_space_probe(cli, *samples, *interval_ms, output.as_deref()),
-        Commands::FocusWinHelper { .. } => unreachable!(),
+        _ => {
+            // Commands without a case_info entry are handled here or are errors.
+            // FocusWinHelper is handled in handle_helper_commands_early.
+        }
     }
 }
 

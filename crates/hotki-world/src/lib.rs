@@ -1732,9 +1732,7 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
         let frames = Frames {
             authoritative,
             authoritative_kind,
-            #[cfg(feature = "test-introspection")]
             ax: ax_rect,
-            #[cfg(feature = "test-introspection")]
             cg: cg_rect,
             display_id,
             space_id: w.space,
@@ -1864,7 +1862,6 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
             }
         }
         state.frames.insert(key, frames.clone());
-        #[cfg(feature = "test-introspection")]
         if let (Some(ax_rect), Some(cg_rect)) = (frames.ax, frames.cg) {
             let delta = ax_rect.delta(&cg_rect);
             if delta != RectDelta::default() {

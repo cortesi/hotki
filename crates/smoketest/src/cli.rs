@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use logging::LogArgs;
 
-use crate::config;
+use crate::{config, suite::CaseRunOpts};
 
 /// Command-line interface arguments for the smoketest binary.
 #[derive(Parser, Debug)]
@@ -391,4 +391,66 @@ pub enum Commands {
     /// Focused test: attempt placement on a non-movable window and assert skip
     #[command(name = "place.skip.nonmovable")]
     PlaceSkip,
+}
+
+impl Commands {
+    /// Return the case slug and run options for a command.
+    pub fn case_info(&self, fake_mode: bool) -> Option<(&'static str, CaseRunOpts)> {
+        let default_opts = CaseRunOpts::default();
+        let fake_opts = CaseRunOpts {
+            warn_overlay: Some(false),
+            fail_fast: Some(true),
+        };
+
+        let slug = match self {
+            Self::Relay => "repeat-relay",
+            Self::Shell => "repeat-shell",
+            Self::Volume => "repeat-volume",
+            Self::Raise => "raise",
+            Self::FocusNav => "focus.nav",
+            Self::Focus => "focus.tracking",
+            Self::Hide => "hide.toggle.roundtrip",
+            Self::Place if fake_mode => "place.fake.adapter",
+            Self::Place => "place.grid.cycle",
+            Self::PlaceFake => "place.fake.adapter",
+            Self::PlaceAsync => "place.async.delay",
+            Self::PlaceAnimated => "place.animated.tween",
+            Self::PlaceTerm => "place.term.anchor",
+            Self::PlaceIncrements => "place.increments.anchor",
+            Self::PlaceMoveMin => "place.move.min",
+            Self::PlaceMoveNonresizable => "place.move.nonresizable",
+            Self::PlaceMinimized => "place.minimized.defer",
+            Self::PlaceZoomed => "place.zoomed.normalize",
+            Self::PlaceFlex {
+                force_size_pos,
+                force_shrink_move_grow,
+            } => {
+                if *force_shrink_move_grow {
+                    "place.flex.smg"
+                } else if *force_size_pos {
+                    "place.flex.force_size_pos"
+                } else {
+                    "place.flex.default"
+                }
+            }
+            Self::PlaceFallback => "place.flex.force_size_pos",
+            Self::PlaceSmg => "place.flex.smg",
+            Self::PlaceSkip => "place.skip.nonmovable",
+            Self::Ui => "ui.demo.standard",
+            Self::Minui => "ui.demo.mini",
+            Self::Fullscreen => "fullscreen.toggle.nonnative",
+            Self::WorldStatus => "world.status.permissions",
+            Self::WorldAx => "world.ax.focus_props",
+            Self::WorldSpaces => "world.spaces.adoption",
+            _ => return None,
+        };
+
+        let opts = if fake_mode && slug.starts_with("place.") {
+            fake_opts
+        } else {
+            default_opts
+        };
+
+        Some((slug, opts))
+    }
 }

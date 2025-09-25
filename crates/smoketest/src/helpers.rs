@@ -24,7 +24,7 @@ pub fn wait_failure(case: &str, err: &WaitError) -> Error {
 /// Assert that the authoritative frame in `frames` matches `expected` within `eps` pixels.
 ///
 /// Emits a single-line diagnostic with standardized formatting that includes raw AX/CG deltas when
-/// `test-introspection` data is available.
+/// diagnostic data is available.
 pub fn assert_frame_matches<P>(
     case: &str,
     expected: RectPx,
@@ -85,35 +85,26 @@ fn format_artifacts<P: AsRef<Path>>(artifacts: &[P]) -> String {
     }
 }
 
-/// Format optional raw AX/CG deltas when the test-introspection feature is enabled.
+/// Format optional raw AX/CG deltas captured alongside the authoritative frame.
 fn frame_extras(frames: &Frames, actual: RectPx) -> String {
-    #[cfg(feature = "test-introspection")]
-    {
-        let mut extras = String::new();
-        if let Some(ax) = frames.ax {
-            let ax_delta = actual.delta(&ax);
-            if !delta_is_zero(&ax_delta) {
-                extras.push_str(" ax_delta=");
-                extras.push_str(&format_delta(ax_delta));
-            }
+    let mut extras = String::new();
+    if let Some(ax) = frames.ax {
+        let ax_delta = actual.delta(&ax);
+        if !delta_is_zero(&ax_delta) {
+            extras.push_str(" ax_delta=");
+            extras.push_str(&format_delta(ax_delta));
         }
-        if let Some(cg) = frames.cg {
-            let cg_delta = actual.delta(&cg);
-            if !delta_is_zero(&cg_delta) {
-                extras.push_str(" cg_delta=");
-                extras.push_str(&format_delta(cg_delta));
-            }
+    }
+    if let Some(cg) = frames.cg {
+        let cg_delta = actual.delta(&cg);
+        if !delta_is_zero(&cg_delta) {
+            extras.push_str(" cg_delta=");
+            extras.push_str(&format_delta(cg_delta));
         }
-        extras
     }
-    #[cfg(not(feature = "test-introspection"))]
-    {
-        let _ = (frames, actual);
-        String::new()
-    }
+    extras
 }
 
-#[cfg(feature = "test-introspection")]
 /// Return true when a rectangle delta equals zero in all dimensions.
 fn delta_is_zero(delta: &RectDelta) -> bool {
     delta.dx == 0 && delta.dy == 0 && delta.dw == 0 && delta.dh == 0

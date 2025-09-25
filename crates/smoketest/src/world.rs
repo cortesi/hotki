@@ -1,7 +1,6 @@
 //! Shared trait-backed window snapshot helpers for smoketests.
 
 use std::{
-    future::Future,
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -43,14 +42,6 @@ fn map_world_error(op: &str, err: &CommandError) -> Error {
     Error::InvalidState(format!("world {op} command failed: {err}"))
 }
 
-/// Execute a future on the shared runtime used by smoketests.
-fn world_block_on<F, T>(fut: F) -> Result<T>
-where
-    F: Future<Output = T>,
-{
-    runtime::block_on(fut)
-}
-
 /// Raise a window matching the provided title and best-effort ensure it is frontmost.
 pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -> Result<()> {
     let regex = Regex::new(&format!("^{}$", regex::escape(title)))
@@ -62,7 +53,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
 
     for attempt in 0..attempts {
         let world = world_handle()?;
-        let receipt = world_block_on(async { world.request_raise(intent.clone()).await })?;
+        let receipt = runtime::block_on(async { world.request_raise(intent.clone()).await })?;
         match receipt {
             Ok(receipt) => {
                 if let Some(target) = receipt.target
@@ -73,7 +64,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
                         pid: target.pid,
                         id: target.id,
                     };
-                    if let Ok(Some(window)) = world_block_on(async { world.get(key).await })
+                    if let Ok(Some(window)) = runtime::block_on(async { world.get(key).await })
                         && window.on_active_space
                         && window.is_on_screen
                     {

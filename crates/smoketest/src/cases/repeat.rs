@@ -27,7 +27,7 @@ use winit::{
 use crate::{
     config,
     error::{Error, Result},
-    suite::{CaseCtx, StageHandle},
+    suite::{CaseCtx, CaseStage},
 };
 
 /// Identifier used for relay repeat runs.
@@ -91,28 +91,19 @@ fn run_repeat_workload(slug: &str, duration_ms: u64) -> Result<RepeatOutput> {
 
 /// Persist repeat metrics and captured output to artifact files for later inspection.
 fn record_repeat_stats(
-    stage: &mut StageHandle<'_>,
+    stage: &mut CaseStage<'_, '_>,
     slug: &str,
     duration_ms: u64,
     output: &RepeatOutput,
 ) -> Result<()> {
-    let sanitized = slug.replace('-', "_");
-    let stats_path = stage
-        .artifacts_dir()
-        .join(format!("{}_stats.txt", sanitized));
     let stats_contents = format!(
         "case={slug}\nduration_ms={duration_ms}\nrepeats={}\n",
         output.repeats
     );
-    fs::write(&stats_path, stats_contents)?;
-    stage.record_artifact(&stats_path);
+    stage.write_slug_artifact("stats.txt", stats_contents.as_bytes())?;
 
-    let log_path = stage
-        .artifacts_dir()
-        .join(format!("{}_output.log", sanitized));
     let log_contents = format!("stdout:\n{}\n\nstderr:\n{}\n", output.stdout, output.stderr);
-    fs::write(&log_path, log_contents)?;
-    stage.record_artifact(&log_path);
+    stage.write_slug_artifact("output.log", log_contents.as_bytes())?;
 
     Ok(())
 }

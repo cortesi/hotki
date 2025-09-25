@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
     process::exit,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -14,6 +15,25 @@ use crate::{
     error::{Error, Result, print_hints},
     proc_registry, process, world,
 };
+
+/// Convert a case slug into the canonical filename prefix.
+pub fn sanitize_slug(slug: &str) -> String {
+    slug.chars()
+        .map(|ch| match ch {
+            '.' | '-' => '_',
+            other => other,
+        })
+        .collect()
+}
+
+/// Optional overrides applied when running registry-backed cases.
+#[derive(Clone, Copy, Default)]
+pub struct CaseRunOpts {
+    /// Override whether the warn overlay should be shown during the run.
+    pub warn_overlay: Option<bool>,
+    /// Override the fail-fast behavior for the runner configuration.
+    pub fail_fast: Option<bool>,
+}
 
 /// Configured time budget for a smoketest case.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -133,17 +153,12 @@ impl<'a> CaseCtx<'a> {
     /// Execute the provided stage closure and capture its elapsed duration.
     pub fn stage<F, T>(&mut self, stage: Stage, f: F) -> Result<T>
     where
-        F: FnOnce(&mut StageHandle<'_>) -> Result<T>,
+        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
     {
-        let mut handle = StageHandle {
-            name: self.name,
-            world: self.world.clone(),
-            artifacts_dir: &self.artifacts_dir,
-            artifacts: &mut self.artifacts,
-        };
+        let mut stage_ctx = CaseStage { inner: self };
         let start = Instant::now();
         pump_active_mimics();
-        let result = f(&mut handle);
+        let result = f(&mut stage_ctx);
         pump_active_mimics();
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.durations.set(stage, elapsed_ms)?;
@@ -161,7 +176,7 @@ impl<'a> CaseCtx<'a> {
     /// Run the setup stage and record the elapsed duration.
     pub fn setup<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut StageHandle<'_>) -> Result<T>,
+        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
     {
         self.stage(Stage::Setup, f)
     }
@@ -169,7 +184,7 @@ impl<'a> CaseCtx<'a> {
     /// Run the action stage and record the elapsed duration.
     pub fn action<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut StageHandle<'_>) -> Result<T>,
+        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
     {
         self.stage(Stage::Action, f)
     }
@@ -177,43 +192,121 @@ impl<'a> CaseCtx<'a> {
     /// Run the settle stage and record the elapsed duration.
     pub fn settle<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut StageHandle<'_>) -> Result<T>,
+        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
     {
         self.stage(Stage::Settle, f)
     }
 }
 
-/// Stage-scoped handle that exposes world accessors and artifact recording.
-pub struct StageHandle<'a> {
-    /// Case name associated with the current stage.
-    name: &'a str,
-    /// Shared world handle used to drive requests and fetch frames.
-    world: WorldHandle,
-    /// Artifact directory allocated for the case.
-    artifacts_dir: &'a Path,
-    /// Collected artifacts recorded during stage execution.
-    artifacts: &'a mut Vec<PathBuf>,
+/// Stage-scoped view that exposes world accessors and artifact recording.
+pub struct CaseStage<'ctx, 'name> {
+    /// Mutable handle to the underlying case context.
+    inner: &'ctx mut CaseCtx<'name>,
 }
 
-impl<'a> StageHandle<'a> {
+impl<'ctx, 'name> CaseStage<'ctx, 'name> {
     /// Clone the shared world handle for asynchronous operations.
     pub fn world_clone(&self) -> WorldHandle {
-        self.world.clone()
+        self.inner.world.clone()
     }
 
     /// Return the artifact directory assigned to the case.
     pub fn artifacts_dir(&self) -> &Path {
-        self.artifacts_dir
+        &self.inner.artifacts_dir
     }
 
     /// Record an artifact path to be surfaced in case summaries.
     pub fn record_artifact<P: AsRef<Path>>(&mut self, path: P) {
-        self.artifacts.push(path.as_ref().to_path_buf());
+        self.inner.artifacts.push(path.as_ref().to_path_buf());
+    }
+
+    /// Write artifact contents into the case directory and record the emitted path.
+    pub fn write_artifact<P, C>(&mut self, relative_path: P, contents: C) -> Result<PathBuf>
+    where
+        P: AsRef<Path>,
+        C: AsRef<[u8]>,
+    {
+        let path = self.artifacts_dir().join(relative_path.as_ref());
+        fs::write(&path, contents)?;
+        self.record_artifact(&path);
+        Ok(path)
+    }
+
+    /// Serialize a JSON payload into an artifact file using pretty formatting.
+    pub fn write_json_artifact<P, T>(&mut self, relative_path: P, value: &T) -> Result<PathBuf>
+    where
+        P: AsRef<Path>,
+        T: Serialize,
+    {
+        let rel = relative_path.as_ref();
+        let path = self.artifacts_dir().join(rel);
+        let mut file = File::create(&path)?;
+        serde_json::to_writer_pretty(&mut file, value).map_err(|e| {
+            Error::InvalidState(format!(
+                "failed to serialize artifact {}: {}",
+                rel.display(),
+                e
+            ))
+        })?;
+        file.write_all(b"\n")?;
+        self.record_artifact(&path);
+        Ok(path)
+    }
+
+    /// Write an artifact named after the case slug with the provided suffix.
+    pub fn write_slug_artifact<C>(&mut self, suffix: &str, contents: C) -> Result<PathBuf>
+    where
+        C: AsRef<[u8]>,
+    {
+        let filename = Self::artifact_name(self.inner.name, suffix);
+        self.write_artifact(filename, contents)
+    }
+
+    /// Serialize a JSON payload into a slug-prefixed artifact.
+    pub fn write_slug_json_artifact<T>(&mut self, suffix: &str, value: &T) -> Result<PathBuf>
+    where
+        T: Serialize,
+    {
+        let filename = Self::artifact_name(self.inner.name, suffix);
+        self.write_json_artifact(filename, value)
+    }
+
+    /// Write an artifact for an arbitrary slug and suffix.
+    pub fn write_named_artifact<C>(
+        &mut self,
+        slug: &str,
+        suffix: &str,
+        contents: C,
+    ) -> Result<PathBuf>
+    where
+        C: AsRef<[u8]>,
+    {
+        let filename = Self::artifact_name(slug, suffix);
+        self.write_artifact(filename, contents)
+    }
+
+    /// Serialize JSON into an artifact named after the supplied slug and suffix.
+    pub fn write_named_json_artifact<T>(
+        &mut self,
+        slug: &str,
+        suffix: &str,
+        value: &T,
+    ) -> Result<PathBuf>
+    where
+        T: Serialize,
+    {
+        let filename = Self::artifact_name(slug, suffix);
+        self.write_json_artifact(filename, value)
     }
 
     /// Return the case name associated with this stage.
     pub fn case_name(&self) -> &str {
-        self.name
+        self.inner.name
+    }
+
+    /// Build an artifact filename for the provided slug/suffix pair.
+    fn artifact_name(slug: &str, suffix: &str) -> String {
+        format!("{}_{}", sanitize_slug(slug), suffix)
     }
 }
 
@@ -246,39 +339,6 @@ pub struct RunnerConfig<'a> {
     pub overlay_info: Option<&'a str>,
 }
 
-/// Helper that keeps a single overlay instance alive across multiple cases.
-struct SuiteOverlay<'a> {
-    /// Shared overlay session reused across the suite run.
-    session: process::OverlaySession,
-    /// Runner configuration that informs overlay content updates.
-    config: &'a RunnerConfig<'a>,
-}
-
-impl<'a> SuiteOverlay<'a> {
-    /// Start the overlay if the configuration requires it.
-    fn start(config: &'a RunnerConfig<'a>) -> Option<Self> {
-        if config.warn_overlay && !config.quiet {
-            process::OverlaySession::start().map(|session| Self { session, config })
-        } else {
-            None
-        }
-    }
-
-    /// Update overlay labels before each case begins execution.
-    fn before_case(&self, entry: &CaseEntry) {
-        let info = self.config.overlay_info.or(entry.info).unwrap_or("");
-        self.session.set_info(info);
-        self.session.set_status(entry.name);
-    }
-
-    /// Shut down the overlay process once the suite is finished.
-    fn finish(self) {
-        if let Err(e) = self.session.shutdown() {
-            eprintln!("suite: failed to stop overlay: {}", e);
-        }
-    }
-}
-
 /// Summary of a single case run emitted by the registry runner.
 pub struct CaseRunOutcome {
     /// Registry entry executed for the case.
@@ -293,42 +353,61 @@ pub struct CaseRunOutcome {
     pub quiescence_error: Option<Error>,
 }
 
-/// Run every registered case in order, respecting the supplied runner configuration.
-pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
+impl CaseRunOutcome {
+    /// Returns true when the case run produced neither primary nor cleanup errors.
+    fn is_success(&self) -> bool {
+        self.primary_error.is_none() && self.quiescence_error.is_none()
+    }
+
+    /// Returns true when any error surfaced during the case run.
+    fn is_failure(&self) -> bool {
+        !self.is_success()
+    }
+}
+
+/// Shut down shared overlay state and surface aggregated failure information.
+/// Run the provided case sequence with shared suite setup and teardown.
+fn run_suite<I>(config: &RunnerConfig<'_>, cases: I, announce_success: bool) -> Result<()>
+where
+    I: IntoIterator<Item = (usize, &'static CaseEntry)>,
+{
     ensure_helper_limit()?;
     let artifact_root = create_artifact_root()?;
-    let overlay = SuiteOverlay::start(config);
-    let mut failures: Vec<CaseRunOutcome> = Vec::new();
-    for (idx, entry) in CASES.iter().enumerate() {
+    let overlay = if config.warn_overlay && !config.quiet {
+        process::OverlaySession::start()
+    } else {
+        None
+    };
+    let mut failures = Vec::new();
+    for (idx, entry) in cases.into_iter() {
         if !config.quiet {
             crate::heading(&format!("Test: {}", entry.name));
         }
-        if let Some(ref overlay_session) = overlay {
-            overlay_session.before_case(entry);
+        if let Some(session) = overlay.as_ref() {
+            let info = config.overlay_info.or(entry.info).unwrap_or("");
+            session.set_info(info);
+            session.set_status(entry.name);
         }
         let world_handle = world::world_handle()?;
         world_handle.reset();
         let outcome = run_entry(entry, config, &artifact_root, idx)?;
         report_outcome(&outcome, config.quiet);
-        if outcome.primary_error.is_some() || outcome.quiescence_error.is_some() {
-            failures.push(outcome);
+        if outcome.is_failure() {
+            failures.push(entry);
             if config.fail_fast {
                 break;
             }
         }
     }
-    if let Some(overlay_session) = overlay {
-        overlay_session.finish();
-    }
     if failures.is_empty() {
-        if !config.quiet {
+        if announce_success && !config.quiet {
             println!("All smoketest cases passed");
         }
         Ok(())
     } else {
         let names = failures
             .iter()
-            .map(|outcome| outcome.entry.name)
+            .map(|entry| entry.name)
             .collect::<Vec<_>>()
             .join(", ");
         Err(Error::InvalidState(format!(
@@ -337,49 +416,30 @@ pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
     }
 }
 
+/// Run every registered case in order, respecting the supplied runner configuration.
+pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
+    run_suite(config, CASES.iter().enumerate(), true)
+}
+
 /// Run a subset of cases by name, preserving the CLI sequence order.
 pub fn run_sequence(names: &[&str], config: &RunnerConfig<'_>) -> Result<()> {
-    ensure_helper_limit()?;
-    let artifact_root = create_artifact_root()?;
-    let overlay = SuiteOverlay::start(config);
-    let mut failures = Vec::new();
-    for (idx, name) in names.iter().enumerate() {
-        let entry = CASES
-            .iter()
-            .find(|case| case.name == *name)
-            .ok_or_else(|| Error::InvalidState(format!("unknown smoketest case: {name}")))?;
-        if !config.quiet {
-            crate::heading(&format!("Test: {}", entry.name));
-        }
-        if let Some(ref overlay_session) = overlay {
-            overlay_session.before_case(entry);
-        }
-        let world_handle = world::world_handle()?;
-        world_handle.reset();
-        let outcome = run_entry(entry, config, &artifact_root, idx)?;
-        report_outcome(&outcome, config.quiet);
-        if outcome.primary_error.is_some() || outcome.quiescence_error.is_some() {
-            failures.push(outcome);
-            if config.fail_fast {
-                break;
-            }
-        }
-    }
-    if let Some(overlay_session) = overlay {
-        overlay_session.finish();
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        let names = failures
-            .iter()
-            .map(|outcome| outcome.entry.name)
-            .collect::<Vec<_>>()
-            .join(", ");
-        Err(Error::InvalidState(format!(
-            "smoketest cases failed: {names}"
-        )))
-    }
+    let ordered = resolve_named_cases(names)?;
+    run_suite(config, ordered, false)
+}
+
+/// Resolve CLI-provided case names into registry entries paired with sequence order.
+fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)>> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            let entry = CASES
+                .iter()
+                .find(|case| case.name == *name)
+                .ok_or_else(|| Error::InvalidState(format!("unknown smoketest case: {name}")))?;
+            Ok((idx, entry))
+        })
+        .collect()
 }
 
 /// Execute a single registry entry and capture timing/artifact metadata.
@@ -396,22 +456,19 @@ fn run_entry(
     let case_dir = create_case_dir(artifact_root, index, entry.name)?;
     let start = Instant::now();
     let world = world::world_handle()?;
+    let run_case = |world: WorldHandle, artifacts_dir: PathBuf| {
+        let mut ctx = CaseCtx::new(entry.name, world, artifacts_dir);
+        let result = (entry.run)(&mut ctx);
+        (ctx, result)
+    };
     let (ctx, run_result) = if entry.main_thread {
-        let world_clone = world;
-        let case_dir_clone = case_dir;
+        let world_clone = world.clone();
+        let case_dir_clone = case_dir.clone();
         run_on_main_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
-            let res = (entry.run)(&mut ctx);
-            (ctx, res)
+            run_case(world_clone, case_dir_clone)
         })
     } else {
-        let world_clone = world;
-        let case_dir_clone = case_dir;
-        run_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
-            let res = (entry.run)(&mut ctx);
-            (ctx, res)
-        })
+        run_with_watchdog(entry.name, timeout_ms, move || run_case(world, case_dir))
     };
     let elapsed = start.elapsed();
 
@@ -443,7 +500,7 @@ fn run_entry(
 /// Print a user-friendly summary for the supplied outcome.
 fn report_outcome(outcome: &CaseRunOutcome, quiet: bool) {
     let elapsed = outcome.elapsed.as_secs_f64();
-    if outcome.primary_error.is_none() && outcome.quiescence_error.is_none() {
+    if outcome.is_success() {
         if !quiet {
             println!("{}... OK ({elapsed:.3}s)", outcome.entry.name);
         }
@@ -650,16 +707,7 @@ const UI_HELPERS: &[HelperDoc] = &[HelperDoc {
 }];
 
 /// Helper functions consumed by fullscreen smoketests.
-const FULLSCREEN_HELPERS: &[HelperDoc] = &[
-    HelperDoc {
-        name: "HelperWindow::spawn_frontmost",
-        summary: "Spawn a helper window and ensure it becomes frontmost for assertions.",
-    },
-    HelperDoc {
-        name: "send_key",
-        summary: "Inject a single key chord via the server driver.",
-    },
-];
+const FULLSCREEN_HELPERS: &[HelperDoc] = &[];
 
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[

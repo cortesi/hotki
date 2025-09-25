@@ -76,8 +76,8 @@ and debuggable.
   is surfaced as `authoritative_kind = Cached` so tests can assert the provenance explicitly.
 - `WorldView::display_scale` and `WorldView::authoritative_eps` expose the reconciled scale and the
   default pixel epsilon. Tests should query these helpers instead of hard-coding `1` or `2`.
-- Raw AX/CG rectangles are reserved for labs and unit tests behind the `test-introspection`
-  feature flag. Production code should rely on the authoritative rectangle exclusively.
+- Raw AX/CG rectangles are available for diagnostics, but production code should continue to rely
+  on the authoritative rectangle exclusively.
 
 ## Message Style
 Emit failures as a single structured line so CI logs stay machine-parseable:

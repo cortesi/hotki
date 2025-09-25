@@ -9,7 +9,7 @@ use super::support::{
 };
 use crate::{
     error::{Error, Result},
-    suite::{CaseCtx, StageHandle},
+    suite::{CaseCtx, CaseStage},
 };
 
 /// Wrap the legacy focus tracking smoketest within the suite runner.
@@ -160,7 +160,7 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
 }
 
 /// Execute the ordered raise sequence for the focus scenario.
-fn run_raise_sequence(stage: &StageHandle<'_>, state: &mut ScenarioState) -> Result<()> {
+fn run_raise_sequence(stage: &CaseStage<'_, '_>, state: &mut ScenarioState) -> Result<()> {
     raise_window(stage, state, "primary")?;
     raise_window(stage, state, "sibling")?;
     Ok(())

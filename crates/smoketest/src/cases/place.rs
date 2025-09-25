@@ -1,6 +1,5 @@
 //! Placement smoketest cases implemented against the mimic harness.
 use std::{
-    fs,
     path::PathBuf,
     sync::Arc,
     thread,
@@ -20,7 +19,7 @@ use mac_winops::{
     PlacementEngineConfig, PlacementGrid, PlacementOutcome, Rect, RetryLimits, screen,
 };
 use objc2_foundation::MainThreadMarker;
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::debug;
 
 use super::support::{
@@ -32,7 +31,7 @@ use crate::{
     error::{Error, Result},
     focus_guard::FocusGuard,
     helpers,
-    suite::{CaseCtx, StageHandle},
+    suite::{CaseCtx, CaseStage},
     world,
 };
 
@@ -52,6 +51,24 @@ struct PlaceState {
     title: String,
     /// Raise strategy requested by the helper configuration.
     raise: RaiseStrategy,
+}
+
+impl PlaceState {
+    /// Persist the expected rectangle artifact and update the cached value.
+    fn record_expected(&mut self, stage: &mut CaseStage<'_, '_>, expected: RectPx) -> Result<()> {
+        stage.write_named_artifact(
+            self.slug,
+            "expected.txt",
+            format!("expected={expected:?}\n").as_bytes(),
+        )?;
+        self.expected = expected;
+        Ok(())
+    }
+
+    /// Emit mimic diagnostics for the current scenario.
+    fn record_mimic_diag(&self, stage: &mut CaseStage<'_, '_>) -> Result<PathBuf> {
+        record_mimic_diagnostics(stage, self.slug, &self.mimic)
+    }
 }
 
 /// Timing breakdown captured for the nonresizable move case.
@@ -87,10 +104,6 @@ struct MoveCaseState {
 pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
     ctx.setup(|stage| {
         let summaries = run_fake_adapter_scenarios()?;
-        let slug = "place.fake.adapter";
-        let ops_path = stage
-            .artifacts_dir()
-            .join(format!("{}_ops.json", slug.replace('.', "_")));
         let entries: Vec<_> = summaries
             .iter()
             .map(|(label, ops)| {
@@ -101,12 +114,7 @@ pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
             })
             .collect();
         let payload = json!({ "scenarios": entries });
-        let mut data = serde_json::to_string_pretty(&payload).map_err(|e| {
-            Error::InvalidState(format!("failed to serialize fake adapter ops: {e}"))
-        })?;
-        data.push('\n');
-        fs::write(&ops_path, data)?;
-        stage.record_artifact(&ops_path);
+        stage.write_slug_json_artifact("ops.json", &payload)?;
         Ok(())
     })?;
 
@@ -160,7 +168,7 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
         let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -210,8 +218,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let world = stage.world_clone();
             let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
-            rewrite_expected_artifact(stage, place.slug, expected)?;
-            place.expected = expected;
+            place.record_expected(stage, expected)?;
         }
         Ok(())
     })?;
@@ -246,7 +253,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             observer,
             config::PLACE.eps.round() as i32,
         )?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -308,7 +315,7 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
         let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -356,8 +363,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let frames =
                 wait_for_initial_frames(stage.case_name(), &world, place_state.target_key)?;
             let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
-            rewrite_expected_artifact(stage, place_state.slug, expected)?;
-            place_state.expected = expected;
+            place_state.record_expected(stage, expected)?;
             focus_guard.reassert()?;
         }
         Ok(())
@@ -382,7 +388,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
         let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -422,8 +428,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let world = stage.world_clone();
             let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, 3, 1, 0, 0)?;
-            rewrite_expected_artifact(stage, place.slug, expected)?;
-            place.expected = expected;
+            place.record_expected(stage, expected)?;
         }
         Ok(())
     })?;
@@ -467,7 +472,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let world_clone = world;
         let frames = block_on_with_pump(async move { world_clone.frames(target_key).await })?
             .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
-        let diag_path = record_mimic_diagnostics(stage, place.slug, &place.mimic)?;
+        let diag_path = place.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -525,8 +530,7 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                     Error::InvalidState("frames unavailable before scenario A".into())
                 })?;
             let expected = grid_rect_from_frames(&frames, 2, 2, 1, 1)?;
-            place.expected = expected;
-            rewrite_expected_artifact(stage, place.slug, expected)?;
+            place.record_expected(stage, expected)?;
             let observer =
                 world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (2, 2, 1, 1))?;
@@ -560,8 +564,7 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                     Error::InvalidState("frames unavailable before scenario B".into())
                 })?;
             let expected = grid_rect_from_frames(&frames, 3, 1, 1, 0)?;
-            place.expected = expected;
-            rewrite_expected_artifact(stage, place.slug, expected)?;
+            place.record_expected(stage, expected)?;
             let observer =
                 world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (3, 1, 1, 0))?;
@@ -598,7 +601,7 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let world_clone = world;
         let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
             .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
-        let diag_path = record_mimic_diagnostics(stage, place.slug, &place.mimic)?;
+        let diag_path = place.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -671,14 +674,18 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
                 let expected = grid_rect_from_frames(&frames_before, cols, rows, col, row)?;
                 state_ref.expected = expected;
-                rewrite_expected_artifact(stage, state_ref.slug, expected)?;
+                stage.write_named_artifact(
+                    state_ref.slug,
+                    "expected.txt",
+                    format!("expected={expected:?}\n").as_bytes(),
+                )?;
                 let observer = world.window_observer_with_config(
                     state_ref.target_key,
                     helpers::default_wait_config(),
                 );
                 request_grid(&world, state_ref.target_id, (cols, rows, col, row))?;
                 let frames = wait_for_expected(stage, state_ref, observer, eps)?;
-                let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
+                let diag_path = state_ref.record_mimic_diag(stage)?;
                 let artifacts = [diag_path.clone()];
                 helpers::assert_frame_matches(
                     stage.case_name(),
@@ -690,39 +697,17 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 focus_guard.reassert()?;
                 let delta = expected.delta(&frames.authoritative);
                 entries.push(json!({
-                    "grid": { "cols": cols, "rows": rows, "col": col, "row": row },
-                    "expected": {
-                        "x": expected.x,
-                        "y": expected.y,
-                        "w": expected.w,
-                        "h": expected.h,
-                    },
-                    "actual": {
-                        "x": frames.authoritative.x,
-                        "y": frames.authoritative.y,
-                        "w": frames.authoritative.w,
-                        "h": frames.authoritative.h,
-                    },
-                    "delta": {
-                        "dx": delta.dx,
-                        "dy": delta.dy,
-                        "dw": delta.dw,
-                        "dh": delta.dh,
-                    },
+                    "grid": grid_json(cols, rows, col, row),
+                    "expected": rect_json(expected),
+                    "actual": rect_json(frames.authoritative),
+                    "delta": delta_json(delta),
                     "scale": frames.scale,
                 }));
             }
         }
 
-        let cells_path = stage
-            .artifacts_dir()
-            .join(format!("{}_cells.json", SLUG.replace('.', "_")));
         let payload = json!({ "cells": entries });
-        let mut data = serde_json::to_string_pretty(&payload)
-            .map_err(|e| Error::InvalidState(format!("failed to serialize cells log: {e}")))?;
-        data.push('\n');
-        fs::write(&cells_path, data)?;
-        stage.record_artifact(&cells_path);
+        stage.write_slug_json_artifact("cells.json", &payload)?;
         Ok(())
     })?;
 
@@ -735,7 +720,7 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames =
             block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -866,7 +851,11 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames = wait_for_initial_frames(stage.case_name(), &world, state_ref.target_key)?;
         let initial = frames.authoritative;
         state_ref.expected = initial;
-        rewrite_expected_artifact(stage, state_ref.slug, initial)?;
+        stage.write_named_artifact(
+            state_ref.slug,
+            "expected.txt",
+            format!("expected={initial:?}\n").as_bytes(),
+        )?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
         let observer =
             world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
@@ -876,7 +865,7 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames_after =
             wait_for_expected(stage, state_ref, observer, config::PLACE.eps.round() as i32)?;
         mac_winops::drop_pending_main_ops();
-        let diag_path = record_mimic_diagnostics(stage, state_ref.slug, &state_ref.mimic)?;
+        let diag_path = state_ref.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -887,35 +876,13 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         )?;
         focus_guard.reassert()?;
         let delta = initial.delta(&frames_after.authoritative);
-        let comparison_path = stage
-            .artifacts_dir()
-            .join(format!("{}_comparison.json", SLUG.replace('.', "_")));
         let payload = json!({
-            "grid": { "cols": GRID.0, "rows": GRID.1, "col": GRID.2, "row": GRID.3 },
-            "expected": {
-                "x": initial.x,
-                "y": initial.y,
-                "w": initial.w,
-                "h": initial.h,
-            },
-            "actual": {
-                "x": frames_after.authoritative.x,
-                "y": frames_after.authoritative.y,
-                "w": frames_after.authoritative.w,
-                "h": frames_after.authoritative.h,
-            },
-            "delta": {
-                "dx": delta.dx,
-                "dy": delta.dy,
-                "dw": delta.dw,
-                "dh": delta.dh,
-            },
+            "grid": grid_json(GRID.0, GRID.1, GRID.2, GRID.3),
+            "expected": rect_json(initial),
+            "actual": rect_json(frames_after.authoritative),
+            "delta": delta_json(delta),
         });
-        let mut data = serde_json::to_string_pretty(&payload)
-            .map_err(|e| Error::InvalidState(format!("failed to serialize skip report: {e}")))?;
-        data.push('\n');
-        fs::write(&comparison_path, data)?;
-        stage.record_artifact(&comparison_path);
+        stage.write_slug_json_artifact("comparison.json", &payload)?;
         Ok(())
     })?;
 
@@ -928,7 +895,7 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames =
             block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -978,8 +945,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         );
         let expected = grid_rect_from_frames(&frames, 4, 4, 1, 0)?;
         debug!(case = %stage.case_name(), expected = ?expected, "place_move_min_setup_ready");
-        rewrite_expected_artifact(stage, place.slug, expected)?;
-        place.expected = expected;
+        place.record_expected(stage, expected)?;
         focus_guard.reassert()?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         focus_guard.reassert()?;
@@ -1135,8 +1101,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             expected = ?expected,
             "place_move_nonres_setup_ready"
         );
-        rewrite_expected_artifact(stage, place.slug, expected)?;
-        place.expected = expected;
+        place.record_expected(stage, expected)?;
         focus_guard.reassert()?;
         let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
         focus_guard.reassert()?;
@@ -1190,8 +1155,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             });
         state_data.budget.settle_wait_ms = settle_start.elapsed().as_millis() as u64;
         let budget_path = write_move_budget(stage, state_data.place.slug, &state_data.budget)?;
-        let diag_path =
-            record_mimic_diagnostics(stage, state_data.place.slug, &state_data.place.mimic)?;
+        let diag_path = state_data.place.record_mimic_diag(stage)?;
         let artifacts = [diag_path, budget_path];
         match wait_result {
             Ok(frames) => {
@@ -1339,6 +1303,31 @@ fn format_delta_px(delta: RectDelta) -> String {
     format!("<{},{},{},{}>", delta.dx, delta.dy, delta.dw, delta.dh)
 }
 
+/// Serialize a rectangle into a JSON object with pixel coordinates.
+fn rect_json(rect: RectPx) -> Value {
+    json!({
+        "x": rect.x,
+        "y": rect.y,
+        "w": rect.w,
+        "h": rect.h,
+    })
+}
+
+/// Serialize a rectangle delta into a JSON object.
+fn delta_json(delta: RectDelta) -> Value {
+    json!({
+        "dx": delta.dx,
+        "dy": delta.dy,
+        "dw": delta.dw,
+        "dh": delta.dh,
+    })
+}
+
+/// Serialize grid metadata into a JSON object.
+fn grid_json(cols: u32, rows: u32, col: u32, row: u32) -> Value {
+    json!({ "cols": cols, "rows": rows, "col": col, "row": row })
+}
+
 /// Render artifact paths as a comma-separated list.
 fn format_artifacts(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
@@ -1388,7 +1377,7 @@ fn format_frame_failure(
 
 /// Spawn a mimic helper and locate its world identifiers for subsequent stages.
 fn spawn_place_state<F>(
-    stage: &mut StageHandle<'_>,
+    stage: &mut CaseStage<'_, '_>,
     slug: &'static str,
     expected: RectPx,
     configure: F,
@@ -1497,11 +1486,11 @@ where
         debug!(pid = resolved_pid, ?err, "activate pid request failed");
     }
 
-    let expected_path = stage
-        .artifacts_dir()
-        .join(format!("{}_expected.txt", slug.replace('.', "_")));
-    fs::write(&expected_path, format!("expected={:?}\n", expected))?;
-    stage.record_artifact(&expected_path);
+    stage.write_named_artifact(
+        slug,
+        "expected.txt",
+        format!("expected={expected:?}\n").as_bytes(),
+    )?;
 
     let warmup_config = WaitConfig::new(
         Duration::from_millis(1_200),
@@ -1618,28 +1607,12 @@ fn wait_for_initial_frames(case: &str, world: &WorldHandle, key: WindowKey) -> R
 }
 
 /// Update the persisted expected rectangle artifact for a scenario.
-fn rewrite_expected_artifact(
-    stage: &mut StageHandle<'_>,
-    slug: &str,
-    expected: RectPx,
-) -> Result<()> {
-    let path = stage
-        .artifacts_dir()
-        .join(format!("{}_expected.txt", slug.replace('.', "_")));
-    fs::write(&path, format!("expected={expected:?}\n"))?;
-    stage.record_artifact(&path);
-    Ok(())
-}
-
 /// Persist per-phase timings for the nonresizable move case.
 fn write_move_budget(
-    stage: &mut StageHandle<'_>,
+    stage: &mut CaseStage<'_, '_>,
     slug: &str,
     budget: &MoveCaseBudget,
 ) -> Result<PathBuf> {
-    let path = stage
-        .artifacts_dir()
-        .join(format!("{}_phases.json", slug.replace('.', "_")));
     let payload = json!({
         "setup": {
             "warmup_ms": budget.warmup_ms,
@@ -1654,23 +1627,15 @@ fn write_move_budget(
             "wait_ms": budget.settle_wait_ms,
         },
     });
-    let mut data = serde_json::to_string_pretty(&payload)
-        .map_err(|e| Error::InvalidState(format!("failed to serialize move budget: {}", e)))?;
-    data.push('\n');
-    fs::write(&path, data)?;
-    stage.record_artifact(&path);
-    Ok(path)
+    stage.write_named_json_artifact(slug, "phases.json", &payload)
 }
 
 /// Persist placement counter snapshots for diagnostics.
 fn record_counters_artifact(
-    stage: &mut StageHandle<'_>,
+    stage: &mut CaseStage<'_, '_>,
     slug: &str,
     snapshot: &PlacementCountersSnapshot,
 ) -> Result<PathBuf> {
-    let path = stage
-        .artifacts_dir()
-        .join(format!("{}_counters.json", slug.replace('.', "_")));
     let payload = json!({
         "primary": {
             "attempts": snapshot.primary.attempts,
@@ -1710,12 +1675,7 @@ fn record_counters_artifact(
         "safe_park": snapshot.safe_park,
         "failures": snapshot.failures,
     });
-    let mut data = serde_json::to_string_pretty(&payload)
-        .map_err(|e| Error::InvalidState(format!("failed to serialize placement counters: {e}")))?;
-    data.push('\n');
-    fs::write(&path, data)?;
-    stage.record_artifact(&path);
-    Ok(path)
+    stage.write_named_json_artifact(slug, "counters.json", &payload)
 }
 
 /// Shared implementation for flexible placement cases.
@@ -1748,8 +1708,7 @@ where
             let world = stage.world_clone();
             let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
-            rewrite_expected_artifact(stage, place.slug, expected)?;
-            place.expected = expected;
+            place.record_expected(stage, expected)?;
         }
         Ok(())
     })?;
@@ -1788,7 +1747,7 @@ where
         }
         let counters_path = record_counters_artifact(stage, state_data.slug, &snapshot)?;
         verify_snapshot(&snapshot)?;
-        let diag_path = record_mimic_diagnostics(stage, state_data.slug, &state_data.mimic)?;
+        let diag_path = state_data.record_mimic_diag(stage)?;
         let artifacts = [diag_path, counters_path];
         helpers::assert_frame_matches(
             stage.case_name(),
@@ -2061,7 +2020,7 @@ where
 /// Issue a world move command for the supplied window and grid configuration.
 /// Wait until world reports the expected authoritative frame for the helper window.
 fn wait_for_expected(
-    stage: &StageHandle<'_>,
+    stage: &CaseStage<'_, '_>,
     state: &PlaceState,
     observer: WindowObserver,
     eps: i32,

@@ -1,7 +1,6 @@
 //! World-centric smoketest cases implemented with the mimic harness.
 
 use std::{
-    fs,
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -22,7 +21,7 @@ use crate::{
     config,
     error::{Error, Result},
     runtime,
-    suite::{CaseCtx, StageHandle},
+    suite::{CaseCtx, CaseStage},
 };
 
 /// Verify that world status reports healthy capabilities and reasonable polling budgets.
@@ -74,7 +73,6 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .focused
             .map(|key| format!("pid={} id={}", key.pid, key.id));
 
-        let status_path = stage.artifacts_dir().join("world_status_permissions.json");
         let payload = json!({
             "windows_count": status.windows_count,
             "focused": focused_repr,
@@ -89,11 +87,7 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
             "reconcile_seq": status.reconcile_seq,
             "suspects_pending": status.suspects_pending,
         });
-        let mut data = serde_json::to_string_pretty(&payload)
-            .map_err(|e| Error::InvalidState(format!("failed to serialize world status: {e}")))?;
-        data.push('\n');
-        fs::write(&status_path, data)?;
-        stage.record_artifact(&status_path);
+        stage.write_json_artifact("world_status_permissions.json", &payload)?;
 
         Ok(())
     })?;
@@ -171,18 +165,13 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
             )));
         }
 
-        let props_path = stage.artifacts_dir().join("world_ax_focus_props.json");
         let payload = json!({
             "role": props.role,
             "subrole": props.subrole,
             "can_set_pos": props.can_set_pos,
             "can_set_size": props.can_set_size,
         });
-        let mut data = serde_json::to_string_pretty(&payload)
-            .map_err(|e| Error::InvalidState(format!("failed to serialize ax props: {e}")))?;
-        data.push('\n');
-        fs::write(&props_path, data)?;
-        stage.record_artifact(&props_path);
+        stage.write_json_artifact("world_ax_focus_props.json", &payload)?;
 
         Ok(())
     })?;
@@ -198,7 +187,7 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
 }
 
 /// Record diagnostics and shutdown the mimic scenario.
-fn finalize_scenario(stage: &mut StageHandle<'_>, state: ScenarioState) -> Result<()> {
+fn finalize_scenario(stage: &mut CaseStage<'_, '_>, state: ScenarioState) -> Result<()> {
     record_mimic_diagnostics(stage, state.slug, &state.mimic)?;
     shutdown_mimic(state.mimic)?;
     Ok(())
@@ -227,15 +216,7 @@ pub fn world_spaces_adoption(ctx: &mut CaseCtx<'_>) -> Result<()> {
             "last_tick_ms": outcome.last_tick_ms,
             "current_poll_ms": outcome.current_poll_ms,
         });
-        let mut data = serde_json::to_string_pretty(&payload).map_err(|err| {
-            Error::InvalidState(format!("failed to serialize world-spaces outcome: {err}"))
-        })?;
-        data.push('\n');
-        let path = stage
-            .artifacts_dir()
-            .join(format!("{}_outcome.json", SLUG.replace('.', "_")));
-        fs::write(&path, data)?;
-        stage.record_artifact(&path);
+        stage.write_slug_json_artifact("outcome.json", &payload)?;
 
         Ok(())
     })?;
