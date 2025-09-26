@@ -4,16 +4,12 @@ use clap::Parser;
 use logging as logshared;
 use tracing_subscriber::{fmt, prelude::*};
 
-/// Event-driven binding watchers that keep the HUD responsive.
-mod binding_watcher;
 /// Scenario-specific smoketest cases and mimic harness helpers.
 mod cases;
 mod cli;
 mod config;
 /// Error definitions and hint helpers used by smoketest.
 mod error;
-/// Focus guards that reconcile world and AX views for helper windows.
-mod focus_guard;
 /// Shared helper utilities for new smoketest cases.
 mod helpers;
 mod process;
@@ -42,8 +38,8 @@ use std::{
 use cli::{Cli, Commands};
 use error::print_hints;
 use hotki_world::mimic::run_focus_winhelper;
-use process::WARN_OVERLAY_STANDALONE_FLAG;
 use suite::CaseRunOpts;
+use warn_overlay::WARN_OVERLAY_STANDALONE_FLAG;
 /// Tracks whether hotki was already built during this smoketest invocation.
 static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
 

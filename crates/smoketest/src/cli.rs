@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use logging::LogArgs;
 
-use crate::{config, suite::CaseRunOpts};
+use crate::{
+    config,
+    suite::{CaseRunOpts, case_by_alias},
+};
 
 /// Command-line interface arguments for the smoketest binary.
 #[derive(Parser, Debug)]
@@ -137,35 +140,13 @@ pub enum SeqTest {
 impl SeqTest {
     /// Return the registry slug corresponding to this sequence entry.
     pub fn slug(self) -> &'static str {
-        match self {
-            Self::RepeatRelay => "repeat-relay",
-            Self::RepeatShell => "repeat-shell",
-            Self::RepeatVolume => "repeat-volume",
-            Self::FocusTracking => "focus.tracking",
-            Self::FocusNav => "focus.nav",
-            Self::Raise => "raise",
-            Self::HideToggle => "hide.toggle.roundtrip",
-            Self::PlaceGrid => "place.grid.cycle",
-            Self::PlaceAsync => "place.async.delay",
-            Self::PlaceAnimated => "place.animated.tween",
-            Self::PlaceTerm => "place.term.anchor",
-            Self::PlaceIncrements => "place.increments.anchor",
-            Self::PlaceMoveMin => "place.move.min",
-            Self::PlaceMoveNonresizable => "place.move.nonresizable",
-            Self::PlaceSkip => "place.skip.nonmovable",
-            Self::PlaceFake => "place.fake.adapter",
-            Self::PlaceMinimized => "place.minimized.defer",
-            Self::PlaceZoomed => "place.zoomed.normalize",
-            Self::PlaceFlex => "place.flex.default",
-            Self::PlaceFlexSmg => "place.flex.smg",
-            Self::PlaceFlexFallback => "place.flex.force_size_pos",
-            Self::Fullscreen => "fullscreen.toggle.nonnative",
-            Self::Ui => "ui.demo.standard",
-            Self::Minui => "ui.demo.mini",
-            Self::WorldSpaces => "world.spaces.adoption",
-            Self::WorldStatus => "world.status.permissions",
-            Self::WorldAx => "world.ax.focus_props",
-        }
+        let alias_value = self
+            .to_possible_value()
+            .expect("seq test must expose a clap alias");
+        let alias = alias_value.get_name();
+        case_by_alias(alias)
+            .map(|entry| entry.name)
+            .expect("seq test alias must map to a registered case")
     }
 }
 
@@ -402,7 +383,7 @@ impl Commands {
             fail_fast: Some(true),
         };
 
-        let slug = match self {
+        let candidate = match self {
             Self::Relay => "repeat-relay",
             Self::Shell => "repeat-shell",
             Self::Volume => "repeat-volume",
@@ -445,12 +426,13 @@ impl Commands {
             _ => return None,
         };
 
-        let opts = if fake_mode && slug.starts_with("place.") {
+        let opts = if fake_mode && candidate.starts_with("place.") {
             fake_opts
         } else {
             default_opts
         };
 
-        Some((slug, opts))
+        let entry = case_by_alias(candidate)?;
+        Some((entry.name, opts))
     }
 }

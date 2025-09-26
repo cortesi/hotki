@@ -8,17 +8,8 @@ use crate::{
     world,
 };
 
-/// State tracking for HotkiSession
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    /// Process launched; waiting for readiness
-    Starting,
-    /// Session stopped or cleaned up
-    Stopped,
-}
-
-/// Builder for HotkiSession configuration
-pub struct HotkiSessionBuilder {
+/// Launch configuration for a smoketest-backed hotki session.
+pub struct HotkiSessionConfig {
     /// Path to the hotki binary to run.
     binary_path: PathBuf,
     /// Optional path to a config RON file to load.
@@ -27,54 +18,28 @@ pub struct HotkiSessionBuilder {
     with_logs: bool,
 }
 
-impl HotkiSessionBuilder {
-    /// Create a new session builder for the given binary path.
-    pub fn new(binary_path: impl Into<PathBuf>) -> Self {
-        Self {
-            binary_path: binary_path.into(),
+impl HotkiSessionConfig {
+    /// Construct a configuration using the default hotki binary resolution.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            binary_path: resolve_hotki_binary()?,
             config_path: None,
             with_logs: false,
-        }
-    }
-
-    /// Construct a builder using the default hotki binary resolution.
-    pub fn from_env() -> Result<Self> {
-        Ok(Self::new(resolve_hotki_binary()?))
+        })
     }
 
     /// Provide a configuration file path to the hotki process.
+    #[must_use]
     pub fn with_config(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_path = Some(path.into());
         self
     }
 
     /// Enable or disable child process logging via `RUST_LOG`.
+    #[must_use]
     pub fn with_logs(mut self, enable: bool) -> Self {
         self.with_logs = enable;
         self
-    }
-
-    /// Spawn the hotki process and return a running session.
-    pub fn spawn(self) -> Result<HotkiSession> {
-        let mut cmd = Command::new(&self.binary_path);
-
-        if self.with_logs {
-            cmd.env("RUST_LOG", logshared::log_config_for_child());
-        }
-
-        if let Some(cfg) = &self.config_path {
-            cmd.arg(cfg);
-        }
-
-        let child = process::spawn_managed(cmd)?;
-
-        let socket_path = socket_path_for_pid(child.pid as u32);
-
-        Ok(HotkiSession {
-            child,
-            socket_path,
-            state: SessionState::Starting,
-        })
     }
 }
 
@@ -82,16 +47,34 @@ impl HotkiSessionBuilder {
 pub struct HotkiSession {
     /// Child process handle.
     child: ManagedChild,
-    /// Path to the server's unix socket for this process.
+    /// Path to the server's unix socket for the session.
     socket_path: String,
-    /// Current session state.
-    state: SessionState,
+    /// Whether teardown has already been performed.
+    cleaned_up: bool,
 }
 
 impl HotkiSession {
-    /// Build a session builder using the default hotki binary resolution.
-    pub fn builder_from_env() -> Result<HotkiSessionBuilder> {
-        HotkiSessionBuilder::from_env()
+    /// Spawn a hotki process according to the supplied configuration.
+    pub fn spawn(config: HotkiSessionConfig) -> Result<Self> {
+        let HotkiSessionConfig {
+            binary_path,
+            config_path,
+            with_logs,
+        } = config;
+        let mut cmd = Command::new(&binary_path);
+        if with_logs {
+            cmd.env("RUST_LOG", logshared::log_config_for_child());
+        }
+        if let Some(cfg) = &config_path {
+            cmd.arg(cfg);
+        }
+        let child = process::spawn_managed(cmd)?;
+        let socket_path = socket_path_for_pid(child.pid as u32);
+        Ok(Self {
+            child,
+            socket_path,
+            cleaned_up: false,
+        })
     }
 
     /// Return the OS process id for the hotki child.
@@ -105,7 +88,10 @@ impl HotkiSession {
     }
 
     /// Attempt a graceful server shutdown via RPC (best-effort).
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(&self) {
+        if self.cleaned_up {
+            return;
+        }
         let sock = self.socket_path.clone();
         drop(world::block_on(async move {
             if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
@@ -117,22 +103,25 @@ impl HotkiSession {
             }
             Ok::<(), Error>(())
         }));
-        self.state = SessionState::Stopped;
     }
 
     /// Forcefully kill the child process and wait for exit.
     pub fn kill_and_wait(&mut self) {
+        if self.cleaned_up {
+            return;
+        }
         if let Err(_e) = self.child.kill_and_wait() {}
-        self.state = SessionState::Stopped;
+        self.cleaned_up = true;
     }
 }
 
 impl Drop for HotkiSession {
     fn drop(&mut self) {
-        if self.state != SessionState::Stopped {
-            self.shutdown();
-            self.kill_and_wait();
+        if self.cleaned_up {
+            return;
         }
+        self.shutdown();
+        self.kill_and_wait();
     }
 }
 

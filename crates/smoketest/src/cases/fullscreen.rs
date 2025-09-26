@@ -13,12 +13,11 @@ use tracing::warn;
 use crate::{
     config,
     error::{Error, Result},
-    focus_guard::FocusGuard,
     process::spawn_managed,
     server_drive,
-    session::HotkiSession,
+    session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, sanitize_slug},
-    world,
+    world::{self, FocusGuard},
 };
 
 /// Toggle non-native fullscreen for a helper window and capture before/after diagnostics.
@@ -32,10 +31,11 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let config_path = ctx.scratch_path(filename);
         fs::write(&config_path, config_ron.as_bytes())?;
 
-        let session = HotkiSession::builder_from_env()?
-            .with_config(&config_path)
-            .with_logs(true)
-            .spawn()?;
+        let session = HotkiSession::spawn(
+            HotkiSessionConfig::from_env()?
+                .with_config(&config_path)
+                .with_logs(true),
+        )?;
 
         state = Some(FullscreenCaseState {
             session,

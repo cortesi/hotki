@@ -24,10 +24,9 @@ use super::support::{MainOpsDrainGuard, block_on_with_pump, ensure_window_ready,
 use crate::{
     config,
     error::{Error, Result},
-    focus_guard::FocusGuard,
     helpers,
     suite::CaseCtx,
-    world,
+    world::{self, FocusGuard},
 };
 
 /// Tracks helper state shared across placement test stages.

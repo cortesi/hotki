@@ -13,7 +13,9 @@ use tracing::info;
 use crate::{
     cases,
     error::{Error, Result, print_hints},
-    process, world,
+    process,
+    warn_overlay::OverlaySession,
+    world,
 };
 
 /// Common tracing target for smoketest case logging.
@@ -27,6 +29,13 @@ pub fn sanitize_slug(slug: &str) -> String {
             other => other,
         })
         .collect()
+}
+
+/// Retrieve a case registry entry by slug or CLI alias.
+pub fn case_by_alias(alias: &str) -> Option<&'static CaseEntry> {
+    CASES
+        .iter()
+        .find(|entry| entry.name == alias || entry.aliases.contains(&alias))
 }
 
 /// Optional overrides applied when running registry-backed cases.
@@ -72,6 +81,8 @@ pub struct CaseEntry {
     pub budget: Budget,
     /// Helper API surface consumed by the case.
     pub helpers: &'static [HelperDoc],
+    /// Alternate CLI aliases that map to this case.
+    pub aliases: &'static [&'static str],
     /// Function pointer invoked to execute the case.
     pub run: fn(&mut CaseCtx<'_>) -> Result<()>,
 }
@@ -256,7 +267,7 @@ where
     ensure_helper_limit()?;
     let scratch_root = create_scratch_root()?;
     let overlay = if config.warn_overlay && !config.quiet {
-        process::OverlaySession::start()
+        OverlaySession::start()
     } else {
         None
     };
@@ -315,9 +326,7 @@ fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)
         .iter()
         .enumerate()
         .map(|(idx, name)| {
-            let entry = CASES
-                .iter()
-                .find(|case| case.name == *name)
+            let entry = case_by_alias(name)
                 .ok_or_else(|| Error::InvalidState(format!("unknown smoketest case: {name}")))?;
             Ok((idx, entry))
         })
@@ -587,6 +596,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 600,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::repeat_relay_throughput,
     },
     CaseEntry {
@@ -600,6 +610,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 600,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::repeat_shell_throughput,
     },
     CaseEntry {
@@ -613,6 +624,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 600,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::repeat_volume_throughput,
     },
     CaseEntry {
@@ -626,6 +638,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_600,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::raise,
     },
     CaseEntry {
@@ -639,6 +652,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_000,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::focus_tracking,
     },
     CaseEntry {
@@ -652,6 +666,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_000,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::focus_nav,
     },
     CaseEntry {
@@ -665,6 +680,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_800,
         },
         helpers: HIDE_HELPERS,
+        aliases: &[],
         run: cases::hide_toggle_roundtrip,
     },
     CaseEntry {
@@ -678,6 +694,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 400,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::place_fake_adapter,
     },
     CaseEntry {
@@ -691,6 +708,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_000,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_minimized_defer,
     },
     CaseEntry {
@@ -704,6 +722,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_zoomed_normalize,
     },
     CaseEntry {
@@ -717,6 +736,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_animated_tween,
     },
     CaseEntry {
@@ -730,6 +750,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_800,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_async_delay,
     },
     CaseEntry {
@@ -743,6 +764,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_000,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_term_anchor,
     },
     CaseEntry {
@@ -756,6 +778,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_increments_anchor,
     },
     CaseEntry {
@@ -769,6 +792,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_move_min_anchor,
     },
     CaseEntry {
@@ -782,6 +806,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_move_nonresizable_anchor,
     },
     CaseEntry {
@@ -795,6 +820,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 3_000,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_grid_cycle,
     },
     CaseEntry {
@@ -808,6 +834,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_flex_default,
     },
     CaseEntry {
@@ -821,6 +848,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_flex_force_size_pos,
     },
     CaseEntry {
@@ -834,6 +862,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_800,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_flex_smg,
     },
     CaseEntry {
@@ -847,6 +876,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_400,
         },
         helpers: PLACE_HELPERS,
+        aliases: &[],
         run: cases::place_skip_nonmovable,
     },
     CaseEntry {
@@ -860,6 +890,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_000,
         },
         helpers: UI_HELPERS,
+        aliases: &[],
         run: cases::ui_demo_standard,
     },
     CaseEntry {
@@ -873,6 +904,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 2_000,
         },
         helpers: UI_HELPERS,
+        aliases: &[],
         run: cases::ui_demo_mini,
     },
     CaseEntry {
@@ -886,6 +918,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 1_500,
         },
         helpers: FULLSCREEN_HELPERS,
+        aliases: &[],
         run: cases::fullscreen_toggle_nonnative,
     },
     CaseEntry {
@@ -899,6 +932,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 900,
         },
         helpers: WORLD_HELPERS,
+        aliases: &[],
         run: cases::world_status_permissions,
     },
     CaseEntry {
@@ -912,6 +946,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 900,
         },
         helpers: WORLD_HELPERS,
+        aliases: &[],
         run: cases::world_ax_focus_props,
     },
     CaseEntry {
@@ -925,6 +960,7 @@ static CASES: &[CaseEntry] = &[
             settle_ms: 400,
         },
         helpers: &[],
+        aliases: &[],
         run: cases::world_spaces_adoption,
     },
 ];

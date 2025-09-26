@@ -1,7 +1,7 @@
 //! Process management utilities for smoketests.
 use std::{
     collections::HashSet,
-    env, fs,
+    fs,
     process::{Child, Command, Stdio},
     sync::OnceLock,
     thread,
@@ -13,7 +13,6 @@ use parking_lot::Mutex;
 use crate::{
     config,
     error::{Error, Result},
-    warn_overlay,
 };
 
 /// Global registry of helper process IDs for best-effort cleanup.
@@ -86,73 +85,6 @@ impl Drop for ManagedChild {
 pub fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     let child = cmd.spawn().map_err(|e| Error::SpawnFailed(e.to_string()))?;
     Ok(ManagedChild::new(child))
-}
-
-/// Internal flag passed to the smoketest binary to start the warn overlay helper.
-pub const WARN_OVERLAY_STANDALONE_FLAG: &str = "--hotki-internal-warn-overlay";
-
-/// Spawn the hands-off warning overlay (returns a managed child to kill later).
-pub fn spawn_warn_overlay() -> Result<ManagedChild> {
-    let exe = env::current_exe()?;
-    let status_path = warn_overlay::status_file_path();
-    let info_path = warn_overlay::info_file_path();
-    let mut cmd = Command::new(exe);
-    cmd.env("HOTKI_SKIP_BUILD", "1")
-        .arg(WARN_OVERLAY_STANDALONE_FLAG)
-        .arg("--status-path")
-        .arg(status_path)
-        .arg("--info-path")
-        .arg(info_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let child = spawn_managed(cmd)?;
-    Ok(child)
-}
-
-/// Long-lived overlay instance used for multi-case smoketest runs.
-pub struct OverlaySession {
-    /// Child process hosting the hands-off overlay window.
-    child: ManagedChild,
-}
-
-impl OverlaySession {
-    /// Start the overlay and wait for the initial countdown to complete.
-    pub fn start() -> Option<Self> {
-        let status_path = warn_overlay::status_file_path();
-        if fs::write(&status_path, b"").is_err() {
-            // best effort, ignore failure
-        }
-        let info_path = warn_overlay::info_file_path();
-        if fs::write(&info_path, b"").is_err() {
-            // best effort, ignore failure
-        }
-        match spawn_warn_overlay() {
-            Ok(child) => {
-                thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
-                Some(Self { child })
-            }
-            Err(_) => None,
-        }
-    }
-
-    /// Update the status line shown in the overlay window. Best-effort.
-    pub fn set_status(&self, name: &str) {
-        warn_overlay::write_overlay_text("status", name);
-    }
-
-    /// Update the auxiliary info line in the overlay window. Best-effort.
-    pub fn set_info(&self, info: &str) {
-        warn_overlay::write_overlay_text("info", info);
-    }
-}
-
-impl Drop for OverlaySession {
-    fn drop(&mut self) {
-        if let Err(e) = self.child.kill_and_wait() {
-            eprintln!("overlay: failed to stop helper: {}", e);
-        }
-    }
 }
 
 /// Build the hotki binary quietly.

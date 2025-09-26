@@ -1,7 +1,8 @@
 use std::{
     env, fs,
     path::PathBuf,
-    process as std_process,
+    process::{self as std_process, Command, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -15,7 +16,14 @@ use winit::{
     window::{Window, WindowId, WindowLevel},
 };
 
-use crate::config;
+use crate::{
+    config,
+    error::Result as SmoketestResult,
+    process::{self as process_utils, ManagedChild},
+};
+
+/// Internal flag passed to the smoketest binary to start the warn overlay helper.
+pub const WARN_OVERLAY_STANDALONE_FLAG: &str = "--hotki-internal-warn-overlay";
 
 /// Temp-file path that carries the active smoketest status message.
 pub fn status_file_path() -> PathBuf {
@@ -36,6 +44,70 @@ pub fn write_overlay_text(label: &str, text: &str) {
 /// Compose the per-run overlay temp-file path for the given label.
 fn overlay_path_for_current_run(label: &str) -> PathBuf {
     env::temp_dir().join(format!("hotki-smoketest-{label}-{}.txt", std_process::id()))
+}
+
+/// Spawn the warn overlay helper process and return a managed child handle.
+fn spawn_overlay_child() -> SmoketestResult<ManagedChild> {
+    let exe = env::current_exe()?;
+    let status_path = status_file_path();
+    let info_path = info_file_path();
+    let mut cmd = Command::new(exe);
+    cmd.env("HOTKI_SKIP_BUILD", "1")
+        .arg(WARN_OVERLAY_STANDALONE_FLAG)
+        .arg("--status-path")
+        .arg(status_path)
+        .arg("--info-path")
+        .arg(info_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = process_utils::spawn_managed(cmd)?;
+    Ok(child)
+}
+
+/// Long-lived overlay instance used for multi-case smoketest runs.
+pub struct OverlaySession {
+    /// Child process hosting the hands-off overlay window.
+    child: ManagedChild,
+}
+
+impl OverlaySession {
+    /// Start the overlay and wait for the initial countdown to complete.
+    pub fn start() -> Option<Self> {
+        let status_path = status_file_path();
+        if fs::write(&status_path, b"").is_err() {
+            // best effort, ignore failure
+        }
+        let info_path = info_file_path();
+        if fs::write(&info_path, b"").is_err() {
+            // best effort, ignore failure
+        }
+        match spawn_overlay_child() {
+            Ok(child) => {
+                thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
+                Some(Self { child })
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Update the status line shown in the overlay window. Best-effort.
+    pub fn set_status(&self, name: &str) {
+        write_overlay_text("status", name);
+    }
+
+    /// Update the auxiliary info line in the overlay window. Best-effort.
+    pub fn set_info(&self, info: &str) {
+        write_overlay_text("info", info);
+    }
+}
+
+impl Drop for OverlaySession {
+    fn drop(&mut self) {
+        if let Err(e) = self.child.kill_and_wait() {
+            eprintln!("overlay: failed to stop helper: {}", e);
+        }
+    }
 }
 
 /// Internal app container for the warn overlay window and labels.
