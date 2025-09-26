@@ -1,12 +1,14 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{env, fs, io::ErrorKind, path::PathBuf, process::Command};
 
 use logging as logshared;
 
 use crate::{
     error::{Error, Result},
     process::{self, ManagedChild},
+    server_drive::{self, DriverError},
     world,
 };
+use tracing::debug;
 
 /// Launch configuration for a smoketest-backed hotki session.
 pub struct HotkiSessionConfig {
@@ -49,6 +51,8 @@ pub struct HotkiSession {
     child: ManagedChild,
     /// Path to the server's unix socket for the session.
     socket_path: String,
+    /// Path to the control bridge socket exposed by the UI runtime.
+    control_socket: String,
     /// Whether teardown has already been performed.
     cleaned_up: bool,
 }
@@ -70,9 +74,16 @@ impl HotkiSession {
         }
         let child = process::spawn_managed(cmd)?;
         let socket_path = socket_path_for_pid(child.pid as u32);
+        let control_socket = format!("{}.bridge", socket_path);
+        if let Err(err) = fs::remove_file(&control_socket)
+            && err.kind() != ErrorKind::NotFound
+        {
+            tracing::debug!(?err, socket = %control_socket, "failed to remove stale control socket");
+        }
         Ok(Self {
             child,
             socket_path,
+            control_socket,
             cleaned_up: false,
         })
     }
@@ -92,6 +103,17 @@ impl HotkiSession {
         if self.cleaned_up {
             return;
         }
+        match server_drive::shutdown() {
+            Ok(()) => return,
+            Err(DriverError::NotInitialized) => {}
+            Err(err) => {
+                debug!(
+                    ?err,
+                    "shared MRPC shutdown failed; retrying with direct client"
+                );
+            }
+        }
+
         let sock = self.socket_path.clone();
         drop(world::block_on(async move {
             if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
@@ -111,6 +133,11 @@ impl HotkiSession {
             return;
         }
         if let Err(_e) = self.child.kill_and_wait() {}
+        if let Err(err) = fs::remove_file(&self.control_socket)
+            && err.kind() != ErrorKind::NotFound
+        {
+            tracing::debug!(?err, socket = %self.control_socket, "failed to remove control socket");
+        }
         self.cleaned_up = true;
     }
 }

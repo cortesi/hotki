@@ -57,6 +57,7 @@ pub use client::Client;
 pub use error::{Error, Result};
 pub use ipc::{Connection, rpc::WorldSnapshotLite};
 pub use server::Server;
+pub mod smoketest_bridge;
 
 /// Return the per-user runtime directory used for IPC socket files.
 ///

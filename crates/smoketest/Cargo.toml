@@ -33,5 +33,6 @@ thiserror = { workspace = true }
 libc = { workspace = true }
 parking_lot = "0.12.4"
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 once_cell = { workspace = true }
 hotki-world-ids = { version = "0.0.1", path = "../hotki-world-ids" }

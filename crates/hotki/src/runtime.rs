@@ -3,6 +3,7 @@
 //! convenience actions for opening macOS settings.
 use std::{
     collections::VecDeque,
+    env, io,
     path::{Path, PathBuf},
     process::{self, Command},
     thread,
@@ -11,8 +12,14 @@ use std::{
 use config::themes;
 use egui::Context;
 use hotki_protocol::{NotifyKind, ipc::heartbeat};
-use hotki_server::Client;
+use hotki_server::{
+    Client,
+    smoketest_bridge::{BridgeKeyKind, BridgeRequest, BridgeResponse},
+};
 use tokio::{
+    fs,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
+    net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
     sync::{mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
@@ -54,6 +61,8 @@ struct ConnectionDriver {
     current_cursor: config::Cursor,
     /// When true, periodically dump the world snapshot to logs.
     dumpworld: bool,
+    /// Optional smoketest bridge socket path to expose test commands.
+    test_bridge_path: Option<PathBuf>,
 }
 
 impl ConnectionDriver {
@@ -97,6 +106,13 @@ impl ConnectionDriver {
                 config::Config::default()
             }
         };
+        let test_bridge_path = env::var_os("HOTKI_CONTROL_SOCKET")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let derived = hotki_server::socket_path_for_pid(process::id());
+                Some(PathBuf::from(format!("{}.bridge", derived)))
+            });
+
         Self {
             config_path,
             server_log_filter,
@@ -107,6 +123,18 @@ impl ConnectionDriver {
             ui_config,
             current_cursor: config::Cursor::default(),
             dumpworld,
+            test_bridge_path,
+        }
+    }
+
+    /// Initialize the smoketest bridge listener if it hasn't been started yet.
+    async fn ensure_test_bridge(&mut self) {
+        if let Some(path) = self.test_bridge_path.take()
+            && let Err(err) = init_test_bridge(path.clone(), self.tx_ctrl_runtime.clone()).await
+        {
+            tracing::warn!(?err, socket = %path.display(), "failed to initialize smoketest bridge");
+            // If initialization failed, allow later retries by restoring the path
+            self.test_bridge_path = Some(path);
         }
     }
 
@@ -132,13 +160,16 @@ impl ConnectionDriver {
         msg: ControlMsg,
         preconnect_queue: &mut VecDeque<ControlMsg>,
     ) -> bool {
-        match msg.clone() {
+        match msg {
             ControlMsg::Shutdown => {
                 self.trigger_graceful_shutdown(750);
                 return true;
             }
-            ControlMsg::Reload | ControlMsg::SwitchTheme(_) => {
-                preconnect_queue.push_back(msg);
+            ControlMsg::Reload => {
+                preconnect_queue.push_back(ControlMsg::Reload);
+            }
+            ControlMsg::SwitchTheme(name) => {
+                preconnect_queue.push_back(ControlMsg::SwitchTheme(name));
             }
             ControlMsg::OpenAccessibility => {
                 open_accessibility_settings();
@@ -171,6 +202,17 @@ impl ConnectionDriver {
                     tracing::warn!("failed to send Notify");
                 }
                 self.egui_ctx.request_repaint();
+            }
+            ControlMsg::Test(cmd) => {
+                if cmd
+                    .respond_to
+                    .send(BridgeResponse::Err {
+                        message: "bridge not ready".to_string(),
+                    })
+                    .is_err()
+                {
+                    tracing::debug!("bridge responder dropped before connection readiness");
+                }
             }
         }
         false
@@ -277,6 +319,13 @@ impl ConnectionDriver {
             ControlMsg::SwitchTheme(name) => {
                 self.apply_ui_override(UiOverride::ThemeSet(name));
             }
+            ControlMsg::Test(cmd) => {
+                let TestCommand { req, respond_to } = cmd;
+                let response = self.handle_test_command(conn, req).await;
+                if respond_to.send(response).is_err() {
+                    tracing::debug!("bridge responder dropped while delivering response");
+                }
+            }
             other => {
                 handle_control_msg(
                     conn,
@@ -290,6 +339,73 @@ impl ConnectionDriver {
             }
         }
         false
+    }
+
+    /// Handle an individual smoketest bridge request using the active connection.
+    async fn handle_test_command(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+        req: BridgeRequest,
+    ) -> BridgeResponse {
+        match req {
+            BridgeRequest::Ping => BridgeResponse::Ok,
+            BridgeRequest::SetConfig { path } => match config::load_from_path(Path::new(&path)) {
+                Ok(cfg) => match conn.set_config(cfg.clone()).await {
+                    Ok(()) => {
+                        self.ui_config = cfg;
+                        apply_ui_config(&self.ui_config, &self.tx_keys, &self.egui_ctx).await;
+                        BridgeResponse::Ok
+                    }
+                    Err(err) => BridgeResponse::Err {
+                        message: err.to_string(),
+                    },
+                },
+                Err(err) => BridgeResponse::Err {
+                    message: err.pretty(),
+                },
+            },
+            BridgeRequest::InjectKey {
+                ident,
+                kind,
+                repeat,
+            } => {
+                let result = match (kind, repeat) {
+                    (BridgeKeyKind::Down, true) => conn.inject_key_repeat(&ident).await,
+                    (BridgeKeyKind::Down, false) => conn.inject_key_down(&ident).await,
+                    (BridgeKeyKind::Up, _) => conn.inject_key_up(&ident).await,
+                };
+                match result {
+                    Ok(()) => BridgeResponse::Ok,
+                    Err(err) => BridgeResponse::Err {
+                        message: err.to_string(),
+                    },
+                }
+            }
+            BridgeRequest::GetBindings => match conn.get_bindings().await {
+                Ok(bindings) => BridgeResponse::Bindings { bindings },
+                Err(err) => BridgeResponse::Err {
+                    message: err.to_string(),
+                },
+            },
+            BridgeRequest::GetDepth => match conn.get_depth().await {
+                Ok(depth) => BridgeResponse::Depth { depth },
+                Err(err) => BridgeResponse::Err {
+                    message: err.to_string(),
+                },
+            },
+            BridgeRequest::GetWorldSnapshot => match conn.get_world_snapshot().await {
+                Ok(snapshot) => BridgeResponse::WorldSnapshot { snapshot },
+                Err(err) => BridgeResponse::Err {
+                    message: err.to_string(),
+                },
+            },
+            BridgeRequest::Shutdown => match conn.shutdown().await {
+                Ok(()) => BridgeResponse::Ok,
+                Err(err) => BridgeResponse::Err {
+                    message: err.to_string(),
+                },
+            },
+        }
     }
 
     /// Handle a single server-to-UI event received from the engine.
@@ -446,6 +562,8 @@ impl ConnectionDriver {
         }
         debug!("Config sent to server engine");
 
+        self.ensure_test_bridge().await;
+
         // Apply any queued preconnect messages now that we are connected.
         // Ensure theme switches use the same override path for consistency.
         while let Some(msg) = preconnect_queue.pop_front() {
@@ -598,7 +716,123 @@ impl ConnectionDriver {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Spawn the UI-side listener that proxies smoketest bridge requests.
+async fn init_test_bridge(
+    path: PathBuf,
+    tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    if let Err(err) = fs::remove_file(&path).await
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(?err, socket = %path.display(), "failed to remove stale test bridge socket");
+    }
+    let listener = UnixListener::bind(&path)?;
+    let cleanup_path = path.clone();
+    tokio::spawn(async move {
+        if let Err(err) = run_test_bridge(listener, tx_ctrl_runtime).await {
+            tracing::debug!(?err, "smoketest bridge listener exited");
+        }
+        if let Err(err) = fs::remove_file(&cleanup_path).await
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            tracing::debug!(?err, "failed to remove smoketest bridge socket on shutdown");
+        }
+    });
+    Ok(())
+}
+
+/// Accept incoming bridge clients and spawn per-connection handlers.
+async fn run_test_bridge(
+    listener: UnixListener,
+    tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+) -> io::Result<()> {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
+                let tx = tx_ctrl_runtime.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_test_bridge_client(stream, tx).await {
+                        tracing::debug!(?err, "smoketest bridge client disconnected");
+                    }
+                });
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(err) => {
+                return Err(err);
+            }
+        }
+    }
+}
+
+/// Process commands from a single smoketest bridge client connection.
+async fn handle_test_bridge_client(
+    stream: UnixStream,
+    tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+) -> io::Result<()> {
+    let (reader, writer) = stream.into_split();
+    let reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let req: BridgeRequest = match serde_json::from_str(&line) {
+            Ok(req) => req,
+            Err(err) => {
+                let resp = BridgeResponse::Err {
+                    message: format!("invalid request: {}", err),
+                };
+                write_bridge_response(&mut writer, resp).await?;
+                continue;
+            }
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if tx_ctrl_runtime
+            .send(ControlMsg::Test(TestCommand {
+                req,
+                respond_to: reply_tx,
+            }))
+            .is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "runtime control channel closed",
+            ));
+        }
+
+        let resp = match reply_rx.await {
+            Ok(resp) => resp,
+            Err(_canceled) => BridgeResponse::Err {
+                message: "runtime dropped bridge response".to_string(),
+            },
+        };
+        write_bridge_response(&mut writer, resp).await?;
+    }
+
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Serialize a bridge response to the client stream.
+async fn write_bridge_response(
+    writer: &mut BufWriter<OwnedWriteHalf>,
+    resp: BridgeResponse,
+) -> io::Result<()> {
+    let encoded = serde_json::to_string(&resp).map_err(io::Error::other)?;
+    writer.write_all(encoded.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await
+}
+
+/// Control messages routed to the runtime event loop.
+#[derive(Debug)]
 pub enum ControlMsg {
     /// Reload from disk using `config_path`
     Reload,
@@ -621,8 +855,20 @@ pub enum ControlMsg {
         /// Notice body text.
         text: String,
     },
+    /// Internal test bridge command (smoketest harness).
+    Test(TestCommand),
 }
 
+/// Request/response pair used to service smoketest bridge commands.
+#[derive(Debug)]
+pub struct TestCommand {
+    /// The bridge request submitted by the smoketest harness.
+    req: BridgeRequest,
+    /// Channel used to deliver the bridge response back to the harness.
+    respond_to: oneshot::Sender<BridgeResponse>,
+}
+
+/// Open the macOS Accessibility privacy pane.
 fn open_accessibility_settings() {
     if Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
@@ -633,7 +879,7 @@ fn open_accessibility_settings() {
     }
 }
 
-/// Open the system preferences pane for Input Monitoring.
+/// Open the macOS Input Monitoring privacy pane.
 fn open_input_monitoring_settings() {
     if Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
@@ -808,6 +1054,19 @@ async fn handle_control_msg(
                 tracing::warn!("failed to send permissions help event");
             }
             egui_ctx.request_repaint();
+        }
+        ControlMsg::Test(cmd) => {
+            if cmd
+                .respond_to
+                .send(BridgeResponse::Err {
+                    message: "bridge request received in control handler".to_string(),
+                })
+                .is_err()
+            {
+                tracing::debug!(
+                    "bridge responder dropped before control handler processed request"
+                );
+            }
         }
     }
 }

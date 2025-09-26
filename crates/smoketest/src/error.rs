@@ -69,7 +69,7 @@ pub fn print_hints(err: &Error) {
             match inner {
                 DriverError::Connect { socket_path, .. } => {
                     eprintln!(
-                        "      ensure the hotki-server is running and listening on '{}'.",
+                        "      ensure the UI bridge listener is running at '{}'.",
                         socket_path
                     );
                     eprintln!(
@@ -78,7 +78,7 @@ pub fn print_hints(err: &Error) {
                 }
                 DriverError::InitTimeout { socket_path, .. } => {
                     eprintln!(
-                        "      MRPC connection did not initialize in time (socket: '{}').",
+                        "      bridge connection did not initialize in time (socket: '{}').",
                         socket_path
                     );
                     eprintln!("      verify the backend launched and the socket path is correct.");
@@ -94,10 +94,14 @@ pub fn print_hints(err: &Error) {
                         ident
                     );
                 }
-                DriverError::RuntimeFailure { .. } | DriverError::RpcFailure { .. } => {
+                DriverError::BridgeFailure { message } => {
                     eprintln!(
-                        "      see logs above for runtime or RPC errors returned by hotki-server."
+                        "      see logs above for bridge errors returned by hotki runtime: {}",
+                        message
                     );
+                }
+                DriverError::Io { source } => {
+                    eprintln!("      IO error talking to the bridge: {source}");
                 }
             }
         }
