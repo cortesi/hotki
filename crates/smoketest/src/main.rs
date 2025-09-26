@@ -16,10 +16,7 @@ mod error;
 mod focus_guard;
 /// Shared helper utilities for new smoketest cases.
 mod helpers;
-/// Registry of helper process IDs for cleanup.
-mod proc_registry;
 mod process;
-mod runtime;
 /// RPC driving helpers against the running server.
 mod server_drive;
 /// Session management for launching and controlling hotki.
@@ -28,8 +25,6 @@ mod session;
 mod space_probe;
 /// Smoketest case registry and runner.
 mod suite;
-/// Utility helpers for path resolution and minor tasks.
-mod util;
 /// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
 /// Helper window for UI-driven tests and animations.

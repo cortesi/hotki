@@ -24,8 +24,9 @@ use tracing::{debug, warn};
 
 use crate::{
     error::{Error, Result},
-    helpers, runtime,
-    suite::CaseStage,
+    helpers,
+    suite::CaseCtx,
+    world,
 };
 
 thread_local! {
@@ -70,7 +71,7 @@ where
 {
     let (tx, rx) = mpsc::channel::<Result<F::Output>>();
     thread::spawn(move || {
-        let result = runtime::block_on(fut);
+        let result = world::block_on(fut);
         if let Err(err) = tx.send(result) {
             warn!(?err, "block_on_with_pump: receiver dropped runtime result");
         }
@@ -167,12 +168,12 @@ struct WindowDescriptor {
 
 /// Spawn a mimic scenario and wait for declared windows to surface in the world snapshot.
 pub fn spawn_scenario(
-    stage: &CaseStage<'_, '_>,
+    ctx: &CaseCtx<'_>,
     slug: &'static str,
     specs: Vec<WindowSpawnSpec>,
 ) -> Result<ScenarioState> {
     let total_start = Instant::now();
-    let world = stage.world_clone();
+    let world = ctx.world_clone();
     let mut descriptors = Vec::with_capacity(specs.len());
     let mut mimic_specs = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -375,14 +376,10 @@ pub fn shutdown_mimic(handle: MimicHandle) -> Result<()> {
 }
 
 /// Raise a helper window identified by `label`, asserting focus updates.
-pub fn raise_window(
-    stage: &CaseStage<'_, '_>,
-    state: &mut ScenarioState,
-    label: &str,
-) -> Result<()> {
+pub fn raise_window(ctx: &CaseCtx<'_>, state: &mut ScenarioState, label: &str) -> Result<()> {
     let start_all = Instant::now();
     let window = state.window(label)?;
-    let world = stage.world_clone();
+    let world = ctx.world_clone();
     let window_title = window.title.clone();
     let expected_id = window.world_id;
     let pattern = format!("^{}$", regex::escape(&window_title));
@@ -416,11 +413,11 @@ pub fn raise_window(
     }
 
     let wait_start = Instant::now();
-    wait_for_focus(stage, state, &world, expected_id)?;
+    wait_for_focus(ctx, state, &world, expected_id)?;
     let wait_ms = wait_start.elapsed().as_millis();
     let total_ms = start_all.elapsed().as_millis();
     debug!(
-        case = %stage.case_name(),
+        case = %ctx.case_name(),
         label,
         request_ms,
         wait_ms,
@@ -432,7 +429,7 @@ pub fn raise_window(
 
 /// Wait until the world reports focus on the expected helper window.
 fn wait_for_focus(
-    stage: &CaseStage<'_, '_>,
+    ctx: &CaseCtx<'_>,
     state: &mut ScenarioState,
     world: &WorldHandle,
     expected_id: WorldWindowId,
@@ -450,7 +447,7 @@ fn wait_for_focus(
             return Ok(());
         }
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             expected_pid,
             expected_window,
             observed_pid = key.pid,
@@ -460,7 +457,7 @@ fn wait_for_focus(
         logged_mismatch = true;
     } else {
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             expected_pid,
             expected_window,
             "wait_for_focus_initial_none"
@@ -478,7 +475,7 @@ fn wait_for_focus(
             }
             if !logged_mismatch {
                 debug!(
-                    case = %stage.case_name(),
+                    case = %ctx.case_name(),
                     expected_pid,
                     expected_window,
                     observed_pid = key.pid,
@@ -489,7 +486,7 @@ fn wait_for_focus(
             }
         } else if !logged_none {
             debug!(
-                case = %stage.case_name(),
+                case = %ctx.case_name(),
                 expected_pid,
                 expected_window,
                 "wait_for_focus_poll_none"
@@ -499,7 +496,7 @@ fn wait_for_focus(
         if Instant::now() >= deadline {
             return Err(Error::InvalidState(format!(
                 "timeout waiting for {} (lost_count={} next_index={})",
-                stage.case_name(),
+                ctx.case_name(),
                 state.cursor.lost_count,
                 state.cursor.next_index
             )));
@@ -517,7 +514,7 @@ fn wait_for_focus(
             if let WorldEvent::FocusChanged(change) = event {
                 if let Some(ref key) = change.key {
                     debug!(
-                        case = %stage.case_name(),
+                        case = %ctx.case_name(),
                         expected_pid,
                         expected_window,
                         observed_pid = key.pid,
@@ -529,7 +526,7 @@ fn wait_for_focus(
                     }
                     if !logged_mismatch {
                         debug!(
-                            case = %stage.case_name(),
+                            case = %ctx.case_name(),
                             expected_pid,
                             expected_window,
                             observed_pid = key.pid,
@@ -540,7 +537,7 @@ fn wait_for_focus(
                     }
                 } else {
                     debug!(
-                        case = %stage.case_name(),
+                        case = %ctx.case_name(),
                         expected_pid,
                         expected_window,
                         "focus_event_none"

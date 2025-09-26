@@ -13,7 +13,7 @@ use tracing::info;
 use crate::{
     cases,
     error::{Error, Result, print_hints},
-    proc_registry, process, world,
+    process, world,
 };
 
 /// Common tracing target for smoketest case logging.
@@ -148,12 +148,11 @@ impl<'a> CaseCtx<'a> {
     /// Execute the provided stage closure and capture its elapsed duration.
     pub fn stage<F, T>(&mut self, stage: Stage, f: F) -> Result<T>
     where
-        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
+        F: FnOnce(&mut CaseCtx<'_>) -> Result<T>,
     {
-        let mut stage_ctx = CaseStage { inner: self };
         let start = Instant::now();
         pump_active_mimics();
-        let result = f(&mut stage_ctx);
+        let result = f(self);
         pump_active_mimics();
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.durations.set(stage, elapsed_ms)?;
@@ -161,16 +160,14 @@ impl<'a> CaseCtx<'a> {
     }
 
     /// Consume the context and return recorded stage durations.
-    pub(crate) fn finish(self) -> CaseReport {
-        CaseReport {
-            durations: self.durations,
-        }
+    pub(crate) fn into_durations(self) -> StageDurationsOptional {
+        self.durations
     }
 
     /// Run the setup stage and record the elapsed duration.
     pub fn setup<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
+        F: FnOnce(&mut CaseCtx<'_>) -> Result<T>,
     {
         self.stage(Stage::Setup, f)
     }
@@ -178,7 +175,7 @@ impl<'a> CaseCtx<'a> {
     /// Run the action stage and record the elapsed duration.
     pub fn action<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
+        F: FnOnce(&mut CaseCtx<'_>) -> Result<T>,
     {
         self.stage(Stage::Action, f)
     }
@@ -186,32 +183,14 @@ impl<'a> CaseCtx<'a> {
     /// Run the settle stage and record the elapsed duration.
     pub fn settle<F, T>(&mut self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut CaseStage<'_, '_>) -> Result<T>,
+        F: FnOnce(&mut CaseCtx<'_>) -> Result<T>,
     {
         self.stage(Stage::Settle, f)
-    }
-}
-
-/// Stage-scoped view that exposes world accessors and artifact recording.
-pub struct CaseStage<'ctx, 'name> {
-    /// Mutable handle to the underlying case context.
-    inner: &'ctx mut CaseCtx<'name>,
-}
-
-impl<'ctx, 'name> CaseStage<'ctx, 'name> {
-    /// Clone the shared world handle for asynchronous operations.
-    pub fn world_clone(&self) -> WorldHandle {
-        self.inner.world.clone()
-    }
-
-    /// Return the scratch directory assigned to the case.
-    pub fn scratch_dir(&self) -> &Path {
-        &self.inner.scratch_dir
     }
 
     /// Build a scratch path relative to the case directory.
     pub fn scratch_path<P: AsRef<Path>>(&self, relative_path: P) -> PathBuf {
-        self.scratch_dir().join(relative_path.as_ref())
+        self.scratch_dir.join(relative_path.as_ref())
     }
 
     /// Log a structured event associated with this case.
@@ -219,27 +198,14 @@ impl<'ctx, 'name> CaseStage<'ctx, 'name> {
         info!(
             target: LOG_TARGET,
             event = label,
-            case = self.inner.name,
+            case = self.name,
             message = message
         );
     }
 
-    /// Return the case name associated with this stage.
+    /// Return the case name associated with this context.
     pub fn case_name(&self) -> &str {
-        self.inner.name
-    }
-}
-
-/// Internal representation of stage timings produced by a case.
-pub struct CaseReport {
-    /// Optional stage durations recorded while running the case.
-    durations: StageDurationsOptional,
-}
-
-impl CaseReport {
-    /// Consume the report and return stage durations.
-    fn into_parts(self) -> StageDurationsOptional {
-        self.durations
+        self.name
     }
 }
 
@@ -390,7 +356,7 @@ fn run_entry(
 
     let run_error = run_result.err();
     let world_for_reset = ctx.world_clone();
-    let actual_durations = ctx.finish().into_parts();
+    let actual_durations = ctx.into_durations();
 
     log_case_timing(entry, &actual_durations);
 
@@ -462,7 +428,7 @@ where
                 "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
                 timeout_ms, name
             );
-            proc_registry::kill_all();
+            process::kill_all();
             exit(2);
         }
     }
@@ -496,7 +462,7 @@ where
                     "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
                     timeout_ms, name_owned
                 );
-                proc_registry::kill_all();
+                process::kill_all();
                 exit(2);
             }
             thread::sleep(Duration::from_millis(25));

@@ -14,7 +14,7 @@ use thiserror::Error;
 use tokio::time::timeout;
 use tracing::debug;
 
-use crate::{config, error::Error as SmoketestError, runtime};
+use crate::{config, error::Error as SmoketestError, world};
 
 /// Shared connection slot to the hotki-server.
 static CONN: OnceLock<Mutex<Option<hotki_server::Connection>>> = OnceLock::new();
@@ -110,7 +110,7 @@ fn block_on_rpc<F, T>(action: &'static str, fut: F) -> DriverResult<T>
 where
     F: Future<Output = hotki_server::Result<T>>,
 {
-    runtime::block_on(fut)
+    world::block_on(fut)
         .map_err(|e| DriverError::runtime(action, &e))?
         .map_err(|source| DriverError::RpcFailure { action, source })
 }
@@ -138,7 +138,7 @@ pub fn init(socket_path: &str) -> DriverResult<()> {
     }
 
     let socket_path_buf = socket_path.to_string();
-    match runtime::block_on(async { hotki_server::Connection::connect_unix(socket_path).await }) {
+    match world::block_on(async { hotki_server::Connection::connect_unix(socket_path).await }) {
         Ok(Ok(conn)) => {
             let mut guard = conn_slot().lock();
             *guard = Some(conn);
@@ -208,7 +208,7 @@ fn drain_events_loop() {
             match guard.as_mut() {
                 Some(conn) => {
                     // Poll with a short timeout to avoid holding the lock long.
-                    let res = runtime::block_on(async {
+                    let res = world::block_on(async {
                         timeout(Duration::from_millis(40), conn.recv_event()).await
                     });
                     Some(res)

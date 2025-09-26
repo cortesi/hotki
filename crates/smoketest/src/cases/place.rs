@@ -26,7 +26,7 @@ use crate::{
     error::{Error, Result},
     focus_guard::FocusGuard,
     helpers,
-    suite::{CaseCtx, CaseStage},
+    suite::CaseCtx,
     world,
 };
 
@@ -50,8 +50,8 @@ struct PlaceState {
 
 impl PlaceState {
     /// Log the expected rectangle and update the cached value.
-    fn record_expected(&mut self, stage: &CaseStage<'_, '_>, expected: RectPx) -> Result<()> {
-        stage.log_event(
+    fn record_expected(&mut self, ctx: &CaseCtx<'_>, expected: RectPx) -> Result<()> {
+        ctx.log_event(
             "place_expected_rect",
             &format!("slug={} expected={:?}", self.slug, expected),
         );
@@ -69,7 +69,7 @@ struct MoveCaseBudget {
     spawn_ms: u64,
     /// Milliseconds spent waiting for initial frames to appear.
     initial_frames_ms: u64,
-    /// Milliseconds consumed raising the helper during the action stage.
+    /// Milliseconds consumed raising the helper during the action ctx.
     action_raise_ms: u64,
     /// Milliseconds required to issue the move request and refresh cursors.
     move_request_ms: u64,
@@ -91,7 +91,7 @@ struct MoveCaseState {
 
 /// Verify fake adapter flows exercise apply, nudge, and fallback paths.
 pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let summaries = run_fake_adapter_scenarios()?;
         let summary = summaries
             .iter()
@@ -105,7 +105,7 @@ pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        stage.log_event("place_fake_adapter_ops", &summary);
+        ctx.log_event("place_fake_adapter_ops", &summary);
         Ok(())
     })?;
 
@@ -117,7 +117,7 @@ pub fn place_fake_adapter(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Verify placement converges when the helper begins minimized and must be restored first.
 pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let expected = RectPx {
             x: 160,
             y: 160,
@@ -125,7 +125,7 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 320,
         };
         state = Some(spawn_place_state(
-            stage,
+            ctx,
             "place.minimized.defer",
             expected,
             |config, expected| {
@@ -142,24 +142,24 @@ pub fn place_minimized_defer(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_ref()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         request_grid(&world, state_ref.target_id, (3, 2, 1, 0))?;
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
-        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        helpers::assert_frame_matches(stage.case_name(), state_data.expected, &frames, 2)?;
+        let frames = wait_for_expected(ctx, &state_data, observer, 2)?;
+        helpers::assert_frame_matches(ctx.case_name(), state_data.expected, &frames, 2)?;
         shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
@@ -172,14 +172,14 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
     const SLUG: &str = "place.zoomed.normalize";
     let grid = (config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0);
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
             w: 0,
             h: 0,
         };
-        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+        state = Some(spawn_place_state(ctx, SLUG, placeholder, |config, _| {
             config.time_ms = 10_000;
             config.label_text = Some("ZOOM".into());
             config.start_zoomed = true;
@@ -198,22 +198,22 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             };
         })?);
         if let Some(place) = state.as_mut() {
-            let world = stage.world_clone();
-            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
+            let world = ctx.world_clone();
+            let frames = wait_for_initial_frames(ctx.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
-            place.record_expected(stage, expected)?;
+            place.record_expected(ctx, expected)?;
         }
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
-        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
+        let world = ctx.world_clone();
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
         ensure_window_on_active_space(
-            stage.case_name(),
+            ctx.case_name(),
             state_ref,
             &world,
             Duration::from_millis(1_600),
@@ -223,21 +223,17 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
-        let frames = wait_for_expected(
-            stage,
-            &state_data,
-            observer,
-            config::PLACE.eps.round() as i32,
-        )?;
+        let frames =
+            wait_for_expected(ctx, &state_data, observer, config::PLACE.eps.round() as i32)?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             state_data.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -252,7 +248,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Exercise tweened placement to ensure animated geometry converges to the target rectangle.
 pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let expected = RectPx {
             x: 120,
             y: 120,
@@ -260,7 +256,7 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 360,
         };
         state = Some(spawn_place_state(
-            stage,
+            ctx,
             "place.animated.tween",
             expected,
             |config, expected| {
@@ -278,24 +274,24 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         request_grid(&world, state_ref.target_id, (3, 2, 2, 0))?;
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
-        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        helpers::assert_frame_matches(stage.case_name(), state_data.expected, &frames, 2)?;
+        let frames = wait_for_expected(ctx, &state_data, observer, 2)?;
+        helpers::assert_frame_matches(ctx.case_name(), state_data.expected, &frames, 2)?;
         shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
@@ -307,7 +303,7 @@ pub fn place_animated_tween(ctx: &mut CaseCtx<'_>) -> Result<()> {
 pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
     const GRID: (u32, u32, u32, u32) = (3, 2, 0, 1);
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
@@ -315,7 +311,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 0,
         };
         state = Some(spawn_place_state(
-            stage,
+            ctx,
             "place.async.delay",
             placeholder,
             |config, _expected| {
@@ -330,37 +326,36 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?);
         if let Some(place_state) = state.as_mut() {
-            let focus_guard = promote_helper_frontmost(stage.case_name(), place_state)?;
-            let world = stage.world_clone();
-            let frames =
-                wait_for_initial_frames(stage.case_name(), &world, place_state.target_key)?;
+            let focus_guard = promote_helper_frontmost(ctx.case_name(), place_state)?;
+            let world = ctx.world_clone();
+            let frames = wait_for_initial_frames(ctx.case_name(), &world, place_state.target_key)?;
             let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
-            place_state.record_expected(stage, expected)?;
+            place_state.record_expected(ctx, expected)?;
             focus_guard.reassert()?;
         }
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
-        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
+        let world = ctx.world_clone();
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
         request_grid(&world, state_ref.target_id, GRID)?;
         focus_guard.reassert()?;
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
-        let frames = wait_for_expected(stage, &state_data, observer, 2)?;
-        helpers::assert_frame_matches(stage.case_name(), state_data.expected, &frames, 2)?;
+        let frames = wait_for_expected(ctx, &state_data, observer, 2)?;
+        helpers::assert_frame_matches(ctx.case_name(), state_data.expected, &frames, 2)?;
         shutdown_mimic(state_data.mimic)?;
         Ok(())
     })?;
@@ -371,7 +366,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Verify terminal-style placements remain anchored after rounding to window increments.
 pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
@@ -379,7 +374,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 0,
         };
         state = Some(spawn_place_state(
-            stage,
+            ctx,
             "place.term.anchor",
             placeholder,
             |config, _expected| {
@@ -389,32 +384,32 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?);
         if let Some(place) = state.as_mut() {
-            let world = stage.world_clone();
-            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
+            let world = ctx.world_clone();
+            let frames = wait_for_initial_frames(ctx.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, 3, 1, 0, 0)?;
-            place.record_expected(stage, expected)?;
+            place.record_expected(ctx, expected)?;
         }
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let place = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer =
             world.window_observer_with_config(place.target_key, helpers::default_wait_config());
         request_grid(&world, place.target_id, (3, 1, 0, 0))?;
         let eps = config::PLACE.eps.round() as i32;
-        let frames = wait_for_expected(stage, place, observer, eps)?;
+        let frames = wait_for_expected(ctx, place, observer, eps)?;
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             frame = ?frames.authoritative,
             "place_term_anchor_settled"
         );
-        let world_ref = stage.world_clone();
+        let world_ref = ctx.world_clone();
         ensure_frame_stability(
-            stage.case_name(),
+            ctx.case_name(),
             &world_ref,
             place.target_key,
             place.expected,
@@ -424,11 +419,11 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let place = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let target_key = WindowKey {
             pid: place.target_key.pid,
             id: place.target_key.id,
@@ -437,7 +432,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames = block_on_with_pump(async move { world_clone.frames(target_key).await })?
             .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             place.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -452,7 +447,7 @@ pub fn place_term_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Verify placement with resize increments across multiple grid scenarios.
 pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
@@ -460,7 +455,7 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 0,
         };
         state = Some(spawn_place_state(
-            stage,
+            ctx,
             "place.increments.anchor",
             placeholder,
             |config, _expected| {
@@ -472,11 +467,11 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let place = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let eps = config::PLACE.eps.round() as i32;
 
         // Scenario A: 2x2 grid bottom-right cell.
@@ -491,20 +486,20 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                     Error::InvalidState("frames unavailable before scenario A".into())
                 })?;
             let expected = grid_rect_from_frames(&frames, 2, 2, 1, 1)?;
-            place.record_expected(stage, expected)?;
+            place.record_expected(ctx, expected)?;
             let observer =
                 world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (2, 2, 1, 1))?;
-            let settled = wait_for_expected(stage, place, observer, eps)?;
+            let settled = wait_for_expected(ctx, place, observer, eps)?;
             debug!(
-                case = %stage.case_name(),
+                case = %ctx.case_name(),
                 scenario = "2x2.br",
                 frame = ?settled.authoritative,
                 "place_increments_scenario_a"
             );
-            let world_ref = stage.world_clone();
+            let world_ref = ctx.world_clone();
             ensure_frame_stability(
-                stage.case_name(),
+                ctx.case_name(),
                 &world_ref,
                 place.target_key,
                 expected,
@@ -525,20 +520,20 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                     Error::InvalidState("frames unavailable before scenario B".into())
                 })?;
             let expected = grid_rect_from_frames(&frames, 3, 1, 1, 0)?;
-            place.record_expected(stage, expected)?;
+            place.record_expected(ctx, expected)?;
             let observer =
                 world.window_observer_with_config(place.target_key, helpers::default_wait_config());
             request_grid(&world, place.target_id, (3, 1, 1, 0))?;
-            let settled = wait_for_expected(stage, place, observer, eps)?;
+            let settled = wait_for_expected(ctx, place, observer, eps)?;
             debug!(
-                case = %stage.case_name(),
+                case = %ctx.case_name(),
                 scenario = "3x1.mid",
                 frame = ?settled.authoritative,
                 "place_increments_scenario_b"
             );
-            let world_ref = stage.world_clone();
+            let world_ref = ctx.world_clone();
             ensure_frame_stability(
-                stage.case_name(),
+                ctx.case_name(),
                 &world_ref,
                 place.target_key,
                 expected,
@@ -550,11 +545,11 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let place = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let key = WindowKey {
             pid: place.target_key.pid,
             id: place.target_key.id,
@@ -563,7 +558,7 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let frames = block_on_with_pump(async move { world_clone.frames(key).await })?
             .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             place.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -579,14 +574,14 @@ pub fn place_increments_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
 pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
     const SLUG: &str = "place.grid.cycle";
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
             w: 0,
             h: 0,
         };
-        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+        state = Some(spawn_place_state(ctx, SLUG, placeholder, |config, _| {
             config.time_ms = 25_000;
             config.grid = Some((config::PLACE.grid_cols, config::PLACE.grid_rows, 0, 0));
             config.place = PlaceOptions {
@@ -605,11 +600,11 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let cols = config::PLACE.grid_cols;
         let rows = config::PLACE.grid_rows;
         let eps = config::PLACE.eps.round() as i32;
@@ -617,9 +612,9 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
 
         for row in 0..rows {
             for col in 0..cols {
-                let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
+                let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
                 ensure_window_on_active_space(
-                    stage.case_name(),
+                    ctx.case_name(),
                     state_ref,
                     &world,
                     Duration::from_millis(1_400),
@@ -631,14 +626,14 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 })?
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
                 let expected = grid_rect_from_frames(&frames_before, cols, rows, col, row)?;
-                state_ref.record_expected(stage, expected)?;
+                state_ref.record_expected(ctx, expected)?;
                 let observer = world.window_observer_with_config(
                     state_ref.target_key,
                     helpers::default_wait_config(),
                 );
                 request_grid(&world, state_ref.target_id, (cols, rows, col, row))?;
-                let frames = wait_for_expected(stage, state_ref, observer, eps)?;
-                helpers::assert_frame_matches(stage.case_name(), expected, &frames, eps)?;
+                let frames = wait_for_expected(ctx, state_ref, observer, eps)?;
+                helpers::assert_frame_matches(ctx.case_name(), expected, &frames, eps)?;
                 focus_guard.reassert()?;
                 let delta = expected.delta(&frames.authoritative);
                 entries.push(format!(
@@ -651,21 +646,21 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
             }
         }
 
-        stage.log_event("place_grid_cells", &entries.join("; "));
+        ctx.log_event("place_grid_cells", &entries.join("; "));
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let world_for_final = world;
         let frames =
             block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             state_data.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -764,14 +759,14 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
     const SLUG: &str = "place.skip.nonmovable";
     const GRID: (u32, u32, u32, u32) = (2, 2, 0, 0);
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let placeholder = RectPx {
             x: 0,
             y: 0,
             w: 0,
             h: 0,
         };
-        state = Some(spawn_place_state(stage, SLUG, placeholder, |config, _| {
+        state = Some(spawn_place_state(ctx, SLUG, placeholder, |config, _| {
             config.time_ms = 20_000;
             config.panel_nonmovable = true;
             config.attach_sheet = true;
@@ -784,32 +779,32 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
-        let frames = wait_for_initial_frames(stage.case_name(), &world, state_ref.target_key)?;
+        let world = ctx.world_clone();
+        let frames = wait_for_initial_frames(ctx.case_name(), &world, state_ref.target_key)?;
         let initial = frames.authoritative;
-        state_ref.record_expected(stage, initial)?;
-        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
+        state_ref.record_expected(ctx, initial)?;
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
         let observer =
             world.window_observer_with_config(state_ref.target_key, helpers::default_wait_config());
         let _drain_guard = MainOpsDrainGuard::disable();
         request_grid(&world, state_ref.target_id, GRID)?;
         mac_winops::drop_pending_main_ops();
         let frames_after =
-            wait_for_expected(stage, state_ref, observer, config::PLACE.eps.round() as i32)?;
+            wait_for_expected(ctx, state_ref, observer, config::PLACE.eps.round() as i32)?;
         mac_winops::drop_pending_main_ops();
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             initial,
             &frames_after,
             config::PLACE.eps.round() as i32,
         )?;
         focus_guard.reassert()?;
         let delta = initial.delta(&frames_after.authoritative);
-        stage.log_event(
+        ctx.log_event(
             "place_nonmovable_comparison",
             &format!(
                 "grid=({},{},{},{}) expected={:?} actual={:?} delta={:?}",
@@ -819,17 +814,17 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let world_for_final = world;
         let frames =
             block_on_with_pump(async move { world_for_final.frames(state_data.target_key).await })?
                 .ok_or_else(|| Error::InvalidState("authoritative frame unavailable".into()))?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             state_data.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -844,13 +839,13 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Verify grid-relative moves when the helper enforces a taller minimum height.
 pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<MoveCaseState> = None;
-    ctx.setup(|stage| {
-        debug!(case = %stage.case_name(), "place_move_min_setup_start");
+    ctx.setup(|ctx| {
+        debug!(case = %ctx.case_name(), "place_move_min_setup_start");
         for _ in 0..120 {
             pump_active_mimics();
             thread::sleep(Duration::from_millis(5));
         }
-        debug!(case = %stage.case_name(), "place_move_min_spawning_state");
+        debug!(case = %ctx.case_name(), "place_move_min_spawning_state");
         let placeholder = RectPx {
             x: 0,
             y: 0,
@@ -858,26 +853,26 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             h: 0,
         };
         let mut place =
-            spawn_place_state(stage, "place.move.min", placeholder, |config, _expected| {
+            spawn_place_state(ctx, "place.move.min", placeholder, |config, _expected| {
                 config.time_ms = 25_000;
                 config.label_text = Some("MIN".into());
                 config.grid = Some((4, 4, 0, 0));
                 config.min_size = Some((320.0, 380.0));
                 config.place.raise = RaiseStrategy::KeepFrontWindow;
             })?;
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
-        let world = stage.world_clone();
-        let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
+        let world = ctx.world_clone();
+        let frames = wait_for_initial_frames(ctx.case_name(), &world, place.target_key)?;
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             initial = ?frames.authoritative,
             "place_move_min_after_wait"
         );
         let expected = grid_rect_from_frames(&frames, 4, 4, 1, 0)?;
-        debug!(case = %stage.case_name(), expected = ?expected, "place_move_min_setup_ready");
-        place.record_expected(stage, expected)?;
+        debug!(case = %ctx.case_name(), expected = ?expected, "place_move_min_setup_ready");
+        place.record_expected(ctx, expected)?;
         focus_guard.reassert()?;
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
         focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
@@ -888,33 +883,33 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("move-min state missing during action".into()))?;
-        let world = stage.world_clone();
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &state_ref.place)?;
+        let world = ctx.world_clone();
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &state_ref.place)?;
         request_move(
             &world,
             state_ref.place.target_id,
             (4, 4),
             MoveDirection::Right,
         )?;
-        debug!(case = %stage.case_name(), "place_move_min_move_requested");
+        debug!(case = %ctx.case_name(), "place_move_min_move_requested");
         focus_guard.reassert()?;
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("move-min state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let target_key = state_data.place.target_key;
         let expected = state_data.expected;
         let eps = state_data.eps;
         let wait_result =
-            wait_for_frame_condition(stage.case_name(), &world, target_key, move |frames| {
+            wait_for_frame_condition(ctx.case_name(), &world, target_key, move |frames| {
                 let actual = frames.authoritative;
                 let width_ok = (actual.w - expected.w).abs() <= eps;
                 let height_ok = actual.h >= expected.h - eps;
@@ -926,7 +921,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             Ok(frames) => {
                 let actual = frames.authoritative;
                 debug!(
-                    case = %stage.case_name(),
+                    case = %ctx.case_name(),
                     actual = ?actual,
                     "place_move_min_frames_observed"
                 );
@@ -938,7 +933,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 if !(width_ok && height_ok && left_ok && bottom_ok) {
                     let info = "checks=left,bottom,min_width,min_height".to_string();
                     let msg = format_frame_failure(
-                        stage.case_name(),
+                        ctx.case_name(),
                         state_data.expected,
                         Some(actual),
                         frames.scale,
@@ -955,7 +950,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 let (actual, scale) = frame_actual_and_scale(fallback);
                 let info = format!("checks=left,bottom,min_width,min_height; wait_err={wait_err}");
                 let msg = format_frame_failure(
-                    stage.case_name(),
+                    ctx.case_name(),
                     state_data.expected,
                     actual,
                     scale,
@@ -976,8 +971,8 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Verify grid-relative moves when the helper disables resizing entirely.
 pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<MoveCaseState> = None;
-    ctx.setup(|stage| {
-        debug!(case = %stage.case_name(), "place_move_nonres_setup_start");
+    ctx.setup(|ctx| {
+        debug!(case = %ctx.case_name(), "place_move_nonres_setup_start");
         let mut budget = MoveCaseBudget::default();
         let warmup_start = Instant::now();
         let warmup_deadline = warmup_start + Duration::from_millis(300);
@@ -986,7 +981,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             thread::sleep(Duration::from_millis(10));
         }
         budget.warmup_ms = warmup_start.elapsed().as_millis() as u64;
-        debug!(case = %stage.case_name(), "place_move_nonres_spawning_state");
+        debug!(case = %ctx.case_name(), "place_move_nonres_spawning_state");
         let placeholder = RectPx {
             x: 0,
             y: 0,
@@ -995,7 +990,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         };
         let spawn_start = Instant::now();
         let mut place = spawn_place_state(
-            stage,
+            ctx,
             "place.move.nonresizable",
             placeholder,
             |config, _expected| {
@@ -1010,25 +1005,25 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             },
         )?;
         budget.spawn_ms = spawn_start.elapsed().as_millis() as u64;
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
-        let world = stage.world_clone();
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
+        let world = ctx.world_clone();
         let frames_start = Instant::now();
-        let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
+        let frames = wait_for_initial_frames(ctx.case_name(), &world, place.target_key)?;
         budget.initial_frames_ms = frames_start.elapsed().as_millis() as u64;
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             initial = ?frames.authoritative,
             "place_move_nonres_after_wait"
         );
         let expected = grid_rect_from_frames(&frames, 4, 4, 1, 0)?;
         debug!(
-            case = %stage.case_name(),
+            case = %ctx.case_name(),
             expected = ?expected,
             "place_move_nonres_setup_ready"
         );
-        place.record_expected(stage, expected)?;
+        place.record_expected(ctx, expected)?;
         focus_guard.reassert()?;
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &place)?;
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
         focus_guard.reassert()?;
         state = Some(MoveCaseState {
             place,
@@ -1039,13 +1034,13 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state.as_mut().ok_or_else(|| {
             Error::InvalidState("move-nonresizable state missing during action".into())
         })?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let raise_start = Instant::now();
-        let focus_guard = promote_helper_frontmost(stage.case_name(), &state_ref.place)?;
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), &state_ref.place)?;
         state_ref.budget.action_raise_ms = raise_start.elapsed().as_millis() as u64;
         let move_start = Instant::now();
         request_move(
@@ -1055,22 +1050,22 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             MoveDirection::Right,
         )?;
         state_ref.budget.move_request_ms = move_start.elapsed().as_millis() as u64;
-        debug!(case = %stage.case_name(), "place_move_nonres_move_requested");
+        debug!(case = %ctx.case_name(), "place_move_nonres_move_requested");
         focus_guard.reassert()?;
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let mut state_data = state.take().ok_or_else(|| {
             Error::InvalidState("move-nonresizable state missing during settle".into())
         })?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let target_key = state_data.place.target_key;
         let settle_start = Instant::now();
         let expected = state_data.expected;
         let eps = state_data.eps;
         let wait_result =
-            wait_for_frame_condition(stage.case_name(), &world, target_key, move |frames| {
+            wait_for_frame_condition(ctx.case_name(), &world, target_key, move |frames| {
                 let actual = frames.authoritative;
                 let left_ok = (actual.x - expected.x).abs() <= eps;
                 let bottom_ok = (actual.y - expected.y).abs() <= eps;
@@ -1079,12 +1074,12 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 left_ok && bottom_ok && width_ok && height_ok
             });
         state_data.budget.settle_wait_ms = settle_start.elapsed().as_millis() as u64;
-        log_move_budget(stage, state_data.place.slug, &state_data.budget);
+        log_move_budget(ctx, state_data.place.slug, &state_data.budget);
         match wait_result {
             Ok(frames) => {
                 let actual = frames.authoritative;
                 debug!(
-                    case = %stage.case_name(),
+                    case = %ctx.case_name(),
                     actual = ?actual,
                     "place_move_nonres_frames_observed"
                 );
@@ -1096,7 +1091,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 if !(left_ok && bottom_ok && width_ok && height_ok) {
                     let info = "checks=left,bottom,min_width,min_height".to_string();
                     let msg = format_frame_failure(
-                        stage.case_name(),
+                        ctx.case_name(),
                         state_data.expected,
                         Some(actual),
                         frames.scale,
@@ -1113,7 +1108,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 let (actual, scale) = frame_actual_and_scale(fallback);
                 let info = format!("checks=left,bottom,min_width,min_height; wait_err={wait_err}");
                 let msg = format_frame_failure(
-                    stage.case_name(),
+                    ctx.case_name(),
                     state_data.expected,
                     actual,
                     scale,
@@ -1251,7 +1246,7 @@ fn format_frame_failure(
 
 /// Spawn a mimic helper and locate its world identifiers for subsequent stages.
 fn spawn_place_state<F>(
-    stage: &CaseStage<'_, '_>,
+    ctx: &CaseCtx<'_>,
     slug: &'static str,
     expected: RectPx,
     configure: F,
@@ -1259,7 +1254,7 @@ fn spawn_place_state<F>(
 where
     F: FnOnce(&mut HelperConfig, RectPx),
 {
-    let world = stage.world_clone();
+    let world = ctx.world_clone();
     let slug_arc: Arc<str> = Arc::from(slug);
     let label_arc: Arc<str> = Arc::from("primary");
     let mut config = HelperConfig {
@@ -1360,7 +1355,7 @@ where
         debug!(pid = resolved_pid, ?err, "activate pid request failed");
     }
 
-    stage.log_event(
+    ctx.log_event(
         "place_spawn_expected",
         &format!("slug={} expected={:?}", slug, expected),
     );
@@ -1480,8 +1475,8 @@ fn wait_for_initial_frames(case: &str, world: &WorldHandle, key: WindowKey) -> R
 }
 
 /// Persist per-phase timings for the nonresizable move case via structured logging.
-fn log_move_budget(stage: &CaseStage<'_, '_>, slug: &str, budget: &MoveCaseBudget) {
-    stage.log_event(
+fn log_move_budget(ctx: &CaseCtx<'_>, slug: &str, budget: &MoveCaseBudget) {
+    ctx.log_event(
         "place_move_budget",
         &format!(
             "slug={} setup=(warmup_ms={} spawn_ms={} initial_frames_ms={}) action=(raise_ms={} move_request_ms={}) settle_wait_ms={}",
@@ -1497,12 +1492,8 @@ fn log_move_budget(stage: &CaseStage<'_, '_>, slug: &str, budget: &MoveCaseBudge
 }
 
 /// Persist placement counter snapshots via structured logging.
-fn log_counters_snapshot(
-    stage: &CaseStage<'_, '_>,
-    slug: &str,
-    snapshot: &PlacementCountersSnapshot,
-) {
-    stage.log_event(
+fn log_counters_snapshot(ctx: &CaseCtx<'_>, slug: &str, snapshot: &PlacementCountersSnapshot) {
+    ctx.log_event(
         "place_counters",
         &format!(
             "slug={} primary=({}/{}/{}) axis_nudge=({}/{}/{}) retry_opposite=({}/{}/{}) size_only=({}/{}/{}) anchor_size_only=({}/{}/{}) anchor_legal=({}/{}/{}) fallback_smg=({}/{}/{}) safe_park={} failures={}",
@@ -1548,7 +1539,7 @@ where
     V: Fn(&PlacementCountersSnapshot) -> Result<()>,
 {
     let mut state: Option<PlaceState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         mac_winops::placement_counters_reset();
         let placeholder = RectPx {
             x: 0,
@@ -1556,25 +1547,25 @@ where
             w: 0,
             h: 0,
         };
-        state = Some(spawn_place_state(stage, slug, placeholder, |config, _| {
+        state = Some(spawn_place_state(ctx, slug, placeholder, |config, _| {
             config.time_ms = 25_000;
             config.label_text = Some(label.into());
         })?);
         if let Some(place) = state.as_mut() {
-            let world = stage.world_clone();
-            let frames = wait_for_initial_frames(stage.case_name(), &world, place.target_key)?;
+            let world = ctx.world_clone();
+            let frames = wait_for_initial_frames(ctx.case_name(), &world, place.target_key)?;
             let expected = grid_rect_from_frames(&frames, grid.0, grid.1, grid.2, grid.3)?;
-            place.record_expected(stage, expected)?;
+            place.record_expected(ctx, expected)?;
         }
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("place state missing during action".into()))?;
-        let world = stage.world_clone();
-        let focus_guard = promote_helper_frontmost(stage.case_name(), state_ref)?;
+        let world = ctx.world_clone();
+        let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
         let mut options = PlaceAttemptOptions::default();
         configure_options(&mut options);
         request_grid_with_options(&world, state_ref.target_id, grid, Some(&options))?;
@@ -1582,29 +1573,25 @@ where
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state_data = state
             .take()
             .ok_or_else(|| Error::InvalidState("place state missing during settle".into()))?;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let observer = world
             .window_observer_with_config(state_data.target_key, helpers::default_wait_config());
-        let frames = wait_for_expected(
-            stage,
-            &state_data,
-            observer,
-            config::PLACE.eps.round() as i32,
-        )?;
+        let frames =
+            wait_for_expected(ctx, &state_data, observer, config::PLACE.eps.round() as i32)?;
         let snapshot = mac_winops::placement_counters_snapshot();
         if snapshot.primary.attempts == 0 {
             return Err(Error::InvalidState(
                 "expected at least one primary placement attempt".into(),
             ));
         }
-        log_counters_snapshot(stage, state_data.slug, &snapshot);
+        log_counters_snapshot(ctx, state_data.slug, &snapshot);
         verify_snapshot(&snapshot)?;
         helpers::assert_frame_matches(
-            stage.case_name(),
+            ctx.case_name(),
             state_data.expected,
             &frames,
             config::PLACE.eps.round() as i32,
@@ -1873,7 +1860,7 @@ where
 /// Issue a world move command for the supplied window and grid configuration.
 /// Wait until world reports the expected authoritative frame for the helper window.
 fn wait_for_expected(
-    stage: &CaseStage<'_, '_>,
+    ctx: &CaseCtx<'_>,
     state: &PlaceState,
     observer: WindowObserver,
     eps: i32,
@@ -1889,7 +1876,7 @@ fn wait_for_expected(
     })?;
     match wait_result {
         Ok(frames) => Ok(frames),
-        Err(err) => Err(helpers::wait_failure(stage.case_name(), &err)),
+        Err(err) => Err(helpers::wait_failure(ctx.case_name(), &err)),
     }
 }
 

@@ -1,6 +1,7 @@
 use std::{
-    fs,
+    env, fs,
     path::PathBuf,
+    process as std_process,
     time::{Duration, Instant},
 };
 
@@ -15,6 +16,27 @@ use winit::{
 };
 
 use crate::config;
+
+/// Temp-file path that carries the active smoketest status message.
+pub fn status_file_path() -> PathBuf {
+    overlay_path_for_current_run("status")
+}
+
+/// Temp-file path that carries auxiliary overlay information.
+pub fn info_file_path() -> PathBuf {
+    overlay_path_for_current_run("info")
+}
+
+/// Best-effort helper that writes `text` into the overlay’s shared temp files.
+pub fn write_overlay_text(label: &str, text: &str) {
+    let path = overlay_path_for_current_run(label);
+    if let Err(_err) = fs::write(path, text.as_bytes()) {}
+}
+
+/// Compose the per-run overlay temp-file path for the given label.
+fn overlay_path_for_current_run(label: &str) -> PathBuf {
+    env::temp_dir().join(format!("hotki-smoketest-{label}-{}.txt", std_process::id()))
+}
 
 /// Internal app container for the warn overlay window and labels.
 struct OverlayApp {

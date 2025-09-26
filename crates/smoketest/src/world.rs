@@ -1,7 +1,8 @@
 //! Shared trait-backed window snapshot helpers for smoketests.
 
 use std::{
-    sync::Arc,
+    future::Future,
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -13,20 +14,48 @@ use once_cell::sync::OnceCell;
 use regex::Regex;
 use tracing::{debug, info};
 
-use crate::{
-    error::{Error, Result},
-    runtime,
-};
+use parking_lot::Mutex;
+use tokio::runtime::Runtime;
+
+use crate::error::{Error, Result};
+
+/// Shared tokio runtime used across smoketest helpers.
+static SHARED_RUNTIME: OnceLock<Arc<Mutex<Runtime>>> = OnceLock::new();
 
 /// Lazily constructed world handle shared across smoketest helpers.
 static WORLD_HANDLE: OnceCell<WorldHandle> = OnceCell::new();
+
+/// Get or create the shared tokio runtime used by the smoketests.
+pub fn shared_runtime() -> Result<Arc<Mutex<Runtime>>> {
+    if let Some(rt) = SHARED_RUNTIME.get() {
+        return Ok(rt.clone());
+    }
+    let runtime = Runtime::new()
+        .map_err(|e| Error::InvalidState(format!("Failed to create tokio runtime: {e}")))?;
+    let arc = Arc::new(Mutex::new(runtime));
+    if SHARED_RUNTIME.set(arc.clone()).is_err() {
+        Ok(SHARED_RUNTIME.get().expect("runtime initialized").clone())
+    } else {
+        Ok(arc)
+    }
+}
+
+/// Execute an async future on the shared runtime and return its output.
+pub fn block_on<F, T>(fut: F) -> Result<T>
+where
+    F: Future<Output = T>,
+{
+    let runtime = shared_runtime()?;
+    let guard = runtime.lock();
+    Ok(guard.block_on(fut))
+}
 
 /// Ensure the shared world instance exists and return a cloned handle.
 pub fn world_handle() -> Result<WorldHandle> {
     if let Some(handle) = WORLD_HANDLE.get() {
         return Ok(handle.clone());
     }
-    let rt = runtime::shared_runtime()?;
+    let rt = shared_runtime()?;
     let runtime = rt.lock();
     let guard = runtime.enter();
     let handle = World::spawn(Arc::new(RealWinOps), hotki_world::WorldCfg::default());
@@ -53,7 +82,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
 
     for attempt in 0..attempts {
         let world = world_handle()?;
-        let receipt = runtime::block_on(async { world.request_raise(intent.clone()).await })?;
+        let receipt = block_on(async { world.request_raise(intent.clone()).await })?;
         match receipt {
             Ok(receipt) => {
                 if let Some(target) = receipt.target
@@ -64,7 +93,7 @@ pub fn ensure_frontmost(pid: i32, title: &str, attempts: usize, delay_ms: u64) -
                         pid: target.pid,
                         id: target.id,
                     };
-                    if let Ok(Some(window)) = runtime::block_on(async { world.get(key).await })
+                    if let Ok(Some(window)) = block_on(async { world.get(key).await })
                         && window.on_active_space
                         && window.is_on_screen
                     {
@@ -150,7 +179,7 @@ pub fn list_windows() -> Result<Vec<WorldWindow>> {
     let active_spaces = active_space_ids();
     world.hint_refresh();
     let windows: Vec<WorldWindow> =
-        runtime::block_on(async move { world.snapshot().await.into_iter().collect::<Vec<_>>() })?;
+        block_on(async move { world.snapshot().await.into_iter().collect::<Vec<_>>() })?;
     let elapsed = sweep_start.elapsed();
     let active_count = windows.iter().filter(|w| w.on_active_space).count();
     let total = windows.len();

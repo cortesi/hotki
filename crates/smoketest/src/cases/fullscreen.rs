@@ -18,22 +18,21 @@ use crate::{
     server_drive,
     session::HotkiSession,
     suite::{CaseCtx, sanitize_slug},
-    util, world,
+    world,
 };
 
 /// Toggle non-native fullscreen for a helper window and capture before/after diagnostics.
 pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<FullscreenCaseState> = None;
 
-    ctx.setup(|stage| {
-        let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
+    ctx.setup(|ctx| {
         let title = config::test_title("fullscreen");
         let config_ron = build_fullscreen_config(&title);
-        let filename = format!("{}_config.ron", sanitize_slug(stage.case_name()));
-        let config_path = stage.scratch_path(filename);
+        let filename = format!("{}_config.ron", sanitize_slug(ctx.case_name()));
+        let config_path = ctx.scratch_path(filename);
         fs::write(&config_path, config_ron.as_bytes())?;
 
-        let session = HotkiSession::builder(hotki_bin)
+        let session = HotkiSession::builder_from_env()?
             .with_config(&config_path)
             .with_logs(true)
             .spawn()?;
@@ -47,7 +46,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("fullscreen state missing during action".into()))?;
@@ -127,12 +126,12 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         state_ref.before = Some(before);
         state_ref.after = Some(after);
 
-        stage.log_event("fullscreen_runtime", "fullscreen toggle executed");
+        ctx.log_event("fullscreen_runtime", "fullscreen toggle executed");
 
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let mut state_inner = state
             .take()
             .ok_or_else(|| Error::InvalidState("fullscreen state missing during settle".into()))?;
@@ -145,7 +144,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .ok_or_else(|| Error::InvalidState("missing after frame".into()))?;
         let area_delta = after.area() - before.area();
 
-        stage.log_event(
+        ctx.log_event(
             "fullscreen_outcome",
             &format!(
                 "helper_title={} before=({:.1},{:.1},{:.1},{:.1}) after=({:.1},{:.1},{:.1},{:.1}) area_delta={}",

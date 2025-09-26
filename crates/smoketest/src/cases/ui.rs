@@ -12,7 +12,7 @@ use crate::{
     server_drive,
     session::HotkiSession,
     suite::{CaseCtx, sanitize_slug},
-    util, world,
+    world,
 };
 
 /// Key sequence applied once the HUD is visible to exercise the demo flow.
@@ -103,13 +103,12 @@ struct UiCaseState {
 fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
     let mut state: Option<UiCaseState> = None;
 
-    ctx.setup(|stage| {
-        let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
+    ctx.setup(|ctx| {
         let filename = format!("{}_config.ron", sanitize_slug(spec.slug));
-        let config_path = stage.scratch_path(filename);
+        let config_path = ctx.scratch_path(filename);
         fs::write(&config_path, spec.ron_config.as_bytes())?;
 
-        let session = HotkiSession::builder(hotki_bin)
+        let session = HotkiSession::builder_from_env()?
             .with_config(&config_path)
             .with_logs(spec.with_logs)
             .spawn()?;
@@ -163,7 +162,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let mut state_inner = state
             .take()
             .ok_or_else(|| Error::InvalidState("ui case state missing during settle".into()))?;
@@ -187,7 +186,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             .hud_activation
             .as_ref()
             .map_or_else(|| "<none>".to_string(), ActivationOutcome::summary_string);
-        stage.log_event(
+        ctx.log_event(
             "ui_demo_outcome",
             &format!(
                 "slug={} hud_seen={} time_to_hud_ms={:?} hud_windows={} hud_activation={}",

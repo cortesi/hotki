@@ -27,7 +27,7 @@ use winit::{
 use crate::{
     config,
     error::{Error, Result},
-    suite::{CaseCtx, CaseStage},
+    suite::CaseCtx,
 };
 
 /// Identifier used for relay repeat runs.
@@ -68,7 +68,7 @@ pub fn repeat_volume_throughput(ctx: &mut CaseCtx<'_>) -> Result<()> {
 fn run_repeat_case(ctx: &mut CaseCtx<'_>, slug: &str, duration_ms: u64) -> Result<()> {
     ctx.setup(|_| Ok(()))?;
     let output = ctx.action(|_| run_repeat_workload(slug, duration_ms))?;
-    ctx.settle(|stage| record_repeat_stats(stage, slug, duration_ms, &output))?;
+    ctx.settle(|ctx| record_repeat_stats(ctx, slug, duration_ms, &output))?;
     Ok(())
 }
 
@@ -91,19 +91,19 @@ fn run_repeat_workload(slug: &str, duration_ms: u64) -> Result<RepeatOutput> {
 
 /// Log repeat metrics and captured output for later inspection.
 fn record_repeat_stats(
-    stage: &CaseStage<'_, '_>,
+    ctx: &CaseCtx<'_>,
     slug: &str,
     duration_ms: u64,
     output: &RepeatOutput,
 ) -> Result<()> {
-    stage.log_event(
+    ctx.log_event(
         "repeat_stats",
         &format!(
             "slug={slug} duration_ms={duration_ms} repeats={}",
             output.repeats
         ),
     );
-    stage.log_event(
+    ctx.log_event(
         "repeat_output",
         &format!("stdout={:?} stderr={:?}", output.stdout, output.stderr),
     );

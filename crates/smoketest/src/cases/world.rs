@@ -19,31 +19,27 @@ use super::support::{
 use crate::{
     config,
     error::{Error, Result},
-    runtime,
-    suite::{CaseCtx, CaseStage},
+    suite::CaseCtx,
+    world,
 };
 
 /// Verify that world status reports healthy capabilities and reasonable polling budgets.
 pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut scenario: Option<ScenarioState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let spec = WindowSpawnSpec::new("primary", "StatusProbe").configure(|config| {
             config.time_ms = 20_000;
             config.label_text = Some("WS".into());
         });
-        scenario = Some(spawn_scenario(
-            stage,
-            "world.status.permissions",
-            vec![spec],
-        )?);
+        scenario = Some(spawn_scenario(ctx, "world.status.permissions", vec![spec])?);
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         if scenario.is_none() {
             return Err(Error::InvalidState("scenario missing during action".into()));
         }
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
         let status = block_on_with_pump(async move { world.status().await })?;
 
         if status.windows_count == 0 {
@@ -73,7 +69,7 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .map(|key| format!("pid={} id={}", key.pid, key.id));
 
         let focused = focused_repr.unwrap_or_else(|| "-".to_string());
-        stage.log_event(
+        ctx.log_event(
             "world_status_permissions",
             &format!(
                 "windows_count={} focused={} last_tick_ms={} current_poll_ms={} accessibility={:?} screen_recording={:?} debounce_cache={} debounce_pending={} reconcile_seq={} suspects_pending={}",
@@ -93,11 +89,11 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("scenario missing during settle".into()))?;
-        finalize_scenario(stage, state)
+        finalize_scenario(ctx, state)
     })?;
 
     Ok(())
@@ -106,23 +102,23 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
 /// Ensure AX properties surface on the focused window via world snapshots.
 pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut scenario: Option<ScenarioState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let spec = WindowSpawnSpec::new("primary", "AXProps").configure(|config| {
             config.time_ms = 20_000;
             config.label_text = Some("AX".into());
         });
-        scenario = Some(spawn_scenario(stage, "world.ax.focus_props", vec![spec])?);
+        scenario = Some(spawn_scenario(ctx, "world.ax.focus_props", vec![spec])?);
         Ok(())
     })?;
 
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state = scenario
             .as_mut()
             .ok_or_else(|| Error::InvalidState("scenario missing during action".into()))?;
-        raise_window(stage, state, "primary")?;
+        raise_window(ctx, state, "primary")?;
         let window = state.window("primary")?;
         let expected = window.world_id;
-        let world = stage.world_clone();
+        let world = ctx.world_clone();
 
         let deadline = Instant::now() + Duration::from_millis(2_000);
         let props: AxProps = loop {
@@ -166,7 +162,7 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
             )));
         }
 
-        stage.log_event(
+        ctx.log_event(
             "world_ax_focus_props",
             &format!(
                 "role={:?} subrole={:?} can_set_pos={:?} can_set_size={:?}",
@@ -177,18 +173,18 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("scenario missing during settle".into()))?;
-        finalize_scenario(stage, state)
+        finalize_scenario(ctx, state)
     })?;
 
     Ok(())
 }
 
 /// Record diagnostics and shutdown the mimic scenario.
-fn finalize_scenario(_stage: &CaseStage<'_, '_>, state: ScenarioState) -> Result<()> {
+fn finalize_scenario(_ctx: &CaseCtx<'_>, state: ScenarioState) -> Result<()> {
     shutdown_mimic(state.mimic)?;
     Ok(())
 }
@@ -205,12 +201,12 @@ pub fn world_spaces_adoption(ctx: &mut CaseCtx<'_>) -> Result<()> {
         Ok(())
     })?;
 
-    ctx.settle(|stage| {
+    ctx.settle(|ctx| {
         let outcome = metrics
             .take()
             .ok_or_else(|| Error::InvalidState("world-spaces metrics missing".into()))?;
 
-        stage.log_event(
+        ctx.log_event(
             "world_spaces_outcome",
             &format!(
                 "slug={} adoption_ms={} last_tick_ms={} current_poll_ms={}",
@@ -236,7 +232,7 @@ struct WorldSpacesMetrics {
 
 /// Simulate multi-space adoption against the mock winops backend.
 fn run_world_spaces_simulation() -> Result<WorldSpacesMetrics> {
-    runtime::block_on(async {
+    world::block_on(async {
         const ADOPTION_BUDGET_MS: u64 = 250;
 
         let mock = Arc::new(MockWinOps::new());

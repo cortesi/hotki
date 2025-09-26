@@ -8,14 +8,14 @@ use super::support::{
 };
 use crate::{
     error::{Error, Result},
-    suite::{CaseCtx, CaseStage},
+    suite::CaseCtx,
 };
 
 /// Wrap the legacy focus tracking smoketest within the suite runner.
 pub fn focus_tracking(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let _fast_raise_guard = mac_winops::override_ensure_frontmost_config(3, 40, 160);
     let mut scenario: Option<ScenarioState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let specs = vec![
             WindowSpawnSpec::new("support", "focus-support").configure(|config| {
                 config.time_ms = 25_000;
@@ -30,18 +30,18 @@ pub fn focus_tracking(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 config.label_text = Some("P".into());
             }),
         ];
-        scenario = Some(spawn_scenario(stage, "focus.tracking", specs)?);
+        scenario = Some(spawn_scenario(ctx, "focus.tracking", specs)?);
         Ok(())
     })?;
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state = scenario
             .as_mut()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during action".into()))?;
-        raise_window(stage, state, "support")?;
-        raise_window(stage, state, "primary")?;
+        raise_window(ctx, state, "support")?;
+        raise_window(ctx, state, "primary")?;
         Ok(())
     })?;
-    ctx.settle(|_stage| {
+    ctx.settle(|_| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during settle".into()))?;
@@ -55,7 +55,7 @@ pub fn focus_tracking(ctx: &mut CaseCtx<'_>) -> Result<()> {
 pub fn focus_nav(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let _fast_raise_guard = mac_winops::override_ensure_frontmost_config(3, 40, 160);
     let mut scenario: Option<ScenarioState> = None;
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let slots = [
             ("tl", "focus-nav-tl", (180.0, 520.0), "TL"),
             ("tr", "focus-nav-tr", (860.0, 520.0), "TR"),
@@ -73,19 +73,19 @@ pub fn focus_nav(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 })
             })
             .collect::<Vec<_>>();
-        scenario = Some(spawn_scenario(stage, "focus.nav", specs)?);
+        scenario = Some(spawn_scenario(ctx, "focus.nav", specs)?);
         Ok(())
     })?;
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state = scenario
             .as_mut()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during action".into()))?;
         for label in ["tl", "tr", "br", "bl"] {
-            raise_window(stage, state, label)?;
+            raise_window(ctx, state, label)?;
         }
         Ok(())
     })?;
-    ctx.settle(|_stage| {
+    ctx.settle(|_| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during settle".into()))?;
@@ -100,7 +100,7 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let _fast_raise_guard = mac_winops::override_ensure_frontmost_config(3, 40, 160);
     let mut scenario: Option<ScenarioState> = None;
     let setup_start = Instant::now();
-    ctx.setup(|stage| {
+    ctx.setup(|ctx| {
         let specs = vec![
             WindowSpawnSpec::new("primary", "raise-primary").configure(|config| {
                 config.time_ms = 25_000;
@@ -115,7 +115,7 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 config.label_text = Some("S".into());
             }),
         ];
-        scenario = Some(spawn_scenario(stage, "raise", specs)?);
+        scenario = Some(spawn_scenario(ctx, "raise", specs)?);
         Ok(())
     })?;
     debug!(
@@ -125,11 +125,11 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
     );
 
     let action_start = Instant::now();
-    ctx.action(|stage| {
+    ctx.action(|ctx| {
         let state = scenario
             .as_mut()
             .ok_or_else(|| Error::InvalidState("raise scenario missing during action".into()))?;
-        run_raise_sequence(stage, state)?;
+        run_raise_sequence(ctx, state)?;
         Ok(())
     })?;
     debug!(
@@ -139,7 +139,7 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
     );
 
     let settle_start = Instant::now();
-    ctx.settle(|_stage| {
+    ctx.settle(|_| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("raise scenario missing during settle".into()))?;
@@ -156,8 +156,8 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
 }
 
 /// Execute the ordered raise sequence for the focus scenario.
-fn run_raise_sequence(stage: &CaseStage<'_, '_>, state: &mut ScenarioState) -> Result<()> {
-    raise_window(stage, state, "primary")?;
-    raise_window(stage, state, "sibling")?;
+fn run_raise_sequence(ctx: &CaseCtx<'_>, state: &mut ScenarioState) -> Result<()> {
+    raise_window(ctx, state, "primary")?;
+    raise_window(ctx, state, "sibling")?;
     Ok(())
 }

@@ -1,18 +1,48 @@
 //! Process management utilities for smoketests.
 use std::{
+    collections::HashSet,
     env, fs,
-    path::PathBuf,
-    process as std_process,
     process::{Child, Command, Stdio},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
+use parking_lot::Mutex;
+
 use crate::{
     config,
     error::{Error, Result},
-    proc_registry,
+    warn_overlay,
 };
+
+/// Global registry of helper process IDs for best-effort cleanup.
+static PROCESS_REGISTRY: OnceLock<Mutex<HashSet<i32>>> = OnceLock::new();
+
+/// Access the shared process registry, initializing it on first use.
+fn registry() -> &'static Mutex<HashSet<i32>> {
+    PROCESS_REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Track a helper PID so watchdogs can terminate it later.
+fn register_pid(pid: i32) {
+    registry().lock().insert(pid);
+}
+
+/// Remove a helper PID from the registry once it has exited cleanly.
+fn unregister_pid(pid: i32) {
+    registry().lock().remove(&pid);
+}
+
+/// Kill all registered processes (best-effort cleanup).
+pub fn kill_all() {
+    let pids: Vec<i32> = registry().lock().iter().copied().collect();
+    for pid in pids {
+        unsafe {
+            let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
 
 /// Managed child process that cleans up on drop.
 pub struct ManagedChild {
@@ -26,7 +56,7 @@ impl ManagedChild {
     /// Wrap a child process and register it for bookkeeping.
     pub fn new(child: Child) -> Self {
         let pid = child.id() as i32;
-        proc_registry::register(pid);
+        register_pid(pid);
         Self {
             child: Some(child),
             pid,
@@ -39,7 +69,7 @@ impl ManagedChild {
             child.kill().map_err(Error::Io)?;
             child.wait().map_err(Error::Io)?;
         }
-        proc_registry::unregister(self.pid);
+        unregister_pid(self.pid);
         Ok(())
     }
 }
@@ -64,8 +94,8 @@ pub const WARN_OVERLAY_STANDALONE_FLAG: &str = "--hotki-internal-warn-overlay";
 /// Spawn the hands-off warning overlay (returns a managed child to kill later).
 pub fn spawn_warn_overlay() -> Result<ManagedChild> {
     let exe = env::current_exe()?;
-    let status_path = overlay_status_path_for_current_run();
-    let info_path = overlay_info_path_for_current_run();
+    let status_path = warn_overlay::status_file_path();
+    let info_path = warn_overlay::info_file_path();
     let mut cmd = Command::new(exe);
     cmd.env("HOTKI_SKIP_BUILD", "1")
         .arg(WARN_OVERLAY_STANDALONE_FLAG)
@@ -89,11 +119,11 @@ pub struct OverlaySession {
 impl OverlaySession {
     /// Start the overlay and wait for the initial countdown to complete.
     pub fn start() -> Option<Self> {
-        let status_path = overlay_status_path_for_current_run();
+        let status_path = warn_overlay::status_file_path();
         if fs::write(&status_path, b"").is_err() {
             // best effort, ignore failure
         }
-        let info_path = overlay_info_path_for_current_run();
+        let info_path = warn_overlay::info_file_path();
         if fs::write(&info_path, b"").is_err() {
             // best effort, ignore failure
         }
@@ -108,12 +138,12 @@ impl OverlaySession {
 
     /// Update the status line shown in the overlay window. Best-effort.
     pub fn set_status(&self, name: &str) {
-        write_overlay_text("status", name);
+        warn_overlay::write_overlay_text("status", name);
     }
 
     /// Update the auxiliary info line in the overlay window. Best-effort.
     pub fn set_info(&self, info: &str) {
-        write_overlay_text("info", info);
+        warn_overlay::write_overlay_text("info", info);
     }
 }
 
@@ -123,27 +153,6 @@ impl Drop for OverlaySession {
             eprintln!("overlay: failed to stop helper: {}", e);
         }
     }
-}
-
-/// Compute the overlay status file path for the current smoketest run.
-pub fn overlay_status_path_for_current_run() -> PathBuf {
-    overlay_path_for_current_run("status")
-}
-
-/// Compute the overlay info file path for the current smoketest run.
-pub fn overlay_info_path_for_current_run() -> PathBuf {
-    overlay_path_for_current_run("info")
-}
-
-/// Compute an overlay file path for the current smoketest run.
-fn overlay_path_for_current_run(label: &str) -> PathBuf {
-    env::temp_dir().join(format!("hotki-smoketest-{label}-{}.txt", std_process::id()))
-}
-
-/// Write overlay text to the temp file for the requested label.
-fn write_overlay_text(label: &str, text: &str) {
-    let path = overlay_path_for_current_run(label);
-    if let Err(_e) = fs::write(path, text.as_bytes()) {}
 }
 
 /// Build the hotki binary quietly.
