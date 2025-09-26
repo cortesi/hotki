@@ -217,6 +217,12 @@ impl FocusGuard {
     pub fn reassert(&self) -> Result<()> {
         let mut attempts = 0usize;
         let mut last_error: Option<Error> = None;
+        let mut next_seq =
+            match server_drive::wait_for_world_seq(0, config::INPUT_DELAYS.retry_delay_ms) {
+                Ok(seq) => seq,
+                Err(server_drive::DriverError::NotInitialized) => 0,
+                Err(err) => return Err(Error::from(err)),
+            };
         while attempts < FOCUS_GUARD_MAX_ATTEMPTS {
             attempts += 1;
             if let Err(err) = self.raise_once() {
@@ -225,13 +231,39 @@ impl FocusGuard {
             }
             match self.verify_alignment() {
                 Ok(true) => return Ok(()),
-                Ok(false) => {}
+                Ok(false) => {
+                    next_seq = next_seq.saturating_add(1);
+                    match server_drive::wait_for_world_seq(
+                        next_seq,
+                        config::INPUT_DELAYS.retry_delay_ms,
+                    ) {
+                        Ok(seq) => next_seq = seq,
+                        Err(server_drive::DriverError::NotInitialized) => {}
+                        Err(err) => {
+                            let mapped = Error::from(err);
+                            debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
+                            last_error = Some(mapped);
+                        }
+                    }
+                }
                 Err(err) => {
                     debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %err, "focus_guard_verify_failed");
                     last_error = Some(err);
+                    next_seq = next_seq.saturating_add(1);
+                    match server_drive::wait_for_world_seq(
+                        next_seq,
+                        config::INPUT_DELAYS.retry_delay_ms,
+                    ) {
+                        Ok(seq) => next_seq = seq,
+                        Err(server_drive::DriverError::NotInitialized) => {}
+                        Err(err) => {
+                            let mapped = Error::from(err);
+                            debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
+                            last_error = Some(mapped);
+                        }
+                    }
                 }
             }
-            thread::sleep(Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms));
         }
         Err(last_error.unwrap_or_else(|| {
             Error::InvalidState(format!(

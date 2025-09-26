@@ -20,9 +20,9 @@ from highest to lowest impact on reliability.
 
 2. Stage Two: Surface Live State Snapshots Through the Bridge
 
-1. [ ] Stream world-focus and HUD updates over the bridge so tests can assert UI/world parity without polling.
-2. [ ] Add a `wait_for_world_seq` bridge call that blocks until hotki-world reaches a target reconcile ID.
-3. [ ] Update flaky smoketests to replace sleep-based waits with the new synchronisation primitives.
+1. [x] Stream world-focus and HUD updates over the bridge so tests can assert UI/world parity without polling.
+2. [x] Add a `wait_for_world_seq` bridge call that blocks until hotki-world reaches a target reconcile ID.
+3. [x] Update flaky smoketests to replace sleep-based waits with the new synchronisation primitives.
 
 3. Stage Three: Harden Startup and Shutdown Paths
 

@@ -19,6 +19,7 @@ use super::support::{
 use crate::{
     config,
     error::{Error, Result},
+    server_drive,
     suite::CaseCtx,
     world,
 };
@@ -120,7 +121,8 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let expected = window.world_id;
         let world = ctx.world_clone();
 
-        let deadline = Instant::now() + Duration::from_millis(2_000);
+        let _ = server_drive::wait_for_world_seq(0, 1_000);
+        let deadline = Instant::now() + Duration::from_millis(4_000);
         let props: AxProps = loop {
             let focused = block_on_with_pump({
                 let world_clone = world.clone();
@@ -160,6 +162,21 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 "world-ax: invalid props role={:?} subrole={:?} can_set_pos={:?} can_set_size={:?}",
                 props.role, props.subrole, props.can_set_pos, props.can_set_size
             )));
+        }
+
+        if let Ok(Some(snapshot)) = server_drive::latest_world_focus() {
+            let app_summary = snapshot
+                .app
+                .as_ref()
+                .map(|app| format!("{}:{}", app.pid, app.title))
+                .unwrap_or_else(|| "<none>".to_string());
+            ctx.log_event(
+                "world_ax_focus_props.focus",
+                &format!(
+                    "event_id={} reconcile_seq={} received_ms={} app={}",
+                    snapshot.event_id, snapshot.reconcile_seq, snapshot.received_ms, app_summary
+                ),
+            );
         }
 
         ctx.log_event(

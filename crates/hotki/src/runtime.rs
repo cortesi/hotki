@@ -10,26 +10,30 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{self, Command},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     thread,
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
 use config::themes;
 use egui::Context;
-use hotki_protocol::{NotifyKind, ipc::heartbeat};
+use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
 use hotki_server::{
     Client,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeKeyKind, BridgeReply, BridgeRequest, BridgeResponse,
-        BridgeTimestampMs,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind, BridgeReply,
+        BridgeRequest, BridgeResponse, BridgeTimestampMs, default_wait_world_seq_timeout_ms,
     },
 };
 use tokio::{
     fs,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
-    sync::{mpsc, oneshot},
-    time::{Duration, Instant as TokioInstant, Sleep, sleep},
+    sync::{Notify, broadcast, mpsc, oneshot},
+    time::{Duration, Instant as TokioInstant, Sleep, sleep, timeout},
 };
 use tracing::{debug, error, info};
 
@@ -71,6 +75,12 @@ struct ConnectionDriver {
     dumpworld: bool,
     /// Optional smoketest bridge socket path to expose test commands.
     test_bridge_path: Option<PathBuf>,
+    /// Broadcast channel used to stream bridge updates to the smoketest harness.
+    bridge_events: broadcast::Sender<BridgeEvent>,
+    /// Latest reconcile sequence reported by the world service.
+    world_seq: Arc<AtomicU64>,
+    /// Notifier triggered when the world reconcile sequence advances.
+    world_seq_notify: Arc<Notify>,
 }
 
 impl ConnectionDriver {
@@ -94,6 +104,21 @@ impl ConnectionDriver {
                 }
                 self.egui_ctx.request_repaint();
             }
+        }
+    }
+
+    /// Publish a bridge event to any smoketest subscribers.
+    fn emit_bridge_event(&self, event: BridgeEvent) {
+        if self.bridge_events.send(event).is_err() {
+            // No active smoketest subscribers; ignore the backpressure signal.
+        }
+    }
+
+    /// Record the latest world reconcile sequence and wake pending waiters.
+    fn update_world_seq(&self, seq: u64) {
+        let previous = self.world_seq.swap(seq, AtomicOrdering::SeqCst);
+        if seq > previous {
+            self.world_seq_notify.notify_waiters();
         }
     }
     /// Construct a new driver instance with initial configuration and channels.
@@ -120,6 +145,9 @@ impl ConnectionDriver {
                 let derived = hotki_server::socket_path_for_pid(process::id());
                 Some(PathBuf::from(format!("{}.bridge", derived)))
             });
+        let (bridge_events, _rx) = broadcast::channel(128);
+        let world_seq = Arc::new(AtomicU64::new(0));
+        let world_seq_notify = Arc::new(Notify::new());
 
         Self {
             config_path,
@@ -132,13 +160,21 @@ impl ConnectionDriver {
             current_cursor: config::Cursor::default(),
             dumpworld,
             test_bridge_path,
+            bridge_events,
+            world_seq,
+            world_seq_notify,
         }
     }
 
     /// Initialize the smoketest bridge listener if it hasn't been started yet.
     async fn ensure_test_bridge(&mut self) {
         if let Some(path) = self.test_bridge_path.take()
-            && let Err(err) = init_test_bridge(path.clone(), self.tx_ctrl_runtime.clone()).await
+            && let Err(err) = init_test_bridge(
+                path.clone(),
+                self.tx_ctrl_runtime.clone(),
+                self.bridge_events.clone(),
+            )
+            .await
         {
             tracing::warn!(?err, socket = %path.display(), "failed to initialize smoketest bridge");
             // If initialization failed, allow later retries by restoring the path
@@ -414,6 +450,12 @@ impl ConnectionDriver {
                     message: err.to_string(),
                 },
             },
+            BridgeRequest::WaitForWorldSeq { target, timeout_ms } => {
+                match self.wait_for_world_seq(conn, target, timeout_ms).await {
+                    Ok(seq) => BridgeResponse::WorldSeq { reached: seq },
+                    Err(message) => BridgeResponse::Err { message },
+                }
+            }
             BridgeRequest::Shutdown => match conn.shutdown().await {
                 Ok(()) => BridgeResponse::Ok,
                 Err(err) => BridgeResponse::Err {
@@ -423,8 +465,52 @@ impl ConnectionDriver {
         }
     }
 
+    /// Wait for the world reconcile sequence to reach `target` or time out.
+    async fn wait_for_world_seq(
+        &self,
+        conn: &mut hotki_server::Connection,
+        target: u64,
+        timeout_ms: u64,
+    ) -> Result<u64, String> {
+        let timeout_ms = if timeout_ms == 0 {
+            default_wait_world_seq_timeout_ms()
+        } else {
+            timeout_ms
+        };
+        let deadline = TokioInstant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let status = conn
+                .get_world_status()
+                .await
+                .map_err(|err| err.to_string())?;
+            let current = status.reconcile_seq;
+            self.update_world_seq(current);
+            if current >= target {
+                return Ok(current);
+            }
+            let now = TokioInstant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let notified = self.world_seq_notify.notified();
+            match timeout(remaining, notified).await {
+                Ok(()) => continue,
+                Err(_) => break,
+            }
+        }
+        let last = self.world_seq.load(AtomicOrdering::SeqCst);
+        Err(format!(
+            "world reconcile sequence {target} not reached within {timeout_ms} ms (last seen {last})"
+        ))
+    }
+
     /// Handle a single server-to-UI event received from the engine.
-    async fn handle_server_msg(&mut self, msg: hotki_protocol::MsgToUI) {
+    async fn handle_server_msg(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+        msg: hotki_protocol::MsgToUI,
+    ) {
         match msg {
             hotki_protocol::MsgToUI::HudUpdate { cursor } => {
                 self.current_cursor = cursor;
@@ -439,6 +525,15 @@ impl ConnectionDriver {
                     .ui_config
                     .parent_title(&self.current_cursor)
                     .map(|s| s.to_string());
+                let bridge_keys: Vec<BridgeHudKey> = visible_keys
+                    .iter()
+                    .map(|(ident, desc, is_mode)| BridgeHudKey {
+                        ident: ident.clone(),
+                        description: desc.clone(),
+                        is_mode: *is_mode,
+                    })
+                    .collect();
+                let bridge_parent_title = parent_title.clone();
                 if self
                     .tx_keys
                     .send(AppEvent::KeyUpdate {
@@ -452,6 +547,12 @@ impl ConnectionDriver {
                     tracing::warn!("failed to send KeyUpdate");
                 }
                 self.egui_ctx.request_repaint();
+                self.emit_bridge_event(BridgeEvent::Hud {
+                    cursor: self.current_cursor.clone(),
+                    depth,
+                    parent_title: bridge_parent_title,
+                    keys: bridge_keys,
+                });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
                 if self
@@ -520,8 +621,40 @@ impl ConnectionDriver {
                 // No-op beyond heartbeat timer reset in the caller
             }
             hotki_protocol::MsgToUI::World(msg) => {
-                if self.dumpworld {
-                    debug!("World event: {:?}", msg);
+                self.handle_world_stream(conn, msg).await;
+            }
+        }
+    }
+
+    /// Process a streamed world event: update reconcile metrics and emit focus updates.
+    async fn handle_world_stream(&self, conn: &mut hotki_server::Connection, msg: WorldStreamMsg) {
+        if self.dumpworld {
+            debug!("World event: {:?}", msg);
+        }
+        let focus_payload = match &msg {
+            WorldStreamMsg::FocusChanged(app) => Some(app.clone()),
+            _ => None,
+        };
+
+        match conn.get_world_status().await {
+            Ok(status) => {
+                let seq = status.reconcile_seq;
+                self.update_world_seq(seq);
+                if let Some(app) = focus_payload {
+                    self.emit_bridge_event(BridgeEvent::WorldFocus {
+                        app,
+                        reconcile_seq: seq,
+                    });
+                }
+            }
+            Err(err) => {
+                tracing::debug!(?err, "failed to fetch world status for bridge update");
+                if let Some(app) = focus_payload {
+                    let seq = self.world_seq.load(AtomicOrdering::SeqCst);
+                    self.emit_bridge_event(BridgeEvent::WorldFocus {
+                        app,
+                        reconcile_seq: seq,
+                    });
                 }
             }
         }
@@ -647,7 +780,7 @@ impl ConnectionDriver {
                             if let hotki_protocol::MsgToUI::World(hotki_protocol::WorldStreamMsg::ResyncRecommended) = &msg {
                                 self.handle_resync(conn).await;
                             }
-                            self.handle_server_msg(msg).await;
+                            self.handle_server_msg(conn, msg).await;
                         }
                         Err(e) => {
                             match e {
@@ -735,6 +868,7 @@ impl ConnectionDriver {
 async fn init_test_bridge(
     path: PathBuf,
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+    events: broadcast::Sender<BridgeEvent>,
 ) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -747,7 +881,7 @@ async fn init_test_bridge(
     let listener = UnixListener::bind(&path)?;
     let cleanup_path = path.clone();
     tokio::spawn(async move {
-        if let Err(err) = run_test_bridge(listener, tx_ctrl_runtime).await {
+        if let Err(err) = run_test_bridge(listener, tx_ctrl_runtime, events).await {
             tracing::debug!(?err, "smoketest bridge listener exited");
         }
         if let Err(err) = fs::remove_file(&cleanup_path).await
@@ -763,13 +897,15 @@ async fn init_test_bridge(
 async fn run_test_bridge(
     listener: UnixListener,
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+    events: broadcast::Sender<BridgeEvent>,
 ) -> io::Result<()> {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 let tx = tx_ctrl_runtime.clone();
+                let rx = events.subscribe();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_test_bridge_client(stream, tx).await {
+                    if let Err(err) = handle_test_bridge_client(stream, tx, rx).await {
                         tracing::debug!(?err, "smoketest bridge client disconnected");
                     }
                 });
@@ -791,6 +927,7 @@ type ProcessingFuture = Pin<Box<dyn Future<Output = (BridgeCommandId, BridgeResp
 async fn handle_test_bridge_client(
     stream: UnixStream,
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
+    mut event_rx: broadcast::Receiver<BridgeEvent>,
 ) -> io::Result<()> {
     let (reader, writer) = stream.into_split();
     let reader = BufReader::new(reader);
@@ -800,6 +937,7 @@ async fn handle_test_bridge_client(
     let mut pending: VecDeque<BridgeCommand> = VecDeque::new();
     let mut processing: Option<ProcessingFuture> = None;
     let mut expected_command: BridgeCommandId = 0;
+    let mut next_event_id: BridgeCommandId = 1 << 63;
 
     loop {
         tokio::select! {
@@ -816,6 +954,23 @@ async fn handle_test_bridge_client(
                         ).await?;
                     }
                     None => break,
+                }
+            }
+            event = event_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let reply = BridgeReply {
+                            command_id: next_event_id,
+                            timestamp_ms: now_millis(),
+                            response: BridgeResponse::Event { event },
+                        };
+                        write_bridge_reply(&mut writer, reply).await?;
+                        next_event_id = next_event_id.wrapping_add(1);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
             result = async {

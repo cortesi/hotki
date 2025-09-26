@@ -13,11 +13,13 @@ use serde::Serialize;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive,
+    server_drive::{self, DriverError},
     session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, sanitize_slug},
     world,
 };
+use hotki_server::smoketest_bridge::BridgeEvent;
+use tracing::debug;
 
 /// Window title emitted by the HUD process.
 const HUD_TITLE: &str = "Hotki HUD";
@@ -85,6 +87,7 @@ impl BindingWatcher {
         let deadline = start + Duration::from_millis(timeout_ms);
         let poll_interval = Duration::from_millis(config::INPUT_DELAYS.poll_interval_ms.max(10));
         let mut last_attempt: Option<Instant> = None;
+        let mut last_hud_event: Option<u64> = None;
 
         self.dispatch_activation(
             activation_ident,
@@ -95,6 +98,46 @@ impl BindingWatcher {
         )?;
 
         while Instant::now() < deadline {
+            let mut hud_ready_via_event = false;
+            match server_drive::drain_bridge_events() {
+                Ok(events) => {
+                    for event in events {
+                        debug!(
+                            event_id = event.id,
+                            event_ms = event.timestamp_ms,
+                            "hud_event_observed"
+                        );
+                        if let BridgeEvent::Hud { .. } = event.payload
+                            && last_hud_event != Some(event.id)
+                        {
+                            metrics.record_hud_update();
+                            metrics.record_frontmost();
+                            last_hud_event = Some(event.id);
+                            if let Ok(Some(snapshot)) = server_drive::latest_hud() {
+                                debug!(
+                                    hud_event_id = snapshot.event_id,
+                                    depth = snapshot.depth,
+                                    parent = ?snapshot.parent_title,
+                                    received_ms = snapshot.received_ms,
+                                    viewing_root = snapshot.cursor.viewing_root,
+                                    key_count = snapshot.keys.len(),
+                                    "hud_snapshot_state"
+                                );
+                            }
+                            if expected_nested.is_empty() {
+                                hud_ready_via_event = true;
+                            }
+                        }
+                    }
+                }
+                Err(DriverError::NotInitialized) => {}
+                Err(err) => return Err(Error::from(err)),
+            }
+
+            if hud_ready_via_event {
+                return Ok(metrics.into_outcome());
+            }
+
             if self.hud_visible()? {
                 metrics.record_hud_update();
                 metrics.record_frontmost();

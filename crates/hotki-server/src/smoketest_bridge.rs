@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::rpc::WorldSnapshotLite;
+use hotki_protocol::{App, Cursor};
 
 /// Unique identifier assigned to each bridge command.
 pub type BridgeCommandId = u64;
@@ -47,8 +48,22 @@ pub enum BridgeRequest {
     GetDepth,
     /// Fetch a lightweight world snapshot.
     GetWorldSnapshot,
+    /// Block until the world reconcile sequence reaches at least `target`.
+    WaitForWorldSeq {
+        /// Minimum reconcile sequence expected from the world service.
+        target: u64,
+        /// Maximum time to wait before returning an error (milliseconds).
+        #[serde(default = "default_wait_world_seq_timeout_ms")]
+        timeout_ms: u64,
+    },
     /// Request a graceful backend shutdown.
     Shutdown,
+}
+
+/// Default timeout (in milliseconds) applied when waiting for the world
+/// reconcile sequence to advance.
+pub const fn default_wait_world_seq_timeout_ms() -> u64 {
+    5_000
 }
 
 /// Key event kind forwarded through the bridge.
@@ -82,16 +97,61 @@ pub enum BridgeResponse {
         /// Current depth value.
         depth: usize,
     },
+    /// Success reporting the reconcile sequence reached by the world service.
+    WorldSeq {
+        /// Reconcile sequence observed when the wait completed.
+        reached: u64,
+    },
     /// Success containing a world snapshot.
     WorldSnapshot {
         /// Serialized world snapshot payload.
         snapshot: WorldSnapshotLite,
+    },
+    /// Asynchronous event emitted by the UI runtime.
+    Event {
+        /// Event payload describing the observed state change.
+        event: BridgeEvent,
     },
     /// Error with a message for diagnostics.
     Err {
         /// Human-readable error message.
         message: String,
     },
+}
+
+/// Event payload streamed from the UI runtime to the smoketest harness.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BridgeEvent {
+    /// HUD state changed after evaluating a cursor update.
+    Hud {
+        /// Cursor context describing the HUD state.
+        cursor: Cursor,
+        /// Logical depth associated with the cursor.
+        depth: usize,
+        /// Optional parent title when the HUD is nested under another item.
+        parent_title: Option<String>,
+        /// Keys currently visible in the HUD.
+        keys: Vec<BridgeHudKey>,
+    },
+    /// World service reported a focus change.
+    WorldFocus {
+        /// Latest focused application context, if any.
+        app: Option<App>,
+        /// Reconcile sequence observed when the focus change occurred.
+        reconcile_seq: u64,
+    },
+}
+
+/// HUD key metadata forwarded to the smoketest harness.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeHudKey {
+    /// Key chord string as rendered by the HUD.
+    pub ident: String,
+    /// Human-readable description provided by the config.
+    pub description: String,
+    /// True when the key represents a mode binding.
+    pub is_mode: bool,
 }
 
 /// Response envelope emitted by the UI runtime back to the smoketest harness.
@@ -128,6 +188,15 @@ impl BridgeResponse {
     pub fn into_depth(self) -> Result<usize, String> {
         match self {
             BridgeResponse::Depth { depth } => Ok(depth),
+            BridgeResponse::Err { message } => Err(message),
+            other => Err(format!("unexpected bridge response: {:?}", other)),
+        }
+    }
+
+    /// Extract the reconcile sequence value from the response.
+    pub fn into_world_seq(self) -> Result<u64, String> {
+        match self {
+            BridgeResponse::WorldSeq { reached } => Ok(reached),
             BridgeResponse::Err { message } => Err(message),
             other => Err(format!("unexpected bridge response: {:?}", other)),
         }

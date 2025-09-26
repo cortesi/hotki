@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     convert::TryInto,
     env,
     io::{self, BufRead, BufReader, Write},
@@ -10,11 +10,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use hotki_protocol::{App, Cursor};
 use hotki_server::{
     WorldSnapshotLite,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeKeyKind, BridgeReply, BridgeRequest, BridgeResponse,
-        BridgeTimestampMs,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind, BridgeReply,
+        BridgeRequest, BridgeResponse, BridgeTimestampMs,
     },
 };
 use parking_lot::Mutex;
@@ -35,6 +36,47 @@ fn log_bindings_enabled() -> bool {
 
 /// Result alias for bridge driver operations.
 pub type DriverResult<T> = Result<T, DriverError>;
+
+/// Raw bridge event record captured from the UI runtime stream.
+#[derive(Debug, Clone)]
+pub struct BridgeEventRecord {
+    /// Command identifier assigned to the streamed event.
+    pub id: BridgeCommandId,
+    /// Millisecond timestamp recorded when the UI flushed the event.
+    pub timestamp_ms: BridgeTimestampMs,
+    /// Event payload describing the state change.
+    pub payload: BridgeEvent,
+}
+
+/// Snapshot of the most recent HUD update observed on the bridge stream.
+#[derive(Debug, Clone)]
+pub struct HudSnapshot {
+    /// Identifier of the bridge event associated with this snapshot.
+    pub event_id: BridgeCommandId,
+    /// Millisecond timestamp when the snapshot was observed.
+    pub received_ms: BridgeTimestampMs,
+    /// Cursor context backing the HUD rendering.
+    pub cursor: Cursor,
+    /// Logical depth of the HUD stack for the cursor.
+    pub depth: usize,
+    /// Optional parent title when the HUD is nested.
+    pub parent_title: Option<String>,
+    /// Keys rendered by the HUD for the current cursor.
+    pub keys: Vec<BridgeHudKey>,
+}
+
+/// Snapshot of the most recent world focus event observed on the bridge stream.
+#[derive(Debug, Clone)]
+pub struct WorldFocusSnapshot {
+    /// Identifier of the bridge event associated with this focus change.
+    pub event_id: BridgeCommandId,
+    /// Millisecond timestamp when the focus event was observed.
+    pub received_ms: BridgeTimestampMs,
+    /// Optional focused application context reported by the world service.
+    pub app: Option<App>,
+    /// World reconcile sequence at which the focus change occurred.
+    pub reconcile_seq: u64,
+}
 
 /// Error variants surfaced by the smoketest bridge driver.
 #[derive(Debug, Error)]
@@ -367,6 +409,26 @@ pub fn get_world_snapshot() -> DriverResult<WorldSnapshotLite> {
     with_connection_mut(|conn| conn.call_snapshot())
 }
 
+/// Block until the world reconcile sequence reaches `target` (or times out).
+pub fn wait_for_world_seq(target: u64, timeout_ms: u64) -> DriverResult<u64> {
+    with_connection_mut(|conn| conn.wait_for_world_seq(target, timeout_ms))
+}
+
+/// Retrieve the latest HUD snapshot observed on the bridge.
+pub fn latest_hud() -> DriverResult<Option<HudSnapshot>> {
+    with_connection_mut(|conn| Ok(conn.latest_hud()))
+}
+
+/// Retrieve the latest world focus snapshot observed on the bridge.
+pub fn latest_world_focus() -> DriverResult<Option<WorldFocusSnapshot>> {
+    with_connection_mut(|conn| Ok(conn.latest_focus()))
+}
+
+/// Drain buffered bridge events for inspection.
+pub fn drain_bridge_events() -> DriverResult<Vec<BridgeEventRecord>> {
+    with_connection_mut(|conn| Ok(conn.drain_events()))
+}
+
 /// Blocking Unix-stream client that forwards commands to the UI bridge.
 struct BridgeClient {
     /// Reader half of the bridge socket.
@@ -379,11 +441,19 @@ struct BridgeClient {
     next_command_id: BridgeCommandId,
     /// Maximum time to wait for an acknowledgement.
     ack_timeout: Duration,
+    /// Circular buffer of recent bridge events.
+    event_buffer: VecDeque<BridgeEventRecord>,
+    /// Latest HUD snapshot emitted by the bridge.
+    latest_hud: Option<HudSnapshot>,
+    /// Latest world focus snapshot emitted by the bridge.
+    latest_focus: Option<WorldFocusSnapshot>,
 }
 
 impl BridgeClient {
     /// Maximum number of reconnection attempts per bridge call.
     const MAX_RECONNECT_ATTEMPTS: u32 = 3;
+    /// Maximum number of bridge events retained in memory.
+    const EVENT_BUFFER_CAPACITY: usize = 128;
 
     /// Establish a new bridge client connection to the given socket path.
     fn connect(path: &str) -> DriverResult<Self> {
@@ -401,6 +471,9 @@ impl BridgeClient {
             socket_path: path.to_string(),
             next_command_id: 0,
             ack_timeout: Duration::from_millis(config::BRIDGE.ack_timeout_ms),
+            event_buffer: VecDeque::new(),
+            latest_hud: None,
+            latest_focus: None,
         })
     }
 
@@ -487,29 +560,45 @@ impl BridgeClient {
         {
             return (false, Err(DriverError::Io { source }));
         }
-        let ack_result = self.read_reply();
-        if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
-            debug!(?err, "failed to clear bridge read timeout");
-        }
-        let ack = match ack_result {
-            Ok(reply) => reply,
-            Err(DriverError::Io { source })
-                if source.kind() == io::ErrorKind::WouldBlock
-                    || source.kind() == io::ErrorKind::TimedOut =>
-            {
-                return (
-                    false,
-                    Err(DriverError::AckTimeout {
-                        command_id,
-                        timeout_ms: self.ack_timeout.as_millis() as u64,
-                    }),
-                );
+        loop {
+            let ack_result = self.read_reply();
+            match ack_result {
+                Ok(reply) => {
+                    if let BridgeResponse::Event { .. } = &reply.response {
+                        self.record_event(reply);
+                        continue;
+                    }
+                    let outcome = self.validate_ack(command_id, &reply);
+                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+                        debug!(?err, "failed to clear bridge read timeout");
+                    }
+                    match outcome {
+                        Ok(()) => return (true, self.await_final_response(command_id)),
+                        Err(err) => return (false, Err(err)),
+                    }
+                }
+                Err(DriverError::Io { source })
+                    if source.kind() == io::ErrorKind::WouldBlock
+                        || source.kind() == io::ErrorKind::TimedOut =>
+                {
+                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+                        debug!(?err, "failed to clear bridge read timeout");
+                    }
+                    return (
+                        false,
+                        Err(DriverError::AckTimeout {
+                            command_id,
+                            timeout_ms: self.ack_timeout.as_millis() as u64,
+                        }),
+                    );
+                }
+                Err(err) => {
+                    if let Err(clear_err) = self.reader.get_ref().set_read_timeout(None) {
+                        debug!(?clear_err, "failed to clear bridge read timeout");
+                    }
+                    return (false, Err(err));
+                }
             }
-            Err(err) => return (false, Err(err)),
-        };
-        match self.validate_ack(command_id, &ack) {
-            Ok(()) => (true, self.await_final_response(command_id)),
-            Err(err) => (false, Err(err)),
         }
     }
 
@@ -538,17 +627,23 @@ impl BridgeClient {
         &mut self,
         command_id: BridgeCommandId,
     ) -> DriverResult<BridgeResponse> {
-        let reply = self.read_reply()?;
-        if reply.command_id != command_id {
-            return Err(DriverError::SequenceMismatch {
-                expected: command_id,
-                got: reply.command_id,
-            });
-        }
-        match reply.response {
-            BridgeResponse::Ack { .. } => Err(DriverError::AckMissing { command_id }),
-            BridgeResponse::Err { message } => Err(DriverError::BridgeFailure { message }),
-            other => Ok(other),
+        loop {
+            let reply = self.read_reply()?;
+            if let BridgeResponse::Event { .. } = &reply.response {
+                self.record_event(reply);
+                continue;
+            }
+            if reply.command_id != command_id {
+                return Err(DriverError::SequenceMismatch {
+                    expected: command_id,
+                    got: reply.command_id,
+                });
+            }
+            return match reply.response {
+                BridgeResponse::Ack { .. } => Err(DriverError::AckMissing { command_id }),
+                BridgeResponse::Err { message } => Err(DriverError::BridgeFailure { message }),
+                other => Ok(other),
+            };
         }
     }
 
@@ -568,6 +663,67 @@ impl BridgeClient {
         serde_json::from_str(trimmed).map_err(|err| DriverError::BridgeFailure {
             message: err.to_string(),
         })
+    }
+
+    /// Record an asynchronous event emitted by the bridge.
+    fn record_event(&mut self, reply: BridgeReply) {
+        if let BridgeResponse::Event { event } = reply.response {
+            if self.event_buffer.len() >= Self::EVENT_BUFFER_CAPACITY {
+                self.event_buffer.pop_front();
+            }
+            match &event {
+                BridgeEvent::Hud {
+                    cursor,
+                    depth,
+                    parent_title,
+                    keys,
+                } => {
+                    self.latest_hud = Some(HudSnapshot {
+                        event_id: reply.command_id,
+                        received_ms: reply.timestamp_ms,
+                        cursor: cursor.clone(),
+                        depth: *depth,
+                        parent_title: parent_title.clone(),
+                        keys: keys.clone(),
+                    });
+                }
+                BridgeEvent::WorldFocus { app, reconcile_seq } => {
+                    self.latest_focus = Some(WorldFocusSnapshot {
+                        event_id: reply.command_id,
+                        received_ms: reply.timestamp_ms,
+                        app: app.clone(),
+                        reconcile_seq: *reconcile_seq,
+                    });
+                }
+            }
+            self.event_buffer.push_back(BridgeEventRecord {
+                id: reply.command_id,
+                timestamp_ms: reply.timestamp_ms,
+                payload: event,
+            });
+        }
+    }
+
+    /// Drain the buffered bridge events.
+    fn drain_events(&mut self) -> Vec<BridgeEventRecord> {
+        self.event_buffer.drain(..).collect()
+    }
+
+    /// Access the latest HUD snapshot observed on the bridge.
+    fn latest_hud(&self) -> Option<HudSnapshot> {
+        self.latest_hud.clone()
+    }
+
+    /// Access the latest world focus snapshot observed on the bridge.
+    fn latest_focus(&self) -> Option<WorldFocusSnapshot> {
+        self.latest_focus.clone()
+    }
+
+    /// Wait for the world reconcile sequence to reach `target` and return the observed value.
+    fn wait_for_world_seq(&mut self, target: u64, timeout_ms: u64) -> DriverResult<u64> {
+        self.call(&BridgeRequest::WaitForWorldSeq { target, timeout_ms })?
+            .into_world_seq()
+            .map_err(|message| DriverError::BridgeFailure { message })
     }
 
     /// Attempt to re-establish the bridge connection with exponential backoff.
