@@ -1,8 +1,11 @@
 use std::{
+    any::Any,
     collections::BTreeSet,
     fs,
+    panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::exit,
+    result::Result as StdResult,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -302,6 +305,50 @@ impl CaseRunOutcome {
     }
 }
 
+/// Summary emitted after executing a smoketest case body.
+struct CaseExecution {
+    /// Wall-clock duration consumed by the case run.
+    elapsed: Duration,
+    /// Primary error returned by the case body, if any.
+    primary_error: Option<Error>,
+    /// Handle used to reset and verify post-run quiescence.
+    world_for_reset: WorldHandle,
+}
+
+/// Combine cleanup errors surfaced before/after the case run into a single error.
+fn merge_cleanup_errors(existing: Option<Error>, next: Option<Error>) -> Option<Error> {
+    match (existing, next) {
+        (None, None) => None,
+        (Some(err), None) | (None, Some(err)) => Some(err),
+        (Some(first), Some(second)) => Some(Error::InvalidState(format!("{}\n{}", first, second))),
+    }
+}
+
+/// Run a registry entry with pre/post world cleanup guards.
+fn run_case(
+    entry: &'static CaseEntry,
+    config: &RunnerConfig<'_>,
+    scratch_root: &Path,
+    index: usize,
+) -> Result<CaseRunOutcome> {
+    let case_dir = create_case_dir(scratch_root, index, entry.name)?;
+    let world = world::world_handle()?;
+
+    let quiescence_error = ensure_world_quiescent(&world, entry.name, "before run")?;
+
+    let execution = execute_case(entry, config, case_dir, &world);
+
+    let post_cleanup = ensure_world_quiescent(&execution.world_for_reset, entry.name, "after run")?;
+    let combined_cleanup = merge_cleanup_errors(quiescence_error, post_cleanup);
+
+    Ok(CaseRunOutcome {
+        entry,
+        elapsed: execution.elapsed,
+        primary_error: execution.primary_error,
+        quiescence_error: combined_cleanup,
+    })
+}
+
 /// Shut down shared overlay state and surface aggregated failure information.
 /// Run the provided case sequence with shared suite setup and teardown.
 fn run_suite<I>(config: &RunnerConfig<'_>, cases: I, announce_success: bool) -> Result<()>
@@ -325,9 +372,7 @@ where
             session.set_info(info);
             session.set_status(entry.name);
         }
-        let world_handle = world::world_handle()?;
-        world_handle.reset();
-        let outcome = run_entry(entry, config, &scratch_root, idx)?;
+        let outcome = run_case(entry, config, &scratch_root, idx)?;
         report_outcome(&outcome, config.quiet);
         if outcome.is_failure() {
             failures.push(entry);
@@ -378,49 +423,52 @@ fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)
 }
 
 /// Execute a single registry entry and capture timing/artifact metadata.
-fn run_entry(
+fn execute_case(
     entry: &'static CaseEntry,
     config: &RunnerConfig<'_>,
-    scratch_root: &Path,
-    index: usize,
-) -> Result<CaseRunOutcome> {
+    case_dir: PathBuf,
+    world: &WorldHandle,
+) -> CaseExecution {
     let timeout_ms = config
         .base_timeout_ms
         .saturating_add(entry.extra_timeout_ms);
 
-    let case_dir = create_case_dir(scratch_root, index, entry.name)?;
     let start = Instant::now();
-    let world = world::world_handle()?;
-    let run_case = |world: WorldHandle, scratch_dir: PathBuf| {
-        let mut ctx = CaseCtx::new(entry.name, world, scratch_dir);
-        let result = (entry.run)(&mut ctx);
-        (ctx, result)
-    };
-    let (ctx, run_result) = if entry.main_thread {
+    let exec_result = if entry.main_thread {
         let world_clone = world.clone();
         let case_dir_clone = case_dir.clone();
         run_on_main_with_watchdog(entry.name, timeout_ms, move || {
-            run_case(world_clone, case_dir_clone)
+            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
+            let result = (entry.run)(&mut ctx);
+            (ctx, result)
         })
     } else {
-        run_with_watchdog(entry.name, timeout_ms, move || run_case(world, case_dir))
+        let world_clone = world.clone();
+        run_with_watchdog(entry.name, timeout_ms, move || {
+            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir);
+            let result = (entry.run)(&mut ctx);
+            (ctx, result)
+        })
     };
     let elapsed = start.elapsed();
 
-    let run_error = run_result.err();
-    let world_for_reset = ctx.world_clone();
-    let actual_durations = ctx.into_durations();
-
-    log_case_timing(entry, &actual_durations);
-
-    let quiescence_error = ensure_world_quiescent(&world_for_reset, entry.name)?;
-
-    Ok(CaseRunOutcome {
-        entry,
-        elapsed,
-        primary_error: run_error,
-        quiescence_error,
-    })
+    match exec_result {
+        Ok((ctx, run_result)) => {
+            let world_for_reset = ctx.world_clone();
+            let durations = ctx.into_durations();
+            log_case_timing(entry, &durations);
+            CaseExecution {
+                elapsed,
+                primary_error: run_result.err(),
+                world_for_reset,
+            }
+        }
+        Err(abort) => CaseExecution {
+            elapsed,
+            primary_error: Some(abort.into_error()),
+            world_for_reset: world.clone(),
+        },
+    }
 }
 
 /// Emit a structured log entry summarizing configured budgets and observed durations for a case.
@@ -458,37 +506,124 @@ fn report_outcome(outcome: &CaseRunOutcome, quiet: bool) {
     }
 }
 
+/// Abort reason surfaced by watchdog wrappers around case execution.
+#[derive(Debug)]
+enum WatchdogAbort {
+    /// The watchdog deadline elapsed before the worker finished.
+    Timeout {
+        /// Identifier for the task guarded by the watchdog.
+        name: String,
+        /// Timeout budget in milliseconds assigned to the task.
+        timeout_ms: u64,
+    },
+    /// The worker panicked while the watchdog was armed.
+    Panic {
+        /// Identifier for the task guarded by the watchdog.
+        name: String,
+        /// Message extracted from the panic payload.
+        message: String,
+    },
+}
+
+impl WatchdogAbort {
+    /// Build a timeout abort using the provided task name and deadline.
+    fn timeout(name: &str, timeout_ms: u64) -> Self {
+        Self::Timeout {
+            name: name.to_string(),
+            timeout_ms,
+        }
+    }
+
+    /// Build a panic abort from a plain string message.
+    fn panic_from_message(name: &str, message: String) -> Self {
+        Self::Panic {
+            name: name.to_string(),
+            message,
+        }
+    }
+
+    /// Translate the abort into the suite's error type.
+    fn into_error(self) -> Error {
+        match self {
+            Self::Timeout { name, timeout_ms } => {
+                Error::InvalidState(format!("watchdog timeout after {timeout_ms} ms in {name}"))
+            }
+            Self::Panic { name, message } => {
+                Error::InvalidState(format!("test case {name} panicked: {message}"))
+            }
+        }
+    }
+}
+
+/// Render a human-readable message from a panic payload for diagnostics.
+fn panic_message(payload: &(dyn Any + Send + 'static)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        (*msg).to_string()
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// Convenience alias for watchdog guard results.
+type WatchdogResult<T> = StdResult<T, WatchdogAbort>;
+
+/// Outcome produced by the worker thread controlled by the watchdog.
+enum WorkerOutcome<T> {
+    /// Worker completed successfully with the provided value.
+    Completed(T),
+    /// Worker panicked and yielded the formatted panic message.
+    Panicked(String),
+}
+
 /// Run `f` on a background thread and bail out if the timeout expires.
-fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> WatchdogResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    use std::{sync::mpsc, thread};
+    use std::{
+        sync::mpsc::{self, RecvTimeoutError},
+        thread,
+    };
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let value = f();
-        if tx.send(value).is_err() {
-            // Receiver dropped due to timeout; nothing else to do.
+        let outcome = panic::catch_unwind(AssertUnwindSafe(f)).map_or_else(
+            |payload| WorkerOutcome::Panicked(panic_message(payload.as_ref())),
+            WorkerOutcome::Completed,
+        );
+        if tx.send(outcome).is_err() {
+            // Receiver was dropped; the watchdog will see the disconnect.
         }
     });
 
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        Ok(value) => value,
-        Err(_) => {
+        Ok(WorkerOutcome::Completed(value)) => Ok(value),
+        Ok(WorkerOutcome::Panicked(message)) => {
+            Err(WatchdogAbort::panic_from_message(name, message))
+        }
+        Err(RecvTimeoutError::Timeout) => {
             eprintln!(
                 "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
                 timeout_ms, name
             );
             process::kill_all();
-            exit(2);
+            Err(WatchdogAbort::timeout(name, timeout_ms))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            process::kill_all();
+            Err(WatchdogAbort::panic_from_message(
+                name,
+                "worker thread disconnected".to_string(),
+            ))
         }
     }
 }
 
 /// Run `f` on the current thread while a watchdog enforces the deadline.
-fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> T
+fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> WatchdogResult<T>
 where
     F: FnOnce() -> T,
 {
@@ -522,12 +657,14 @@ where
         }
     });
 
-    let value = f();
+    let value = panic::catch_unwind(AssertUnwindSafe(f));
     canceled.store(true, Ordering::SeqCst);
     if watchdog.join().is_err() {
         // Watchdog thread panicked; treat it as best-effort cleanup.
     }
+
     value
+        .map_err(|payload| WatchdogAbort::panic_from_message(name, panic_message(payload.as_ref())))
 }
 
 /// Verify helper metadata and enforce the shared helper catalog limit.
@@ -575,14 +712,15 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
 }
 
 /// Reset the shared world handle and surface quiescence violations with artifacts referenced.
-fn ensure_world_quiescent(world: &WorldHandle, case: &str) -> Result<Option<Error>> {
+fn ensure_world_quiescent(world: &WorldHandle, case: &str, context: &str) -> Result<Option<Error>> {
     let report = world.reset();
     if report.is_quiescent() {
         return Ok(None);
     }
     let msg = format!(
-        "{}: world not quiescent after run (ax={}, main_ops={}, mimics={}, subs={})",
+        "{}: world not quiescent {} (ax={}, main_ops={}, mimics={}, subs={})",
         case,
+        context,
         report.active_ax_observers,
         report.pending_main_ops,
         report.mimic_windows,

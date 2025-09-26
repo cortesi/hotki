@@ -235,14 +235,14 @@ pub fn raise_window(pid: i32, id: WindowId) -> Result<()> {
                     warn!("AXRaise on window failed");
                 }
             } else {
-                info!("raise_window: window does not support AXRaise; skipping action");
+                debug!("raise_window: window does not support AXRaise; skipping action");
             }
         }
 
         let order_err =
             unsafe { CGSOrderWindow(CGSMainConnectionID(), id as i32, K_CGS_ORDER_ABOVE, 0) };
         if order_err == 0 {
-            info!(
+            debug!(
                 "raise_window: CGSOrderWindow promoted pid={} id={} above all",
                 pid, id
             );

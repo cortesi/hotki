@@ -58,6 +58,44 @@ use mac_winops::{
 };
 use regex::Regex;
 
+#[cfg(feature = "world-mimic")]
+fn pump_mimics() {
+    crate::mimic::pump_active_mimics();
+}
+
+#[cfg(not(feature = "world-mimic"))]
+fn pump_mimics() {}
+
+#[cfg(feature = "world-mimic")]
+fn active_mimic_count() -> usize {
+    crate::mimic::active_count()
+}
+
+#[cfg(not(feature = "world-mimic"))]
+fn active_mimic_count() -> usize {
+    0
+}
+
+#[cfg(feature = "world-mimic")]
+fn shutdown_mimics(deadline: Instant) {
+    let requested = crate::mimic::request_shutdown_all();
+    if requested == 0 {
+        return;
+    }
+    if crate::mimic::wait_until_idle(deadline) {
+        return;
+    }
+    let remaining = crate::mimic::active_count();
+    tracing::debug!(remaining, "mimics still active after shutdown deadline");
+    let forced = mac_winops::close_mimic_windows();
+    tracing::debug!(forced, "force-closed mimic windows after shutdown timeout");
+    let final_deadline = Instant::now() + Duration::from_millis(100);
+    let _ = crate::mimic::wait_until_idle(final_deadline);
+}
+
+#[cfg(not(feature = "world-mimic"))]
+fn shutdown_mimics(_: Instant) {}
+
 use self::events::{DEFAULT_EVENT_CAPACITY, EventHub};
 
 /// Re-export of placement attempt tuning options used by mac-winops.
@@ -749,10 +787,11 @@ impl WorldHandle {
     /// Collect counts used to verify teardown quiescence.
     #[must_use]
     pub fn quiescence_report(&self) -> QuiescenceReport {
+        pump_mimics();
         QuiescenceReport {
             active_ax_observers: mac_winops::active_ax_observer_count(),
             pending_main_ops: mac_winops::pending_main_ops_len(),
-            mimic_windows: mac_winops::mimic_window_count(),
+            mimic_windows: active_mimic_count(),
             subscriptions: self.events.subscriber_count(),
         }
     }
@@ -766,17 +805,30 @@ impl WorldHandle {
     /// Reset helper state by closing subscriptions, mimic windows, and draining main ops.
     pub fn reset(&self) -> QuiescenceReport {
         self.events.close_all();
-        mac_winops::close_mimic_windows();
-        while mac_winops::pending_main_ops() {
-            mac_winops::drain_main_ops();
+        let mimic_deadline = Instant::now() + Duration::from_millis(250);
+        shutdown_mimics(mimic_deadline);
+        let main_deadline = Instant::now() + Duration::from_millis(250);
+        if !self.pump_main_until(main_deadline) {
+            mac_winops::drop_pending_main_ops();
         }
         crate::ax_read_pool::reset();
-        let _ = mac_winops::clear_ax_observers();
-        if mac_winops::active_ax_observer_count() > 0 {
-            let deadline = Instant::now() + Duration::from_millis(200);
-            while mac_winops::active_ax_observer_count() > 0 && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
+        let ax_deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if mac_winops::active_ax_observer_count() == 0 {
+                break;
             }
+            let _ = mac_winops::clear_ax_observers();
+            if mac_winops::active_ax_observer_count() == 0 {
+                break;
+            }
+            if Instant::now() >= ax_deadline {
+                tracing::debug!(
+                    remaining = mac_winops::active_ax_observer_count(),
+                    "AX observers still active after reset deadline"
+                );
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
         }
         self.quiescence_report()
     }

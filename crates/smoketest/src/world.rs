@@ -14,7 +14,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use regex::Regex;
 use tokio::runtime::Runtime;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     config,
@@ -323,7 +323,7 @@ pub fn list_windows() -> Result<Vec<WorldWindow>> {
     let elapsed = sweep_start.elapsed();
     let active_count = windows.iter().filter(|w| w.on_active_space).count();
     let total = windows.len();
-    info!(
+    debug!(
         target: "smoketest::world",
         sweep_ms = elapsed.as_secs_f64() * 1000.0,
         total_windows = total,

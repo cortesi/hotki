@@ -8,9 +8,9 @@ use std::{
     rc::{Rc, Weak},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use once_cell::sync::OnceCell;
@@ -30,6 +30,8 @@ fn registry() -> &'static Mutex<MimicRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(MimicRegistry::default()))
 }
 
+static ACTIVE_MIMIC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 thread_local! {
     static ACTIVE_MIMICS: RefCell<Vec<Weak<MimicRuntime>>> = const { RefCell::new(Vec::new()) };
     static SHARED_EVENT_LOOP: RefCell<Option<Rc<RefCell<winit::event_loop::EventLoop<()>>>>> =
@@ -38,6 +40,7 @@ thread_local! {
 
 fn register_active_mimic(runtime: &Rc<MimicRuntime>) {
     ACTIVE_MIMICS.with(|list| list.borrow_mut().push(Rc::downgrade(runtime)));
+    ACTIVE_MIMIC_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Handle for the shared winit event loop used by mimic helpers and smoketests.
@@ -79,12 +82,51 @@ pub fn pump_active_mimics() {
         entries.retain(|weak| {
             if let Some(runtime) = weak.upgrade() {
                 runtime.pump();
-                !runtime.is_finished()
+                if runtime.is_finished() {
+                    ACTIVE_MIMIC_COUNT.fetch_sub(1, Ordering::SeqCst);
+                    false
+                } else {
+                    true
+                }
             } else {
+                ACTIVE_MIMIC_COUNT.fetch_sub(1, Ordering::SeqCst);
                 false
             }
         });
     });
+}
+
+/// Return the number of active mimic runtimes.
+#[must_use]
+pub fn active_count() -> usize {
+    ACTIVE_MIMIC_COUNT.load(Ordering::SeqCst)
+}
+
+/// Request shutdown for all active mimics, returning the number signalled.
+pub fn request_shutdown_all() -> usize {
+    ACTIVE_MIMICS.with(|list| {
+        let mut requested = 0;
+        for weak in list.borrow().iter() {
+            if let Some(runtime) = weak.upgrade() {
+                runtime.request_shutdown();
+                requested += 1;
+            }
+        }
+        requested
+    })
+}
+
+/// Pump active mimics until the deadline elapses or none remain.
+pub fn wait_until_idle(deadline: Instant) -> bool {
+    while Instant::now() < deadline {
+        pump_active_mimics();
+        if active_count() == 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    pump_active_mimics();
+    active_count() == 0
 }
 
 fn format_quirks(quirks: &[Quirk]) -> String {
