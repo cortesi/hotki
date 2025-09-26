@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
     process::exit,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -9,12 +8,16 @@ use std::{
 
 use hotki_world::{WorldHandle, mimic::pump_active_mimics};
 use serde::Serialize;
+use tracing::info;
 
 use crate::{
-    artifacts, cases,
+    cases,
     error::{Error, Result, print_hints},
     proc_registry, process, world,
 };
+
+/// Common tracing target for smoketest case logging.
+pub const LOG_TARGET: &str = "smoketest.case";
 
 /// Convert a case slug into the canonical filename prefix.
 pub fn sanitize_slug(slug: &str) -> String {
@@ -114,40 +117,32 @@ pub enum Stage {
     Settle,
 }
 
-/// Mutable case context that accumulates stage timings and artifacts.
+/// Mutable case context that accumulates stage timings and scratch metadata.
 pub struct CaseCtx<'a> {
     /// Registry slug associated with the current case.
     name: &'a str,
     /// Shared world handle used by the case.
     world: WorldHandle,
-    /// Artifact directory allocated for the case.
-    artifacts_dir: PathBuf,
+    /// Scratch directory allocated for the case.
+    scratch_dir: PathBuf,
     /// Optional stage timings recorded during execution.
     durations: StageDurationsOptional,
-    /// Artifact paths registered during execution.
-    artifacts: Vec<PathBuf>,
 }
 
 impl<'a> CaseCtx<'a> {
     /// Construct a new case context with the provided identifiers.
-    pub fn new(name: &'a str, world: WorldHandle, artifacts_dir: PathBuf) -> Self {
+    pub fn new(name: &'a str, world: WorldHandle, scratch_dir: PathBuf) -> Self {
         Self {
             name,
             world,
-            artifacts_dir,
+            scratch_dir,
             durations: StageDurationsOptional::default(),
-            artifacts: Vec::new(),
         }
     }
 
     /// Clone the shared world handle for asynchronous operations.
     pub fn world_clone(&self) -> WorldHandle {
         self.world.clone()
-    }
-
-    /// Return the artifact directory assigned to the case.
-    pub fn artifacts_dir(&self) -> &Path {
-        &self.artifacts_dir
     }
 
     /// Execute the provided stage closure and capture its elapsed duration.
@@ -165,11 +160,10 @@ impl<'a> CaseCtx<'a> {
         result
     }
 
-    /// Consume the context and return recorded stage durations and artifacts.
+    /// Consume the context and return recorded stage durations.
     pub(crate) fn finish(self) -> CaseReport {
         CaseReport {
             durations: self.durations,
-            artifacts: self.artifacts,
         }
     }
 
@@ -210,118 +204,42 @@ impl<'ctx, 'name> CaseStage<'ctx, 'name> {
         self.inner.world.clone()
     }
 
-    /// Return the artifact directory assigned to the case.
-    pub fn artifacts_dir(&self) -> &Path {
-        &self.inner.artifacts_dir
+    /// Return the scratch directory assigned to the case.
+    pub fn scratch_dir(&self) -> &Path {
+        &self.inner.scratch_dir
     }
 
-    /// Record an artifact path to be surfaced in case summaries.
-    pub fn record_artifact<P: AsRef<Path>>(&mut self, path: P) {
-        self.inner.artifacts.push(path.as_ref().to_path_buf());
+    /// Build a scratch path relative to the case directory.
+    pub fn scratch_path<P: AsRef<Path>>(&self, relative_path: P) -> PathBuf {
+        self.scratch_dir().join(relative_path.as_ref())
     }
 
-    /// Write artifact contents into the case directory and record the emitted path.
-    pub fn write_artifact<P, C>(&mut self, relative_path: P, contents: C) -> Result<PathBuf>
-    where
-        P: AsRef<Path>,
-        C: AsRef<[u8]>,
-    {
-        let path = self.artifacts_dir().join(relative_path.as_ref());
-        fs::write(&path, contents)?;
-        self.record_artifact(&path);
-        Ok(path)
-    }
-
-    /// Serialize a JSON payload into an artifact file using pretty formatting.
-    pub fn write_json_artifact<P, T>(&mut self, relative_path: P, value: &T) -> Result<PathBuf>
-    where
-        P: AsRef<Path>,
-        T: Serialize,
-    {
-        let rel = relative_path.as_ref();
-        let path = self.artifacts_dir().join(rel);
-        let mut file = File::create(&path)?;
-        serde_json::to_writer_pretty(&mut file, value).map_err(|e| {
-            Error::InvalidState(format!(
-                "failed to serialize artifact {}: {}",
-                rel.display(),
-                e
-            ))
-        })?;
-        file.write_all(b"\n")?;
-        self.record_artifact(&path);
-        Ok(path)
-    }
-
-    /// Write an artifact named after the case slug with the provided suffix.
-    pub fn write_slug_artifact<C>(&mut self, suffix: &str, contents: C) -> Result<PathBuf>
-    where
-        C: AsRef<[u8]>,
-    {
-        let filename = Self::artifact_name(self.inner.name, suffix);
-        self.write_artifact(filename, contents)
-    }
-
-    /// Serialize a JSON payload into a slug-prefixed artifact.
-    pub fn write_slug_json_artifact<T>(&mut self, suffix: &str, value: &T) -> Result<PathBuf>
-    where
-        T: Serialize,
-    {
-        let filename = Self::artifact_name(self.inner.name, suffix);
-        self.write_json_artifact(filename, value)
-    }
-
-    /// Write an artifact for an arbitrary slug and suffix.
-    pub fn write_named_artifact<C>(
-        &mut self,
-        slug: &str,
-        suffix: &str,
-        contents: C,
-    ) -> Result<PathBuf>
-    where
-        C: AsRef<[u8]>,
-    {
-        let filename = Self::artifact_name(slug, suffix);
-        self.write_artifact(filename, contents)
-    }
-
-    /// Serialize JSON into an artifact named after the supplied slug and suffix.
-    pub fn write_named_json_artifact<T>(
-        &mut self,
-        slug: &str,
-        suffix: &str,
-        value: &T,
-    ) -> Result<PathBuf>
-    where
-        T: Serialize,
-    {
-        let filename = Self::artifact_name(slug, suffix);
-        self.write_json_artifact(filename, value)
+    /// Log a structured event associated with this case.
+    pub fn log_event(&self, label: &str, message: &str) {
+        info!(
+            target: LOG_TARGET,
+            event = label,
+            case = self.inner.name,
+            message = message
+        );
     }
 
     /// Return the case name associated with this stage.
     pub fn case_name(&self) -> &str {
         self.inner.name
     }
-
-    /// Build an artifact filename for the provided slug/suffix pair.
-    fn artifact_name(slug: &str, suffix: &str) -> String {
-        format!("{}_{}", sanitize_slug(slug), suffix)
-    }
 }
 
-/// Internal representation of stage timings and artifacts produced by a case.
+/// Internal representation of stage timings produced by a case.
 pub struct CaseReport {
     /// Optional stage durations recorded while running the case.
     durations: StageDurationsOptional,
-    /// Artifact paths registered during execution.
-    artifacts: Vec<PathBuf>,
 }
 
 impl CaseReport {
-    /// Consume the report and return stage durations plus recorded artifacts.
-    fn into_parts(self) -> (StageDurationsOptional, Vec<PathBuf>) {
-        (self.durations, self.artifacts)
+    /// Consume the report and return stage durations.
+    fn into_parts(self) -> StageDurationsOptional {
+        self.durations
     }
 }
 
@@ -345,8 +263,6 @@ pub struct CaseRunOutcome {
     pub entry: &'static CaseEntry,
     /// Wall-clock duration spent running the case body (including watchdog).
     pub elapsed: Duration,
-    /// Artifact paths recorded while executing the case.
-    pub artifacts: Vec<PathBuf>,
     /// Primary execution error, if any, returned by the case body.
     pub primary_error: Option<Error>,
     /// Quiescence check failure raised during teardown, if any.
@@ -372,7 +288,7 @@ where
     I: IntoIterator<Item = (usize, &'static CaseEntry)>,
 {
     ensure_helper_limit()?;
-    let artifact_root = create_artifact_root()?;
+    let scratch_root = create_scratch_root()?;
     let overlay = if config.warn_overlay && !config.quiet {
         process::OverlaySession::start()
     } else {
@@ -390,7 +306,7 @@ where
         }
         let world_handle = world::world_handle()?;
         world_handle.reset();
-        let outcome = run_entry(entry, config, &artifact_root, idx)?;
+        let outcome = run_entry(entry, config, &scratch_root, idx)?;
         report_outcome(&outcome, config.quiet);
         if outcome.is_failure() {
             failures.push(entry);
@@ -446,18 +362,18 @@ fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)
 fn run_entry(
     entry: &'static CaseEntry,
     config: &RunnerConfig<'_>,
-    artifact_root: &Path,
+    scratch_root: &Path,
     index: usize,
 ) -> Result<CaseRunOutcome> {
     let timeout_ms = config
         .base_timeout_ms
         .saturating_add(entry.extra_timeout_ms);
 
-    let case_dir = create_case_dir(artifact_root, index, entry.name)?;
+    let case_dir = create_case_dir(scratch_root, index, entry.name)?;
     let start = Instant::now();
     let world = world::world_handle()?;
-    let run_case = |world: WorldHandle, artifacts_dir: PathBuf| {
-        let mut ctx = CaseCtx::new(entry.name, world, artifacts_dir);
+    let run_case = |world: WorldHandle, scratch_dir: PathBuf| {
+        let mut ctx = CaseCtx::new(entry.name, world, scratch_dir);
         let result = (entry.run)(&mut ctx);
         (ctx, result)
     };
@@ -474,27 +390,33 @@ fn run_entry(
 
     let run_error = run_result.err();
     let world_for_reset = ctx.world_clone();
-    let artifacts_dir_path = ctx.artifacts_dir().to_path_buf();
-    let report = ctx.finish().into_parts();
-    let (actual_durations, mut artifacts) = report;
+    let actual_durations = ctx.finish().into_parts();
 
-    let budget_path = artifacts::write_budget_report(
-        entry.name,
-        &entry.budget,
-        &actual_durations,
-        &artifacts_dir_path,
-    )?;
-    artifacts.push(budget_path);
+    log_case_timing(entry, &actual_durations);
 
-    let quiescence_error = ensure_world_quiescent(&world_for_reset, entry.name, &artifacts)?;
+    let quiescence_error = ensure_world_quiescent(&world_for_reset, entry.name)?;
 
     Ok(CaseRunOutcome {
         entry,
         elapsed,
-        artifacts,
         primary_error: run_error,
         quiescence_error,
     })
+}
+
+/// Emit a structured log entry summarizing configured budgets and observed durations for a case.
+fn log_case_timing(entry: &CaseEntry, durations: &StageDurationsOptional) {
+    info!(
+        target: LOG_TARGET,
+        event = "stage_timings",
+        case = entry.name,
+        setup_budget_ms = entry.budget.setup_ms,
+        action_budget_ms = entry.budget.action_ms,
+        settle_budget_ms = entry.budget.settle_ms,
+        setup_ms = durations.setup_ms,
+        action_ms = durations.action_ms,
+        settle_ms = durations.settle_ms
+    );
 }
 
 /// Print a user-friendly summary for the supplied outcome.
@@ -514,11 +436,6 @@ fn report_outcome(outcome: &CaseRunOutcome, quiet: bool) {
     }
     if let Some(err) = &outcome.quiescence_error {
         eprintln!("{}: cleanup error: {}", outcome.entry.name, err);
-    }
-    if !outcome.artifacts.is_empty() {
-        for path in &outcome.artifacts {
-            eprintln!("  artifact: {}", path.display());
-        }
     }
 }
 
@@ -617,20 +534,20 @@ fn ensure_helper_limit() -> Result<()> {
     Ok(())
 }
 
-/// Create the root artifact directory for the current smoketest run.
-fn create_artifact_root() -> Result<PathBuf> {
+/// Create the root scratch directory for the current smoketest run.
+fn create_scratch_root() -> Result<PathBuf> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Error::InvalidState("system time before UNIX_EPOCH".into()))?
         .as_millis();
     let path = PathBuf::from("tmp")
-        .join("smoketest-artifacts")
+        .join("smoketest-scratch")
         .join(format!("run-{ts}"));
     fs::create_dir_all(&path)?;
     Ok(path)
 }
 
-/// Create (or reuse) the artifact directory for a specific case.
+/// Create (or reuse) the scratch directory for a specific case.
 fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
     let sanitized = name.replace('/', "-");
     let dir = root.join(format!("{:02}-{}", index + 1, sanitized));
@@ -639,38 +556,20 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
 }
 
 /// Reset the shared world handle and surface quiescence violations with artifacts referenced.
-fn ensure_world_quiescent(
-    world: &WorldHandle,
-    case: &str,
-    artifacts: &[PathBuf],
-) -> Result<Option<Error>> {
+fn ensure_world_quiescent(world: &WorldHandle, case: &str) -> Result<Option<Error>> {
     let report = world.reset();
     if report.is_quiescent() {
         return Ok(None);
     }
     let msg = format!(
-        "{}: world not quiescent after run (ax={}, main_ops={}, mimics={}, subs={}) artifacts={}",
+        "{}: world not quiescent after run (ax={}, main_ops={}, mimics={}, subs={})",
         case,
         report.active_ax_observers,
         report.pending_main_ops,
         report.mimic_windows,
-        report.subscriptions,
-        format_artifacts(artifacts)
+        report.subscriptions
     );
     Ok(Some(Error::InvalidState(msg)))
-}
-
-/// Format artifact paths for inclusion in failure messages.
-fn format_artifacts(paths: &[PathBuf]) -> String {
-    if paths.is_empty() {
-        "-".to_string()
-    } else {
-        paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
 }
 
 /// Helper functions shared by hide and placement-focused smoketest cases.

@@ -26,7 +26,7 @@ and debuggable.
 - Each case owns a fresh world. Call `world.reset()` (or respawn helpers) before reusing handles so
   state from a prior case cannot leak.
 - Teardown must assert quiescence: helper processes are killed, subscriptions drained, and world
-  queues emptied. Capture artifacts whenever residual events remain.
+  queues emptied. Emit structured logs whenever residual events remain.
 - Keep helper names unique per case via `config::test_title(..)`; this avoids cross-case focus
   collisions.
 
@@ -39,7 +39,7 @@ and debuggable.
 
 ## Case Naming
 - Registry entries follow a dotted hierarchy: `<domain>.<scenario>.<variant>` (for example
-  `place.minimized.defer`). Keep segments short and deterministic so artifact paths and CLI invocations
+  `place.minimized.defer`). Keep segments short and deterministic so log keys and CLI invocations
   stay discoverable.
 - Reuse the registry slug when spawning mimic windows. Helper titles adopt the
   `[{slug}::{window_label}]` convention so diagnostics line up without additional parsing.
@@ -83,14 +83,14 @@ and debuggable.
 Emit failures as a single structured line so CI logs stay machine-parseable:
 
 ```
-case=<name> scale=<n> eps=<px> expected=<x,y,w,h> got=<x,y,w,h> delta=<dx,dy,dw,dh> artifacts=<paths>
+case=<name> scale=<n> eps=<px> expected=<x,y,w,h> got=<x,y,w,h> delta=<dx,dy,dw,dh>
 ```
 
 - `case` should identify the scenario plus any sub-key (for example `place[col=1,row=2]`).
 - `scale` is the display backing scale (normally `1` or `2`).
 - `eps` is the comparison tolerance in pixels.
 - `delta` is the signed difference (`actual - expected`).
-- `artifacts` lists comma-separated relative paths or `[]` when none exist.
+- Add context via `event`-scoped log fields instead of writing side-channel files.
 - Prefer helper functions (see `helpers::assert_frame_matches`) over open-coded formats so new cases
   inherit the template automatically.
 

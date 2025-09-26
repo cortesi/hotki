@@ -64,7 +64,7 @@ pub fn repeat_volume_throughput(ctx: &mut CaseCtx<'_>) -> Result<()> {
     run_repeat_case(ctx, "repeat-volume", duration_ms)
 }
 
-/// Shared harness that runs a repeat counting routine in-process and emits artifacts.
+/// Shared harness that runs a repeat counting routine in-process and logs diagnostics.
 fn run_repeat_case(ctx: &mut CaseCtx<'_>, slug: &str, duration_ms: u64) -> Result<()> {
     ctx.setup(|_| Ok(()))?;
     let output = ctx.action(|_| run_repeat_workload(slug, duration_ms))?;
@@ -89,22 +89,24 @@ fn run_repeat_workload(slug: &str, duration_ms: u64) -> Result<RepeatOutput> {
     })
 }
 
-/// Persist repeat metrics and captured output to artifact files for later inspection.
+/// Log repeat metrics and captured output for later inspection.
 fn record_repeat_stats(
-    stage: &mut CaseStage<'_, '_>,
+    stage: &CaseStage<'_, '_>,
     slug: &str,
     duration_ms: u64,
     output: &RepeatOutput,
 ) -> Result<()> {
-    let stats_contents = format!(
-        "case={slug}\nduration_ms={duration_ms}\nrepeats={}\n",
-        output.repeats
+    stage.log_event(
+        "repeat_stats",
+        &format!(
+            "slug={slug} duration_ms={duration_ms} repeats={}",
+            output.repeats
+        ),
     );
-    stage.write_slug_artifact("stats.txt", stats_contents.as_bytes())?;
-
-    let log_contents = format!("stdout:\n{}\n\nstderr:\n{}\n", output.stdout, output.stderr);
-    stage.write_slug_artifact("output.log", log_contents.as_bytes())?;
-
+    stage.log_event(
+        "repeat_output",
+        &format!("stdout={:?} stderr={:?}", output.stdout, output.stderr),
+    );
     Ok(())
 }
 

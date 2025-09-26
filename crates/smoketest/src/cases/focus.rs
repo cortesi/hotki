@@ -4,8 +4,7 @@ use std::time::Instant;
 use tracing::debug;
 
 use super::support::{
-    ScenarioState, WindowSpawnSpec, raise_window, record_mimic_diagnostics, shutdown_mimic,
-    spawn_scenario,
+    ScenarioState, WindowSpawnSpec, raise_window, shutdown_mimic, spawn_scenario,
 };
 use crate::{
     error::{Error, Result},
@@ -42,11 +41,10 @@ pub fn focus_tracking(ctx: &mut CaseCtx<'_>) -> Result<()> {
         raise_window(stage, state, "primary")?;
         Ok(())
     })?;
-    ctx.settle(|stage| {
+    ctx.settle(|_stage| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during settle".into()))?;
-        record_mimic_diagnostics(stage, state.slug, &state.mimic)?;
         shutdown_mimic(state.mimic)?;
         Ok(())
     })?;
@@ -87,11 +85,10 @@ pub fn focus_nav(ctx: &mut CaseCtx<'_>) -> Result<()> {
         }
         Ok(())
     })?;
-    ctx.settle(|stage| {
+    ctx.settle(|_stage| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("focus scenario missing during settle".into()))?;
-        record_mimic_diagnostics(stage, state.slug, &state.mimic)?;
         shutdown_mimic(state.mimic)?;
         Ok(())
     })?;
@@ -142,11 +139,10 @@ pub fn raise(ctx: &mut CaseCtx<'_>) -> Result<()> {
     );
 
     let settle_start = Instant::now();
-    ctx.settle(|stage| {
+    ctx.settle(|_stage| {
         let state = scenario
             .take()
             .ok_or_else(|| Error::InvalidState("raise scenario missing during settle".into()))?;
-        record_mimic_diagnostics(stage, state.slug, &state.mimic)?;
         shutdown_mimic(state.mimic)?;
         Ok(())
     })?;

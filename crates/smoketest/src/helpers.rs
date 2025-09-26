@@ -1,10 +1,11 @@
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use hotki_world::{Frames, RectDelta, RectPx, WaitConfig, WaitError};
 
 use crate::{
     config,
     error::{Error, Result},
+    suite::LOG_TARGET,
 };
 
 /// Standard wait configuration used for world-driven assertions.
@@ -25,16 +26,7 @@ pub fn wait_failure(case: &str, err: &WaitError) -> Error {
 ///
 /// Emits a single-line diagnostic with standardized formatting that includes raw AX/CG deltas when
 /// diagnostic data is available.
-pub fn assert_frame_matches<P>(
-    case: &str,
-    expected: RectPx,
-    frames: &Frames,
-    eps: i32,
-    artifacts: &[P],
-) -> Result<()>
-where
-    P: AsRef<Path>,
-{
+pub fn assert_frame_matches(case: &str, expected: RectPx, frames: &Frames, eps: i32) -> Result<()> {
     let actual = frames.authoritative;
     let delta = expected.delta(&actual);
     if frame_within_eps(&delta, eps) {
@@ -43,15 +35,27 @@ where
 
     let scale = frames.scale;
     let message = format!(
-        "case=<{}> scale=<{:.2}> eps=<{}> expected={} got={} delta={}{} artifacts={}",
+        "case=<{}> scale=<{:.2}> eps=<{}> expected={} got={} delta={}{}",
         case,
         scale,
         eps,
         format_rect(expected),
         format_rect(actual),
         format_delta(delta),
-        frame_extras(frames, actual),
-        format_artifacts(artifacts)
+        frame_extras(frames, actual)
+    );
+
+    tracing::error!(
+        target: LOG_TARGET,
+        event = "frame_mismatch",
+        case,
+        scale = scale,
+        eps,
+        expected = %format_rect(expected),
+        actual = %format_rect(actual),
+        delta = %format_delta(delta),
+        extras = %frame_extras(frames, actual),
+        "frame mismatch"
     );
 
     Err(Error::InvalidState(message))
@@ -70,19 +74,6 @@ fn format_rect(rect: RectPx) -> String {
 /// Format a rectangle delta as `<dx,dy,dw,dh>` for diagnostics.
 fn format_delta(delta: RectDelta) -> String {
     format!("<{},{},{},{}>", delta.dx, delta.dy, delta.dw, delta.dh)
-}
-
-/// Format artifact paths for inclusion in failure messages.
-fn format_artifacts<P: AsRef<Path>>(artifacts: &[P]) -> String {
-    if artifacts.is_empty() {
-        "-".to_string()
-    } else {
-        artifacts
-            .iter()
-            .map(|p| p.as_ref().display().to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
 }
 
 /// Format optional raw AX/CG deltas captured alongside the authoritative frame.

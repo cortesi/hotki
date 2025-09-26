@@ -6,8 +6,8 @@ use mac_winops::drain_main_ops;
 use tracing::debug;
 
 use super::support::{
-    ScenarioState, WindowSpawnSpec, block_on_with_pump, raise_window, record_mimic_diagnostics,
-    shutdown_mimic, spawn_scenario,
+    ScenarioState, WindowSpawnSpec, block_on_with_pump, raise_window, shutdown_mimic,
+    spawn_scenario,
 };
 use crate::{
     config,
@@ -176,15 +176,11 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 final_frames.mode
             )));
         }
-        let diag_path =
-            record_mimic_diagnostics(stage, state_data.scenario.slug, &state_data.scenario.mimic)?;
-        let artifacts = [diag_path];
         helpers::assert_frame_matches(
             stage.case_name(),
             state_data.expected,
             &final_frames,
             state_data.eps,
-            &artifacts,
         )?;
         shutdown_mimic(state_data.scenario.mimic)?;
         Ok(())

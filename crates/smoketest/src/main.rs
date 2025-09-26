@@ -4,8 +4,6 @@ use clap::Parser;
 use logging as logshared;
 use tracing_subscriber::{fmt, prelude::*};
 
-/// Artifact capture utilities for failure diagnostics.
-mod artifacts;
 /// Event-driven binding watchers that keep the HUD responsive.
 mod binding_watcher;
 /// Scenario-specific smoketest cases and mimic harness helpers.

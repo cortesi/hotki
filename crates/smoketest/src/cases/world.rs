@@ -10,12 +10,11 @@ use hotki_world::{
     PermissionState, World, WorldCfg, WorldHandle, WorldWindow, mimic::pump_active_mimics,
 };
 use mac_winops::{AxProps, WindowInfo, ops::MockWinOps};
-use serde_json::json;
 use tokio::time::sleep;
 
 use super::support::{
-    ScenarioState, WindowSpawnSpec, block_on_with_pump, raise_window, record_mimic_diagnostics,
-    shutdown_mimic, spawn_scenario,
+    ScenarioState, WindowSpawnSpec, block_on_with_pump, raise_window, shutdown_mimic,
+    spawn_scenario,
 };
 use crate::{
     config,
@@ -73,21 +72,23 @@ pub fn world_status_permissions(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .focused
             .map(|key| format!("pid={} id={}", key.pid, key.id));
 
-        let payload = json!({
-            "windows_count": status.windows_count,
-            "focused": focused_repr,
-            "last_tick_ms": status.last_tick_ms,
-            "current_poll_ms": status.current_poll_ms,
-            "capabilities": {
-                "accessibility": format!("{:?}", status.capabilities.accessibility),
-                "screen_recording": format!("{:?}", status.capabilities.screen_recording),
-            },
-            "debounce_cache": status.debounce_cache,
-            "debounce_pending": status.debounce_pending,
-            "reconcile_seq": status.reconcile_seq,
-            "suspects_pending": status.suspects_pending,
-        });
-        stage.write_json_artifact("world_status_permissions.json", &payload)?;
+        let focused = focused_repr.unwrap_or_else(|| "-".to_string());
+        stage.log_event(
+            "world_status_permissions",
+            &format!(
+                "windows_count={} focused={} last_tick_ms={} current_poll_ms={} accessibility={:?} screen_recording={:?} debounce_cache={} debounce_pending={} reconcile_seq={} suspects_pending={}",
+                status.windows_count,
+                focused,
+                status.last_tick_ms,
+                status.current_poll_ms,
+                status.capabilities.accessibility,
+                status.capabilities.screen_recording,
+                status.debounce_cache,
+                status.debounce_pending,
+                status.reconcile_seq,
+                status.suspects_pending
+            ),
+        );
 
         Ok(())
     })?;
@@ -165,13 +166,13 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
             )));
         }
 
-        let payload = json!({
-            "role": props.role,
-            "subrole": props.subrole,
-            "can_set_pos": props.can_set_pos,
-            "can_set_size": props.can_set_size,
-        });
-        stage.write_json_artifact("world_ax_focus_props.json", &payload)?;
+        stage.log_event(
+            "world_ax_focus_props",
+            &format!(
+                "role={:?} subrole={:?} can_set_pos={:?} can_set_size={:?}",
+                props.role, props.subrole, props.can_set_pos, props.can_set_size
+            ),
+        );
 
         Ok(())
     })?;
@@ -187,8 +188,7 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
 }
 
 /// Record diagnostics and shutdown the mimic scenario.
-fn finalize_scenario(stage: &mut CaseStage<'_, '_>, state: ScenarioState) -> Result<()> {
-    record_mimic_diagnostics(stage, state.slug, &state.mimic)?;
+fn finalize_scenario(_stage: &CaseStage<'_, '_>, state: ScenarioState) -> Result<()> {
     shutdown_mimic(state.mimic)?;
     Ok(())
 }
@@ -210,13 +210,13 @@ pub fn world_spaces_adoption(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("world-spaces metrics missing".into()))?;
 
-        let payload = json!({
-            "slug": SLUG,
-            "adoption_ms": outcome.adoption_ms,
-            "last_tick_ms": outcome.last_tick_ms,
-            "current_poll_ms": outcome.current_poll_ms,
-        });
-        stage.write_slug_json_artifact("outcome.json", &payload)?;
+        stage.log_event(
+            "world_spaces_outcome",
+            &format!(
+                "slug={} adoption_ms={} last_tick_ms={} current_poll_ms={}",
+                SLUG, outcome.adoption_ms, outcome.last_tick_ms, outcome.current_poll_ms
+            ),
+        );
 
         Ok(())
     })?;

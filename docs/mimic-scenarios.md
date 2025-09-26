@@ -17,7 +17,7 @@ canonical manifest, and optional importer heuristics to reconcile platform quirk
 ## Quirks
 
 Stage Four introduces a dedicated mimic harness with deterministic quirks that mirror common
-application behaviours. Each mimic window advertises its quirks in artifacts via the
+application behaviours. Each mimic window advertises its quirks in structured logs via the
 `scenario_slug/window_label/quirks[]` tag.
 
 - **AxRounding** – The helper reports CoreGraphics frames verbatim but publishes Accessibility frames

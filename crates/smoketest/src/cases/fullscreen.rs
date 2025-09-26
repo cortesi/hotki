@@ -1,14 +1,13 @@
 //! Fullscreen smoketest case implemented on the registry runner.
 
 use std::{
-    cmp, env,
+    cmp, env, fs,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 use mac_winops::{self, wait::wait_for_windows_visible_ms};
-use serde_json::json;
 use tracing::warn;
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
     process::spawn_managed,
     server_drive,
     session::HotkiSession,
-    suite::CaseCtx,
+    suite::{CaseCtx, sanitize_slug},
     util, world,
 };
 
@@ -30,7 +29,9 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
         let title = config::test_title("fullscreen");
         let config_ron = build_fullscreen_config(&title);
-        let config_path = stage.write_slug_artifact("config.ron", config_ron.as_bytes())?;
+        let filename = format!("{}_config.ron", sanitize_slug(stage.case_name()));
+        let config_path = stage.scratch_path(filename);
+        fs::write(&config_path, config_ron.as_bytes())?;
 
         let session = HotkiSession::builder(hotki_bin)
             .with_config(&config_path)
@@ -126,7 +127,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         state_ref.before = Some(before);
         state_ref.after = Some(after);
 
-        stage.write_slug_artifact("runtime.txt", b"fullscreen toggle executed\n".as_ref())?;
+        stage.log_event("fullscreen_runtime", "fullscreen toggle executed");
 
         Ok(())
     })?;
@@ -144,13 +145,22 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .ok_or_else(|| Error::InvalidState("missing after frame".into()))?;
         let area_delta = after.area() - before.area();
 
-        let payload = json!({
-            "helper_title": state_inner.title,
-            "before": before.to_json(),
-            "after": after.to_json(),
-            "area_delta": area_delta,
-        });
-        stage.write_slug_json_artifact("outcome.json", &payload)?;
+        stage.log_event(
+            "fullscreen_outcome",
+            &format!(
+                "helper_title={} before=({:.1},{:.1},{:.1},{:.1}) after=({:.1},{:.1},{:.1},{:.1}) area_delta={}",
+                state_inner.title,
+                before.x,
+                before.y,
+                before.w,
+                before.h,
+                after.x,
+                after.y,
+                after.w,
+                after.h,
+                area_delta
+            ),
+        );
 
         state_inner.session.shutdown();
         state_inner.session.kill_and_wait();
@@ -210,7 +220,7 @@ fn wait_for_frame_update(pid: i32, title: &str, timeout_ms: u64) -> Result<AxFra
 }
 
 /// Simplified representation of a helper window frame captured via AX.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct AxFrame {
     /// Window origin X coordinate.
     x: f64,
@@ -232,10 +242,5 @@ impl AxFrame {
     /// Compute the frame area in pixels.
     fn area(&self) -> f64 {
         self.w * self.h
-    }
-
-    /// Convert the frame into a JSON-friendly structure.
-    fn to_json(&self) -> serde_json::Value {
-        json!({ "x": self.x, "y": self.y, "w": self.w, "h": self.h })
     }
 }

@@ -4,7 +4,6 @@ use std::{
     cell::Cell,
     collections::HashMap,
     future::Future,
-    path::PathBuf,
     sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
@@ -141,8 +140,6 @@ impl ScenarioWindow {}
 
 /// State captured after spawning a mimic scenario.
 pub struct ScenarioState {
-    /// Scenario slug recorded across artifacts and helper labels.
-    pub(crate) slug: &'static str,
     /// Handle to the active mimic scenario.
     pub(crate) mimic: MimicHandle,
     /// Event cursor positioned after the initial snapshot.
@@ -269,7 +266,6 @@ pub fn spawn_scenario(
     debug!(slug, drained_events, "spawn_scenario_drain_done");
 
     Ok(ScenarioState {
-        slug,
         mimic,
         cursor,
         windows,
@@ -371,16 +367,6 @@ pub fn ensure_window_ready(
             Ok(window)
         }
     }
-}
-
-/// Record mimic diagnostics to the artifact directory and return the recorded path.
-pub fn record_mimic_diagnostics(
-    stage: &mut CaseStage<'_, '_>,
-    slug: &str,
-    mimic: &MimicHandle,
-) -> Result<PathBuf> {
-    let contents = mimic.diagnostics().join("\n");
-    stage.write_named_artifact(slug, "mimic.txt", contents.as_bytes())
 }
 
 /// Kill the supplied mimic handle, converting errors into smoketest failures.

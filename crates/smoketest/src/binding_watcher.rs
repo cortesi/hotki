@@ -41,15 +41,16 @@ impl ActivationOutcome {
         self.hud_update_ms.is_some()
     }
 
-    /// Marshal the outcome into a JSON-friendly representation.
-    pub fn to_summary_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "hud_update_ms": self.hud_update_ms,
-            "frontmost_ms": self.frontmost_ms,
-            "activation_attempts": self.activation_attempts,
-            "hud_updates_seen": self.hud_updates_seen,
-            "observed_via_event": self.observed_via_event(),
-        })
+    /// Render a concise summary string for logging.
+    pub fn summary_string(&self) -> String {
+        format!(
+            "hud_update_ms={:?} frontmost_ms={:?} activation_attempts={} hud_updates_seen={} observed_via_event={}",
+            self.hud_update_ms,
+            self.frontmost_ms,
+            self.activation_attempts,
+            self.hud_updates_seen,
+            self.observed_via_event()
+        )
     }
 }
 

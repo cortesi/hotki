@@ -1,10 +1,9 @@
 //! UI-driven smoketest cases executed via the registry runner.
 
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use hotki_world::WorldWindow;
 use serde::Serialize;
-use serde_json::json;
 
 use crate::{
     binding_watcher::{ACTIVATION_IDENT, ActivationOutcome, BindingWatcher},
@@ -12,7 +11,7 @@ use crate::{
     error::{Error, Result},
     server_drive,
     session::HotkiSession,
-    suite::CaseCtx,
+    suite::{CaseCtx, sanitize_slug},
     util, world,
 };
 
@@ -88,7 +87,7 @@ struct UiCaseSpec {
 struct UiCaseState {
     /// Running hotki session launched for this demo.
     session: HotkiSession,
-    /// Registry slug mirrored in artifact file names.
+    /// Registry slug mirrored when logging diagnostics or creating scratch configs.
     slug: &'static str,
     /// Filesystem path to the RON configuration applied for this demo.
     config_path: PathBuf,
@@ -106,7 +105,9 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
     ctx.setup(|stage| {
         let hotki_bin = util::resolve_hotki_bin().ok_or(Error::HotkiBinNotFound)?;
-        let config_path = stage.write_slug_artifact("config.ron", spec.ron_config.as_bytes())?;
+        let filename = format!("{}_config.ron", sanitize_slug(spec.slug));
+        let config_path = stage.scratch_path(filename);
+        fs::write(&config_path, spec.ron_config.as_bytes())?;
 
         let session = HotkiSession::builder(hotki_bin)
             .with_config(&config_path)
@@ -167,17 +168,36 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             .take()
             .ok_or_else(|| Error::InvalidState("ui case state missing during settle".into()))?;
 
-        let payload = json!({
-            "slug": state_inner.slug,
-            "hud_seen": state_inner.time_to_hud_ms.is_some(),
-            "time_to_hud_ms": state_inner.time_to_hud_ms,
-            "hud_windows": state_inner.hud_windows,
-            "hud_activation": state_inner
-                .hud_activation
-                .as_ref()
-                .map(ActivationOutcome::to_summary_json),
-        });
-        stage.write_slug_json_artifact("outcome.json", &payload)?;
+        let hud_windows_desc = state_inner
+            .hud_windows
+            .as_ref()
+            .map(|wins| {
+                wins.iter()
+                    .map(|w| {
+                        format!(
+                            "title={} pid={} id={} on_active={} on_screen={} layer={}",
+                            w.title, w.pid, w.id, w.on_active_space, w.is_on_screen, w.layer
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|| "<none>".to_string());
+        let hud_activation_summary = state_inner
+            .hud_activation
+            .as_ref()
+            .map_or_else(|| "<none>".to_string(), ActivationOutcome::summary_string);
+        stage.log_event(
+            "ui_demo_outcome",
+            &format!(
+                "slug={} hud_seen={} time_to_hud_ms={:?} hud_windows={} hud_activation={}",
+                state_inner.slug,
+                state_inner.time_to_hud_ms.is_some(),
+                state_inner.time_to_hud_ms,
+                hud_windows_desc,
+                hud_activation_summary
+            ),
+        );
 
         state_inner.session.shutdown();
         state_inner.session.kill_and_wait();
