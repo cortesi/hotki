@@ -16,6 +16,7 @@ pub enum HotkeyMethod {
     GetBindings,
     GetDepth,
     GetWorldStatus,
+    GetServerStatus,
     GetWorldSnapshot,
 }
 
@@ -29,6 +30,7 @@ impl HotkeyMethod {
             HotkeyMethod::GetBindings => "get_bindings",
             HotkeyMethod::GetDepth => "get_depth",
             HotkeyMethod::GetWorldStatus => "get_world_status",
+            HotkeyMethod::GetServerStatus => "get_server_status",
             HotkeyMethod::GetWorldSnapshot => "get_world_snapshot",
         }
     }
@@ -42,6 +44,7 @@ impl HotkeyMethod {
             "get_bindings" => Some(HotkeyMethod::GetBindings),
             "get_depth" => Some(HotkeyMethod::GetDepth),
             "get_world_status" => Some(HotkeyMethod::GetWorldStatus),
+            "get_server_status" => Some(HotkeyMethod::GetServerStatus),
             "get_world_snapshot" => Some(HotkeyMethod::GetWorldSnapshot),
             _ => None,
         }
@@ -153,6 +156,25 @@ pub fn enc_event(event: &hotki_protocol::MsgToUI) -> crate::Result<Value> {
 pub fn dec_event(v: Value) -> Result<hotki_protocol::MsgToUI, crate::Error> {
     hotki_protocol::ipc::codec::value_to_msg(v)
         .map_err(|e| crate::Error::Serialization(e.to_string()))
+}
+
+/// Lightweight server status snapshot surfaced for smoketest diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerStatusLite {
+    /// Idle timeout configured on the server, in seconds.
+    pub idle_timeout_secs: u64,
+    /// True when the idle timer is currently armed.
+    pub idle_timer_armed: bool,
+    /// Optional wall-clock deadline in milliseconds since the Unix epoch.
+    pub idle_deadline_ms: Option<u64>,
+    /// Count of connected clients observed by the server.
+    pub clients_connected: usize,
+}
+
+/// Encode a server status snapshot to msgpack binary `Value`.
+pub fn enc_server_status(status: &ServerStatusLite) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(status)?;
+    Ok(Value::Binary(bytes))
 }
 
 /// Lightweight snapshot payload for `get_world_snapshot` method.

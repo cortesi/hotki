@@ -124,6 +124,12 @@ pub fn print_hints(err: &Error) {
                         message
                     );
                 }
+                DriverError::PostShutdownMessage { message } => {
+                    eprintln!("      bridge emitted unexpected data after shutdown: {message}");
+                    eprintln!(
+                        "      ensure pending events are drained before acknowledging shutdown."
+                    );
+                }
                 DriverError::Io { source } => {
                     eprintln!("      IO error talking to the bridge: {source}");
                 }

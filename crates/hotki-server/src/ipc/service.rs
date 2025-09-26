@@ -37,7 +37,10 @@ use tokio::sync::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::ipc::rpc::{HotkeyMethod, HotkeyNotification, enc_world_status};
+use super::{IdleTimerSnapshot, IdleTimerState};
+use crate::ipc::rpc::{
+    HotkeyMethod, HotkeyNotification, ServerStatusLite, enc_server_status, enc_world_status,
+};
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
@@ -65,6 +68,8 @@ pub struct HotkeyService {
     world_event_drops: Arc<AtomicU64>,
     /// One-shot guard to emit ResyncRecommended after a world drop.
     world_resync_pending: Arc<AtomicUsize>,
+    /// Shared idle timer state for status reporting.
+    idle_state: Arc<IdleTimerState>,
 }
 
 impl HotkeyService {
@@ -79,7 +84,11 @@ impl HotkeyService {
             value: Value::Map(map),
         })
     }
-    pub fn new(manager: Arc<mac_hotkey::Manager>, shutdown: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        manager: Arc<mac_hotkey::Manager>,
+        shutdown: Arc<AtomicBool>,
+        idle_state: Arc<IdleTimerState>,
+    ) -> Self {
         // Create bounded event channel
         let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
 
@@ -96,6 +105,7 @@ impl HotkeyService {
             auto_shutdown_on_empty: Arc::new(AtomicBool::new(false)),
             world_event_drops: Arc::new(AtomicU64::new(0)),
             world_resync_pending: Arc::new(AtomicUsize::new(0)),
+            idle_state,
         }
     }
 
@@ -105,12 +115,14 @@ impl HotkeyService {
     pub fn builder(
         manager: Arc<mac_hotkey::Manager>,
         shutdown: Arc<AtomicBool>,
+        idle_state: Arc<IdleTimerState>,
     ) -> HotkeyServiceBuilder {
         HotkeyServiceBuilder {
             manager,
             shutdown,
             per_id_capacity: None,
             auto_shutdown_on_empty: false,
+            idle_state,
         }
     }
 
@@ -139,6 +151,22 @@ impl HotkeyService {
             *engine_guard = Some(Engine::new(self.manager.clone(), event_tx));
         }
         Ok(())
+    }
+
+    /// Gather a lightweight server status snapshot for diagnostics.
+    async fn snapshot_server_status(&self) -> ServerStatusLite {
+        let clients_connected = { self.clients.lock().await.len() };
+        let IdleTimerSnapshot {
+            timeout_secs,
+            armed,
+            deadline_ms,
+        } = self.idle_state.snapshot();
+        ServerStatusLite {
+            idle_timeout_secs: timeout_secs,
+            idle_timer_armed: armed,
+            idle_deadline_ms: deadline_ms,
+            clients_connected,
+        }
     }
 
     /// Forward events from the receiver to connected clients
@@ -729,6 +757,15 @@ impl MrpcConnection for HotkeyService {
                 })
             }
 
+            Some(HotkeyMethod::GetServerStatus) => {
+                enc_server_status(&self.snapshot_server_status().await).map_err(|e| {
+                    Self::typed_err(
+                        crate::error::RpcErrorCode::InvalidType,
+                        &[("message", Value::String(e.to_string().into()))],
+                    )
+                })
+            }
+
             None => {
                 warn!("Unknown method: {}", method);
                 Err(Self::typed_err(
@@ -862,6 +899,7 @@ pub struct HotkeyServiceBuilder {
     shutdown: Arc<AtomicBool>,
     per_id_capacity: Option<usize>,
     auto_shutdown_on_empty: bool,
+    idle_state: Arc<IdleTimerState>,
 }
 
 impl HotkeyServiceBuilder {
@@ -874,7 +912,7 @@ impl HotkeyServiceBuilder {
 
     /// Build the service with the configured options.
     pub fn build(self) -> HotkeyService {
-        let mut svc = HotkeyService::new(self.manager, self.shutdown);
+        let mut svc = HotkeyService::new(self.manager, self.shutdown, self.idle_state);
         svc.per_id_capacity = self.per_id_capacity;
         svc.auto_shutdown_on_empty
             .store(self.auto_shutdown_on_empty, Ordering::SeqCst);

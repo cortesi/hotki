@@ -15,7 +15,10 @@ use tao::{
 };
 use tracing::{debug, error, info, trace};
 
-use crate::{Error, Result, default_socket_path, ipc::IPCServer};
+use crate::{
+    Error, Result, default_socket_path,
+    ipc::{IPCServer, IdleTimerState},
+};
 
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
@@ -99,12 +102,14 @@ impl Server {
 
         // Create shutdown coordination
         let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let idle_state = Arc::new(IdleTimerState::new(self.idle_timeout_secs));
         // Create the IPC server; pass shutdown flag so RPC can trigger exit
         let ipc_server = IPCServer::new(
             &self.socket_path,
             manager,
             shutdown_requested.clone(),
             proxy_for_ipc.clone(),
+            idle_state.clone(),
         );
         let shutdown_requested_clone = shutdown_requested.clone();
         let ipc_wakeup = proxy_for_ipc.clone();
@@ -232,6 +237,7 @@ impl Server {
         // Ensure we only log the shutdown transition once.
         let mut shutdown_logged = false;
 
+        let idle_state_for_loop = idle_state.clone();
         event_loop.run(move |event, _, control_flow| {
             // Default to waiting until the next concrete event.
             *control_flow = ControlFlow::Wait;
@@ -258,6 +264,7 @@ impl Server {
                             "Client disconnected, starting {}s idle timer",
                             self.idle_timeout_secs
                         );
+                        idle_state_for_loop.arm(when);
                         *control_flow = ControlFlow::WaitUntil(when);
                     }
                     Some(when) => {
@@ -276,6 +283,9 @@ impl Server {
                 }
             } else {
                 // No disconnect or it was canceled; ensure no idle timer is pending.
+                if idle_deadline.is_some() {
+                    idle_state_for_loop.disarm();
+                }
                 idle_deadline = None;
             }
 
@@ -293,6 +303,7 @@ impl Server {
                     // User events indicate client activity - reset disconnect timer if set
                     if client_disconnected.load(Ordering::SeqCst) {
                         client_disconnected.store(false, Ordering::SeqCst);
+                        idle_state_for_loop.disarm();
                         idle_deadline = None;
                         info!("Client reconnected, canceling idle timer");
                     }
@@ -308,6 +319,7 @@ impl Server {
                     } else {
                         info!("Shutdown complete");
                     }
+                    idle_state_for_loop.disarm();
                 }
                 _ => {
                     // Log other events at trace level for debugging

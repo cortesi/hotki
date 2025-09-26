@@ -10,7 +10,7 @@ use tracing::{debug, error, info, trace};
 
 use crate::{
     Error, Result,
-    ipc::rpc::{HotkeyMethod, HotkeyNotification},
+    ipc::rpc::{HotkeyMethod, HotkeyNotification, ServerStatusLite, WorldSnapshotLite},
 };
 
 /// Active IPC connection.
@@ -192,18 +192,33 @@ impl Connection {
         WorldStatusLite::from_value(response)
     }
 
+    /// Retrieve the current server status snapshot.
+    pub async fn get_server_status(&mut self) -> Result<ServerStatusLite> {
+        let response = self
+            .client
+            .send_request(HotkeyMethod::GetServerStatus.as_str(), &[])
+            .await
+            .map_err(|e| Error::Ipc(format!("get_server_status request failed: {}", e)))?;
+        match response {
+            Value::Binary(bytes) => rmp_serde::from_slice::<ServerStatusLite>(&bytes)
+                .map_err(|e| Error::Serialization(e.to_string())),
+            other => Err(Error::Ipc(format!(
+                "Unexpected get_server_status response: {:?}",
+                other
+            ))),
+        }
+    }
+
     /// Get a lightweight world snapshot (windows + focused context).
-    pub async fn get_world_snapshot(&mut self) -> Result<crate::ipc::rpc::WorldSnapshotLite> {
+    pub async fn get_world_snapshot(&mut self) -> Result<WorldSnapshotLite> {
         let response = self
             .client
             .send_request(HotkeyMethod::GetWorldSnapshot.as_str(), &[])
             .await
             .map_err(|e| Error::Ipc(format!("get_world_snapshot request failed: {}", e)))?;
         match response {
-            Value::Binary(bytes) => {
-                rmp_serde::from_slice::<crate::ipc::rpc::WorldSnapshotLite>(&bytes)
-                    .map_err(|e| Error::Serialization(e.to_string()))
-            }
+            Value::Binary(bytes) => rmp_serde::from_slice::<WorldSnapshotLite>(&bytes)
+                .map_err(|e| Error::Serialization(e.to_string())),
             other => Err(Error::Ipc(format!(
                 "Unexpected get_world_snapshot response: {:?}",
                 other

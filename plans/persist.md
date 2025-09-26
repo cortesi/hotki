@@ -26,9 +26,9 @@ from highest to lowest impact on reliability.
 
 3. Stage Three: Harden Startup and Shutdown Paths
 
-1. [ ] Extend the bridge handshake to include server idle-timer state and pending notifications.
-2. [ ] Inject pre-shutdown drain hooks so the UI flushes world events before acknowledging `Shutdown`.
-3. [ ] Add harness assertions that no stray bridge messages arrive after shutdown completes.
+1. [x] Extend the bridge handshake to include server idle-timer state and pending notifications.
+2. [x] Inject pre-shutdown drain hooks so the UI flushes world events before acknowledging `Shutdown`.
+3. [x] Add harness assertions that no stray bridge messages arrive after shutdown completes.
 
 4. Stage Four: Expand Diagnostics and Guard Rails (lower value)
 

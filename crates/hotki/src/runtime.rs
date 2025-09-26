@@ -24,8 +24,9 @@ use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
 use hotki_server::{
     Client,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind, BridgeReply,
-        BridgeRequest, BridgeResponse, BridgeTimestampMs, default_wait_world_seq_timeout_ms,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
+        BridgeKeyKind, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
+        BridgeTimestampMs, default_wait_world_seq_timeout_ms,
     },
 };
 use tokio::{
@@ -81,28 +82,24 @@ struct ConnectionDriver {
     world_seq: Arc<AtomicU64>,
     /// Notifier triggered when the world reconcile sequence advances.
     world_seq_notify: Arc<Notify>,
+    /// Pending notifications tracked for smoketest handshake responses.
+    bridge_notifications: VecDeque<BridgeNotification>,
 }
 
 impl ConnectionDriver {
+    /// Maximum number of notifications tracked for smoketest handshake payloads.
+    const MAX_BRIDGE_NOTIFICATIONS: usize = 32;
+    /// Cap on the number of events drained during shutdown handshake preparation.
+    const MAX_SHUTDOWN_DRAIN_EVENTS: usize = 128;
+
     /// Handle a server-recommended resync by fetching a fresh snapshot and notifying the user.
-    async fn handle_resync(&self, conn: &mut hotki_server::Connection) {
+    async fn handle_resync(&mut self, conn: &mut hotki_server::Connection) {
         match conn.get_world_snapshot().await {
             Ok(_snap) => {
                 self.egui_ctx.request_repaint();
             }
             Err(e) => {
-                if self
-                    .tx_keys
-                    .send(AppEvent::Notify {
-                        kind: NotifyKind::Error,
-                        title: "World".to_string(),
-                        text: format!("Sync failed: {}", e),
-                    })
-                    .is_err()
-                {
-                    tracing::warn!("failed to send world-sync error notification");
-                }
-                self.egui_ctx.request_repaint();
+                self.notify(NotifyKind::Error, "World", &format!("Sync failed: {}", e));
             }
         }
     }
@@ -112,6 +109,75 @@ impl ConnectionDriver {
         if self.bridge_events.send(event).is_err() {
             // No active smoketest subscribers; ignore the backpressure signal.
         }
+    }
+
+    /// Track a notification for inclusion in smoketest handshakes.
+    fn record_bridge_notification(&mut self, kind: NotifyKind, title: &str, text: &str) {
+        if self.bridge_notifications.len() >= Self::MAX_BRIDGE_NOTIFICATIONS {
+            self.bridge_notifications.pop_front();
+        }
+        self.bridge_notifications.push_back(BridgeNotification {
+            kind,
+            title: title.to_string(),
+            text: text.to_string(),
+        });
+    }
+
+    /// Clear tracked notifications (e.g., when the UI requests a clear).
+    fn clear_bridge_notifications(&mut self) {
+        self.bridge_notifications.clear();
+    }
+
+    /// Collect the currently tracked notifications as a Vec for responses.
+    fn pending_bridge_notifications(&self) -> Vec<BridgeNotification> {
+        self.bridge_notifications.iter().cloned().collect()
+    }
+
+    /// Drain any remaining server events after issuing a shutdown request.
+    async fn drain_pending_bridge_events(&self, conn: &mut hotki_server::Connection) {
+        let mut processed = 0usize;
+        while processed < Self::MAX_SHUTDOWN_DRAIN_EVENTS {
+            match timeout(Duration::from_secs(1), conn.recv_event()).await {
+                Ok(Ok(_msg)) => {
+                    processed += 1;
+                    // Events observed during shutdown are dropped to avoid
+                    // triggering additional world status RPCs.
+                }
+                Ok(Err(hotki_server::Error::Ipc(ref s))) if s == "Event channel closed" => {
+                    break;
+                }
+                Ok(Err(err)) => {
+                    tracing::debug!(?err, "bridge drain aborted");
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        if processed >= Self::MAX_SHUTDOWN_DRAIN_EVENTS {
+            tracing::debug!("bridge drain reached event limit");
+        }
+    }
+
+    /// Build the handshake payload returned to the smoketest harness.
+    async fn make_handshake_response(
+        &self,
+        conn: &mut hotki_server::Connection,
+    ) -> Result<BridgeResponse, String> {
+        let status = conn
+            .get_server_status()
+            .await
+            .map_err(|err| err.to_string())?;
+        let idle_timer = BridgeIdleTimerState {
+            timeout_secs: status.idle_timeout_secs,
+            armed: status.idle_timer_armed,
+            deadline_ms: status.idle_deadline_ms,
+            clients_connected: status.clients_connected,
+        };
+        let notifications = self.pending_bridge_notifications();
+        Ok(BridgeResponse::Handshake {
+            idle_timer,
+            notifications,
+        })
     }
 
     /// Record the latest world reconcile sequence and wake pending waiters.
@@ -163,6 +229,7 @@ impl ConnectionDriver {
             bridge_events,
             world_seq,
             world_seq_notify,
+            bridge_notifications: VecDeque::new(),
         }
     }
 
@@ -200,7 +267,7 @@ impl ConnectionDriver {
     /// Handle control messages received before the server connection is ready.
     /// Returns true if a Shutdown was requested (caller should exit).
     async fn handle_preconnect_control(
-        &self,
+        &mut self,
         msg: ControlMsg,
         preconnect_queue: &mut VecDeque<ControlMsg>,
     ) -> bool {
@@ -238,14 +305,7 @@ impl ConnectionDriver {
                 self.egui_ctx.request_repaint();
             }
             ControlMsg::Notice { kind, title, text } => {
-                if self
-                    .tx_keys
-                    .send(AppEvent::Notify { kind, title, text })
-                    .is_err()
-                {
-                    tracing::warn!("failed to send Notify");
-                }
-                self.egui_ctx.request_repaint();
+                self.notify(kind, &title, &text);
             }
             ControlMsg::Test(cmd) => {
                 if cmd
@@ -263,7 +323,8 @@ impl ConnectionDriver {
     }
 
     /// Helper to send a UI notification.
-    fn notify(&self, kind: NotifyKind, title: &str, text: &str) {
+    fn notify(&mut self, kind: NotifyKind, title: &str, text: &str) {
+        self.record_bridge_notification(kind, title, text);
         if self
             .tx_keys
             .send(AppEvent::Notify {
@@ -399,7 +460,10 @@ impl ConnectionDriver {
         req: BridgeRequest,
     ) -> BridgeResponse {
         match req {
-            BridgeRequest::Ping => BridgeResponse::Ok,
+            BridgeRequest::Ping => match self.make_handshake_response(conn).await {
+                Ok(resp) => resp,
+                Err(message) => BridgeResponse::Err { message },
+            },
             BridgeRequest::SetConfig { path } => match config::load_from_path(Path::new(&path)) {
                 Ok(cfg) => match conn.set_config(cfg.clone()).await {
                     Ok(()) => {
@@ -457,7 +521,10 @@ impl ConnectionDriver {
                 }
             }
             BridgeRequest::Shutdown => match conn.shutdown().await {
-                Ok(()) => BridgeResponse::Ok,
+                Ok(()) => {
+                    self.drain_pending_bridge_events(conn).await;
+                    BridgeResponse::Ok
+                }
                 Err(err) => BridgeResponse::Err {
                     message: err.to_string(),
                 },
@@ -555,14 +622,7 @@ impl ConnectionDriver {
                 });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
-                if self
-                    .tx_keys
-                    .send(AppEvent::Notify { kind, title, text })
-                    .is_err()
-                {
-                    tracing::warn!("failed to send Notify");
-                }
-                self.egui_ctx.request_repaint();
+                self.notify(kind, &title, &text);
             }
             hotki_protocol::MsgToUI::ReloadConfig => {
                 if self.tx_ctrl_runtime.send(ControlMsg::Reload).is_err() {
@@ -571,6 +631,7 @@ impl ConnectionDriver {
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
+                self.clear_bridge_notifications();
                 if self.tx_keys.send(AppEvent::ClearNotifications).is_err() {
                     tracing::warn!("failed to send ClearNotifications");
                 }

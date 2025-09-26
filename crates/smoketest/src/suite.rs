@@ -431,8 +431,13 @@ fn execute_case(
     case_dir: PathBuf,
     world: &WorldHandle,
 ) -> CaseExecution {
-    let timeout_ms = config
-        .base_timeout_ms
+    let budget_total = entry
+        .budget
+        .setup_ms
+        .saturating_add(entry.budget.action_ms)
+        .saturating_add(entry.budget.settle_ms);
+    let timeout_ms = budget_total
+        .saturating_add(config.base_timeout_ms)
         .saturating_add(entry.extra_timeout_ms);
 
     let start = Instant::now();
@@ -765,12 +770,17 @@ const UI_HELPERS: &[HelperDoc] = &[HelperDoc {
 /// Helper functions consumed by fullscreen smoketests.
 const FULLSCREEN_HELPERS: &[HelperDoc] = NO_HELPERS;
 
+/// Additional watchdog slack for fast cases (milliseconds).
+const EXTRA_SHORT: u64 = 2_000;
+/// Additional watchdog slack for moderate cases (milliseconds).
+const EXTRA_MEDIUM: u64 = 3_000;
+
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "repeat-relay",
         Some("Relay repeat throughput over the mimic harness"),
-        5_000,
+        EXTRA_SHORT,
         Budget::new(1_200, 1_600, 600),
         NO_HELPERS,
         cases::repeat_relay_throughput,
@@ -778,7 +788,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::background(
         "repeat-shell",
         Some("Shell repeat throughput using the registry runner"),
-        5_000,
+        EXTRA_SHORT,
         Budget::new(1_000, 1_600, 600),
         NO_HELPERS,
         cases::repeat_shell_throughput,
@@ -786,7 +796,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::background(
         "repeat-volume",
         Some("Volume repeat throughput with restore-on-exit"),
-        6_000,
+        EXTRA_MEDIUM,
         Budget::new(1_000, 2_600, 600),
         NO_HELPERS,
         cases::repeat_volume_throughput,
@@ -794,7 +804,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "raise",
         Some("Raise windows by title using world focus APIs"),
-        10_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 800, 1_600),
         NO_HELPERS,
         cases::raise,
@@ -802,7 +812,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "focus.tracking",
         Some("Track focus transitions for helper windows"),
-        60_000,
+        EXTRA_MEDIUM,
         Budget::new(2_000, 3_000, 1_000),
         NO_HELPERS,
         cases::focus_tracking,
@@ -810,7 +820,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "focus.nav",
         Some("Navigate focus across helper windows via focus actions"),
-        60_000,
+        EXTRA_MEDIUM,
         Budget::new(2_000, 4_000, 1_000),
         NO_HELPERS,
         cases::focus_nav,
@@ -818,7 +828,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "hide.toggle.roundtrip",
         Some("Toggle hide on/off via world hide intents and verify window restoration"),
-        20_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 800, 1_800),
         HIDE_HELPERS,
         cases::hide_toggle_roundtrip,
@@ -826,7 +836,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.fake.adapter",
         Some("Exercise fake adapter placement flows without spawning helpers"),
-        5_000,
+        EXTRA_SHORT,
         Budget::new(400, 200, 400),
         NO_HELPERS,
         cases::place_fake_adapter,
@@ -834,7 +844,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.minimized.defer",
         Some("Auto-unminimize minimized helper window before placement"),
-        15_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 400, 2_000),
         PLACE_HELPERS,
         cases::place_minimized_defer,
@@ -842,7 +852,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.zoomed.normalize",
         Some("Normalize placement after starting from a zoomed helper window"),
-        15_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 600, 2_400),
         PLACE_HELPERS,
         cases::place_zoomed_normalize,
@@ -850,7 +860,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.animated.tween",
         Some("Tweened placement verifies animated frame convergence"),
-        35_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 450, 2_400),
         PLACE_HELPERS,
         cases::place_animated_tween,
@@ -858,7 +868,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.async.delay",
         Some("Delayed apply placement converges after artificial async lag"),
-        35_000,
+        EXTRA_MEDIUM,
         Budget::new(3_000, 1_000, 2_800),
         PLACE_HELPERS,
         cases::place_async_delay,
@@ -866,7 +876,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.term.anchor",
         Some("Terminal-style placement honors step-size anchors without post-move drift"),
-        10_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 500, 2_000),
         PLACE_HELPERS,
         cases::place_term_anchor,
@@ -874,7 +884,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.increments.anchor",
         Some("Placement with resize increments anchors both 2x2 and 3x1 scenarios"),
-        12_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 800, 2_400),
         PLACE_HELPERS,
         cases::place_increments_anchor,
@@ -882,7 +892,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.move.min",
         Some("Move within grid when minimum height exceeds cell"),
-        5_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 450, 2_400),
         PLACE_HELPERS,
         cases::place_move_min_anchor,
@@ -890,7 +900,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.move.nonresizable",
         Some("Move anchored fallback when resizing is disabled"),
-        5_000,
+        EXTRA_SHORT,
         Budget::new(1_200, 450, 2_400),
         PLACE_HELPERS,
         cases::place_move_nonresizable_anchor,
@@ -898,15 +908,15 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.grid.cycle",
         Some("Cycle helper placement across every grid cell"),
-        30_000,
-        Budget::new(1_800, 12_000, 3_000),
+        EXTRA_MEDIUM,
+        Budget::new(1_200, 4_500, 1_500),
         PLACE_HELPERS,
         cases::place_grid_cycle,
     ),
     CaseEntry::main(
         "place.flex.default",
         Some("Flexible placement settles without forcing retries"),
-        12_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 600, 2_400),
         PLACE_HELPERS,
         cases::place_flex_default,
@@ -914,7 +924,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.flex.force_size_pos",
         Some("Force size->pos retries to confirm opposite ordering attempts"),
-        12_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 650, 2_400),
         PLACE_HELPERS,
         cases::place_flex_force_size_pos,
@@ -922,7 +932,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.flex.smg",
         Some("Force shrink->move->grow fallback sequencing"),
-        15_000,
+        EXTRA_MEDIUM,
         Budget::new(1_200, 700, 2_800),
         PLACE_HELPERS,
         cases::place_flex_smg,
@@ -930,7 +940,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "place.skip.nonmovable",
         Some("Placement skips non-movable helper windows"),
-        8_000,
+        EXTRA_SHORT,
         Budget::new(1_200, 700, 1_400),
         PLACE_HELPERS,
         cases::place_skip_nonmovable,
@@ -938,7 +948,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "ui.demo.standard",
         Some("HUD demo flows through activation, theme cycle, and exit"),
-        45_000,
+        EXTRA_SHORT,
         Budget::new(2_000, 6_000, 2_000),
         UI_HELPERS,
         cases::ui_demo_standard,
@@ -946,7 +956,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "ui.demo.mini",
         Some("Mini HUD demo mirrors the standard flow in compact mode"),
-        45_000,
+        EXTRA_SHORT,
         Budget::new(2_000, 5_000, 2_000),
         UI_HELPERS,
         cases::ui_demo_mini,
@@ -954,7 +964,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "fullscreen.toggle.nonnative",
         Some("Toggle non-native fullscreen via injected chords and AX validation"),
-        20_000,
+        EXTRA_MEDIUM,
         Budget::new(1_500, 3_000, 1_500),
         FULLSCREEN_HELPERS,
         cases::fullscreen_toggle_nonnative,
@@ -962,7 +972,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "world.status.permissions",
         Some("World status reports granted capabilities and sane polling budgets"),
-        6_000,
+        EXTRA_SHORT,
         Budget::new(900, 600, 900),
         WORLD_HELPERS,
         cases::world_status_permissions,
@@ -970,7 +980,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "world.ax.focus_props",
         Some("Focused window exposes AX props through world snapshots"),
-        8_000,
+        EXTRA_SHORT,
         Budget::new(900, 1_000, 900),
         WORLD_HELPERS,
         cases::world_ax_focus_props,
@@ -978,7 +988,7 @@ static CASES: &[CaseEntry] = &[
     CaseEntry::background(
         "world.spaces.adoption",
         Some("World adopts mock Mission Control spaces within budget"),
-        6_000,
+        EXTRA_SHORT,
         Budget::new(400, 1_200, 400),
         NO_HELPERS,
         cases::world_spaces_adoption,

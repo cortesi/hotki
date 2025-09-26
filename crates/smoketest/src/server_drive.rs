@@ -14,8 +14,9 @@ use hotki_protocol::{App, Cursor};
 use hotki_server::{
     WorldSnapshotLite,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind, BridgeReply,
-        BridgeRequest, BridgeResponse, BridgeTimestampMs,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
+        BridgeKeyKind, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
+        BridgeTimestampMs,
     },
 };
 use parking_lot::Mutex;
@@ -32,6 +33,34 @@ static LOG_BINDINGS: OnceLock<bool> = OnceLock::new();
 /// Return true when verbose binding diagnostics are enabled via env flag.
 fn log_bindings_enabled() -> bool {
     *LOG_BINDINGS.get_or_init(|| env::var_os("SMOKETEST_LOG_BINDINGS").is_some())
+}
+
+/// Validate invariants returned by the bridge handshake before running tests.
+fn ensure_clean_handshake(handshake: &BridgeHandshake) -> DriverResult<()> {
+    if handshake.idle_timer.armed {
+        return Err(DriverError::BridgeFailure {
+            message: format!(
+                "server idle timer armed during handshake (deadline_ms={:?})",
+                handshake.idle_timer.deadline_ms
+            ),
+        });
+    }
+    if handshake.idle_timer.clients_connected == 0 {
+        return Err(DriverError::BridgeFailure {
+            message: "server reported zero connected clients during handshake".to_string(),
+        });
+    }
+    if let Some(sample) = handshake.notifications.first() {
+        return Err(DriverError::BridgeFailure {
+            message: format!(
+                "bridge reported {} pending notifications, starting with '{}': {}",
+                handshake.notifications.len(),
+                sample.title,
+                sample.text
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Result alias for bridge driver operations.
@@ -76,6 +105,15 @@ pub struct WorldFocusSnapshot {
     pub app: Option<App>,
     /// World reconcile sequence at which the focus change occurred.
     pub reconcile_seq: u64,
+}
+
+/// Handshake payload returned when the smoketest bridge establishes a session.
+#[derive(Debug, Clone)]
+pub struct BridgeHandshake {
+    /// Idle timer snapshot reported by the UI runtime.
+    pub idle_timer: BridgeIdleTimerState,
+    /// Pending notifications surfaced by the UI.
+    pub notifications: Vec<BridgeNotification>,
 }
 
 /// Error variants surfaced by the smoketest bridge driver.
@@ -146,6 +184,12 @@ pub enum DriverError {
         #[source]
         source: io::Error,
     },
+    /// Bridge produced additional messages after shutdown was acknowledged.
+    #[error("unexpected bridge message after shutdown: {message}")]
+    PostShutdownMessage {
+        /// Raw message payload observed.
+        message: String,
+    },
 }
 
 /// Normalize an identifier by parsing it as a chord when possible.
@@ -185,7 +229,8 @@ pub fn init(socket_path: &str) -> DriverResult<()> {
 
     let control_path = control_socket_path(socket_path);
     let mut client = BridgeClient::connect(&control_path)?;
-    client.call_ok(&BridgeRequest::Ping)?;
+    let handshake = client.handshake()?;
+    ensure_clean_handshake(&handshake)?;
 
     let mut guard = conn_slot().lock();
     *guard = Some(client);
@@ -231,7 +276,11 @@ pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> DriverResult<()> {
 
 /// Request a graceful shutdown via the active bridge connection, if available.
 pub fn shutdown() -> DriverResult<()> {
-    match with_connection_mut(|conn| conn.call_ok(&BridgeRequest::Shutdown)) {
+    match with_connection_mut(|conn| {
+        let baseline = conn.event_buffer_len();
+        conn.call_ok(&BridgeRequest::Shutdown)?;
+        conn.assert_no_new_events_since(baseline)
+    }) {
         Err(err @ DriverError::NotInitialized) => Err(err),
         Err(err) => {
             reset();
@@ -447,6 +496,8 @@ struct BridgeClient {
     latest_hud: Option<HudSnapshot>,
     /// Latest world focus snapshot emitted by the bridge.
     latest_focus: Option<WorldFocusSnapshot>,
+    /// Most recent handshake data captured during initialization.
+    handshake: Option<BridgeHandshake>,
 }
 
 impl BridgeClient {
@@ -474,7 +525,29 @@ impl BridgeClient {
             event_buffer: VecDeque::new(),
             latest_hud: None,
             latest_focus: None,
+            handshake: None,
         })
+    }
+
+    /// Perform the bridge handshake and cache the resulting snapshot.
+    fn handshake(&mut self) -> DriverResult<BridgeHandshake> {
+        match self.call(&BridgeRequest::Ping)? {
+            BridgeResponse::Handshake {
+                idle_timer,
+                notifications,
+            } => {
+                let payload = BridgeHandshake {
+                    idle_timer,
+                    notifications,
+                };
+                self.handshake = Some(payload.clone());
+                Ok(payload)
+            }
+            BridgeResponse::Err { message } => Err(DriverError::BridgeFailure { message }),
+            other => Err(DriverError::BridgeFailure {
+                message: format!("unexpected handshake response: {:?}", other),
+            }),
+        }
     }
 
     /// Send a bridge request and wait for its response.
@@ -707,6 +780,21 @@ impl BridgeClient {
     /// Drain the buffered bridge events.
     fn drain_events(&mut self) -> Vec<BridgeEventRecord> {
         self.event_buffer.drain(..).collect()
+    }
+
+    /// Return the number of events observed so far.
+    fn event_buffer_len(&self) -> usize {
+        self.event_buffer.len()
+    }
+
+    /// Ensure no additional events arrived after a baseline index.
+    fn assert_no_new_events_since(&self, baseline: usize) -> DriverResult<()> {
+        if let Some(event) = self.event_buffer.get(baseline) {
+            return Err(DriverError::PostShutdownMessage {
+                message: format!("bridge event observed after shutdown: {:?}", event.payload),
+            });
+        }
+        Ok(())
     }
 
     /// Access the latest HUD snapshot observed on the bridge.

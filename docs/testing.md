@@ -11,8 +11,9 @@ smoketests drive to replay shortcuts and inspect world state.
 - The UI runtime reads `HOTKI_CONTROL_SOCKET` during startup and binds the smoketest bridge listener
   to the provided path, replacing any stale socket from previous runs.
 - After the process starts, `HotkiSession::spawn` immediately resets any previous bridge client and
-  performs a handshake (`BridgeRequest::Ping`) through `server_drive::ensure_init`, guaranteeing that
-  the bridge is ready before a smoketest case begins.
+  performs a handshake (`BridgeRequest::Ping`) through `server_drive::ensure_init`. The handshake returns
+  the server's idle-timer snapshot and any pending UI notifications; `ensure_init` asserts the timer is
+  disarmed and the pending list is empty before a smoketest case begins.
 
 ## Runtime Usage
 

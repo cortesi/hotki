@@ -7,8 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_server::smoketest_bridge::BridgeEvent;
 use hotki_world::WorldWindow;
 use serde::Serialize;
+use tracing::debug;
 
 use crate::{
     config,
@@ -18,8 +20,6 @@ use crate::{
     suite::{CaseCtx, sanitize_slug},
     world,
 };
-use hotki_server::smoketest_bridge::BridgeEvent;
-use tracing::debug;
 
 /// Window title emitted by the HUD process.
 const HUD_TITLE: &str = "Hotki HUD";

@@ -11,6 +11,7 @@ use hotki_world::{
 };
 use mac_winops::{AxProps, WindowInfo, ops::MockWinOps};
 use tokio::time::sleep;
+use tracing::debug;
 
 use super::support::{
     ScenarioState, WindowSpawnSpec, block_on_with_pump, raise_window, shutdown_mimic,
@@ -121,7 +122,9 @@ pub fn world_ax_focus_props(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let expected = window.world_id;
         let world = ctx.world_clone();
 
-        let _ = server_drive::wait_for_world_seq(0, 1_000);
+        if let Err(err) = server_drive::wait_for_world_seq(0, 1_000) {
+            debug!(?err, "initial wait_for_world_seq failed; continuing");
+        }
         let deadline = Instant::now() + Duration::from_millis(4_000);
         let props: AxProps = loop {
             let focused = block_on_with_pump({

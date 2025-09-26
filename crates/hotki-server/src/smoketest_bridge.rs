@@ -1,8 +1,8 @@
 //! Test bridge protocol used by the smoketest harness to proxy RPCs through the UI.
+use hotki_protocol::{App, Cursor, NotifyKind};
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::rpc::WorldSnapshotLite;
-use hotki_protocol::{App, Cursor};
 
 /// Unique identifier assigned to each bridge command.
 pub type BridgeCommandId = u64;
@@ -77,7 +77,7 @@ pub enum BridgeKeyKind {
 }
 
 /// Response type for the smoketest bridge.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BridgeResponse {
     /// Acknowledge receipt of a command while it waits in the UI queue.
@@ -111,6 +111,13 @@ pub enum BridgeResponse {
     Event {
         /// Event payload describing the observed state change.
         event: BridgeEvent,
+    },
+    /// Initial handshake response with server/runtime state.
+    Handshake {
+        /// Current server idle timer snapshot.
+        idle_timer: BridgeIdleTimerState,
+        /// Pending notifications queued on the UI side.
+        notifications: Vec<BridgeNotification>,
     },
     /// Error with a message for diagnostics.
     Err {
@@ -154,8 +161,32 @@ pub struct BridgeHudKey {
     pub is_mode: bool,
 }
 
+/// Snapshot of the server idle timer state returned during handshake.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeIdleTimerState {
+    /// Idle timeout configuration in seconds.
+    pub timeout_secs: u64,
+    /// True when the timer is currently armed on the server.
+    pub armed: bool,
+    /// Optional wall-clock deadline for the idle timer in milliseconds since epoch.
+    pub deadline_ms: Option<u64>,
+    /// Number of clients currently connected to the server.
+    pub clients_connected: usize,
+}
+
+/// Pending notification payload returned during handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeNotification {
+    /// Notification severity kind.
+    pub kind: NotifyKind,
+    /// Notification title text.
+    pub title: String,
+    /// Notification body text.
+    pub text: String,
+}
+
 /// Response envelope emitted by the UI runtime back to the smoketest harness.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeReply {
     /// Identifier of the command that produced this response.
     pub command_id: BridgeCommandId,

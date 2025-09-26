@@ -19,7 +19,7 @@ pub struct Defaults {
 /// Default test duration and timeout settings.
 pub const DEFAULTS: Defaults = Defaults {
     duration_ms: 1000,
-    timeout_ms: 10000,
+    timeout_ms: 3000,
     min_volume_duration_ms: 2000,
 };
 

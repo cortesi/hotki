@@ -15,7 +15,7 @@ use mrpc::Server as MrpcServer;
 use tokio::{select, time::sleep};
 use tracing::{debug, trace};
 
-use super::service::HotkeyService;
+use super::{IdleTimerState, service::HotkeyService};
 use crate::{Error, Result};
 
 /// IPC server
@@ -31,8 +31,9 @@ impl IPCServer {
         manager: mac_hotkey::Manager,
         shutdown: Arc<AtomicBool>,
         _proxy: tao::event_loop::EventLoopProxy<()>,
+        idle_state: Arc<IdleTimerState>,
     ) -> Self {
-        let mut builder = HotkeyService::builder(Arc::new(manager), shutdown);
+        let mut builder = HotkeyService::builder(Arc::new(manager), shutdown, idle_state);
         if let Ok(v) = env::var("HOTKI_MAX_INFLIGHT_PER_ID")
             && let Ok(n) = v.parse::<usize>()
         {
