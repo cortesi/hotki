@@ -54,6 +54,18 @@ pub struct Retry {
 /// Default connection retry pacing.
 pub const RETRY: Retry = Retry { fast_delay_ms: 50 };
 
+/// Bridge-level handshake timing configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeConfig {
+    /// Maximum time the UI may take to acknowledge a command before we fail fast.
+    pub ack_timeout_ms: u64,
+}
+
+/// Default bridge handshake thresholds.
+pub const BRIDGE: BridgeConfig = BridgeConfig {
+    ack_timeout_ms: 750,
+};
+
 /// Helper window defaults shared across tests.
 #[derive(Debug, Clone, Copy)]
 pub struct HelperWindowConfig {

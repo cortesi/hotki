@@ -1,14 +1,21 @@
-use std::{env, fs, io::ErrorKind, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    io::ErrorKind,
+    path::PathBuf,
+    process::{self as std_process, Command},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use logging as logshared;
+use tracing::debug;
 
 use crate::{
+    config,
     error::{Error, Result},
     process::{self, ManagedChild},
     server_drive::{self, DriverError},
     world,
 };
-use tracing::debug;
 
 /// Launch configuration for a smoketest-backed hotki session.
 pub struct HotkiSessionConfig {
@@ -72,13 +79,28 @@ impl HotkiSession {
         if let Some(cfg) = &config_path {
             cmd.arg(cfg);
         }
-        let child = process::spawn_managed(cmd)?;
-        let socket_path = socket_path_for_pid(child.pid as u32);
-        let control_socket = format!("{}.bridge", socket_path);
+        let control_socket = unique_control_socket_path();
+        unsafe {
+            env::set_var("HOTKI_CONTROL_SOCKET", &control_socket);
+        }
+        cmd.env("HOTKI_CONTROL_SOCKET", &control_socket);
         if let Err(err) = fs::remove_file(&control_socket)
             && err.kind() != ErrorKind::NotFound
         {
             tracing::debug!(?err, socket = %control_socket, "failed to remove stale control socket");
+        }
+
+        let mut child = process::spawn_managed(cmd)?;
+        let socket_path = socket_path_for_pid(child.pid as u32);
+        server_drive::reset();
+        if let Err(err) = server_drive::ensure_init(&socket_path, config::DEFAULTS.timeout_ms) {
+            if let Err(kill_err) = child.kill_and_wait() {
+                debug!(
+                    ?kill_err,
+                    "failed to terminate hotki after bridge init failure"
+                );
+            }
+            return Err(Error::from(err));
         }
         Ok(Self {
             child,
@@ -159,6 +181,19 @@ pub fn socket_path_for_pid(pid: u32) -> String {
     hotki_server::socket_path_for_pid(pid)
 }
 
+/// Generate a unique control socket path under the system temporary directory.
+fn unique_control_socket_path() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let pid = std_process::id();
+    env::temp_dir()
+        .join(format!("hotki-bridge-{pid}-{ts}.sock"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Resolve the hotki binary path from env overrides or the current executable dir.
 fn resolve_hotki_binary() -> Result<PathBuf> {
     if let Ok(path) = env::var("HOTKI_BIN") {
@@ -174,4 +209,32 @@ fn resolve_hotki_binary() -> Result<PathBuf> {
         .filter(|path| path.exists());
 
     inferred.ok_or(Error::HotkiBinNotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server_drive;
+
+    #[test]
+    fn spawn_initializes_bridge() -> Result<()> {
+        server_drive::reset();
+        let config = match HotkiSessionConfig::from_env() {
+            Ok(cfg) => cfg.with_logs(false),
+            Err(Error::HotkiBinNotFound) => return Ok(()),
+            Err(other) => return Err(other),
+        };
+        let mut session = HotkiSession::spawn(config)?;
+
+        assert!(
+            server_drive::is_ready(),
+            "bridge should be ready immediately after spawning"
+        );
+        server_drive::check_alive()?;
+
+        session.shutdown();
+        session.kill_and_wait();
+        server_drive::reset();
+        Ok(())
+    }
 }

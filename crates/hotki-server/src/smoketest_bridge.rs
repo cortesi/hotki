@@ -3,6 +3,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::rpc::WorldSnapshotLite;
 
+/// Unique identifier assigned to each bridge command.
+pub type BridgeCommandId = u64;
+
+/// Millisecond-precision wall-clock timestamp carried by bridge envelopes.
+pub type BridgeTimestampMs = u64;
+
+/// Request envelope transmitted from the smoketest harness to the UI runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeCommand {
+    /// Monotonic command identifier allocated by the harness.
+    pub command_id: BridgeCommandId,
+    /// Millisecond timestamp recorded when the harness issued the command.
+    pub issued_at_ms: BridgeTimestampMs,
+    /// Bridge request payload.
+    pub request: BridgeRequest,
+}
+
 /// Request type for the smoketest bridge between the smoketest harness and the UI runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -48,6 +65,11 @@ pub enum BridgeKeyKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BridgeResponse {
+    /// Acknowledge receipt of a command while it waits in the UI queue.
+    Ack {
+        /// Number of commands currently queued (including the acknowledged one).
+        queued: usize,
+    },
     /// Success without additional payload.
     Ok,
     /// Success containing a list of bindings.
@@ -70,6 +92,17 @@ pub enum BridgeResponse {
         /// Human-readable error message.
         message: String,
     },
+}
+
+/// Response envelope emitted by the UI runtime back to the smoketest harness.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BridgeReply {
+    /// Identifier of the command that produced this response.
+    pub command_id: BridgeCommandId,
+    /// Millisecond timestamp recorded when the runtime flushed the response.
+    pub timestamp_ms: BridgeTimestampMs,
+    /// Response payload.
+    pub response: BridgeResponse,
 }
 
 impl BridgeResponse {

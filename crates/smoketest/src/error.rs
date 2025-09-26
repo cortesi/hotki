@@ -94,6 +94,30 @@ pub fn print_hints(err: &Error) {
                         ident
                     );
                 }
+                DriverError::AckTimeout {
+                    command_id,
+                    timeout_ms,
+                } => {
+                    eprintln!(
+                        "      bridge did not ACK command {command_id} within {timeout_ms} ms."
+                    );
+                    eprintln!("      check UI logs for stalled bridge tasks or deadlocks.");
+                }
+                DriverError::SequenceMismatch { expected, got } => {
+                    eprintln!(
+                        "      bridge replies arrived out of order (expected {}, got {}).",
+                        expected, got
+                    );
+                    eprintln!(
+                        "      ensure only one harness is targeting the bridge socket at a time."
+                    );
+                }
+                DriverError::AckMissing { command_id } => {
+                    eprintln!(
+                        "      bridge never acknowledged command {}; see runtime logs for queue issues.",
+                        command_id
+                    );
+                }
                 DriverError::BridgeFailure { message } => {
                     eprintln!(
                         "      see logs above for bridge errors returned by hotki runtime: {}",

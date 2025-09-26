@@ -3,10 +3,15 @@
 //! convenience actions for opening macOS settings.
 use std::{
     collections::VecDeque,
-    env, io,
+    convert::TryInto,
+    env,
+    future::Future,
+    io,
     path::{Path, PathBuf},
+    pin::Pin,
     process::{self, Command},
     thread,
+    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
 use config::themes;
@@ -14,7 +19,10 @@ use egui::Context;
 use hotki_protocol::{NotifyKind, ipc::heartbeat};
 use hotki_server::{
     Client,
-    smoketest_bridge::{BridgeKeyKind, BridgeRequest, BridgeResponse},
+    smoketest_bridge::{
+        BridgeCommand, BridgeCommandId, BridgeKeyKind, BridgeReply, BridgeRequest, BridgeResponse,
+        BridgeTimestampMs,
+    },
 };
 use tokio::{
     fs,
@@ -320,10 +328,17 @@ impl ConnectionDriver {
                 self.apply_ui_override(UiOverride::ThemeSet(name));
             }
             ControlMsg::Test(cmd) => {
-                let TestCommand { req, respond_to } = cmd;
+                let TestCommand {
+                    command_id,
+                    req,
+                    respond_to,
+                } = cmd;
                 let response = self.handle_test_command(conn, req).await;
                 if respond_to.send(response).is_err() {
-                    tracing::debug!("bridge responder dropped while delivering response");
+                    tracing::debug!(
+                        command_id,
+                        "bridge responder dropped while delivering response"
+                    );
                 }
             }
             other => {
@@ -769,6 +784,9 @@ async fn run_test_bridge(
     }
 }
 
+/// Future that resolves with the command id and final bridge response.
+type ProcessingFuture = Pin<Box<dyn Future<Output = (BridgeCommandId, BridgeResponse)> + Send>>;
+
 /// Process commands from a single smoketest bridge client connection.
 async fn handle_test_bridge_client(
     stream: UnixStream,
@@ -779,56 +797,181 @@ async fn handle_test_bridge_client(
     let mut writer = BufWriter::new(writer);
     let mut lines = reader.lines();
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let req: BridgeRequest = match serde_json::from_str(&line) {
-            Ok(req) => req,
-            Err(err) => {
-                let resp = BridgeResponse::Err {
-                    message: format!("invalid request: {}", err),
-                };
-                write_bridge_response(&mut writer, resp).await?;
-                continue;
-            }
-        };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if tx_ctrl_runtime
-            .send(ControlMsg::Test(TestCommand {
-                req,
-                respond_to: reply_tx,
-            }))
-            .is_err()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "runtime control channel closed",
-            ));
-        }
+    let mut pending: VecDeque<BridgeCommand> = VecDeque::new();
+    let mut processing: Option<ProcessingFuture> = None;
+    let mut expected_command: BridgeCommandId = 0;
 
-        let resp = match reply_rx.await {
-            Ok(resp) => resp,
-            Err(_canceled) => BridgeResponse::Err {
-                message: "runtime dropped bridge response".to_string(),
-            },
-        };
-        write_bridge_response(&mut writer, resp).await?;
+    loop {
+        tokio::select! {
+            maybe_line = lines.next_line() => {
+                match maybe_line? {
+                    Some(line) => {
+                        handle_bridge_line(
+                            line,
+                            &mut writer,
+                            &mut pending,
+                            &mut processing,
+                            &tx_ctrl_runtime,
+                            &mut expected_command,
+                        ).await?;
+                    }
+                    None => break,
+                }
+            }
+            result = async {
+                if let Some(fut) = processing.as_mut() {
+                    Some(fut.await)
+                } else {
+                    None
+                }
+            }, if processing.is_some() => {
+                if let Some((command_id, response)) = result {
+                    let reply = BridgeReply {
+                        command_id,
+                        timestamp_ms: now_millis(),
+                        response,
+                    };
+                    write_bridge_reply(&mut writer, reply).await?;
+                    processing = None;
+                    drive_queue(&mut pending, &mut processing, &tx_ctrl_runtime, &mut writer).await?;
+                }
+            }
+        }
     }
 
     writer.flush().await?;
     Ok(())
 }
 
-/// Serialize a bridge response to the client stream.
-async fn write_bridge_response(
+/// Process a single inbound bridge line: validate sequence, enqueue, and ACK.
+async fn handle_bridge_line(
+    line: String,
     writer: &mut BufWriter<OwnedWriteHalf>,
-    resp: BridgeResponse,
+    pending: &mut VecDeque<BridgeCommand>,
+    processing: &mut Option<ProcessingFuture>,
+    tx_ctrl_runtime: &mpsc::UnboundedSender<ControlMsg>,
+    expected_command: &mut BridgeCommandId,
 ) -> io::Result<()> {
-    let encoded = serde_json::to_string(&resp).map_err(io::Error::other)?;
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+
+    let command: BridgeCommand = match serde_json::from_str(&line) {
+        Ok(cmd) => cmd,
+        Err(err) => {
+            let reply = BridgeReply {
+                command_id: *expected_command,
+                timestamp_ms: now_millis(),
+                response: BridgeResponse::Err {
+                    message: format!("invalid request: {}", err),
+                },
+            };
+            write_bridge_reply(writer, reply).await?;
+            return Ok(());
+        }
+    };
+
+    if command.command_id != *expected_command {
+        let reply = BridgeReply {
+            command_id: command.command_id,
+            timestamp_ms: now_millis(),
+            response: BridgeResponse::Err {
+                message: format!(
+                    "unexpected command id: expected {}, got {}",
+                    *expected_command, command.command_id
+                ),
+            },
+        };
+        write_bridge_reply(writer, reply).await?;
+        return Ok(());
+    }
+
+    let next = (*expected_command).wrapping_add(1);
+    *expected_command = next;
+    let command_id = command.command_id;
+    pending.push_back(command);
+
+    let queued = pending.len() + if processing.is_some() { 1 } else { 0 };
+    let ack = BridgeReply {
+        command_id,
+        timestamp_ms: now_millis(),
+        response: BridgeResponse::Ack { queued },
+    };
+    write_bridge_reply(writer, ack).await?;
+
+    drive_queue(pending, processing, tx_ctrl_runtime, writer).await
+}
+
+/// Drive the queued commands, ensuring only one runtime request executes at a time.
+async fn drive_queue(
+    pending: &mut VecDeque<BridgeCommand>,
+    processing: &mut Option<ProcessingFuture>,
+    tx_ctrl_runtime: &mpsc::UnboundedSender<ControlMsg>,
+    writer: &mut BufWriter<OwnedWriteHalf>,
+) -> io::Result<()> {
+    while processing.is_none() {
+        let Some(command) = pending.pop_front() else {
+            break;
+        };
+        let BridgeCommand {
+            command_id,
+            request,
+            ..
+        } = command;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if tx_ctrl_runtime
+            .send(ControlMsg::Test(TestCommand {
+                command_id,
+                req: request,
+                respond_to: reply_tx,
+            }))
+            .is_err()
+        {
+            let reply = BridgeReply {
+                command_id,
+                timestamp_ms: now_millis(),
+                response: BridgeResponse::Err {
+                    message: "runtime control channel closed".to_string(),
+                },
+            };
+            write_bridge_reply(writer, reply).await?;
+            continue;
+        }
+
+        let fut = Box::pin(async move {
+            let response = match reply_rx.await {
+                Ok(resp) => resp,
+                Err(_canceled) => BridgeResponse::Err {
+                    message: "runtime dropped bridge response".to_string(),
+                },
+            };
+            (command_id, response)
+        });
+        *processing = Some(fut);
+    }
+    Ok(())
+}
+
+/// Serialize a bridge reply to the client stream.
+/// Serialize a bridge reply to the client stream.
+async fn write_bridge_reply(
+    writer: &mut BufWriter<OwnedWriteHalf>,
+    reply: BridgeReply,
+) -> io::Result<()> {
+    let encoded = serde_json::to_string(&reply).map_err(io::Error::other)?;
     writer.write_all(encoded.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await
+}
+
+/// Return the current wall-clock timestamp in milliseconds since the Unix epoch.
+fn now_millis() -> BridgeTimestampMs {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| StdDuration::from_secs(0))
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// Control messages routed to the runtime event loop.
@@ -862,6 +1005,8 @@ pub enum ControlMsg {
 /// Request/response pair used to service smoketest bridge commands.
 #[derive(Debug)]
 pub struct TestCommand {
+    /// Identifier for the command being serviced.
+    command_id: BridgeCommandId,
     /// The bridge request submitted by the smoketest harness.
     req: BridgeRequest,
     /// Channel used to deliver the bridge response back to the harness.

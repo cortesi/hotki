@@ -9,6 +9,8 @@ mimic captures, and assert results exclusively through `hotki-world` APIs.
   guarantees, budgets, skip semantics, message format, and "Do Not Do" policy.
 - [Mimic Scenarios](../../docs/mimic-scenarios.md) – capture lifecycle, bundle structure, quirks, and
   importer heuristics.
+- [Bridge Lifecycle](../../docs/testing.md) – handshake timing, control socket export, reconnection,
+  and shutdown expectations.
 
 ## Running Smoketests
 
