@@ -1177,6 +1177,7 @@ mod ax_read_pool;
 mod events;
 mod frames;
 #[cfg(feature = "world-mimic")]
+/// Smoketest-only helper windows that mimic real applications.
 pub mod mimic;
 mod view;
 mod wait;

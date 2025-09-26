@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
     process::exit,
     result::Result as StdResult,
+    sync::mpsc::{self, RecvTimeoutError},
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -583,11 +585,6 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    use std::{
-        sync::mpsc::{self, RecvTimeoutError},
-        thread,
-    };
-
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let outcome = panic::catch_unwind(AssertUnwindSafe(f)).map_or_else(
