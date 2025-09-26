@@ -5,7 +5,7 @@ use logging::LogArgs;
 
 use crate::{
     config,
-    suite::{CaseRunOpts, case_by_alias},
+    suite::{CaseRunOpts, case_by_slug},
 };
 
 /// Command-line interface arguments for the smoketest binary.
@@ -142,7 +142,7 @@ impl SeqTest {
             .to_possible_value()
             .expect("seq test must expose a clap alias");
         let alias = alias_value.get_name();
-        case_by_alias(alias)
+        case_by_slug(alias)
             .map(|entry| entry.name)
             .expect("seq test alias must map to a registered case")
     }
@@ -343,7 +343,7 @@ impl Commands {
             default_opts
         };
 
-        let entry = case_by_alias(candidate)?;
+        let entry = case_by_slug(candidate)?;
         Some((entry.name, opts))
     }
 }

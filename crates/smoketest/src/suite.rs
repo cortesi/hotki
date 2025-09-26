@@ -31,11 +31,9 @@ pub fn sanitize_slug(slug: &str) -> String {
         .collect()
 }
 
-/// Retrieve a case registry entry by slug or CLI alias.
-pub fn case_by_alias(alias: &str) -> Option<&'static CaseEntry> {
-    CASES
-        .iter()
-        .find(|entry| entry.name == alias || entry.aliases.contains(&alias))
+/// Retrieve a case registry entry by slug.
+pub fn case_by_slug(slug: &str) -> Option<&'static CaseEntry> {
+    CASES.iter().find(|entry| entry.name == slug)
 }
 
 /// Optional overrides applied when running registry-backed cases.
@@ -56,6 +54,17 @@ pub struct Budget {
     pub action_ms: u64,
     /// Maximum milliseconds expected while waiting for the case to settle.
     pub settle_ms: u64,
+}
+
+impl Budget {
+    /// Construct a budget from setup/action/settle millisecond values.
+    pub const fn new(setup_ms: u64, action_ms: u64, settle_ms: u64) -> Self {
+        Self {
+            setup_ms,
+            action_ms,
+            settle_ms,
+        }
+    }
 }
 
 /// Documentation for helper functions that a case relies on.
@@ -81,10 +90,45 @@ pub struct CaseEntry {
     pub budget: Budget,
     /// Helper API surface consumed by the case.
     pub helpers: &'static [HelperDoc],
-    /// Alternate CLI aliases that map to this case.
-    pub aliases: &'static [&'static str],
     /// Function pointer invoked to execute the case.
     pub run: fn(&mut CaseCtx<'_>) -> Result<()>,
+}
+
+impl CaseEntry {
+    /// Create a main-thread case entry with the provided metadata.
+    pub const fn main(
+        name: &'static str,
+        info: Option<&'static str>,
+        extra_timeout_ms: u64,
+        budget: Budget,
+        helpers: &'static [HelperDoc],
+        run: fn(&mut CaseCtx<'_>) -> Result<()>,
+    ) -> Self {
+        Self {
+            name,
+            info,
+            main_thread: true,
+            extra_timeout_ms,
+            budget,
+            helpers,
+            run,
+        }
+    }
+
+    /// Create a background-thread case entry with the provided metadata.
+    pub const fn background(
+        name: &'static str,
+        info: Option<&'static str>,
+        extra_timeout_ms: u64,
+        budget: Budget,
+        helpers: &'static [HelperDoc],
+        run: fn(&mut CaseCtx<'_>) -> Result<()>,
+    ) -> Self {
+        Self {
+            main_thread: false,
+            ..Self::main(name, info, extra_timeout_ms, budget, helpers, run)
+        }
+    }
 }
 
 /// Optional per-stage timings captured during case execution.
@@ -326,7 +370,7 @@ fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)
         .iter()
         .enumerate()
         .map(|(idx, name)| {
-            let entry = case_by_alias(name)
+            let entry = case_by_slug(name)
                 .ok_or_else(|| Error::InvalidState(format!("unknown smoketest case: {name}")))?;
             Ok((idx, entry))
         })
@@ -547,6 +591,9 @@ fn ensure_world_quiescent(world: &WorldHandle, case: &str) -> Result<Option<Erro
     Ok(Some(Error::InvalidState(msg)))
 }
 
+/// Helper sets used by smoketest cases.
+const NO_HELPERS: &[HelperDoc] = &[];
+
 /// Helper functions shared by hide and placement-focused smoketest cases.
 const PLACE_HELPERS: &[HelperDoc] = &[
     HelperDoc {
@@ -581,386 +628,224 @@ const UI_HELPERS: &[HelperDoc] = &[HelperDoc {
 }];
 
 /// Helper functions consumed by fullscreen smoketests.
-const FULLSCREEN_HELPERS: &[HelperDoc] = &[];
+const FULLSCREEN_HELPERS: &[HelperDoc] = NO_HELPERS;
 
 /// Registry of Stage Five mimic-driven placement cases.
 static CASES: &[CaseEntry] = &[
-    CaseEntry {
-        name: "repeat-relay",
-        info: Some("Relay repeat throughput over the mimic harness"),
-        main_thread: true,
-        extra_timeout_ms: 5_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 1_600,
-            settle_ms: 600,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::repeat_relay_throughput,
-    },
-    CaseEntry {
-        name: "repeat-shell",
-        info: Some("Shell repeat throughput using the registry runner"),
-        main_thread: false,
-        extra_timeout_ms: 5_000,
-        budget: Budget {
-            setup_ms: 1_000,
-            action_ms: 1_600,
-            settle_ms: 600,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::repeat_shell_throughput,
-    },
-    CaseEntry {
-        name: "repeat-volume",
-        info: Some("Volume repeat throughput with restore-on-exit"),
-        main_thread: false,
-        extra_timeout_ms: 6_000,
-        budget: Budget {
-            setup_ms: 1_000,
-            action_ms: 2_600,
-            settle_ms: 600,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::repeat_volume_throughput,
-    },
-    CaseEntry {
-        name: "raise",
-        info: Some("Raise windows by title using world focus APIs"),
-        main_thread: true,
-        extra_timeout_ms: 10_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 800,
-            settle_ms: 1_600,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::raise,
-    },
-    CaseEntry {
-        name: "focus.tracking",
-        info: Some("Track focus transitions for helper windows"),
-        main_thread: true,
-        extra_timeout_ms: 60_000,
-        budget: Budget {
-            setup_ms: 2_000,
-            action_ms: 3_000,
-            settle_ms: 1_000,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::focus_tracking,
-    },
-    CaseEntry {
-        name: "focus.nav",
-        info: Some("Navigate focus across helper windows via focus actions"),
-        main_thread: true,
-        extra_timeout_ms: 60_000,
-        budget: Budget {
-            setup_ms: 2_000,
-            action_ms: 4_000,
-            settle_ms: 1_000,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::focus_nav,
-    },
-    CaseEntry {
-        name: "hide.toggle.roundtrip",
-        info: Some("Toggle hide on/off via world hide intents and verify window restoration"),
-        main_thread: true,
-        extra_timeout_ms: 20_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 800,
-            settle_ms: 1_800,
-        },
-        helpers: HIDE_HELPERS,
-        aliases: &[],
-        run: cases::hide_toggle_roundtrip,
-    },
-    CaseEntry {
-        name: "place.fake.adapter",
-        info: Some("Exercise fake adapter placement flows without spawning helpers"),
-        main_thread: true,
-        extra_timeout_ms: 5_000,
-        budget: Budget {
-            setup_ms: 400,
-            action_ms: 200,
-            settle_ms: 400,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::place_fake_adapter,
-    },
-    CaseEntry {
-        name: "place.minimized.defer",
-        info: Some("Auto-unminimize minimized helper window before placement"),
-        main_thread: true,
-        extra_timeout_ms: 15_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 400,
-            settle_ms: 2_000,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_minimized_defer,
-    },
-    CaseEntry {
-        name: "place.zoomed.normalize",
-        info: Some("Normalize placement after starting from a zoomed helper window"),
-        main_thread: true,
-        extra_timeout_ms: 15_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 600,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_zoomed_normalize,
-    },
-    CaseEntry {
-        name: "place.animated.tween",
-        info: Some("Tweened placement verifies animated frame convergence"),
-        main_thread: true,
-        extra_timeout_ms: 35_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 450,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_animated_tween,
-    },
-    CaseEntry {
-        name: "place.async.delay",
-        info: Some("Delayed apply placement converges after artificial async lag"),
-        main_thread: true,
-        extra_timeout_ms: 35_000,
-        budget: Budget {
-            setup_ms: 3_000,
-            action_ms: 1_000,
-            settle_ms: 2_800,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_async_delay,
-    },
-    CaseEntry {
-        name: "place.term.anchor",
-        info: Some("Terminal-style placement honors step-size anchors without post-move drift"),
-        main_thread: true,
-        extra_timeout_ms: 10_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 500,
-            settle_ms: 2_000,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_term_anchor,
-    },
-    CaseEntry {
-        name: "place.increments.anchor",
-        info: Some("Placement with resize increments anchors both 2x2 and 3x1 scenarios"),
-        main_thread: true,
-        extra_timeout_ms: 12_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 800,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_increments_anchor,
-    },
-    CaseEntry {
-        name: "place.move.min",
-        info: Some("Move within grid when minimum height exceeds cell"),
-        main_thread: true,
-        extra_timeout_ms: 5_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 450,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_move_min_anchor,
-    },
-    CaseEntry {
-        name: "place.move.nonresizable",
-        info: Some("Move anchored fallback when resizing is disabled"),
-        main_thread: true,
-        extra_timeout_ms: 5_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 450,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_move_nonresizable_anchor,
-    },
-    CaseEntry {
-        name: "place.grid.cycle",
-        info: Some("Cycle helper placement across every grid cell"),
-        main_thread: true,
-        extra_timeout_ms: 30_000,
-        budget: Budget {
-            setup_ms: 1_800,
-            action_ms: 12_000,
-            settle_ms: 3_000,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_grid_cycle,
-    },
-    CaseEntry {
-        name: "place.flex.default",
-        info: Some("Flexible placement settles without forcing retries"),
-        main_thread: true,
-        extra_timeout_ms: 12_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 600,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_flex_default,
-    },
-    CaseEntry {
-        name: "place.flex.force_size_pos",
-        info: Some("Force size->pos retries to confirm opposite ordering attempts"),
-        main_thread: true,
-        extra_timeout_ms: 12_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 650,
-            settle_ms: 2_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_flex_force_size_pos,
-    },
-    CaseEntry {
-        name: "place.flex.smg",
-        info: Some("Force shrink->move->grow fallback sequencing"),
-        main_thread: true,
-        extra_timeout_ms: 15_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 700,
-            settle_ms: 2_800,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_flex_smg,
-    },
-    CaseEntry {
-        name: "place.skip.nonmovable",
-        info: Some("Placement skips non-movable helper windows"),
-        main_thread: true,
-        extra_timeout_ms: 8_000,
-        budget: Budget {
-            setup_ms: 1_200,
-            action_ms: 700,
-            settle_ms: 1_400,
-        },
-        helpers: PLACE_HELPERS,
-        aliases: &[],
-        run: cases::place_skip_nonmovable,
-    },
-    CaseEntry {
-        name: "ui.demo.standard",
-        info: Some("HUD demo flows through activation, theme cycle, and exit"),
-        main_thread: true,
-        extra_timeout_ms: 45_000,
-        budget: Budget {
-            setup_ms: 2_000,
-            action_ms: 6_000,
-            settle_ms: 2_000,
-        },
-        helpers: UI_HELPERS,
-        aliases: &[],
-        run: cases::ui_demo_standard,
-    },
-    CaseEntry {
-        name: "ui.demo.mini",
-        info: Some("Mini HUD demo mirrors the standard flow in compact mode"),
-        main_thread: true,
-        extra_timeout_ms: 45_000,
-        budget: Budget {
-            setup_ms: 2_000,
-            action_ms: 5_000,
-            settle_ms: 2_000,
-        },
-        helpers: UI_HELPERS,
-        aliases: &[],
-        run: cases::ui_demo_mini,
-    },
-    CaseEntry {
-        name: "fullscreen.toggle.nonnative",
-        info: Some("Toggle non-native fullscreen via injected chords and AX validation"),
-        main_thread: true,
-        extra_timeout_ms: 20_000,
-        budget: Budget {
-            setup_ms: 1_500,
-            action_ms: 3_000,
-            settle_ms: 1_500,
-        },
-        helpers: FULLSCREEN_HELPERS,
-        aliases: &[],
-        run: cases::fullscreen_toggle_nonnative,
-    },
-    CaseEntry {
-        name: "world.status.permissions",
-        info: Some("World status reports granted capabilities and sane polling budgets"),
-        main_thread: true,
-        extra_timeout_ms: 6_000,
-        budget: Budget {
-            setup_ms: 900,
-            action_ms: 600,
-            settle_ms: 900,
-        },
-        helpers: WORLD_HELPERS,
-        aliases: &[],
-        run: cases::world_status_permissions,
-    },
-    CaseEntry {
-        name: "world.ax.focus_props",
-        info: Some("Focused window exposes AX props through world snapshots"),
-        main_thread: true,
-        extra_timeout_ms: 8_000,
-        budget: Budget {
-            setup_ms: 900,
-            action_ms: 1_000,
-            settle_ms: 900,
-        },
-        helpers: WORLD_HELPERS,
-        aliases: &[],
-        run: cases::world_ax_focus_props,
-    },
-    CaseEntry {
-        name: "world.spaces.adoption",
-        info: Some("World adopts mock Mission Control spaces within budget"),
-        main_thread: false,
-        extra_timeout_ms: 6_000,
-        budget: Budget {
-            setup_ms: 400,
-            action_ms: 1_200,
-            settle_ms: 400,
-        },
-        helpers: &[],
-        aliases: &[],
-        run: cases::world_spaces_adoption,
-    },
+    CaseEntry::main(
+        "repeat-relay",
+        Some("Relay repeat throughput over the mimic harness"),
+        5_000,
+        Budget::new(1_200, 1_600, 600),
+        NO_HELPERS,
+        cases::repeat_relay_throughput,
+    ),
+    CaseEntry::background(
+        "repeat-shell",
+        Some("Shell repeat throughput using the registry runner"),
+        5_000,
+        Budget::new(1_000, 1_600, 600),
+        NO_HELPERS,
+        cases::repeat_shell_throughput,
+    ),
+    CaseEntry::background(
+        "repeat-volume",
+        Some("Volume repeat throughput with restore-on-exit"),
+        6_000,
+        Budget::new(1_000, 2_600, 600),
+        NO_HELPERS,
+        cases::repeat_volume_throughput,
+    ),
+    CaseEntry::main(
+        "raise",
+        Some("Raise windows by title using world focus APIs"),
+        10_000,
+        Budget::new(1_200, 800, 1_600),
+        NO_HELPERS,
+        cases::raise,
+    ),
+    CaseEntry::main(
+        "focus.tracking",
+        Some("Track focus transitions for helper windows"),
+        60_000,
+        Budget::new(2_000, 3_000, 1_000),
+        NO_HELPERS,
+        cases::focus_tracking,
+    ),
+    CaseEntry::main(
+        "focus.nav",
+        Some("Navigate focus across helper windows via focus actions"),
+        60_000,
+        Budget::new(2_000, 4_000, 1_000),
+        NO_HELPERS,
+        cases::focus_nav,
+    ),
+    CaseEntry::main(
+        "hide.toggle.roundtrip",
+        Some("Toggle hide on/off via world hide intents and verify window restoration"),
+        20_000,
+        Budget::new(1_200, 800, 1_800),
+        HIDE_HELPERS,
+        cases::hide_toggle_roundtrip,
+    ),
+    CaseEntry::main(
+        "place.fake.adapter",
+        Some("Exercise fake adapter placement flows without spawning helpers"),
+        5_000,
+        Budget::new(400, 200, 400),
+        NO_HELPERS,
+        cases::place_fake_adapter,
+    ),
+    CaseEntry::main(
+        "place.minimized.defer",
+        Some("Auto-unminimize minimized helper window before placement"),
+        15_000,
+        Budget::new(1_200, 400, 2_000),
+        PLACE_HELPERS,
+        cases::place_minimized_defer,
+    ),
+    CaseEntry::main(
+        "place.zoomed.normalize",
+        Some("Normalize placement after starting from a zoomed helper window"),
+        15_000,
+        Budget::new(1_200, 600, 2_400),
+        PLACE_HELPERS,
+        cases::place_zoomed_normalize,
+    ),
+    CaseEntry::main(
+        "place.animated.tween",
+        Some("Tweened placement verifies animated frame convergence"),
+        35_000,
+        Budget::new(1_200, 450, 2_400),
+        PLACE_HELPERS,
+        cases::place_animated_tween,
+    ),
+    CaseEntry::main(
+        "place.async.delay",
+        Some("Delayed apply placement converges after artificial async lag"),
+        35_000,
+        Budget::new(3_000, 1_000, 2_800),
+        PLACE_HELPERS,
+        cases::place_async_delay,
+    ),
+    CaseEntry::main(
+        "place.term.anchor",
+        Some("Terminal-style placement honors step-size anchors without post-move drift"),
+        10_000,
+        Budget::new(1_200, 500, 2_000),
+        PLACE_HELPERS,
+        cases::place_term_anchor,
+    ),
+    CaseEntry::main(
+        "place.increments.anchor",
+        Some("Placement with resize increments anchors both 2x2 and 3x1 scenarios"),
+        12_000,
+        Budget::new(1_200, 800, 2_400),
+        PLACE_HELPERS,
+        cases::place_increments_anchor,
+    ),
+    CaseEntry::main(
+        "place.move.min",
+        Some("Move within grid when minimum height exceeds cell"),
+        5_000,
+        Budget::new(1_200, 450, 2_400),
+        PLACE_HELPERS,
+        cases::place_move_min_anchor,
+    ),
+    CaseEntry::main(
+        "place.move.nonresizable",
+        Some("Move anchored fallback when resizing is disabled"),
+        5_000,
+        Budget::new(1_200, 450, 2_400),
+        PLACE_HELPERS,
+        cases::place_move_nonresizable_anchor,
+    ),
+    CaseEntry::main(
+        "place.grid.cycle",
+        Some("Cycle helper placement across every grid cell"),
+        30_000,
+        Budget::new(1_800, 12_000, 3_000),
+        PLACE_HELPERS,
+        cases::place_grid_cycle,
+    ),
+    CaseEntry::main(
+        "place.flex.default",
+        Some("Flexible placement settles without forcing retries"),
+        12_000,
+        Budget::new(1_200, 600, 2_400),
+        PLACE_HELPERS,
+        cases::place_flex_default,
+    ),
+    CaseEntry::main(
+        "place.flex.force_size_pos",
+        Some("Force size->pos retries to confirm opposite ordering attempts"),
+        12_000,
+        Budget::new(1_200, 650, 2_400),
+        PLACE_HELPERS,
+        cases::place_flex_force_size_pos,
+    ),
+    CaseEntry::main(
+        "place.flex.smg",
+        Some("Force shrink->move->grow fallback sequencing"),
+        15_000,
+        Budget::new(1_200, 700, 2_800),
+        PLACE_HELPERS,
+        cases::place_flex_smg,
+    ),
+    CaseEntry::main(
+        "place.skip.nonmovable",
+        Some("Placement skips non-movable helper windows"),
+        8_000,
+        Budget::new(1_200, 700, 1_400),
+        PLACE_HELPERS,
+        cases::place_skip_nonmovable,
+    ),
+    CaseEntry::main(
+        "ui.demo.standard",
+        Some("HUD demo flows through activation, theme cycle, and exit"),
+        45_000,
+        Budget::new(2_000, 6_000, 2_000),
+        UI_HELPERS,
+        cases::ui_demo_standard,
+    ),
+    CaseEntry::main(
+        "ui.demo.mini",
+        Some("Mini HUD demo mirrors the standard flow in compact mode"),
+        45_000,
+        Budget::new(2_000, 5_000, 2_000),
+        UI_HELPERS,
+        cases::ui_demo_mini,
+    ),
+    CaseEntry::main(
+        "fullscreen.toggle.nonnative",
+        Some("Toggle non-native fullscreen via injected chords and AX validation"),
+        20_000,
+        Budget::new(1_500, 3_000, 1_500),
+        FULLSCREEN_HELPERS,
+        cases::fullscreen_toggle_nonnative,
+    ),
+    CaseEntry::main(
+        "world.status.permissions",
+        Some("World status reports granted capabilities and sane polling budgets"),
+        6_000,
+        Budget::new(900, 600, 900),
+        WORLD_HELPERS,
+        cases::world_status_permissions,
+    ),
+    CaseEntry::main(
+        "world.ax.focus_props",
+        Some("Focused window exposes AX props through world snapshots"),
+        8_000,
+        Budget::new(900, 1_000, 900),
+        WORLD_HELPERS,
+        cases::world_ax_focus_props,
+    ),
+    CaseEntry::background(
+        "world.spaces.adoption",
+        Some("World adopts mock Mission Control spaces within budget"),
+        6_000,
+        Budget::new(400, 1_200, 400),
+        NO_HELPERS,
+        cases::world_spaces_adoption,
+    ),
 ];
