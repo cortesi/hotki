@@ -35,7 +35,6 @@ use std::{
 
 use cli::{Cli, Commands};
 use error::print_hints;
-use hotki_world::mimic::run_focus_winhelper;
 use suite::CaseRunOpts;
 use warn_overlay::WARN_OVERLAY_STANDALONE_FLAG;
 /// Tracks whether hotki was already built during this smoketest invocation.
@@ -124,10 +123,6 @@ fn main() {
 
     init_tracing_from_cli(&cli);
 
-    if handle_helper_commands_early(&cli) {
-        return;
-    }
-
     let perms = permissions::check_permissions();
     let fake_mode = (!perms.accessibility_ok || !perms.input_ok) && env::var_os("CI").is_some();
     if fake_mode && !cli.quiet {
@@ -159,86 +154,6 @@ fn init_tracing_from_cli(cli: &Cli) {
         .with(env_filter)
         .with(fmt::layer().without_time())
         .try_init();
-}
-
-/// Handle helper subcommands that bypass standard checks. Returns true if handled.
-fn handle_helper_commands_early(cli: &Cli) -> bool {
-    if let Commands::FocusWinHelper {
-        title,
-        time,
-        delay_setframe_ms,
-        delay_apply_ms,
-        tween_ms,
-        apply_target,
-        apply_grid,
-        slot,
-        grid,
-        size,
-        pos,
-        label_text,
-        min_size,
-        step_size,
-        start_minimized,
-        start_zoomed,
-        panel_nonmovable,
-        non_resizable,
-        attach_sheet,
-    } = &cli.command
-    {
-        let grid_tuple = grid
-            .as_ref()
-            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
-        let size_tuple = size
-            .as_ref()
-            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
-        let pos_tuple = pos
-            .as_ref()
-            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
-        let step_size_tuple = step_size
-            .as_ref()
-            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
-        let min_size_tuple = min_size
-            .as_ref()
-            .and_then(|v| (v.len() == 2).then(|| (v[0], v[1])));
-        let apply_target_tuple = apply_target
-            .as_ref()
-            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
-        let apply_grid_tuple = apply_grid
-            .as_ref()
-            .and_then(|v| (v.len() == 4).then(|| (v[0], v[1], v[2], v[3])));
-
-        for iteration in 1..=cli.repeat {
-            if cli.repeat > 1 && !cli.quiet {
-                heading(&format!("Run {iteration}/{}", cli.repeat));
-            }
-            if let Err(e) = run_focus_winhelper(
-                title,
-                *time,
-                delay_setframe_ms.unwrap_or(0),
-                delay_apply_ms.unwrap_or(0),
-                tween_ms.unwrap_or(0),
-                apply_target_tuple,
-                apply_grid_tuple,
-                *slot,
-                grid_tuple,
-                size_tuple,
-                pos_tuple,
-                label_text.clone(),
-                min_size_tuple,
-                step_size_tuple,
-                *start_minimized,
-                *start_zoomed,
-                *panel_nonmovable,
-                *non_resizable,
-                *attach_sheet,
-            ) {
-                eprintln!("focus-winhelper: ERROR: {}", e);
-                exit(2);
-            }
-        }
-        return true;
-    }
-    false
 }
 
 /// Ensure required macOS permissions are granted; exit with a helpful message if not.
@@ -314,7 +229,6 @@ fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
         }
         _ => {
             // Commands without a case_info entry are handled here or are errors.
-            // FocusWinHelper is handled in handle_helper_commands_early.
         }
     }
 }

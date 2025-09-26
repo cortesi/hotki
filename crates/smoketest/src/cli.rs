@@ -256,80 +256,6 @@ pub enum Commands {
     #[command(name = "place.flex.smg")]
     PlaceSmg,
 
-    /// Internal helper: create a foreground window with a title for focus testing
-    #[command(hide = true, name = "focus-winhelper")]
-    FocusWinHelper {
-        /// Title to set on the helper window
-        #[arg(long)]
-        title: String,
-        /// How long to keep the window alive (ms)
-        #[arg(long, default_value_t = config::HELPER_WINDOW.default_lifetime_ms)]
-        time: u64,
-        /// Optional delay to apply when the system attempts to change the
-        /// window frame (position/size). When set, the helper will briefly
-        /// revert to the previous frame and only apply the new frame after
-        /// `delay-setframe-ms` has elapsed. This simulates apps that apply
-        /// geometry asynchronously.
-        #[arg(long, value_name = "MS")]
-        delay_setframe_ms: Option<u64>,
-        /// Explicit delayed-apply: after `delay-apply-ms`, set the window
-        /// frame to `apply-target` regardless of prior changes. This avoids
-        /// relying on event delivery for simulation.
-        #[arg(long, value_name = "MS")]
-        delay_apply_ms: Option<u64>,
-        /// Animate frame changes to the latest requested target over this duration
-        /// (milliseconds). When set, the helper intercepts setFrame attempts and
-        /// tweens from the last-known frame to the most recent desired frame.
-        /// Useful to simulate apps that animate their own geometry updates.
-        #[arg(long, value_name = "MS")]
-        tween_ms: Option<u64>,
-        /// Target `(x y w h)` for delayed apply (AppKit logical coords)
-        #[arg(long, value_names = ["X", "Y", "W", "H"])]
-        apply_target: Option<Vec<f64>>,
-        /// Grid `(cols rows col row)` for delayed apply; helper computes
-        /// target rect on its current screen's visible frame
-        #[arg(long, value_names = ["COLS", "ROWS", "COL", "ROW"])]
-        apply_grid: Option<Vec<u32>>,
-        /// Optional 2x2 grid slot: 1=tl, 2=tr, 3=bl, 4=br
-        #[arg(long)]
-        slot: Option<u8>,
-        /// Optional explicit grid placement (cols, rows, col, row)
-        #[arg(long, value_names = ["COLS", "ROWS", "COL", "ROW"])]
-        grid: Option<Vec<u32>>,
-        /// Optional size (width, height)
-        #[arg(long, value_names = ["W", "H"])]
-        size: Option<Vec<f64>>,
-        /// Optional position (x, y) in AppKit logical coords
-        #[arg(long, value_names = ["X", "Y"])]
-        pos: Option<Vec<f64>>,
-        /// Optional label text to render centered inside the window
-        #[arg(long)]
-        label_text: Option<String>,
-        /// Optional minimum content size `(W, H)` enforced by the helper window.
-        /// Simulates apps (e.g., browsers) that refuse to shrink below a floor.
-        #[arg(long, value_names = ["W", "H"])]
-        min_size: Option<Vec<f64>>,
-        /// Optional step size for rounding requested window sizes to the nearest
-        /// multiples `(W, H)`. Simulates terminal-style resize increments.
-        #[arg(long, value_names = ["W", "H"])]
-        step_size: Option<Vec<f64>>,
-        /// Start the helper window minimized (miniaturized)
-        #[arg(long, default_value_t = false)]
-        start_minimized: bool,
-        /// Start the helper window zoomed (macOS 'zoom' state)
-        #[arg(long, default_value_t = false)]
-        start_zoomed: bool,
-        /// Make the helper non-movable (sets NSWindow.movable=false)
-        #[arg(long, default_value_t = false)]
-        panel_nonmovable: bool,
-        /// Make the helper non-resizable (removes NSWindowStyleMask::Resizable)
-        #[arg(long, default_value_t = false)]
-        non_resizable: bool,
-        /// Attach a simple sheet to the helper window (AXRole=AXSheet)
-        #[arg(long, default_value_t = false)]
-        attach_sheet: bool,
-    },
-
     /// Launch UI with test config and drive a short HUD + theme cycle
     #[command(name = "ui.demo.standard")]
     Ui,
@@ -408,7 +334,7 @@ impl Commands {
             Self::WorldStatus => "world.status.permissions",
             Self::WorldAx => "world.ax.focus_props",
             Self::WorldSpaces => "world.spaces.adoption",
-            Self::All | Self::Seq { .. } | Self::FocusWinHelper { .. } => return None,
+            Self::All | Self::Seq { .. } => return None,
         };
 
         let opts = if fake_mode && candidate.starts_with("place.") {

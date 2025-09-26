@@ -22,15 +22,6 @@ pub enum Error {
         timeout_ms: u64,
     },
 
-    /// Expected focus was not observed within the timeout period.
-    #[error("did not observe matching focus title within {timeout_ms} ms (expected: '{expected}')")]
-    FocusNotObserved {
-        /// Timeout in milliseconds
-        timeout_ms: u64,
-        /// Expected title regex or substring
-        expected: String,
-    },
-
     /// MRPC event stream closed unexpectedly while a smoketest was running.
     #[error("IPC disconnected unexpectedly while {during}")]
     IpcDisconnected {
@@ -64,14 +55,6 @@ pub fn print_hints(err: &Error) {
             eprintln!("      check that the server started (use --logs) and bindings are ready");
             eprintln!("      also ensure Accessibility is granted for best reliability");
         }
-        Error::FocusNotObserved { .. } => {
-            eprintln!(
-                "hint: ensure the smoketest window is frontmost (we call NSApplication.activate)"
-            );
-            eprintln!("      grant Accessibility permission for faster title updates (optional)");
-            eprintln!("      use --logs to inspect focus watcher and HudUpdate events");
-        }
-
         Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {
             // No specific hints for these errors
         }

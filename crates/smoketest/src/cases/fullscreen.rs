@@ -1,32 +1,43 @@
 //! Fullscreen smoketest case implemented on the registry runner.
 
 use std::{
-    cmp, env, fs,
-    process::{Command, Stdio},
-    thread,
+    fs, thread,
     time::{Duration, Instant},
 };
 
-use mac_winops::{self, wait::wait_for_windows_visible_ms};
+use mac_winops;
 use tracing::warn;
 
+use super::support::{
+    ScenarioState, WindowSpawnSpec, raise_window, shutdown_mimic, spawn_scenario,
+};
 use crate::{
     config,
     error::{Error, Result},
-    process::spawn_managed,
     server_drive,
     session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, sanitize_slug},
     world::{self, FocusGuard},
 };
 
+/// Scenario slug and label used for the fullscreen helper window.
+const HELPER_SCENARIO_SLUG: &str = "fullscreen.helper";
+/// Label assigned to the fullscreen helper inside the scenario.
+const HELPER_LABEL: &str = "primary";
+/// Overlay text rendered inside the fullscreen helper window.
+const HELPER_LABEL_TEXT: &str = "FS";
+
 /// Toggle non-native fullscreen for a helper window and capture before/after diagnostics.
 pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let mut state: Option<FullscreenCaseState> = None;
 
     ctx.setup(|ctx| {
-        let title = config::test_title("fullscreen");
-        let config_ron = build_fullscreen_config(&title);
+        let helper_title_base = config::test_title("fullscreen");
+        let helper_title = format!(
+            "{} [{}::{}]",
+            helper_title_base, HELPER_SCENARIO_SLUG, HELPER_LABEL
+        );
+        let config_ron = build_fullscreen_config(&helper_title);
         let filename = format!("{}_config.ron", sanitize_slug(ctx.case_name()));
         let config_path = ctx.scratch_path(filename);
         fs::write(&config_path, config_ron.as_bytes())?;
@@ -37,9 +48,20 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 .with_logs(true),
         )?;
 
+        let helper_lifetime = config::HELPER_WINDOW
+            .default_lifetime_ms
+            .saturating_add(config::HELPER_WINDOW.extra_time_ms);
+        let helper_spec =
+            WindowSpawnSpec::new(HELPER_LABEL, helper_title_base).configure(move |config| {
+                config.time_ms = helper_lifetime;
+                config.label_text = Some(HELPER_LABEL_TEXT.into());
+            });
+        let scenario = spawn_scenario(ctx, HELPER_SCENARIO_SLUG, vec![helper_spec])?;
+
         state = Some(FullscreenCaseState {
             session,
-            title,
+            title: helper_title,
+            scenario,
             before: None,
             after: None,
         });
@@ -55,38 +77,17 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         server_drive::ensure_init(&socket, 5_000)?;
         server_drive::wait_for_idents(&["g", "shift+cmd+9"], 4_000)?;
 
-        let helper_lifetime = config::HELPER_WINDOW
-            .default_lifetime_ms
-            .saturating_add(config::HELPER_WINDOW.extra_time_ms);
-        let visible_timeout = cmp::max(5_000, config::HIDE.first_window_max_ms * 3);
-        let mut helper = {
-            let exe = env::current_exe()?;
-            let mut cmd = Command::new(exe);
-            cmd.env("HOTKI_SKIP_BUILD", "1")
-                .arg("focus-winhelper")
-                .arg("--title")
-                .arg(&state_ref.title)
-                .arg("--time")
-                .arg(helper_lifetime.to_string())
-                .arg("--label-text")
-                .arg("FS")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            spawn_managed(cmd)?
-        };
-        if !wait_for_windows_visible_ms(
-            &[(helper.pid, &state_ref.title)],
-            visible_timeout,
-            config::FULLSCREEN.helper_show_delay_ms,
-        ) {
-            return Err(Error::FocusNotObserved {
-                timeout_ms: visible_timeout,
-                expected: format!("helper window '{}' not visible", state_ref.title),
-            });
+        let helper_pid;
+        let helper_world_id;
+        {
+            let window = state_ref.scenario.window(HELPER_LABEL)?;
+            helper_pid = window.key.pid;
+            helper_world_id = window.world_id;
         }
+
+        raise_window(ctx, &mut state_ref.scenario, HELPER_LABEL)?;
         if let Err(err) = world::ensure_frontmost(
-            helper.pid,
+            helper_pid,
             &state_ref.title,
             3,
             config::INPUT_DELAYS.ui_action_delay_ms,
@@ -96,33 +97,32 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 err
             );
             if !mac_winops::ensure_frontmost_by_title(
-                helper.pid,
+                helper_pid,
                 &state_ref.title,
                 3,
                 config::INPUT_DELAYS.ui_action_delay_ms,
             ) {
                 warn!(
                     "ensure_frontmost: mac_winops fallback failed pid={} title='{}'",
-                    helper.pid, state_ref.title
+                    helper_pid, state_ref.title
                 );
             }
         }
 
-        let focus_guard = FocusGuard::acquire(helper.pid, &state_ref.title, None)?;
+        let focus_guard = FocusGuard::acquire(helper_pid, &state_ref.title, Some(helper_world_id))?;
 
         server_drive::inject_key("g")?;
         focus_guard.reassert()?;
-        let before = read_ax_frame(helper.pid, &state_ref.title)?;
+        let before = read_ax_frame(helper_pid, &state_ref.title)?;
 
         server_drive::inject_key("shift+cmd+9")?;
         let after = wait_for_frame_update(
-            helper.pid,
+            helper_pid,
             &state_ref.title,
             config::FULLSCREEN.wait_total_ms,
         )?;
         focus_guard.reassert()?;
 
-        helper.kill_and_wait()?;
         state_ref.before = Some(before);
         state_ref.after = Some(after);
 
@@ -161,6 +161,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             ),
         );
 
+        shutdown_mimic(state_inner.scenario.mimic)?;
         state_inner.session.shutdown();
         state_inner.session.kill_and_wait();
         server_drive::reset();
@@ -176,6 +177,8 @@ struct FullscreenCaseState {
     session: HotkiSession,
     /// Title assigned to the helper window.
     title: String,
+    /// Active mimic scenario managing the fullscreen helper window.
+    scenario: ScenarioState,
     /// Frame captured before toggling fullscreen.
     before: Option<AxFrame>,
     /// Frame captured after toggling fullscreen.

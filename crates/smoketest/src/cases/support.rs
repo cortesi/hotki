@@ -98,7 +98,7 @@ pub struct WindowSpawnSpec {
     /// Label used to reference the helper window within a scenario.
     pub label: &'static str,
     /// Title assigned to the helper window when spawned.
-    pub title: &'static str,
+    pub title: String,
     /// Placement options supplied to the helper window.
     pub place: PlaceOptions,
     /// Mimic quirks enabled for the helper window.
@@ -109,10 +109,10 @@ pub struct WindowSpawnSpec {
 
 impl WindowSpawnSpec {
     /// Create a new window specification with default placement options.
-    pub fn new(label: &'static str, title: &'static str) -> Self {
+    pub fn new(label: &'static str, title: impl Into<String>) -> Self {
         Self {
             label,
-            title,
+            title: title.into(),
             place: PlaceOptions::default(),
             quirks: Vec::new(),
             configure: Box::new(|_| {}),

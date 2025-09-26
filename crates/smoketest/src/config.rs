@@ -100,8 +100,6 @@ pub const PLACE: PlaceConfig = PlaceConfig {
 /// Fullscreen test timing.
 #[derive(Debug, Clone, Copy)]
 pub struct FullscreenConfig {
-    /// Delay after launching the fullscreen helper before measuring.
-    pub helper_show_delay_ms: u64,
     /// Maximum time to wait for fullscreen frame stabilization.
     pub wait_total_ms: u64,
     /// Poll interval while waiting for fullscreen frame changes.
@@ -110,21 +108,8 @@ pub struct FullscreenConfig {
 
 /// Default fullscreen timing.
 pub const FULLSCREEN: FullscreenConfig = FullscreenConfig {
-    helper_show_delay_ms: 300,
     wait_total_ms: 1000,
     wait_poll_ms: 50,
-};
-
-/// Hide test tunables.
-#[derive(Debug, Clone, Copy)]
-pub struct HideConfig {
-    /// Max wait for the helper window to appear initially.
-    pub first_window_max_ms: u64,
-}
-
-/// Default hide test timing and geometry.
-pub const HIDE: HideConfig = HideConfig {
-    first_window_max_ms: 2000,
 };
 
 /// Warn overlay tuning.

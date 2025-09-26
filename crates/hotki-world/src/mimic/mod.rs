@@ -766,10 +766,6 @@ impl Default for HelperConfig {
     }
 }
 
-fn run_helper_window(title: String, config: HelperConfig) -> Result<(), String> {
-    helper_app::run(title, config)
-}
-
 fn apply_quirk_defaults(config: &mut HelperConfig, quirks: &[Quirk]) {
     if quirks.iter().any(|q| matches!(q, Quirk::DelayApplyMove)) && config.delay_apply_ms == 0 {
         config.delay_apply_ms = 160;
@@ -2378,67 +2374,6 @@ mod helper_app {
             }
         }
     }
-
-    pub(super) fn run(title: String, config: HelperConfig) -> Result<(), String> {
-        use winit::event_loop::EventLoop;
-
-        let params = HelperParams::from_config(title, config);
-        let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
-        let mut app = HelperApp::new(params);
-        event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
-        if let Some(err) = app.take_error() {
-            Err(err)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Run the helper window configured by the provided parameters.
-#[allow(clippy::too_many_arguments)]
-pub fn run_focus_winhelper(
-    title: &str,
-    time_ms: u64,
-    delay_setframe_ms: u64,
-    delay_apply_ms: u64,
-    tween_ms: u64,
-    apply_target: Option<(f64, f64, f64, f64)>,
-    apply_grid: Option<(u32, u32, u32, u32)>,
-    slot: Option<u8>,
-    grid: Option<(u32, u32, u32, u32)>,
-    size: Option<(f64, f64)>,
-    pos: Option<(f64, f64)>,
-    label_text: Option<String>,
-    min_size: Option<(f64, f64)>,
-    step_size: Option<(f64, f64)>,
-    start_minimized: bool,
-    start_zoomed: bool,
-    panel_nonmovable: bool,
-    panel_nonresizable: bool,
-    attach_sheet: bool,
-) -> Result<(), String> {
-    let config = HelperConfig {
-        time_ms,
-        delay_setframe_ms,
-        delay_apply_ms,
-        tween_ms,
-        apply_target,
-        apply_grid,
-        slot,
-        grid,
-        size,
-        pos,
-        label_text,
-        min_size,
-        step_size,
-        start_minimized,
-        start_zoomed,
-        panel_nonmovable,
-        panel_nonresizable,
-        attach_sheet,
-        ..HelperConfig::default()
-    };
-    run_helper_window(title.to_string(), config)
 }
 
 mod config {
