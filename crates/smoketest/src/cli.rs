@@ -1,7 +1,5 @@
 //! Command-line interface definitions for smoketest.
 
-use std::path::PathBuf;
-
 use clap::{Parser, Subcommand, ValueEnum};
 use logging::LogArgs;
 
@@ -355,19 +353,6 @@ pub enum Commands {
     /// Simulate multi-space navigation and verify adoption performance.
     #[command(name = "world.spaces.adoption")]
     WorldSpaces,
-    /// Capture raw CoreGraphics window listings for Mission Control analysis.
-    #[command(name = "space-probe")]
-    SpaceProbe {
-        /// Number of samples to capture.
-        #[arg(long, default_value_t = 30)]
-        samples: u32,
-        /// Delay between samples in milliseconds.
-        #[arg(long, default_value_t = 300)]
-        interval_ms: u64,
-        /// Optional JSONL output path (stdout if omitted).
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
     // Preflight smoketest removed.
     /// Focused test: attempt placement on a non-movable window and assert skip
     #[command(name = "place.skip.nonmovable")]
@@ -423,7 +408,7 @@ impl Commands {
             Self::WorldStatus => "world.status.permissions",
             Self::WorldAx => "world.ax.focus_props",
             Self::WorldSpaces => "world.spaces.adoption",
-            _ => return None,
+            Self::All | Self::Seq { .. } | Self::FocusWinHelper { .. } => return None,
         };
 
         let opts = if fake_mode && candidate.starts_with("place.") {

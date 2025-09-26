@@ -17,8 +17,6 @@ mod process;
 mod server_drive;
 /// Session management for launching and controlling hotki.
 mod session;
-/// Mission Control capture helpers.
-mod space_probe;
 /// Smoketest case registry and runner.
 mod suite;
 /// UI overlay to warn users to avoid typing during smoketests.
@@ -30,7 +28,7 @@ mod world;
 use std::{
     env,
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::exit,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -314,26 +312,9 @@ fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
             let slugs: Vec<&str> = tests.iter().map(|test| test.slug()).collect();
             run_cases(cli, &slugs, CaseRunOpts::default());
         }
-        Commands::SpaceProbe {
-            samples,
-            interval_ms,
-            output,
-        } => handle_space_probe(cli, *samples, *interval_ms, output.as_deref()),
         _ => {
             // Commands without a case_info entry are handled here or are errors.
             // FocusWinHelper is handled in handle_helper_commands_early.
         }
-    }
-}
-
-/// Invoke the Mission Control space probe helper.
-fn handle_space_probe(cli: &Cli, samples: u32, interval_ms: u64, output: Option<&Path>) {
-    if !cli.quiet {
-        heading("space-probe");
-    }
-    if let Err(e) = space_probe::run(samples, interval_ms, output, cli.quiet) {
-        eprintln!("space-probe: ERROR: {e}");
-        print_hints(&e);
-        exit(1);
     }
 }
