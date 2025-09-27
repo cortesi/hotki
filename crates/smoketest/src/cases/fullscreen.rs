@@ -162,7 +162,7 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         );
 
         shutdown_mimic(state_inner.scenario.mimic)?;
-        state_inner.session.shutdown();
+        state_inner.session.shutdown()?;
         state_inner.session.kill_and_wait();
         server_drive::reset();
         Ok(())

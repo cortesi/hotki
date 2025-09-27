@@ -13,8 +13,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{self, ManagedChild},
-    server_drive::{self, DriverError},
-    world,
+    server_drive::{self, ControlSocketScope},
 };
 
 /// Launch configuration for a smoketest-backed hotki session.
@@ -60,8 +59,48 @@ pub struct HotkiSession {
     socket_path: String,
     /// Path to the control bridge socket exposed by the UI runtime.
     control_socket: String,
+    /// Bridge control socket override guard for this session.
+    _control_scope: ControlSocketScope,
     /// Whether teardown has already been performed.
     cleaned_up: bool,
+}
+
+/// Ensures the control socket is torn down if session bootstrap fails mid-way.
+struct ControlSocketCleanup {
+    /// Filesystem path to the bridge control socket for this bootstrap attempt.
+    path: String,
+    /// Whether cleanup should run when the guard is dropped.
+    active: bool,
+}
+
+impl ControlSocketCleanup {
+    /// Create a guard that will remove the control socket path if not disarmed.
+    fn new(path: String) -> Self {
+        Self { path, active: true }
+    }
+
+    /// Prevent the guard from removing the socket path on drop.
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for ControlSocketCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Err(err) = fs::remove_file(&self.path)
+            && err.kind() != ErrorKind::NotFound
+        {
+            debug!(
+                ?err,
+                socket = %self.path,
+                "failed to remove control socket during bootstrap cleanup"
+            );
+        }
+        self.active = false;
+    }
 }
 
 impl HotkiSession {
@@ -72,6 +111,19 @@ impl HotkiSession {
             config_path,
             with_logs,
         } = config;
+        let control_socket = unique_control_socket_path();
+        let mut cleanup_guard = ControlSocketCleanup::new(control_socket.clone());
+        let control_scope = ControlSocketScope::new(control_socket.clone());
+        if let Err(err) = fs::remove_file(&control_socket)
+            && err.kind() != ErrorKind::NotFound
+        {
+            debug!(
+                ?err,
+                socket = %control_socket,
+                "failed to remove stale control socket"
+            );
+        }
+
         let mut cmd = Command::new(&binary_path);
         if with_logs {
             cmd.env("RUST_LOG", logshared::log_config_for_child());
@@ -79,18 +131,15 @@ impl HotkiSession {
         if let Some(cfg) = &config_path {
             cmd.arg(cfg);
         }
-        let control_socket = unique_control_socket_path();
-        unsafe {
-            env::set_var("HOTKI_CONTROL_SOCKET", &control_socket);
-        }
         cmd.env("HOTKI_CONTROL_SOCKET", &control_socket);
-        if let Err(err) = fs::remove_file(&control_socket)
-            && err.kind() != ErrorKind::NotFound
-        {
-            tracing::debug!(?err, socket = %control_socket, "failed to remove stale control socket");
-        }
 
-        let mut child = process::spawn_managed(cmd)?;
+        let mut child = match process::spawn_managed(cmd) {
+            Ok(child) => child,
+            Err(err) => {
+                server_drive::reset();
+                return Err(err);
+            }
+        };
         let socket_path = socket_path_for_pid(child.pid as u32);
         server_drive::reset();
         if let Err(err) = server_drive::ensure_init(&socket_path, config::DEFAULTS.timeout_ms) {
@@ -100,12 +149,15 @@ impl HotkiSession {
                     "failed to terminate hotki after bridge init failure"
                 );
             }
+            server_drive::reset();
             return Err(Error::from(err));
         }
+        cleanup_guard.disarm();
         Ok(Self {
             child,
             socket_path,
             control_socket,
+            _control_scope: control_scope,
             cleaned_up: false,
         })
     }
@@ -120,33 +172,12 @@ impl HotkiSession {
         &self.socket_path
     }
 
-    /// Attempt a graceful server shutdown via RPC (best-effort).
-    pub fn shutdown(&self) {
+    /// Attempt a graceful server shutdown via the bridge, surfacing failures.
+    pub fn shutdown(&self) -> Result<()> {
         if self.cleaned_up {
-            return;
+            return Ok(());
         }
-        match server_drive::shutdown() {
-            Ok(()) => return,
-            Err(DriverError::NotInitialized) => {}
-            Err(err) => {
-                debug!(
-                    ?err,
-                    "shared MRPC shutdown failed; retrying with direct client"
-                );
-            }
-        }
-
-        let sock = self.socket_path.clone();
-        drop(world::block_on(async move {
-            if let Ok(mut c) = hotki_server::Client::new_with_socket(&sock)
-                .with_connect_only()
-                .connect()
-                .await
-            {
-                drop(c.shutdown_server().await);
-            }
-            Ok::<(), Error>(())
-        }));
+        server_drive::shutdown().map_err(Error::from)
     }
 
     /// Forcefully kill the child process and wait for exit.
@@ -155,6 +186,7 @@ impl HotkiSession {
             return;
         }
         if let Err(_e) = self.child.kill_and_wait() {}
+        server_drive::reset();
         if let Err(err) = fs::remove_file(&self.control_socket)
             && err.kind() != ErrorKind::NotFound
         {
@@ -169,7 +201,9 @@ impl Drop for HotkiSession {
         if self.cleaned_up {
             return;
         }
-        self.shutdown();
+        if let Err(err) = self.shutdown() {
+            debug!(?err, "bridge shutdown during drop failed");
+        }
         self.kill_and_wait();
     }
 }
@@ -232,7 +266,7 @@ mod tests {
         );
         server_drive::check_alive()?;
 
-        session.shutdown();
+        session.shutdown()?;
         session.kill_and_wait();
         server_drive::reset();
         Ok(())

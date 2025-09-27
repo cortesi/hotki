@@ -474,7 +474,7 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             ),
         );
 
-        state_inner.session.shutdown();
+        state_inner.session.shutdown()?;
         state_inner.session.kill_and_wait();
         server_drive::reset();
 

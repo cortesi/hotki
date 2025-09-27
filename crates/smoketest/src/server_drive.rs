@@ -29,6 +29,35 @@ use crate::config;
 static CONN: OnceLock<Mutex<Option<BridgeClient>>> = OnceLock::new();
 /// Flag to enable verbose binding polling diagnostics.
 static LOG_BINDINGS: OnceLock<bool> = OnceLock::new();
+/// Override for the bridge control socket path, scoped to the active session.
+static CONTROL_SOCKET_OVERRIDE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// Access the optional control socket override slot.
+fn control_socket_override_slot() -> &'static Mutex<Option<String>> {
+    CONTROL_SOCKET_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+/// Guard that scopes a custom control socket path for the bridge driver.
+pub struct ControlSocketScope {
+    /// Control socket path that was active before this scope was installed.
+    previous: Option<String>,
+}
+
+impl ControlSocketScope {
+    /// Install a new override, returning a guard that restores the prior value on drop.
+    pub(crate) fn new(path: impl Into<String>) -> Self {
+        let mut slot = control_socket_override_slot().lock();
+        let previous = slot.replace(path.into());
+        Self { previous }
+    }
+}
+
+impl Drop for ControlSocketScope {
+    fn drop(&mut self) {
+        let mut slot = control_socket_override_slot().lock();
+        *slot = self.previous.take();
+    }
+}
 
 /// Return true when verbose binding diagnostics are enabled via env flag.
 fn log_bindings_enabled() -> bool {
@@ -225,6 +254,9 @@ fn with_connection_mut<R>(f: impl FnOnce(&mut BridgeClient) -> DriverResult<R>) 
 
 /// Derive the control socket path from the server socket path.
 fn control_socket_path(server_socket: &str) -> String {
+    if let Some(path) = control_socket_override_slot().lock().clone() {
+        return path;
+    }
     if let Some(path) = env::var_os("HOTKI_CONTROL_SOCKET")
         && let Some(value) = path.to_str()
     {
