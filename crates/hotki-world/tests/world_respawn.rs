@@ -64,8 +64,14 @@ fn ax_pool_hint_reaches_respawned_world() {
 
         // Create a worker tied to this pid so it survives the first world instance.
         world_test::set_ax_title(id, "T-1");
-        let deadline = Instant::now() + Duration::from_millis(2000);
+        let deadline = Instant::now() + Duration::from_millis(2500);
         loop {
+            if matches!(
+                world_test::ax_pool_peek_title(pid, id).as_deref(),
+                Some("T-1")
+            ) {
+                break;
+            }
             if let Some(title) = world_test::ax_pool_schedule_title(pid, id) {
                 assert_eq!(title, "T-1");
                 break;

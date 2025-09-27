@@ -63,6 +63,16 @@ fn ensure_clean_handshake(handshake: &BridgeHandshake) -> DriverResult<()> {
     Ok(())
 }
 
+/// Render a concise diagnostic string for initialization failures.
+fn describe_init_error(err: &DriverError) -> String {
+    match err {
+        DriverError::Connect { source, .. } => source.to_string(),
+        DriverError::BridgeFailure { message } => message.clone(),
+        DriverError::Io { source } => source.to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Result alias for bridge driver operations.
 pub type DriverResult<T> = Result<T, DriverError>;
 
@@ -221,22 +231,6 @@ fn control_socket_path(server_socket: &str) -> String {
     format!("{server_socket}.bridge")
 }
 
-/// Initialize a shared bridge connection to the UI runtime.
-pub fn init(socket_path: &str) -> DriverResult<()> {
-    if conn_slot().lock().is_some() {
-        return Ok(());
-    }
-
-    let control_path = control_socket_path(socket_path);
-    let mut client = BridgeClient::connect(&control_path)?;
-    let handshake = client.handshake()?;
-    ensure_clean_handshake(&handshake)?;
-
-    let mut guard = conn_slot().lock();
-    *guard = Some(client);
-    Ok(())
-}
-
 /// Returns true if a connection is available for RPC driving.
 pub fn is_ready() -> bool {
     conn_slot().lock().is_some()
@@ -253,15 +247,20 @@ pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> DriverResult<()> {
     let mut last_error: Option<String> = None;
 
     while Instant::now() < deadline {
-        match init(socket_path) {
-            Ok(()) => return Ok(()),
+        match BridgeClient::connect_with_handshake(&control_path) {
+            Ok(client) => {
+                let mut guard = conn_slot().lock();
+                *guard = Some(client);
+                return Ok(());
+            }
             Err(err) => {
-                last_error = Some(match &err {
-                    DriverError::Connect { source, .. } => source.to_string(),
-                    DriverError::BridgeFailure { message } => message.clone(),
-                    DriverError::Io { source } => source.to_string(),
-                    other => other.to_string(),
-                });
+                last_error = Some(describe_init_error(&err));
+                debug!(
+                    error = %last_error.as_ref().unwrap(),
+                    socket = %control_path,
+                    "bridge initialization attempt failed"
+                );
+                reset();
                 thread::sleep(config::ms(config::RETRY.fast_delay_ms));
             }
         }
@@ -529,6 +528,13 @@ impl BridgeClient {
         })
     }
 
+    /// Establish a connection and perform an initial handshake with invariant checks.
+    fn connect_with_handshake(path: &str) -> DriverResult<Self> {
+        let mut client = Self::connect(path)?;
+        client.refresh_handshake()?;
+        Ok(client)
+    }
+
     /// Perform the bridge handshake and cache the resulting snapshot.
     fn handshake(&mut self) -> DriverResult<BridgeHandshake> {
         match self.call(&BridgeRequest::Ping)? {
@@ -540,6 +546,7 @@ impl BridgeClient {
                     idle_timer,
                     notifications,
                 };
+                ensure_clean_handshake(&payload)?;
                 self.handshake = Some(payload.clone());
                 Ok(payload)
             }
@@ -548,6 +555,12 @@ impl BridgeClient {
                 message: format!("unexpected handshake response: {:?}", other),
             }),
         }
+    }
+
+    /// Clear cached state and perform a fresh handshake.
+    fn refresh_handshake(&mut self) -> DriverResult<BridgeHandshake> {
+        self.clear_cached_state();
+        self.handshake()
     }
 
     /// Send a bridge request and wait for its response.
@@ -777,6 +790,14 @@ impl BridgeClient {
         }
     }
 
+    /// Reset cached snapshots and buffered events.
+    fn clear_cached_state(&mut self) {
+        self.event_buffer.clear();
+        self.latest_hud = None;
+        self.latest_focus = None;
+        self.handshake = None;
+    }
+
     /// Drain the buffered bridge events.
     fn drain_events(&mut self) -> Vec<BridgeEventRecord> {
         self.event_buffer.drain(..).collect()
@@ -830,6 +851,7 @@ impl BridgeClient {
                     self.reader = BufReader::new(reader_stream);
                     self.writer = writer;
                     self.next_command_id = 0;
+                    self.refresh_handshake()?;
                     return Ok(());
                 }
                 Err(err) => {
@@ -900,9 +922,21 @@ fn now_millis() -> BridgeTimestampMs {
 #[cfg(test)]
 mod tests {
     use std::{
-        env, process,
-        time::{SystemTime, UNIX_EPOCH},
+        env, fs,
+        io::{BufRead, BufReader, ErrorKind, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        process,
+        sync::{OnceLock, mpsc},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    use hotki_protocol::Cursor;
+    use hotki_server::smoketest_bridge::{
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
+        BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
+    };
+    use parking_lot::Mutex as ParkingMutex;
 
     use super::*;
 
@@ -914,8 +948,14 @@ mod tests {
         format!("/tmp/hotki-bridge-test-{}-{}.sock", process::id(), nanos)
     }
 
+    fn bridge_test_lock() -> &'static ParkingMutex<()> {
+        static LOCK: OnceLock<ParkingMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| ParkingMutex::new(()))
+    }
+
     #[test]
     fn inject_key_requires_initialization() {
+        let _guard = bridge_test_lock().lock();
         reset();
         let err = inject_key("cmd+shift+9").unwrap_err();
         assert!(matches!(err, DriverError::NotInitialized));
@@ -923,6 +963,7 @@ mod tests {
 
     #[test]
     fn ensure_init_times_out_for_missing_socket() {
+        let _guard = bridge_test_lock().lock();
         reset();
         let path = unique_control_socket();
         let err = ensure_init(&path, 25).unwrap_err();
@@ -936,6 +977,7 @@ mod tests {
 
     #[test]
     fn get_bindings_fails_without_connection() {
+        let _guard = bridge_test_lock().lock();
         reset();
         let err = get_bindings().unwrap_err();
         assert!(matches!(err, DriverError::NotInitialized));
@@ -943,6 +985,7 @@ mod tests {
 
     #[test]
     fn check_alive_without_connection_reports_error() {
+        let _guard = bridge_test_lock().lock();
         reset();
         let err = check_alive().unwrap_err();
         assert!(matches!(err, DriverError::NotInitialized));
@@ -950,6 +993,7 @@ mod tests {
 
     #[test]
     fn control_socket_path_appends_suffix() {
+        let _guard = bridge_test_lock().lock();
         let key = "HOTKI_CONTROL_SOCKET";
         let restore = env::var_os(key);
         unsafe {
@@ -965,5 +1009,282 @@ mod tests {
                 env::remove_var(key);
             },
         }
+    }
+
+    fn ts() -> BridgeTimestampMs {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn read_command(reader: &mut BufReader<UnixStream>) -> BridgeCommand {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(
+            !line.trim().is_empty(),
+            "unexpected EOF while reading bridge command"
+        );
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn send_reply(writer: &mut UnixStream, reply: &BridgeReply) {
+        let mut bytes = serde_json::to_vec(reply).unwrap();
+        bytes.push(b'\n');
+        writer.write_all(&bytes).unwrap();
+        writer.flush().unwrap();
+    }
+
+    fn send_ack(writer: &mut UnixStream, command_id: BridgeCommandId, queued: usize) {
+        let reply = BridgeReply {
+            command_id,
+            timestamp_ms: ts(),
+            response: BridgeResponse::Ack { queued },
+        };
+        send_reply(writer, &reply);
+    }
+
+    fn send_handshake(writer: &mut UnixStream, command_id: BridgeCommandId, clients: usize) {
+        let response = BridgeResponse::Handshake {
+            idle_timer: BridgeIdleTimerState {
+                timeout_secs: 60,
+                armed: false,
+                deadline_ms: None,
+                clients_connected: clients,
+            },
+            notifications: Vec::new(),
+        };
+        let reply = BridgeReply {
+            command_id,
+            timestamp_ms: ts(),
+            response,
+        };
+        send_reply(writer, &reply);
+    }
+
+    fn send_hud_event(writer: &mut UnixStream, event_id: BridgeCommandId) {
+        let response = BridgeResponse::Event {
+            event: BridgeEvent::Hud {
+                cursor: Cursor::default(),
+                depth: 1,
+                parent_title: Some("Test".into()),
+                keys: vec![BridgeHudKey {
+                    ident: "k".into(),
+                    description: "Key".into(),
+                    is_mode: false,
+                }],
+            },
+        };
+        let reply = BridgeReply {
+            command_id: event_id,
+            timestamp_ms: ts(),
+            response,
+        };
+        send_reply(writer, &reply);
+    }
+
+    fn send_ok(writer: &mut UnixStream, command_id: BridgeCommandId) {
+        let reply = BridgeReply {
+            command_id,
+            timestamp_ms: ts(),
+            response: BridgeResponse::Ok,
+        };
+        send_reply(writer, &reply);
+    }
+
+    #[test]
+    fn ensure_init_retries_failed_handshake() {
+        let _guard = bridge_test_lock().lock();
+        reset();
+        let path = unique_control_socket();
+        let control_path = control_socket_path(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        let server_path = control_path;
+        let handle = thread::spawn(move || {
+            if let Err(err) = fs::remove_file(&server_path)
+                && err.kind() != ErrorKind::NotFound
+            {
+                panic!("failed to remove socket: {err}");
+            }
+            let listener = UnixListener::bind(&server_path).unwrap();
+            ready_tx.send(()).unwrap();
+
+            // First attempt: respond with handshake error then close.
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                let reply = BridgeReply {
+                    command_id: cmd.command_id,
+                    timestamp_ms: ts(),
+                    response: BridgeResponse::Err {
+                        message: "handshake failed".into(),
+                    },
+                };
+                send_reply(&mut writer, &reply);
+            }
+
+            // Second attempt: successful handshake.
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_handshake(&mut writer, cmd.command_id, 7);
+                // Keep connection open briefly to let client finish setup.
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        ensure_init(&path, 1_000).unwrap();
+
+        let clients = with_connection_mut(|conn| {
+            Ok(conn
+                .handshake
+                .as_ref()
+                .map(|h| h.idle_timer.clients_connected))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(clients, 7);
+
+        reset();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn reconnect_refreshes_handshake_and_clears_cache() {
+        let _guard = bridge_test_lock().lock();
+        reset();
+        let path = unique_control_socket();
+        let control_path = control_socket_path(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        let server_path = control_path;
+        let handle = thread::spawn(move || {
+            if let Err(err) = fs::remove_file(&server_path)
+                && err.kind() != ErrorKind::NotFound
+            {
+                panic!("failed to remove socket: {err}");
+            }
+            let listener = UnixListener::bind(&server_path).unwrap();
+            ready_tx.send(()).unwrap();
+
+            // First connection: handshake succeeds and emits HUD event, then close.
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_hud_event(&mut writer, 1 << 32);
+                send_handshake(&mut writer, cmd.command_id, 1);
+                // Close connection to force reconnect on next command.
+            }
+
+            // Second connection: handshake + depth response.
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_handshake(&mut writer, cmd.command_id, 2);
+
+                let depth_cmd = read_command(&mut reader);
+                assert!(matches!(depth_cmd.request, BridgeRequest::GetDepth));
+                send_ack(&mut writer, depth_cmd.command_id, 1);
+                let reply = BridgeReply {
+                    command_id: depth_cmd.command_id,
+                    timestamp_ms: ts(),
+                    response: BridgeResponse::Depth { depth: 2 },
+                };
+                send_reply(&mut writer, &reply);
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        ensure_init(&path, 1_000).unwrap();
+
+        let hud_before = with_connection_mut(|conn| Ok(conn.latest_hud())).unwrap();
+        assert!(hud_before.is_some());
+
+        let depth = with_connection_mut(|conn| conn.call_depth()).unwrap();
+        assert_eq!(depth, 2);
+
+        assert!(
+            is_ready(),
+            "bridge connection dropped unexpectedly during reconnect test"
+        );
+        let hud_after = with_connection_mut(|conn| Ok(conn.latest_hud())).unwrap();
+        assert!(hud_after.is_none());
+
+        let clients = with_connection_mut(|conn| {
+            Ok(conn
+                .handshake
+                .as_ref()
+                .map(|h| h.idle_timer.clients_connected))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(clients, 2);
+
+        let buffered = with_connection_mut(|conn| Ok(conn.event_buffer_len())).unwrap();
+        assert_eq!(buffered, 0);
+
+        reset();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_flags_post_shutdown_events() {
+        let _guard = bridge_test_lock().lock();
+        reset();
+        let path = unique_control_socket();
+        let control_path = control_socket_path(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        let server_path = control_path;
+        let handle = thread::spawn(move || {
+            if let Err(err) = fs::remove_file(&server_path)
+                && err.kind() != ErrorKind::NotFound
+            {
+                panic!("failed to remove socket: {err}");
+            }
+            let listener = UnixListener::bind(&server_path).unwrap();
+            ready_tx.send(()).unwrap();
+
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_handshake(&mut writer, cmd.command_id, 3);
+
+                let shutdown_cmd = read_command(&mut reader);
+                assert!(matches!(shutdown_cmd.request, BridgeRequest::Shutdown));
+                send_ack(&mut writer, shutdown_cmd.command_id, 1);
+                send_hud_event(&mut writer, shutdown_cmd.command_id + 100);
+                send_ok(&mut writer, shutdown_cmd.command_id);
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        ensure_init(&path, 1_000).unwrap();
+
+        let err = shutdown().unwrap_err();
+        assert!(matches!(err, DriverError::PostShutdownMessage { .. }));
+
+        reset();
+        handle.join().unwrap();
     }
 }
