@@ -218,7 +218,7 @@ pub fn place_zoomed_normalize(ctx: &mut CaseCtx<'_>) -> Result<()> {
             Duration::from_millis(1_600),
         )?;
         request_grid(&world, state_ref.target_id, grid)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         Ok(())
     })?;
 
@@ -330,7 +330,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
             let frames = wait_for_initial_frames(ctx.case_name(), &world, place_state.target_key)?;
             let expected = grid_rect_from_frames(&frames, GRID.0, GRID.1, GRID.2, GRID.3)?;
             place_state.record_expected(ctx, expected)?;
-            focus_guard.reassert()?;
+            focus_guard.reassert(None)?;
         }
         Ok(())
     })?;
@@ -342,7 +342,7 @@ pub fn place_async_delay(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let world = ctx.world_clone();
         let focus_guard = promote_helper_frontmost(ctx.case_name(), state_ref)?;
         request_grid(&world, state_ref.target_id, GRID)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         Ok(())
     })?;
 
@@ -633,7 +633,7 @@ pub fn place_grid_cycle(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 request_grid(&world, state_ref.target_id, (cols, rows, col, row))?;
                 let frames = wait_for_expected(ctx, state_ref, observer, eps)?;
                 helpers::assert_frame_matches(ctx.case_name(), expected, &frames, eps)?;
-                focus_guard.reassert()?;
+                focus_guard.reassert(None)?;
                 let delta = expected.delta(&frames.authoritative);
                 entries.push(format!(
                     "grid=({cols},{rows},{col},{row}) expected={:?} actual={:?} delta={:?} scale={}",
@@ -801,7 +801,7 @@ pub fn place_skip_nonmovable(ctx: &mut CaseCtx<'_>) -> Result<()> {
             &frames_after,
             config::PLACE.eps.round() as i32,
         )?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         let delta = initial.delta(&frames_after.authoritative);
         ctx.log_event(
             "place_nonmovable_comparison",
@@ -870,9 +870,9 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let expected = grid_rect_from_frames(&frames, 4, 4, 1, 0)?;
         debug!(case = %ctx.case_name(), expected = ?expected, "place_move_min_setup_ready");
         place.record_expected(ctx, expected)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         state = Some(MoveCaseState {
             place,
             expected,
@@ -895,7 +895,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             MoveDirection::Right,
         )?;
         debug!(case = %ctx.case_name(), "place_move_min_move_requested");
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         Ok(())
     })?;
 
@@ -1021,9 +1021,9 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             "place_move_nonres_setup_ready"
         );
         place.record_expected(ctx, expected)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         let focus_guard = promote_helper_frontmost(ctx.case_name(), &place)?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         state = Some(MoveCaseState {
             place,
             expected,
@@ -1050,7 +1050,7 @@ pub fn place_move_nonresizable_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         )?;
         state_ref.budget.move_request_ms = move_start.elapsed().as_millis() as u64;
         debug!(case = %ctx.case_name(), "place_move_nonres_move_requested");
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         Ok(())
     })?;
 
@@ -1426,7 +1426,12 @@ fn promote_helper_frontmost(case: &str, state: &PlaceState) -> Result<FocusGuard
         _ => {}
     }
 
-    FocusGuard::acquire(state.target_id.pid(), &state.title, Some(state.target_id))
+    FocusGuard::acquire(
+        state.target_id.pid(),
+        &state.title,
+        Some(state.target_id),
+        None,
+    )
 }
 
 /// Wait for the helper window to report on-screen and on the active space.
@@ -1568,7 +1573,7 @@ where
         let mut options = PlaceAttemptOptions::default();
         configure_options(&mut options);
         request_grid_with_options(&world, state_ref.target_id, grid, Some(&options))?;
-        focus_guard.reassert()?;
+        focus_guard.reassert(None)?;
         Ok(())
     })?;
 

@@ -14,7 +14,7 @@ use super::support::{
 use crate::{
     config,
     error::{Error, Result},
-    server_drive,
+    server_drive::BridgeDriver,
     session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, sanitize_slug},
     world::{self, FocusGuard},
@@ -73,9 +73,11 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("fullscreen state missing during action".into()))?;
 
-        let socket = state_ref.session.socket_path().to_string();
-        server_drive::ensure_init(&socket, 5_000)?;
-        server_drive::wait_for_idents(&["g", "shift+cmd+9"], 4_000)?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.ensure_ready(5_000)?;
+            bridge.wait_for_idents(&["g", "shift+cmd+9"], 4_000)?;
+        }
 
         let helper_pid;
         let helper_world_id;
@@ -109,19 +111,43 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
             }
         }
 
-        let focus_guard = FocusGuard::acquire(helper_pid, &state_ref.title, Some(helper_world_id))?;
+        let focus_guard = {
+            let bridge = state_ref.session.bridge_mut();
+            FocusGuard::acquire(
+                helper_pid,
+                &state_ref.title,
+                Some(helper_world_id),
+                Some(bridge),
+            )?
+        };
 
-        server_drive::inject_key("g")?;
-        focus_guard.reassert()?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.inject_key("g")?;
+        }
+        {
+            let bridge = state_ref.session.bridge_mut();
+            focus_guard.reassert(Some(bridge))?;
+        }
         let before = read_ax_frame(helper_pid, &state_ref.title)?;
 
-        server_drive::inject_key("shift+cmd+9")?;
-        let after = wait_for_frame_update(
-            helper_pid,
-            &state_ref.title,
-            config::FULLSCREEN.wait_total_ms,
-        )?;
-        focus_guard.reassert()?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.inject_key("shift+cmd+9")?;
+        }
+        let after = {
+            let bridge = state_ref.session.bridge_mut();
+            wait_for_frame_update(
+                bridge,
+                helper_pid,
+                &state_ref.title,
+                config::FULLSCREEN.wait_total_ms,
+            )?
+        };
+        {
+            let bridge = state_ref.session.bridge_mut();
+            focus_guard.reassert(Some(bridge))?;
+        }
 
         state_ref.before = Some(before);
         state_ref.after = Some(after);
@@ -164,7 +190,6 @@ pub fn fullscreen_toggle_nonnative(ctx: &mut CaseCtx<'_>) -> Result<()> {
         shutdown_mimic(state_inner.scenario.mimic)?;
         state_inner.session.shutdown()?;
         state_inner.session.kill_and_wait();
-        server_drive::reset();
         Ok(())
     })?;
 
@@ -201,7 +226,12 @@ fn read_ax_frame(pid: i32, title: &str) -> Result<AxFrame> {
 }
 
 /// Wait until the helper window reports an updated AX frame.
-fn wait_for_frame_update(pid: i32, title: &str, timeout_ms: u64) -> Result<AxFrame> {
+fn wait_for_frame_update(
+    bridge: &mut BridgeDriver,
+    pid: i32,
+    title: &str,
+    timeout_ms: u64,
+) -> Result<AxFrame> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         if let Some(frame) = mac_winops::ax_window_frame(pid, title) {
@@ -212,7 +242,7 @@ fn wait_for_frame_update(pid: i32, title: &str, timeout_ms: u64) -> Result<AxFra
                 "failed to read window frame after fullscreen toggle".into(),
             ));
         }
-        if server_drive::check_alive().is_err() {
+        if bridge.check_alive().is_err() {
             return Err(Error::IpcDisconnected {
                 during: "fullscreen toggle",
             });

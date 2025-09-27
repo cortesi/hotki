@@ -10,20 +10,20 @@ smoketests drive to replay shortcuts and inspect world state.
   and exports it via the `HOTKI_CONTROL_SOCKET` environment variable before launching the Hotki UI.
 - The UI runtime reads `HOTKI_CONTROL_SOCKET` during startup and binds the smoketest bridge listener
   to the provided path, replacing any stale socket from previous runs.
-- After the process starts, `HotkiSession::spawn` immediately resets any previous bridge client and
-  performs a handshake (`BridgeRequest::Ping`) through `server_drive::ensure_init`. The handshake returns
-  the server's idle-timer snapshot and any pending UI notifications; `ensure_init` asserts the timer is
-  disarmed and the pending list is empty before a smoketest case begins.
+- After the process starts, `HotkiSession::spawn` constructs a fresh `BridgeDriver`, pointing it at the
+  session's server socket, and calls `BridgeDriver::ensure_ready`. The handshake (`BridgeRequest::Ping`)
+  returns the server's idle-timer snapshot plus any pending UI notifications; `ensure_ready` asserts the
+  timer is disarmed and the pending list is empty before a smoketest case begins.
 
 ## Runtime Usage
 
-- All bridge commands flow through `server_drive`, which stores a shared `BridgeClient` instance once
-  initialization succeeds.
+- All bridge commands now flow through an explicit `BridgeDriver` handle. Each session owns its driver,
+  eliminating the process-wide `OnceLock<Mutex<Option<BridgeClient>>>` singleton.
 - `BridgeClient` resends requests automatically when reads fail with `BrokenPipe`, `ConnectionReset`,
   or `ConnectionAborted`, performing exponential backoff between reconnection attempts. This protects
   the harness from transient bridge restarts while keeping call semantics the same for callers.
-- Smoketest helpers continue to rely on `server_drive::ensure_init` for retry loops in scenarios where
-  the UI bridge has not yet published key bindings or other runtime state.
+- Smoketest helpers call `BridgeDriver::ensure_ready` when they expect the bridge to reconnect or when
+  reconnection loops are required while the UI publishes bindings or other runtime state.
 
 ## Sequencing and ACKs
 
@@ -39,11 +39,11 @@ smoketests drive to replay shortcuts and inspect world state.
 
 ## Shutdown
 
-- `HotkiSession::shutdown` first attempts to close the UI via the shared bridge. If the bridge was
-  never initialized, `server_drive::shutdown` now propagates `DriverError::NotInitialized`, allowing
-  the session to fall back to a direct MRPC shutdown path until the bridge becomes mandatory.
-- Whether the shutdown succeeds or fails, the harness resets its cached bridge client so subsequent
-  sessions start from a clean state.
+- `HotkiSession::shutdown` first attempts to close the UI via its `BridgeDriver`. If the bridge was
+  never initialized, `BridgeDriver::shutdown` propagates `DriverError::NotInitialized`, allowing the
+  session to fall back to a direct MRPC shutdown path until the bridge becomes mandatory.
+- Whether the shutdown succeeds or fails, the harness drops the session's driver so subsequent sessions
+  start from a clean state.
 - The `HOTKI_CONTROL_SOCKET` path is removed during cleanup to avoid collisions when the next session
   spawns.
 

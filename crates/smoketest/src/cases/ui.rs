@@ -15,7 +15,7 @@ use tracing::debug;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive::{self, DriverError},
+    server_drive::{BridgeDriver, DriverError},
     session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, sanitize_slug},
     world,
@@ -78,6 +78,7 @@ impl BindingWatcher {
     /// Attempt to activate the HUD and wait until the expected submenu bindings appear.
     fn activate_until_ready(
         &self,
+        bridge: &mut BridgeDriver,
         activation_ident: &str,
         expected_nested: &[&str],
         timeout_ms: u64,
@@ -90,6 +91,7 @@ impl BindingWatcher {
         let mut last_hud_event: Option<u64> = None;
 
         self.dispatch_activation(
+            bridge,
             activation_ident,
             deadline,
             timeout_ms,
@@ -99,7 +101,7 @@ impl BindingWatcher {
 
         while Instant::now() < deadline {
             let mut hud_ready_via_event = false;
-            match server_drive::drain_bridge_events() {
+            match bridge.drain_bridge_events() {
                 Ok(events) => {
                     for event in events {
                         debug!(
@@ -113,7 +115,7 @@ impl BindingWatcher {
                             metrics.record_hud_update();
                             metrics.record_frontmost();
                             last_hud_event = Some(event.id);
-                            if let Ok(Some(snapshot)) = server_drive::latest_hud() {
+                            if let Ok(Some(snapshot)) = bridge.latest_hud() {
                                 debug!(
                                     hud_event_id = snapshot.event_id,
                                     depth = snapshot.depth,
@@ -148,9 +150,9 @@ impl BindingWatcher {
 
                 if let Some(remaining_ms) = remaining_ms(deadline) {
                     let nested_timeout = remaining_ms.min(config::BINDING_GATES.default_ms);
-                    match server_drive::wait_for_idents(expected_nested, nested_timeout) {
+                    match bridge.wait_for_idents(expected_nested, nested_timeout) {
                         Ok(()) => return Ok(metrics.into_outcome()),
-                        Err(server_drive::DriverError::BindingTimeout { .. }) => {
+                        Err(DriverError::BindingTimeout { .. }) => {
                             // Nested bindings not ready yet; retry activation below.
                             last_attempt = None;
                         }
@@ -163,6 +165,7 @@ impl BindingWatcher {
 
             if should_retry(last_attempt) {
                 self.dispatch_activation(
+                    bridge,
                     activation_ident,
                     deadline,
                     timeout_ms,
@@ -180,6 +183,7 @@ impl BindingWatcher {
     /// Attempt to inject the activation chord if enough time remains before the deadline.
     fn dispatch_activation(
         &self,
+        bridge: &mut BridgeDriver,
         activation_ident: &str,
         deadline: Instant,
         total_timeout_ms: u64,
@@ -189,8 +193,8 @@ impl BindingWatcher {
         let remaining = remaining_ms(deadline).ok_or(Error::HudNotVisible {
             timeout_ms: total_timeout_ms,
         })?;
-        server_drive::wait_for_idents(&[activation_ident], remaining)?;
-        server_drive::inject_key(activation_ident)?;
+        bridge.wait_for_idents(&[activation_ident], remaining)?;
+        bridge.inject_key(activation_ident)?;
         metrics.record_activation();
         *last_attempt = Some(Instant::now());
         Ok(())
@@ -406,20 +410,30 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             .as_mut()
             .ok_or_else(|| Error::InvalidState("ui case state missing during action".into()))?;
 
-        let socket = state_ref.session.socket_path().to_string();
-        server_drive::ensure_init(&socket, 3_000)?;
-        server_drive::set_config_from_path(&state_ref.config_path)?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.ensure_ready(3_000)?;
+            bridge.set_config_from_path(&state_ref.config_path)?;
+        }
         let gate_ms = config::BINDING_GATES.default_ms * 5;
         let watcher = BindingWatcher::new(state_ref.session.pid() as i32);
         let ident_activate = UI_DEMO_SEQUENCE[0];
-        let activation =
-            watcher.activate_until_ready(ACTIVATION_IDENT, &[ident_activate], gate_ms)?;
+        let activation = {
+            let bridge = state_ref.session.bridge_mut();
+            watcher.activate_until_ready(bridge, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
+        };
 
-        server_drive::inject_key(ident_activate)?;
-        server_drive::wait_for_idents(&["h", "l"], gate_ms)?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.inject_key(ident_activate)?;
+            bridge.wait_for_idents(&["h", "l"], gate_ms)?;
+        }
 
         let theme_steps = &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1];
-        server_drive::inject_sequence(theme_steps)?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.inject_sequence(theme_steps)?;
+        }
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
         if hud_windows.is_empty() {
@@ -434,7 +448,10 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
         // Close the HUD after capturing window diagnostics to leave the session cleanly.
         let ident_exit = UI_DEMO_SEQUENCE[UI_DEMO_SEQUENCE.len() - 1];
-        server_drive::inject_key(ident_exit)?;
+        {
+            let bridge = state_ref.session.bridge_mut();
+            bridge.inject_key(ident_exit)?;
+        }
         Ok(())
     })?;
 
@@ -476,7 +493,6 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
         state_inner.session.shutdown()?;
         state_inner.session.kill_and_wait();
-        server_drive::reset();
 
         Ok(())
     })?;

@@ -52,14 +52,16 @@ and debuggable.
 - Gate environment-sensitive cases with the shared `assume!` macro. Record skips as
   `SKIP: <case> -- <reason>` and exit early with `Ok(())` so stats remain accurate.
 - Keep skip probes centralized. Use canonical helpers such as `world::list_windows`,
-  `world::ensure_frontmost`, or `server_drive::wait_for_idents` instead of ad-hoc environment checks.
+  `world::ensure_frontmost`, or `smoketest::server_drive::BridgeDriver::wait_for_idents` instead of
+  ad-hoc environment checks.
 - Never sprinkle test-specific environment variables. If a scenario needs configuration, extend the
   smoketest CLI surface.
 
 ## Canonical Environment Probes
 - `smoketest::world::list_windows()` – authoritative snapshot for display/window counts.
 - `smoketest::world::ensure_frontmost(..)` – deterministic focus handoff without reaching into AX.
-- `smoketest::server_drive::wait_for_focused_title(..)` – confirm backend focus updates over MRPC.
+- `smoketest::server_drive::BridgeDriver::wait_for_world_seq(..)` – confirm backend focus updates over
+  MRPC.
 - `mac_winops::screen::visible_frame_containing_point(..)` – translate helper frames into display
   coordinates when budgeting placements.
 - If you need a new probe (e.g., multiple-display detection, screen scale, mission-control state),

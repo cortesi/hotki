@@ -13,7 +13,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{self, ManagedChild},
-    server_drive::{self, ControlSocketScope},
+    server_drive::{BridgeDriver, ControlSocketScope},
 };
 
 /// Launch configuration for a smoketest-backed hotki session.
@@ -55,12 +55,12 @@ impl HotkiSessionConfig {
 pub struct HotkiSession {
     /// Child process handle.
     child: ManagedChild,
-    /// Path to the server's unix socket for the session.
-    socket_path: String,
     /// Path to the control bridge socket exposed by the UI runtime.
     control_socket: String,
     /// Bridge control socket override guard for this session.
     _control_scope: ControlSocketScope,
+    /// Driver handle used to communicate with the smoketest bridge.
+    bridge: BridgeDriver,
     /// Whether teardown has already been performed.
     cleaned_up: bool,
 }
@@ -133,31 +133,23 @@ impl HotkiSession {
         }
         cmd.env("HOTKI_CONTROL_SOCKET", &control_socket);
 
-        let mut child = match process::spawn_managed(cmd) {
-            Ok(child) => child,
-            Err(err) => {
-                server_drive::reset();
-                return Err(err);
-            }
-        };
-        let socket_path = socket_path_for_pid(child.pid as u32);
-        server_drive::reset();
-        if let Err(err) = server_drive::ensure_init(&socket_path, config::DEFAULTS.timeout_ms) {
+        let mut child = process::spawn_managed(cmd)?;
+        let mut bridge = BridgeDriver::new(socket_path_for_pid(child.pid as u32));
+        if let Err(err) = bridge.ensure_ready(config::DEFAULTS.timeout_ms) {
             if let Err(kill_err) = child.kill_and_wait() {
                 debug!(
                     ?kill_err,
                     "failed to terminate hotki after bridge init failure"
                 );
             }
-            server_drive::reset();
             return Err(Error::from(err));
         }
         cleanup_guard.disarm();
         Ok(Self {
             child,
-            socket_path,
             control_socket,
             _control_scope: control_scope,
+            bridge,
             cleaned_up: false,
         })
     }
@@ -167,17 +159,17 @@ impl HotkiSession {
         self.child.pid as u32
     }
 
-    /// Return the server socket path for the session.
-    pub fn socket_path(&self) -> &str {
-        &self.socket_path
+    /// Borrow the bridge driver mutably.
+    pub fn bridge_mut(&mut self) -> &mut BridgeDriver {
+        &mut self.bridge
     }
 
     /// Attempt a graceful server shutdown via the bridge, surfacing failures.
-    pub fn shutdown(&self) -> Result<()> {
+    pub fn shutdown(&mut self) -> Result<()> {
         if self.cleaned_up {
             return Ok(());
         }
-        server_drive::shutdown().map_err(Error::from)
+        self.bridge.shutdown().map_err(Error::from)
     }
 
     /// Forcefully kill the child process and wait for exit.
@@ -186,7 +178,7 @@ impl HotkiSession {
             return;
         }
         if let Err(_e) = self.child.kill_and_wait() {}
-        server_drive::reset();
+        self.bridge.reset();
         if let Err(err) = fs::remove_file(&self.control_socket)
             && err.kind() != ErrorKind::NotFound
         {
@@ -248,11 +240,8 @@ fn resolve_hotki_binary() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server_drive;
-
     #[test]
     fn spawn_initializes_bridge() -> Result<()> {
-        server_drive::reset();
         let config = match HotkiSessionConfig::from_env() {
             Ok(cfg) => cfg.with_logs(false),
             Err(Error::HotkiBinNotFound) => return Ok(()),
@@ -260,15 +249,10 @@ mod tests {
         };
         let mut session = HotkiSession::spawn(config)?;
 
-        assert!(
-            server_drive::is_ready(),
-            "bridge should be ready immediately after spawning"
-        );
-        server_drive::check_alive()?;
+        session.bridge_mut().check_alive()?;
 
         session.shutdown()?;
         session.kill_and_wait();
-        server_drive::reset();
         Ok(())
     }
 }

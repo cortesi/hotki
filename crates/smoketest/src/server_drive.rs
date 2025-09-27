@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hotki_protocol::{App, Cursor};
+use hotki_protocol::Cursor;
 use hotki_server::{
     WorldSnapshotLite,
     smoketest_bridge::{
@@ -25,8 +25,6 @@ use tracing::debug;
 
 use crate::config;
 
-/// Shared bridge client slot to the UI smoketest bridge.
-static CONN: OnceLock<Mutex<Option<BridgeClient>>> = OnceLock::new();
 /// Flag to enable verbose binding polling diagnostics.
 static LOG_BINDINGS: OnceLock<bool> = OnceLock::new();
 /// Override for the bridge control socket path, scoped to the active session.
@@ -105,6 +103,185 @@ fn describe_init_error(err: &DriverError) -> String {
 /// Result alias for bridge driver operations.
 pub type DriverResult<T> = Result<T, DriverError>;
 
+/// Driver handle that owns bridge connection state for a single hotki session.
+pub struct BridgeDriver {
+    /// Control socket path used to communicate with the UI bridge.
+    control_socket: String,
+    /// Active bridge client, when initialized.
+    client: Option<BridgeClient>,
+}
+
+impl BridgeDriver {
+    /// Construct a driver for the provided server socket path.
+    #[must_use]
+    pub fn new(server_socket: impl Into<String>) -> Self {
+        let server_socket = server_socket.into();
+        let control_socket = control_socket_path(&server_socket);
+        Self {
+            control_socket,
+            client: None,
+        }
+    }
+
+    /// Drop the current bridge client so the next operation reconnects from scratch.
+    pub fn reset(&mut self) {
+        self.client = None;
+    }
+
+    /// Ensure the bridge connection is initialized within `timeout_ms`.
+    pub fn ensure_ready(&mut self, timeout_ms: u64) -> DriverResult<()> {
+        if self.client.is_some() {
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut last_error: Option<String> = None;
+
+        while Instant::now() < deadline {
+            match BridgeClient::connect_with_handshake(&self.control_socket) {
+                Ok(client) => {
+                    self.client = Some(client);
+                    return Ok(());
+                }
+                Err(err) => {
+                    last_error = Some(describe_init_error(&err));
+                    debug!(
+                        error = %last_error.as_ref().unwrap(),
+                        socket = %self.control_socket,
+                        "bridge initialization attempt failed"
+                    );
+                    self.reset();
+                    thread::sleep(config::ms(config::RETRY.fast_delay_ms));
+                }
+            }
+        }
+
+        Err(DriverError::InitTimeout {
+            socket_path: self.control_socket.clone(),
+            timeout_ms,
+            last_error: last_error
+                .unwrap_or_else(|| "no connection attempts were made".to_string()),
+        })
+    }
+
+    /// Attempt a graceful shutdown via the active bridge connection, if available.
+    pub fn shutdown(&mut self) -> DriverResult<()> {
+        let conn = match self.client_mut() {
+            Ok(conn) => conn,
+            Err(DriverError::NotInitialized) => return Err(DriverError::NotInitialized),
+            Err(err) => {
+                self.reset();
+                return Err(err);
+            }
+        };
+        let baseline = conn.event_buffer_len();
+        if let Err(err) = conn.call_ok(&BridgeRequest::Shutdown) {
+            self.reset();
+            return Err(err);
+        }
+        match conn.assert_no_new_events_since(baseline) {
+            Ok(()) => {
+                self.reset();
+                Ok(())
+            }
+            Err(err) => {
+                self.reset();
+                Err(err)
+            }
+        }
+    }
+
+    /// Inject a single key press (down + small delay + up) via the bridge.
+    pub fn inject_key(&mut self, seq: &str) -> DriverResult<()> {
+        self.client_mut()?.inject_key(seq)
+    }
+
+    /// Inject a sequence of key presses with UI delays.
+    pub fn inject_sequence(&mut self, sequences: &[&str]) -> DriverResult<()> {
+        let conn = self.client_mut()?;
+        for seq in sequences {
+            conn.inject_key(seq)?;
+        }
+        Ok(())
+    }
+
+    /// Load a configuration from disk and apply it to the running server.
+    pub fn set_config_from_path(&mut self, path: &Path) -> DriverResult<()> {
+        let path_str = path.to_str().ok_or_else(|| DriverError::BridgeFailure {
+            message: format!("non-UTF-8 config path: {}", path.display()),
+        })?;
+        self.client_mut()?.call_ok(&BridgeRequest::SetConfig {
+            path: path_str.to_string(),
+        })
+    }
+
+    /// Wait until all identifiers are present in the current bindings.
+    pub fn wait_for_idents(&mut self, idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
+        if idents.is_empty() {
+            return Ok(());
+        }
+
+        let wanted: BTreeSet<String> = idents
+            .iter()
+            .map(|ident| canonicalize_ident(ident))
+            .collect();
+        self.client_mut()?.wait_for_hud_keys(&wanted, timeout_ms)
+    }
+
+    /// Quick liveness probe against the backend via a lightweight bridge command.
+    pub fn check_alive(&mut self) -> DriverResult<()> {
+        self.client_mut()?.call_depth().map(|_| ())
+    }
+
+    /// Fetch a lightweight world snapshot from the backend, if connected.
+    pub fn get_world_snapshot(&mut self) -> DriverResult<WorldSnapshotLite> {
+        self.client_mut()?.call_snapshot()
+    }
+
+    /// Fetch the current depth reported by the bridge.
+    #[cfg(test)]
+    pub fn get_depth(&mut self) -> DriverResult<usize> {
+        self.client_mut()?.call_depth()
+    }
+
+    /// Block until the world reconcile sequence reaches `target` (or times out).
+    pub fn wait_for_world_seq(&mut self, target: u64, timeout_ms: u64) -> DriverResult<u64> {
+        self.client_mut()?.wait_for_world_seq(target, timeout_ms)
+    }
+
+    /// Retrieve the latest HUD snapshot observed on the bridge.
+    pub fn latest_hud(&self) -> DriverResult<Option<HudSnapshot>> {
+        Ok(self.client()?.latest_hud())
+    }
+
+    /// Drain buffered bridge events for inspection.
+    pub fn drain_bridge_events(&mut self) -> DriverResult<Vec<BridgeEventRecord>> {
+        Ok(self.client_mut()?.drain_events())
+    }
+
+    /// Retrieve the most recent handshake snapshot, if initialized.
+    #[cfg(test)]
+    pub fn handshake(&self) -> DriverResult<Option<BridgeHandshake>> {
+        Ok(self.client()?.handshake.clone())
+    }
+
+    /// Return the number of events currently buffered in the client.
+    #[cfg(test)]
+    pub fn event_buffer_len(&self) -> DriverResult<usize> {
+        Ok(self.client()?.event_buffer_len())
+    }
+
+    /// Internal helper that borrows the active client mutably.
+    fn client_mut(&mut self) -> DriverResult<&mut BridgeClient> {
+        self.client.as_mut().ok_or(DriverError::NotInitialized)
+    }
+
+    /// Internal helper that borrows the active client immutably.
+    fn client(&self) -> DriverResult<&BridgeClient> {
+        self.client.as_ref().ok_or(DriverError::NotInitialized)
+    }
+}
+
 /// Raw bridge event record captured from the UI runtime stream.
 #[derive(Debug, Clone)]
 pub struct BridgeEventRecord {
@@ -133,19 +310,6 @@ pub struct HudSnapshot {
     pub keys: Vec<BridgeHudKey>,
     /// Canonicalized identifiers rendered by the HUD for readiness checks.
     pub idents: BTreeSet<String>,
-}
-
-/// Snapshot of the most recent world focus event observed on the bridge stream.
-#[derive(Debug, Clone)]
-pub struct WorldFocusSnapshot {
-    /// Identifier of the bridge event associated with this focus change.
-    pub event_id: BridgeCommandId,
-    /// Millisecond timestamp when the focus event was observed.
-    pub received_ms: BridgeTimestampMs,
-    /// Optional focused application context reported by the world service.
-    pub app: Option<App>,
-    /// World reconcile sequence at which the focus change occurred.
-    pub reconcile_seq: u64,
 }
 
 /// Handshake payload returned when the smoketest bridge establishes a session.
@@ -240,18 +404,6 @@ fn canonicalize_ident(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-/// Access the global connection slot, initializing storage if needed.
-fn conn_slot() -> &'static Mutex<Option<BridgeClient>> {
-    CONN.get_or_init(|| Mutex::new(None))
-}
-
-/// Borrow the global bridge client mutably and execute the provided closure.
-fn with_connection_mut<R>(f: impl FnOnce(&mut BridgeClient) -> DriverResult<R>) -> DriverResult<R> {
-    let mut guard = conn_slot().lock();
-    let conn = guard.as_mut().ok_or(DriverError::NotInitialized)?;
-    f(conn)
-}
-
 /// Derive the control socket path from the server socket path.
 fn control_socket_path(server_socket: &str) -> String {
     if let Some(path) = control_socket_override_slot().lock().clone() {
@@ -265,146 +417,9 @@ fn control_socket_path(server_socket: &str) -> String {
     format!("{server_socket}.bridge")
 }
 
-/// Returns true if a connection is available for RPC driving.
-pub fn is_ready() -> bool {
-    conn_slot().lock().is_some()
-}
-
-/// Ensure the shared bridge is initialized within `timeout_ms`.
-pub fn ensure_init(socket_path: &str, timeout_ms: u64) -> DriverResult<()> {
-    if is_ready() {
-        return Ok(());
-    }
-
-    let control_path = control_socket_path(socket_path);
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut last_error: Option<String> = None;
-
-    while Instant::now() < deadline {
-        match BridgeClient::connect_with_handshake(&control_path) {
-            Ok(client) => {
-                let mut guard = conn_slot().lock();
-                *guard = Some(client);
-                return Ok(());
-            }
-            Err(err) => {
-                last_error = Some(describe_init_error(&err));
-                debug!(
-                    error = %last_error.as_ref().unwrap(),
-                    socket = %control_path,
-                    "bridge initialization attempt failed"
-                );
-                reset();
-                thread::sleep(config::ms(config::RETRY.fast_delay_ms));
-            }
-        }
-    }
-
-    Err(DriverError::InitTimeout {
-        socket_path: control_path,
-        timeout_ms,
-        last_error: last_error.unwrap_or_else(|| "no connection attempts were made".to_string()),
-    })
-}
-
-/// Request a graceful shutdown via the active bridge connection, if available.
-pub fn shutdown() -> DriverResult<()> {
-    match with_connection_mut(|conn| {
-        let baseline = conn.event_buffer_len();
-        conn.call_ok(&BridgeRequest::Shutdown)?;
-        conn.assert_no_new_events_since(baseline)
-    }) {
-        Err(err @ DriverError::NotInitialized) => Err(err),
-        Err(err) => {
-            reset();
-            Err(err)
-        }
-        Ok(()) => {
-            reset();
-            Ok(())
-        }
-    }
-}
-
-/// Drop the shared bridge connection so subsequent tests start clean.
-pub fn reset() {
-    let mut g = conn_slot().lock();
-    *g = None;
-}
-
-/// Inject a single key press (down + small delay + up) via the bridge.
-pub fn inject_key(seq: &str) -> DriverResult<()> {
-    with_connection_mut(|conn| conn.inject_key(seq))
-}
-
 /// Returns true when the bridge error message indicates a missing key binding.
 fn message_contains_key_not_bound(msg: &str) -> bool {
     msg.contains("KeyNotBound")
-}
-
-/// Inject a sequence of key presses with UI delays.
-pub fn inject_sequence(sequences: &[&str]) -> DriverResult<()> {
-    with_connection_mut(|conn| {
-        for seq in sequences {
-            conn.inject_key(seq)?;
-        }
-        Ok(())
-    })
-}
-
-/// Load a configuration from disk and apply it to the running server.
-pub fn set_config_from_path(path: &Path) -> DriverResult<()> {
-    let path_str = path.to_str().ok_or_else(|| DriverError::BridgeFailure {
-        message: format!("non-UTF-8 config path: {}", path.display()),
-    })?;
-    with_connection_mut(|conn| {
-        conn.call_ok(&BridgeRequest::SetConfig {
-            path: path_str.to_string(),
-        })
-    })
-}
-
-/// Wait until all identifiers are present in the current bindings.
-pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
-    if idents.is_empty() {
-        return Ok(());
-    }
-
-    let wanted: BTreeSet<String> = idents
-        .iter()
-        .map(|ident| canonicalize_ident(ident))
-        .collect();
-    with_connection_mut(|conn| conn.wait_for_hud_keys(&wanted, timeout_ms))
-}
-
-/// Quick liveness probe against the backend via a lightweight bridge command.
-pub fn check_alive() -> DriverResult<()> {
-    with_connection_mut(|conn| conn.call_depth().map(|_| ()))
-}
-
-/// Fetch a lightweight world snapshot from the backend, if connected.
-pub fn get_world_snapshot() -> DriverResult<WorldSnapshotLite> {
-    with_connection_mut(|conn| conn.call_snapshot())
-}
-
-/// Block until the world reconcile sequence reaches `target` (or times out).
-pub fn wait_for_world_seq(target: u64, timeout_ms: u64) -> DriverResult<u64> {
-    with_connection_mut(|conn| conn.wait_for_world_seq(target, timeout_ms))
-}
-
-/// Retrieve the latest HUD snapshot observed on the bridge.
-pub fn latest_hud() -> DriverResult<Option<HudSnapshot>> {
-    with_connection_mut(|conn| Ok(conn.latest_hud()))
-}
-
-/// Retrieve the latest world focus snapshot observed on the bridge.
-pub fn latest_world_focus() -> DriverResult<Option<WorldFocusSnapshot>> {
-    with_connection_mut(|conn| Ok(conn.latest_focus()))
-}
-
-/// Drain buffered bridge events for inspection.
-pub fn drain_bridge_events() -> DriverResult<Vec<BridgeEventRecord>> {
-    with_connection_mut(|conn| Ok(conn.drain_events()))
 }
 
 /// Blocking Unix-stream client that forwards commands to the UI bridge.
@@ -423,8 +438,6 @@ struct BridgeClient {
     event_buffer: VecDeque<BridgeEventRecord>,
     /// Latest HUD snapshot emitted by the bridge.
     latest_hud: Option<HudSnapshot>,
-    /// Latest world focus snapshot emitted by the bridge.
-    latest_focus: Option<WorldFocusSnapshot>,
     /// Most recent handshake data captured during initialization.
     handshake: Option<BridgeHandshake>,
 }
@@ -453,7 +466,6 @@ impl BridgeClient {
             ack_timeout: Duration::from_millis(config::BRIDGE.ack_timeout_ms),
             event_buffer: VecDeque::new(),
             latest_hud: None,
-            latest_focus: None,
             handshake: None,
         })
     }
@@ -708,14 +720,7 @@ impl BridgeClient {
                         idents,
                     });
                 }
-                BridgeEvent::WorldFocus { app, reconcile_seq } => {
-                    self.latest_focus = Some(WorldFocusSnapshot {
-                        event_id: reply.command_id,
-                        received_ms: reply.timestamp_ms,
-                        app: app.clone(),
-                        reconcile_seq: *reconcile_seq,
-                    });
-                }
+                BridgeEvent::WorldFocus { .. } => {}
             }
             self.event_buffer.push_back(BridgeEventRecord {
                 id: reply.command_id,
@@ -729,7 +734,6 @@ impl BridgeClient {
     fn clear_cached_state(&mut self) {
         self.event_buffer.clear();
         self.latest_hud = None;
-        self.latest_focus = None;
         self.handshake = None;
     }
 
@@ -756,11 +760,6 @@ impl BridgeClient {
     /// Access the latest HUD snapshot observed on the bridge.
     fn latest_hud(&self) -> Option<HudSnapshot> {
         self.latest_hud.clone()
-    }
-
-    /// Access the latest world focus snapshot observed on the bridge.
-    fn latest_focus(&self) -> Option<WorldFocusSnapshot> {
-        self.latest_focus.clone()
     }
 
     /// Return true when the current HUD snapshot contains all `want` identifiers.
@@ -1078,7 +1077,7 @@ mod tests {
         io::{BufRead, BufReader, ErrorKind, Write},
         os::unix::net::{UnixListener, UnixStream},
         process,
-        sync::{OnceLock, mpsc},
+        sync::{Arc, OnceLock, mpsc},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -1108,21 +1107,20 @@ mod tests {
     #[test]
     fn inject_key_requires_initialization() {
         let _guard = bridge_test_lock().lock();
-        reset();
-        let err = inject_key("cmd+shift+9").unwrap_err();
+        let mut driver = BridgeDriver::new(unique_control_socket());
+        let err = driver.inject_key("cmd+shift+9").unwrap_err();
         assert!(matches!(err, DriverError::NotInitialized));
     }
 
     #[test]
     fn inject_key_waits_for_binding_event() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
         let control_path = control_socket_path(&path);
         let (ready_tx, ready_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        let server_path = control_path;
+        let server_path = control_path.clone();
         let handle = thread::spawn(move || {
             if let Err(err) = fs::remove_file(&server_path)
                 && err.kind() != ErrorKind::NotFound
@@ -1196,23 +1194,26 @@ mod tests {
         });
 
         ready_rx.recv().unwrap();
-        ensure_init(&path, 1_000).unwrap();
+        let mut driver = BridgeDriver::new(path);
+        driver.ensure_ready(1_000).unwrap();
+        let driver = Arc::new(ParkingMutex::new(driver));
 
-        let injector = thread::spawn(|| inject_key("cmd+b"));
+        let injector_driver = Arc::clone(&driver);
+        let injector = thread::spawn(move || injector_driver.lock().inject_key("cmd+b"));
         thread::sleep(Duration::from_millis(50));
         event_tx.send(()).unwrap();
         injector.join().unwrap().unwrap();
-
-        reset();
+        driver.lock().reset();
         handle.join().unwrap();
+        fs::remove_file(&control_path).ok();
     }
 
     #[test]
     fn ensure_init_times_out_for_missing_socket() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
-        let err = ensure_init(&path, 25).unwrap_err();
+        let mut driver = BridgeDriver::new(path.clone());
+        let err = driver.ensure_ready(25).unwrap_err();
         match err {
             DriverError::InitTimeout { socket_path, .. } => {
                 assert_eq!(socket_path, control_socket_path(&path))
@@ -1224,8 +1225,8 @@ mod tests {
     #[test]
     fn check_alive_without_connection_reports_error() {
         let _guard = bridge_test_lock().lock();
-        reset();
-        let err = check_alive().unwrap_err();
+        let mut driver = BridgeDriver::new(unique_control_socket());
+        let err = driver.check_alive().unwrap_err();
         assert!(matches!(err, DriverError::NotInitialized));
     }
 
@@ -1381,12 +1382,11 @@ mod tests {
     #[test]
     fn ensure_init_retries_failed_handshake() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
         let control_path = control_socket_path(&path);
         let (ready_tx, ready_rx) = mpsc::channel();
 
-        let server_path = control_path;
+        let server_path = control_path.clone();
         let handle = thread::spawn(move || {
             if let Err(err) = fs::remove_file(&server_path)
                 && err.kind() != ErrorKind::NotFound
@@ -1427,32 +1427,30 @@ mod tests {
         });
 
         ready_rx.recv().unwrap();
-        ensure_init(&path, 1_000).unwrap();
+        let mut driver = BridgeDriver::new(path);
+        driver.ensure_ready(1_000).unwrap();
 
-        let clients = with_connection_mut(|conn| {
-            Ok(conn
-                .handshake
-                .as_ref()
-                .map(|h| h.idle_timer.clients_connected))
-        })
-        .unwrap()
-        .unwrap();
+        let clients = driver
+            .handshake()
+            .unwrap()
+            .map(|h| h.idle_timer.clients_connected)
+            .unwrap();
         assert_eq!(clients, 7);
 
-        reset();
+        driver.reset();
         handle.join().unwrap();
+        fs::remove_file(&control_path).ok();
     }
 
     #[test]
     fn wait_for_idents_tracks_hud_events() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
         let control_path = control_socket_path(&path);
         let (ready_tx, ready_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        let server_path = control_path;
+        let server_path = control_path.clone();
         let handle = thread::spawn(move || {
             if let Err(err) = fs::remove_file(&server_path)
                 && err.kind() != ErrorKind::NotFound
@@ -1500,29 +1498,30 @@ mod tests {
         });
 
         ready_rx.recv().unwrap();
-        ensure_init(&path, 1_000).unwrap();
+        let mut driver = BridgeDriver::new(path);
+        driver.ensure_ready(1_000).unwrap();
 
         let notifier = thread::spawn(move || {
             thread::sleep(Duration::from_millis(50));
             event_tx.send(()).unwrap();
         });
 
-        wait_for_idents(&["cmd+b"], 1_000).unwrap();
+        driver.wait_for_idents(&["cmd+b"], 1_000).unwrap();
         notifier.join().unwrap();
 
-        reset();
+        driver.reset();
         handle.join().unwrap();
+        fs::remove_file(&control_path).ok();
     }
 
     #[test]
     fn reconnect_refreshes_handshake_and_clears_cache() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
         let control_path = control_socket_path(&path);
         let (ready_tx, ready_rx) = mpsc::channel();
 
-        let server_path = control_path;
+        let server_path = control_path.clone();
         let handle = thread::spawn(move || {
             if let Err(err) = fs::remove_file(&server_path)
                 && err.kind() != ErrorKind::NotFound
@@ -1567,47 +1566,41 @@ mod tests {
         });
 
         ready_rx.recv().unwrap();
-        ensure_init(&path, 1_000).unwrap();
+        let mut driver = BridgeDriver::new(path);
+        driver.ensure_ready(1_000).unwrap();
 
-        let hud_before = with_connection_mut(|conn| Ok(conn.latest_hud())).unwrap();
+        let hud_before = driver.latest_hud().unwrap();
         assert!(hud_before.is_some());
 
-        let depth = with_connection_mut(|conn| conn.call_depth()).unwrap();
+        let depth = driver.get_depth().unwrap();
         assert_eq!(depth, 2);
 
-        assert!(
-            is_ready(),
-            "bridge connection dropped unexpectedly during reconnect test"
-        );
-        let hud_after = with_connection_mut(|conn| Ok(conn.latest_hud())).unwrap();
+        let hud_after = driver.latest_hud().unwrap();
         assert!(hud_after.is_none());
 
-        let clients = with_connection_mut(|conn| {
-            Ok(conn
-                .handshake
-                .as_ref()
-                .map(|h| h.idle_timer.clients_connected))
-        })
-        .unwrap()
-        .unwrap();
+        let clients = driver
+            .handshake()
+            .unwrap()
+            .map(|h| h.idle_timer.clients_connected)
+            .unwrap();
         assert_eq!(clients, 2);
 
-        let buffered = with_connection_mut(|conn| Ok(conn.event_buffer_len())).unwrap();
+        let buffered = driver.event_buffer_len().unwrap();
         assert_eq!(buffered, 0);
 
-        reset();
+        driver.reset();
         handle.join().unwrap();
+        fs::remove_file(&control_path).ok();
     }
 
     #[test]
     fn shutdown_flags_post_shutdown_events() {
         let _guard = bridge_test_lock().lock();
-        reset();
         let path = unique_control_socket();
         let control_path = control_socket_path(&path);
         let (ready_tx, ready_rx) = mpsc::channel();
 
-        let server_path = control_path;
+        let server_path = control_path.clone();
         let handle = thread::spawn(move || {
             if let Err(err) = fs::remove_file(&server_path)
                 && err.kind() != ErrorKind::NotFound
@@ -1634,12 +1627,14 @@ mod tests {
         });
 
         ready_rx.recv().unwrap();
-        ensure_init(&path, 1_000).unwrap();
+        let mut driver = BridgeDriver::new(path);
+        driver.ensure_ready(1_000).unwrap();
 
-        let err = shutdown().unwrap_err();
+        let err = driver.shutdown().unwrap_err();
         assert!(matches!(err, DriverError::PostShutdownMessage { .. }));
 
-        reset();
+        driver.reset();
         handle.join().unwrap();
+        fs::remove_file(&control_path).ok();
     }
 }

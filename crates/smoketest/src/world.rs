@@ -19,7 +19,7 @@ use tracing::debug;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive::{self, DriverError},
+    server_drive::{BridgeDriver, DriverError},
 };
 
 /// Shared tokio runtime used across smoketest helpers.
@@ -197,6 +197,7 @@ impl FocusGuard {
         pid: i32,
         title: impl Into<String>,
         window: Option<WorldWindowId>,
+        bridge: Option<&mut BridgeDriver>,
     ) -> Result<Self> {
         let guard = Self {
             pid,
@@ -209,40 +210,45 @@ impl FocusGuard {
                     .max(1_000),
             ),
         };
-        guard.reassert()?;
+        guard.reassert(bridge)?;
         Ok(guard)
     }
 
     /// Re-run the focus loop until world and AX agree on the frontmost window.
-    pub fn reassert(&self) -> Result<()> {
+    pub fn reassert(&self, bridge: Option<&mut BridgeDriver>) -> Result<()> {
+        let mut bridge = bridge;
         let mut attempts = 0usize;
         let mut last_error: Option<Error> = None;
-        let mut next_seq =
-            match server_drive::wait_for_world_seq(0, config::INPUT_DELAYS.retry_delay_ms) {
+        let mut next_seq = if let Some(driver) = bridge.as_deref_mut() {
+            match driver.wait_for_world_seq(0, config::INPUT_DELAYS.retry_delay_ms) {
                 Ok(seq) => seq,
-                Err(server_drive::DriverError::NotInitialized) => 0,
+                Err(DriverError::NotInitialized) => 0,
                 Err(err) => return Err(Error::from(err)),
-            };
+            }
+        } else {
+            0
+        };
         while attempts < FOCUS_GUARD_MAX_ATTEMPTS {
             attempts += 1;
             if let Err(err) = self.raise_once() {
                 debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %err, "focus_guard_raise_failed");
                 last_error = Some(err);
             }
-            match self.verify_alignment() {
+            match self.verify_alignment(bridge.as_deref_mut()) {
                 Ok(true) => return Ok(()),
                 Ok(false) => {
                     next_seq = next_seq.saturating_add(1);
-                    match server_drive::wait_for_world_seq(
-                        next_seq,
-                        config::INPUT_DELAYS.retry_delay_ms,
-                    ) {
-                        Ok(seq) => next_seq = seq,
-                        Err(server_drive::DriverError::NotInitialized) => {}
-                        Err(err) => {
-                            let mapped = Error::from(err);
-                            debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
-                            last_error = Some(mapped);
+                    if let Some(driver) = bridge.as_deref_mut() {
+                        match driver
+                            .wait_for_world_seq(next_seq, config::INPUT_DELAYS.retry_delay_ms)
+                        {
+                            Ok(seq) => next_seq = seq,
+                            Err(DriverError::NotInitialized) => {}
+                            Err(err) => {
+                                let mapped = Error::from(err);
+                                debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
+                                last_error = Some(mapped);
+                            }
                         }
                     }
                 }
@@ -250,16 +256,17 @@ impl FocusGuard {
                     debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %err, "focus_guard_verify_failed");
                     last_error = Some(err);
                     next_seq = next_seq.saturating_add(1);
-                    match server_drive::wait_for_world_seq(
-                        next_seq,
-                        config::INPUT_DELAYS.retry_delay_ms,
-                    ) {
-                        Ok(seq) => next_seq = seq,
-                        Err(server_drive::DriverError::NotInitialized) => {}
-                        Err(err) => {
-                            let mapped = Error::from(err);
-                            debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
-                            last_error = Some(mapped);
+                    if let Some(driver) = bridge.as_deref_mut() {
+                        match driver
+                            .wait_for_world_seq(next_seq, config::INPUT_DELAYS.retry_delay_ms)
+                        {
+                            Ok(seq) => next_seq = seq,
+                            Err(DriverError::NotInitialized) => {}
+                            Err(err) => {
+                                let mapped = Error::from(err);
+                                debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %mapped, "focus_guard_wait_failed");
+                                last_error = Some(mapped);
+                            }
                         }
                     }
                 }
@@ -311,19 +318,23 @@ impl FocusGuard {
     }
 
     /// Confirm that world and AX agree on the focused window.
-    fn verify_alignment(&self) -> Result<bool> {
-        let world_ok = match server_drive::get_world_snapshot() {
-            Ok(snapshot) => snapshot
-                .windows
-                .iter()
-                .find(|w| w.pid == self.pid && w.title == self.title)
-                .map(|w| w.focused && w.on_active_space)
-                .unwrap_or(false),
-            Err(DriverError::NotInitialized) => {
-                debug!(pid = self.pid, title = %self.title, "focus_guard_skip_world");
-                true
+    fn verify_alignment(&self, bridge: Option<&mut BridgeDriver>) -> Result<bool> {
+        let world_ok = if let Some(driver) = bridge {
+            match driver.get_world_snapshot() {
+                Ok(snapshot) => snapshot
+                    .windows
+                    .iter()
+                    .find(|w| w.pid == self.pid && w.title == self.title)
+                    .map(|w| w.focused && w.on_active_space)
+                    .unwrap_or(false),
+                Err(DriverError::NotInitialized) => {
+                    debug!(pid = self.pid, title = %self.title, "focus_guard_skip_world");
+                    true
+                }
+                Err(err) => return Err(Error::from(err)),
             }
-            Err(err) => return Err(Error::from(err)),
+        } else {
+            true
         };
 
         if !world_ok {
