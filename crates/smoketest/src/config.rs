@@ -28,8 +28,6 @@ pub const DEFAULTS: Defaults = Defaults {
 pub struct InputDelays {
     /// Polling interval for checking conditions.
     pub poll_interval_ms: u64,
-    /// Short delay between key events.
-    pub key_event_delay_ms: u64,
     /// Standard delay between UI actions.
     pub ui_action_delay_ms: u64,
     /// Delay between retry attempts.
@@ -39,7 +37,6 @@ pub struct InputDelays {
 /// Default input-event timings.
 pub const INPUT_DELAYS: InputDelays = InputDelays {
     poll_interval_ms: 10,
-    key_event_delay_ms: 25,
     ui_action_delay_ms: 50,
     retry_delay_ms: 80,
 };

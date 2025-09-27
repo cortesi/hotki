@@ -102,6 +102,8 @@ pub struct HudSnapshot {
     pub parent_title: Option<String>,
     /// Keys rendered by the HUD for the current cursor.
     pub keys: Vec<BridgeHudKey>,
+    /// Canonicalized identifiers rendered by the HUD for readiness checks.
+    pub idents: BTreeSet<String>,
 }
 
 /// Snapshot of the most recent world focus event observed on the bridge stream.
@@ -300,60 +302,7 @@ pub fn reset() {
 
 /// Inject a single key press (down + small delay + up) via the bridge.
 pub fn inject_key(seq: &str) -> DriverResult<()> {
-    let ident = canonicalize_ident(seq);
-    let gate_ms = config::BINDING_GATES.default_ms.saturating_mul(3);
-    let deadline = Instant::now() + Duration::from_millis(gate_ms);
-
-    loop {
-        match inject_key_down_once(&ident) {
-            Ok(()) => break,
-            Err(DriverError::BridgeFailure { message })
-                if message_contains_key_not_bound(&message) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(DriverError::BindingTimeout {
-                        ident: ident.clone(),
-                        timeout_ms: gate_ms,
-                    });
-                }
-                thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
-            }
-            Err(err) => return Err(err),
-        }
-    }
-
-    thread::sleep(config::ms(config::INPUT_DELAYS.key_event_delay_ms));
-
-    match inject_key_up_once(&ident) {
-        Ok(()) => {}
-        Err(DriverError::BridgeFailure { message }) if message_contains_key_not_bound(&message) => {
-        }
-        Err(err) => return Err(err),
-    }
-
-    Ok(())
-}
-
-/// Issue a single key-down event via the bridge without retries.
-fn inject_key_down_once(ident: &str) -> DriverResult<()> {
-    with_connection_mut(|conn| {
-        conn.call_ok(&BridgeRequest::InjectKey {
-            ident: ident.to_string(),
-            kind: BridgeKeyKind::Down,
-            repeat: false,
-        })
-    })
-}
-
-/// Issue a single key-up event via the bridge without retries.
-fn inject_key_up_once(ident: &str) -> DriverResult<()> {
-    with_connection_mut(|conn| {
-        conn.call_ok(&BridgeRequest::InjectKey {
-            ident: ident.to_string(),
-            kind: BridgeKeyKind::Up,
-            repeat: false,
-        })
-    })
+    with_connection_mut(|conn| conn.inject_key(seq))
 }
 
 /// Returns true when the bridge error message indicates a missing key binding.
@@ -363,16 +312,12 @@ fn message_contains_key_not_bound(msg: &str) -> bool {
 
 /// Inject a sequence of key presses with UI delays.
 pub fn inject_sequence(sequences: &[&str]) -> DriverResult<()> {
-    for s in sequences {
-        inject_key(s)?;
-        thread::sleep(config::ms(config::INPUT_DELAYS.ui_action_delay_ms));
-    }
-    Ok(())
-}
-
-/// Return current bindings if connected.
-pub fn get_bindings() -> DriverResult<Vec<String>> {
-    with_connection_mut(|conn| conn.call_bindings())
+    with_connection_mut(|conn| {
+        for seq in sequences {
+            conn.inject_key(seq)?;
+        }
+        Ok(())
+    })
 }
 
 /// Load a configuration from disk and apply it to the running server.
@@ -393,58 +338,11 @@ pub fn wait_for_idents(idents: &[&str], timeout_ms: u64) -> DriverResult<()> {
         return Ok(());
     }
 
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut remaining: BTreeSet<String> = idents
+    let wanted: BTreeSet<String> = idents
         .iter()
         .map(|ident| canonicalize_ident(ident))
         .collect();
-    let mut last_snapshot: Vec<String> = Vec::new();
-    let start = Instant::now();
-
-    while Instant::now() < deadline {
-        let binds = get_bindings()?;
-        let mut snapshot = Vec::with_capacity(binds.len());
-        for binding in binds {
-            let trimmed = binding.trim_matches('"');
-            let normalized = canonicalize_ident(trimmed);
-            snapshot.push(normalized.clone());
-            remaining.remove(&normalized);
-        }
-
-        if log_bindings_enabled() {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-            let remaining_list = remaining.iter().cloned().collect::<Vec<_>>();
-            debug!(
-                elapsed_ms,
-                snapshot = ?snapshot,
-                remaining = ?remaining_list,
-                "wait_for_idents_poll"
-            );
-        }
-
-        last_snapshot = snapshot;
-
-        if remaining.is_empty() {
-            return Ok(());
-        }
-
-        thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
-    }
-
-    let missing = remaining.into_iter().collect::<Vec<_>>().join(", ");
-    if log_bindings_enabled() {
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        debug!(
-            elapsed_ms,
-            snapshot = ?last_snapshot,
-            missing = %missing,
-            "wait_for_idents_timeout"
-        );
-    }
-    Err(DriverError::BindingTimeout {
-        ident: missing,
-        timeout_ms,
-    })
+    with_connection_mut(|conn| conn.wait_for_hud_keys(&wanted, timeout_ms))
 }
 
 /// Quick liveness probe against the backend via a lightweight bridge command.
@@ -764,6 +662,10 @@ impl BridgeClient {
                     parent_title,
                     keys,
                 } => {
+                    let idents: BTreeSet<String> = keys
+                        .iter()
+                        .map(|key| canonicalize_ident(&key.ident))
+                        .collect();
                     self.latest_hud = Some(HudSnapshot {
                         event_id: reply.command_id,
                         received_ms: reply.timestamp_ms,
@@ -771,6 +673,7 @@ impl BridgeClient {
                         depth: *depth,
                         parent_title: parent_title.clone(),
                         keys: keys.clone(),
+                        idents,
                     });
                 }
                 BridgeEvent::WorldFocus { app, reconcile_seq } => {
@@ -826,6 +729,223 @@ impl BridgeClient {
     /// Access the latest world focus snapshot observed on the bridge.
     fn latest_focus(&self) -> Option<WorldFocusSnapshot> {
         self.latest_focus.clone()
+    }
+
+    /// Return true when the current HUD snapshot contains all `want` identifiers.
+    fn hud_contains_all(&self, want: &BTreeSet<String>) -> bool {
+        if want.is_empty() {
+            return true;
+        }
+        self.latest_hud
+            .as_ref()
+            .map(|snapshot| want.is_subset(&snapshot.idents))
+            .unwrap_or(false)
+    }
+
+    /// Wait for the next bridge event until `deadline`, recording it when observed.
+    /// Returns `true` if an event arrived before the deadline, or `false` on timeout.
+    fn wait_for_bridge_event(&mut self, deadline: Instant) -> DriverResult<bool> {
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        if let Err(source) = self.reader.get_ref().set_read_timeout(Some(remaining)) {
+            return Err(DriverError::Io { source });
+        }
+        let outcome = self.read_reply();
+        if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+            debug!(?err, "failed to clear bridge read timeout");
+        }
+        match outcome {
+            Ok(reply) => match reply.response {
+                BridgeResponse::Event { .. } => {
+                    self.record_event(reply);
+                    Ok(true)
+                }
+                other => Err(DriverError::BridgeFailure {
+                    message: format!(
+                        "unexpected bridge reply while waiting for events: {:?}",
+                        other
+                    ),
+                }),
+            },
+            Err(DriverError::Io { source })
+                if source.kind() == io::ErrorKind::WouldBlock
+                    || source.kind() == io::ErrorKind::TimedOut =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Wait until the HUD snapshot contains all desired identifiers or the timeout elapses.
+    fn wait_for_hud_keys(&mut self, want: &BTreeSet<String>, timeout_ms: u64) -> DriverResult<()> {
+        if want.is_empty() {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(timeout_ms);
+
+        loop {
+            if self.hud_contains_all(want) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            let _ = self.wait_for_bridge_event(deadline)?;
+        }
+
+        if self.hud_contains_all(want) {
+            return Ok(());
+        }
+
+        let rpc_snapshot = match self.call_bindings() {
+            Ok(bindings) => Some(bindings),
+            Err(err) => {
+                debug!(?err, "failed to fetch bindings snapshot after HUD timeout");
+                None
+            }
+        };
+
+        let current = self
+            .latest_hud
+            .as_ref()
+            .map(|snapshot| snapshot.idents.clone())
+            .unwrap_or_default();
+        let rpc_view = rpc_snapshot.as_ref().map(|bindings| {
+            bindings
+                .iter()
+                .map(|raw| canonicalize_ident(raw.trim_matches('"')))
+                .collect::<Vec<_>>()
+        });
+
+        if let Some(view) = &rpc_view {
+            let rpc_idents = view.iter().cloned().collect::<BTreeSet<_>>();
+            if want.is_subset(&rpc_idents) {
+                if log_bindings_enabled() {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let hud_view = current.iter().cloned().collect::<Vec<_>>();
+                    debug!(
+                        elapsed_ms,
+                        hud = ?hud_view,
+                        rpc = ?view,
+                        "wait_for_idents_rpc_match"
+                    );
+                }
+                return Ok(());
+            }
+        }
+
+        if self.hud_contains_all(want) {
+            return Ok(());
+        }
+
+        let missing: Vec<String> = want.difference(&current).cloned().collect();
+
+        if log_bindings_enabled() {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let hud_view = current.iter().cloned().collect::<Vec<_>>();
+            debug!(
+                elapsed_ms,
+                hud = ?hud_view,
+                rpc = ?rpc_view,
+                missing = ?missing,
+                "wait_for_idents_timeout"
+            );
+        }
+
+        Err(DriverError::BindingTimeout {
+            ident: missing.join(", "),
+            timeout_ms,
+        })
+    }
+
+    /// Wait for a HUD event newer than `baseline` within `timeout_ms` milliseconds.
+    /// Returns `true` if a new HUD event arrived, or `false` if the wait timed out.
+    fn wait_for_hud_progress_since(
+        &mut self,
+        baseline: Option<BridgeCommandId>,
+        timeout_ms: u64,
+    ) -> DriverResult<bool> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let current_id = self.latest_hud.as_ref().map(|snapshot| snapshot.event_id);
+            let advanced =
+                matches!((baseline, current_id), (_, Some(current)) if Some(current) != baseline);
+            if advanced {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let _ = self.wait_for_bridge_event(deadline)?;
+        }
+    }
+
+    /// Inject a key chord by issuing down/up events once the HUD reports readiness.
+    fn inject_key(&mut self, seq: &str) -> DriverResult<()> {
+        let ident = canonicalize_ident(seq);
+        let gate_ms = config::BINDING_GATES.default_ms.saturating_mul(3);
+        let mut targets = BTreeSet::new();
+        targets.insert(ident.clone());
+
+        self.wait_for_hud_keys(&targets, gate_ms)?;
+
+        let deadline = Instant::now() + Duration::from_millis(gate_ms);
+        loop {
+            let baseline = self.latest_hud.as_ref().map(|snapshot| snapshot.event_id);
+            match self.call_ok(&BridgeRequest::InjectKey {
+                ident: ident.clone(),
+                kind: BridgeKeyKind::Down,
+                repeat: false,
+            }) {
+                Ok(()) => {
+                    let hud_wait_ms = config::INPUT_DELAYS.retry_delay_ms.max(10);
+                    let _ = self.wait_for_hud_progress_since(baseline, hud_wait_ms)?;
+                    break;
+                }
+                Err(DriverError::BridgeFailure { message })
+                    if message_contains_key_not_bound(&message) =>
+                {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(DriverError::BindingTimeout {
+                            ident,
+                            timeout_ms: gate_ms,
+                        });
+                    }
+                    let remaining_ms = deadline.saturating_duration_since(now).as_millis() as u64;
+                    if remaining_ms == 0 {
+                        return Err(DriverError::BindingTimeout {
+                            ident,
+                            timeout_ms: gate_ms,
+                        });
+                    }
+                    self.wait_for_hud_keys(&targets, remaining_ms)?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        match self.call_ok(&BridgeRequest::InjectKey {
+            ident,
+            kind: BridgeKeyKind::Up,
+            repeat: false,
+        }) {
+            Ok(()) => Ok(()),
+            Err(DriverError::BridgeFailure { message })
+                if message_contains_key_not_bound(&message) =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Wait for the world reconcile sequence to reach `target` and return the observed value.
@@ -962,6 +1082,100 @@ mod tests {
     }
 
     #[test]
+    fn inject_key_waits_for_binding_event() {
+        let _guard = bridge_test_lock().lock();
+        reset();
+        let path = unique_control_socket();
+        let control_path = control_socket_path(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+
+        let server_path = control_path;
+        let handle = thread::spawn(move || {
+            if let Err(err) = fs::remove_file(&server_path)
+                && err.kind() != ErrorKind::NotFound
+            {
+                panic!("failed to remove socket: {err}");
+            }
+            let listener = UnixListener::bind(&server_path).unwrap();
+            ready_tx.send(()).unwrap();
+
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_handshake(&mut writer, cmd.command_id, 1);
+                send_custom_hud_event(
+                    &mut writer,
+                    cmd.command_id + 10,
+                    vec![BridgeHudKey {
+                        ident: "h".into(),
+                        description: "Help".into(),
+                        is_mode: false,
+                    }],
+                );
+                assert!(try_read_command(&mut reader, 100).is_none());
+
+                event_rx.recv().unwrap();
+                send_custom_hud_event(
+                    &mut writer,
+                    cmd.command_id + 11,
+                    vec![BridgeHudKey {
+                        ident: "cmd+b".into(),
+                        description: "Binding".into(),
+                        is_mode: false,
+                    }],
+                );
+
+                let down = read_command(&mut reader);
+                match &down.request {
+                    BridgeRequest::InjectKey {
+                        ident,
+                        kind,
+                        repeat,
+                    } => {
+                        assert_eq!(ident, "cmd+b");
+                        assert!(matches!(kind, BridgeKeyKind::Down));
+                        assert!(!repeat);
+                    }
+                    other => panic!("expected InjectKey down, got {:?}", other),
+                }
+                send_ack(&mut writer, down.command_id, 1);
+                send_ok(&mut writer, down.command_id);
+
+                let up = read_command(&mut reader);
+                match &up.request {
+                    BridgeRequest::InjectKey {
+                        ident,
+                        kind,
+                        repeat,
+                    } => {
+                        assert_eq!(ident, "cmd+b");
+                        assert!(matches!(kind, BridgeKeyKind::Up));
+                        assert!(!repeat);
+                    }
+                    other => panic!("expected InjectKey up, got {:?}", other),
+                }
+                send_ack(&mut writer, up.command_id, 1);
+                send_ok(&mut writer, up.command_id);
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        ensure_init(&path, 1_000).unwrap();
+
+        let injector = thread::spawn(|| inject_key("cmd+b"));
+        thread::sleep(Duration::from_millis(50));
+        event_tx.send(()).unwrap();
+        injector.join().unwrap().unwrap();
+
+        reset();
+        handle.join().unwrap();
+    }
+
+    #[test]
     fn ensure_init_times_out_for_missing_socket() {
         let _guard = bridge_test_lock().lock();
         reset();
@@ -973,14 +1187,6 @@ mod tests {
             }
             other => panic!("expected InitTimeout, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn get_bindings_fails_without_connection() {
-        let _guard = bridge_test_lock().lock();
-        reset();
-        let err = get_bindings().unwrap_err();
-        assert!(matches!(err, DriverError::NotInitialized));
     }
 
     #[test]
@@ -1030,6 +1236,40 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
+    fn try_read_command(
+        reader: &mut BufReader<UnixStream>,
+        timeout_ms: u64,
+    ) -> Option<BridgeCommand> {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(timeout_ms)))
+            .unwrap();
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                if let Err(err) = reader.get_ref().set_read_timeout(None) {
+                    debug!(?err, "failed to clear test bridge read timeout");
+                }
+                None
+            }
+            Ok(_) => {
+                if let Err(err) = reader.get_ref().set_read_timeout(None) {
+                    debug!(?err, "failed to clear test bridge read timeout");
+                }
+                Some(serde_json::from_str(&line).unwrap())
+            }
+            Err(err)
+                if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
+            {
+                if let Err(err) = reader.get_ref().set_read_timeout(None) {
+                    debug!(?err, "failed to clear test bridge read timeout");
+                }
+                None
+            }
+            Err(err) => panic!("unexpected bridge read error: {err}"),
+        }
+    }
+
     fn send_reply(writer: &mut UnixStream, reply: &BridgeReply) {
         let mut bytes = serde_json::to_vec(reply).unwrap();
         bytes.push(b'\n');
@@ -1064,17 +1304,17 @@ mod tests {
         send_reply(writer, &reply);
     }
 
-    fn send_hud_event(writer: &mut UnixStream, event_id: BridgeCommandId) {
+    fn send_custom_hud_event(
+        writer: &mut UnixStream,
+        event_id: BridgeCommandId,
+        keys: Vec<BridgeHudKey>,
+    ) {
         let response = BridgeResponse::Event {
             event: BridgeEvent::Hud {
                 cursor: Cursor::default(),
                 depth: 1,
                 parent_title: Some("Test".into()),
-                keys: vec![BridgeHudKey {
-                    ident: "k".into(),
-                    description: "Key".into(),
-                    is_mode: false,
-                }],
+                keys,
             },
         };
         let reply = BridgeReply {
@@ -1083,6 +1323,18 @@ mod tests {
             response,
         };
         send_reply(writer, &reply);
+    }
+
+    fn send_hud_event(writer: &mut UnixStream, event_id: BridgeCommandId) {
+        send_custom_hud_event(
+            writer,
+            event_id,
+            vec![BridgeHudKey {
+                ident: "k".into(),
+                description: "Key".into(),
+                is_mode: false,
+            }],
+        );
     }
 
     fn send_ok(writer: &mut UnixStream, command_id: BridgeCommandId) {
@@ -1154,6 +1406,77 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(clients, 7);
+
+        reset();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn wait_for_idents_tracks_hud_events() {
+        let _guard = bridge_test_lock().lock();
+        reset();
+        let path = unique_control_socket();
+        let control_path = control_socket_path(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+
+        let server_path = control_path;
+        let handle = thread::spawn(move || {
+            if let Err(err) = fs::remove_file(&server_path)
+                && err.kind() != ErrorKind::NotFound
+            {
+                panic!("failed to remove socket: {err}");
+            }
+            let listener = UnixListener::bind(&server_path).unwrap();
+            ready_tx.send(()).unwrap();
+
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let cmd = read_command(&mut reader);
+                assert!(matches!(cmd.request, BridgeRequest::Ping));
+                send_ack(&mut writer, cmd.command_id, 1);
+                send_handshake(&mut writer, cmd.command_id, 1);
+                send_custom_hud_event(
+                    &mut writer,
+                    cmd.command_id + 10,
+                    vec![BridgeHudKey {
+                        ident: "h".into(),
+                        description: "Help".into(),
+                        is_mode: false,
+                    }],
+                );
+
+                event_rx.recv().unwrap();
+                send_custom_hud_event(
+                    &mut writer,
+                    cmd.command_id + 11,
+                    vec![BridgeHudKey {
+                        ident: "cmd+b".into(),
+                        description: "Binding".into(),
+                        is_mode: false,
+                    }],
+                );
+
+                if let Some(cmd) = try_read_command(&mut reader, 200) {
+                    panic!(
+                        "unexpected bridge command after HUD event: {:?}",
+                        cmd.request
+                    );
+                }
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        ensure_init(&path, 1_000).unwrap();
+
+        let notifier = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            event_tx.send(()).unwrap();
+        });
+
+        wait_for_idents(&["cmd+b"], 1_000).unwrap();
+        notifier.join().unwrap();
 
         reset();
         handle.join().unwrap();
