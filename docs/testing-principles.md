@@ -15,9 +15,8 @@ and debuggable.
 
 ## Runloop Pumping
 - Mutating operations must execute on the macOS main thread. Use
-  `WorldHandle::pump_main_until(..)` or `mac_winops::drain_main_ops()` immediately after commands to
-  settle AppKit state.
-- Avoid manual sleeps. Prefer event-driven loops (`pump_main_until`, `recv_event_until`) that observe
+  `WorldHandle::pump_until_idle(..)` immediately after commands to settle AppKit state.
+- Avoid manual sleeps. Prefer event-driven loops (`pump_until_idle`, `recv_event_until`) that observe
   completion signals.
 - When waiting on asynchronous deltas, always pair a deadline budget with a runloop pump to avoid
   starving the dispatcher.

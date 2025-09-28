@@ -907,6 +907,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
         let target_key = state_data.place.target_key;
         let expected = state_data.expected;
         let eps = state_data.eps;
+        debug!(case = %ctx.case_name(), "place_move_min_settle_wait_start");
         let wait_result =
             wait_for_frame_condition(ctx.case_name(), &world, target_key, move |frames| {
                 let actual = frames.authoritative;
@@ -918,6 +919,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
             });
         match wait_result {
             Ok(frames) => {
+                debug!(case = %ctx.case_name(), "place_move_min_settle_wait_done");
                 let actual = frames.authoritative;
                 debug!(
                     case = %ctx.case_name(),
@@ -944,6 +946,7 @@ pub fn place_move_min_anchor(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 }
             }
             Err(wait_err) => {
+                debug!(case = %ctx.case_name(), error = %wait_err, "place_move_min_settle_wait_error");
                 let fallback =
                     block_on_with_pump(async move { world.clone().frames(target_key).await })?;
                 let (actual, scale) = frame_actual_and_scale(fallback);

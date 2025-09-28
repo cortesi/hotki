@@ -999,6 +999,28 @@ impl WorldHandle {
         }
     }
 
+    /// Pump pending main-thread operations for at most `budget` duration.
+    ///
+    /// Returns `true` when the queue drained before the elapsed budget expires.
+    #[must_use]
+    pub fn pump_until_idle(&self, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        self.pump_main_until(deadline)
+    }
+
+    /// Wait for the main-thread operation queue to become idle until `deadline`.
+    #[must_use]
+    pub fn wait_main_idle_until(&self, deadline: Instant) -> bool {
+        mac_winops::wait_main_ops_idle(deadline)
+    }
+
+    /// Wait for the main-thread operation queue to become idle for at most `budget` duration.
+    #[must_use]
+    pub fn wait_main_idle(&self, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        self.wait_main_idle_until(deadline)
+    }
+
     /// Construct an observer that waits for events on `key` using the default configuration.
     #[must_use]
     pub fn window_observer(&self, key: WindowKey) -> WindowObserver {

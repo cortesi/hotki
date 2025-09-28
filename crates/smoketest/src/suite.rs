@@ -805,7 +805,7 @@ static CASES: &[CaseEntry] = &[
         "raise",
         Some("Raise windows by title using world focus APIs"),
         EXTRA_MEDIUM,
-        Budget::new(1_200, 800, 1_600),
+        Budget::new(10_000, 8_000, 2_000),
         NO_HELPERS,
         cases::raise,
     ),

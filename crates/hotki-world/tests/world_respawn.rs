@@ -5,7 +5,7 @@ use hotki_world::{
     test_support::{override_scope, run_async_test, wait_snapshot_until},
 };
 use mac_winops::{
-    Pos, WindowId, WindowInfo,
+    AxProps, Pos, WindowId, WindowInfo,
     ops::{MockWinOps, WinOps},
 };
 use tokio::time::{Instant, sleep};
@@ -57,6 +57,22 @@ fn ax_pool_hint_reaches_respawned_world() {
         let pid = 4242;
         let id: WindowId = 7;
         mock.set_windows(vec![win("AppA", "Initial", pid, id, true)]);
+        world_test::set_ax_focus(pid, id);
+        world_test::set_ax_props(
+            pid,
+            id,
+            AxProps {
+                role: Some("AXWindow".into()),
+                subrole: Some("AXStandardWindow".into()),
+                can_set_pos: Some(true),
+                can_set_size: Some(true),
+                frame: None,
+                minimized: Some(false),
+                fullscreen: Some(false),
+                visible: Some(true),
+                zoomed: Some(false),
+            },
+        );
 
         let cfg = cfg_slow_poll();
         let world1 = World::spawn(mock.clone() as Arc<dyn WinOps>, cfg.clone());
@@ -97,6 +113,21 @@ fn ax_pool_hint_reaches_respawned_world() {
             win("AppA", "Initial", pid, id, true),
             win("AppB", "Second", pid, id_new, false),
         ]);
+        world_test::set_ax_props(
+            pid,
+            id_new,
+            AxProps {
+                role: Some("AXWindow".into()),
+                subrole: Some("AXStandardWindow".into()),
+                can_set_pos: Some(true),
+                can_set_size: Some(true),
+                frame: None,
+                minimized: Some(false),
+                fullscreen: Some(false),
+                visible: Some(true),
+                zoomed: Some(false),
+            },
+        );
 
         world_test::set_ax_title(id_new, "T-2");
         assert!(world_test::ax_pool_schedule_title(pid, id_new).is_none());

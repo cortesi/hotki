@@ -1,8 +1,9 @@
 //! Hide/show smoketest cases executed with the mimic harness.
 
+use std::time::Duration;
+
 use hotki_world::{CommandToggle, HideIntent, RectPx, WindowKey, WindowMode, WindowObserver};
 use hotki_world_ids::WorldWindowId;
-use mac_winops::drain_main_ops;
 use tracing::debug;
 
 use super::support::{
@@ -114,7 +115,9 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 target.window_id()
             )));
         }
-        drain_main_ops();
+        if !world.pump_until_idle(Duration::ZERO) {
+            // Best-effort drain; observer wait handles any remaining work.
+        }
         let hidden_frames = wait_for_mode(ctx, hide_observer, WindowMode::Hidden)?;
         state_ref.hidden_observed = true;
         debug!(
@@ -146,7 +149,9 @@ pub fn hide_toggle_roundtrip(ctx: &mut CaseCtx<'_>) -> Result<()> {
                 target.window_id()
             )));
         }
-        drain_main_ops();
+        if !world.pump_until_idle(Duration::ZERO) {
+            // Best-effort drain; observer wait handles any remaining work.
+        }
         let restored_frames =
             wait_for_rect(ctx, restore_observer, state_ref.expected, state_ref.eps)?;
         debug!(

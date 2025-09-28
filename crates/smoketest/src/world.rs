@@ -9,7 +9,7 @@ use std::{
 
 use hotki_world::{CommandError, RaiseIntent, WindowKey, World, WorldHandle, WorldWindow};
 use hotki_world_ids::WorldWindowId;
-use mac_winops::{self, active_space_ids, focus, ops::RealWinOps};
+use mac_winops::{self, FOCUS_SKIP_APPS, active_space_ids, focus, ops::RealWinOps};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use regex::Regex;
@@ -229,6 +229,20 @@ impl FocusGuard {
             0
         };
         while attempts < FOCUS_GUARD_MAX_ATTEMPTS {
+            match self.verify_alignment(bridge.as_deref_mut()) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(err) => {
+                    debug!(
+                        pid = self.pid,
+                        title = %self.title,
+                        attempt = attempts + 1,
+                        error = %err,
+                        "focus_guard_verify_failed"
+                    );
+                    last_error = Some(err);
+                }
+            }
             attempts += 1;
             if let Err(err) = self.raise_once() {
                 debug!(pid = self.pid, title = %self.title, attempt = attempts, error = %err, "focus_guard_raise_failed");
@@ -342,13 +356,37 @@ impl FocusGuard {
             return Ok(false);
         }
 
-        let ax_ok = match focus::system_focus_snapshot() {
-            Some((_, title, pid)) => pid == self.pid && (title.is_empty() || title == self.title),
+        let ax_snapshot = focus::system_focus_snapshot();
+        let ax_ok = match ax_snapshot {
+            Some((ref app, ref title, pid)) => {
+                if pid == self.pid && (title.is_empty() || title == &self.title) {
+                    true
+                } else if FOCUS_SKIP_APPS.iter().any(|skip| app == skip) {
+                    debug!(
+                        pid = self.pid,
+                        title = %self.title,
+                        focus_app = %app,
+                        "focus_guard_ax_skip_app"
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
             None => false,
         };
 
         if !ax_ok {
-            debug!(pid = self.pid, title = %self.title, "focus_guard_ax_pending");
+            if let Some((app, _, _)) = ax_snapshot {
+                debug!(
+                    pid = self.pid,
+                    title = %self.title,
+                    focus_app = %app,
+                    "focus_guard_ax_pending"
+                );
+            } else {
+                debug!(pid = self.pid, title = %self.title, "focus_guard_ax_pending");
+            }
         }
 
         Ok(world_ok && ax_ok)

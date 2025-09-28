@@ -18,9 +18,8 @@ use hotki_world::{
     },
 };
 use hotki_world_ids::WorldWindowId;
-use mac_winops;
 use regex::Regex;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use crate::{
     error::{Error, Result},
@@ -69,6 +68,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    let world = world::world_handle()?;
     let (tx, rx) = mpsc::channel::<Result<F::Output>>();
     thread::spawn(move || {
         let result = world::block_on(fut);
@@ -76,13 +76,17 @@ where
             warn!(?err, "block_on_with_pump: receiver dropped runtime result");
         }
     });
+    let pump_budget = Duration::from_millis(5);
     loop {
-        if DRAIN_MAIN_OPS.with(|cell| cell.get()) {
-            mac_winops::drain_main_ops();
-        }
         pump_active_mimics();
-        let pump_deadline = Instant::now() + Duration::from_millis(5);
-        mac_winops::wait_main_ops_idle(pump_deadline);
+        let drained = if DRAIN_MAIN_OPS.with(|cell| cell.get()) {
+            world.pump_until_idle(pump_budget)
+        } else {
+            world.wait_main_idle(pump_budget)
+        };
+        if !drained {
+            trace!("block_on_with_pump: main ops budget elapsed");
+        }
         match rx.try_recv() {
             Ok(result) => return result,
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -501,8 +505,9 @@ fn wait_for_focus(
                 state.cursor.next_index
             )));
         }
-        let pump_until = Instant::now() + Duration::from_millis(10);
-        world.pump_main_until(pump_until);
+        if !world.pump_until_idle(Duration::from_millis(10)) {
+            trace!("wait_for_focus_poll: main ops budget elapsed");
+        }
         pump_active_mimics();
         while let Some(event) = world.next_event_now(&mut state.cursor) {
             if state.cursor.lost_count > baseline_lost {

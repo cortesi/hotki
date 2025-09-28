@@ -581,6 +581,10 @@ fn debounce_event_coalescing_for_repetitive_changes() {
         let mut cursor = world.subscribe();
         tokio::time::sleep(Duration::from_millis(60)).await;
         drain_events(&world, &mut cursor);
+        assert!(
+            wait_snapshot_until(&world, 200, |snap| snap.len() == 1).await,
+            "world failed to observe initial window"
+        );
 
         // Burst of rapid updates still inside the debounce window:
         //  - title change

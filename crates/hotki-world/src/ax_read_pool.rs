@@ -529,10 +529,15 @@ pub fn title(pid: i32, id: WindowId) -> Option<String> {
         return Some(t);
     }
     let tx = pool.ensure_worker(pid);
-    let _ = tx.send(TimedJob {
-        job: Job::TitleForId { pid, id },
-        deadline: Instant::now() + Duration::from_millis(READ_DEADLINE_MS),
-    });
+    if tx
+        .send(TimedJob {
+            job: Job::TitleForId { pid, id },
+            deadline: Instant::now() + Duration::from_millis(READ_DEADLINE_MS),
+        })
+        .is_err()
+    {
+        tracing::debug!(pid, id, "ax_read_pool: failed to queue title job");
+    }
     None
 }
 
@@ -546,13 +551,14 @@ pub fn props(pid: i32, id: WindowId) -> Option<AxProps> {
             return Some(p);
         }
     }
-    let force_async = override_value(|o| o.ax_async_only).unwrap_or(false);
-    let props_override = if force_async {
-        None
-    } else {
-        test_overrides().lock().props.get(&Key { pid, id }).cloned()
-    };
+    let props_override = test_overrides().lock().props.get(&Key { pid, id }).cloned();
     if let Some(props) = props_override {
+        let mut cache = pool.cache.write();
+        cache.set_props(pid, id, props.clone(), Instant::now());
+        return Some(props);
+    }
+    let force_async = override_value(|o| o.ax_async_only).unwrap_or(false);
+    if !force_async && let Ok(props) = mac_winops::ax_props_for_window_id(id) {
         let mut cache = pool.cache.write();
         cache.set_props(pid, id, props.clone(), Instant::now());
         return Some(props);
