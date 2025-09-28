@@ -579,7 +579,7 @@ impl ConnectionDriver {
         msg: hotki_protocol::MsgToUI,
     ) {
         match msg {
-            hotki_protocol::MsgToUI::HudUpdate { cursor } => {
+            hotki_protocol::MsgToUI::HudUpdate { cursor, displays } => {
                 self.current_cursor = cursor;
                 let vks = self.ui_config.hud_keys_ctx(&self.current_cursor);
                 let visible_keys: Vec<(String, String, bool)> = vks
@@ -608,6 +608,7 @@ impl ConnectionDriver {
                         depth,
                         cursor: self.current_cursor.clone(),
                         parent_title,
+                        displays,
                     })
                     .is_err()
                 {

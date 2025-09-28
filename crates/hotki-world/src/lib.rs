@@ -54,7 +54,9 @@ use std::{
 pub use hotki_world_ids::WorldWindowId;
 use mac_winops::{
     self, AxProps, Error as WinOpsError, PlaceAttemptOptions as WinPlaceAttemptOptions, Pos,
-    WindowId, WindowInfo, ops::WinOps, screen,
+    WindowId, WindowInfo,
+    ops::{RealWinOps, WinOps},
+    screen,
 };
 use regex::Regex;
 
@@ -174,6 +176,71 @@ type DisplayId = u32;
 
 /// Display bounds tuple: `(display_id, x, y, width, height)` in Cocoa screen coordinates.
 type DisplayBounds = (DisplayId, i32, i32, i32, i32);
+
+/// Rectangular description of a macOS display in bottom-left origin coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DisplayFrame {
+    /// CoreGraphics display identifier (`CGDirectDisplayID`).
+    pub id: u32,
+    /// Horizontal origin in pixels.
+    pub x: f32,
+    /// Vertical origin in pixels.
+    pub y: f32,
+    /// Width in pixels.
+    pub width: f32,
+    /// Height in pixels.
+    pub height: f32,
+}
+
+impl DisplayFrame {
+    /// Upper edge (`y + height`) in bottom-left origin coordinates.
+    #[must_use]
+    pub fn top(&self) -> f32 {
+        self.y + self.height
+    }
+}
+
+impl From<(u32, i32, i32, i32, i32)> for DisplayFrame {
+    fn from(value: (u32, i32, i32, i32, i32)) -> Self {
+        let (id, x, y, w, h) = value;
+        Self {
+            id,
+            x: x as f32,
+            y: y as f32,
+            width: w as f32,
+            height: h as f32,
+        }
+    }
+}
+
+/// Snapshot describing the active display set tracked by the world service.
+#[derive(Clone, Debug, Default)]
+pub struct WorldDisplays {
+    /// Top-most Y coordinate across all displays (used to convert to top-left origin).
+    pub global_top: f32,
+    /// Active display chosen for UI anchoring, if available.
+    pub active: Option<DisplayFrame>,
+    /// All currently known display frames.
+    pub displays: Vec<DisplayFrame>,
+}
+
+impl WorldDisplays {
+    /// Return the active display frame if present.
+    #[must_use]
+    pub fn active_frame(&self) -> Option<DisplayFrame> {
+        self.active
+    }
+
+    /// Global top coordinate (defaults to `0.0` when no displays are tracked).
+    #[must_use]
+    pub fn global_top(&self) -> f32 {
+        if self.global_top.is_finite() && self.global_top > 0.0 {
+            self.global_top
+        } else {
+            0.0
+        }
+    }
+}
 
 /// Snapshot of a single window.
 #[derive(Clone, Debug)]
@@ -870,6 +937,13 @@ impl WorldHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// Snapshot of current display geometry and active display selection.
+    pub async fn displays_snapshot(&self) -> WorldDisplays {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::DisplaysSnapshot { respond: tx });
+        rx.await.unwrap_or_default()
+    }
+
     /// Retrieve frame metadata for a specific window key.
     pub async fn frames(&self, key: WindowKey) -> Option<Frames> {
         self.frames_snapshot().await.get(&key).cloned()
@@ -1297,6 +1371,11 @@ impl World {
         Arc::new(Self::spawn(winops, cfg))
     }
 
+    /// Spawn the world service with the default `RealWinOps` backend.
+    pub fn spawn_default_view(cfg: WorldCfg) -> Arc<dyn WorldView> {
+        Self::spawn_view(Arc::new(RealWinOps), cfg)
+    }
+
     /// Spawn a no-op world suitable for tests. Responds immediately with
     /// default/empty data and emits no events. No polling or background work.
     pub fn spawn_noop() -> WorldHandle {
@@ -1310,6 +1389,9 @@ impl World {
                     }
                     Command::FramesSnapshot { respond } => {
                         let _ = respond.send(HashMap::new());
+                    }
+                    Command::DisplaysSnapshot { respond } => {
+                        let _ = respond.send(WorldDisplays::default());
                     }
                     Command::Get { respond, .. } => {
                         let _ = respond.send(None);
@@ -1379,6 +1461,8 @@ struct WorldState {
     last_hidden_target: Option<WorldWindowId>,
     /// Pending hide operations awaiting the window entering Hidden mode.
     pending_hide: HashSet<WorldWindowId>,
+    /// Snapshot of current display geometry.
+    displays: WorldDisplays,
 }
 
 impl WorldState {
@@ -1401,6 +1485,7 @@ impl WorldState {
             hidden_targets: HashMap::new(),
             last_hidden_target: None,
             pending_hide: HashSet::new(),
+            displays: WorldDisplays::default(),
         }
     }
 }
@@ -1473,6 +1558,9 @@ enum Command {
     },
     FramesSnapshot {
         respond: oneshot::Sender<HashMap<WindowKey, Frames>>,
+    },
+    DisplaysSnapshot {
+        respond: oneshot::Sender<WorldDisplays>,
     },
     Get {
         key: WindowKey,
@@ -1556,6 +1644,9 @@ async fn run_actor(
                     }
                     Command::FramesSnapshot { respond } => {
                         let _ = respond.send(state.frames.clone());
+                    }
+                    Command::DisplaysSnapshot { respond } => {
+                        let _ = respond.send(state.displays.clone());
                     }
                     Command::Get { key, respond } => {
                         let _ = respond.send(state.store.get(&key).cloned());
@@ -2004,6 +2095,8 @@ fn reconcile(state: &mut WorldState, events: &EventHub, winops: &dyn WinOps) -> 
         }
         events.publish(WorldEvent::FocusChanged(change));
     }
+
+    update_display_snapshot(state, &displays);
 
     had_changes
 }
@@ -2856,6 +2949,61 @@ fn best_display_id(pos: &Pos, displays: &[DisplayBounds]) -> Option<DisplayId> {
         }
     }
     if best_area > 0 { best_id } else { None }
+}
+
+fn pick_active_display(state: &WorldState, displays: &[DisplayBounds]) -> Option<u32> {
+    let is_known = |id: &u32| displays.iter().any(|(did, ..)| *did == *id);
+
+    if let Some(focused) = state.focused
+        && let Some(id) = state
+            .frames
+            .get(&focused)
+            .and_then(|frames| frames.display_id)
+            .filter(is_known)
+    {
+        return Some(id);
+    }
+
+    if let Some((key, _)) = state
+        .store
+        .iter()
+        .filter(|(_, window)| window.layer == 0)
+        .min_by_key(|(_, window)| window.z)
+        && let Some(id) = state
+            .frames
+            .get(key)
+            .and_then(|frames| frames.display_id)
+            .filter(is_known)
+    {
+        return Some(id);
+    }
+
+    displays.first().map(|(id, ..)| *id)
+}
+
+fn update_display_snapshot(state: &mut WorldState, displays: &[DisplayBounds]) {
+    if displays.is_empty() {
+        state.displays = WorldDisplays::default();
+        return;
+    }
+
+    let frames: Vec<DisplayFrame> = displays
+        .iter()
+        .map(|&(id, x, y, w, h)| DisplayFrame::from((id, x, y, w, h)))
+        .collect();
+    let global_top = frames
+        .iter()
+        .map(DisplayFrame::top)
+        .fold(f32::MIN, f32::max)
+        .max(0.0);
+    let active = pick_active_display(state, displays)
+        .and_then(|id| frames.iter().copied().find(|frame| frame.id == id));
+
+    state.displays = WorldDisplays {
+        global_top,
+        active,
+        displays: frames,
+    };
 }
 
 fn determine_window_mode(info: &WindowInfo, ax: Option<&AxProps>) -> WindowMode {

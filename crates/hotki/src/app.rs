@@ -2,12 +2,13 @@
 use config::Config;
 use eframe::{App, Frame};
 use egui::Context;
-use hotki_protocol::NotifyKind;
+use hotki_protocol::{DisplaysSnapshot, NotifyKind};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
 use crate::{
-    details::Details, hud::Hud, notification::NotificationCenter, permissions::PermissionsHelp,
+    details::Details, display::DisplayMetrics, hud::Hud, notification::NotificationCenter,
+    permissions::PermissionsHelp,
 };
 
 /// Events sent from the background runtime to the UI thread.
@@ -30,6 +31,8 @@ pub enum AppEvent {
         cursor: config::Cursor,
         /// Optional parent application title for mini-HUD.
         parent_title: Option<String>,
+        /// Display geometry snapshot for HUD/notification placement.
+        displays: DisplaysSnapshot,
     },
     /// Show an in-app notification.
     Notify {
@@ -71,6 +74,8 @@ pub struct HotkiApp {
     pub(crate) last_cursor: config::Cursor,
     /// True when a graceful shutdown is in progress; allows window close.
     pub(crate) shutdown_in_progress: bool,
+    /// Cached display metrics for HUD/notification placement.
+    pub(crate) display_metrics: DisplayMetrics,
 }
 
 impl App for HotkiApp {
@@ -127,7 +132,9 @@ impl App for HotkiApp {
                     depth,
                     cursor,
                     parent_title,
+                    displays,
                 } => {
+                    self.display_metrics = DisplayMetrics::from_snapshot(&displays);
                     self.apply_effective_theme(
                         &cursor,
                         KeysState::FromUpdate {
@@ -191,6 +198,14 @@ enum KeysState {
 }
 
 impl HotkiApp {
+    /// Propagate the cached display metrics to HUD, notifications, and details.
+    fn sync_display_metrics(&mut self) {
+        let metrics = self.display_metrics.clone();
+        self.hud.set_display_metrics(metrics.clone());
+        self.notifications.set_display_metrics(metrics.clone());
+        self.details.set_display_metrics(metrics);
+    }
+
     /// Compute and apply the effective UI theme (HUD + notifications + details) for a cursor.
     /// When `keys_state` is `Some`, it sets those keys/visibility/parent title on the HUD;
     /// when `None`, it preserves existing HUD keys state.
@@ -201,6 +216,7 @@ impl HotkiApp {
         let (cur_keys, cur_visible, cur_parent_title) = self.hud.get_state();
         // Recreate HUD with new theme
         self.hud = Hud::new(&hud_theme);
+        self.sync_display_metrics();
         match keys_state {
             KeysState::FromUpdate {
                 keys,

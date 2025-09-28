@@ -7,7 +7,7 @@ use tokio::time::Instant as TokioInstant;
 use crate::{
     Capabilities, CommandError, CommandReceipt, EventCursor, EventFilter, Frames, FullscreenIntent,
     HideIntent, MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent, RaiseIntent,
-    WindowKey, WorldEvent, WorldHandle, WorldStatus, WorldWindow,
+    WindowKey, WorldDisplays, WorldEvent, WorldHandle, WorldStatus, WorldWindow,
 };
 
 /// Unified view over window state snapshots and focus context.
@@ -61,6 +61,9 @@ pub trait WorldView: Send + Sync {
 
     /// Retrieve frame metadata for a specific window.
     async fn frames(&self, key: WindowKey) -> Option<Frames>;
+
+    /// Retrieve the tracked display geometry snapshot.
+    async fn displays(&self) -> WorldDisplays;
 
     /// Resolve the scale for a tracked display identifier, if known.
     async fn display_scale(&self, display_id: u32) -> Option<f32>;
@@ -213,6 +216,10 @@ impl WorldView for WorldHandle {
         WorldHandle::frames(self, key).await
     }
 
+    async fn displays(&self) -> WorldDisplays {
+        WorldHandle::displays_snapshot(self).await
+    }
+
     async fn display_scale(&self, display_id: u32) -> Option<f32> {
         WorldHandle::display_scale(self, display_id).await
     }
@@ -303,7 +310,7 @@ mod test_world {
     use crate::{
         Capabilities, CommandError, CommandReceipt, EventCursor, EventFilter, Frames,
         FullscreenIntent, HideIntent, MoveDirection, MoveIntent, PlaceAttemptOptions, PlaceIntent,
-        RaiseIntent, WindowKey, WorldEvent, WorldStatus, WorldWindow, WorldWindowId,
+        RaiseIntent, WindowKey, WorldDisplays, WorldEvent, WorldStatus, WorldWindow, WorldWindowId,
         events::EventHub,
     };
 
@@ -315,6 +322,7 @@ mod test_world {
         status: WorldStatus,
         hint_refreshes: u64,
         frames: HashMap<WindowKey, Frames>,
+        displays: WorldDisplays,
     }
 
     /// Deterministic in-memory [`WorldView`] implementation for unit and smoke tests.
@@ -348,6 +356,11 @@ mod test_world {
         /// Replace the tracked frame metadata map.
         pub fn set_frames(&self, frames: HashMap<WindowKey, Frames>) {
             self.state.write().frames = frames;
+        }
+
+        /// Replace the tracked display snapshot.
+        pub fn set_displays(&self, displays: WorldDisplays) {
+            self.state.write().displays = displays;
         }
 
         /// Update the stored capability information.
@@ -476,6 +489,10 @@ mod test_world {
 
         async fn frames(&self, key: WindowKey) -> Option<Frames> {
             self.state.read().frames.get(&key).cloned()
+        }
+
+        async fn displays(&self) -> WorldDisplays {
+            self.state.read().displays.clone()
         }
 
         async fn display_scale(&self, display_id: u32) -> Option<f32> {

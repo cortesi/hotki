@@ -18,6 +18,8 @@ use crate::logs::client_layer;
 mod app;
 /// Details window (notifications/config/logs/about).
 mod details;
+/// Display geometry helpers.
+mod display;
 mod fonts;
 mod hud;
 mod logs;
@@ -33,6 +35,7 @@ use config::{Config, default_config_path, load_from_path};
 use crate::{
     app::{AppEvent, HotkiApp},
     details::Details,
+    display::DisplayMetrics,
     hud::Hud,
     notification::NotificationCenter,
 };
@@ -169,7 +172,7 @@ fn main() -> eframe::Result<()> {
             let root_cursor = config::Cursor::default();
             let n = app_cfg.notify_config(&root_cursor);
             let theme = n.theme();
-            let notifications = NotificationCenter::new(&n);
+            let mut notifications = NotificationCenter::new(&n);
 
             let mut details = Details::new(theme);
             details.set_config_path(Some(config_path.clone()));
@@ -178,16 +181,23 @@ fn main() -> eframe::Result<()> {
             let mut permissions = permissions::PermissionsHelp::new();
             permissions.set_control_sender(tx_ctrl.clone());
 
+            let metrics = DisplayMetrics::default();
+            let mut hud = Hud::new(&app_cfg.hud(&root_cursor));
+            hud.set_display_metrics(metrics.clone());
+            notifications.set_display_metrics(metrics.clone());
+            details.set_display_metrics(metrics.clone());
+
             Ok(Box::new(HotkiApp {
                 rx,
                 _tray: tray_icon,
-                hud: Hud::new(&app_cfg.hud(&root_cursor)),
+                hud,
                 notifications,
                 details,
                 permissions,
                 config: app_cfg,
                 last_cursor: root_cursor,
                 shutdown_in_progress: false,
+                display_metrics: metrics,
             }))
         }),
     )

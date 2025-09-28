@@ -4,12 +4,9 @@ use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
-use mac_winops::{
-    nswindow::{apply_transparent_rounded, set_on_all_spaces},
-    screen,
-};
+use mac_winops::nswindow::{apply_transparent_rounded, set_on_all_spaces};
 
-use crate::fonts;
+use crate::{display::DisplayMetrics, fonts};
 
 /// Minimum HUD width in logical pixels.
 const HUD_MIN_WIDTH: f32 = 240.0;
@@ -49,6 +46,8 @@ pub struct Hud {
     last_size: Option<Vec2>,
     /// Cached width of the '+' glyph for current key font (size, weight -> width).
     plus_w_cache: Option<(f32, FontWeight, f32)>,
+    /// Cached display metrics used for positioning.
+    display: DisplayMetrics,
 }
 
 impl Hud {
@@ -64,6 +63,7 @@ impl Hud {
             last_opacity: None,
             last_size: None,
             plus_w_cache: None,
+            display: DisplayMetrics::default(),
         }
     }
 
@@ -79,6 +79,7 @@ impl Hud {
             last_opacity: self.last_opacity,
             last_size: self.last_size,
             plus_w_cache: self.plus_w_cache,
+            display: self.display.clone(),
         }
     }
 
@@ -242,6 +243,17 @@ impl Hud {
         (self.keys.clone(), self.visible, self.parent_title.clone())
     }
 
+    /// Update display metrics used for positioning and clear cached placement when the
+    /// active display changes.
+    pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
+        let previous = self.display.active_frame();
+        let next = metrics.active_frame();
+        self.display = metrics;
+        if previous != next {
+            self.last_pos = None;
+        }
+    }
+
     /// Get the active screen frame as `(x, y, w, h, global_top)`.
     ///
     /// Notes on coordinates:
@@ -250,8 +262,10 @@ impl Hud {
     ///   bottom-left coordinates into top-left values expected by winit/egui window APIs.
     /// - Callers should clamp positions against the chosen screen's bounds and guard for
     ///   degenerate ranges when the desired window size exceeds the screen size.
-    fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
-        screen::active_frame()
+    fn active_screen_frame(&self) -> (f32, f32, f32, f32, f32) {
+        let frame = self.display.active_frame();
+        let global_top = self.display.global_top();
+        (frame.x, frame.y, frame.width, frame.height, global_top)
     }
 
     /// FontId for key tokens inside key boxes.
@@ -413,7 +427,7 @@ impl Hud {
 
     /// Compute the anchored top-left position for the HUD window.
     fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
-        let (sx, sy, sw, sh, global_top) = Self::active_screen_frame();
+        let (sx, sy, sw, sh, global_top) = self.active_screen_frame();
         let m = 12.0;
         // Guard against invalid or negative sizes; ensure a minimal positive window size.
         let size = vec2(size.x.max(1.0), size.y.max(1.0));

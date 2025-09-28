@@ -9,7 +9,6 @@ use std::{
 
 use clap::Parser;
 use hotki_world::{World, WorldView};
-use mac_winops::ops::RealWinOps;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -136,7 +135,7 @@ fn wait_for_hud(
             let left = deadline.saturating_duration_since(Instant::now());
             let chunk = std::cmp::min(left, poll);
             match rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await }) {
-                Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor })) => {
+                Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor, .. })) => {
                     let visible = cursor.viewing_root || cursor.depth() > 0;
                     if visible {
                         return true;
@@ -278,7 +277,7 @@ fn main() {
     };
     let world = {
         let guard = rt.enter();
-        let world = World::spawn_view(Arc::new(RealWinOps), hotki_world::WorldCfg::default());
+        let world = World::spawn_default_view(hotki_world::WorldCfg::default());
         drop(guard);
         world
     };

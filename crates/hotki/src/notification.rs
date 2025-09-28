@@ -7,9 +7,9 @@ use egui::{
     text::LayoutJob,
 };
 use hotki_protocol::NotifyKind;
-use mac_winops::{nswindow, screen};
+use mac_winops::nswindow;
 
-use crate::fonts;
+use crate::{display::DisplayMetrics, fonts};
 
 /// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
@@ -74,6 +74,8 @@ pub struct NotificationCenter {
     theme: NotifyTheme,
     /// Window corner radius for notifications.
     radius: f32,
+    /// Display metrics used for anchoring windows.
+    display: DisplayMetrics,
 }
 
 impl NotificationCenter {
@@ -90,6 +92,7 @@ impl NotificationCenter {
             counter: 0,
             theme: cfg.theme(),
             radius: cfg.radius,
+            display: DisplayMetrics::default(),
         }
     }
 
@@ -107,6 +110,18 @@ impl NotificationCenter {
     fn next_id(&mut self) -> ViewportId {
         self.counter += 1;
         ViewportId::from_hash_of(format!("hotki_notify_{}", self.counter))
+    }
+
+    /// Update display metrics used for anchoring notifications.
+    pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
+        let previous = self.display.active_frame();
+        let next = metrics.active_frame();
+        self.display = metrics;
+        if previous != next {
+            for item in &mut self.items {
+                item.snap_to_target = true;
+            }
+        }
     }
 
     /// Render the title row with optional icon.
@@ -177,8 +192,10 @@ impl NotificationCenter {
     ///
     /// Callers should clamp results against the selected screen bounds and handle
     /// degenerate ranges when the notification width exceeds the screen width.
-    fn active_screen_frame() -> (f32, f32, f32, f32, f32) {
-        screen::active_frame()
+    fn active_screen_frame(&self) -> (f32, f32, f32, f32, f32) {
+        let frame = self.display.active_frame();
+        let global_top = self.display.global_top();
+        (frame.x, frame.y, frame.width, frame.height, global_top)
     }
 
     /// Queue a new notification to be displayed.
@@ -220,7 +237,7 @@ impl NotificationCenter {
     fn layout(&mut self, ctx: &Context) {
         let m = 12.0; // screen margin
         let gap = 8.0; // vertical gap between notifications
-        let (sx, sy, sw, sh, global_top) = Self::active_screen_frame();
+        let (sx, sy, sw, sh, global_top) = self.active_screen_frame();
         let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
         // Guard against invalid/negative configured width.
         let width = self.width.max(1.0);
@@ -332,6 +349,8 @@ impl NotificationCenter {
         self.layout(ctx);
         let mut any_animating = false;
 
+        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, global_top) = self.active_screen_frame();
+
         // Update animation and draw. Items that would fall below the bottom of the active
         // screen are not rendered, but remain in the backlog and ephemeral list until
         // they time out naturally.
@@ -352,9 +371,8 @@ impl NotificationCenter {
             }
 
             // Skip rendering windows that would be completely off-screen below the bottom.
-            let (_sx, sy, _sw, _sh, global_top) = Self::active_screen_frame();
             let pos_b = global_top - it.target_pos.y - it.size.y;
-            if pos_b < sy {
+            if pos_b < sy_frame {
                 // Hide viewport if it was shown previously
                 ctx.send_viewport_cmd_to(it.id, ViewportCommand::Visible(false));
                 continue;

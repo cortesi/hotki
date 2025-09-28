@@ -62,8 +62,8 @@ and debuggable.
 - `smoketest::world::ensure_frontmost(..)` – deterministic focus handoff without reaching into AX.
 - `smoketest::server_drive::BridgeDriver::wait_for_world_seq(..)` – confirm backend focus updates over
   MRPC.
-- `mac_winops::screen::visible_frame_containing_point(..)` – translate helper frames into display
-  coordinates when budgeting placements.
+- `WorldView::displays()` / `WorldHandle::displays_snapshot()` – translate helper frames into display
+  coordinates and `global_top` when budgeting placements.
 - If you need a new probe (e.g., multiple-display detection, screen scale, mission-control state),
   add it to `hotki-world` or the smoketest helper modules so all cases stay on the same contract.
 

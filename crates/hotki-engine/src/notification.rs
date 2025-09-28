@@ -1,4 +1,4 @@
-use hotki_protocol::{MsgToUI, NotifyKind};
+use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
 use keymode::KeyResponse;
 use tokio::sync::mpsc::Sender;
 use tracing::info;
@@ -18,9 +18,13 @@ impl NotificationDispatcher {
     }
 
     /// Send a HUD update with the current cursor and focus snapshot.
-    pub fn send_hud_update_cursor(&self, cursor: config::Cursor) -> Result<()> {
+    pub fn send_hud_update_cursor(
+        &self,
+        cursor: config::Cursor,
+        displays: DisplaysSnapshot,
+    ) -> Result<()> {
         self.tx
-            .try_send(MsgToUI::HudUpdate { cursor })
+            .try_send(MsgToUI::HudUpdate { cursor, displays })
             .map_err(|_| Error::ChannelClosed)
     }
 

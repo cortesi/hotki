@@ -154,6 +154,34 @@ pub struct WorldWindowLite {
     pub is_on_screen: bool,
 }
 
+/// Rectangular bounds for a display in bottom-left origin coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayRect {
+    /// CoreGraphics display identifier (`CGDirectDisplayID`).
+    pub id: u32,
+    /// Horizontal origin in pixels.
+    pub x: f32,
+    /// Vertical origin in pixels.
+    pub y: f32,
+    /// Width in pixels.
+    pub width: f32,
+    /// Height in pixels.
+    pub height: f32,
+}
+
+/// Snapshot describing active/visible displays for HUD/layout decisions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct DisplaysSnapshot {
+    /// Maximum top Y across all displays (used for top-left conversions).
+    pub global_top: f32,
+    /// Active display chosen for anchoring, if known.
+    pub active: Option<DisplayRect>,
+    /// All displays currently tracked.
+    pub displays: Vec<DisplayRect>,
+}
+
 /// Streamed world events from the server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorldStreamMsg {
@@ -240,6 +268,8 @@ pub enum MsgToUI {
     HudUpdate {
         /// Cursor state describing the current key mode and overrides.
         cursor: Cursor,
+        /// Display geometry snapshot for UI placement.
+        displays: DisplaysSnapshot,
     },
 
     /// Notification request for the UI

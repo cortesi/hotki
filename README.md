@@ -33,6 +33,10 @@ to the [`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
 one place, simplifies testing via the in-memory `TestWorld`, and ensures that
 refresh hints flow through a single channel.
 
+Display geometry (active display bounds and the `global_top` conversion helper) also flows through
+`WorldView::displays()` / `WorldHandle::displays_snapshot()`. UI components and smoketests should
+use these helpers rather than invoking `mac_winops::screen::*` directly.
+
 ## Contributor Docs
 
 - [Testing Principles](docs/testing-principles.md) – world-only flows, runloop pumping, reset

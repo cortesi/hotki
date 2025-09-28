@@ -28,8 +28,7 @@ async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>) {
     let api = Arc::new(MockHotkeyApi::new());
     // Use noop world for tests that don't need focus
     let world = World::spawn_noop_view();
-    let engine =
-        Engine::new_with_api_and_ops(api, tx, Arc::new(mac_winops::ops::RealWinOps), false, world);
+    let engine = Engine::new_with_api_and_ops(api, tx, Arc::new(MockWinOps::new()), false, world);
     (engine, rx)
 }
 

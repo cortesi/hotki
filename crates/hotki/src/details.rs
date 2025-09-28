@@ -7,10 +7,11 @@ use egui::{
 };
 use egui_extras::{Column, TableBuilder};
 use hotki_protocol::NotifyKind;
-use mac_winops::{nswindow, screen};
+use mac_winops::nswindow;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
+    display::DisplayMetrics,
     logs::{self, Side},
     notification::BacklogEntry,
     runtime::ControlMsg,
@@ -58,6 +59,8 @@ pub struct Details {
     want_focus: bool,
     /// Last known geometry for this session.
     last_saved: Option<WindowGeom>,
+    /// Display geometry used for placement/clamping.
+    display: DisplayMetrics,
     /// Currently active tab.
     active_tab: Tab,
     /// Current notification theme for colors.
@@ -82,6 +85,7 @@ impl Details {
             restore_pending: false,
             want_focus: false,
             last_saved: None,
+            display: DisplayMetrics::default(),
             active_tab: Tab::Notifications,
             theme,
             config_path: None,
@@ -116,6 +120,60 @@ impl Details {
     /// Update the active theme used for colors.
     pub fn update_theme(&mut self, theme: NotifyTheme) {
         self.theme = theme;
+    }
+
+    /// Update display metrics used to clamp and restore window geometry.
+    pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
+        self.display = metrics;
+    }
+
+    /// Query the current Details window geometry converted to a top-left origin.
+    fn current_geom_top_left(&self) -> Option<WindowGeom> {
+        // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
+        let global_top = self.display.global_top();
+        let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
+        let x_t = x_b;
+        let y_t = global_top - (y_b + h);
+        Some(WindowGeom {
+            pos: (x_t, y_t),
+            size: (w, h),
+        })
+    }
+
+    /// Clamp a window geometry to the current active screen's visible frame.
+    fn clamp_to_active_frame(&self, g: WindowGeom) -> WindowGeom {
+        let frame = self.display.active_frame();
+        let global_top = self.display.global_top();
+        let sx_b = frame.x;
+        let sy_b = frame.y;
+        let sw = frame.width;
+        let sh = frame.height;
+
+        // Convert active screen rect to top-left origin
+        let screen_left = sx_b;
+        let screen_right = sx_b + sw;
+        let screen_top_tl = global_top - (sy_b + sh);
+        let screen_bottom_tl = global_top - sy_b;
+
+        // Ensure minimally positive size and at most screen size
+        let min_w = 100.0_f32;
+        let min_h = 80.0_f32;
+        let clamped_w = g.size.0.max(min_w).min(sw);
+        let clamped_h = g.size.1.max(min_h).min(sh);
+
+        // Compute clamped position ranges; collapse if window is larger than screen
+        let x_min = screen_left;
+        let x_max = (screen_right - clamped_w).max(x_min);
+        let y_min = screen_top_tl;
+        let y_max = (screen_bottom_tl - clamped_h).max(y_min);
+
+        let x = g.pos.0.clamp(x_min, x_max);
+        let y = g.pos.1.clamp(y_min, y_max);
+
+        WindowGeom {
+            pos: (x, y),
+            size: (clamped_w, clamped_h),
+        }
     }
 
     /// Set the config file path shown in the Config tab and load.
@@ -186,7 +244,7 @@ impl Details {
                 self.visible = false;
                 wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 // Remember final geometry for this session only
-                if let Some(cur) = current_geom_top_left() {
+                if let Some(cur) = self.current_geom_top_left() {
                     self.last_saved = Some(cur);
                 }
                 return;
@@ -194,7 +252,7 @@ impl Details {
             // Apply saved geometry once after opening (clamped to active screen)
             if self.restore_pending {
                 if let Some(stored) = self.last_saved {
-                    let clamped = clamp_to_active_frame(stored);
+                    let clamped = self.clamp_to_active_frame(stored);
                     wctx.send_viewport_cmd_to(
                         self.id,
                         ViewportCommand::InnerSize(vec2(clamped.size.0, clamped.size.1)),
@@ -321,7 +379,7 @@ impl Details {
                 });
             });
             // Track geometry in-memory if it changed (no file persistence)
-            if let Some(cur) = current_geom_top_left()
+            if let Some(cur) = self.current_geom_top_left()
                 && self
                     .last_saved
                     .map(|g| g.pos != cur.pos || g.size != cur.size)
@@ -449,51 +507,4 @@ pub struct WindowGeom {
     pub pos: (f32, f32),
     /// Inner size `(w, h)` in logical pixels.
     pub size: (f32, f32),
-}
-
-/// Query the current Details window geometry converted to a top-left origin.
-fn current_geom_top_left() -> Option<WindowGeom> {
-    // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
-    let (_sx, _sy, _sw, _sh, global_top) = screen::active_frame();
-    let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
-    let x_t = x_b; // x is the same
-    let y_t = global_top - (y_b + h);
-    Some(WindowGeom {
-        pos: (x_t, y_t),
-        size: (w, h),
-    })
-}
-
-/// Clamp a window geometry to the current active screen's visible frame.
-///
-/// Coordinates use a global top-left origin. If the saved size exceeds the screen,
-/// it is reduced to fit; placement collapses to the screen's top-left in degenerate cases.
-fn clamp_to_active_frame(g: WindowGeom) -> WindowGeom {
-    let (sx_b, sy_b, sw, sh, global_top) = screen::active_frame();
-
-    // Convert active screen rect to top-left origin
-    let screen_left = sx_b;
-    let screen_right = sx_b + sw;
-    let screen_top_tl = global_top - (sy_b + sh);
-    let screen_bottom_tl = global_top - sy_b;
-
-    // Ensure minimally positive size and at most screen size
-    let min_w = 100.0_f32;
-    let min_h = 80.0_f32;
-    let clamped_w = g.size.0.max(min_w).min(sw);
-    let clamped_h = g.size.1.max(min_h).min(sh);
-
-    // Compute clamped position ranges; collapse if window is larger than screen
-    let x_min = screen_left;
-    let x_max = (screen_right - clamped_w).max(x_min);
-    let y_min = screen_top_tl;
-    let y_max = (screen_bottom_tl - clamped_h).max(y_min);
-
-    let x = g.pos.0.clamp(x_min, x_max);
-    let y = g.pos.1.clamp(y_min, y_max);
-
-    WindowGeom {
-        pos: (x, y),
-        size: (clamped_w, clamped_h),
-    }
 }

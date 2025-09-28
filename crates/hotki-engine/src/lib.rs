@@ -32,7 +32,7 @@
 //! - Focus state (`focus.ctx`, `focus.last_target_pid`) uses `parking_lot::Mutex`.
 //!   Never hold these mutex guards across an `.await`. Clone/copy values out
 //!   and drop the guard before awaiting.
-//! - Service calls (`world`, `repeater`, `relay`, `notifier`, `winops`) must
+//! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
 //!   not be awaited while any of the async engine mutexes are held. Acquire,
 //!   compute, drop guards, then perform async work.
 //! - `set_config` acquires a write guard, replaces the config, drops the guard,
@@ -70,17 +70,17 @@ pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use focus::FocusState;
-use hotki_protocol::MsgToUI;
+use hotki_protocol::{DisplaysSnapshot, MsgToUI};
 use hotki_world::{
     CommandError, CommandToggle, FocusChange, FullscreenIntent, FullscreenKind, HideIntent,
-    MoveDirection, MoveIntent, PlaceIntent, RaiseIntent, WorldView,
+    MoveDirection, MoveIntent, PlaceIntent, RaiseIntent, WorldDisplays, WorldView,
 };
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
-use mac_winops::ops::{RealWinOps, WinOps};
+use mac_winops::ops::WinOps;
 pub use notification::NotificationDispatcher;
 use regex_cache::RegexCache;
 pub use relay::RelayHandler;
@@ -131,6 +131,27 @@ fn command_error_message(op: &'static str, err: &CommandError) -> Option<String>
     }
 }
 
+fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayRect {
+    hotki_protocol::DisplayRect {
+        id: frame.id,
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+    }
+}
+
+fn to_displays_snapshot(world: WorldDisplays) -> hotki_protocol::DisplaysSnapshot {
+    let global_top = world.global_top();
+    let active = world.active_frame().map(to_display_rect);
+    let displays = world.displays.into_iter().map(to_display_rect).collect();
+    hotki_protocol::DisplaysSnapshot {
+        global_top,
+        active,
+        displays,
+    }
+}
+
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
@@ -153,7 +174,9 @@ pub struct Engine {
     raise_nonce: Arc<AtomicU64>,
     /// Cache for compiled regular expressions used by actions like Raise
     regex_cache: Arc<RegexCache>,
-    // winops/world are part of `svc`
+    /// Last displays snapshot sent to the UI.
+    display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
+    // world is part of `svc`
 }
 
 impl Engine {
@@ -177,17 +200,14 @@ impl Engine {
             config::Style::default(),
         )));
 
-        // Prepare shared winops and world before constructing Self
-        let winops: Arc<dyn WinOps> = Arc::new(RealWinOps);
-        let world =
-            hotki_world::World::spawn_view(winops.clone(), hotki_world::WorldCfg::default());
+        // Prepare shared world before constructing Self
+        let world = hotki_world::World::spawn_default_view(hotki_world::WorldCfg::default());
         let repeater =
             Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
         let svc = Services {
             relay: relay_handler,
             notifier,
             repeater,
-            winops,
             world: world.clone(),
         };
 
@@ -200,6 +220,7 @@ impl Engine {
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             regex_cache: Arc::new(RegexCache::new()),
+            display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -231,7 +252,6 @@ impl Engine {
             relay: relay_handler,
             notifier,
             repeater,
-            winops,
             world: world.clone(),
         };
 
@@ -244,17 +264,19 @@ impl Engine {
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             regex_cache: Arc::new(RegexCache::new()),
+            display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
         };
         eng.spawn_world_focus_subscription();
         eng
     }
 
     /// Custom constructor for tests and advanced scenarios.
-    /// Allows injecting a `HotkeyApi`, `WinOps`, relay enable flag, and an explicit world view.
+    /// Allows injecting a `HotkeyApi`, relay enable flag, and an explicit world view backed by
+    /// caller-provided window ops.
     pub fn new_with_api_and_ops(
         api: Arc<dyn deps::HotkeyApi>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
-        winops: Arc<dyn WinOps>,
+        _winops: Arc<dyn WinOps>,
         relay_enabled: bool,
         world: Arc<dyn WorldView>,
     ) -> Self {
@@ -270,7 +292,6 @@ impl Engine {
             relay: relay_handler,
             notifier,
             repeater,
-            winops: winops.clone(),
             world: world.clone(),
         };
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
@@ -287,6 +308,7 @@ impl Engine {
             focus,
             raise_nonce: Arc::new(AtomicU64::new(0)),
             regex_cache: Arc::new(RegexCache::new()),
+            display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -333,11 +355,17 @@ impl Engine {
                                     .await;
                                 });
                             }
+                            if let Err(err) = engine.refresh_displays_if_changed(&world).await {
+                                warn!("Display refresh after world event failed: {}", err);
+                            }
                         }
                         None => {
                             if cursor.is_closed() {
                                 warn!("World focus subscription closed; exiting");
                                 return;
+                            }
+                            if let Err(err) = engine.refresh_displays_if_changed(&world).await {
+                                warn!("Display refresh after world timeout failed: {}", err);
                             }
                         }
                     }
@@ -400,6 +428,31 @@ impl Engine {
         self.rebind_and_refresh(&app, &title).await
     }
 
+    async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
+        let world_displays = world.displays().await;
+        let snapshot = to_displays_snapshot(world_displays);
+        {
+            let mut cache = self.display_snapshot.lock().await;
+            if *cache == snapshot {
+                return Ok(());
+            }
+            *cache = snapshot.clone();
+        }
+
+        let cursor = {
+            let st = self.state.lock().await;
+            st.current_cursor()
+        };
+        let (app, title, _pid) = self.current_context_tuple();
+        let cursor = cursor.with_app(hotki_protocol::App {
+            app,
+            title,
+            pid: self.current_pid_world_first(),
+        });
+        self.svc.notifier.send_hud_update_cursor(cursor, snapshot)?;
+        Ok(())
+    }
+
     async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
         tracing::debug!("start app={} title={}", app, title);
         let cfg_guard = self.config.read().await;
@@ -424,7 +477,17 @@ impl Engine {
                 pid: self.current_pid_world_first(),
             });
             debug!("HUD update: cursor {:?}", cursor.path());
-            self.svc.notifier.send_hud_update_cursor(cursor)?;
+            let displays_snapshot = {
+                let world_displays = self.svc.world.displays().await;
+                to_displays_snapshot(world_displays)
+            };
+            {
+                let mut cache = self.display_snapshot.lock().await;
+                *cache = displays_snapshot.clone();
+            }
+            self.svc
+                .notifier
+                .send_hud_update_cursor(cursor, displays_snapshot)?;
         }
 
         // Determine capture policy via Config + Location
