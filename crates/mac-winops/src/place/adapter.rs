@@ -190,11 +190,6 @@ impl FakeApplyResponse {
         }
     }
 
-    pub fn with_settle(mut self, settle_ms: u64) -> Self {
-        self.settle_ms = settle_ms;
-        self
-    }
-
     pub fn with_persist(mut self, persist: bool) -> Self {
         self.persist = persist;
         self

@@ -225,11 +225,6 @@ pub mod ipc {
         tokio::sync::mpsc::channel::<MsgToUI>(DEFAULT_UI_CHANNEL_CAPACITY)
     }
 
-    /// Create a bounded UI channel with a custom capacity.
-    pub fn ui_channel_with_capacity(cap: usize) -> (UiTx, UiRx) {
-        tokio::sync::mpsc::channel::<MsgToUI>(cap)
-    }
-
     /// Codec for encoding/decoding UI messages used by the IPC layer.
     pub mod codec;
 

@@ -564,19 +564,6 @@ impl Config {
         }
     }
 
-    /// Resolve the action for a chord using app/title from the location's App context.
-    pub fn action_ctx(
-        &self,
-        loc: &Cursor,
-        chord: &mac_keycode::Chord,
-    ) -> Option<(Action, KeysAttrs, Option<usize>)> {
-        let (app, title) = loc
-            .app_ref()
-            .map(|a| (a.app.as_str(), a.title.as_str()))
-            .unwrap_or(("", ""));
-        self.action(loc, chord, app, title)
-    }
-
     /// Compute merged mode attributes along the current path.
     fn merged_mode_attrs(&self, path: &[u32]) -> KeysAttrs {
         let mut cur = &self.keys;

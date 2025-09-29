@@ -201,10 +201,6 @@ impl ServerProcess {
         }
     }
 
-    /// Get the process ID if running
-    pub fn pid(&self) -> Option<u32> {
-        self.child.as_ref().map(|c| c.id())
-    }
 }
 
 impl Drop for ServerProcess {

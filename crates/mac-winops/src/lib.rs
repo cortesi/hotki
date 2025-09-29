@@ -426,7 +426,12 @@ pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_m
     let mut cg_hold_ms: u64 = 0;
     let mut focus_hold_ms: u64 = 0;
     for attempt in 0..attempts {
-        let mut cached_id = wait::find_window_id_ms(pid, title, delay_ms, 20);
+        let mut cached_id = wait::find_window_id(
+            pid,
+            title,
+            Duration::from_millis(delay_ms),
+            Duration::from_millis(20),
+        );
         let mut last_nudge: Option<Instant> = None;
         if let Some(id) = cached_id {
             debug!(
@@ -566,7 +571,12 @@ pub fn ensure_frontmost_by_title(pid: i32, title: &str, attempts: usize, delay_m
                     );
                     let _ = request_raise_window(pid, id);
                 } else {
-                    cached_id = wait::find_window_id_ms(pid, title, delay_ms, 20);
+                    cached_id = wait::find_window_id(
+                        pid,
+                        title,
+                        Duration::from_millis(delay_ms),
+                        Duration::from_millis(20),
+                    );
                     if let Some(id) = cached_id {
                         debug!(
                             "ensure_frontmost_by_title: resolved id={} on retry; raising",
@@ -1118,11 +1128,6 @@ pub fn wait_main_ops_idle(deadline: Instant) -> bool {
 
 /// Close any active mimic windows. Placeholder until the mimic harness is wired up.
 pub fn close_mimic_windows() -> usize {
-    0
-}
-
-/// Current mimic window count.
-pub fn mimic_window_count() -> usize {
     0
 }
 

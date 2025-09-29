@@ -94,18 +94,6 @@ impl PlacementTuning {
     }
 
     #[inline]
-    pub fn with_epsilon(mut self, epsilon: f64) -> Self {
-        self.epsilon = epsilon;
-        self
-    }
-
-    #[inline]
-    pub fn with_settle_timing(mut self, timing: SettleTiming) -> Self {
-        self.settle_timing = timing;
-        self
-    }
-
-    #[inline]
     pub fn epsilon(&self) -> f64 {
         self.epsilon
     }
@@ -228,15 +216,6 @@ impl PlacementDecisionHooks {
     }
 
     #[inline]
-    pub fn with_safe_park<F>(mut self, hook: F) -> Self
-    where
-        F: Fn(&PlacementContext) -> bool + Send + Sync + 'static,
-    {
-        self.safe_park = Arc::new(hook);
-        self
-    }
-
-    #[inline]
     pub fn with_fallback<F>(mut self, hook: F) -> Self
     where
         F: Fn(&FallbackInvocation<'_>) -> bool + Send + Sync + 'static,
@@ -328,29 +307,8 @@ impl PlaceAttemptOptions {
     }
 
     #[inline]
-    pub fn with_pos_first_only(mut self, enabled: bool) -> Self {
-        self.pos_first_only = enabled;
-        self
-    }
-
-    #[inline]
     pub fn with_retry_limits(mut self, limits: RetryLimits) -> Self {
         self.retry_limits = limits;
-        self
-    }
-
-    #[inline]
-    pub fn with_tuning(mut self, tuning: PlacementTuning) -> Self {
-        self.tuning = tuning;
-        self
-    }
-
-    #[inline]
-    pub fn with_safe_park_hook<F>(mut self, hook: F) -> Self
-    where
-        F: Fn(&PlacementContext) -> bool + Send + Sync + 'static,
-    {
-        self.hooks = self.hooks.clone().with_safe_park(hook);
         self
     }
 

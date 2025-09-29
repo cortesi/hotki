@@ -86,10 +86,3 @@ where
 pub fn layer() -> ForwardLayer {
     ForwardLayer
 }
-
-/// Fetch how many log events have been dropped since the last sink was set.
-pub fn dropped_logs() -> u64 {
-    LOG_DROPS
-        .get_or_init(|| AtomicU64::new(0))
-        .load(Ordering::SeqCst)
-}

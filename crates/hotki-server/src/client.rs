@@ -353,14 +353,6 @@ impl Client {
         }
         Ok(())
     }
-
-    /// Get the PID of the spawned server process, if any.
-    ///
-    /// Returns `None` if no server was spawned (e.g., connected to an existing server)
-    /// or if the server process has terminated.
-    pub fn server_pid(&self) -> Option<u32> {
-        self.server.as_ref().and_then(|s| s.pid())
-    }
 }
 
 // preflight helpers are provided by the permissions crate

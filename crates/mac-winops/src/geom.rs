@@ -179,13 +179,6 @@ impl Rect {
             && approx_eq(self.w, other.w, eps)
             && approx_eq(self.h, other.h, eps)
     }
-
-    /// Check whether all components of this diff-rect are within `eps`.
-    /// Intended to be called on values produced by `Rect::diffs`.
-    #[inline]
-    pub fn within_diff_eps(&self, eps: f64) -> bool {
-        self.x <= eps && self.y <= eps && self.w <= eps && self.h <= eps
-    }
 }
 
 /// Compute the rectangle for a grid cell within the provided visible frame.
