@@ -19,7 +19,7 @@ pub use error::Error;
 pub use hotki_protocol::{Cursor, Toggle};
 pub use loader::{load_from_path, load_from_str};
 pub use mode::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};
-use raw::RawConfig;
+use raw::{RawConfig, RawNotifyWindowStyle};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 /// Extension trait providing `Cursor::ensure_in` semantics without creating a
@@ -294,127 +294,51 @@ impl Default for Notify {
     }
 }
 
+/// Resolve a raw notification window style to a concrete style with parsed colors.
+fn resolve_notify_style(
+    raw: &RawNotifyWindowStyle,
+    defaults: &RawNotifyWindowStyle,
+) -> NotifyWindowStyle {
+    fn choose<'a>(s: &'a Option<String>, d: &'a Option<String>) -> &'a str {
+        s.as_deref().unwrap_or_else(|| d.as_deref().unwrap())
+    }
+    fn parse_color(val: &str, def: &str) -> (u8, u8, u8) {
+        parse_rgb(val).unwrap_or_else(|| parse_rgb(def).unwrap())
+    }
+
+    NotifyWindowStyle {
+        bg: parse_color(
+            choose(&raw.bg, &defaults.bg),
+            defaults.bg.as_deref().unwrap(),
+        ),
+        title_fg: parse_color(
+            choose(&raw.title_fg, &defaults.title_fg),
+            defaults.title_fg.as_deref().unwrap(),
+        ),
+        body_fg: parse_color(
+            choose(&raw.body_fg, &defaults.body_fg),
+            defaults.body_fg.as_deref().unwrap(),
+        ),
+        title_font_size: raw
+            .title_font_size
+            .unwrap_or(defaults.title_font_size.unwrap_or(14.0)),
+        title_font_weight: raw.title_font_weight.unwrap_or(FontWeight::Regular),
+        body_font_size: raw
+            .body_font_size
+            .unwrap_or(defaults.body_font_size.unwrap_or(12.0)),
+        body_font_weight: raw.body_font_weight.unwrap_or(FontWeight::Regular),
+        icon: Some(choose(&raw.icon, &defaults.icon).to_string()),
+    }
+}
+
 impl Notify {
     pub fn theme(&self) -> NotifyTheme {
-        // Helper items
-        fn choose<'a>(s: &'a Option<String>, d: &'a Option<String>) -> &'a str {
-            if let Some(v) = s {
-                v
-            } else {
-                d.as_deref().unwrap()
-            }
-        }
-        fn parse_or_default(val: &str, def: &str) -> (u8, u8, u8) {
-            parse_rgb(val).unwrap_or_else(|| parse_rgb(def).unwrap())
-        }
-
-        // Fallback defaults from a default Notify instance
         let d = Self::default();
-
-        let weight_or = |w: &Option<FontWeight>| w.unwrap_or(FontWeight::Regular);
-        let size_or = |s: &Option<f32>, def: f32| s.unwrap_or(def);
-
         NotifyTheme {
-            info: NotifyWindowStyle {
-                bg: parse_or_default(
-                    choose(&self.info.bg, &d.info.bg),
-                    d.info.bg.as_deref().unwrap(),
-                ),
-                title_fg: parse_or_default(
-                    choose(&self.info.title_fg, &d.info.title_fg),
-                    d.info.title_fg.as_deref().unwrap(),
-                ),
-                body_fg: parse_or_default(
-                    choose(&self.info.body_fg, &d.info.body_fg),
-                    d.info.body_fg.as_deref().unwrap(),
-                ),
-                title_font_size: size_or(
-                    &self.info.title_font_size,
-                    d.info.title_font_size.unwrap_or(14.0),
-                ),
-                title_font_weight: weight_or(&self.info.title_font_weight),
-                body_font_size: size_or(
-                    &self.info.body_font_size,
-                    d.info.body_font_size.unwrap_or(12.0),
-                ),
-                body_font_weight: weight_or(&self.info.body_font_weight),
-                icon: Some(choose(&self.info.icon, &d.info.icon).to_string()),
-            },
-            warn: NotifyWindowStyle {
-                bg: parse_or_default(
-                    choose(&self.warn.bg, &d.warn.bg),
-                    d.warn.bg.as_deref().unwrap(),
-                ),
-                title_fg: parse_or_default(
-                    choose(&self.warn.title_fg, &d.warn.title_fg),
-                    d.warn.title_fg.as_deref().unwrap(),
-                ),
-                body_fg: parse_or_default(
-                    choose(&self.warn.body_fg, &d.warn.body_fg),
-                    d.warn.body_fg.as_deref().unwrap(),
-                ),
-                title_font_size: size_or(
-                    &self.warn.title_font_size,
-                    d.warn.title_font_size.unwrap_or(14.0),
-                ),
-                title_font_weight: weight_or(&self.warn.title_font_weight),
-                body_font_size: size_or(
-                    &self.warn.body_font_size,
-                    d.warn.body_font_size.unwrap_or(12.0),
-                ),
-                body_font_weight: weight_or(&self.warn.body_font_weight),
-                icon: Some(choose(&self.warn.icon, &d.warn.icon).to_string()),
-            },
-            error: NotifyWindowStyle {
-                bg: parse_or_default(
-                    choose(&self.error.bg, &d.error.bg),
-                    d.error.bg.as_deref().unwrap(),
-                ),
-                title_fg: parse_or_default(
-                    choose(&self.error.title_fg, &d.error.title_fg),
-                    d.error.title_fg.as_deref().unwrap(),
-                ),
-                body_fg: parse_or_default(
-                    choose(&self.error.body_fg, &d.error.body_fg),
-                    d.error.body_fg.as_deref().unwrap(),
-                ),
-                title_font_size: size_or(
-                    &self.error.title_font_size,
-                    d.error.title_font_size.unwrap_or(14.0),
-                ),
-                title_font_weight: weight_or(&self.error.title_font_weight),
-                body_font_size: size_or(
-                    &self.error.body_font_size,
-                    d.error.body_font_size.unwrap_or(12.0),
-                ),
-                body_font_weight: weight_or(&self.error.body_font_weight),
-                icon: Some(choose(&self.error.icon, &d.error.icon).to_string()),
-            },
-            success: NotifyWindowStyle {
-                bg: parse_or_default(
-                    choose(&self.success.bg, &d.success.bg),
-                    d.success.bg.as_deref().unwrap(),
-                ),
-                title_fg: parse_or_default(
-                    choose(&self.success.title_fg, &d.success.title_fg),
-                    d.success.title_fg.as_deref().unwrap(),
-                ),
-                body_fg: parse_or_default(
-                    choose(&self.success.body_fg, &d.success.body_fg),
-                    d.success.body_fg.as_deref().unwrap(),
-                ),
-                title_font_size: size_or(
-                    &self.success.title_font_size,
-                    d.success.title_font_size.unwrap_or(14.0),
-                ),
-                title_font_weight: weight_or(&self.success.title_font_weight),
-                body_font_size: size_or(
-                    &self.success.body_font_size,
-                    d.success.body_font_size.unwrap_or(12.0),
-                ),
-                body_font_weight: weight_or(&self.success.body_font_weight),
-                icon: Some(choose(&self.success.icon, &d.success.icon).to_string()),
-            },
+            info: resolve_notify_style(&self.info, &d.info),
+            warn: resolve_notify_style(&self.warn, &d.warn),
+            error: resolve_notify_style(&self.error, &d.error),
+            success: resolve_notify_style(&self.success, &d.success),
         }
     }
 }
@@ -1112,7 +1036,7 @@ mod tests {
         assert_eq!(cfg.hud(&loc2).title_fg, (0xa0, 0xc4, 0xff));
 
         // Reset override
-        loc2.clear_theme();
+        loc2.set_theme(None);
         assert_eq!(cfg.hud(&loc2).title_fg, (0xd0, 0xd0, 0xd0));
     }
 

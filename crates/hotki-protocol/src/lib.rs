@@ -98,22 +98,12 @@ impl Cursor {
         self.override_theme = name.map(|s| s.to_string());
     }
 
-    /// Clear any theme override at this location (revert to loaded theme).
-    pub fn clear_theme(&mut self) {
-        self.override_theme = None;
-    }
-
     /// Enable or disable user style overlays at this location.
     ///
     /// - `true` enables user-provided overlays
     /// - `false` disables them (rendering the base theme only)
     pub fn set_user_style_enabled(&mut self, enabled: bool) {
         self.user_ui_disabled = !enabled;
-    }
-
-    /// Returns `true` when user style overlays are enabled at this location.
-    pub fn user_style_enabled(&self) -> bool {
-        !self.user_ui_disabled
     }
 }
 
