@@ -130,9 +130,9 @@ pub enum Toggle {
 }
 
 /// Rectangular bounds for a display in bottom-left origin coordinates.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct DisplayRect {
+pub struct DisplayFrame {
     /// CoreGraphics display identifier (`CGDirectDisplayID`).
     pub id: u32,
     /// Horizontal origin in pixels.
@@ -145,6 +145,14 @@ pub struct DisplayRect {
     pub height: f32,
 }
 
+impl DisplayFrame {
+    /// Upper edge (`y + height`) in bottom-left origin coordinates.
+    #[must_use]
+    pub fn top(&self) -> f32 {
+        self.y + self.height
+    }
+}
+
 /// Snapshot describing active/visible displays for HUD/layout decisions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -152,9 +160,9 @@ pub struct DisplaysSnapshot {
     /// Maximum top Y across all displays (used for top-left conversions).
     pub global_top: f32,
     /// Active display chosen for anchoring, if known.
-    pub active: Option<DisplayRect>,
+    pub active: Option<DisplayFrame>,
     /// All displays currently tracked.
-    pub displays: Vec<DisplayRect>,
+    pub displays: Vec<DisplayFrame>,
 }
 
 /// Streamed world events from the server.
@@ -275,7 +283,8 @@ pub enum MsgToUI {
 }
 
 /// Notification kinds supported by the UI.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum NotifyKind {
     /// Informational notification.
     Info,
@@ -285,4 +294,6 @@ pub enum NotifyKind {
     Error,
     /// Success/affirmation notification.
     Success,
+    /// Ignore output; produce no notification.
+    Ignore,
 }

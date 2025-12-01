@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use keymode::{KeyResponse, NotificationType};
+use keymode::{KeyResponse, NotifyKind};
 use mac_keycode::Chord;
 use parking_lot::Mutex;
 use tokio::time::Duration;
@@ -30,11 +30,7 @@ pub const STOP_WAIT_TIMEOUT_MS: u64 = 50;
 
 /// Run a command using the user's shell, mapping output to a KeyResponse.
 /// This function is blocking and intended to be called inside `spawn_blocking`.
-fn run_shell_blocking(
-    command: &str,
-    ok_notify: NotificationType,
-    err_notify: NotificationType,
-) -> KeyResponse {
+fn run_shell_blocking(command: &str, ok_notify: NotifyKind, err_notify: NotifyKind) -> KeyResponse {
     tracing::info!("Executing shell command: {}", command);
     let shell_path: String = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     match Command::new(&shell_path).arg("-lc").arg(command).output() {
@@ -72,20 +68,20 @@ fn run_shell_blocking(
             };
 
             match notify_type {
-                NotificationType::Ignore => KeyResponse::Ok,
-                NotificationType::Info => KeyResponse::Info {
+                NotifyKind::Ignore => KeyResponse::Ok,
+                NotifyKind::Info => KeyResponse::Info {
                     title: "Shell command".to_string(),
                     text: combined,
                 },
-                NotificationType::Warn => KeyResponse::Warn {
+                NotifyKind::Warn => KeyResponse::Warn {
                     title: "Shell command".to_string(),
                     text: combined,
                 },
-                NotificationType::Error => KeyResponse::Error {
+                NotifyKind::Error => KeyResponse::Error {
                     title: "Shell command".to_string(),
                     text: combined,
                 },
-                NotificationType::Success => KeyResponse::Success {
+                NotifyKind::Success => KeyResponse::Success {
                     title: "Shell command".to_string(),
                     text: combined,
                 },
@@ -114,8 +110,8 @@ const SYS_INTERVAL_MS: u64 = 33; // ~30 repeats per second
 pub enum ExecSpec {
     Shell {
         command: String,
-        ok_notify: NotificationType,
-        err_notify: NotificationType,
+        ok_notify: NotifyKind,
+        err_notify: NotifyKind,
     },
     Relay {
         chord: Chord,
@@ -261,8 +257,8 @@ impl Repeater {
             .notifier
             .handle_key_response(keymode::KeyResponse::ShellAsync {
                 command: command.clone(),
-                ok_notify: NotificationType::Ignore,
-                err_notify: NotificationType::Ignore,
+                ok_notify: NotifyKind::Ignore,
+                err_notify: NotifyKind::Ignore,
                 repeat: None,
             });
 
@@ -344,7 +340,7 @@ impl Repeater {
             tokio::spawn(async move {
                 let _guard = state2.gate.lock().await;
                 let _ = tokio::task::spawn_blocking(move || {
-                    run_shell_blocking(&cmd, NotificationType::Ignore, NotificationType::Ignore)
+                    run_shell_blocking(&cmd, NotifyKind::Ignore, NotifyKind::Ignore)
                 })
                 .await;
                 // Notify shell repeat callback if set
@@ -470,8 +466,8 @@ mod tests {
             "shell-coalesce".to_string(),
             ExecSpec::Shell {
                 command: cmd,
-                ok_notify: keymode::NotificationType::Ignore,
-                err_notify: keymode::NotificationType::Ignore,
+                ok_notify: keymode::NotifyKind::Ignore,
+                err_notify: keymode::NotifyKind::Ignore,
             },
             Some(RepeatSpec {
                 initial_delay_ms: Some(100),

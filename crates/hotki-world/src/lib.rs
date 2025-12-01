@@ -45,6 +45,7 @@ use core_graphics::{
 };
 pub use events::EventCursor;
 use events::{DEFAULT_EVENT_CAPACITY, EventHub as InternalHub};
+pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot};
 use parking_lot::RwLock;
 use permissions::{accessibility_ok, screen_recording_ok};
 use tokio::time::{self, Instant as TokioInstant};
@@ -113,40 +114,6 @@ pub enum WorldEvent {
     Updated(WindowKey, WorldWindow),
     /// The focused window changed, including best-effort context.
     FocusChanged(FocusChange),
-}
-
-/// Rectangular description of a macOS display in bottom-left origin coordinates.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct DisplayFrame {
-    /// Display identifier.
-    pub id: u32,
-    /// Horizontal origin in pixels.
-    pub x: f32,
-    /// Vertical origin in pixels.
-    pub y: f32,
-    /// Width in pixels.
-    pub width: f32,
-    /// Height in pixels.
-    pub height: f32,
-}
-
-impl DisplayFrame {
-    /// Upper edge (`y + height`) in bottom-left origin coordinates.
-    #[must_use]
-    pub fn top(&self) -> f32 {
-        self.y + self.height
-    }
-}
-
-/// Snapshot describing the active display set tracked by the world service.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WorldDisplays {
-    /// Top-most Y coordinate across all displays (used to convert to top-left origin).
-    pub global_top: f32,
-    /// Display containing the current focus, if known.
-    pub active: Option<DisplayFrame>,
-    /// All known displays.
-    pub displays: Vec<DisplayFrame>,
 }
 
 /// Capability snapshot describing permissions relevant to focus/read-only operation.
@@ -252,7 +219,7 @@ pub trait WorldView: Send + Sync {
     async fn status(&self) -> WorldStatus;
 
     /// Retrieve the tracked display geometry snapshot.
-    async fn displays(&self) -> WorldDisplays;
+    async fn displays(&self) -> DisplaysSnapshot;
 
     /// Hint that external state likely changed and should be refreshed quickly.
     fn hint_refresh(&self);
@@ -269,7 +236,7 @@ struct PollingWorld {
 struct WorldState {
     snapshot: RwLock<Vec<WorldWindow>>,
     focused: RwLock<Option<WindowKey>>,
-    displays: RwLock<WorldDisplays>,
+    displays: RwLock<DisplaysSnapshot>,
     capabilities: RwLock<Capabilities>,
     status: RwLock<WorldStatus>,
 }
@@ -459,7 +426,7 @@ impl WorldView for PollingWorld {
         self.inner.status.read().clone()
     }
 
-    async fn displays(&self) -> WorldDisplays {
+    async fn displays(&self) -> DisplaysSnapshot {
         self.inner.displays.read().clone()
     }
 
@@ -481,7 +448,7 @@ struct PlatformWindow {
 struct PlatformSnapshot {
     windows: Vec<PlatformWindow>,
     focused: Option<PlatformWindow>,
-    displays: WorldDisplays,
+    displays: DisplaysSnapshot,
     capabilities: Capabilities,
 }
 
@@ -527,7 +494,7 @@ fn capture_platform_snapshot() -> PlatformSnapshot {
     }
 }
 
-fn gather_displays() -> WorldDisplays {
+fn gather_displays() -> DisplaysSnapshot {
     let mut frames = Vec::new();
     let mut global_top = 0.0_f32;
     let main = CGDisplay::main();
@@ -565,7 +532,7 @@ fn gather_displays() -> WorldDisplays {
         active = Some(fallback);
     }
 
-    WorldDisplays {
+    DisplaysSnapshot {
         global_top,
         active,
         displays: frames,
@@ -750,7 +717,7 @@ impl TestWorld {
     }
 
     /// Replace the tracked display snapshot.
-    pub fn set_displays(&self, displays: WorldDisplays) {
+    pub fn set_displays(&self, displays: DisplaysSnapshot) {
         *self.inner.displays.write() = displays.clone();
         self.hub.publish(WorldEvent::Updated(
             WindowKey { pid: -1, id: 0 },
@@ -830,7 +797,7 @@ impl WorldView for TestWorld {
         self.inner.status.read().clone()
     }
 
-    async fn displays(&self) -> WorldDisplays {
+    async fn displays(&self) -> DisplaysSnapshot {
         self.inner.displays.read().clone()
     }
 

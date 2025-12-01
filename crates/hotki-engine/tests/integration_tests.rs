@@ -12,7 +12,7 @@ use hotki_engine::{
 };
 use hotki_protocol::MsgToUI;
 use hotki_world::{
-    DisplayFrame, FocusChange, TestWorld, WindowKey, WorldDisplays, WorldEvent, WorldWindow,
+    DisplayFrame, DisplaysSnapshot, FocusChange, TestWorld, WindowKey, WorldEvent, WorldWindow,
 };
 use keymode::Keys;
 use parking_lot::Mutex;
@@ -648,7 +648,7 @@ fn test_display_snapshot_reaches_hud_updates() {
         engine.set_config(cfg).await.expect("set config");
 
         // Seed displays before focus to ensure snapshot is ready.
-        let displays = WorldDisplays {
+        let displays = DisplaysSnapshot {
             global_top: 1400.0,
             active: Some(DisplayFrame {
                 id: 7,

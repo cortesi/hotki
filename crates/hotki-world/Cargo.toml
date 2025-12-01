@@ -15,3 +15,4 @@ parking_lot = "0.12.4"
 async-trait.workspace = true
 core-foundation = "0.10.1"
 core-graphics = "0.25.0"
+hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }

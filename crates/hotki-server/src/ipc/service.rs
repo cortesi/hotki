@@ -805,52 +805,22 @@ impl HotkeyServiceBuilder {
         svc
     }
 }
-fn to_display_rect(frame: hotki_world::WorldDisplays) -> hotki_protocol::DisplaysSnapshot {
-    let displays = frame
-        .displays
-        .into_iter()
-        .map(|d| hotki_protocol::DisplayRect {
-            id: d.id,
-            x: d.x,
-            y: d.y,
-            width: d.width,
-            height: d.height,
-        })
-        .collect();
-    let active = frame.active.map(|d| hotki_protocol::DisplayRect {
-        id: d.id,
-        x: d.x,
-        y: d.y,
-        width: d.width,
-        height: d.height,
-    });
-    hotki_protocol::DisplaysSnapshot {
-        global_top: frame.global_top,
-        active,
-        displays,
-    }
-}
-
 fn build_snapshot_payload(
-    displays: hotki_world::WorldDisplays,
+    displays: hotki_world::DisplaysSnapshot,
     focused: Option<App>,
 ) -> crate::ipc::rpc::WorldSnapshotLite {
-    crate::ipc::rpc::WorldSnapshotLite {
-        focused,
-        displays: to_display_rect(displays),
-    }
+    crate::ipc::rpc::WorldSnapshotLite { focused, displays }
 }
 
 #[cfg(test)]
 mod tests {
-    use hotki_protocol::{App, DisplaysSnapshot};
-    use hotki_world::{DisplayFrame, WorldDisplays};
+    use hotki_protocol::{App, DisplayFrame, DisplaysSnapshot};
 
     use super::*;
 
     #[test]
     fn build_snapshot_carries_focus_and_displays() {
-        let displays = WorldDisplays {
+        let displays = DisplaysSnapshot {
             global_top: 1200.0,
             active: Some(DisplayFrame {
                 id: 7,
@@ -886,7 +856,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_defaults_when_no_focus() {
-        let displays = WorldDisplays::default();
+        let displays = DisplaysSnapshot::default();
         let payload = build_snapshot_payload(displays.clone(), None);
         assert_eq!(payload.focused, None);
         assert_eq!(payload.displays, DisplaysSnapshot::default());

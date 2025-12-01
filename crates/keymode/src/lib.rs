@@ -7,6 +7,6 @@ mod error;
 /// State machine and transition logic for keymode.
 mod state;
 
-pub use config::{Action, Keys, KeysAttrs, NotificationType, ShellModifiers, ShellSpec};
+pub use config::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};
 pub use error::KeymodeError;
 pub use state::{KeyResponse, ShellRepeatConfig, State};

@@ -17,7 +17,7 @@ mod types;
 pub use error::Error;
 pub use hotki_protocol::{Cursor, Toggle};
 pub use loader::{load_from_path, load_from_str};
-pub use mode::{Action, Keys, KeysAttrs, NotificationType, ShellModifiers, ShellSpec};
+pub use mode::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};
 use raw::RawConfig;
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
@@ -551,13 +551,13 @@ impl Config {
     ///
     /// This applies all overlays along `loc`, resolves the full notification theme,
     /// and returns the concrete per-kind style.
-    pub fn notify(&self, loc: &Cursor, ty: NotificationType) -> NotifyWindowStyle {
+    pub fn notify(&self, loc: &Cursor, ty: NotifyKind) -> NotifyWindowStyle {
         let theme = self.style(loc).notify.theme();
         match ty {
-            NotificationType::Info | NotificationType::Ignore => theme.info,
-            NotificationType::Warn => theme.warn,
-            NotificationType::Error => theme.error,
-            NotificationType::Success => theme.success,
+            NotifyKind::Info | NotifyKind::Ignore => theme.info,
+            NotifyKind::Warn => theme.warn,
+            NotifyKind::Error => theme.error,
+            NotifyKind::Success => theme.success,
         }
     }
 

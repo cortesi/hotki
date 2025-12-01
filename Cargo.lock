@@ -2236,6 +2236,7 @@ dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
+ "hotki-protocol",
  "parking_lot",
  "permissions",
  "tokio",

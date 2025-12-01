@@ -5,17 +5,7 @@ use serde::{Deserialize, Serialize, de::Error as DeError};
 
 use crate::{Toggle, raw};
 
-/// Notification kinds for presenting command output in the host UI
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NotificationType {
-    Info,
-    Warn,
-    Error,
-    Success,
-    /// Ignore any output; treat as Ok
-    Ignore,
-}
+pub use hotki_protocol::NotifyKind;
 
 /// Attributes for key bindings
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -177,22 +167,22 @@ pub struct ShellModifiers {
     /// Notification type for successful exit (status 0)
     /// Defaults to Ignore
     #[serde(default = "default_ok_notify")]
-    pub ok_notify: NotificationType,
+    pub ok_notify: NotifyKind,
 
     /// Notification type for error exit (non-zero status)
     /// Defaults to Warn
     #[serde(default = "default_err_notify")]
-    pub err_notify: NotificationType,
+    pub err_notify: NotifyKind,
 }
 
 /// Serde default: successful shell command produces no notification.
-fn default_ok_notify() -> NotificationType {
-    NotificationType::Ignore
+fn default_ok_notify() -> NotifyKind {
+    NotifyKind::Ignore
 }
 
 /// Serde default: shell command errors produce a warning notification.
-fn default_err_notify() -> NotificationType {
-    NotificationType::Warn
+fn default_err_notify() -> NotifyKind {
+    NotifyKind::Warn
 }
 
 impl Default for ShellModifiers {
@@ -222,17 +212,17 @@ impl ShellSpec {
     }
 
     /// Get notification type for successful exit
-    pub fn ok_notify(&self) -> NotificationType {
+    pub fn ok_notify(&self) -> NotifyKind {
         match self {
-            Self::Cmd(_) => NotificationType::Ignore,
+            Self::Cmd(_) => NotifyKind::Ignore,
             Self::WithMods(_, m) => m.ok_notify,
         }
     }
 
     /// Get notification type for error exit
-    pub fn err_notify(&self) -> NotificationType {
+    pub fn err_notify(&self) -> NotifyKind {
         match self {
-            Self::Cmd(_) => NotificationType::Warn,
+            Self::Cmd(_) => NotifyKind::Warn,
             Self::WithMods(_, m) => m.err_notify,
         }
     }

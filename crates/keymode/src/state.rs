@@ -1,7 +1,7 @@
 use hotki_protocol::MsgToUI;
 use mac_keycode::Chord;
 
-use crate::{Action, KeymodeError, KeysAttrs, NotificationType};
+use crate::{Action, KeymodeError, KeysAttrs, NotifyKind};
 
 /// Result of handling a key press
 #[derive(Debug)]
@@ -24,8 +24,8 @@ pub enum KeyResponse {
     /// Shell command to execute asynchronously
     ShellAsync {
         command: String,
-        ok_notify: NotificationType,
-        err_notify: NotificationType,
+        ok_notify: NotifyKind,
+        err_notify: NotifyKind,
         /// Optional software repeat configuration (only populated when attrs.noexit() && repeat)
         repeat: Option<ShellRepeatConfig>,
     },
@@ -170,8 +170,8 @@ impl State {
         let script = format!("set volume output volume {}", (level).min(100));
         let response = KeyResponse::ShellAsync {
             command: format!("osascript -e '{}'", script),
-            ok_notify: NotificationType::Ignore,
-            err_notify: NotificationType::Warn,
+            ok_notify: NotifyKind::Ignore,
+            err_notify: NotifyKind::Warn,
             repeat: None,
         };
         if !attrs.noexit() {
@@ -199,8 +199,8 @@ impl State {
         }
         let response = KeyResponse::ShellAsync {
             command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-            ok_notify: NotificationType::Ignore,
-            err_notify: NotificationType::Warn,
+            ok_notify: NotifyKind::Ignore,
+            err_notify: NotifyKind::Warn,
             repeat,
         };
         if !attrs.noexit() {
@@ -224,8 +224,8 @@ impl State {
         };
         let response = KeyResponse::ShellAsync {
             command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-            ok_notify: NotificationType::Ignore,
-            err_notify: NotificationType::Warn,
+            ok_notify: NotifyKind::Ignore,
+            err_notify: NotifyKind::Warn,
             repeat: None,
         };
         if !attrs.noexit() {

@@ -98,7 +98,7 @@ impl NotificationCenter {
     /// Pick the appropriate window style for a given kind.
     fn style_for(kind: NotifyKind, theme: &NotifyTheme) -> &config::NotifyWindowStyle {
         match kind {
-            NotifyKind::Info => &theme.info,
+            NotifyKind::Info | NotifyKind::Ignore => &theme.info,
             NotifyKind::Warn => &theme.warn,
             NotifyKind::Error => &theme.error,
             NotifyKind::Success => &theme.success,
@@ -387,7 +387,7 @@ impl NotificationCenter {
 
                 let (bg, title_fg, body_fg, title_size, title_weight, body_size, body_weight, icon) =
                     match it.kind {
-                        NotifyKind::Info => {
+                        NotifyKind::Info | NotifyKind::Ignore => {
                             let s = &self.theme.info;
                             (
                                 Color32::from_rgb(s.bg.0, s.bg.1, s.bg.2),

@@ -482,7 +482,7 @@ impl Details {
 /// Foreground color for a notification kind using the active theme.
 fn kind_color(theme: &NotifyTheme, kind: NotifyKind) -> Color32 {
     let (r, g, b) = match kind {
-        NotifyKind::Info => theme.info.title_fg,
+        NotifyKind::Info | NotifyKind::Ignore => theme.info.title_fg,
         NotifyKind::Warn => theme.warn.title_fg,
         NotifyKind::Error => theme.error.title_fg,
         NotifyKind::Success => theme.success.title_fg,
@@ -493,7 +493,7 @@ fn kind_color(theme: &NotifyTheme, kind: NotifyKind) -> Color32 {
 /// Human-readable label for a notification kind.
 fn kind_label(kind: NotifyKind) -> &'static str {
     match kind {
-        NotifyKind::Info => "info",
+        NotifyKind::Info | NotifyKind::Ignore => "info",
         NotifyKind::Warn => "warn",
         NotifyKind::Error => "error",
         NotifyKind::Success => "success",

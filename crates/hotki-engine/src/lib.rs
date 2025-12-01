@@ -64,7 +64,7 @@ pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};
-use hotki_world::{FocusChange, WorldDisplays, WorldView};
+use hotki_world::{FocusChange, WorldView};
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
@@ -76,27 +76,6 @@ pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
 use tracing::{debug, trace, warn};
-
-fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayRect {
-    hotki_protocol::DisplayRect {
-        id: frame.id,
-        x: frame.x,
-        y: frame.y,
-        width: frame.width,
-        height: frame.height,
-    }
-}
-
-fn to_displays_snapshot(world: WorldDisplays) -> hotki_protocol::DisplaysSnapshot {
-    let global_top = world.global_top;
-    let active = world.active.map(to_display_rect);
-    let displays = world.displays.into_iter().map(to_display_rect).collect();
-    hotki_protocol::DisplaysSnapshot {
-        global_top,
-        active,
-        displays,
-    }
-}
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -311,8 +290,7 @@ impl Engine {
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
-        let world_displays = world.displays().await;
-        let snapshot = to_displays_snapshot(world_displays);
+        let snapshot = world.displays().await;
         {
             let mut cache = self.display_snapshot.lock().await;
             if *cache == snapshot {
@@ -354,10 +332,7 @@ impl Engine {
             };
             let cursor = self.cursor_with_current_app(cursor);
             debug!("HUD update: cursor {:?}", cursor.path());
-            let displays_snapshot = {
-                let world_displays = self.world.displays().await;
-                to_displays_snapshot(world_displays)
-            };
+            let displays_snapshot = self.world.displays().await;
             {
                 let mut cache = self.display_snapshot.lock().await;
                 *cache = displays_snapshot.clone();
@@ -597,8 +572,8 @@ impl Engine {
         &self,
         id: &str,
         command: String,
-        ok_notify: keymode::NotificationType,
-        err_notify: keymode::NotificationType,
+        ok_notify: keymode::NotifyKind,
+        err_notify: keymode::NotifyKind,
         repeat: Option<keymode::ShellRepeatConfig>,
     ) -> Result<()> {
         let exec = ExecSpec::Shell {
