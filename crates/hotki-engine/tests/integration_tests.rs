@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use config::Keys;
 use hotki_engine::{
     Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatSpec, Repeater,
     test_support::{recv_until, run_engine_test, wait_snapshot_until},
@@ -14,7 +15,6 @@ use hotki_protocol::MsgToUI;
 use hotki_world::{
     DisplayFrame, DisplaysSnapshot, FocusChange, TestWorld, WindowKey, WorldEvent, WorldWindow,
 };
-use keymode::Keys;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 

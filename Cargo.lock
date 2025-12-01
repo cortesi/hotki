@@ -2167,7 +2167,6 @@ dependencies = [
  "config",
  "hotki-protocol",
  "hotki-world",
- "keymode",
  "mac-hotkey",
  "mac-keycode",
  "parking_lot",
@@ -2493,17 +2492,6 @@ dependencies = [
  "bitflags 2.9.4",
  "serde",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "keymode"
-version = "0.0.1"
-dependencies = [
- "config",
- "hotki-protocol",
- "mac-keycode",
- "ron",
- "thiserror 2.0.16",
 ]
 
 [[package]]

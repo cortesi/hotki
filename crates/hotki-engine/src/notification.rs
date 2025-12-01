@@ -1,5 +1,5 @@
+use config::keymode::KeyResponse;
 use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
-use keymode::KeyResponse;
 use tokio::sync::mpsc::Sender;
 use tracing::info;
 

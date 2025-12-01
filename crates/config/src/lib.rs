@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod defaults;
 mod error;
+pub mod keymode;
 mod loader;
 mod mode;
 mod raw;

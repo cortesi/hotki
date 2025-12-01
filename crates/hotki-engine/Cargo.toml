@@ -6,7 +6,6 @@ license = "MIT"
 description = "Hotki core engine: effects, orchestrator, and key handling"
 
 [dependencies]
-keymode = { path = "../keymode" }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }

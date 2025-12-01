@@ -60,6 +60,7 @@ mod ticker;
 const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
 
+use config::keymode::{KeyResponse, State};
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
@@ -68,7 +69,6 @@ use hotki_world::{FocusChange, WorldView};
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
-use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
 pub use notification::NotificationDispatcher;
 use parking_lot::Mutex;
@@ -153,7 +153,7 @@ impl Engine {
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
-            keymode::Keys::default(),
+            config::Keys::default(),
             config::Style::default(),
         )));
 
@@ -526,7 +526,7 @@ impl Engine {
         &self,
         identifier: &str,
         target: Chord,
-        attrs: &keymode::KeysAttrs,
+        attrs: &config::KeysAttrs,
     ) -> Result<()> {
         debug!(
             "Relay action {} -> {} (noexit={})",
@@ -572,9 +572,9 @@ impl Engine {
         &self,
         id: &str,
         command: String,
-        ok_notify: keymode::NotifyKind,
-        err_notify: keymode::NotifyKind,
-        repeat: Option<keymode::ShellRepeatConfig>,
+        ok_notify: config::NotifyKind,
+        err_notify: config::NotifyKind,
+        repeat: Option<config::keymode::ShellRepeatConfig>,
     ) -> Result<()> {
         let exec = ExecSpec::Shell {
             command,

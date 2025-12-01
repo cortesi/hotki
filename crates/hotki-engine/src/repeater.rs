@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use keymode::{KeyResponse, NotifyKind};
+use config::{NotifyKind, keymode::KeyResponse};
 use mac_keycode::Chord;
 use parking_lot::Mutex;
 use tokio::time::Duration;
@@ -255,7 +255,7 @@ impl Repeater {
         // First run (notifications ignored)
         let _ = self
             .notifier
-            .handle_key_response(keymode::KeyResponse::ShellAsync {
+            .handle_key_response(config::keymode::KeyResponse::ShellAsync {
                 command: command.clone(),
                 ok_notify: NotifyKind::Ignore,
                 err_notify: NotifyKind::Ignore,
@@ -291,7 +291,7 @@ impl Repeater {
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Shell task join error: {}", e);
-                        keymode::KeyResponse::Warn {
+                        config::keymode::KeyResponse::Warn {
                             title: "Shell command".to_string(),
                             text: "Execution task failed".to_string(),
                         }
@@ -466,8 +466,8 @@ mod tests {
             "shell-coalesce".to_string(),
             ExecSpec::Shell {
                 command: cmd,
-                ok_notify: keymode::NotifyKind::Ignore,
-                err_notify: keymode::NotifyKind::Ignore,
+                ok_notify: config::NotifyKind::Ignore,
+                err_notify: config::NotifyKind::Ignore,
             },
             Some(RepeatSpec {
                 initial_delay_ms: Some(100),

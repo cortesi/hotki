@@ -1,7 +1,17 @@
 use hotki_protocol::MsgToUI;
 use mac_keycode::Chord;
+use thiserror::Error;
 
-use crate::{Action, KeymodeError, KeysAttrs, NotifyKind};
+use crate::{Action, KeysAttrs, NotifyKind};
+
+/// Error type for keymode state handling
+#[derive(Debug, Error)]
+#[allow(missing_docs)]
+pub enum KeymodeError {
+    /// Invalid relay keyspec string
+    #[error("Invalid relay keyspec '{spec}'")]
+    InvalidRelayKeyspec { spec: String },
+}
 
 /// Result of handling a key press
 #[derive(Debug)]
@@ -44,14 +54,14 @@ pub struct ShellRepeatConfig {
 #[derive(Debug, Default)]
 pub struct State {
     /// Current position within the configured key hierarchy.
-    cursor: config::Cursor,
+    cursor: crate::Cursor,
 }
 
 impl State {
     /// Create a new state (root path, HUD hidden).
     pub fn new() -> Self {
         Self {
-            cursor: config::Cursor::default(),
+            cursor: crate::Cursor::default(),
         }
     }
 
@@ -130,7 +140,7 @@ impl State {
     /// Build a `ShellAsync` response, attaching repeat configuration if effective.
     fn handle_shell(
         &mut self,
-        spec: &config::ShellSpec,
+        spec: &crate::ShellSpec,
         attrs: &KeysAttrs,
     ) -> Result<KeyResponse, KeymodeError> {
         let mut repeat = None;
@@ -212,13 +222,13 @@ impl State {
     /// Build a shell command to toggle or set system mute state.
     fn handle_mute(
         &mut self,
-        arg: config::Toggle,
+        arg: crate::Toggle,
         attrs: &KeysAttrs,
     ) -> Result<KeyResponse, KeymodeError> {
         let script = match arg {
-            config::Toggle::On => "set volume output muted true".to_string(),
-            config::Toggle::Off => "set volume output muted false".to_string(),
-            config::Toggle::Toggle => {
+            crate::Toggle::On => "set volume output muted true".to_string(),
+            crate::Toggle::Off => "set volume output muted false".to_string(),
+            crate::Toggle::Toggle => {
                 "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
             }
         };
@@ -246,21 +256,21 @@ impl State {
     }
 
     /// Ensure context by popping while guards on the entering entries do not match.
-    pub fn ensure_context(&mut self, cfg: &config::Config, app: &str, title: &str) -> bool {
-        let (next, changed) = config::CursorEnsureExt::ensure_in(&self.cursor, cfg, app, title);
+    pub fn ensure_context(&mut self, cfg: &crate::Config, app: &str, title: &str) -> bool {
+        let (next, changed) = crate::CursorEnsureExt::ensure_in(&self.cursor, cfg, app, title);
         self.cursor = next;
         changed
     }
 
     /// Return the current cursor (version is set by the caller before sending to UI).
-    pub fn current_cursor(&self) -> config::Cursor {
+    pub fn current_cursor(&self) -> crate::Cursor {
         self.cursor.clone()
     }
 
     /// Process a key press with app/title context.
     pub fn handle_key_with_context(
         &mut self,
-        cfg: &config::Config,
+        cfg: &crate::Config,
         key: &Chord,
         app: &str,
         title: &str,
@@ -283,7 +293,7 @@ mod tests {
 
     fn press(
         state: &mut State,
-        cfg: &config::Config,
+        cfg: &crate::Config,
         chord: &Chord,
     ) -> Result<KeyResponse, KeymodeError> {
         state.handle_key_with_context(cfg, chord, "", "")
@@ -292,7 +302,7 @@ mod tests {
     #[test]
     fn test_unknown_keys() {
         let keys: Keys = ron::from_str("[(\"a\", \"Action\", shell(\"test\"))]").unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = crate::Config::from_parts(keys, crate::Style::default());
         let mut state = State::new();
         press(&mut state, &cfg, &chord("z")).unwrap();
         press(&mut state, &cfg, &chord("x")).unwrap();
@@ -312,7 +322,7 @@ mod tests {
             ])),
         ]"#;
         let keys: Keys = ron::from_str(ron_text).unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = crate::Config::from_parts(keys, crate::Style::default());
         let mut state = State::new();
 
         press(&mut state, &cfg, &chord("m")).unwrap();
@@ -338,7 +348,7 @@ mod tests {
     fn test_reload_and_clear_notifications() {
         // Reload non-sticky
         let keys: Keys = ron::from_str("[(\"r\", \"Reload\", reload_config)]").unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = crate::Config::from_parts(keys, crate::Style::default());
         let mut state = State::new();
         match press(&mut state, &cfg, &chord("r")).unwrap() {
             KeyResponse::Ui(MsgToUI::ReloadConfig) => {}
@@ -356,7 +366,7 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        let cfg2 = config::Config::from_parts(keys2, config::Style::default());
+        let cfg2 = crate::Config::from_parts(keys2, crate::Style::default());
         let mut state2 = State::new();
         press(&mut state2, &cfg2, &chord("m")).unwrap();
         assert_eq!(state2.depth(), 1);
@@ -380,7 +390,7 @@ mod tests {
             ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
         ]"#;
         let keys: Keys = ron::from_str(ron_text).unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = crate::Config::from_parts(keys, crate::Style::default());
         let mut state = State::new();
         press(&mut state, &cfg, &chord("shift+cmd+0")).unwrap();
         assert_eq!(state.depth(), 1);
