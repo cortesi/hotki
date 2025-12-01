@@ -305,7 +305,7 @@ impl Engine {
     }
 
     async fn rebind_current_context(&self) -> Result<()> {
-        let (app, title, _pid) = self.current_context_tuple();
+        let (app, title, _pid) = self.current_context();
         debug!("Rebinding with context: app={}, title={}", app, title);
         self.rebind_and_refresh(&app, &title).await
     }
@@ -325,12 +325,7 @@ impl Engine {
             let st = self.state.lock().await;
             st.current_cursor()
         };
-        let (app, title, _pid) = self.current_context_tuple();
-        let cursor = cursor.with_app(hotki_protocol::App {
-            app,
-            title,
-            pid: self.current_pid_world_first(),
-        });
+        let cursor = self.cursor_with_current_app(cursor);
         self.notifier.send_hud_update_cursor(cursor, snapshot)?;
         Ok(())
     }
@@ -357,12 +352,7 @@ impl Engine {
                 let st = self.state.lock().await;
                 st.current_cursor()
             };
-            // Attach focus context to the cursor we send to the UI
-            let cursor = cursor.with_app(hotki_protocol::App {
-                app: app.to_string(),
-                title: title.to_string(),
-                pid: self.current_pid_world_first(),
-            });
+            let cursor = self.cursor_with_current_app(cursor);
             debug!("HUD update: cursor {:?}", cursor.path());
             let displays_snapshot = {
                 let world_displays = self.world.displays().await;
@@ -381,12 +371,7 @@ impl Engine {
             let st = self.state.lock().await;
             st.current_cursor()
         };
-        // Carry app/title on the cursor for downstream consumers
-        let cur_with_app = cur.clone().with_app(hotki_protocol::App {
-            app: app.to_string(),
-            title: title.to_string(),
-            pid: self.current_pid_world_first(),
-        });
+        let cur_with_app = self.cursor_with_current_app(cur.clone());
         let hud_visible = cfg_guard.hud_visible(&cur);
         let capture = cfg_guard.mode_requests_capture(&cur);
         {
@@ -487,7 +472,7 @@ impl Engine {
         if self.sync_on_dispatch {
             self.world.hint_refresh();
         }
-        let (app_ctx, title_ctx, _pid) = self.current_context_tuple();
+        let (app_ctx, title_ctx, _pid) = self.current_context();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
@@ -574,7 +559,7 @@ impl Engine {
             target,
             attrs.noexit()
         );
-        let pid = self.current_pid_world_first();
+        let pid = self.current_context().2;
         if attrs.noexit() {
             let mods = &target.modifiers;
             let cmd_like = mods.contains(&mac_keycode::Modifier::Command)
@@ -631,7 +616,7 @@ impl Engine {
 
     /// Handle a key up event
     fn handle_key_up(&self, identifier: &str) {
-        let pid = self.current_pid_world_first();
+        let pid = self.current_context().2;
         self.repeater.stop_sync(identifier);
         if self.relay.stop_relay(identifier, pid) {
             debug!("Stopped relay for {}", identifier);
@@ -640,7 +625,7 @@ impl Engine {
 
     /// Handle a repeat key event for active relays
     fn handle_repeat(&self, identifier: &str) {
-        let pid = self.current_pid_world_first();
+        let pid = self.current_context().2;
         // Forward OS repeat to active relay target, if any
         if self.relay.repeat_relay(identifier, pid) {
             // If a software ticker is active for this id, stop it to avoid double repeats.
@@ -704,17 +689,15 @@ impl Engine {
 }
 
 impl Engine {
-    fn current_pid_world_first(&self) -> i32 {
-        if let Some((_, _, p)) = &*self.focus_ctx.lock() {
-            return *p;
-        }
-        -1
-    }
-
-    fn current_context_tuple(&self) -> (String, String, i32) {
+    fn current_context(&self) -> (String, String, i32) {
         if let Some((a, t, p)) = &*self.focus_ctx.lock() {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)
+    }
+
+    fn cursor_with_current_app(&self, cursor: hotki_protocol::Cursor) -> hotki_protocol::Cursor {
+        let (app, title, pid) = self.current_context();
+        cursor.with_app(hotki_protocol::App { app, title, pid })
     }
 }
