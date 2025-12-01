@@ -29,33 +29,6 @@ pub enum KeyResponse {
         /// Optional software repeat configuration (only populated when attrs.noexit() && repeat)
         repeat: Option<ShellRepeatConfig>,
     },
-    /// Place window into a grid cell on the current screen
-    Place {
-        cols: u32,
-        rows: u32,
-        col: u32,
-        row: u32,
-    },
-    /// Move within a grid by one cell in the given direction.
-    PlaceMove {
-        cols: u32,
-        rows: u32,
-        dir: config::Dir,
-    },
-    /// Focus the next window in the given direction.
-    Focus { dir: config::Dir },
-    /// Fullscreen operation request handled in the engine/backend
-    Fullscreen {
-        desired: config::Toggle,
-        kind: config::FullscreenKind,
-    },
-    /// Raise a window matching the given spec.
-    Raise {
-        app: Option<String>,
-        title: Option<String>,
-    },
-    /// Hide or reveal the focused window (tri-state)
-    Hide { desired: config::Toggle },
 }
 
 /// Optional repeat configuration for shell actions
@@ -99,23 +72,6 @@ impl State {
         entered_index: Option<usize>,
     ) -> Result<KeyResponse, KeymodeError> {
         match action {
-            Action::Place(grid, at) => self.handle_place(grid, at, attrs),
-            Action::PlaceMove(grid, dir) => self.handle_place_move(grid, *dir, attrs),
-            Action::Focus(dir) => self.handle_focus(*dir, attrs),
-            Action::Raise(spec) => {
-                if spec.app.is_none() && spec.title.is_none() {
-                    return Err(KeymodeError::RaiseMissingAppOrTitle);
-                }
-                let resp = KeyResponse::Raise {
-                    app: spec.app.clone(),
-                    title: spec.title.clone(),
-                };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(resp)
-            }
-            Action::Fullscreen(spec) => self.handle_fullscreen(spec, attrs),
             Action::Keys(new_mode) => {
                 let _ = new_mode; // contents live in Config; we just advance cursor
                 if let Some(i) = entered_index {
@@ -158,102 +114,7 @@ impl State {
                 }
                 Ok(response)
             }
-            Action::Hide(desired) => {
-                let response = KeyResponse::Hide { desired: *desired };
-                if !attrs.noexit() {
-                    self.reset();
-                }
-                Ok(response)
-            }
         }
-    }
-
-    /// Build a `KeyResponse::Place` after validating indices are in range.
-    fn handle_place(
-        &mut self,
-        grid: &config::GridSpec,
-        at: &config::AtSpec,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
-        let (gx, gy) = match grid {
-            config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
-        };
-        let (ix, iy) = match at {
-            config::AtSpec::At(config::At(x, y)) => (*x, *y),
-        };
-        if ix >= gx || iy >= gy {
-            return Err(KeymodeError::PlaceAtOutOfRange {
-                ix,
-                iy,
-                gx,
-                gy,
-                max_x: gx.saturating_sub(1),
-                max_y: gy.saturating_sub(1),
-            });
-        }
-        let resp = KeyResponse::Place {
-            cols: gx,
-            rows: gy,
-            col: ix,
-            row: iy,
-        };
-        if !attrs.noexit() {
-            self.reset();
-        }
-        Ok(resp)
-    }
-
-    /// Build a `KeyResponse::PlaceMove` for the given grid and direction.
-    fn handle_place_move(
-        &mut self,
-        grid: &config::GridSpec,
-        dir: config::Dir,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
-        let (gx, gy) = match grid {
-            config::GridSpec::Grid(config::Grid(x, y)) => (*x, *y),
-        };
-        let resp = KeyResponse::PlaceMove {
-            cols: gx,
-            rows: gy,
-            dir,
-        };
-        if !attrs.noexit() {
-            self.reset();
-        }
-        Ok(resp)
-    }
-
-    /// Build a `KeyResponse::Focus` for the given direction.
-    fn handle_focus(
-        &mut self,
-        dir: config::Dir,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
-        let resp = KeyResponse::Focus { dir };
-        if !attrs.noexit() {
-            self.reset();
-        }
-        Ok(resp)
-    }
-
-    /// Build a `KeyResponse::Fullscreen` from a fullscreen specification.
-    fn handle_fullscreen(
-        &mut self,
-        spec: &config::FullscreenSpec,
-        attrs: &KeysAttrs,
-    ) -> Result<KeyResponse, KeymodeError> {
-        let (toggle, kind) = match spec {
-            config::FullscreenSpec::One(t) => (t, config::FullscreenKind::Nonnative),
-            config::FullscreenSpec::Two(t, k) => (t, *k),
-        };
-        if !attrs.noexit() {
-            self.reset();
-        }
-        Ok(KeyResponse::Fullscreen {
-            desired: *toggle,
-            kind,
-        })
     }
 
     /// Parse and relay a chord string, carrying attributes through.

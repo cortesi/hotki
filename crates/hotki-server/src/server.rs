@@ -18,6 +18,7 @@ use tracing::{debug, error, info, trace};
 use crate::{
     Error, Result, default_socket_path,
     ipc::{IPCServer, IdleTimerState},
+    loop_wake,
 };
 
 /// Default idle timeout in seconds after client disconnects.
@@ -88,7 +89,7 @@ impl Server {
         let proxy = event_loop.create_proxy();
         // Keep a clone for posting wakeups from other threads
         let proxy_for_ipc = proxy.clone();
-        mac_winops::focus::set_main_proxy(proxy);
+        loop_wake::set_main_proxy(proxy.clone());
 
         // Set activation policy to Accessory to prevent dock icon
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -194,7 +195,7 @@ impl Server {
                                 );
                                 // Parent exited; request shutdown.
                                 shutdown_for_parent.store(true, Ordering::SeqCst);
-                                let _ = mac_winops::focus::post_user_event();
+                                let _ = loop_wake::post_user_event();
                                 let _ = libc::close(kq);
                                 return;
                             } else {
@@ -211,7 +212,7 @@ impl Server {
                             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
                         if !alive {
                             shutdown_for_parent.store(true, Ordering::SeqCst);
-                            let _ = mac_winops::focus::post_user_event();
+                            let _ = loop_wake::post_user_event();
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(100));
@@ -295,11 +296,9 @@ impl Server {
                     // These events fire frequently, ignore them
                 }
                 Event::UserEvent(()) => {
-                    if let Err(e) = mac_winops::focus::install_ns_workspace_observer() {
+                    if let Err(e) = loop_wake::install_ns_workspace_observer() {
                         error!("Failed to install NSWorkspace observer: {}", e);
                     }
-                    // Run any queued main-thread operations (e.g., non-native fullscreen)
-                    mac_winops::drain_main_ops();
                     // User events indicate client activity - reset disconnect timer if set
                     if client_disconnected.load(Ordering::SeqCst) {
                         client_disconnected.store(false, Ordering::SeqCst);

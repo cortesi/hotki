@@ -7,21 +7,12 @@ license = "MIT"
 
 [features]
 test-utils = []
-world-mimic = ["dep:winit", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 tokio = { workspace = true }
-mac-winops = { path = "../mac-winops" }
 permissions = { path = "../permissions" }
 tracing = { workspace = true }
-once_cell = { workspace = true }
 parking_lot = "0.12.4"
-crossbeam-channel.workspace = true
 async-trait.workspace = true
-hotki-world-ids = { version = "0.0.1", path = "../hotki-world-ids" }
-regex.workspace = true
-winit = { version = "0.30", optional = true }
-objc2 = { version = "0.6.2", optional = true }
-objc2-app-kit = { version = "0.3.1", optional = true, features = ["NSScreen", "NSTextField", "NSFont", "libc"] }
-objc2-foundation = { version = "0.3.1", optional = true }
-thiserror.workspace = true
+core-foundation = "0.10.1"
+core-graphics = "0.25.0"

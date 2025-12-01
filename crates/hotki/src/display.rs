@@ -88,4 +88,22 @@ impl DisplayMetrics {
             self.active_frame().top()
         }
     }
+
+    /// Active screen frame as `(x, y, width, height, global_top)`.
+    ///
+    /// Coordinates follow AppKit semantics:
+    /// - `(x, y, width, height)` are in bottom-left origin space for the active screen.
+    /// - `global_top` is the maximum top Y across all screens, used to convert to
+    ///   top-left coordinates expected by winit/egui.
+    #[must_use]
+    pub fn active_screen_frame(&self) -> (f32, f32, f32, f32, f32) {
+        let frame = self.active_frame();
+        (
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
+            self.global_top(),
+        )
+    }
 }

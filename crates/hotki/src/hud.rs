@@ -4,9 +4,12 @@ use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
-use mac_winops::nswindow::{apply_transparent_rounded, set_on_all_spaces};
 
-use crate::{display::DisplayMetrics, fonts};
+use crate::{
+    display::DisplayMetrics,
+    fonts,
+    nswindow::{apply_transparent_rounded, set_on_all_spaces},
+};
 
 /// Minimum HUD width in logical pixels.
 const HUD_MIN_WIDTH: f32 = 240.0;
@@ -254,20 +257,6 @@ impl Hud {
         }
     }
 
-    /// Get the active screen frame as `(x, y, w, h, global_top)`.
-    ///
-    /// Notes on coordinates:
-    /// - `x, y, w, h` are in AppKit's bottom-left origin space for the chosen screen.
-    /// - `global_top` is the maximum top Y across all displays and is used to convert
-    ///   bottom-left coordinates into top-left values expected by winit/egui window APIs.
-    /// - Callers should clamp positions against the chosen screen's bounds and guard for
-    ///   degenerate ranges when the desired window size exceeds the screen size.
-    fn active_screen_frame(&self) -> (f32, f32, f32, f32, f32) {
-        let frame = self.display.active_frame();
-        let global_top = self.display.global_top();
-        (frame.x, frame.y, frame.width, frame.height, global_top)
-    }
-
     /// FontId for key tokens inside key boxes.
     fn key_font_id(&self) -> egui::FontId {
         egui::FontId::new(
@@ -427,7 +416,7 @@ impl Hud {
 
     /// Compute the anchored top-left position for the HUD window.
     fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
-        let (sx, sy, sw, sh, global_top) = self.active_screen_frame();
+        let (sx, sy, sw, sh, global_top) = self.display.active_screen_frame();
         let m = 12.0;
         // Guard against invalid or negative sizes; ensure a minimal positive window size.
         let size = vec2(size.x.max(1.0), size.y.max(1.0));

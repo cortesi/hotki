@@ -11,17 +11,13 @@ config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
-mac-winops = { path = "../mac-winops" }
 hotki-world = { path = "../hotki-world" }
-tao = "0.34"
 
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
-core-foundation = "0.10"
-io-kit-sys = "0.4.1"
 relaykey = { version = "0.0.1", path = "../relaykey" }
 regex = { workspace = true }
 lru = "0.16.1"

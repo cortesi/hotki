@@ -8,20 +8,9 @@
                 ("o", "Show Root Keys", show_hud_root),
             ])),
 
-            ("a", "Raise", keys([
-                ("w", "wezterm", raise(app: "WezTerm")),
-            ]), (capture: true)),
-
-
             ("c", "Key Capture", keys([
                 ("a", "Hi", shell("echo hi", (ok_notify: success))),
             ]), (capture: true)),
-
-            ("i", "Hide", keys([
-                ("t", "toggle", hide(toggle)),
-                ("s", "show", hide(off)),
-                ("h", "hide", hide(on)),
-            ]), (capture: true, noexit: true)),
 
             ("s", "Shell", keys([
                 ("e", "Simple echo", shell("echo hi", (ok_notify: success))),
@@ -36,25 +25,6 @@
                 // Relay repeat examples (attrs apply to relay too)
                 ("b", "Repeat Relay Custom", relay("shift+x"), (noexit: true, repeat: true, repeat_delay: 200, repeat_interval: 300)),
             ])),
-
-            ("w", "Window Operations", keys([
-                ("f", "Fullcreen", fullscreen(toggle)),
-                ("n", "Fullcreen Native", fullscreen(toggle, native)),
-                ("3", "3 Columns", keys([
-                    ("1", "Column 1", place(grid(3, 1), at(0, 0))),
-                    ("2", "Column 2", place(grid(3, 1), at(1, 0))),
-                    ("3", "Column 3", place(grid(3, 1), at(2, 0))),
-                ])),
-                ("4", "4x4 Columns", keys([
-                    ("l", "left", place_move(grid(4, 4), right)),
-                    ("h", "right", place_move(grid(4, 4), left)),
-                    ("k", "up", place_move(grid(4, 4), up)),
-                    ("j", "down", place_move(grid(4, 4), down)),
-                ])),
-                ("s", "spaces", keys([
-                    // space(N) removed
-                                    ])),
-            ]), (noexit: true)),
 
             ("m", "Media", keys([
                 // For media playback, use shell commands specific to your apps

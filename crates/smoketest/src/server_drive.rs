@@ -10,14 +10,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hotki_protocol::Cursor;
-use hotki_server::{
-    WorldSnapshotLite,
-    smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
-        BridgeKeyKind, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
-        BridgeTimestampMs,
-    },
+use hotki_protocol::{Cursor, DisplaysSnapshot};
+pub use hotki_server::smoketest_bridge::BridgeEvent;
+use hotki_server::smoketest_bridge::{
+    BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeIdleTimerState, BridgeKeyKind,
+    BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
 };
 use parking_lot::Mutex;
 use thiserror::Error;
@@ -229,24 +226,15 @@ impl BridgeDriver {
     }
 
     /// Quick liveness probe against the backend via a lightweight bridge command.
+    #[allow(dead_code)]
     pub fn check_alive(&mut self) -> DriverResult<()> {
         self.client_mut()?.call_depth().map(|_| ())
-    }
-
-    /// Fetch a lightweight world snapshot from the backend, if connected.
-    pub fn get_world_snapshot(&mut self) -> DriverResult<WorldSnapshotLite> {
-        self.client_mut()?.call_snapshot()
     }
 
     /// Fetch the current depth reported by the bridge.
     #[cfg(test)]
     pub fn get_depth(&mut self) -> DriverResult<usize> {
         self.client_mut()?.call_depth()
-    }
-
-    /// Block until the world reconcile sequence reaches `target` (or times out).
-    pub fn wait_for_world_seq(&mut self, target: u64, timeout_ms: u64) -> DriverResult<u64> {
-        self.client_mut()?.wait_for_world_seq(target, timeout_ms)
     }
 
     /// Retrieve the latest HUD snapshot observed on the bridge.
@@ -308,6 +296,8 @@ pub struct HudSnapshot {
     pub parent_title: Option<String>,
     /// Keys rendered by the HUD for the current cursor.
     pub keys: Vec<BridgeHudKey>,
+    /// Display geometry snapshot carried with the HUD update.
+    pub displays: DisplaysSnapshot,
     /// Canonicalized identifiers rendered by the HUD for readiness checks.
     pub idents: BTreeSet<String>,
 }
@@ -699,28 +689,28 @@ impl BridgeClient {
             if self.event_buffer.len() >= Self::EVENT_BUFFER_CAPACITY {
                 self.event_buffer.pop_front();
             }
-            match &event {
-                BridgeEvent::Hud {
-                    cursor,
-                    depth,
-                    parent_title,
-                    keys,
-                } => {
-                    let idents: BTreeSet<String> = keys
-                        .iter()
-                        .map(|key| canonicalize_ident(&key.ident))
-                        .collect();
-                    self.latest_hud = Some(HudSnapshot {
-                        event_id: reply.command_id,
-                        received_ms: reply.timestamp_ms,
-                        cursor: cursor.clone(),
-                        depth: *depth,
-                        parent_title: parent_title.clone(),
-                        keys: keys.clone(),
-                        idents,
-                    });
-                }
-                BridgeEvent::WorldFocus { .. } => {}
+            if let BridgeEvent::Hud {
+                cursor,
+                depth,
+                parent_title,
+                keys,
+                displays,
+            } = &event
+            {
+                let idents: BTreeSet<String> = keys
+                    .iter()
+                    .map(|key| canonicalize_ident(&key.ident))
+                    .collect();
+                self.latest_hud = Some(HudSnapshot {
+                    event_id: reply.command_id,
+                    received_ms: reply.timestamp_ms,
+                    cursor: cursor.clone(),
+                    depth: *depth,
+                    parent_title: parent_title.clone(),
+                    keys: keys.clone(),
+                    displays: displays.clone(),
+                    idents,
+                });
             }
             self.event_buffer.push_back(BridgeEventRecord {
                 id: reply.command_id,
@@ -979,13 +969,6 @@ impl BridgeClient {
         }
     }
 
-    /// Wait for the world reconcile sequence to reach `target` and return the observed value.
-    fn wait_for_world_seq(&mut self, target: u64, timeout_ms: u64) -> DriverResult<u64> {
-        self.call(&BridgeRequest::WaitForWorldSeq { target, timeout_ms })?
-            .into_world_seq()
-            .map_err(|message| DriverError::BridgeFailure { message })
-    }
-
     /// Attempt to re-establish the bridge connection with exponential backoff.
     fn reconnect_with_backoff(&mut self, attempt: u32) -> DriverResult<()> {
         let mut last_err: Option<io::Error> = None;
@@ -1038,16 +1021,10 @@ impl BridgeClient {
     }
 
     /// Retrieve the current depth value via the bridge.
+    #[allow(dead_code)]
     fn call_depth(&mut self) -> DriverResult<usize> {
         self.call(&BridgeRequest::GetDepth)?
             .into_depth()
-            .map_err(|message| DriverError::BridgeFailure { message })
-    }
-
-    /// Retrieve a `WorldSnapshotLite` via the bridge.
-    fn call_snapshot(&mut self) -> DriverResult<WorldSnapshotLite> {
-        self.call(&BridgeRequest::GetWorldSnapshot)?
-            .into_snapshot()
             .map_err(|message| DriverError::BridgeFailure { message })
     }
 }
@@ -1348,6 +1325,7 @@ mod tests {
                 depth: 1,
                 parent_title: Some("Test".into()),
                 keys,
+                displays: DisplaysSnapshot::default(),
             },
         };
         let reply = BridgeReply {

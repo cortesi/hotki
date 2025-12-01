@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hotki_world::{WorldHandle, mimic::pump_active_mimics};
 use serde::Serialize;
 use tracing::info;
 
@@ -20,7 +19,6 @@ use crate::{
     error::{Error, Result, print_hints},
     process,
     warn_overlay::OverlaySession,
-    world,
 };
 
 /// Common tracing target for smoketest case logging.
@@ -181,8 +179,6 @@ pub enum Stage {
 pub struct CaseCtx<'a> {
     /// Registry slug associated with the current case.
     name: &'a str,
-    /// Shared world handle used by the case.
-    world: WorldHandle,
     /// Scratch directory allocated for the case.
     scratch_dir: PathBuf,
     /// Optional stage timings recorded during execution.
@@ -191,18 +187,12 @@ pub struct CaseCtx<'a> {
 
 impl<'a> CaseCtx<'a> {
     /// Construct a new case context with the provided identifiers.
-    pub fn new(name: &'a str, world: WorldHandle, scratch_dir: PathBuf) -> Self {
+    pub fn new(name: &'a str, scratch_dir: PathBuf) -> Self {
         Self {
             name,
-            world,
             scratch_dir,
             durations: StageDurationsOptional::default(),
         }
-    }
-
-    /// Clone the shared world handle for asynchronous operations.
-    pub fn world_clone(&self) -> WorldHandle {
-        self.world.clone()
     }
 
     /// Execute the provided stage closure and capture its elapsed duration.
@@ -211,9 +201,7 @@ impl<'a> CaseCtx<'a> {
         F: FnOnce(&mut CaseCtx<'_>) -> Result<T>,
     {
         let start = Instant::now();
-        pump_active_mimics();
         let result = f(self);
-        pump_active_mimics();
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.durations.set(stage, elapsed_ms)?;
         result
@@ -262,11 +250,6 @@ impl<'a> CaseCtx<'a> {
             message = message
         );
     }
-
-    /// Return the case name associated with this context.
-    pub fn case_name(&self) -> &str {
-        self.name
-    }
 }
 
 /// Execution settings shared by registry-driven smoketest runs.
@@ -313,17 +296,6 @@ struct CaseExecution {
     elapsed: Duration,
     /// Primary error returned by the case body, if any.
     primary_error: Option<Error>,
-    /// Handle used to reset and verify post-run quiescence.
-    world_for_reset: WorldHandle,
-}
-
-/// Combine cleanup errors surfaced before/after the case run into a single error.
-fn merge_cleanup_errors(existing: Option<Error>, next: Option<Error>) -> Option<Error> {
-    match (existing, next) {
-        (None, None) => None,
-        (Some(err), None) | (None, Some(err)) => Some(err),
-        (Some(first), Some(second)) => Some(Error::InvalidState(format!("{}\n{}", first, second))),
-    }
 }
 
 /// Run a registry entry with pre/post world cleanup guards.
@@ -334,20 +306,13 @@ fn run_case(
     index: usize,
 ) -> Result<CaseRunOutcome> {
     let case_dir = create_case_dir(scratch_root, index, entry.name)?;
-    let world = world::world_handle()?;
-
-    let quiescence_error = ensure_world_quiescent(&world, entry.name, "before run")?;
-
-    let execution = execute_case(entry, config, case_dir, &world);
-
-    let post_cleanup = ensure_world_quiescent(&execution.world_for_reset, entry.name, "after run")?;
-    let combined_cleanup = merge_cleanup_errors(quiescence_error, post_cleanup);
+    let execution = execute_case(entry, config, case_dir);
 
     Ok(CaseRunOutcome {
         entry,
         elapsed: execution.elapsed,
         primary_error: execution.primary_error,
-        quiescence_error: combined_cleanup,
+        quiescence_error: None,
     })
 }
 
@@ -429,7 +394,6 @@ fn execute_case(
     entry: &'static CaseEntry,
     config: &RunnerConfig<'_>,
     case_dir: PathBuf,
-    world: &WorldHandle,
 ) -> CaseExecution {
     let budget_total = entry
         .budget
@@ -442,17 +406,15 @@ fn execute_case(
 
     let start = Instant::now();
     let exec_result = if entry.main_thread {
-        let world_clone = world.clone();
         let case_dir_clone = case_dir.clone();
         run_on_main_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir_clone);
+            let mut ctx = CaseCtx::new(entry.name, case_dir_clone);
             let result = (entry.run)(&mut ctx);
             (ctx, result)
         })
     } else {
-        let world_clone = world.clone();
         run_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, world_clone, case_dir);
+            let mut ctx = CaseCtx::new(entry.name, case_dir);
             let result = (entry.run)(&mut ctx);
             (ctx, result)
         })
@@ -461,19 +423,16 @@ fn execute_case(
 
     match exec_result {
         Ok((ctx, run_result)) => {
-            let world_for_reset = ctx.world_clone();
             let durations = ctx.into_durations();
             log_case_timing(entry, &durations);
             CaseExecution {
                 elapsed,
                 primary_error: run_result.err(),
-                world_for_reset,
             }
         }
         Err(abort) => CaseExecution {
             elapsed,
             primary_error: Some(abort.into_error()),
-            world_for_reset: world.clone(),
         },
     }
 }
@@ -714,283 +673,62 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
 }
 
 /// Reset the shared world handle and surface quiescence violations with artifacts referenced.
-fn ensure_world_quiescent(world: &WorldHandle, case: &str, context: &str) -> Result<Option<Error>> {
-    let report = world.reset();
-    if report.is_quiescent() {
-        return Ok(None);
-    }
-    let msg = format!(
-        "{}: world not quiescent {} (ax={}, main_ops={}, mimics={}, subs={})",
-        case,
-        context,
-        report.active_ax_observers,
-        report.pending_main_ops,
-        report.mimic_windows,
-        report.subscriptions
-    );
-    Ok(Some(Error::InvalidState(msg)))
-}
-
 /// Helper sets used by smoketest cases.
 const NO_HELPERS: &[HelperDoc] = &[];
-
-/// Helper functions shared by hide and placement-focused smoketest cases.
-const PLACE_HELPERS: &[HelperDoc] = &[
-    HelperDoc {
-        name: "WorldHandle::window_observer",
-        summary: "Create per-window observers that block on deterministic frame and mode waits.",
-    },
-    HelperDoc {
-        name: "assert_frame_matches",
-        summary: "Emit standardized frame diffs comparing expected geometry with world data.",
-    },
-];
-
-/// Alias for hide cases since they rely on the same helper set as placement cases.
-const HIDE_HELPERS: &[HelperDoc] = PLACE_HELPERS;
-
-/// Helper functions consumed by world-centric smoketests.
-const WORLD_HELPERS: &[HelperDoc] = &[
-    HelperDoc {
-        name: "spawn_scenario",
-        summary: "Launch mimic helpers and resolve their world identifiers for assertions.",
-    },
-    HelperDoc {
-        name: "raise_window",
-        summary: "Raise helper windows by label using world raise intents.",
-    },
-];
-
-/// Helper functions consumed by UI demo smoketests.
-const UI_HELPERS: &[HelperDoc] = &[HelperDoc {
-    name: "HotkiSession::builder",
-    summary: "Launch a scoped hotki session backed by a temporary config.",
-}];
-
-/// Helper functions consumed by fullscreen smoketests.
-const FULLSCREEN_HELPERS: &[HelperDoc] = NO_HELPERS;
 
 /// Additional watchdog slack for fast cases (milliseconds).
 const EXTRA_SHORT: u64 = 2_000;
 /// Additional watchdog slack for moderate cases (milliseconds).
 const EXTRA_MEDIUM: u64 = 3_000;
 
-/// Registry of Stage Five mimic-driven placement cases.
+/// Registry of retained smoketest cases (window operations removed).
 static CASES: &[CaseEntry] = &[
     CaseEntry::main(
         "repeat-relay",
-        Some("Relay repeat throughput over the mimic harness"),
+        Some("Measure relay repeat throughput."),
         EXTRA_SHORT,
-        Budget::new(1_200, 1_600, 600),
+        Budget::new(200, 1200, 400),
         NO_HELPERS,
         cases::repeat_relay_throughput,
     ),
     CaseEntry::background(
         "repeat-shell",
-        Some("Shell repeat throughput using the registry runner"),
+        Some("Measure shell repeat throughput."),
         EXTRA_SHORT,
-        Budget::new(1_000, 1_600, 600),
+        Budget::new(200, 1200, 400),
         NO_HELPERS,
         cases::repeat_shell_throughput,
     ),
     CaseEntry::background(
         "repeat-volume",
-        Some("Volume repeat throughput with restore-on-exit"),
+        Some("Measure volume repeat throughput with state restoration."),
         EXTRA_MEDIUM,
-        Budget::new(1_000, 2_600, 600),
+        Budget::new(200, 2000, 800),
         NO_HELPERS,
         cases::repeat_volume_throughput,
     ),
     CaseEntry::main(
-        "raise",
-        Some("Raise windows by title using world focus APIs"),
-        EXTRA_MEDIUM,
-        Budget::new(10_000, 8_000, 2_000),
-        NO_HELPERS,
-        cases::raise,
-    ),
-    CaseEntry::main(
-        "focus.tracking",
-        Some("Track focus transitions for helper windows"),
-        EXTRA_MEDIUM,
-        Budget::new(2_000, 3_000, 1_000),
-        NO_HELPERS,
-        cases::focus_tracking,
-    ),
-    CaseEntry::main(
-        "focus.nav",
-        Some("Navigate focus across helper windows via focus actions"),
-        EXTRA_MEDIUM,
-        Budget::new(2_000, 4_000, 1_000),
-        NO_HELPERS,
-        cases::focus_nav,
-    ),
-    CaseEntry::main(
-        "hide.toggle.roundtrip",
-        Some("Toggle hide on/off via world hide intents and verify window restoration"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 800, 1_800),
-        HIDE_HELPERS,
-        cases::hide_toggle_roundtrip,
-    ),
-    CaseEntry::main(
-        "place.fake.adapter",
-        Some("Exercise fake adapter placement flows without spawning helpers"),
-        EXTRA_SHORT,
-        Budget::new(400, 200, 400),
-        NO_HELPERS,
-        cases::place_fake_adapter,
-    ),
-    CaseEntry::main(
-        "place.minimized.defer",
-        Some("Auto-unminimize minimized helper window before placement"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 400, 2_000),
-        PLACE_HELPERS,
-        cases::place_minimized_defer,
-    ),
-    CaseEntry::main(
-        "place.zoomed.normalize",
-        Some("Normalize placement after starting from a zoomed helper window"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 600, 2_400),
-        PLACE_HELPERS,
-        cases::place_zoomed_normalize,
-    ),
-    CaseEntry::main(
-        "place.animated.tween",
-        Some("Tweened placement verifies animated frame convergence"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 450, 2_400),
-        PLACE_HELPERS,
-        cases::place_animated_tween,
-    ),
-    CaseEntry::main(
-        "place.async.delay",
-        Some("Delayed apply placement converges after artificial async lag"),
-        EXTRA_MEDIUM,
-        Budget::new(3_000, 1_000, 2_800),
-        PLACE_HELPERS,
-        cases::place_async_delay,
-    ),
-    CaseEntry::main(
-        "place.term.anchor",
-        Some("Terminal-style placement honors step-size anchors without post-move drift"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 500, 2_000),
-        PLACE_HELPERS,
-        cases::place_term_anchor,
-    ),
-    CaseEntry::main(
-        "place.increments.anchor",
-        Some("Placement with resize increments anchors both 2x2 and 3x1 scenarios"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 800, 2_400),
-        PLACE_HELPERS,
-        cases::place_increments_anchor,
-    ),
-    CaseEntry::main(
-        "place.move.min",
-        Some("Move within grid when minimum height exceeds cell"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 450, 2_400),
-        PLACE_HELPERS,
-        cases::place_move_min_anchor,
-    ),
-    CaseEntry::main(
-        "place.move.nonresizable",
-        Some("Move anchored fallback when resizing is disabled"),
-        EXTRA_SHORT,
-        Budget::new(1_200, 450, 2_400),
-        PLACE_HELPERS,
-        cases::place_move_nonresizable_anchor,
-    ),
-    CaseEntry::main(
-        "place.grid.cycle",
-        Some("Cycle helper placement across every grid cell"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 4_500, 1_500),
-        PLACE_HELPERS,
-        cases::place_grid_cycle,
-    ),
-    CaseEntry::main(
-        "place.flex.default",
-        Some("Flexible placement settles without forcing retries"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 600, 2_400),
-        PLACE_HELPERS,
-        cases::place_flex_default,
-    ),
-    CaseEntry::main(
-        "place.flex.force_size_pos",
-        Some("Force size->pos retries to confirm opposite ordering attempts"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 650, 2_400),
-        PLACE_HELPERS,
-        cases::place_flex_force_size_pos,
-    ),
-    CaseEntry::main(
-        "place.flex.smg",
-        Some("Force shrink->move->grow fallback sequencing"),
-        EXTRA_MEDIUM,
-        Budget::new(1_200, 700, 2_800),
-        PLACE_HELPERS,
-        cases::place_flex_smg,
-    ),
-    CaseEntry::main(
-        "place.skip.nonmovable",
-        Some("Placement skips non-movable helper windows"),
-        EXTRA_SHORT,
-        Budget::new(1_200, 700, 1_400),
-        PLACE_HELPERS,
-        cases::place_skip_nonmovable,
-    ),
-    CaseEntry::main(
         "ui.demo.standard",
-        Some("HUD demo flows through activation, theme cycle, and exit"),
-        EXTRA_SHORT,
-        Budget::new(2_000, 6_000, 2_000),
-        UI_HELPERS,
+        Some("Launch the full UI with HUD and details panes."),
+        EXTRA_MEDIUM,
+        Budget::new(800, 2000, 1200),
+        NO_HELPERS,
         cases::ui_demo_standard,
     ),
     CaseEntry::main(
         "ui.demo.mini",
-        Some("Mini HUD demo mirrors the standard flow in compact mode"),
-        EXTRA_SHORT,
-        Budget::new(2_000, 5_000, 2_000),
-        UI_HELPERS,
+        Some("Launch the minimal UI surface."),
+        EXTRA_MEDIUM,
+        Budget::new(800, 2000, 1200),
+        NO_HELPERS,
         cases::ui_demo_mini,
     ),
     CaseEntry::main(
-        "fullscreen.toggle.nonnative",
-        Some("Toggle non-native fullscreen via injected chords and AX validation"),
+        "ui.display.mapping",
+        Some("Verify HUD placement tracks the focused display."),
         EXTRA_MEDIUM,
-        Budget::new(1_500, 3_000, 1_500),
-        FULLSCREEN_HELPERS,
-        cases::fullscreen_toggle_nonnative,
-    ),
-    CaseEntry::main(
-        "world.status.permissions",
-        Some("World status reports granted capabilities and sane polling budgets"),
-        EXTRA_SHORT,
-        Budget::new(900, 600, 900),
-        WORLD_HELPERS,
-        cases::world_status_permissions,
-    ),
-    CaseEntry::main(
-        "world.ax.focus_props",
-        Some("Focused window exposes AX props through world snapshots"),
-        EXTRA_SHORT,
-        Budget::new(900, 1_000, 900),
-        WORLD_HELPERS,
-        cases::world_ax_focus_props,
-    ),
-    CaseEntry::background(
-        "world.spaces.adoption",
-        Some("World adopts mock Mission Control spaces within budget"),
-        EXTRA_SHORT,
-        Budget::new(400, 1_200, 400),
+        Budget::new(800, 2000, 1200),
         NO_HELPERS,
-        cases::world_spaces_adoption,
+        cases::ui_display_mapping,
     ),
 ];

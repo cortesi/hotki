@@ -2,19 +2,13 @@
 
 ## Contributor Docs
 
-- [Testing Principles](docs/testing-principles.md) – canonical world-only flow guidance, runloop
-  pumping, reset contracts, budgets, skip semantics, and message format rules.
-- [Mimic Scenarios](docs/mimic-scenarios.md) – capture lifecycle, replay structure, and importer
-  heuristics cross-links.
+- [Testing Principles](docs/testing-principles.md) – relay/HUD guidance, budgets, skip semantics,
+  and message format rules.
 
-## World Mimic Feature
+## Window Ops
 
-- The `world-mimic` feature gates the winit-based mimic harness. Enable it for development and
-  testing via `cargo check --features world-mimic` or `cargo test --features world-mimic`.
-- Release builds (bundles, CI release profiles) must omit the feature to avoid pulling UI helpers
-  into the shipping binary.
-- `smoketest` and other dev tooling already enable the feature in their crate manifests, so you only
-  need to pass the flag when working directly in `hotki-world`.
+- Built-in window operations (activate/hide/raise/place/fullscreen) have been removed. Bindings
+  should call an external CLI via `shell(...)` when window control is required.
 
 ## Smoketest
 
@@ -50,32 +44,13 @@ Additional command:
 
 Test runner:
 
-- `all`: Executes every registered smoketest case (repeat throughput, placement, UI, world probes)
+- `all`: Executes every registered smoketest case (repeat throughput + UI demos)
   through the registry runner.
   - Example: `cargo run --bin smoketest -- all`
   - Output is slug-oriented (`repeat-shell... OK`) and the command exits non-zero on failure.
 - `seq`: Runs a subset of registry slugs in order when you need a faster cycle.
-  - Example: `cargo run --bin smoketest -- seq repeat-relay hide.toggle.roundtrip ui.demo.standard`
+  - Example: `cargo run --bin smoketest -- seq repeat-relay ui.demo.standard`
   - Use the case names emitted by `cargo run --bin smoketest -- all --quiet` for sequencing.
-
-## Placement Engine
-
-- Window moves now go through the shared `PlacementEngine`, which records every
-  attempt and verifies the resulting rect against the target. Use
-  `PlaceAttemptOptions` to tune epsilon, retry budgets, and safe-park hooks for
-  difficult windows or experiments.
-- Main-thread entry points accept explicit options via
-  `request_place_grid_opts`, `request_place_grid_focused_opts`, and
-  `request_place_move_grid_opts`. Passing `PlaceAttemptOptions::default()`
-  preserves the legacy behaviour.
-- All Accessibility setters are wrapped by the `AxAdapter` trait. Production
-  code uses the system adapter; tests and smoketests inject
-  `FakeAxAdapter` to drive deterministic outcomes without live windows.
-- Persistent counters (see `placement_counters_snapshot`) help validate fallbacks
-  and timing. Reset them between deterministic tests with
-  `placement_counters_reset`.
-- After modifying placement or UI flows, run `cargo run --bin smoketest -- all`
-  to exercise focused, id-based, and move placements through the fake adapter.
 
 ## Concurrency and Locking
 

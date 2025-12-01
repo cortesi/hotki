@@ -10,10 +10,6 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{self, Command},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
-    },
     thread,
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
@@ -26,14 +22,14 @@ use hotki_server::{
     smoketest_bridge::{
         BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
         BridgeKeyKind, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
-        BridgeTimestampMs, default_wait_world_seq_timeout_ms,
+        BridgeTimestampMs,
     },
 };
 use tokio::{
     fs,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
-    sync::{Notify, broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep, timeout},
 };
 use tracing::{debug, error, info};
@@ -78,10 +74,6 @@ struct ConnectionDriver {
     test_bridge_path: Option<PathBuf>,
     /// Broadcast channel used to stream bridge updates to the smoketest harness.
     bridge_events: broadcast::Sender<BridgeEvent>,
-    /// Latest reconcile sequence reported by the world service.
-    world_seq: Arc<AtomicU64>,
-    /// Notifier triggered when the world reconcile sequence advances.
-    world_seq_notify: Arc<Notify>,
     /// Pending notifications tracked for smoketest handshake responses.
     bridge_notifications: VecDeque<BridgeNotification>,
 }
@@ -91,18 +83,6 @@ impl ConnectionDriver {
     const MAX_BRIDGE_NOTIFICATIONS: usize = 32;
     /// Cap on the number of events drained during shutdown handshake preparation.
     const MAX_SHUTDOWN_DRAIN_EVENTS: usize = 128;
-
-    /// Handle a server-recommended resync by fetching a fresh snapshot and notifying the user.
-    async fn handle_resync(&mut self, conn: &mut hotki_server::Connection) {
-        match conn.get_world_snapshot().await {
-            Ok(_snap) => {
-                self.egui_ctx.request_repaint();
-            }
-            Err(e) => {
-                self.notify(NotifyKind::Error, "World", &format!("Sync failed: {}", e));
-            }
-        }
-    }
 
     /// Publish a bridge event to any smoketest subscribers.
     fn emit_bridge_event(&self, event: BridgeEvent) {
@@ -181,12 +161,6 @@ impl ConnectionDriver {
     }
 
     /// Record the latest world reconcile sequence and wake pending waiters.
-    fn update_world_seq(&self, seq: u64) {
-        let previous = self.world_seq.swap(seq, AtomicOrdering::SeqCst);
-        if seq > previous {
-            self.world_seq_notify.notify_waiters();
-        }
-    }
     /// Construct a new driver instance with initial configuration and channels.
     fn new(
         config_path: PathBuf,
@@ -212,8 +186,6 @@ impl ConnectionDriver {
                 Some(PathBuf::from(format!("{}.bridge", derived)))
             });
         let (bridge_events, _rx) = broadcast::channel(128);
-        let world_seq = Arc::new(AtomicU64::new(0));
-        let world_seq_notify = Arc::new(Notify::new());
 
         Self {
             config_path,
@@ -227,8 +199,6 @@ impl ConnectionDriver {
             dumpworld,
             test_bridge_path,
             bridge_events,
-            world_seq,
-            world_seq_notify,
             bridge_notifications: VecDeque::new(),
         }
     }
@@ -508,18 +478,6 @@ impl ConnectionDriver {
                     message: err.to_string(),
                 },
             },
-            BridgeRequest::GetWorldSnapshot => match conn.get_world_snapshot().await {
-                Ok(snapshot) => BridgeResponse::WorldSnapshot { snapshot },
-                Err(err) => BridgeResponse::Err {
-                    message: err.to_string(),
-                },
-            },
-            BridgeRequest::WaitForWorldSeq { target, timeout_ms } => {
-                match self.wait_for_world_seq(conn, target, timeout_ms).await {
-                    Ok(seq) => BridgeResponse::WorldSeq { reached: seq },
-                    Err(message) => BridgeResponse::Err { message },
-                }
-            }
             BridgeRequest::Shutdown => match conn.shutdown().await {
                 Ok(()) => {
                     self.drain_pending_bridge_events(conn).await;
@@ -532,46 +490,6 @@ impl ConnectionDriver {
         }
     }
 
-    /// Wait for the world reconcile sequence to reach `target` or time out.
-    async fn wait_for_world_seq(
-        &self,
-        conn: &mut hotki_server::Connection,
-        target: u64,
-        timeout_ms: u64,
-    ) -> Result<u64, String> {
-        let timeout_ms = if timeout_ms == 0 {
-            default_wait_world_seq_timeout_ms()
-        } else {
-            timeout_ms
-        };
-        let deadline = TokioInstant::now() + Duration::from_millis(timeout_ms);
-        loop {
-            let status = conn
-                .get_world_status()
-                .await
-                .map_err(|err| err.to_string())?;
-            let current = status.reconcile_seq;
-            self.update_world_seq(current);
-            if current >= target {
-                return Ok(current);
-            }
-            let now = TokioInstant::now();
-            if now >= deadline {
-                break;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let notified = self.world_seq_notify.notified();
-            match timeout(remaining, notified).await {
-                Ok(()) => continue,
-                Err(_) => break,
-            }
-        }
-        let last = self.world_seq.load(AtomicOrdering::SeqCst);
-        Err(format!(
-            "world reconcile sequence {target} not reached within {timeout_ms} ms (last seen {last})"
-        ))
-    }
-
     /// Handle a single server-to-UI event received from the engine.
     async fn handle_server_msg(
         &mut self,
@@ -580,6 +498,7 @@ impl ConnectionDriver {
     ) {
         match msg {
             hotki_protocol::MsgToUI::HudUpdate { cursor, displays } => {
+                let displays_clone = displays.clone();
                 self.current_cursor = cursor;
                 let vks = self.ui_config.hud_keys_ctx(&self.current_cursor);
                 let visible_keys: Vec<(String, String, bool)> = vks
@@ -608,7 +527,7 @@ impl ConnectionDriver {
                         depth,
                         cursor: self.current_cursor.clone(),
                         parent_title,
-                        displays,
+                        displays: displays_clone,
                     })
                     .is_err()
                 {
@@ -620,6 +539,10 @@ impl ConnectionDriver {
                     depth,
                     parent_title: bridge_parent_title,
                     keys: bridge_keys,
+                    displays,
+                });
+                self.emit_bridge_event(BridgeEvent::Focus {
+                    app: self.current_cursor.app.clone(),
                 });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
@@ -689,37 +612,12 @@ impl ConnectionDriver {
     }
 
     /// Process a streamed world event: update reconcile metrics and emit focus updates.
-    async fn handle_world_stream(&self, conn: &mut hotki_server::Connection, msg: WorldStreamMsg) {
+    async fn handle_world_stream(&self, _conn: &mut hotki_server::Connection, msg: WorldStreamMsg) {
         if self.dumpworld {
             debug!("World event: {:?}", msg);
         }
-        let focus_payload = match &msg {
-            WorldStreamMsg::FocusChanged(app) => Some(app.clone()),
-            _ => None,
-        };
-
-        match conn.get_world_status().await {
-            Ok(status) => {
-                let seq = status.reconcile_seq;
-                self.update_world_seq(seq);
-                if let Some(app) = focus_payload {
-                    self.emit_bridge_event(BridgeEvent::WorldFocus {
-                        app,
-                        reconcile_seq: seq,
-                    });
-                }
-            }
-            Err(err) => {
-                tracing::debug!(?err, "failed to fetch world status for bridge update");
-                if let Some(app) = focus_payload {
-                    let seq = self.world_seq.load(AtomicOrdering::SeqCst);
-                    self.emit_bridge_event(BridgeEvent::WorldFocus {
-                        app,
-                        reconcile_seq: seq,
-                    });
-                }
-            }
-        }
+        let WorldStreamMsg::FocusChanged(app) = msg;
+        self.emit_bridge_event(BridgeEvent::Focus { app });
     }
 
     /// Background connect with a preconnect control-message queue. Returns an open connection.
@@ -837,11 +735,6 @@ impl ConnectionDriver {
                         Ok(msg) => {
                             // Any message indicates liveness; reset the heartbeat timer
                             hb_timer.as_mut().reset(TokioInstant::now() + heartbeat::timeout());
-                            // Handle explicit backpressure recovery: request a world snapshot
-                            // when the server signals that a resync is recommended.
-                            if let hotki_protocol::MsgToUI::World(hotki_protocol::WorldStreamMsg::ResyncRecommended) = &msg {
-                                self.handle_resync(conn).await;
-                            }
                             self.handle_server_msg(conn, msg).await;
                         }
                         Err(e) => {
@@ -886,36 +779,21 @@ impl ConnectionDriver {
                     .as_ref()
                     .map(|f| format!("{} (pid={}) — {}", f.app, f.pid, f.title))
                     .unwrap_or_else(|| "none".to_string());
+                let display_count = snap.displays.displays.len();
+                let active_disp = snap
+                    .displays
+                    .active
+                    .as_ref()
+                    .map(|d| d.id.to_string())
+                    .unwrap_or_else(|| "-".into());
                 if writeln!(
                     out,
-                    "World: {} window(s); focused: {}",
-                    snap.windows.len(),
-                    focused_ctx
+                    "World: focused={} displays={} active_display={}",
+                    focused_ctx, display_count, active_disp
                 )
                 .is_err()
                 {
                     tracing::debug!("failed to write world header line");
-                }
-                for w in snap.windows.iter() {
-                    let mark = if w.focused { '*' } else { ' ' };
-                    let disp = w
-                        .display_id
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "-".into());
-                    let title = if w.title.is_empty() {
-                        "(no title)"
-                    } else {
-                        &w.title
-                    };
-                    if writeln!(
-                        out,
-                        "  {} z={:<2} pid={:<6} id={:<8} disp={:<3} app={:<16} title={}",
-                        mark, w.z, w.pid, w.id, disp, w.app, title
-                    )
-                    .is_err()
-                    {
-                        tracing::debug!("failed to write world window line");
-                    }
                 }
                 tracing::info!(target: "hotki::worlddump", "\n{}", out);
             }

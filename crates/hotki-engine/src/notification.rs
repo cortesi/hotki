@@ -63,30 +63,6 @@ impl NotificationDispatcher {
                 // Relay is handled elsewhere (event handler / repeater).
                 Ok(())
             }
-            KeyResponse::Fullscreen { .. } => {
-                // Engine handles fullscreen directly; no UI message.
-                Ok(())
-            }
-            KeyResponse::Place { .. } => {
-                // Engine handles placement directly; no UI message.
-                Ok(())
-            }
-            KeyResponse::PlaceMove { .. } => {
-                // Engine handles movement directly; no UI message.
-                Ok(())
-            }
-            KeyResponse::Focus { .. } => {
-                // Engine handles focus navigation directly; no UI message.
-                Ok(())
-            }
-            KeyResponse::Raise { .. } => {
-                // Engine handles raise directly; no UI message.
-                Ok(())
-            }
-            KeyResponse::Hide { .. } => {
-                // Engine handles hide directly; no UI message.
-                Ok(())
-            }
         }
     }
 

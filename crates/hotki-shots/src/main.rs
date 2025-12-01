@@ -179,10 +179,10 @@ fn find_window_by_title(
 ) -> Option<(u32, Option<Rect>)> {
     world.hint_refresh();
     rt.block_on(async {
-        world.window_by_pid_title(pid as i32, title).await.map(|w| {
-            let rect = w.pos.map(|pos| (pos.x, pos.y, pos.width, pos.height));
-            (w.id, rect)
-        })
+        world
+            .window_by_pid_title(pid as i32, title)
+            .await
+            .map(|w| (w.id, None))
     })
 }
 

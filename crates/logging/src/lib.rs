@@ -23,7 +23,7 @@ pub struct LogArgs {
     pub log_level: Option<String>,
 
     /// Set an explicit tracing filter directive (overrides other flags)
-    /// e.g. "hotki_engine=trace,mac_winops=debug"
+    /// e.g. "hotki_engine=trace,hotki_server=debug"
     #[arg(long)]
     pub log_filter: Option<String>,
 }
@@ -39,7 +39,6 @@ pub fn our_crates() -> &'static [&'static str] {
         "hotki_world",
         "hotki_protocol",
         // macOS integration crates
-        "mac_winops",
         "mac_hotkey",
         "mac_keycode",
         // Utilities

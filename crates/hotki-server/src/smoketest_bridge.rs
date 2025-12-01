@@ -1,8 +1,6 @@
 //! Test bridge protocol used by the smoketest harness to proxy RPCs through the UI.
-use hotki_protocol::{App, Cursor, NotifyKind};
+use hotki_protocol::{Cursor, DisplaysSnapshot, NotifyKind};
 use serde::{Deserialize, Serialize};
-
-use crate::ipc::rpc::WorldSnapshotLite;
 
 /// Unique identifier assigned to each bridge command.
 pub type BridgeCommandId = u64;
@@ -11,7 +9,7 @@ pub type BridgeCommandId = u64;
 pub type BridgeTimestampMs = u64;
 
 /// Request envelope transmitted from the smoketest harness to the UI runtime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BridgeCommand {
     /// Monotonic command identifier allocated by the harness.
     pub command_id: BridgeCommandId,
@@ -46,24 +44,8 @@ pub enum BridgeRequest {
     GetBindings,
     /// Fetch the current depth for liveness checks.
     GetDepth,
-    /// Fetch a lightweight world snapshot.
-    GetWorldSnapshot,
-    /// Block until the world reconcile sequence reaches at least `target`.
-    WaitForWorldSeq {
-        /// Minimum reconcile sequence expected from the world service.
-        target: u64,
-        /// Maximum time to wait before returning an error (milliseconds).
-        #[serde(default = "default_wait_world_seq_timeout_ms")]
-        timeout_ms: u64,
-    },
     /// Request a graceful backend shutdown.
     Shutdown,
-}
-
-/// Default timeout (in milliseconds) applied when waiting for the world
-/// reconcile sequence to advance.
-pub const fn default_wait_world_seq_timeout_ms() -> u64 {
-    5_000
 }
 
 /// Key event kind forwarded through the bridge.
@@ -97,16 +79,6 @@ pub enum BridgeResponse {
         /// Current depth value.
         depth: usize,
     },
-    /// Success reporting the reconcile sequence reached by the world service.
-    WorldSeq {
-        /// Reconcile sequence observed when the wait completed.
-        reached: u64,
-    },
-    /// Success containing a world snapshot.
-    WorldSnapshot {
-        /// Serialized world snapshot payload.
-        snapshot: WorldSnapshotLite,
-    },
     /// Asynchronous event emitted by the UI runtime.
     Event {
         /// Event payload describing the observed state change.
@@ -127,7 +99,7 @@ pub enum BridgeResponse {
 }
 
 /// Event payload streamed from the UI runtime to the smoketest harness.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BridgeEvent {
     /// HUD state changed after evaluating a cursor update.
@@ -140,13 +112,13 @@ pub enum BridgeEvent {
         parent_title: Option<String>,
         /// Keys currently visible in the HUD.
         keys: Vec<BridgeHudKey>,
+        /// Display geometry snapshot backing the HUD placement.
+        displays: DisplaysSnapshot,
     },
-    /// World service reported a focus change.
-    WorldFocus {
-        /// Latest focused application context, if any.
-        app: Option<App>,
-        /// Reconcile sequence observed when the focus change occurred.
-        reconcile_seq: u64,
+    /// Focus context changed (read-only world stream).
+    Focus {
+        /// Optional focused app/title/pid context (None when unfocused).
+        app: Option<hotki_protocol::App>,
     },
 }
 
@@ -219,24 +191,6 @@ impl BridgeResponse {
     pub fn into_depth(self) -> Result<usize, String> {
         match self {
             BridgeResponse::Depth { depth } => Ok(depth),
-            BridgeResponse::Err { message } => Err(message),
-            other => Err(format!("unexpected bridge response: {:?}", other)),
-        }
-    }
-
-    /// Extract the reconcile sequence value from the response.
-    pub fn into_world_seq(self) -> Result<u64, String> {
-        match self {
-            BridgeResponse::WorldSeq { reached } => Ok(reached),
-            BridgeResponse::Err { message } => Err(message),
-            other => Err(format!("unexpected bridge response: {:?}", other)),
-        }
-    }
-
-    /// Extract a world snapshot from the response.
-    pub fn into_snapshot(self) -> Result<WorldSnapshotLite, String> {
-        match self {
-            BridgeResponse::WorldSnapshot { snapshot } => Ok(snapshot),
             BridgeResponse::Err { message } => Err(message),
             other => Err(format!("unexpected bridge response: {:?}", other)),
         }

@@ -17,10 +17,7 @@ mod types;
 pub use error::Error;
 pub use hotki_protocol::{Cursor, Toggle};
 pub use loader::{load_from_path, load_from_str};
-pub use mode::{
-    Action, At, AtSpec, Dir, FullscreenKind, FullscreenSpec, Grid, GridSpec, Keys, KeysAttrs,
-    NotificationType, ShellModifiers, ShellSpec,
-};
+pub use mode::{Action, Keys, KeysAttrs, NotificationType, ShellModifiers, ShellSpec};
 use raw::RawConfig;
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 

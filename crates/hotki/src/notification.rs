@@ -7,9 +7,8 @@ use egui::{
     text::LayoutJob,
 };
 use hotki_protocol::NotifyKind;
-use mac_winops::nswindow;
 
-use crate::{display::DisplayMetrics, fonts};
+use crate::{display::DisplayMetrics, fonts, nswindow};
 
 /// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
@@ -183,21 +182,6 @@ impl NotificationCenter {
         ui.label(title_job);
     }
 
-    /// Get the active screen frame and global top coordinate.
-    ///
-    /// Coordinates follow AppKit semantics:
-    /// - `(x, y, w, h)` are in bottom-left origin space for the active screen.
-    /// - `global_top` is the maximum top Y across all screens, used to convert to
-    ///   top-left coordinates expected by winit/egui.
-    ///
-    /// Callers should clamp results against the selected screen bounds and handle
-    /// degenerate ranges when the notification width exceeds the screen width.
-    fn active_screen_frame(&self) -> (f32, f32, f32, f32, f32) {
-        let frame = self.display.active_frame();
-        let global_top = self.display.global_top();
-        (frame.x, frame.y, frame.width, frame.height, global_top)
-    }
-
     /// Queue a new notification to be displayed.
     pub fn push(&mut self, kind: NotifyKind, title: String, text: String) {
         let created = Instant::now();
@@ -237,7 +221,7 @@ impl NotificationCenter {
     fn layout(&mut self, ctx: &Context) {
         let m = 12.0; // screen margin
         let gap = 8.0; // vertical gap between notifications
-        let (sx, sy, sw, sh, global_top) = self.active_screen_frame();
+        let (sx, sy, sw, sh, global_top) = self.display.active_screen_frame();
         let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
         // Guard against invalid/negative configured width.
         let width = self.width.max(1.0);
@@ -349,7 +333,8 @@ impl NotificationCenter {
         self.layout(ctx);
         let mut any_animating = false;
 
-        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, global_top) = self.active_screen_frame();
+        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, global_top) =
+            self.display.active_screen_frame();
 
         // Update animation and draw. Items that would fall below the bottom of the active
         // screen are not rendered, but remain in the backlog and ephemeral list until

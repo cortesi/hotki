@@ -15,7 +15,6 @@ config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 log-forward = { path = "../log-forward" }
 logfmt = { path = "../logfmt" }
-mac-winops = { path = "../mac-winops" }
 logging = { path = "../logging" }
 
 eframe = "0.32.2"
@@ -24,7 +23,6 @@ image = "0.25.8"
 objc2 = "0.6.2"
 objc2-app-kit = "0.3.1"
 objc2-foundation = "0.3.1"
-objc2-quartz-core = "0.3.1"
 ron = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -37,3 +35,4 @@ directories = "6.0.0"
 once_cell = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 parking_lot = "0.12.4"
+objc2-quartz-core = "0.3.1"

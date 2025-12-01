@@ -84,4 +84,4 @@ impl HotkeyApi for MockHotkeyApi {
     }
 }
 
-// (WindowOps moved to mac-winops::ops)
+// (Window operations handled externally; no in-crate bindings remain.)

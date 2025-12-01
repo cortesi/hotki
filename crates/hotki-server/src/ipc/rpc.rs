@@ -90,22 +90,6 @@ pub fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
             V::String("current_poll_ms".into()),
             V::Integer((ws.current_poll_ms as i64).into()),
         ),
-        (
-            V::String("debounce_cache".into()),
-            V::Integer((ws.debounce_cache as i64).into()),
-        ),
-        (
-            V::String("debounce_pending".into()),
-            V::Integer((ws.debounce_pending as i64).into()),
-        ),
-        (
-            V::String("reconcile_seq".into()),
-            V::Integer((ws.reconcile_seq as i64).into()),
-        ),
-        (
-            V::String("suspects_pending".into()),
-            V::Integer((ws.suspects_pending as i64).into()),
-        ),
         (V::String("capabilities".into()), caps),
     ])
 }
@@ -177,13 +161,13 @@ pub fn enc_server_status(status: &ServerStatusLite) -> crate::Result<Value> {
     Ok(Value::Binary(bytes))
 }
 
-/// Lightweight snapshot payload for `get_world_snapshot` method.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Lightweight snapshot payload for `get_world_snapshot` method (focus + displays only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WorldSnapshotLite {
-    /// Current windows in z-order (0 = frontmost first).
-    pub windows: Vec<hotki_protocol::WorldWindowLite>,
     /// Focused context, if any.
     pub focused: Option<hotki_protocol::App>,
+    /// Display snapshot for placement decisions.
+    pub displays: hotki_protocol::DisplaysSnapshot,
 }
 
 /// Encode a world snapshot to msgpack binary `Value`.

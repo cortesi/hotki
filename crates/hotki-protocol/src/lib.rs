@@ -129,31 +129,6 @@ pub enum Toggle {
     Toggle,
 }
 
-/// Lightweight window representation for world event streaming.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorldWindowLite {
-    /// Application name.
-    pub app: String,
-    /// Window title.
-    pub title: String,
-    /// Process id.
-    pub pid: i32,
-    /// Core Graphics window id (`kCGWindowNumber`).
-    pub id: u32,
-    /// Z-order index (0 = frontmost) within the current snapshot.
-    pub z: u32,
-    /// True if focused according to AX-preferred rule.
-    pub focused: bool,
-    /// Display identifier with the greatest overlap, if known.
-    pub display_id: Option<u32>,
-    /// Mission Control space identifier reported by CoreGraphics.
-    pub space: Option<i64>,
-    /// True if the window belongs to one of the active Spaces.
-    pub on_active_space: bool,
-    /// True if CoreGraphics reports the window as currently on-screen.
-    pub is_on_screen: bool,
-}
-
 /// Rectangular bounds for a display in bottom-left origin coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -185,26 +160,8 @@ pub struct DisplaysSnapshot {
 /// Streamed world events from the server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorldStreamMsg {
-    /// A new window was observed.
-    Added(WorldWindowLite),
-    /// A window disappeared.
-    Removed {
-        /// Process id of the removed window.
-        pid: i32,
-        /// Core Graphics window id of the removed window.
-        id: u32,
-    },
-    /// A window was updated; deltas are elided.
-    Updated {
-        /// Process id of the updated window.
-        pid: i32,
-        /// Core Graphics window id of the updated window.
-        id: u32,
-    },
     /// Focus changed to the provided context. `None` when no focused window.
     FocusChanged(Option<App>),
-    /// Recommended resync when server dropped events due to backpressure.
-    ResyncRecommended,
 }
 
 /// IPC-related helpers: channel aliases and message codec.

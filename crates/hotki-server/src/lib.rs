@@ -48,6 +48,7 @@ use std::{env, path::PathBuf, process::id, sync::OnceLock};
 mod client;
 mod error;
 mod ipc;
+mod loop_wake;
 mod process;
 mod server;
 

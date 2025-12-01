@@ -21,14 +21,14 @@ use std::{
     slice,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use hotki_engine::{Engine, Error};
-use hotki_protocol::{App, MsgToUI, WorldStreamMsg, WorldWindowLite};
+use hotki_engine::Engine;
+use hotki_protocol::{App, MsgToUI, WorldStreamMsg};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use parking_lot::Mutex;
 use tokio::sync::{
@@ -38,8 +38,11 @@ use tokio::sync::{
 use tracing::{debug, error, info, trace, warn};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
-use crate::ipc::rpc::{
-    HotkeyMethod, HotkeyNotification, ServerStatusLite, enc_server_status, enc_world_status,
+use crate::{
+    ipc::rpc::{
+        HotkeyMethod, HotkeyNotification, ServerStatusLite, enc_server_status, enc_world_status,
+    },
+    loop_wake,
 };
 
 /// IPC service that handles hotkey manager operations
@@ -64,10 +67,6 @@ pub struct HotkeyService {
     world_forwarder_running: Arc<AtomicBool>,
     /// When true, auto-shutdown the server if no UI clients remain connected.
     auto_shutdown_on_empty: Arc<AtomicBool>,
-    /// Count of world event drops specifically.
-    world_event_drops: Arc<AtomicU64>,
-    /// One-shot guard to emit ResyncRecommended after a world drop.
-    world_resync_pending: Arc<AtomicUsize>,
     /// Shared idle timer state for status reporting.
     idle_state: Arc<IdleTimerState>,
 }
@@ -103,8 +102,6 @@ impl HotkeyService {
             hb_running: Arc::new(AtomicBool::new(false)),
             world_forwarder_running: Arc::new(AtomicBool::new(false)),
             auto_shutdown_on_empty: Arc::new(AtomicBool::new(false)),
-            world_event_drops: Arc::new(AtomicU64::new(0)),
-            world_resync_pending: Arc::new(AtomicUsize::new(0)),
             idle_state,
         }
     }
@@ -191,8 +188,6 @@ impl HotkeyService {
         }
         let shutdown = self.shutdown.clone();
         let event_tx = self.event_tx.clone();
-        let drops = self.world_event_drops.clone();
-        let resync_pending = self.world_resync_pending.clone();
         let engine = self.engine.clone();
         tokio::spawn(async move {
             // Ensure engine exists and get world view
@@ -206,115 +201,44 @@ impl HotkeyService {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             };
 
+            let mut cursor = world.subscribe();
             loop {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
 
-                let mut cursor = world.subscribe();
-                let mut last_lost = cursor.lost_count;
-
-                loop {
-                    if shutdown.load(Ordering::SeqCst) {
-                        return;
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+                let event = match world.next_event_until(&mut cursor, deadline).await {
+                    Some(ev) => ev,
+                    None => {
+                        if cursor.is_closed() {
+                            return;
+                        }
+                        continue;
                     }
+                };
 
-                    let deadline =
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-                    let event = match world.next_event_until(&mut cursor, deadline).await {
-                        Some(ev) => ev,
-                        None => {
-                            if cursor.is_closed() {
-                                return;
-                            }
-                            continue;
+                let hotki_world::WorldEvent::FocusChanged(change) = event else {
+                    continue;
+                };
+
+                let app = match (change.app, change.title, change.pid) {
+                    (Some(app), Some(title), Some(pid)) => Some(App { app, title, pid }),
+                    _ => world.focused_context().await.map(|(app, title, pid)| App {
+                        app,
+                        title,
+                        pid,
+                    }),
+                };
+
+                if let Err(err) =
+                    event_tx.try_send(MsgToUI::World(WorldStreamMsg::FocusChanged(app)))
+                {
+                    match err {
+                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                            // Drop silently; focus updates are best-effort.
                         }
-                    };
-
-                    if cursor.lost_count > last_lost {
-                        let skipped = (cursor.lost_count - last_lost) as u64;
-                        let _ = drops.fetch_add(skipped, Ordering::SeqCst);
-                        resync_pending.store(1, Ordering::SeqCst);
-                        break;
-                    }
-                    last_lost = cursor.lost_count;
-
-                    let msg_opt: Option<WorldStreamMsg> = match event {
-                        hotki_world::WorldEvent::Added(w) => {
-                            let w = *w;
-                            if !w.on_active_space {
-                                debug!(
-                                    pid = w.pid,
-                                    id = w.id,
-                                    space = ?w.space,
-                                    title = %w.title,
-                                    app = %w.app,
-                                    "world window added off active space"
-                                );
-                            }
-                            Some(WorldStreamMsg::Added(WorldWindowLite {
-                                app: w.app,
-                                title: w.title,
-                                pid: w.pid,
-                                id: w.id,
-                                z: w.z,
-                                focused: w.focused,
-                                display_id: w.display_id,
-                                space: w.space,
-                                on_active_space: w.on_active_space,
-                                is_on_screen: w.is_on_screen,
-                            }))
-                        }
-                        hotki_world::WorldEvent::Removed(k) => Some(WorldStreamMsg::Removed {
-                            pid: k.pid,
-                            id: k.id,
-                        }),
-                        hotki_world::WorldEvent::Updated(k, _d) => Some(WorldStreamMsg::Updated {
-                            pid: k.pid,
-                            id: k.id,
-                        }),
-                        hotki_world::WorldEvent::MetaAdded(_, _)
-                        | hotki_world::WorldEvent::MetaRemoved(_, _) => None,
-                        hotki_world::WorldEvent::FocusChanged(change) => {
-                            let app = match (change.app, change.title, change.pid) {
-                                (Some(app), Some(title), Some(pid)) => {
-                                    Some(App { app, title, pid })
-                                }
-                                _ => world.focused_context().await.map(|(app, title, pid)| App {
-                                    app,
-                                    title,
-                                    pid,
-                                }),
-                            };
-                            Some(WorldStreamMsg::FocusChanged(app))
-                        }
-                    };
-
-                    let Some(msg) = msg_opt else { continue };
-
-                    if resync_pending.load(Ordering::SeqCst) > 0 {
-                        match event_tx.try_send(MsgToUI::World(WorldStreamMsg::ResyncRecommended)) {
-                            Ok(()) => {
-                                resync_pending.store(0, Ordering::SeqCst);
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                let _ = drops.fetch_add(1, Ordering::SeqCst);
-                                continue;
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-                        }
-                    }
-
-                    match event_tx.try_send(MsgToUI::World(msg)) {
-                        Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            let n = drops.fetch_add(1, Ordering::SeqCst) + 1;
-                            if n == 1 || n.is_multiple_of(1000) {
-                                tracing::debug!(count = n, "ui_world_drop");
-                            }
-                            resync_pending.store(1, Ordering::SeqCst);
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
                     }
                 }
             }
@@ -435,7 +359,7 @@ impl MrpcConnection for HotkeyService {
                                             "No UI clients; auto-shutdown enabled — stopping server"
                                         );
                                         svc.shutdown.store(true, Ordering::SeqCst);
-                                        let _ = mac_winops::focus::post_user_event();
+                                        let _ = loop_wake::post_user_event();
                                         break;
                                     }
                                 }
@@ -468,7 +392,7 @@ impl MrpcConnection for HotkeyService {
                 self.shutdown.store(true, Ordering::SeqCst);
 
                 // Wake the Tao event loop so it can observe shutdown promptly
-                let _ = mac_winops::focus::post_user_event();
+                let _ = loop_wake::post_user_event();
 
                 // Stop forwarding any further logs/events to clients
                 log_forward::clear_sink();
@@ -593,42 +517,6 @@ impl MrpcConnection for HotkeyService {
                         );
                         Ok(Value::Boolean(true))
                     }
-                    Err(Error::OffActiveSpace {
-                        op,
-                        pid: err_pid,
-                        id: err_id,
-                        space,
-                    }) => {
-                        tracing::debug!(
-                            target: "hotki_server::ipc::service",
-                            "InjectKey: operation {} refused for pid={} id={:?} space={:?}",
-                            op,
-                            err_pid,
-                            err_id,
-                            space
-                        );
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::WindowOffActiveSpace,
-                            &[
-                                ("operation", Value::String(op.into())),
-                                ("pid", Value::Integer((err_pid as i64).into())),
-                                (
-                                    "id",
-                                    match err_id {
-                                        Some(v) => Value::Integer((v as i64).into()),
-                                        None => Value::Nil,
-                                    },
-                                ),
-                                (
-                                    "space",
-                                    match space {
-                                        Some(s) => Value::Integer(s.into()),
-                                        None => Value::Nil,
-                                    },
-                                ),
-                            ],
-                        ));
-                    }
                     Err(e) => {
                         tracing::warn!(
                             target: "hotki_server::ipc::service",
@@ -738,17 +626,15 @@ impl MrpcConnection for HotkeyService {
                     }
                 };
                 let world = eng.world();
-                // Obtain consistent snapshot + focused key
-                let (_cursor, snap, focused_key) = world.subscribe_with_snapshot().await;
-                let (payload, total, offspace_count) = build_snapshot_payload(snap, focused_key);
-                if offspace_count > 0 {
-                    trace!(
-                        total,
-                        offspace = offspace_count,
-                        retained = payload.windows.len(),
-                        "world snapshot dropped off-space windows"
-                    );
-                }
+                let displays = world.displays().await;
+                let focused_app =
+                    world
+                        .focused_context()
+                        .await
+                        .map(|(app, title, pid)| App { app, title, pid });
+
+                let payload = build_snapshot_payload(displays, focused_app);
+
                 crate::ipc::rpc::enc_world_snapshot(&payload).map_err(|e| {
                     Self::typed_err(
                         crate::error::RpcErrorCode::InvalidType,
@@ -919,107 +805,90 @@ impl HotkeyServiceBuilder {
         svc
     }
 }
-fn build_snapshot_payload(
-    mut snap: Vec<hotki_world::WorldWindow>,
-    focused_key: Option<hotki_world::WindowKey>,
-) -> (crate::ipc::rpc::WorldSnapshotLite, usize, usize) {
-    snap.sort_by_key(|w| (w.z, w.pid, w.id));
-    let total = snap.len();
-    let offspace_count = snap.iter().filter(|w| !w.on_active_space).count();
-    let windows: Vec<hotki_protocol::WorldWindowLite> = snap
+fn to_display_rect(frame: hotki_world::WorldDisplays) -> hotki_protocol::DisplaysSnapshot {
+    let displays = frame
+        .displays
         .into_iter()
-        .filter(|w| w.on_active_space)
-        .map(|w| hotki_protocol::WorldWindowLite {
-            app: w.app,
-            title: w.title,
-            pid: w.pid,
-            id: w.id,
-            z: w.z,
-            focused: w.focused,
-            display_id: w.display_id,
-            space: w.space,
-            on_active_space: w.on_active_space,
-            is_on_screen: w.is_on_screen,
+        .map(|d| hotki_protocol::DisplayRect {
+            id: d.id,
+            x: d.x,
+            y: d.y,
+            width: d.width,
+            height: d.height,
         })
         .collect();
-    let focused = focused_key.and_then(|k| {
-        windows
-            .iter()
-            .find(|w| w.pid == k.pid && w.id == k.id)
-            .map(|w| hotki_protocol::App {
-                app: w.app.clone(),
-                title: w.title.clone(),
-                pid: w.pid,
-            })
+    let active = frame.active.map(|d| hotki_protocol::DisplayRect {
+        id: d.id,
+        x: d.x,
+        y: d.y,
+        width: d.width,
+        height: d.height,
     });
-    (
-        crate::ipc::rpc::WorldSnapshotLite { windows, focused },
-        total,
-        offspace_count,
-    )
+    hotki_protocol::DisplaysSnapshot {
+        global_top: frame.global_top,
+        active,
+        displays,
+    }
+}
+
+fn build_snapshot_payload(
+    displays: hotki_world::WorldDisplays,
+    focused: Option<App>,
+) -> crate::ipc::rpc::WorldSnapshotLite {
+    crate::ipc::rpc::WorldSnapshotLite {
+        focused,
+        displays: to_display_rect(displays),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
-    use hotki_world::{WindowKey, WorldWindow};
+    use hotki_protocol::{App, DisplaysSnapshot};
+    use hotki_world::{DisplayFrame, WorldDisplays};
 
     use super::*;
 
-    fn ww(
-        pid: i32,
-        id: u32,
-        z: u32,
-        on_active_space: bool,
-        focused: bool,
-        space: Option<i64>,
-    ) -> WorldWindow {
-        WorldWindow {
-            app: format!("App{}", pid),
-            title: format!("Win{}", id),
-            pid,
-            id,
-            pos: None,
-            layer: 0,
-            z,
-            space,
-            on_active_space,
-            is_on_screen: true,
-            display_id: None,
-            focused,
-            ax: None,
-            meta: Vec::new(),
-            last_seen: Instant::now(),
-            seen_seq: 0,
-        }
+    #[test]
+    fn build_snapshot_carries_focus_and_displays() {
+        let displays = WorldDisplays {
+            global_top: 1200.0,
+            active: Some(DisplayFrame {
+                id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            }),
+            displays: vec![DisplayFrame {
+                id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            }],
+        };
+        let focused = Some(App {
+            app: "Test".into(),
+            title: "Window".into(),
+            pid: 42,
+        });
+
+        let payload = build_snapshot_payload(displays.clone(), focused.clone());
+
+        assert_eq!(payload.focused, focused);
+        assert_eq!(payload.displays.global_top, displays.global_top);
+        assert_eq!(payload.displays.displays.len(), displays.displays.len());
+        assert_eq!(
+            payload.displays.active.unwrap().id,
+            displays.active.unwrap().id
+        );
     }
 
     #[test]
-    fn build_snapshot_filters_offspace() {
-        let snap = vec![
-            ww(1, 1, 0, true, true, Some(1)),
-            ww(2, 2, 1, false, false, Some(2)),
-            ww(3, 3, 2, true, false, None),
-        ];
-        let focused_key = Some(WindowKey { pid: 1, id: 1 });
-        let (payload, total, offspace) = build_snapshot_payload(snap, focused_key);
-        assert_eq!(total, 3);
-        assert_eq!(offspace, 1);
-        assert_eq!(payload.windows.len(), 2);
-        assert!(payload.windows.iter().all(|w| w.on_active_space));
-        let focused = payload.focused.expect("focused app retained");
-        assert_eq!(focused.pid, 1);
-    }
-
-    #[test]
-    fn build_snapshot_drops_offspace_focus() {
-        let snap = vec![ww(5, 10, 0, false, true, Some(5))];
-        let focused_key = Some(WindowKey { pid: 5, id: 10 });
-        let (payload, total, offspace) = build_snapshot_payload(snap, focused_key);
-        assert_eq!(total, 1);
-        assert_eq!(offspace, 1);
-        assert!(payload.windows.is_empty());
-        assert!(payload.focused.is_none());
+    fn build_snapshot_defaults_when_no_focus() {
+        let displays = WorldDisplays::default();
+        let payload = build_snapshot_payload(displays.clone(), None);
+        assert_eq!(payload.focused, None);
+        assert_eq!(payload.displays, DisplaysSnapshot::default());
     }
 }

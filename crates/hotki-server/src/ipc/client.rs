@@ -235,10 +235,6 @@ pub struct WorldStatusLite {
     pub focused_id: Option<i64>,
     pub last_tick_ms: u64,
     pub current_poll_ms: u64,
-    pub debounce_cache: u64,
-    pub debounce_pending: u64,
-    pub reconcile_seq: u64,
-    pub suspects_pending: u64,
     pub accessibility: i32,
     pub screen_recording: i32,
 }
@@ -298,10 +294,6 @@ impl WorldStatusLite {
                 let mut focused_id: Option<i64> = None;
                 let mut last_tick_ms = 0u64;
                 let mut current_poll_ms = 0u64;
-                let mut debounce_cache = 0u64;
-                let mut debounce_pending = 0u64;
-                let mut reconcile_seq = 0u64;
-                let mut suspects_pending = 0u64;
                 let mut accessibility = -1i32;
                 let mut screen_recording = -1i32;
 
@@ -332,26 +324,6 @@ impl WorldStatusLite {
                                     current_poll_ms = i.as_u64().unwrap_or(0);
                                 }
                             }
-                            Some("debounce_cache") => {
-                                if let Value::Integer(i) = val {
-                                    debounce_cache = i.as_u64().unwrap_or(0);
-                                }
-                            }
-                            Some("debounce_pending") => {
-                                if let Value::Integer(i) = val {
-                                    debounce_pending = i.as_u64().unwrap_or(0);
-                                }
-                            }
-                            Some("reconcile_seq") => {
-                                if let Value::Integer(i) = val {
-                                    reconcile_seq = i.as_u64().unwrap_or(0);
-                                }
-                            }
-                            Some("suspects_pending") => {
-                                if let Value::Integer(i) = val {
-                                    suspects_pending = i.as_u64().unwrap_or(0);
-                                }
-                            }
                             Some("capabilities") => {
                                 if let Value::Map(cap) = val {
                                     let (acc, scr) = Self::parse_capabilities(cap);
@@ -369,10 +341,6 @@ impl WorldStatusLite {
                     focused_id,
                     last_tick_ms,
                     current_poll_ms,
-                    debounce_cache,
-                    debounce_pending,
-                    reconcile_seq,
-                    suspects_pending,
                     accessibility,
                     screen_recording,
                 })

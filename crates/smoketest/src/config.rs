@@ -28,8 +28,6 @@ pub const DEFAULTS: Defaults = Defaults {
 pub struct InputDelays {
     /// Polling interval for checking conditions.
     pub poll_interval_ms: u64,
-    /// Standard delay between UI actions.
-    pub ui_action_delay_ms: u64,
     /// Delay between retry attempts.
     pub retry_delay_ms: u64,
 }
@@ -37,7 +35,6 @@ pub struct InputDelays {
 /// Default input-event timings.
 pub const INPUT_DELAYS: InputDelays = InputDelays {
     poll_interval_ms: 10,
-    ui_action_delay_ms: 50,
     retry_delay_ms: 80,
 };
 
@@ -63,21 +60,6 @@ pub const BRIDGE: BridgeConfig = BridgeConfig {
     ack_timeout_ms: 750,
 };
 
-/// Helper window defaults shared across tests.
-#[derive(Debug, Clone, Copy)]
-pub struct HelperWindowConfig {
-    /// Default time to keep helper windows alive in milliseconds.
-    pub default_lifetime_ms: u64,
-    /// Extra time to add to helper window lifetime.
-    pub extra_time_ms: u64,
-}
-
-/// Helper window geometry and lifetime defaults.
-pub const HELPER_WINDOW: HelperWindowConfig = HelperWindowConfig {
-    default_lifetime_ms: 15000,
-    extra_time_ms: 5000,
-};
-
 /// Canonical RPC binding gate timings.
 #[derive(Debug, Clone, Copy)]
 pub struct BindingGates {
@@ -87,39 +69,6 @@ pub struct BindingGates {
 
 /// Default RPC readiness gate tunables.
 pub const BINDING_GATES: BindingGates = BindingGates { default_ms: 2000 };
-
-/// Placement test tunables.
-#[derive(Debug, Clone, Copy)]
-pub struct PlaceConfig {
-    /// Default number of columns for placement grid.
-    pub grid_cols: u32,
-    /// Default number of rows for placement grid.
-    pub grid_rows: u32,
-    /// Epsilon in pixels for frame comparisons in placement checks.
-    pub eps: f64,
-}
-
-/// Default placement grid tuning.
-pub const PLACE: PlaceConfig = PlaceConfig {
-    grid_cols: 3,
-    grid_rows: 2,
-    eps: 2.0,
-};
-
-/// Fullscreen test timing.
-#[derive(Debug, Clone, Copy)]
-pub struct FullscreenConfig {
-    /// Maximum time to wait for fullscreen frame stabilization.
-    pub wait_total_ms: u64,
-    /// Poll interval while waiting for fullscreen frame changes.
-    pub wait_poll_ms: u64,
-}
-
-/// Default fullscreen timing.
-pub const FULLSCREEN: FullscreenConfig = FullscreenConfig {
-    wait_total_ms: 1000,
-    wait_poll_ms: 50,
-};
 
 /// Warn overlay tuning.
 #[derive(Debug, Clone, Copy)]

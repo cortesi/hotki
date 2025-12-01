@@ -18,31 +18,29 @@ Hotki is now an early alpha - it's stable and my daily driver, but I'm not
 cutting binary releases yet. See the [Installation](#installation) section
 below for how to build it. Next steps:
 
-- Window management actions (move, resize, etc)
+- External window-management CLI (Hotki will call it via `shell(...)` bindings)
 - More sophisticated HUD patterns allowing text entry, selection, etc.
-- Tiled window layouts
 - Window groups
 
 
 ## Window State Architecture
 
-Hotki relies on the `hotki-world` crate as the single source of truth for
-window and focus state. Engines, smoketests, and auxiliary tooling subscribe
-to the [`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
-`mac_winops::list_windows` directly. This keeps CoreGraphics and AX access in
-one place, simplifies testing via the in-memory `TestWorld`, and ensures that
-refresh hints flow through a single channel.
+Hotki relies on the `hotki-world` crate for read-only focus and display
+snapshots. Engines, smoketests, and auxiliary tooling subscribe to the
+[`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
+platform APIs directly. This keeps macOS-specific reads in one place and
+simplifies testing via the in-memory `TestWorld`.
 
-Display geometry (active display bounds and the `global_top` conversion helper) also flows through
-`WorldView::displays()` / `WorldHandle::displays_snapshot()`. UI components and smoketests should
-use these helpers rather than invoking `mac_winops::screen::*` directly.
+Display geometry (active display bounds and the `global_top` conversion helper)
+also flows through `WorldView::displays()` / `WorldHandle::displays_snapshot()`.
+UI components and smoketests should use these helpers rather than invoking
+platform APIs directly. All window mutation now happens out-of-process via an
+external CLI invoked through `shell(...)` bindings.
 
 ## Contributor Docs
 
-- [Testing Principles](docs/testing-principles.md) – world-only flows, runloop pumping, reset
-  contracts, budgets, skip semantics, message style, and "Do Not Do" guidance.
-- [Mimic Scenarios](docs/mimic-scenarios.md) – capture lifecycle, replay structure, and importer
-  heuristics integration.
+- [Testing Principles](docs/testing-principles.md) – relay + HUD guidance, budgets, skip semantics,
+  message style, and "Do Not Do" guidance.
 
 
 ## Configuration
@@ -158,7 +156,9 @@ through the HUD.
 
 ### Actions
 
-Below is a table of all supported key binding actions. 
+Window management actions (raise/fullscreen/place/focus/hide) have been removed from Hotki. Bind
+those behaviours to the external window CLI via `shell(...)` if needed. Below is a table of the
+currently supported key binding actions.
 
 <table>
 <tr>
@@ -219,84 +219,6 @@ shell(
         <pre lang="ron">relay("cmd+shift+n")</pre>
     </td>
     <td>Relay a keystroke to the focused application</td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">
-fullscreen(toggle)
-fullscreen(on, native)
-fullscreen(off, nonnative)
-        </pre>
-    </td>
-    <td>
-        Toggle or set fullscreen on the focused window.
-        <br/>
-         <code>native</code>: Uses the app's native macOS Full Screen state
-          (AXFullScreen); if unsupported, Hotki falls back to sending the
-          standard <code>Ctrl+Cmd+F</code> shortcut.<br/>
-        <br/>
-         <code>nonnative</code> (default): Maximizes the window to the current
-          screen's <em>visibleFrame</em> (does not create a new Space). Toggle
-          stores the prior frame per window and restores it on the next
-          toggle/off.
-        <br/>
-    </td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">
-place(grid(3, 1), at(0, 0))
-place(grid(2, 2), at(1, 0))
-        </pre>
-    </td>
-    <td>
-        Place the focused window into a grid cell on the current screen.
-        <ul>
-          <li><code>grid(x, y)</code> divides the screen into <em>x</em> columns and <em>y</em> rows. Both must be <code>&gt; 0</code>.</li>
-          <li><code>at(ix, iy)</code> selects a zero‑based cell within that grid. The origin <code>(0, 0)</code> is <strong>top‑left</strong>.</li>
-        </ul>
-        Example: <code>place(grid(3, 1), at(0, 0))</code> places the window in the left‑most third of the screen.
-    </td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">
-place_move(grid(3, 2), left)
-place_move(grid(3, 2), right)
-place_move(grid(3, 2), up)
-place_move(grid(3, 2), down)
-        </pre>
-    </td>
-    <td>
-        Move the focused window by one cell within a grid on the current screen.
-        <ul>
-          <li><code>grid(x, y)</code> defines the grid (both <code>&gt; 0</code>).</li>
-          <li><code>up</code>/<code>down</code>/<code>left</code>/<code>right</code> move one cell and clamp at edges (no wrap).</li>
-          <li>First invocation from a non‑aligned position places at the visual top‑left cell (0, 0).</li>
-        </ul>
-    </td>
-</tr>
-<tr></tr>
-<tr>
-    <td>
-        <pre lang="ron">
-raise(app: "^Safari$")
-raise(title: "Downloads")
-raise(app: "Safari", title: "Downloads")
-        </pre>
-    </td>
-    <td>
-        Raise (activate) a window matching the given specification.
-        <ul>
-          <li><strong>Regex matching</strong>: <code>app</code> and <code>title</code> are regular expressions, identical in semantics to <code>match_app</code>/<code>match_title</code>.</li>
-          <li><strong>AND semantics</strong>: when both are provided, both must match.</li>
-          <li><strong>Scope</strong>: on‑screen layer‑0 windows in the current Space (v1). Does not un‑minimize or switch Spaces.</li>
-          <li><strong>Cycling</strong>: if the current frontmost window matches and there is another matching window behind it, focus moves to the next match; if there is no other match, it’s a no‑op.</li>
-        </ul>
-    </td>
 </tr>
 <tr></tr>
 <tr>

@@ -22,13 +22,6 @@ pub enum Error {
         timeout_ms: u64,
     },
 
-    /// MRPC event stream closed unexpectedly while a smoketest was running.
-    #[error("IPC disconnected unexpectedly while {during}")]
-    IpcDisconnected {
-        /// Context description of what was running when IPC disconnected
-        during: &'static str,
-    },
-
     /// MRPC driver operations failed while interacting with hotki-server.
     #[error("RPC driver failure: {0}")]
     RpcDriver(#[from] DriverError),
@@ -57,12 +50,6 @@ pub fn print_hints(err: &Error) {
         }
         Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {
             // No specific hints for these errors
-        }
-        Error::IpcDisconnected { .. } => {
-            eprintln!("hint: backend crashed or exited; run with --logs to capture cause");
-            eprintln!(
-                "      if this happened during fullscreen, check macOS accessibility issues and AXFullScreen support"
-            );
         }
         Error::RpcDriver(inner) => {
             eprintln!("hint: RPC driver failed: {inner}");

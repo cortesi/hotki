@@ -7,13 +7,13 @@ use egui::{
 };
 use egui_extras::{Column, TableBuilder};
 use hotki_protocol::NotifyKind;
-use mac_winops::nswindow;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     display::DisplayMetrics,
     logs::{self, Side},
     notification::BacklogEntry,
+    nswindow,
     runtime::ControlMsg,
 };
 

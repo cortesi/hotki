@@ -24,6 +24,7 @@ mod fonts;
 mod hud;
 mod logs;
 mod notification;
+mod nswindow;
 /// Permissions UI helpers and checks.
 mod permissions;
 /// Background UI runtime glue (server connection + event loop).

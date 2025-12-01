@@ -13,27 +13,18 @@ pub fn fast_world_cfg() -> hotki_world::WorldCfg {
     hotki_world::WorldCfg {
         poll_ms_min: 1,
         poll_ms_max: 10,
-        ..hotki_world::WorldCfg::default()
     }
 }
 
 /// Run an asynchronous engine test body on a dedicated runtime with world overrides.
 ///
-/// The helper disables the AX hint bridge (preventing long-lived threads from retaining the
-/// world handle), enables accessibility/screen recording shims, and ensures the runtime shuts down
-/// promptly once the test future completes.
+/// The helper ensures the runtime shuts down promptly once the test future completes.
 pub fn run_engine_test<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
     hotki_world::test_support::run_async_test(async move {
         let _guard = hotki_world::test_support::override_scope();
-        hotki_world::test_api::set_ax_bridge_enabled(false);
-        hotki_world::test_api::set_accessibility_ok(true);
-        hotki_world::test_api::set_screen_recording_ok(true);
-        hotki_world::test_api::set_displays(vec![(0, 0, 0, 1920, 1080)]);
-        hotki_world::test_api::ensure_ax_pool_inited();
-        hotki_world::test_api::ax_pool_reset_metrics_and_cache();
         fut.await;
     });
 }

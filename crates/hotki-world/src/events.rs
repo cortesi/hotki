@@ -16,12 +16,8 @@ use tokio::{
 
 use crate::WorldEvent;
 
-/// Default per-subscriber event ring capacity. Placement scenarios that drive
-/// synthetic helpers (e.g., min-size grids) can emit bursts well over a
-/// thousand updates, so we provision a larger buffer to avoid spurious waits
-/// while still surfacing `lost_count` diagnostics when something truly runs
-/// away.
-pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 16_384;
+/// Default per-subscriber event ring capacity.
+pub const DEFAULT_EVENT_CAPACITY: usize = 16_384;
 
 /// Recorded event with timestamp and monotonic sequence.
 #[derive(Clone, Debug)]
@@ -196,6 +192,7 @@ impl fmt::Debug for EventCursor {
     }
 }
 
+/// Lightweight event fan-out with per-subscriber ring buffers.
 pub struct EventHub {
     seq: AtomicU64,
     capacity: usize,
@@ -205,6 +202,7 @@ pub struct EventHub {
 }
 
 impl EventHub {
+    /// Create a new hub with the given per-subscriber capacity.
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(8);
         let history_capacity = capacity.saturating_mul(2);
@@ -217,6 +215,7 @@ impl EventHub {
         }
     }
 
+    /// Subscribe to events, optionally filtering them before they enter the buffer.
     pub fn subscribe(&self, filter: Option<EventFilter>) -> EventCursor {
         let start = self.seq.load(Ordering::SeqCst);
         let stream = StreamInner::new(start, self.capacity, filter);
@@ -224,6 +223,7 @@ impl EventHub {
         EventCursor::new(stream, start)
     }
 
+    /// Publish an event to all subscribers.
     pub fn publish(&self, event: WorldEvent) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let mut stale = false;
@@ -243,11 +243,13 @@ impl EventHub {
         self.record_history(seq, &event);
     }
 
+    /// Try to pull the next event without waiting.
     pub fn try_next(&self, cursor: &mut EventCursor) -> Option<WorldEvent> {
         let stream = cursor.stream.clone();
         stream.try_next(cursor)
     }
 
+    /// Await the next event until the given deadline, returning `None` on timeout.
     pub async fn next_event_until(
         &self,
         cursor: &mut EventCursor,
@@ -275,6 +277,7 @@ impl EventHub {
         }
     }
 
+    /// Count live subscribers.
     pub fn subscriber_count(&self) -> usize {
         let mut stale = false;
         let count = {
@@ -302,6 +305,7 @@ impl EventHub {
         count
     }
 
+    /// Close all subscribers and return the number closed.
     pub fn close_all(&self) -> usize {
         let mut closed = 0;
         {
@@ -317,6 +321,7 @@ impl EventHub {
         closed
     }
 
+    /// Return the most recent events (up to `limit`) from history.
     pub fn recent_events(&self, limit: usize) -> Vec<EventRecord> {
         let history = self.history.lock();
         let take = limit.min(history.len());

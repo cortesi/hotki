@@ -1061,15 +1061,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "deranged"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d630bccd429a5bb5a64b5e94f693bfc48c9f8566418fda4c494cc94f911f87cc"
-dependencies = [
- "powerfmt",
-]
-
-[[package]]
 name = "directories"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2187,7 +2178,6 @@ dependencies = [
  "log-forward",
  "logfmt",
  "logging",
- "mac-winops",
  "objc2 0.6.2",
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
@@ -2209,19 +2199,15 @@ name = "hotki-engine"
 version = "0.1.0"
 dependencies = [
  "config",
- "core-foundation 0.10.1",
  "hotki-protocol",
  "hotki-world",
- "io-kit-sys",
  "keymode",
  "lru",
  "mac-hotkey",
  "mac-keycode",
- "mac-winops",
  "parking_lot",
  "regex",
  "relaykey",
- "tao",
  "thiserror 2.0.16",
  "tokio",
  "tokio-util",
@@ -2256,7 +2242,6 @@ dependencies = [
  "log-forward",
  "mac-hotkey",
  "mac-keycode",
- "mac-winops",
  "mrpc",
  "once_cell",
  "parking_lot",
@@ -2279,31 +2264,8 @@ dependencies = [
  "hotki-server",
  "hotki-world",
  "mac-keycode",
- "mac-winops",
  "regex",
  "tokio",
-]
-
-[[package]]
-name = "hotki-tester"
-version = "0.0.1"
-dependencies = [
- "clap",
- "config",
- "hotki-protocol",
- "hotki-server",
- "hotki-world",
- "hotki-world-ids",
- "humantime",
- "logging",
- "mac-winops",
- "permissions",
- "ron",
- "thiserror 2.0.16",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2311,31 +2273,13 @@ name = "hotki-world"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "crossbeam-channel",
- "hotki-world-ids",
- "mac-winops",
- "objc2 0.6.2",
- "objc2-app-kit 0.3.1",
- "objc2-foundation 0.3.1",
- "once_cell",
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "parking_lot",
  "permissions",
- "regex",
- "thiserror 2.0.16",
  "tokio",
  "tracing",
- "winit",
 ]
-
-[[package]]
-name = "hotki-world-ids"
-version = "0.0.1"
-
-[[package]]
-name = "humantime"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "icu_collections"
@@ -2503,16 +2447,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "io-kit-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
-dependencies = [
- "core-foundation-sys",
- "mach2",
 ]
 
 [[package]]
@@ -2853,42 +2787,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mac-winops"
-version = "0.1.0"
-dependencies = [
- "block2 0.6.1",
- "clap",
- "core-foundation 0.10.1",
- "core-graphics 0.25.0",
- "crossbeam-channel",
- "hotki-world-ids",
- "libc",
- "mac-keycode",
- "objc2 0.6.2",
- "objc2-app-kit 0.3.1",
- "objc2-foundation 0.3.1",
- "once_cell",
- "parking_lot",
- "permissions",
- "proptest",
- "regex",
- "relaykey",
- "tao",
- "thiserror 2.0.16",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "mach2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3170,12 +3068,6 @@ dependencies = [
  "num-integer",
  "num-traits",
 ]
-
-[[package]]
-name = "num-conv"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
 
 [[package]]
 name = "num-derive"
@@ -3882,12 +3774,6 @@ checksum = "84df19adbe5b5a0782edcab45899906947ab039ccf4573713735ee7de1e6b08a"
 dependencies = [
  "zerovec",
 ]
-
-[[package]]
-name = "powerfmt"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -4622,16 +4508,15 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "config",
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "hotki-engine",
  "hotki-protocol",
  "hotki-server",
- "hotki-world",
- "hotki-world-ids",
  "keymode",
  "libc",
  "logging",
  "mac-keycode",
- "mac-winops",
  "objc2 0.6.2",
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
@@ -4907,36 +4792,6 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
-]
-
-[[package]]
-name = "time"
-version = "0.3.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83bde6f1ec10e72d583d91623c939f623002284ef622b87de38cfd546cbf2031"
-dependencies = [
- "deranged",
- "num-conv",
- "powerfmt",
- "serde",
- "time-core",
- "time-macros",
-]
-
-[[package]]
-name = "time-core"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40868e7c1d2f0b8d73e4a8c7f0ff63af4f6d19be117e90bd73eb1d62cf831c6b"
-
-[[package]]
-name = "time-macros"
-version = "0.2.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
-dependencies = [
- "num-conv",
- "time-core",
 ]
 
 [[package]]

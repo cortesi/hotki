@@ -200,7 +200,6 @@ impl ServerProcess {
             false
         }
     }
-
 }
 
 impl Drop for ServerProcess {

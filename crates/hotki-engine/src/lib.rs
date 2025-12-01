@@ -29,9 +29,9 @@
 //!   1) `config: RwLock<Config>` (read guard), 2) `state: Mutex<State>`,
 //!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
 //!      guard across any call that can block or `await`.
-//! - Focus state (`focus.ctx`, `focus.last_target_pid`) uses `parking_lot::Mutex`.
-//!   Never hold these mutex guards across an `.await`. Clone/copy values out
-//!   and drop the guard before awaiting.
+//! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
+//!   Never hold this guard across an `.await`. Clone/copy values out and drop
+//!   the guard before awaiting.
 //! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
 //!   not be awaited while any of the async engine mutexes are held. Acquire,
 //!   compute, drop guards, then perform async work.
@@ -43,20 +43,15 @@
 /// Test support utilities exported for the test suite.
 pub mod test_support;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 mod deps;
 mod error;
-mod focus;
 mod key_binding;
 mod key_state;
 mod notification;
-mod regex_cache;
 mod relay;
 mod repeater;
 mod services;
@@ -69,67 +64,20 @@ const KEY_PROC_WARN_MS: u64 = 5;
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
-use focus::FocusState;
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};
-use hotki_world::{
-    CommandError, CommandToggle, FocusChange, FullscreenIntent, FullscreenKind, HideIntent,
-    MoveDirection, MoveIntent, PlaceIntent, RaiseIntent, WorldDisplays, WorldView,
-};
+use hotki_world::{FocusChange, WorldDisplays, WorldView};
 pub use hotki_world::{WorldEvent, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use keymode::{KeyResponse, State};
 use mac_keycode::Chord;
-use mac_winops::ops::WinOps;
 pub use notification::NotificationDispatcher;
-use regex_cache::RegexCache;
+use parking_lot::Mutex;
 pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
 use services::Services;
 use tracing::{debug, trace, warn};
-
-#[inline]
-fn to_command_toggle(t: config::Toggle) -> CommandToggle {
-    match t {
-        config::Toggle::On => CommandToggle::On,
-        config::Toggle::Off => CommandToggle::Off,
-        config::Toggle::Toggle => CommandToggle::Toggle,
-    }
-}
-
-#[inline]
-fn to_world_move_dir(d: config::Dir) -> MoveDirection {
-    match d {
-        config::Dir::Left => MoveDirection::Left,
-        config::Dir::Right => MoveDirection::Right,
-        config::Dir::Up => MoveDirection::Up,
-        config::Dir::Down => MoveDirection::Down,
-    }
-}
-
-#[inline]
-fn to_fullscreen_kind(kind: config::FullscreenKind) -> FullscreenKind {
-    match kind {
-        config::FullscreenKind::Native => FullscreenKind::Native,
-        config::FullscreenKind::Nonnative => FullscreenKind::Nonnative,
-    }
-}
-
-fn command_error_message(op: &'static str, err: &CommandError) -> Option<String> {
-    match err {
-        CommandError::BackendFailure { message, .. } => Some(message.clone()),
-        CommandError::InvalidRequest { message } => Some(message.clone()),
-        CommandError::OffActiveSpace { .. } => Some(err.to_string()),
-        CommandError::NoEligibleWindow { .. } => match op {
-            "Place" => Some("No eligible window to place".to_string()),
-            "Move" => Some("No focused window to move".to_string()),
-            "Hide" | "Fullscreen" => Some(err.to_string()),
-            "Raise" => None,
-            _ => Some(err.to_string()),
-        },
-    }
-}
 
 fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayRect {
     hotki_protocol::DisplayRect {
@@ -142,8 +90,8 @@ fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayR
 }
 
 fn to_displays_snapshot(world: WorldDisplays) -> hotki_protocol::DisplaysSnapshot {
-    let global_top = world.global_top();
-    let active = world.active_frame().map(to_display_rect);
+    let global_top = world.global_top;
+    let active = world.active.map(to_display_rect);
     let displays = world.displays.into_iter().map(to_display_rect).collect();
     hotki_protocol::DisplaysSnapshot {
         global_top,
@@ -155,7 +103,13 @@ fn to_displays_snapshot(world: WorldDisplays) -> hotki_protocol::DisplaysSnapsho
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
-/// [`Engine::dispatch`]. Use [`Engine::set_mode`] to install a `Keys` configuration.
+/// [`Engine::dispatch`]. Use [`Engine::set_config`] to install a full configuration.
+///
+/// # Focus Context
+///
+/// The engine caches focus context `(app, title, pid)` from World events in `focus_ctx`.
+/// This uses `parking_lot::Mutex` for fast, synchronous access by the Repeater's PID
+/// lookup. Do not hold this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
     /// Keymode state (tracks only location). Always present.
@@ -168,15 +122,12 @@ pub struct Engine {
     svc: Services,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
-    /// Focus-related state (context, pid, last-target, policy)
-    focus: FocusState,
-    /// Monotonic token to cancel pending Raise debounces when a new Raise occurs
-    raise_nonce: Arc<AtomicU64>,
-    /// Cache for compiled regular expressions used by actions like Raise
-    regex_cache: Arc<RegexCache>,
+    /// Cached focus context from World events: `(app, title, pid)`.
+    focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+    /// If true, hint world refresh on dispatch; else trust cached context.
+    sync_on_dispatch: bool,
     /// Last displays snapshot sent to the UI.
     display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
-    // world is part of `svc`
 }
 
 impl Engine {
@@ -188,106 +139,37 @@ impl Engine {
         manager: Arc<mac_hotkey::Manager>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
     ) -> Self {
-        let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
-            KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
-        ));
-        // Create shared focus/relay instances
-        let focus = FocusState::new(true);
-        let relay_handler = RelayHandler::new();
-        let notifier = NotificationDispatcher::new(event_tx.clone());
-        let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
-            keymode::Keys::default(),
-            config::Style::default(),
-        )));
-
-        // Prepare shared world before constructing Self
+        let api = Arc::new(RealHotkeyApi::new(manager));
         let world = hotki_world::World::spawn_default_view(hotki_world::WorldCfg::default());
-        let repeater =
-            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
-        let svc = Services {
-            relay: relay_handler,
-            notifier,
-            repeater,
-            world: world.clone(),
-        };
-
-        let eng = Self {
-            state: Arc::new(tokio::sync::Mutex::new(State::new())),
-            binding_manager: binding_manager_arc,
-            key_tracker: KeyStateTracker::new(),
-            svc,
-            config: config_arc,
-            focus,
-            raise_nonce: Arc::new(AtomicU64::new(0)),
-            regex_cache: Arc::new(RegexCache::new()),
-            display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
-        };
-        eng.spawn_world_focus_subscription();
-        eng
-    }
-
-    /// Create a new engine with a custom window-ops implementation (useful for tests).
-    pub fn new_with_ops(
-        manager: Arc<mac_hotkey::Manager>,
-        event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
-        winops: Arc<dyn WinOps>,
-    ) -> Self {
-        let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
-            KeyBindingManager::new_with_api(Arc::new(RealHotkeyApi::new(manager))),
-        ));
-        // Create shared focus/relay instances
-        let focus = FocusState::new(true);
-        let relay_handler = RelayHandler::new();
-        let notifier = NotificationDispatcher::new(event_tx.clone());
-        let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
-            keymode::Keys::default(),
-            config::Style::default(),
-        )));
-
-        let world =
-            hotki_world::World::spawn_view(winops.clone(), hotki_world::WorldCfg::default());
-        let repeater =
-            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
-        let svc = Services {
-            relay: relay_handler,
-            notifier,
-            repeater,
-            world: world.clone(),
-        };
-
-        let eng = Self {
-            state: Arc::new(tokio::sync::Mutex::new(State::new())),
-            binding_manager: binding_manager_arc,
-            key_tracker: KeyStateTracker::new(),
-            svc,
-            config: config_arc,
-            focus,
-            raise_nonce: Arc::new(AtomicU64::new(0)),
-            regex_cache: Arc::new(RegexCache::new()),
-            display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
-        };
-        eng.spawn_world_focus_subscription();
-        eng
+        Self::build(api, event_tx, true, true, world)
     }
 
     /// Custom constructor for tests and advanced scenarios.
-    /// Allows injecting a `HotkeyApi`, relay enable flag, and an explicit world view backed by
-    /// caller-provided window ops.
-    pub fn new_with_api_and_ops(
+    /// Allows injecting a `HotkeyApi`, relay enable flag, and an explicit world view.
+    pub fn new_with_api_and_world(
         api: Arc<dyn deps::HotkeyApi>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
-        _winops: Arc<dyn WinOps>,
         relay_enabled: bool,
+        world: Arc<dyn WorldView>,
+    ) -> Self {
+        Self::build(api, event_tx, relay_enabled, false, world)
+    }
+
+    fn build(
+        api: Arc<dyn deps::HotkeyApi>,
+        event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
+        relay_enabled: bool,
+        sync_on_dispatch: bool,
         world: Arc<dyn WorldView>,
     ) -> Self {
         let binding_manager_arc = Arc::new(tokio::sync::Mutex::new(
             KeyBindingManager::new_with_api(api),
         ));
-        let focus = FocusState::new(false);
+        let focus_ctx = Arc::new(Mutex::new(None));
         let relay_handler = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater =
-            Repeater::new_with_ctx(focus.ctx.clone(), relay_handler.clone(), notifier.clone());
+            Repeater::new_with_ctx(focus_ctx.clone(), relay_handler.clone(), notifier.clone());
         let svc = Services {
             relay: relay_handler,
             notifier,
@@ -305,9 +187,8 @@ impl Engine {
             key_tracker: KeyStateTracker::new(),
             svc,
             config: config_arc,
-            focus,
-            raise_nonce: Arc::new(AtomicU64::new(0)),
-            regex_cache: Arc::new(RegexCache::new()),
+            focus_ctx,
+            sync_on_dispatch,
             display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
         };
         eng.spawn_world_focus_subscription();
@@ -376,8 +257,9 @@ impl Engine {
 
     async fn apply_world_focus_context(&self, ctx: Option<(String, String, i32)>) -> Result<()> {
         let mut changed = false;
+        // NOTE: focus_ctx uses parking_lot::Mutex. Guard must be dropped before await.
         {
-            let mut guard = self.focus.ctx.lock();
+            let mut guard = self.focus_ctx.lock();
             if guard.as_ref() != ctx.as_ref() {
                 *guard = ctx.clone();
                 changed = true;
@@ -455,6 +337,11 @@ impl Engine {
 
     async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
         tracing::debug!("start app={} title={}", app, title);
+        // LOCK ORDER: config (read) -> state -> binding_manager.
+        // The config read guard is held for the duration of this function because
+        // we reference its data for key resolution. State and binding_manager
+        // guards are acquired and released in separate scopes to avoid holding
+        // multiple locks simultaneously. Async service calls happen outside all guards.
         let cfg_guard = self.config.read().await;
 
         // Ensure valid context first
@@ -558,11 +445,12 @@ impl Engine {
     /// HUD location (depth/path) remains stable across theme or config updates.
     /// Path invalidation is handled by `Config::ensure_context` during rebind.
     pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
+        // LOCK ORDER: config (write) must be released before rebind_current_context
+        // which acquires config (read) -> state -> binding_manager.
         {
             let mut g = self.config.write().await;
             *g = cfg;
         }
-        // Write guard is dropped before we rebind to avoid nested lock access.
         self.rebind_current_context().await
     }
 
@@ -597,7 +485,7 @@ impl Engine {
     async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
         let start = Instant::now();
         // On dispatch, nudge world to refresh and proceed with cached context
-        if self.focus.sync_on_dispatch {
+        if self.sync_on_dispatch {
             self.svc.world.hint_refresh();
         }
         let (app_ctx, title_ctx, _pid) = self.current_context_tuple();
@@ -607,7 +495,8 @@ impl Engine {
             identifier, app_ctx, title_ctx
         );
 
-        // CRITICAL: Single lock acquisition to avoid race conditions
+        // LOCK ORDER: config (read) -> state. Response handling and rebind happen
+        // after releasing state lock to avoid holding guards across async calls.
         let cfg_for_handle = self.config.read().await;
         let (loc_before, loc_after, response) = {
             let mut st = self.state.lock().await;
@@ -630,72 +519,28 @@ impl Engine {
             Ok(KeyResponse::Relay {
                 chord: target,
                 attrs,
-            }) => self.handle_action_relay(&identifier, target, &attrs).await,
-            Ok(KeyResponse::Fullscreen { desired, kind }) => {
-                self.handle_action_fullscreen(desired, kind).await
-            }
-            Ok(KeyResponse::Raise { app, title }) => self.handle_action_raise(app, title).await,
-            Ok(KeyResponse::Place {
-                cols,
-                rows,
-                col,
-                row,
             }) => {
-                let raise_pid = {
-                    let mut g = self.focus.last_target_pid.lock();
-                    g.take()
-                };
-                self.handle_action_place_request(cols, rows, col, row, raise_pid)
-                    .await
+                self.handle_action_relay(&identifier, target, &attrs)
+                    .await?
             }
-            Ok(KeyResponse::PlaceMove { cols, rows, dir }) => {
-                self.handle_action_place_move(cols, rows, dir).await
+            Ok(KeyResponse::ShellAsync {
+                command,
+                ok_notify,
+                err_notify,
+                repeat,
+            }) => {
+                self.handle_action_shell(&identifier, command, ok_notify, err_notify, repeat)
+                    .await?
             }
-            Ok(KeyResponse::Hide { desired }) => self.handle_action_hide(desired).await,
-            Ok(resp) => {
-                trace!("Key response: {:?}", resp);
-                // Special-case ShellAsync to start shell repeater if configured
-                match resp {
-                    KeyResponse::Focus { dir } => {
-                        tracing::info!("Engine: focus(dir={:?})", dir);
-                        if let Err(err) = self
-                            .svc
-                            .world
-                            .request_focus_dir(to_world_move_dir(dir))
-                            .await
-                        {
-                            tracing::warn!("Focus(World) command failed: {}", err);
-                            if let Some(msg) = command_error_message("Focus", &err) {
-                                let _ = self.svc.notifier.send_error("Focus", msg);
-                            }
-                        }
-                        self.hint_refresh();
-                        Ok(())
-                    }
-                    KeyResponse::ShellAsync {
-                        command,
-                        ok_notify,
-                        err_notify,
-                        repeat,
-                    } => {
-                        self.handle_action_shell(
-                            &identifier,
-                            command,
-                            ok_notify,
-                            err_notify,
-                            repeat,
-                        )
-                        .await
-                    }
-                    other => self.svc.notifier.handle_key_response(other),
-                }
+            Ok(other) => {
+                trace!("Key response: {:?}", other);
+                self.svc.notifier.handle_key_response(other)?;
             }
             Err(e) => {
                 warn!("Key handler error for {}: {}", identifier, e);
                 self.svc.notifier.send_error("Key", e.to_string())?;
-                Ok(())
             }
-        }?;
+        };
 
         let location_changed = loc_before != loc_after;
         if location_changed {
@@ -765,31 +610,6 @@ impl Engine {
         Ok(())
     }
 
-    async fn handle_action_fullscreen(
-        &self,
-        desired: config::Toggle,
-        kind: config::FullscreenKind,
-    ) -> Result<()> {
-        let intent = FullscreenIntent {
-            desired: to_command_toggle(desired),
-            kind: to_fullscreen_kind(kind),
-        };
-        match self.svc.world.request_fullscreen(intent).await {
-            Ok(receipt) => {
-                if receipt.target.is_some() {
-                    self.hint_refresh();
-                }
-                Ok(())
-            }
-            Err(err) => {
-                if let Some(msg) = command_error_message("Fullscreen", &err) {
-                    let _ = self.svc.notifier.send_error("Fullscreen", msg);
-                }
-                Ok(())
-            }
-        }
-    }
-
     async fn handle_action_shell(
         &self,
         id: &str,
@@ -809,188 +629,6 @@ impl Engine {
         });
         self.svc.repeater.start(id.to_string(), exec, rep);
         Ok(())
-    }
-
-    async fn handle_action_raise(&self, app: Option<String>, title: Option<String>) -> Result<()> {
-        tracing::debug!("Raise action: app={:?} title={:?}", app, title);
-        let _ = self.raise_nonce.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut invalid = false;
-        let app_re = if let Some(s) = app.as_ref() {
-            match self.regex_cache.get_or_compile(s).await {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    self.svc
-                        .notifier
-                        .send_error("Raise", format!("Invalid app regex: {}", e))?;
-                    invalid = true;
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let title_re = if let Some(s) = title.as_ref() {
-            match self.regex_cache.get_or_compile(s).await {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    self.svc
-                        .notifier
-                        .send_error("Raise", format!("Invalid title regex: {}", e))?;
-                    invalid = true;
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if invalid {
-            return Ok(());
-        }
-        let intent = RaiseIntent {
-            app_regex: app_re,
-            title_regex: title_re,
-        };
-        match self.svc.world.request_raise(intent).await {
-            Ok(receipt) => {
-                if let Some(target) = receipt.target {
-                    {
-                        let mut g = self.focus.last_target_pid.lock();
-                        *g = Some(target.pid);
-                    }
-                    self.hint_refresh();
-                } else {
-                    tracing::debug!("Raise(World): world returned no target; no-op");
-                }
-                Ok(())
-            }
-            Err(err) => match err {
-                CommandError::NoEligibleWindow { .. } => {
-                    tracing::debug!("Raise(World): no match in snapshot; no-op");
-                    Ok(())
-                }
-                CommandError::OffActiveSpace { pid, space } => {
-                    if let Some(msg) = command_error_message("Raise", &err) {
-                        let _ = self.svc.notifier.send_error("Raise", msg);
-                    }
-                    Err(Error::OffActiveSpace {
-                        op: "raise",
-                        pid,
-                        id: None,
-                        space,
-                    })
-                }
-                other => {
-                    if let Some(msg) = command_error_message("Raise", &other) {
-                        let _ = self.svc.notifier.send_error("Raise", msg);
-                    }
-                    Ok(())
-                }
-            },
-        }
-    }
-
-    async fn handle_action_place_request(
-        &self,
-        cols: u32,
-        rows: u32,
-        col: u32,
-        row: u32,
-        raise_pid: Option<i32>,
-    ) -> Result<()> {
-        let intent = PlaceIntent {
-            cols,
-            rows,
-            col,
-            row,
-            pid_hint: raise_pid,
-            target: None,
-            options: None,
-        };
-
-        match self.svc.world.request_place_grid(intent).await {
-            Ok(receipt) => {
-                if receipt.target.is_some() {
-                    self.hint_refresh();
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let msg = command_error_message("Place", &err);
-                if let Some(ref text) = msg {
-                    let _ = self.svc.notifier.send_error("Place", text.clone());
-                }
-                match err {
-                    CommandError::OffActiveSpace { pid, space } => Err(Error::OffActiveSpace {
-                        op: "place",
-                        pid,
-                        id: None,
-                        space,
-                    }),
-                    CommandError::InvalidRequest { .. } => Err(Error::Msg(
-                        msg.unwrap_or_else(|| "Place request rejected".to_string()),
-                    )),
-                    _ => Ok(()),
-                }
-            }
-        }
-    }
-
-    async fn handle_action_place_move(&self, cols: u32, rows: u32, dir: config::Dir) -> Result<()> {
-        let intent = MoveIntent {
-            cols,
-            rows,
-            dir: to_world_move_dir(dir),
-            pid_hint: None,
-            target: None,
-            options: None,
-        };
-
-        match self.svc.world.request_place_move_grid(intent).await {
-            Ok(receipt) => {
-                if receipt.target.is_some() {
-                    self.hint_refresh();
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let msg = command_error_message("Move", &err);
-                if let Some(ref text) = msg {
-                    let _ = self.svc.notifier.send_error("Move", text.clone());
-                }
-                match err {
-                    CommandError::OffActiveSpace { pid, space } => Err(Error::OffActiveSpace {
-                        op: "place_move",
-                        pid,
-                        id: None,
-                        space,
-                    }),
-                    CommandError::InvalidRequest { .. } => Err(Error::Msg(
-                        msg.unwrap_or_else(|| "Move request rejected".to_string()),
-                    )),
-                    _ => Ok(()),
-                }
-            }
-        }
-    }
-
-    async fn handle_action_hide(&self, desired: config::Toggle) -> Result<()> {
-        let intent = HideIntent {
-            desired: to_command_toggle(desired),
-        };
-        match self.svc.world.request_hide(intent).await {
-            Ok(receipt) => {
-                if receipt.target.is_some() {
-                    self.hint_refresh();
-                }
-                Ok(())
-            }
-            Err(err) => {
-                if let Some(msg) = command_error_message("Hide", &err) {
-                    let _ = self.svc.notifier.send_error("Hide", msg);
-                }
-                Ok(())
-            }
-        }
     }
 
     /// Handle a key up event
@@ -1069,20 +707,16 @@ impl Engine {
 
 impl Engine {
     fn current_pid_world_first(&self) -> i32 {
-        if let Some((_, _, p)) = &*self.focus.ctx.lock() {
+        if let Some((_, _, p)) = &*self.focus_ctx.lock() {
             return *p;
         }
         -1
     }
 
     fn current_context_tuple(&self) -> (String, String, i32) {
-        if let Some((a, t, p)) = &*self.focus.ctx.lock() {
+        if let Some((a, t, p)) = &*self.focus_ctx.lock() {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)
-    }
-
-    fn hint_refresh(&self) {
-        self.svc.world.hint_refresh();
     }
 }

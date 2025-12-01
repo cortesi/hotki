@@ -1,28 +1,40 @@
 //! UI-driven smoketest cases executed via the registry runner.
 
 use std::{
+    cmp::Ordering,
     fs,
     path::PathBuf,
     thread,
     time::{Duration, Instant},
 };
 
-use hotki_server::smoketest_bridge::BridgeEvent;
-use hotki_world::WorldWindow;
+use core_foundation::{
+    array::CFArray,
+    base::{CFType, ItemRef, TCFType},
+    dictionary::CFDictionary,
+    number::CFNumber,
+    string::CFString,
+};
+use core_graphics::{
+    display::CGDisplay,
+    geometry::{CGPoint, CGRect, CGSize},
+    window::{
+        copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowName,
+        kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
+    },
+};
 use serde::Serialize;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{
     config,
     error::{Error, Result},
-    server_drive::{BridgeDriver, DriverError},
+    server_drive::{BridgeDriver, BridgeEvent, DriverError},
     session::{HotkiSession, HotkiSessionConfig},
-    suite::{CaseCtx, sanitize_slug},
-    world,
+    suite::{CaseCtx, LOG_TARGET, sanitize_slug},
 };
 
-/// Window title emitted by the HUD process.
-const HUD_TITLE: &str = "Hotki HUD";
 /// Canonical activation chord identifier expected from the server.
 pub const ACTIVATION_IDENT: &str = "shift+cmd+0";
 
@@ -37,6 +49,8 @@ pub struct ActivationOutcome {
     activation_attempts: u32,
     /// How many HUD update observations were seen in total.
     hud_updates_seen: u32,
+    /// Whether a focus-change event was observed during activation.
+    focus_event_seen: bool,
 }
 
 impl ActivationOutcome {
@@ -53,26 +67,24 @@ impl ActivationOutcome {
     /// Render a concise summary string for logging.
     fn summary_string(&self) -> String {
         format!(
-            "hud_update_ms={:?} frontmost_ms={:?} activation_attempts={} hud_updates_seen={} observed_via_event={}",
+            "hud_update_ms={:?} frontmost_ms={:?} activation_attempts={} hud_updates_seen={} observed_via_event={} focus_event_seen={}",
             self.hud_update_ms,
             self.frontmost_ms,
             self.activation_attempts,
             self.hud_updates_seen,
-            self.observed_via_event()
+            self.observed_via_event(),
+            self.focus_event_seen
         )
     }
 }
 
 /// Observes HUD visibility while waiting for activation to settle.
-struct BindingWatcher {
-    /// PID of the HUD window used to verify visibility.
-    hud_pid: i32,
-}
+struct BindingWatcher;
 
 impl BindingWatcher {
     /// Create a watcher scoped to the target HUD process id.
-    fn new(hud_pid: i32) -> Self {
-        Self { hud_pid }
+    fn new(_hud_pid: i32) -> Self {
+        Self
     }
 
     /// Attempt to activate the HUD and wait until the expected submenu bindings appear.
@@ -104,30 +116,46 @@ impl BindingWatcher {
             match bridge.drain_bridge_events() {
                 Ok(events) => {
                     for event in events {
-                        debug!(
-                            event_id = event.id,
-                            event_ms = event.timestamp_ms,
-                            "hud_event_observed"
-                        );
-                        if let BridgeEvent::Hud { .. } = event.payload
-                            && last_hud_event != Some(event.id)
-                        {
-                            metrics.record_hud_update();
-                            metrics.record_frontmost();
-                            last_hud_event = Some(event.id);
-                            if let Ok(Some(snapshot)) = bridge.latest_hud() {
+                        match event.payload {
+                            BridgeEvent::Hud {
+                                ref cursor,
+                                depth,
+                                ref parent_title,
+                                ..
+                            } => {
+                                metrics.focus_event_seen |= cursor.app.is_some();
                                 debug!(
-                                    hud_event_id = snapshot.event_id,
-                                    depth = snapshot.depth,
-                                    parent = ?snapshot.parent_title,
-                                    received_ms = snapshot.received_ms,
-                                    viewing_root = snapshot.cursor.viewing_root,
-                                    key_count = snapshot.keys.len(),
-                                    "hud_snapshot_state"
+                                    event_id = event.id,
+                                    event_ms = event.timestamp_ms,
+                                    depth,
+                                    parent = ?parent_title,
+                                    viewing_root = cursor.viewing_root,
+                                    "hud_event_observed"
                                 );
+                                if last_hud_event == Some(event.id) {
+                                    continue;
+                                }
+                                metrics.record_hud_update();
+                                metrics.record_frontmost();
+                                last_hud_event = Some(event.id);
+                                if let Ok(Some(snapshot)) = bridge.latest_hud() {
+                                    metrics.focus_event_seen |= snapshot.cursor.app.is_some();
+                                    debug!(
+                                        hud_event_id = snapshot.event_id,
+                                        depth = snapshot.depth,
+                                        parent = ?snapshot.parent_title,
+                                        received_ms = snapshot.received_ms,
+                                        viewing_root = snapshot.cursor.viewing_root,
+                                        key_count = snapshot.keys.len(),
+                                        "hud_snapshot_state"
+                                    );
+                                }
+                                if expected_nested.is_empty() {
+                                    hud_ready_via_event = true;
+                                }
                             }
-                            if expected_nested.is_empty() {
-                                hud_ready_via_event = true;
+                            BridgeEvent::Focus { .. } => {
+                                metrics.focus_event_seen = true;
                             }
                         }
                     }
@@ -140,7 +168,7 @@ impl BindingWatcher {
                 return Ok(metrics.into_outcome());
             }
 
-            if self.hud_visible()? {
+            if self.hud_visible(bridge)? {
                 metrics.record_hud_update();
                 metrics.record_frontmost();
 
@@ -201,11 +229,8 @@ impl BindingWatcher {
     }
 
     /// Check whether the HUD window is visible on the active space.
-    fn hud_visible(&self) -> Result<bool> {
-        let windows = world::list_windows()?;
-        Ok(windows
-            .iter()
-            .any(|w| w.pid == self.hud_pid && w.title == HUD_TITLE && w.is_on_screen))
+    fn hud_visible(&self, bridge: &BridgeDriver) -> Result<bool> {
+        Ok(bridge.latest_hud()?.is_some())
     }
 }
 
@@ -222,6 +247,8 @@ struct ActivationMetrics {
     activation_attempts: u32,
     /// Count of HUD observations recorded during activation.
     hud_updates_seen: u32,
+    /// Whether a focus-change event was observed.
+    focus_event_seen: bool,
 }
 
 impl ActivationMetrics {
@@ -233,6 +260,7 @@ impl ActivationMetrics {
             frontmost_at: None,
             activation_attempts: 0,
             hud_updates_seen: 0,
+            focus_event_seen: false,
         }
     }
 
@@ -269,6 +297,7 @@ impl ActivationMetrics {
             frontmost_ms,
             activation_attempts: self.activation_attempts,
             hud_updates_seen: self.hud_updates_seen,
+            focus_event_seen: self.focus_event_seen,
         }
     }
 }
@@ -295,17 +324,18 @@ fn remaining_ms(deadline: Instant) -> Option<u64> {
 }
 
 /// Key sequence applied once the HUD is visible to exercise the demo flow.
-const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "esc"];
+const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
 
 /// Standard HUD demo configuration (full HUD mode anchored bottom-right).
 const UI_DEMO_CONFIG: &str = r#"(
     keys: [
         ("shift+cmd+0", "activate", keys([
-            ("t", "Theme tester", keys([
-                ("h", "Theme Prev", theme_prev, (noexit: true)),
-                ("l", "Theme Next", theme_next, (noexit: true)),
+                ("t", "Theme tester", keys([
+                    ("h", "Theme Prev", theme_prev, (noexit: true)),
+                    ("l", "Theme Next", theme_next, (noexit: true)),
+                    ("n", "Notify", shell("echo notify", (ok_notify: info)), (noexit: true)),
+                ])),
             ])),
-        ])),
         ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
         ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
     ],
@@ -316,11 +346,12 @@ const UI_DEMO_CONFIG: &str = r#"(
 const MINUI_DEMO_CONFIG: &str = r#"(
     keys: [
         ("shift+cmd+0", "activate", keys([
-            ("t", "Theme tester", keys([
-                ("h", "Theme Prev", theme_prev, (noexit: true)),
-                ("l", "Theme Next", theme_next, (noexit: true)),
+                ("t", "Theme tester", keys([
+                    ("h", "Theme Prev", theme_prev, (noexit: true)),
+                    ("l", "Theme Next", theme_next, (noexit: true)),
+                    ("n", "Notify", shell("echo notify", (ok_notify: info)), (noexit: true)),
+                ])),
             ])),
-        ])),
         ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
         ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
     ],
@@ -348,6 +379,19 @@ pub fn ui_demo_mini(ctx: &mut CaseCtx<'_>) -> Result<()> {
             ron_config: MINUI_DEMO_CONFIG,
             with_logs: false,
         },
+    )
+}
+
+/// Exercise HUD placement relative to world-reported active display.
+pub fn ui_display_mapping(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    run_ui_case_with(
+        ctx,
+        &UiCaseSpec {
+            slug: "ui.display.mapping",
+            ron_config: UI_DEMO_CONFIG,
+            with_logs: true,
+        },
+        verify_display_alignment,
     )
 }
 
@@ -380,6 +424,14 @@ struct UiCaseState {
 
 /// Core implementation that runs a HUD-focused UI smoketest.
 fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
+    run_ui_case_with(ctx, spec, |_| Ok(()))
+}
+
+/// Variant of `run_ui_case` that allows callers to inject extra checks after HUD activation.
+fn run_ui_case_with<F>(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec, after_activation: F) -> Result<()>
+where
+    F: Fn(&mut UiCaseState) -> Result<()>,
+{
     let mut state: Option<UiCaseState> = None;
 
     ctx.setup(|ctx| {
@@ -422,11 +474,16 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
             let bridge = state_ref.session.bridge_mut();
             watcher.activate_until_ready(bridge, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
         };
+        if !activation.focus_event_seen {
+            return Err(Error::InvalidState(
+                "no focus-change bridge events observed during activation".into(),
+            ));
+        }
 
         {
             let bridge = state_ref.session.bridge_mut();
             bridge.inject_key(ident_activate)?;
-            bridge.wait_for_idents(&["h", "l"], gate_ms)?;
+            bridge.wait_for_idents(&["h", "l", "n"], gate_ms)?;
         }
 
         let theme_steps = &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1];
@@ -436,15 +493,12 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
         }
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
-        if hud_windows.is_empty() {
-            return Err(Error::InvalidState(
-                "hud window not visible after activation".into(),
-            ));
-        }
 
         state_ref.time_to_hud_ms = activation.hud_visible_ms();
         state_ref.hud_activation = Some(activation);
         state_ref.hud_windows = Some(hud_windows);
+
+        after_activation(state_ref)?;
 
         // Close the HUD after capturing window diagnostics to leave the session cleanly.
         let ident_exit = UI_DEMO_SEQUENCE[UI_DEMO_SEQUENCE.len() - 1];
@@ -467,8 +521,8 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
                 wins.iter()
                     .map(|w| {
                         format!(
-                            "title={} pid={} id={} on_active={} on_screen={} layer={}",
-                            w.title, w.pid, w.id, w.on_active_space, w.is_on_screen, w.layer
+                            "title={} pid={} id={} display_id={:?} on_screen={} layer={}",
+                            w.title, w.pid, w.id, w.display_id, w.is_on_screen, w.layer
                         )
                     })
                     .collect::<Vec<_>>()
@@ -502,16 +556,57 @@ fn run_ui_case(ctx: &mut CaseCtx<'_>, spec: &UiCaseSpec) -> Result<()> {
 
 /// Collect HUD windows belonging to the active Hotki session.
 fn collect_hud_windows(pid: i32) -> Result<Vec<HudWindowSnapshot>> {
-    let windows = world::list_windows()?;
-    Ok(windows
-        .into_iter()
-        .filter(|w| w.pid == pid && w.title == "Hotki HUD")
-        .map(HudWindowSnapshot::from)
-        .collect())
+    let displays = enumerate_displays()?;
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let arr: CFArray = copy_window_info(options, kCGNullWindowID)
+        .ok_or_else(|| Error::InvalidState("failed to read window list".into()))?;
+
+    let key_layer = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
+    let key_owner_pid = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
+    let key_owner_name = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerName) };
+    let key_name = unsafe { CFString::wrap_under_get_rule(kCGWindowName) };
+    let key_number = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
+    let key_bounds = unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) };
+    let key_onscreen = unsafe { CFString::wrap_under_get_rule(kCGWindowIsOnscreen) };
+
+    let mut windows = Vec::new();
+    for raw in arr.iter() {
+        let dict_ptr = *raw;
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
+
+        if dict_value_i32(&dict, &key_owner_pid) != Some(pid) {
+            continue;
+        }
+
+        let title = dict_value_string(&dict, &key_name).unwrap_or_default();
+        let id = dict_value_u32(&dict, &key_number).unwrap_or(0);
+        let layer = dict_value_i32(&dict, &key_layer).unwrap_or(-1);
+        let is_on_screen = dict_value_bool(&dict, &key_onscreen).unwrap_or(false);
+        let display_id = dict_value_rect(&dict, &key_bounds)
+            .as_ref()
+            .and_then(|rect| display_for_rect(rect, &displays));
+
+        windows.push(HudWindowSnapshot {
+            pid,
+            id,
+            title: if title.is_empty() {
+                dict_value_string(&dict, &key_owner_name).unwrap_or_default()
+            } else {
+                title
+            },
+            layer,
+            is_on_screen,
+            display_id,
+        });
+    }
+
+    Ok(windows)
 }
 
 /// Serializable summary of a HUD window observation.
-#[derive(Serialize)]
+/// Serializable summary of a HUD window observation.
+#[derive(Clone, Serialize)]
 struct HudWindowSnapshot {
     /// Owning process identifier.
     pid: i32,
@@ -519,23 +614,231 @@ struct HudWindowSnapshot {
     id: u32,
     /// Observed window title.
     title: String,
-    /// Whether the window was on the active space.
-    on_active_space: bool,
-    /// Whether the window was reported on-screen.
-    is_on_screen: bool,
     /// Window layer as reported by CoreGraphics.
     layer: i32,
+    /// Whether the window was reported on-screen.
+    is_on_screen: bool,
+    /// Display identifier derived from window bounds, when available.
+    display_id: Option<u32>,
 }
 
-impl From<WorldWindow> for HudWindowSnapshot {
-    fn from(info: WorldWindow) -> Self {
-        Self {
-            pid: info.pid,
-            id: info.id,
-            title: info.title,
-            on_active_space: info.on_active_space,
-            is_on_screen: info.is_on_screen,
-            layer: info.layer,
+/// Verify the HUD aligns with the active display reported by the world service.
+fn verify_display_alignment(state: &mut UiCaseState) -> Result<()> {
+    let displays = enumerate_displays()?;
+    if displays.len() < 2 {
+        info!(
+            target: LOG_TARGET,
+            pid = state.session.pid(),
+            count = displays.len(),
+            "skipping display mapping check: fewer than two displays",
+        );
+        return Ok(());
+    }
+
+    let focused_display = focused_display_id(&displays).ok_or_else(|| {
+        Error::InvalidState("unable to resolve focused display for verification".into())
+    })?;
+
+    let hud_snapshot =
+        state.session.bridge_mut().latest_hud()?.ok_or_else(|| {
+            Error::InvalidState("no HUD snapshot observed after activation".into())
+        })?;
+    let hud_active = hud_snapshot
+        .displays
+        .active
+        .as_ref()
+        .map(|d| d.id)
+        .ok_or_else(|| Error::InvalidState("HUD snapshot missing active display".into()))?;
+
+    if hud_active != focused_display {
+        return Err(Error::InvalidState(format!(
+            "active display mismatch: hud={} focused={}",
+            hud_active, focused_display
+        )));
+    }
+
+    let hud_windows = if let Some(wins) = state.hud_windows.clone() {
+        wins
+    } else {
+        let wins = collect_hud_windows(state.session.pid() as i32)?;
+        state.hud_windows = Some(wins.clone());
+        wins
+    };
+
+    let mut mapped: Vec<u32> = hud_windows.iter().filter_map(|w| w.display_id).collect();
+    if mapped.is_empty() {
+        return Err(Error::InvalidState(
+            "HUD windows missing display identifiers".into(),
+        ));
+    }
+    mapped.sort_unstable();
+    mapped.dedup();
+    if mapped.len() != 1 || mapped[0] != hud_active {
+        return Err(Error::InvalidState(format!(
+            "HUD windows on displays {:?} (expected {})",
+            mapped, hud_active
+        )));
+    }
+
+    Ok(())
+}
+
+/// Lightweight description of a display's bounds in bottom-left coordinates.
+#[derive(Clone, Copy, Debug)]
+struct DisplayFrame {
+    /// Display identifier.
+    id: u32,
+    /// Origin X coordinate.
+    x: f32,
+    /// Origin Y coordinate.
+    y: f32,
+    /// Width in pixels.
+    width: f32,
+    /// Height in pixels.
+    height: f32,
+}
+
+/// Enumerate active displays and produce simple bounding frames.
+fn enumerate_displays() -> Result<Vec<DisplayFrame>> {
+    let mut frames = Vec::new();
+    if let Ok(active) = CGDisplay::active_displays() {
+        for id in active {
+            let display = CGDisplay::new(id);
+            let bounds: CGRect = display.bounds();
+            frames.push(DisplayFrame {
+                id: display.id,
+                x: bounds.origin.x as f32,
+                y: bounds.origin.y as f32,
+                width: bounds.size.width as f32,
+                height: bounds.size.height as f32,
+            });
         }
     }
+
+    if frames.is_empty() {
+        return Err(Error::InvalidState("no active displays detected".into()));
+    }
+    Ok(frames)
+}
+
+/// Resolve the display identifier containing the currently focused window.
+fn focused_display_id(displays: &[DisplayFrame]) -> Option<u32> {
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let arr: CFArray = copy_window_info(options, kCGNullWindowID)?;
+    let key_layer = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
+    let key_bounds = unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) };
+
+    for raw in arr.iter() {
+        let dict_ptr = *raw;
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
+        let layer = dict_value_i32(&dict, &key_layer).unwrap_or(1);
+        if layer != 0 {
+            continue;
+        }
+        let display = dict_value_rect(&dict, &key_bounds)
+            .as_ref()
+            .and_then(|rect| display_for_rect(rect, displays));
+        if display.is_some() {
+            return display;
+        }
+        break;
+    }
+    None
+}
+
+/// Pick the display that contains the majority of a rectangle.
+fn display_for_rect(bounds: &CGRect, displays: &[DisplayFrame]) -> Option<u32> {
+    if displays.is_empty() {
+        return None;
+    }
+
+    let center_x = (bounds.origin.x + bounds.size.width * 0.5) as f32;
+    let center_y = (bounds.origin.y + bounds.size.height * 0.5) as f32;
+
+    if let Some(display) = displays
+        .iter()
+        .find(|d| point_in_display(d, center_x, center_y))
+    {
+        return Some(display.id);
+    }
+
+    displays
+        .iter()
+        .map(|d| (d.id, overlap_area(bounds, d)))
+        .filter(|(_, area)| *area > 0.0)
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+        .map(|(id, _)| id)
+}
+
+/// Check whether a point lies within a display frame.
+fn point_in_display(display: &DisplayFrame, x: f32, y: f32) -> bool {
+    x >= display.x
+        && x <= display.x + display.width
+        && y >= display.y
+        && y <= display.y + display.height
+}
+
+/// Compute the area of overlap between a rect and a display.
+fn overlap_area(bounds: &CGRect, display: &DisplayFrame) -> f32 {
+    let left = bounds.origin.x.max(display.x as f64) as f32;
+    let right =
+        (bounds.origin.x + bounds.size.width).min((display.x + display.width) as f64) as f32;
+    let bottom = bounds.origin.y.max(display.y as f64) as f32;
+    let top =
+        (bounds.origin.y + bounds.size.height).min((display.y + display.height) as f64) as f32;
+
+    let width = (right - left).max(0.0);
+    let height = (top - bottom).max(0.0);
+    width * height
+}
+
+/// Read a string from a CoreGraphics window dictionary value.
+fn dict_value_string(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<String> {
+    dict.find(key)
+        .and_then(|v: ItemRef<CFType>| v.downcast::<CFString>())
+        .map(|s: CFString| s.to_string())
+}
+
+/// Read a boolean from a CoreGraphics window dictionary value.
+fn dict_value_bool(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<bool> {
+    dict.find(key)
+        .and_then(|v: ItemRef<CFType>| v.downcast::<CFNumber>())
+        .and_then(|n: CFNumber| n.to_i64())
+        .map(|n| n != 0)
+}
+
+/// Read an i32 from a CoreGraphics window dictionary value.
+fn dict_value_i32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i32> {
+    dict.find(key)
+        .and_then(|v: ItemRef<CFType>| v.downcast::<CFNumber>())
+        .and_then(|n: CFNumber| n.to_i64())
+        .map(|n| n as i32)
+}
+
+/// Read a u32 from a CoreGraphics window dictionary value.
+fn dict_value_u32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u32> {
+    dict_value_i32(dict, key).map(|v| v as u32)
+}
+
+/// Extract a CGRect from a CoreGraphics window dictionary.
+fn dict_value_rect(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<CGRect> {
+    let bounds_dict: CFDictionary<CFString, CFType> =
+        unsafe { CFDictionary::wrap_under_get_rule(dict.find(key)?.as_CFTypeRef() as _) };
+    let x = dict_value_f32(&bounds_dict, "X")?;
+    let y = dict_value_f32(&bounds_dict, "Y")?;
+    let width = dict_value_f32(&bounds_dict, "Width")?;
+    let height = dict_value_f32(&bounds_dict, "Height")?;
+    let origin = CGPoint::new(x as f64, y as f64);
+    let size = CGSize::new(width as f64, height as f64);
+    Some(CGRect::new(&origin, &size))
+}
+
+/// Read an f32 from a CoreGraphics window dictionary entry.
+fn dict_value_f32(dict: &CFDictionary<CFString, CFType>, name: &'static str) -> Option<f32> {
+    let key = CFString::from_static_string(name);
+    dict.find(&key)
+        .and_then(|v: ItemRef<CFType>| v.downcast::<CFNumber>())
+        .and_then(|n: CFNumber| n.to_f64())
+        .map(|v| v as f32)
 }

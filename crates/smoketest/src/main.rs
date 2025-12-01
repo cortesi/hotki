@@ -4,14 +4,12 @@ use clap::Parser;
 use logging as logshared;
 use tracing_subscriber::{fmt, prelude::*};
 
-/// Scenario-specific smoketest cases and mimic harness helpers.
+/// Scenario-specific smoketest cases for relay + UI only.
 mod cases;
 mod cli;
 mod config;
 /// Error definitions and hint helpers used by smoketest.
 mod error;
-/// Shared helper utilities for new smoketest cases.
-mod helpers;
 mod process;
 /// RPC driving helpers against the running server.
 mod server_drive;
@@ -21,9 +19,6 @@ mod session;
 mod suite;
 /// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
-/// Helper window for UI-driven tests and animations.
-/// World snapshot helpers backed by hotki-world.
-mod world;
 
 use std::{
     env,
@@ -126,9 +121,7 @@ fn main() {
     let perms = permissions::check_permissions();
     let fake_mode = (!perms.accessibility_ok || !perms.input_ok) && env::var_os("CI").is_some();
     if fake_mode && !cli.quiet {
-        println!(
-            "smoketest: Accessibility/Input permissions missing; running fake placement smoke"
-        );
+        println!("smoketest: Accessibility/Input permissions missing; running limited fake smoke");
     }
 
     enforce_permissions_or_exit(perms, fake_mode);

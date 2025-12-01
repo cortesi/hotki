@@ -70,7 +70,6 @@ mod tests {
                 message: "hello".into(),
             },
             MsgToUI::Heartbeat(123456),
-            MsgToUI::World(crate::WorldStreamMsg::ResyncRecommended),
             MsgToUI::World(crate::WorldStreamMsg::FocusChanged(Some(crate::App {
                 app: "X".into(),
                 title: "Y".into(),

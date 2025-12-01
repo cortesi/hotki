@@ -15,8 +15,6 @@ logging = { path = "../logging" }
 hotki-server = { path = "../hotki-server" }
 hotki-engine = { path = "../hotki-engine" }
 hotki-protocol = { path = "../hotki-protocol" }
-hotki-world = { path = "../hotki-world", features = ["world-mimic"] }
-mac-winops = { path = "../mac-winops" }
 mac-keycode = { path = "../mac-keycode" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 winit = "0.30"
@@ -35,4 +33,5 @@ parking_lot = "0.12.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 once_cell = { workspace = true }
-hotki-world-ids = { version = "0.0.1", path = "../hotki-world-ids" }
+core-graphics = "0.25.0"
+core-foundation = "0.10.1"

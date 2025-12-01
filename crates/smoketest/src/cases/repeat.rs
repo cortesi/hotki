@@ -8,21 +8,13 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hotki_engine::{RepeatObserver, Repeater};
 use hotki_protocol::ipc;
-use hotki_world::mimic::{EventLoopHandle, shared_event_loop};
 use parking_lot::Mutex;
 use tokio::runtime::Builder;
-use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow},
-    platform::pump_events::PumpStatus,
-    window::{Window, WindowId},
-};
 
 use crate::{
     config,
@@ -36,26 +28,20 @@ const RELAY_APP_ID: &str = "smoketest-relay";
 const SHELL_APP_ID: &str = "smoketest-shell";
 /// Identifier used for volume repeat runs.
 const VOLUME_APP_ID: &str = "smoketest-volume";
-/// Width of the helper window used in relay repeats.
-const RELAY_WINDOW_WIDTH: f64 = 280.0;
-/// Height of the helper window used in relay repeats.
-const RELAY_WINDOW_HEIGHT: f64 = 180.0;
-/// Margin applied when positioning the relay helper window.
-const RELAY_WINDOW_MARGIN: f64 = 8.0;
 
-/// Verify relay repeat throughput using the mimic-driven runner.
+/// Verify relay repeat throughput using a lightweight in-process harness.
 pub fn repeat_relay_throughput(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let duration_ms = config::DEFAULTS.duration_ms;
     run_repeat_case(ctx, "repeat-relay", duration_ms)
 }
 
-/// Verify shell repeat throughput using the mimic-driven runner.
+/// Verify shell repeat throughput using a simple tail file.
 pub fn repeat_shell_throughput(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let duration_ms = config::DEFAULTS.duration_ms;
     run_repeat_case(ctx, "repeat-shell", duration_ms)
 }
 
-/// Verify system volume repeat throughput using the mimic-driven runner.
+/// Verify system volume repeat throughput using AppleScript.
 pub fn repeat_volume_throughput(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let duration_ms = max(
         config::DEFAULTS.duration_ms,
@@ -133,30 +119,17 @@ fn count_relay(duration_ms: u64) -> Result<usize> {
 
     let timeout = config::ms(duration_ms);
     let title = config::test_title("relay");
+    let id = RELAY_APP_ID.to_string();
+
     {
-        let mut focus = focus_ctx.lock();
-        *focus = Some((
-            "smoketest-app".to_string(),
-            title.clone(),
-            std_process::id() as i32,
-        ));
+        let mut guard = focus_ctx.lock();
+        *guard = Some(("smoketest-app".into(), title, std_process::id() as i32));
     }
-    let mut app = RelayApp {
-        repeater,
-        window: None,
-        id: RELAY_APP_ID.into(),
-        chord,
-        started: false,
-        start: None,
-        timeout,
-        title,
-        finished: false,
-    };
 
-    let handle = shared_event_loop();
-    run_relay_loop(&handle, &mut app)?;
+    repeater.start_relay_repeat(id.clone(), chord, Some(hotki_engine::RepeatSpec::default()));
 
-    shutdown_repeater(&app.repeater, &app.id)?;
+    thread::sleep(timeout);
+    shutdown_repeater(&repeater, &id)?;
 
     Ok(counter.0.load(Ordering::SeqCst))
 }
@@ -340,141 +313,6 @@ impl RepeatObserver for RelayCounter {
 struct NullRepeatObserver;
 
 impl RepeatObserver for NullRepeatObserver {}
-
-/// Minimal winit application used for relay repeat measurement.
-struct RelayApp {
-    /// Repeater used to drive input events.
-    repeater: Repeater,
-    /// Test window instance.
-    window: Option<Window>,
-    /// Identifier for the repeat stream.
-    id: String,
-    /// Key chord to drive repeats.
-    chord: mac_keycode::Chord,
-    /// Title assigned to the helper window.
-    title: String,
-    /// Whether the app has started driving repeats.
-    started: bool,
-    /// Start time for the run.
-    start: Option<Instant>,
-    /// Total duration to run the repeat.
-    timeout: Duration,
-    /// Whether the application requested shutdown.
-    finished: bool,
-}
-
-impl ApplicationHandler for RelayApp {
-    fn resumed(&mut self, elwt: &ActiveEventLoop) {
-        if self.window.is_none() {
-            use winit::dpi::{LogicalPosition, LogicalSize};
-            let attrs = Window::default_attributes()
-                .with_title(self.title.clone())
-                .with_visible(true)
-                .with_inner_size(LogicalSize::new(RELAY_WINDOW_WIDTH, RELAY_WINDOW_HEIGHT));
-            let window = elwt.create_window(attrs).expect("create window");
-            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                unsafe { app.activate() };
-            }
-            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                use objc2_app_kit::NSScreen;
-                if let Some(screen) = NSScreen::mainScreen(mtm) {
-                    let vf = screen.visibleFrame();
-                    let x =
-                        (vf.origin.x + vf.size.width - RELAY_WINDOW_WIDTH - RELAY_WINDOW_MARGIN)
-                            .max(0.0);
-                    let y = (vf.origin.y + RELAY_WINDOW_MARGIN).max(0.0);
-                    window.set_outer_position(LogicalPosition::new(x, y));
-                }
-            }
-            self.window = Some(window);
-        }
-    }
-
-    fn window_event(&mut self, elwt: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let WindowEvent::CloseRequested = event {
-            self.repeater.stop_sync(&self.id);
-            self.request_finish(elwt);
-        }
-    }
-
-    fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
-        if !self.started {
-            self.started = true;
-            self.repeater.start_relay_repeat(
-                self.id.clone(),
-                self.chord.clone(),
-                Some(hotki_engine::RepeatSpec::default()),
-            );
-            self.start = Some(Instant::now());
-        }
-
-        if let Some(start) = self.start {
-            if start.elapsed() >= self.timeout {
-                self.repeater.stop_sync(&self.id);
-                self.request_finish(elwt);
-            }
-            elwt.set_control_flow(ControlFlow::WaitUntil(start + self.timeout));
-        } else {
-            elwt.set_control_flow(ControlFlow::Wait);
-        }
-    }
-}
-
-impl RelayApp {
-    /// Whether the application has requested shutdown.
-    fn should_finish(&self) -> bool {
-        self.finished
-    }
-
-    /// Next timeout used when pumping the shared event loop.
-    fn next_wakeup_timeout(&self) -> Duration {
-        if let Some(start) = self.start {
-            let deadline = start + self.timeout;
-            let now = Instant::now();
-            if deadline <= now {
-                Duration::from_millis(0)
-            } else {
-                (deadline - now).min(Duration::from_millis(16))
-            }
-        } else {
-            Duration::from_millis(16)
-        }
-    }
-
-    /// Request shutdown without calling `exit` so the loop stays reusable.
-    fn request_finish(&mut self, elwt: &ActiveEventLoop) {
-        if self.finished {
-            return;
-        }
-        if let Some(window) = self.window.take() {
-            window.set_visible(false);
-        }
-        self.finished = true;
-        elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
-    }
-}
-
-/// Pump the shared relay application until it signals shutdown.
-fn run_relay_loop(handle: &EventLoopHandle, app: &mut RelayApp) -> Result<()> {
-    loop {
-        let timeout = app.next_wakeup_timeout();
-        let status = handle.pump_app(Some(timeout), app);
-        if app.should_finish() {
-            break;
-        }
-        if let PumpStatus::Exit(code) = status {
-            if code != 0 {
-                return Err(Error::InvalidState(format!(
-                    "relay repeat event loop exited with status {}",
-                    code
-                )));
-            }
-            break;
-        }
-    }
-    Ok(())
-}
 
 /// Captured output and parsed repeat metrics from the repeat workload.
 struct RepeatOutput {

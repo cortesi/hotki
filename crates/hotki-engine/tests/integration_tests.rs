@@ -9,12 +9,13 @@ use std::{
 use hotki_engine::{
     Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec,
     Repeater,
-    test_support::{fast_world_cfg, recv_until, run_engine_test, wait_snapshot_until},
+    test_support::{recv_until, run_engine_test, wait_snapshot_until},
 };
 use hotki_protocol::MsgToUI;
-use hotki_world::World;
+use hotki_world::{
+    DisplayFrame, FocusChange, TestWorld, WindowKey, WorldDisplays, WorldEvent, WorldWindow,
+};
 use keymode::Keys;
-use mac_winops::ops::MockWinOps;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -22,44 +23,41 @@ use tokio::sync::mpsc;
 fn ensure_no_os_interaction() {}
 
 /// Test helper to create a test engine with mock components
-async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>) {
-    ensure_no_os_interaction();
-    let (tx, rx) = mpsc::channel(128);
-    let api = Arc::new(MockHotkeyApi::new());
-    // Use noop world for tests that don't need focus
-    let world = World::spawn_noop_view();
-    let engine = Engine::new_with_api_and_ops(api, tx, Arc::new(MockWinOps::new()), false, world);
-    (engine, rx)
+async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
+    create_test_engine_with_relay(false).await
 }
 
-async fn create_test_engine_with_mock(
+async fn create_test_engine_with_relay(
     relay_enabled: bool,
-) -> (Engine, mpsc::Receiver<MsgToUI>, Arc<MockWinOps>) {
+) -> (Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
     ensure_no_os_interaction();
     let (tx, rx) = mpsc::channel(128);
     let api = Arc::new(MockHotkeyApi::new());
-    let mock = Arc::new(MockWinOps::new());
-    let world = World::spawn_view(mock.clone(), fast_world_cfg());
-    let engine = Engine::new_with_api_and_ops(api, tx, mock.clone(), relay_enabled, world);
-    (engine, rx, mock)
+    let world = Arc::new(TestWorld::new());
+    let engine = Engine::new_with_api_and_world(api, tx, relay_enabled, world.clone());
+    (engine, rx, world)
 }
 
-async fn set_world_focus(engine: &Engine, mock: &MockWinOps, app: &str, title: &str, pid: i32) {
-    mock.set_windows(vec![mac_winops::WindowInfo {
-        id: 1,
-        pid,
+async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32) {
+    let window = WorldWindow {
         app: app.into(),
         title: title.into(),
-        pos: None,
-        space: None,
-        layer: 0,
+        pid,
+        id: 1,
+        display_id: None,
         focused: true,
-        is_on_screen: true,
-        on_active_space: true,
-    }]);
-    let world = engine.world();
-    world.hint_refresh();
-    let ready = wait_snapshot_until(world.as_ref(), 200, |snap| {
+    };
+    let key = WindowKey { pid, id: window.id };
+    world.set_snapshot(vec![window], Some(key));
+    world.push_event(WorldEvent::FocusChanged(FocusChange {
+        key: Some(key),
+        app: Some(app.into()),
+        title: Some(title.into()),
+        pid: Some(pid),
+        display_id: None,
+    }));
+
+    let ready = wait_snapshot_until(world, 200, |snap| {
         snap.iter().any(|w| w.pid == pid && w.focused)
     })
     .await;
@@ -86,7 +84,7 @@ fn create_test_keys() -> Keys {
 #[test]
 fn test_rebind_on_depth_change() {
     run_engine_test(async move {
-        let (mut engine, mut rx, mock) = create_test_engine_with_mock(false).await;
+        let (mut engine, mut rx, world) = create_test_engine_with_relay(false).await;
         let keys = create_test_keys();
 
         // Set initial mode
@@ -94,7 +92,7 @@ fn test_rebind_on_depth_change() {
         engine.set_config(cfg).await.expect("set config");
 
         // Seed world focus to trigger initial binding
-        set_world_focus(&engine, &mock, "TestApp", "TestWindow", 1234).await;
+        set_world_focus(world.as_ref(), "TestApp", "TestWindow", 1234).await;
 
         // Clear initial messages
         while rx.try_recv().is_ok() {}
@@ -148,7 +146,7 @@ fn test_rebind_on_depth_change() {
 fn test_binding_diff_correctness() {
     run_engine_test(async move {
         // For this test, we'll use the Engine's binding snapshot functionality
-        let (mut engine, _rx) = create_test_engine().await;
+        let (mut engine, _rx, _world) = create_test_engine().await;
 
         // Test 1: Set initial bindings
         let keys1 = Keys::from_ron(
@@ -530,7 +528,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
 fn test_binding_registration_order_stability() {
     run_engine_test(async move {
         // Test that binding order remains stable across updates
-        let (mut engine, _rx) = create_test_engine().await;
+        let (mut engine, _rx, _world) = create_test_engine().await;
 
         // Add bindings in random order
         let keys = Keys::from_ron(
@@ -574,7 +572,7 @@ fn test_binding_registration_order_stability() {
 fn test_capture_all_mode_transitions() {
     run_engine_test(async move {
         // Test capture-all mode transitions via engine depth changes
-        let (mut engine, _rx) = create_test_engine().await;
+        let (mut engine, _rx, _world) = create_test_engine().await;
 
         // Set a mode with capture capability
         // Note: capture attribute would need to be specified in config syntax if supported
@@ -607,5 +605,100 @@ fn test_capture_all_mode_transitions() {
         // Simulate going to depth 1 would enable capture if the mode requests it
         // But we can't directly test the internal capture state from here
         // The test validates that the system handles mode transitions
+    });
+}
+
+#[test]
+fn test_match_app_rebinds_on_focus_change() {
+    run_engine_test(async move {
+        let (mut engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let keys = Keys::from_ron(
+            r#"[
+        ("cmd+a", "app-only", relay("cmd+1"), (match_app: "Safari")),
+        ("cmd+b", "global", relay("cmd+2"))
+    ]"#,
+        )
+        .expect("valid keys");
+
+        let cfg = config::Config::from_parts(keys, config::Style::default());
+        engine.set_config(cfg).await.expect("set config");
+
+        // Focus Safari -> both bindings available
+        set_world_focus(world.as_ref(), "Safari", "Doc", 1111).await;
+        let got = recv_until(&mut rx, 400, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        assert!(got, "expected HUD update after focus change to Safari");
+        let mut present = false;
+        for _ in 0..30 {
+            let binds = engine.bindings_snapshot().await;
+            if binds.iter().any(|(id, _)| id == "cmd+a") {
+                present = true;
+                assert!(binds.iter().any(|(id, _)| id == "cmd+b"));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            present,
+            "match_app binding should be present for Safari after rebinding"
+        );
+
+        // Focus other app -> matched binding removed
+        set_world_focus(world.as_ref(), "Notes", "Note", 2222).await;
+        let got = recv_until(&mut rx, 400, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        assert!(got, "expected HUD update after focus change to Notes");
+        let mut absent = false;
+        for _ in 0..30 {
+            let binds = engine.bindings_snapshot().await;
+            if !binds.iter().any(|(id, _)| id == "cmd+a") {
+                absent = true;
+                assert!(binds.iter().any(|(id, _)| id == "cmd+b"));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            absent,
+            "match_app binding should be removed when app no longer matches"
+        );
+    });
+}
+
+#[test]
+fn test_display_snapshot_reaches_hud_updates() {
+    run_engine_test(async move {
+        let (mut engine, mut rx, world) = create_test_engine().await;
+        let keys = Keys::from_ron(r#"[("cmd+k", "noop", pop)]"#).expect("valid keys");
+        let cfg = config::Config::from_parts(keys, config::Style::default());
+        engine.set_config(cfg).await.expect("set config");
+
+        // Seed displays before focus to ensure snapshot is ready.
+        let displays = WorldDisplays {
+            global_top: 1400.0,
+            active: Some(DisplayFrame {
+                id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 1400.0,
+                height: 900.0,
+            }),
+            displays: vec![DisplayFrame {
+                id: 7,
+                x: 0.0,
+                y: 0.0,
+                width: 1400.0,
+                height: 900.0,
+            }],
+        };
+        world.set_displays(displays.clone());
+
+        set_world_focus(world.as_ref(), "TestApp", "Main", 5555).await;
+        let got = recv_until(&mut rx, 600, |m| match m {
+            MsgToUI::HudUpdate { displays: d, .. } => {
+                (d.global_top - displays.global_top).abs() < 0.1
+            }
+            _ => false,
+        })
+        .await;
+        assert!(got, "HUD update should carry latest display snapshot");
     });
 }
