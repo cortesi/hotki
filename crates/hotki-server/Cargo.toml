@@ -8,12 +8,9 @@ license = "MIT"
 
 [dependencies]
 mac-hotkey = { path = "../mac-hotkey" }
-keymode = { path = "../keymode" }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 log-forward = { path = "../log-forward" }
-relaykey = { path = "../relaykey" }
-mac-keycode = { path = "../mac-keycode" }
 permissions = { path = "../permissions" }
 hotki-engine = { path = "../hotki-engine" }
 hotki-world = { path = "../hotki-world" }
@@ -31,6 +28,10 @@ async-trait = { workspace = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }
 parking_lot = "0.12.4"
+
+# relaykey used in dev-dependencies for test-utils
+[package.metadata.cargo-machete]
+ignored = ["relaykey"]
 
 [dev-dependencies]
 relaykey = { path = "../relaykey", features = ["test-utils"] }

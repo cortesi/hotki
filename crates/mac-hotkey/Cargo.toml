@@ -12,7 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 mac-keycode = { path = "../mac-keycode" }
-bitflags = "2"
 crossbeam-channel = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -22,5 +21,3 @@ permissions = { path = "../permissions" }
 core-graphics = "0.25.0"
 parking_lot = "0.12.4"
 
-[dev-dependencies]
-proptest = "1"
