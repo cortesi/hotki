@@ -54,7 +54,6 @@ mod key_state;
 mod notification;
 mod relay;
 mod repeater;
-mod services;
 mod ticker;
 
 // Timing constants for warning thresholds
@@ -76,7 +75,6 @@ use parking_lot::Mutex;
 pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
-use services::Services;
 use tracing::{debug, trace, warn};
 
 fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayRect {
@@ -118,8 +116,6 @@ pub struct Engine {
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
-    /// Grouped long-lived services
-    svc: Services,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
     /// Cached focus context from World events: `(app, title, pid)`.
@@ -128,6 +124,14 @@ pub struct Engine {
     sync_on_dispatch: bool,
     /// Last displays snapshot sent to the UI.
     display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
+    /// Key relay handler for forwarding keys to focused app.
+    relay: RelayHandler,
+    /// Notification dispatcher for UI messages.
+    notifier: NotificationDispatcher,
+    /// Unified repeater for shell commands and key relays.
+    repeater: Repeater,
+    /// World view for focus and display tracking.
+    world: Arc<dyn WorldView>,
 }
 
 impl Engine {
@@ -166,16 +170,9 @@ impl Engine {
             KeyBindingManager::new_with_api(api),
         ));
         let focus_ctx = Arc::new(Mutex::new(None));
-        let relay_handler = RelayHandler::new_with_enabled(relay_enabled);
+        let relay = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
-        let repeater =
-            Repeater::new_with_ctx(focus_ctx.clone(), relay_handler.clone(), notifier.clone());
-        let svc = Services {
-            relay: relay_handler,
-            notifier,
-            repeater,
-            world: world.clone(),
-        };
+        let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
             keymode::Keys::default(),
             config::Style::default(),
@@ -185,11 +182,14 @@ impl Engine {
             state: Arc::new(tokio::sync::Mutex::new(State::new())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
-            svc,
             config: config_arc,
             focus_ctx,
             sync_on_dispatch,
             display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
+            relay,
+            notifier,
+            repeater,
+            world,
         };
         eng.spawn_world_focus_subscription();
         eng
@@ -197,11 +197,11 @@ impl Engine {
 
     /// Access the world view for event subscriptions and snapshots.
     pub fn world(&self) -> Arc<dyn WorldView> {
-        self.svc.world.clone()
+        self.world.clone()
     }
 
     fn spawn_world_focus_subscription(&self) {
-        let world = self.svc.world.clone();
+        let world = self.world.clone();
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
@@ -331,7 +331,7 @@ impl Engine {
             title,
             pid: self.current_pid_world_first(),
         });
-        self.svc.notifier.send_hud_update_cursor(cursor, snapshot)?;
+        self.notifier.send_hud_update_cursor(cursor, snapshot)?;
         Ok(())
     }
 
@@ -365,15 +365,14 @@ impl Engine {
             });
             debug!("HUD update: cursor {:?}", cursor.path());
             let displays_snapshot = {
-                let world_displays = self.svc.world.displays().await;
+                let world_displays = self.world.displays().await;
                 to_displays_snapshot(world_displays)
             };
             {
                 let mut cache = self.display_snapshot.lock().await;
                 *cache = displays_snapshot.clone();
             }
-            self.svc
-                .notifier
+            self.notifier
                 .send_hud_update_cursor(cursor, displays_snapshot)?;
         }
 
@@ -417,9 +416,9 @@ impl Engine {
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
             // Perform async work after dropping manager guard.
-            self.svc.repeater.clear_async().await;
+            self.repeater.clear_async().await;
             // Stop all active relays; each relay uses its original target PID.
-            self.svc.relay.stop_all();
+            self.relay.stop_all();
         }
 
         let elapsed = start.elapsed();
@@ -468,17 +467,17 @@ impl Engine {
 
     /// Re-export: current world snapshot of windows.
     pub async fn world_snapshot(&self) -> Vec<WorldWindow> {
-        self.svc.world.snapshot().await
+        self.world.snapshot().await
     }
 
     /// Re-export: subscribe to world events (Added/Updated/Removed/FocusChanged).
     pub fn world_events(&self) -> hotki_world::EventCursor {
-        self.svc.world.subscribe()
+        self.world.subscribe()
     }
 
     /// Diagnostics: world status snapshot (counts, timings, permissions).
     pub async fn world_status(&self) -> hotki_world::WorldStatus {
-        self.svc.world.status().await
+        self.world.status().await
     }
 
     /// Process a key event and return whether depth changed (requiring rebind)
@@ -486,7 +485,7 @@ impl Engine {
         let start = Instant::now();
         // On dispatch, nudge world to refresh and proceed with cached context
         if self.sync_on_dispatch {
-            self.svc.world.hint_refresh();
+            self.world.hint_refresh();
         }
         let (app_ctx, title_ctx, _pid) = self.current_context_tuple();
 
@@ -534,11 +533,11 @@ impl Engine {
             }
             Ok(other) => {
                 trace!("Key response: {:?}", other);
-                self.svc.notifier.handle_key_response(other)?;
+                self.notifier.handle_key_response(other)?;
             }
             Err(e) => {
                 warn!("Key handler error for {}: {}", identifier, e);
-                self.svc.notifier.send_error("Key", e.to_string())?;
+                self.notifier.send_error("Key", e.to_string())?;
             }
         };
 
@@ -595,17 +594,16 @@ impl Engine {
             let allow_os_repeat = repeat.is_some() && !has_custom_timing;
             self.key_tracker
                 .set_repeat_allowed(identifier, allow_os_repeat);
-            self.svc.repeater.start(
+            self.repeater.start(
                 identifier.to_string(),
                 ExecSpec::Relay { chord: target },
                 repeat,
             );
         } else {
             self.key_tracker.set_repeat_allowed(identifier, false);
-            self.svc
-                .relay
+            self.relay
                 .start_relay(identifier.to_string(), target.clone(), pid, false);
-            let _ = self.svc.relay.stop_relay(identifier, pid);
+            let _ = self.relay.stop_relay(identifier, pid);
         }
         Ok(())
     }
@@ -627,15 +625,15 @@ impl Engine {
             initial_delay_ms: r.initial_delay_ms,
             interval_ms: r.interval_ms,
         });
-        self.svc.repeater.start(id.to_string(), exec, rep);
+        self.repeater.start(id.to_string(), exec, rep);
         Ok(())
     }
 
     /// Handle a key up event
     fn handle_key_up(&self, identifier: &str) {
         let pid = self.current_pid_world_first();
-        self.svc.repeater.stop_sync(identifier);
-        if self.svc.relay.stop_relay(identifier, pid) {
+        self.repeater.stop_sync(identifier);
+        if self.relay.stop_relay(identifier, pid) {
             debug!("Stopped relay for {}", identifier);
         }
     }
@@ -644,10 +642,10 @@ impl Engine {
     fn handle_repeat(&self, identifier: &str) {
         let pid = self.current_pid_world_first();
         // Forward OS repeat to active relay target, if any
-        if self.svc.relay.repeat_relay(identifier, pid) {
+        if self.relay.repeat_relay(identifier, pid) {
             // If a software ticker is active for this id, stop it to avoid double repeats.
-            if self.svc.repeater.is_ticking(identifier) {
-                self.svc.repeater.note_os_repeat(identifier);
+            if self.repeater.is_ticking(identifier) {
+                self.repeater.note_os_repeat(identifier);
             }
             debug!("Repeated relay for {}", identifier);
         }
