@@ -16,17 +16,14 @@ pub fn fast_world_cfg() -> hotki_world::WorldCfg {
     }
 }
 
-/// Run an asynchronous engine test body on a dedicated runtime with world overrides.
+/// Run an asynchronous engine test body on a dedicated runtime.
 ///
 /// The helper ensures the runtime shuts down promptly once the test future completes.
 pub fn run_engine_test<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    hotki_world::test_support::run_async_test(async move {
-        let _guard = hotki_world::test_support::override_scope();
-        fut.await;
-    });
+    hotki_world::test_support::run_async_test(fut);
 }
 
 /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.

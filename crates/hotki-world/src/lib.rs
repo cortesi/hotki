@@ -241,6 +241,49 @@ struct WorldState {
     status: RwLock<WorldStatus>,
 }
 
+impl WorldState {
+    async fn snapshot(&self) -> Vec<WorldWindow> {
+        self.snapshot.read().clone()
+    }
+
+    async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
+        self.snapshot
+            .read()
+            .iter()
+            .find(|w| w.pid == key.pid && w.id == key.id)
+            .cloned()
+    }
+
+    async fn focused(&self) -> Option<WindowKey> {
+        *self.focused.read()
+    }
+
+    async fn focused_window(&self) -> Option<WorldWindow> {
+        let key = self.focused().await?;
+        self.get(key).await
+    }
+
+    async fn focused_context(&self) -> Option<(String, String, i32)> {
+        self.focused_window().await.map(|w| (w.app, w.title, w.pid))
+    }
+
+    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
+        self.get(key).await.map(|w| (w.app, w.title, w.pid))
+    }
+
+    async fn capabilities(&self) -> Capabilities {
+        self.capabilities.read().clone()
+    }
+
+    async fn status(&self) -> WorldStatus {
+        self.status.read().clone()
+    }
+
+    async fn displays(&self) -> DisplaysSnapshot {
+        self.displays.read().clone()
+    }
+}
+
 /// Simple backoff controller for polling cadence.
 struct PollTuner {
     min_ms: u64,
@@ -389,45 +432,39 @@ impl WorldView for PollingWorld {
     }
 
     async fn snapshot(&self) -> Vec<WorldWindow> {
-        self.inner.snapshot.read().clone()
+        self.inner.snapshot().await
     }
 
     async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-        self.inner
-            .snapshot
-            .read()
-            .iter()
-            .find(|w| w.pid == key.pid && w.id == key.id)
-            .cloned()
+        self.inner.get(key).await
     }
 
     async fn focused(&self) -> Option<WindowKey> {
-        *self.inner.focused.read()
+        self.inner.focused().await
     }
 
     async fn focused_window(&self) -> Option<WorldWindow> {
-        let key = self.focused().await?;
-        self.get(key).await
+        self.inner.focused_window().await
     }
 
     async fn focused_context(&self) -> Option<(String, String, i32)> {
-        self.focused_window().await.map(|w| (w.app, w.title, w.pid))
+        self.inner.focused_context().await
     }
 
     async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-        self.get(key).await.map(|w| (w.app, w.title, w.pid))
+        self.inner.context_for_key(key).await
     }
 
     async fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities.read().clone()
+        self.inner.capabilities().await
     }
 
     async fn status(&self) -> WorldStatus {
-        self.inner.status.read().clone()
+        self.inner.status().await
     }
 
     async fn displays(&self) -> DisplaysSnapshot {
-        self.inner.displays.read().clone()
+        self.inner.displays().await
     }
 
     fn hint_refresh(&self) {
@@ -760,45 +797,39 @@ impl WorldView for TestWorld {
     }
 
     async fn snapshot(&self) -> Vec<WorldWindow> {
-        self.inner.snapshot.read().clone()
+        self.inner.snapshot().await
     }
 
     async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-        self.inner
-            .snapshot
-            .read()
-            .iter()
-            .find(|w| w.pid == key.pid && w.id == key.id)
-            .cloned()
+        self.inner.get(key).await
     }
 
     async fn focused(&self) -> Option<WindowKey> {
-        *self.inner.focused.read()
+        self.inner.focused().await
     }
 
     async fn focused_window(&self) -> Option<WorldWindow> {
-        let key = self.focused().await?;
-        self.get(key).await
+        self.inner.focused_window().await
     }
 
     async fn focused_context(&self) -> Option<(String, String, i32)> {
-        self.focused_window().await.map(|w| (w.app, w.title, w.pid))
+        self.inner.focused_context().await
     }
 
     async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-        self.get(key).await.map(|w| (w.app, w.title, w.pid))
+        self.inner.context_for_key(key).await
     }
 
     async fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities.read().clone()
+        self.inner.capabilities().await
     }
 
     async fn status(&self) -> WorldStatus {
-        self.inner.status.read().clone()
+        self.inner.status().await
     }
 
     async fn displays(&self) -> DisplaysSnapshot {
-        self.inner.displays.read().clone()
+        self.inner.displays().await
     }
 
     fn hint_refresh(&self) {

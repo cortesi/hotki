@@ -5,22 +5,6 @@ use std::{future::Future, sync::OnceLock, time::Duration};
 use parking_lot::Mutex;
 use tokio::runtime::Builder;
 
-/// Drop guard that clears test overrides on scope exit.
-pub struct TestOverridesGuard;
-
-impl Drop for TestOverridesGuard {
-    fn drop(&mut self) {
-        // No global overrides in the simplified world; placeholder for API
-        // stability.
-    }
-}
-
-/// Create a guard that resets world overrides when dropped.
-#[must_use]
-pub fn override_scope() -> TestOverridesGuard {
-    TestOverridesGuard
-}
-
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Run an async test body on a dedicated multi-threaded Tokio runtime and shut it down promptly.
