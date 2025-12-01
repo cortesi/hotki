@@ -226,7 +226,7 @@ impl BridgeDriver {
     }
 
     /// Quick liveness probe against the backend via a lightweight bridge command.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn check_alive(&mut self) -> DriverResult<()> {
         self.client_mut()?.call_depth().map(|_| ())
     }
@@ -1021,7 +1021,7 @@ impl BridgeClient {
     }
 
     /// Retrieve the current depth value via the bridge.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn call_depth(&mut self) -> DriverResult<usize> {
         self.call(&BridgeRequest::GetDepth)?
             .into_depth()

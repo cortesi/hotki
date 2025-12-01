@@ -157,9 +157,6 @@ impl Action {
     }
 }
 
-// Former window-management action types (fullscreen/place/focus/raise/hide) have been removed
-// along with their supporting structs/enums.
-
 /// Optional modifiers applied to Shell actions
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

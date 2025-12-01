@@ -95,11 +95,11 @@ fn run_shell_blocking(command: &str, ok_notify: NotifyKind, err_notify: NotifyKi
 }
 
 /// Clamp bounds and defaults for repeat timings (applies to relay + shell repeaters)
-pub const REPEAT_MIN_INITIAL_DELAY_MS: u64 = 100;
-pub const REPEAT_MAX_INITIAL_DELAY_MS: u64 = 1000;
-pub const REPEAT_MIN_INTERVAL_MS: u64 = 100;
-pub const REPEAT_MAX_INTERVAL_MS: u64 = 2000;
-pub const REPEAT_DEFAULT_MIN_INTERVAL_MS: u64 = 150;
+const REPEAT_MIN_INITIAL_DELAY_MS: u64 = 100;
+const REPEAT_MAX_INITIAL_DELAY_MS: u64 = 1000;
+const REPEAT_MIN_INTERVAL_MS: u64 = 100;
+const REPEAT_MAX_INTERVAL_MS: u64 = 2000;
+const REPEAT_DEFAULT_MIN_INTERVAL_MS: u64 = 150;
 
 /// System default timings for key repeat
 const SYS_INITIAL_DELAY_MS: u64 = 250; // Initial delay before first repeat
