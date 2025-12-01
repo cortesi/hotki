@@ -1,11 +1,19 @@
 #![warn(missing_docs)]
 
-//! Shared logging helpers and CLI argument definitions for the hotki workspace.
+//! Shared logging helpers, CLI argument definitions, and tracing utilities for the hotki workspace.
+//!
+//! This crate consolidates logging infrastructure:
+//! - [`fmt`]: Render tracing events to logfmt strings
+//! - [`forward`]: Forward server logs to the UI layer
+//! - CLI argument parsing for log level configuration
 
 use std::env;
 
 use clap::Args;
 use tracing_subscriber::EnvFilter;
+
+pub mod fmt;
+pub mod forward;
 
 /// Logging controls for CLI apps.
 #[derive(Debug, Clone, Args)]
@@ -48,8 +56,7 @@ pub fn our_crates() -> &'static [&'static str] {
         "eventtag",
         "dumpinput",
         "config",
-        "log_forward",
-        "logfmt",
+        "logging",
     ]
 }
 

@@ -2150,8 +2150,6 @@ dependencies = [
  "hotki-protocol",
  "hotki-server",
  "image",
- "log-forward",
- "logfmt",
  "logging",
  "objc2 0.6.2",
  "objc2-app-kit 0.3.1",
@@ -2207,7 +2205,7 @@ dependencies = [
  "hotki-protocol",
  "hotki-world",
  "libc",
- "log-forward",
+ "logging",
  "mac-hotkey",
  "mrpc",
  "once_cell",
@@ -2677,29 +2675,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 
 [[package]]
-name = "log-forward"
+name = "logging"
 version = "0.0.1"
 dependencies = [
+ "clap",
  "hotki-protocol",
- "logfmt",
  "parking_lot",
  "tokio",
  "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "logfmt"
-version = "0.0.1"
-dependencies = [
- "tracing",
-]
-
-[[package]]
-name = "logging"
-version = "0.1.0"
-dependencies = [
- "clap",
  "tracing-subscriber",
 ]
 

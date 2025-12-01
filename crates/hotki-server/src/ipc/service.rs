@@ -169,7 +169,7 @@ impl HotkeyService {
     /// Forward events from the receiver to connected clients
     ///
     /// Log forwarding semantics: logs use a single global sink wired to the
-    /// event channel (`log_forward::set_sink(tx)`). Events are broadcast to all
+    /// event channel (`logging::forward::set_sink(tx)`). Events are broadcast to all
     /// connected clients via `broadcast_event`; multi-client is supported, and
     /// logs are delivered through the same event pipeline as other messages.
     async fn forward_events(&self, mut event_rx: Receiver<MsgToUI>) {
@@ -319,7 +319,7 @@ impl MrpcConnection for HotkeyService {
         // Bind the global log sink to the single event channel. Logs are then
         // forwarded through the standard event pipeline and broadcast to all
         // connected clients by `forward_events`.
-        log_forward::set_sink(self.event_tx.clone());
+        logging::forward::set_sink(self.event_tx.clone());
 
         // Proactively send an initial status snapshot to this client
         if let Err(e) = self.ensure_engine_initialized().await {
@@ -395,7 +395,7 @@ impl MrpcConnection for HotkeyService {
                 let _ = loop_wake::post_user_event();
 
                 // Stop forwarding any further logs/events to clients
-                log_forward::clear_sink();
+                logging::forward::clear_sink();
 
                 // Drop all clients so no further notifications are attempted
                 self.clients.lock().await.clear();

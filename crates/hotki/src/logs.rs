@@ -2,6 +2,7 @@
 use std::{collections::VecDeque, sync::OnceLock};
 
 use egui::Color32;
+use logging::fmt;
 use parking_lot::Mutex;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
@@ -87,7 +88,7 @@ where
     S: Subscriber,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let r = logfmt::render_event(event);
+        let r = fmt::render_event(event);
         push(LogEntry {
             side: Side::Client,
             level: r.level,

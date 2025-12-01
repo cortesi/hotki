@@ -1,6 +1,6 @@
 //! Utilities to render `tracing` events into concise logfmt strings.
 //!
-//! This crate provides helpers to extract level, target, and message from
+//! This module provides helpers to extract level, target, and message from
 //! `tracing::Event` records and to render remaining fields in `key=value`
 //! form. It is used for structured logging throughout the application.
 
@@ -28,6 +28,7 @@ pub struct RenderedLog {
 /// - If the event contains a `message` field, use it.
 /// - Otherwise, concatenate `key=value` pairs from remaining fields.
 pub fn render_event(event: &Event<'_>) -> RenderedLog {
+    /// Visitor that captures the message field and accumulates other fields.
     struct MsgVisitor {
         /// Captured `message` field, if present.
         msg: Option<String>,

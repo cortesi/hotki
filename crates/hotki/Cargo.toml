@@ -16,8 +16,6 @@ hotki-server = { version = "0.1.0", path = "../hotki-server" }
 permissions = { path = "../permissions" }
 config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
-log-forward = { path = "../log-forward" }
-logfmt = { path = "../logfmt" }
 logging = { path = "../logging" }
 
 eframe = "0.32.2"

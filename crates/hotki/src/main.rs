@@ -5,7 +5,7 @@ use std::{path::PathBuf, process};
 use clap::Parser;
 use eframe::NativeOptions;
 use hotki_server::Server;
-use logging::{self as logshared};
+use logging::{self as logshared, forward};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -92,7 +92,7 @@ fn main() -> eframe::Result<()> {
         .with(env_filter)
         .with(fmt::layer().without_time())
         .with(client_layer())
-        .with(log_forward::layer())
+        .with(forward::layer())
         .try_init()
         .ok();
     // Build a filter string for any auto-spawned server process so it inherits
