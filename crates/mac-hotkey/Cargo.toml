@@ -15,7 +15,6 @@ mac-keycode = { path = "../mac-keycode" }
 crossbeam-channel = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-eventtag = { path = "../eventtag" }
 core-foundation = "0.10.1"
 permissions = { path = "../permissions" }
 core-graphics = "0.25.0"

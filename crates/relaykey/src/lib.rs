@@ -15,6 +15,7 @@ use core_graphics::{
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use libc::pid_t;
+use mac_hotkey::HOTK_TAG;
 use mac_keycode::{Chord, Modifier};
 use tracing::{info, trace, warn};
 mod error;
@@ -34,7 +35,7 @@ pub(crate) trait Poster: Send + Sync {
 
 /// Default system poster that uses CoreGraphics to inject events.
 struct MacPoster {
-    /// When true, do not set the HOTK_TAG on injected events so upstream
+    /// When true, do not set the `HOTK_TAG` on injected events so upstream
     /// taps can observe them (used by tools/smoketests).
     untagged: bool,
 }
@@ -65,7 +66,7 @@ impl MacPoster {
         };
         // Tag injected events unless explicitly untagged
         if !self.untagged {
-            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, eventtag::HOTK_TAG);
+            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
         }
         Ok(e)
     }
@@ -115,7 +116,7 @@ impl MacPoster {
         e.set_flags(cge::CGEventFlags::from_bits_retain(bits));
         // Tag all injected events unless explicitly untagged.
         if !self.untagged {
-            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, eventtag::HOTK_TAG);
+            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
         }
         if is_repeat {
             e.set_integer_value_field(cge::EventField::KEYBOARD_EVENT_AUTOREPEAT, 1);

@@ -16,7 +16,7 @@ test-utils = []
 
 [dependencies]
 mac-keycode = { path = "../mac-keycode" }
-eventtag = { path = "../eventtag" }
+mac-hotkey = { path = "../mac-hotkey" }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

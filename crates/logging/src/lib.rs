@@ -53,7 +53,6 @@ pub fn our_crates() -> &'static [&'static str] {
         "permissions",
         "relaykey",
         "keymode",
-        "eventtag",
         "dumpinput",
         "config",
         "logging",

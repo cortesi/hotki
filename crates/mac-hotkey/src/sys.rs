@@ -94,7 +94,7 @@ pub fn run_event_loop(
             // Ignore events we injected ourselves either by PID or by custom tag.
             let src_pid = event.get_integer_value_field(FIELD_EVENT_SOURCE_UNIX_PROCESS_ID) as u32;
             let user_tag = event.get_integer_value_field(FIELD_EVENT_SOURCE_USER_DATA);
-            if user_tag == eventtag::HOTK_TAG || src_pid == process::id() {
+            if user_tag == crate::HOTK_TAG || src_pid == process::id() {
                 trace!(src_pid, user_tag, "ignoring_synthetic_event");
                 return CallbackResult::Keep;
             }

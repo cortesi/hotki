@@ -35,7 +35,11 @@ mod sys;
 
 pub use error::{Error, Result};
 
-// Error and Result are re-exported from the `error` module.
+/// Tag value used to mark injected events so our taps can ignore them.
+///
+/// This is 'hotk' in ASCII bytes: 0x68 0x6f 0x74 0x6b -> 1752468299.
+/// Events are tagged in the `EventSourceUserData` field.
+pub const HOTK_TAG: i64 = 1_752_468_299;
 
 // Use mac_keycode::Chord directly throughout this crate.
 
