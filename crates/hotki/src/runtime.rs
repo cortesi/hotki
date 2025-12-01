@@ -234,24 +234,9 @@ impl ConnectionDriver {
         });
     }
 
-    /// Handle control messages received before the server connection is ready.
-    /// Returns true if a Shutdown was requested (caller should exit).
-    async fn handle_preconnect_control(
-        &mut self,
-        msg: ControlMsg,
-        preconnect_queue: &mut VecDeque<ControlMsg>,
-    ) -> bool {
+    /// Handle control messages that do not require a server connection.
+    fn handle_local_control(&mut self, msg: ControlMsg) {
         match msg {
-            ControlMsg::Shutdown => {
-                self.trigger_graceful_shutdown(750);
-                return true;
-            }
-            ControlMsg::Reload => {
-                preconnect_queue.push_back(ControlMsg::Reload);
-            }
-            ControlMsg::SwitchTheme(name) => {
-                preconnect_queue.push_back(ControlMsg::SwitchTheme(name));
-            }
             ControlMsg::OpenAccessibility => {
                 open_accessibility_settings();
                 self.notify(
@@ -277,7 +262,82 @@ impl ConnectionDriver {
             ControlMsg::Notice { kind, title, text } => {
                 self.notify(kind, &title, &text);
             }
+            _ => {}
+        }
+    }
+
+    /// Handle a control message once a server connection is available.
+    /// Returns true if shutdown was requested.
+    async fn handle_connected_control(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+        msg: ControlMsg,
+    ) -> bool {
+        match msg {
+            ControlMsg::Shutdown => {
+                self.trigger_graceful_shutdown(750);
+                let _res = conn.shutdown().await;
+                true
+            }
+            ControlMsg::Reload => {
+                reload_and_broadcast(
+                    conn,
+                    &mut self.ui_config,
+                    &self.config_path,
+                    &self.tx_keys,
+                    &self.egui_ctx,
+                )
+                .await;
+                false
+            }
+            ControlMsg::SwitchTheme(name) => {
+                self.apply_ui_override(UiOverride::ThemeSet(name));
+                false
+            }
             ControlMsg::Test(cmd) => {
+                let TestCommand {
+                    command_id,
+                    req,
+                    respond_to,
+                } = cmd;
+                let response = self.handle_test_command(conn, req).await;
+                if respond_to.send(response).is_err() {
+                    tracing::debug!(
+                        command_id,
+                        "bridge responder dropped while delivering response"
+                    );
+                }
+                false
+            }
+            other => {
+                self.handle_local_control(other);
+                false
+            }
+        }
+    }
+
+    /// Route a control message, queuing when disconnected. Returns true on shutdown.
+    async fn route_control_msg(
+        &mut self,
+        conn: Option<&mut hotki_server::Connection>,
+        msg: ControlMsg,
+        pending: &mut VecDeque<ControlMsg>,
+    ) -> bool {
+        match (conn, msg) {
+            (Some(conn), msg) => self.handle_connected_control(conn, msg).await,
+            (None, ControlMsg::Shutdown) => {
+                self.trigger_graceful_shutdown(750);
+                true
+            }
+            (None, ControlMsg::Reload) => {
+                pending.push_back(ControlMsg::Reload);
+                false
+            }
+            (None, ControlMsg::SwitchTheme(name)) => {
+                pending.push_back(ControlMsg::SwitchTheme(name));
+                false
+            }
+            (None, ControlMsg::Test(cmd)) => {
                 if cmd
                     .respond_to
                     .send(BridgeResponse::Err {
@@ -287,9 +347,13 @@ impl ConnectionDriver {
                 {
                     tracing::debug!("bridge responder dropped before connection readiness");
                 }
+                false
+            }
+            (None, other) => {
+                self.handle_local_control(other);
+                false
             }
         }
-        false
     }
 
     /// Helper to send a UI notification.
@@ -309,8 +373,21 @@ impl ConnectionDriver {
         self.egui_ctx.request_repaint();
     }
 
+    /// Send the current cursor to the UI and repaint, logging context on failure.
+    fn push_cursor_update(&self, context: &str) {
+        if self
+            .tx_keys
+            .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
+            .is_err()
+        {
+            tracing::warn!("failed to send UpdateCursor ({})", context);
+        }
+        self.egui_ctx.request_repaint();
+    }
+
     /// Apply a UI override (theme or user style) to the current cursor and notify UI.
     fn apply_ui_override(&mut self, action: UiOverride) {
+        let mut update_reason: Option<&str> = None;
         match action {
             UiOverride::ThemeNext => {
                 let cur = self
@@ -320,13 +397,7 @@ impl ConnectionDriver {
                     .unwrap_or("default");
                 let next = themes::get_next_theme(cur);
                 self.current_cursor.set_theme(Some(next));
-                if self
-                    .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
-                    .is_err()
-                {
-                    tracing::warn!("failed to send UpdateCursor (next theme)");
-                }
+                update_reason = Some("next theme");
             }
             UiOverride::ThemePrev => {
                 let cur = self
@@ -336,24 +407,12 @@ impl ConnectionDriver {
                     .unwrap_or("default");
                 let prev = themes::get_prev_theme(cur);
                 self.current_cursor.set_theme(Some(prev));
-                if self
-                    .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
-                    .is_err()
-                {
-                    tracing::warn!("failed to send UpdateCursor (prev theme)");
-                }
+                update_reason = Some("prev theme");
             }
             UiOverride::ThemeSet(name) => {
                 if themes::theme_exists(&name) {
                     self.current_cursor.set_theme(Some(&name));
-                    if self
-                        .tx_keys
-                        .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
-                        .is_err()
-                    {
-                        tracing::warn!("failed to send UpdateCursor (set theme)");
-                    }
+                    update_reason = Some("set theme");
                 } else {
                     self.notify(NotifyKind::Error, "Theme", "Theme not found");
                 }
@@ -365,62 +424,13 @@ impl ConnectionDriver {
                     config::Toggle::Toggle => self
                         .current_cursor
                         .set_user_style_enabled(!self.current_cursor.user_ui_disabled),
-                }
-                if self
-                    .tx_keys
-                    .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
-                    .is_err()
-                {
-                    tracing::warn!("failed to send UpdateCursor (user style)");
-                }
+                };
+                update_reason = Some("user style");
             }
         }
-        self.egui_ctx.request_repaint();
-    }
-
-    // Handle a control message while connected; returns true if we should exit.
-    /// Handle a control message while connected; returns true if we should exit.
-    async fn handle_runtime_control(
-        &mut self,
-        conn: &mut hotki_server::Connection,
-        msg: ControlMsg,
-    ) -> bool {
-        match msg {
-            ControlMsg::Shutdown => {
-                self.trigger_graceful_shutdown(750);
-                let _res = conn.shutdown().await;
-                return true;
-            }
-            ControlMsg::SwitchTheme(name) => {
-                self.apply_ui_override(UiOverride::ThemeSet(name));
-            }
-            ControlMsg::Test(cmd) => {
-                let TestCommand {
-                    command_id,
-                    req,
-                    respond_to,
-                } = cmd;
-                let response = self.handle_test_command(conn, req).await;
-                if respond_to.send(response).is_err() {
-                    tracing::debug!(
-                        command_id,
-                        "bridge responder dropped while delivering response"
-                    );
-                }
-            }
-            other => {
-                handle_control_msg(
-                    conn,
-                    other,
-                    &mut self.ui_config,
-                    &self.config_path,
-                    &self.tx_keys,
-                    &self.egui_ctx,
-                )
-                .await;
-            }
+        if let Some(reason) = update_reason {
+            self.push_cursor_update(reason);
         }
-        false
     }
 
     /// Handle an individual smoketest bridge request using the active connection.
@@ -649,7 +659,10 @@ impl ConnectionDriver {
                     }
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    if self.handle_preconnect_control(msg, &mut preconnect_queue).await {
+                    if self
+                        .route_control_msg(None, msg, &mut preconnect_queue)
+                        .await
+                    {
                         // Shutdown requested; exit early (graceful close in progress)
                         return None;
                     }
@@ -675,21 +688,11 @@ impl ConnectionDriver {
         // Apply any queued preconnect messages now that we are connected.
         // Ensure theme switches use the same override path for consistency.
         while let Some(msg) = preconnect_queue.pop_front() {
-            match msg {
-                ControlMsg::SwitchTheme(name) => {
-                    self.apply_ui_override(UiOverride::ThemeSet(name));
-                }
-                other => {
-                    handle_control_msg(
-                        conn,
-                        other,
-                        &mut self.ui_config,
-                        &self.config_path,
-                        &self.tx_keys,
-                        &self.egui_ctx,
-                    )
-                    .await;
-                }
+            if self
+                .route_control_msg(Some(conn), msg, &mut preconnect_queue)
+                .await
+            {
+                return None;
             }
         }
 
@@ -718,6 +721,7 @@ impl ConnectionDriver {
             dump_far_future
         });
         tokio::pin!(dump_timer);
+        let mut control_sink: VecDeque<ControlMsg> = VecDeque::new();
 
         loop {
             tokio::select! {
@@ -728,7 +732,12 @@ impl ConnectionDriver {
                     break;
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    if self.handle_runtime_control(conn, msg).await { break; }
+                    if self
+                        .route_control_msg(Some(conn), msg, &mut control_sink)
+                        .await
+                    {
+                        break;
+                    }
                 }
                 resp = conn.recv_event() => {
                     match resp {
@@ -1215,100 +1224,6 @@ fn spawn_connect(log_filter: Option<String>) -> oneshot::Receiver<hotki_server::
         }
     });
     rx
-}
-
-/// Unified handler for all `ControlMsg` variants once a connection exists.
-async fn handle_control_msg(
-    conn: &mut hotki_server::Connection,
-    msg: ControlMsg,
-    ui_config: &mut config::Config,
-    config_path: &Path,
-    tx_keys: &mpsc::UnboundedSender<AppEvent>,
-    egui_ctx: &Context,
-) {
-    match msg {
-        ControlMsg::Reload => {
-            reload_and_broadcast(conn, ui_config, config_path, tx_keys, egui_ctx).await
-        }
-        ControlMsg::Shutdown => {
-            // Handled in the event loop branches; no action here.
-        }
-        ControlMsg::SwitchTheme(name) => {
-            if themes::theme_exists(&name) {
-                // Theme override now lives on Location; the live location is updated
-                // inside the event loop when HudUpdate arrives. Here we just request UI refresh.
-                apply_ui_config(ui_config, tx_keys, egui_ctx).await;
-            } else {
-                if tx_keys
-                    .send(AppEvent::Notify {
-                        kind: NotifyKind::Error,
-                        title: "Theme".to_string(),
-                        text: format!("Theme '{}' not found", name),
-                    })
-                    .is_err()
-                {
-                    tracing::warn!("failed to send theme-not-found notification");
-                }
-                egui_ctx.request_repaint();
-            }
-        }
-        ControlMsg::Notice { kind, title, text } => {
-            if tx_keys
-                .send(AppEvent::Notify { kind, title, text })
-                .is_err()
-            {
-                tracing::warn!("failed to send notification");
-            }
-            egui_ctx.request_repaint();
-        }
-        ControlMsg::OpenAccessibility => {
-            open_accessibility_settings();
-            if tx_keys
-                .send(AppEvent::Notify {
-                    kind: NotifyKind::Info,
-                    title: "Accessibility".to_string(),
-                    text: "Opening Accessibility settings...".to_string(),
-                })
-                .is_err()
-            {
-                tracing::warn!("failed to send accessibility notice");
-            }
-            egui_ctx.request_repaint();
-        }
-        ControlMsg::OpenInputMonitoring => {
-            open_input_monitoring_settings();
-            if tx_keys
-                .send(AppEvent::Notify {
-                    kind: NotifyKind::Info,
-                    title: "Input Monitoring".to_string(),
-                    text: "Opening Input Monitoring settings...".to_string(),
-                })
-                .is_err()
-            {
-                tracing::warn!("failed to send input monitoring notice");
-            }
-            egui_ctx.request_repaint();
-        }
-        ControlMsg::OpenPermissionsHelp => {
-            if tx_keys.send(AppEvent::ShowPermissionsHelp).is_err() {
-                tracing::warn!("failed to send permissions help event");
-            }
-            egui_ctx.request_repaint();
-        }
-        ControlMsg::Test(cmd) => {
-            if cmd
-                .respond_to
-                .send(BridgeResponse::Err {
-                    message: "bridge request received in control handler".to_string(),
-                })
-                .is_err()
-            {
-                tracing::debug!(
-                    "bridge responder dropped before control handler processed request"
-                );
-            }
-        }
-    }
 }
 
 /// Start background key runtime and server connection driver on a dedicated thread.

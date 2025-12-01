@@ -15,6 +15,24 @@ use tracing_subscriber::EnvFilter;
 pub mod fmt;
 pub mod forward;
 
+/// Crate targets included in default logging directives.
+const OUR_CRATES: &[&str] = &[
+    "hotki",
+    "hotki_engine",
+    "hotki_protocol",
+    "hotki_server",
+    "hotki_world",
+    "hotki_shots",
+    "smoketest",
+    "config",
+    "logging",
+    "dumpinput",
+    "permissions",
+    "relaykey",
+    "mac_hotkey",
+    "mac_keycode",
+];
+
 /// Logging controls for CLI apps.
 #[derive(Debug, Clone, Args)]
 pub struct LogArgs {
@@ -36,40 +54,26 @@ pub struct LogArgs {
     pub log_filter: Option<String>,
 }
 
-/// List of crate targets that constitute "our" logs.
-pub fn our_crates() -> &'static [&'static str] {
-    &[
-        // Apps and core crates
-        "hotki",
-        "smoketest",
-        "hotki_server",
-        "hotki_engine",
-        "hotki_world",
-        "hotki_protocol",
-        // macOS integration crates
-        "mac_hotkey",
-        "mac_keycode",
-        // Utilities
-        "permissions",
-        "relaykey",
-        "keymode",
-        "dumpinput",
-        "config",
-        "logging",
-    ]
+/// Build crate-scoped directives for the given level.
+fn crate_specs(level: &str) -> Vec<String> {
+    let lvl = level.to_ascii_lowercase();
+    OUR_CRATES
+        .iter()
+        .map(|t| format!("{}={}", t, lvl))
+        .collect()
+}
+
+/// Add MRPC suppression to the provided directives.
+fn join_with_mrpc(mut parts: Vec<String>) -> String {
+    parts.push("mrpc::connection=off".to_string());
+    parts.join(",")
 }
 
 /// Build a filter directive string that sets the same `level` for all of our crates.
 ///
 /// Always includes `mrpc::connection=off` to suppress shutdown noise.
 pub fn level_spec_for(level: &str) -> String {
-    let lvl = level.to_ascii_lowercase();
-    let mut parts: Vec<String> = our_crates()
-        .iter()
-        .map(|t| format!("{}={}", t, lvl))
-        .collect();
-    parts.push("mrpc::connection=off".to_string());
-    parts.join(",")
+    join_with_mrpc(crate_specs(level))
 }
 
 /// Compute the final filter spec string with precedence:
@@ -99,7 +103,7 @@ pub fn compute_spec(
         if spec.contains("mrpc::connection") {
             spec
         } else {
-            format!("{},mrpc::connection=off", spec)
+            join_with_mrpc(vec![spec])
         }
     } else {
         level_spec_for("info")
@@ -116,5 +120,14 @@ pub fn env_filter_from_spec(spec: &str) -> EnvFilter {
 /// If the environment already specifies `RUST_LOG`, return that; otherwise return
 /// a default crate-scoped `info` configuration (with mrpc suppression).
 pub fn log_config_for_child() -> String {
-    env::var("RUST_LOG").unwrap_or_else(|_| level_spec_for("info"))
+    env::var("RUST_LOG").map_or_else(
+        |_| level_spec_for("info"),
+        |spec| {
+            if spec.contains("mrpc::connection") {
+                spec
+            } else {
+                join_with_mrpc(vec![spec])
+            }
+        },
+    )
 }

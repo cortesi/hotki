@@ -1,11 +1,10 @@
 //! Declarative configuration types for actions, modes, and key bindings.
 
+pub use hotki_protocol::NotifyKind;
 use mac_keycode::Chord;
 use serde::{Deserialize, Serialize, de::Error as DeError};
 
 use crate::{Toggle, raw};
-
-pub use hotki_protocol::NotifyKind;
 
 /// Attributes for key bindings
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
