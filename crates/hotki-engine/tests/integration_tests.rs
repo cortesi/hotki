@@ -7,8 +7,7 @@ use std::{
 };
 
 use hotki_engine::{
-    Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatObserver, RepeatSpec,
-    Repeater,
+    Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatSpec, Repeater,
     test_support::{recv_until, run_engine_test, wait_snapshot_until},
 };
 use hotki_protocol::MsgToUI;
@@ -315,42 +314,34 @@ fn test_ticker_cancel_semantics() {
 fn test_repeater_with_observer() {
     run_engine_test(async move {
         ensure_no_os_interaction();
-        // Test RepeatObserver integration
-        struct TestObserver {
-            relay_count: AtomicUsize,
-            shell_count: AtomicUsize,
-        }
+        // Test repeat callback integration
 
-        impl RepeatObserver for TestObserver {
-            fn on_relay_repeat(&self, id: &str) {
-                assert_eq!(id, "test_relay", "Should receive correct relay ID");
-                self.relay_count.fetch_add(1, Ordering::SeqCst);
-            }
-
-            fn on_shell_repeat(&self, id: &str) {
-                assert_eq!(id, "test_shell", "Should receive correct shell ID");
-                self.shell_count.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+        let relay_count = Arc::new(AtomicUsize::new(0));
+        let shell_count = Arc::new(AtomicUsize::new(0));
 
         let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
-        // Disable real key posting while exercising repeat observer behavior
+        // Disable real key posting while exercising repeat callback behavior
         let relay = RelayHandler::new_with_enabled(false);
         let (tx, _rx) = mpsc::channel(16);
         let notifier = NotificationDispatcher::new(tx);
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
-        let observer = Arc::new(TestObserver {
-            relay_count: AtomicUsize::new(0),
-            shell_count: AtomicUsize::new(0),
-        });
+        let relay_count2 = relay_count.clone();
+        repeater.set_on_relay_repeat(Arc::new(move |id| {
+            assert_eq!(id, "test_relay", "Should receive correct relay ID");
+            relay_count2.fetch_add(1, Ordering::SeqCst);
+        }));
 
-        repeater.set_repeat_observer(observer.clone());
+        let shell_count2 = shell_count.clone();
+        repeater.set_on_shell_repeat(Arc::new(move |id| {
+            assert_eq!(id, "test_shell", "Should receive correct shell ID");
+            shell_count2.fetch_add(1, Ordering::SeqCst);
+        }));
 
         // Test relay repeat observation
         *focus_ctx.lock() = Some(("smoketest-app".into(), "smoketest-win".into(), 1234));
 
-        // The observer is only called during actual repeat ticks, not the initial execution
+        // The callback is only called during actual repeat ticks, not the initial execution
         // So we need to make sure repeats actually happen
         repeater.start_relay_repeat(
             "test_relay".to_string(),
@@ -365,12 +356,12 @@ fn test_repeater_with_observer() {
         tokio::time::sleep(Duration::from_millis(150)).await;
         repeater.stop_sync("test_relay");
 
-        let relay_repeats = observer.relay_count.load(Ordering::SeqCst);
-        // We may not observe repeats if the relay handler doesn't call the observer
+        let relay_repeats = relay_count.load(Ordering::SeqCst);
+        // We may not observe repeats if the relay handler doesn't call the callback
         // This is expected behavior - just check that the test doesn't crash
         if relay_repeats == 0 {
             println!(
-                "Note: No relay repeats observed (this may be expected if RelayHandler doesn't notify observer)"
+                "Note: No relay repeats observed (this may be expected if RelayHandler doesn't notify)"
             );
         }
 
@@ -388,15 +379,15 @@ fn test_repeater_with_observer() {
         tokio::time::sleep(Duration::from_millis(150)).await;
         repeater.stop_sync("test_shell");
 
-        let shell_repeats = observer.shell_count.load(Ordering::SeqCst);
+        let shell_repeats = shell_count.load(Ordering::SeqCst);
         // Shell repeats might also not be observed depending on implementation
         if shell_repeats == 0 {
             println!(
-                "Note: No shell repeats observed (this may be expected if shell executor doesn't notify observer)"
+                "Note: No shell repeats observed (this may be expected if shell executor doesn't notify)"
             );
         }
 
-        // If we reached here, the repeater accepted the observer without panics.
+        // If we reached here, the repeater accepted the callbacks without panics.
     });
 }
 
@@ -407,15 +398,7 @@ fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
         // stop/start handoff and does NOT emit a repeat on that tick; repeats then resume.
         ensure_no_os_interaction();
 
-        struct Ctr {
-            relay: AtomicUsize,
-        }
-
-        impl RepeatObserver for Ctr {
-            fn on_relay_repeat(&self, _id: &str) {
-                self.relay.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+        let relay_count = Arc::new(AtomicUsize::new(0));
 
         let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
         let relay = RelayHandler::new_with_enabled(false);
@@ -423,10 +406,10 @@ fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
         let notifier = NotificationDispatcher::new(tx);
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
-        let obs = Arc::new(Ctr {
-            relay: AtomicUsize::new(0),
-        });
-        repeater.set_repeat_observer(obs.clone());
+        let relay_count2 = relay_count.clone();
+        repeater.set_on_relay_repeat(Arc::new(move |_id| {
+            relay_count2.fetch_add(1, Ordering::SeqCst);
+        }));
 
         // Seed initial focus and start relay repeating
         *focus_ctx.lock() = Some(("app1".into(), "win1".into(), 1111));
@@ -446,13 +429,13 @@ fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
 
         // Wait past the first tick (hand-off should have occurred; no repeat yet)
         tokio::time::sleep(Duration::from_millis(70)).await;
-        let after_handoff = obs.relay.load(Ordering::SeqCst);
+        let after_handoff = relay_count.load(Ordering::SeqCst);
         assert_eq!(after_handoff, 0, "Handoff tick should not emit a repeat");
 
         // Wait into the next interval; repeats should now resume on the new PID
         tokio::time::sleep(Duration::from_millis(130)).await;
         repeater.stop_sync("handoff1");
-        let repeats_total = obs.relay.load(Ordering::SeqCst);
+        let repeats_total = relay_count.load(Ordering::SeqCst);
         assert!(repeats_total >= 1, "Repeats should resume after handoff");
     });
 }
@@ -464,14 +447,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         // the switch ticks and that repeats continue afterwards.
         ensure_no_os_interaction();
 
-        struct Ctr {
-            relay: AtomicUsize,
-        }
-        impl RepeatObserver for Ctr {
-            fn on_relay_repeat(&self, _id: &str) {
-                self.relay.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+        let relay_count = Arc::new(AtomicUsize::new(0));
 
         let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
         let relay = RelayHandler::new_with_enabled(false);
@@ -479,10 +455,10 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         let notifier = NotificationDispatcher::new(tx);
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier);
 
-        let obs = Arc::new(Ctr {
-            relay: AtomicUsize::new(0),
-        });
-        repeater.set_repeat_observer(obs.clone());
+        let relay_count2 = relay_count.clone();
+        repeater.set_on_relay_repeat(Arc::new(move |_id| {
+            relay_count2.fetch_add(1, Ordering::SeqCst);
+        }));
 
         *focus_ctx.lock() = Some(("app1".into(), "win1".into(), 1111));
         repeater.start_relay_repeat(
@@ -499,7 +475,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         *focus_ctx.lock() = Some(("app2".into(), "win2".into(), 2222));
         tokio::time::sleep(Duration::from_millis(70)).await; // past first (handoff) tick
         assert_eq!(
-            obs.relay.load(Ordering::SeqCst),
+            relay_count.load(Ordering::SeqCst),
             0,
             "No repeat on first handoff tick"
         );
@@ -509,7 +485,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         *focus_ctx.lock() = Some(("app3".into(), "win3".into(), 3333));
         tokio::time::sleep(Duration::from_millis(70)).await; // past second (handoff) tick
         assert_eq!(
-            obs.relay.load(Ordering::SeqCst),
+            relay_count.load(Ordering::SeqCst),
             0,
             "No repeat on second handoff tick"
         );
@@ -518,7 +494,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         tokio::time::sleep(Duration::from_millis(130)).await;
         repeater.stop_sync("handoff2");
         assert!(
-            obs.relay.load(Ordering::SeqCst) >= 1,
+            relay_count.load(Ordering::SeqCst) >= 1,
             "Repeats resume after multiple handoffs"
         );
     });

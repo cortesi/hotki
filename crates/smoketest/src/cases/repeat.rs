@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use hotki_engine::{RepeatObserver, Repeater};
+use hotki_engine::Repeater;
 use hotki_protocol::ipc;
 use parking_lot::Mutex;
 use tokio::runtime::Builder;
@@ -110,8 +110,11 @@ fn count_relay(duration_ms: u64) -> Result<usize> {
     let notifier = hotki_engine::NotificationDispatcher::new(tx);
     let repeater = hotki_engine::Repeater::new_with_ctx(focus_ctx.clone(), relay, notifier);
 
-    let counter = Arc::new(RelayCounter(AtomicUsize::new(0)));
-    repeater.set_repeat_observer(counter.clone());
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter2 = counter.clone();
+    repeater.set_on_relay_repeat(Arc::new(move |_id| {
+        counter2.fetch_add(1, Ordering::SeqCst);
+    }));
 
     let chord = mac_keycode::Chord::parse("right")
         .or_else(|| mac_keycode::Chord::parse("a"))
@@ -131,14 +134,13 @@ fn count_relay(duration_ms: u64) -> Result<usize> {
     thread::sleep(timeout);
     shutdown_repeater(&repeater, &id)?;
 
-    Ok(counter.0.load(Ordering::SeqCst))
+    Ok(counter.load(Ordering::SeqCst))
 }
 
-/// Stop a repeater ticker, clear observers, and verify it fully drained.
+/// Stop a repeater ticker and verify it fully drained.
 fn shutdown_repeater(repeater: &Repeater, id: &str) -> Result<()> {
     repeater.stop_sync(id);
     repeater.clear_sync();
-    repeater.set_repeat_observer(Arc::new(NullRepeatObserver));
     if repeater.is_ticking(id) {
         return Err(Error::InvalidState(format!(
             "repeat '{id}' still ticking after shutdown"
@@ -299,20 +301,6 @@ fn sh_single_quote(s: &str) -> String {
     out.push('\'');
     out
 }
-
-/// Minimal repeat observer that counts relay repeats.
-struct RelayCounter(AtomicUsize);
-
-impl RepeatObserver for RelayCounter {
-    fn on_relay_repeat(&self, _id: &str) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// No-op repeat observer used to clear out instrumentation hooks.
-struct NullRepeatObserver;
-
-impl RepeatObserver for NullRepeatObserver {}
 
 /// Captured output and parsed repeat metrics from the repeat workload.
 struct RepeatOutput {

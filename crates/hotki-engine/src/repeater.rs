@@ -131,21 +131,6 @@ pub struct RepeatSpec {
     pub interval_ms: Option<u64>,
 }
 
-pub trait PidProvider: Send + Sync {
-    fn current_pid(&self) -> i32;
-}
-
-#[derive(Clone)]
-struct PidFromCtxArc {
-    ctx: Arc<Mutex<Option<(String, String, i32)>>>,
-}
-
-impl PidProvider for PidFromCtxArc {
-    fn current_pid(&self) -> i32 {
-        self.ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1)
-    }
-}
-
 /// Per-id state to serialize shell command execution and coalesce repeats.
 ///
 /// Semantics:
@@ -162,26 +147,28 @@ struct ShellRunState {
     running: AtomicBool,
 }
 
+/// Callback type for observing relay repeat ticks (used by tests/tools).
+pub type OnRelayRepeat = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Callback type for observing shell repeat ticks (used by tests/tools).
+pub type OnShellRepeat = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Unified repeater that runs first-run immediately and then repeats while held
 #[derive(Clone)]
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    pid_provider: Arc<dyn PidProvider>,
+    /// Focus context providing current (app, title, pid).
+    focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
     relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
-    repeat_observer: Arc<Mutex<Option<Arc<dyn RepeatObserver>>>>,
+    /// Optional callback for relay repeat instrumentation.
+    on_relay_repeat: Arc<Mutex<Option<OnRelayRepeat>>>,
+    /// Optional callback for shell repeat instrumentation.
+    on_shell_repeat: Arc<Mutex<Option<OnShellRepeat>>>,
     /// Per-id state for shell execution serialization.
     shell_states: Arc<Mutex<HashMap<String, Arc<ShellRunState>>>>,
-}
-
-/// Observer interface for repeat ticks (used by tests/tools)
-pub trait RepeatObserver: Send + Sync {
-    /// Called whenever a relay (key) repeat tick fires for the given id.
-    fn on_relay_repeat(&self, _id: &str) {}
-    /// Called whenever a shell repeat tick fires for the given id.
-    fn on_shell_repeat(&self, _id: &str) {}
 }
 
 impl Repeater {
@@ -196,13 +183,19 @@ impl Repeater {
         Self {
             sys_initial,
             sys_interval,
-            pid_provider: Arc::new(PidFromCtxArc { ctx: focus_ctx }),
+            focus_ctx,
             relay,
             notifier,
             ticker: Ticker::new(),
-            repeat_observer: Arc::new(Mutex::new(None)),
+            on_relay_repeat: Arc::new(Mutex::new(None)),
+            on_shell_repeat: Arc::new(Mutex::new(None)),
             shell_states: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get the current focused PID, or -1 if unknown.
+    fn current_pid(&self) -> i32 {
+        self.focus_ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1)
     }
 
     /* tests moved to end of module */
@@ -244,10 +237,14 @@ impl Repeater {
         (Duration::from_millis(i_ms), Duration::from_millis(t_ms))
     }
 
-    /// Optional: install a repeat observer used for instrumentation/testing
-    pub fn set_repeat_observer(&self, obs: Arc<dyn RepeatObserver>) {
-        let mut guard = self.repeat_observer.lock();
-        *guard = Some(obs);
+    /// Optional: install a relay repeat callback for instrumentation/testing.
+    pub fn set_on_relay_repeat(&self, cb: OnRelayRepeat) {
+        *self.on_relay_repeat.lock() = Some(cb);
+    }
+
+    /// Optional: install a shell repeat callback for instrumentation/testing.
+    pub fn set_on_shell_repeat(&self, cb: OnShellRepeat) {
+        *self.on_shell_repeat.lock() = Some(cb);
     }
 
     /// Convenience helper for relay repeating start (testing/tools)
@@ -316,7 +313,7 @@ impl Repeater {
             }
             ExecSpec::Relay { chord } => {
                 // Start relay immediately (non-repeat)
-                let pid = self.pid_provider.current_pid();
+                let pid = self.current_pid();
                 self.relay
                     .start_relay(id.clone(), chord.clone(), pid, false);
 
@@ -332,7 +329,7 @@ impl Repeater {
         let id_for_log = id.clone();
         let state = self.shell_state(&id_for_log);
 
-        let rep_obs = self.repeat_observer.clone();
+        let on_shell_repeat = self.on_shell_repeat.clone();
         self.ticker.start(id, initial_delay, interval, move || {
             // Skip if a prior run is still active
             if state.running.swap(true, Ordering::SeqCst) {
@@ -342,7 +339,7 @@ impl Repeater {
             let cmd = command.clone();
             let id_for_trace = id_for_log.clone();
             // Spawn async task to serialize via per-id async mutex, then run blocking
-            let rep_obs2 = rep_obs.clone();
+            let on_shell_repeat2 = on_shell_repeat.clone();
             let state2 = state.clone();
             tokio::spawn(async move {
                 let _guard = state2.gate.lock().await;
@@ -350,10 +347,9 @@ impl Repeater {
                     run_shell_blocking(&cmd, NotificationType::Ignore, NotificationType::Ignore)
                 })
                 .await;
-                // Note shell repeat for observers
-                let obs = rep_obs2.lock().as_ref().cloned();
-                if let Some(obs) = obs {
-                    obs.on_shell_repeat(&id_for_trace);
+                // Notify shell repeat callback if set
+                if let Some(cb) = on_shell_repeat2.lock().as_ref() {
+                    cb(&id_for_trace);
                 }
                 state2.running.store(false, Ordering::SeqCst);
                 trace!("repeater_shell_run_done" = %id_for_trace);
@@ -370,17 +366,17 @@ impl Repeater {
     ) {
         let (initial_delay, interval) = self.effective_timings(repeat);
         let relay = self.relay.clone();
-        let provider = self.pid_provider.clone();
+        let focus_ctx = self.focus_ctx.clone();
         let id_for_log = id.clone();
         let ch = chord.clone();
 
         let mut last_pid = initial_pid;
-        let rep_obs = self.repeat_observer.clone();
+        let on_relay_repeat = self.on_relay_repeat.clone();
         // Coalesce relay repeats to avoid overlapping enqueueing under jitter
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
         self.ticker.start(id, initial_delay, interval, move || {
-            let pid = provider.current_pid();
+            let pid = focus_ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1);
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);
@@ -395,10 +391,9 @@ impl Repeater {
                     return;
                 }
                 let _ = relay.repeat_relay(&id_for_log, pid);
-                // Note relay repeat for observers
-                let obs = rep_obs.lock().as_ref().cloned();
-                if let Some(obs) = obs {
-                    obs.on_relay_repeat(&id_for_log);
+                // Notify relay repeat callback if set
+                if let Some(cb) = on_relay_repeat.lock().as_ref() {
+                    cb(&id_for_log);
                 }
                 running_flag.store(false, Ordering::SeqCst);
             }
@@ -444,22 +439,14 @@ impl Repeater {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
     use tokio::{
         sync::mpsc,
         time::{Duration, Instant, sleep},
     };
 
     use super::*;
-
-    struct Ctr {
-        shell: std::sync::atomic::AtomicUsize,
-    }
-
-    impl RepeatObserver for Ctr {
-        fn on_shell_repeat(&self, _id: &str) {
-            self.shell.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn shell_first_run_coalesces_then_unblocks_repeats() {
@@ -469,10 +456,11 @@ mod tests {
         let notifier = crate::notification::NotificationDispatcher::new(tx);
         let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
 
-        let obs = Arc::new(Ctr {
-            shell: std::sync::atomic::AtomicUsize::new(0),
-        });
-        repeater.set_repeat_observer(obs.clone());
+        let shell_count = Arc::new(AtomicUsize::new(0));
+        let shell_count2 = shell_count.clone();
+        repeater.set_on_shell_repeat(Arc::new(move |_id| {
+            shell_count2.fetch_add(1, AtomicOrdering::SeqCst);
+        }));
 
         // Command blocks briefly so the initial run overlaps the first repeat tick
         // but finishes quickly afterwards.
@@ -494,7 +482,7 @@ mod tests {
         // After ~150ms the first repeat tick would have fired; ensure it was coalesced
         sleep(Duration::from_millis(150)).await;
         assert_eq!(
-            obs.shell.load(std::sync::atomic::Ordering::SeqCst),
+            shell_count.load(AtomicOrdering::SeqCst),
             0,
             "No shell repeats during the first blocking run",
         );
@@ -502,11 +490,10 @@ mod tests {
         // Wait until at least one repeat completes, with a generous deadline to
         // avoid flakiness on slow runners. Check every 50ms up to 1.5s total.
         let deadline = Instant::now() + Duration::from_millis(1500);
-        while Instant::now() < deadline && obs.shell.load(std::sync::atomic::Ordering::SeqCst) == 0
-        {
+        while Instant::now() < deadline && shell_count.load(AtomicOrdering::SeqCst) == 0 {
             sleep(Duration::from_millis(50)).await;
         }
-        let repeats = obs.shell.load(std::sync::atomic::Ordering::SeqCst);
+        let repeats = shell_count.load(AtomicOrdering::SeqCst);
         repeater.stop_sync("shell-coalesce");
         assert!(
             repeats >= 1,

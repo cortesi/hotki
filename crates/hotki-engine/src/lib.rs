@@ -9,7 +9,7 @@
 //!
 //! This crate is macOS-only by design. It exposes a minimal, documented API:
 //! - [`Engine`]: the primary type you construct and drive
-//! - [`RepeatSpec`] and [`RepeatObserver`]: instrumentation hooks
+//! - [`RepeatSpec`], [`OnRelayRepeat`], [`OnShellRepeat`]: instrumentation hooks
 //!
 //! All other modules are crate-private implementation details.
 //!
@@ -74,7 +74,7 @@ pub use notification::NotificationDispatcher;
 use parking_lot::Mutex;
 pub use relay::RelayHandler;
 use repeater::ExecSpec;
-pub use repeater::{RepeatObserver, RepeatSpec, Repeater};
+pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
 use tracing::{debug, trace, warn};
 
 fn to_display_rect(frame: hotki_world::DisplayFrame) -> hotki_protocol::DisplayRect {
