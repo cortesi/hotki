@@ -43,8 +43,8 @@ use core_graphics::{
         kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
     },
 };
-use events::EventHub as InternalHub;
-pub use events::{DEFAULT_EVENT_CAPACITY, EventCursor, EventFilter, EventHub, EventRecord};
+pub use events::EventCursor;
+use events::{DEFAULT_EVENT_CAPACITY, EventHub as InternalHub};
 use parking_lot::RwLock;
 use permissions::{accessibility_ok, screen_recording_ok};
 use tokio::time::{self, Instant as TokioInstant};
@@ -209,18 +209,12 @@ pub trait WorldView: Send + Sync {
     /// Subscribe to live [`WorldEvent`] updates.
     fn subscribe(&self) -> EventCursor;
 
-    /// Subscribe with a filter predicate applied before events enter the ring buffer.
-    fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor;
-
     /// Await the next event for the given cursor until the deadline expires.
     async fn next_event_until(
         &self,
         cursor: &mut EventCursor,
         deadline: TokioInstant,
     ) -> Option<WorldEvent>;
-
-    /// Subscribe and obtain an initial snapshot plus focused key.
-    async fn subscribe_with_snapshot(&self) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>);
 
     /// Subscribe and obtain a derived focus context `(app, title, pid)` if any.
     async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>);
@@ -410,11 +404,7 @@ impl PollingWorld {
 #[async_trait]
 impl WorldView for PollingWorld {
     fn subscribe(&self) -> EventCursor {
-        self.hub.subscribe(None)
-    }
-
-    fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor {
-        self.hub.subscribe(Some(filter))
+        self.hub.subscribe()
     }
 
     async fn next_event_until(
@@ -423,13 +413,6 @@ impl WorldView for PollingWorld {
         deadline: TokioInstant,
     ) -> Option<WorldEvent> {
         self.hub.next_event_until(cursor, deadline).await
-    }
-
-    async fn subscribe_with_snapshot(&self) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>) {
-        let cursor = self.subscribe();
-        let snap = self.inner.snapshot.read().clone();
-        let focused = *self.inner.focused.read();
-        (cursor, snap, focused)
     }
 
     async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
@@ -717,11 +700,6 @@ impl World {
     pub fn spawn_default_view(cfg: WorldCfg) -> Arc<dyn WorldView> {
         PollingWorld::spawn(cfg)
     }
-
-    /// Spawn a no-op view with an empty snapshot and no background tasks.
-    pub fn spawn_noop_view() -> Arc<dyn WorldView> {
-        TestWorld::new().into_view()
-    }
 }
 
 /// Simple in-memory world used for tests and fixtures.
@@ -737,11 +715,6 @@ impl TestWorld {
             inner: Arc::new(WorldState::default()),
             hub: Arc::new(InternalHub::new(DEFAULT_EVENT_CAPACITY)),
         }
-    }
-
-    /// Produce an [`Arc`] trait object from this test world.
-    pub fn into_view(self) -> Arc<dyn WorldView> {
-        Arc::new(self)
     }
 
     /// Replace the snapshot and focused key atomically.
@@ -802,11 +775,7 @@ impl Default for TestWorld {
 #[async_trait]
 impl WorldView for TestWorld {
     fn subscribe(&self) -> EventCursor {
-        self.hub.subscribe(None)
-    }
-
-    fn subscribe_filtered(&self, filter: EventFilter) -> EventCursor {
-        self.hub.subscribe(Some(filter))
+        self.hub.subscribe()
     }
 
     async fn next_event_until(
@@ -815,13 +784,6 @@ impl WorldView for TestWorld {
         deadline: TokioInstant,
     ) -> Option<WorldEvent> {
         self.hub.next_event_until(cursor, deadline).await
-    }
-
-    async fn subscribe_with_snapshot(&self) -> (EventCursor, Vec<WorldWindow>, Option<WindowKey>) {
-        let cursor = self.subscribe();
-        let snap = self.inner.snapshot.read().clone();
-        let focused = *self.inner.focused.read();
-        (cursor, snap, focused)
     }
 
     async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {

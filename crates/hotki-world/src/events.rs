@@ -5,7 +5,6 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::SystemTime,
 };
 
 use parking_lot::Mutex;
@@ -17,21 +16,7 @@ use tokio::{
 use crate::WorldEvent;
 
 /// Default per-subscriber event ring capacity.
-pub const DEFAULT_EVENT_CAPACITY: usize = 16_384;
-
-/// Recorded event with timestamp and monotonic sequence.
-#[derive(Clone, Debug)]
-pub struct EventRecord {
-    /// Global sequence identifier for this event.
-    pub seq: u64,
-    /// Wall-clock timestamp captured when the event was published.
-    pub timestamp: SystemTime,
-    /// The underlying world event payload.
-    pub event: WorldEvent,
-}
-
-/// Predicate used to filter incoming world events for a subscription.
-pub type EventFilter = Arc<dyn Fn(&WorldEvent) -> bool + Send + Sync + 'static>;
+pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 16_384;
 
 struct EventEntry {
     seq: u64,
@@ -85,27 +70,20 @@ impl EventBuffer {
 struct StreamInner {
     buffer: Mutex<EventBuffer>,
     notify: Notify,
-    filter: Option<EventFilter>,
     closed: AtomicBool,
 }
 
 impl StreamInner {
-    fn new(start_seq: u64, capacity: usize, filter: Option<EventFilter>) -> Arc<Self> {
+    fn new(start_seq: u64, capacity: usize) -> Arc<Self> {
         Arc::new(Self {
             buffer: Mutex::new(EventBuffer::new(start_seq, capacity)),
             notify: Notify::new(),
-            filter,
             closed: AtomicBool::new(false),
         })
     }
 
     fn push(&self, seq: u64, event: &WorldEvent) {
         if self.closed.load(Ordering::Acquire) {
-            return;
-        }
-        if let Some(filter) = &self.filter
-            && !filter(event)
-        {
             return;
         }
         let mut buffer = self.buffer.lock();
@@ -193,38 +171,33 @@ impl fmt::Debug for EventCursor {
 }
 
 /// Lightweight event fan-out with per-subscriber ring buffers.
-pub struct EventHub {
+pub(crate) struct EventHub {
     seq: AtomicU64,
     capacity: usize,
-    history_capacity: usize,
     subscribers: Mutex<Vec<Weak<StreamInner>>>,
-    history: Mutex<VecDeque<EventRecord>>,
 }
 
 impl EventHub {
     /// Create a new hub with the given per-subscriber capacity.
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         let capacity = capacity.max(8);
-        let history_capacity = capacity.saturating_mul(2);
         Self {
             seq: AtomicU64::new(0),
             capacity,
-            history_capacity,
             subscribers: Mutex::new(Vec::new()),
-            history: Mutex::new(VecDeque::with_capacity(history_capacity)),
         }
     }
 
-    /// Subscribe to events, optionally filtering them before they enter the buffer.
-    pub fn subscribe(&self, filter: Option<EventFilter>) -> EventCursor {
+    /// Subscribe to events.
+    pub(crate) fn subscribe(&self) -> EventCursor {
         let start = self.seq.load(Ordering::SeqCst);
-        let stream = StreamInner::new(start, self.capacity, filter);
+        let stream = StreamInner::new(start, self.capacity);
         self.subscribers.lock().push(Arc::downgrade(&stream));
         EventCursor::new(stream, start)
     }
 
     /// Publish an event to all subscribers.
-    pub fn publish(&self, event: WorldEvent) {
+    pub(crate) fn publish(&self, event: WorldEvent) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let mut stale = false;
         {
@@ -240,17 +213,10 @@ impl EventHub {
         if stale {
             self.prune();
         }
-        self.record_history(seq, &event);
-    }
-
-    /// Try to pull the next event without waiting.
-    pub fn try_next(&self, cursor: &mut EventCursor) -> Option<WorldEvent> {
-        let stream = cursor.stream.clone();
-        stream.try_next(cursor)
     }
 
     /// Await the next event until the given deadline, returning `None` on timeout.
-    pub async fn next_event_until(
+    pub(crate) async fn next_event_until(
         &self,
         cursor: &mut EventCursor,
         deadline: TokioInstant,
@@ -277,81 +243,21 @@ impl EventHub {
         }
     }
 
-    /// Count live subscribers.
-    pub fn subscriber_count(&self) -> usize {
-        let mut stale = false;
-        let count = {
-            let subscribers = self.subscribers.lock();
-            subscribers
-                .iter()
-                .filter_map(|weak| {
-                    if let Some(stream) = weak.upgrade() {
-                        if stream.is_closed() {
-                            stale = true;
-                            None
-                        } else {
-                            Some(stream)
-                        }
-                    } else {
-                        stale = true;
-                        None
-                    }
-                })
-                .count()
-        };
-        if stale {
-            self.prune();
-        }
-        count
-    }
-
-    /// Close all subscribers and return the number closed.
-    pub fn close_all(&self) -> usize {
-        let mut closed = 0;
-        {
-            let subscribers = self.subscribers.lock();
-            for weak in subscribers.iter() {
-                if let Some(stream) = weak.upgrade() {
-                    stream.close();
-                    closed += 1;
-                }
-            }
-        }
-        self.prune();
-        closed
-    }
-
-    /// Return the most recent events (up to `limit`) from history.
-    pub fn recent_events(&self, limit: usize) -> Vec<EventRecord> {
-        let history = self.history.lock();
-        let take = limit.min(history.len());
-        history
-            .iter()
-            .rev()
-            .take(take)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    }
-
     fn prune(&self) {
         let mut subscribers = self.subscribers.lock();
         subscribers.retain(|weak| {
             weak.strong_count() > 0 && weak.upgrade().is_some_and(|stream| !stream.is_closed())
         })
     }
+}
 
-    fn record_history(&self, seq: u64, event: &WorldEvent) {
-        let mut history = self.history.lock();
-        if history.len() == self.history_capacity {
-            history.pop_front();
+impl Drop for EventHub {
+    fn drop(&mut self) {
+        let subscribers = self.subscribers.lock();
+        for weak in subscribers.iter() {
+            if let Some(stream) = weak.upgrade() {
+                stream.close();
+            }
         }
-        history.push_back(EventRecord {
-            seq,
-            timestamp: SystemTime::now(),
-            event: event.clone(),
-        });
     }
 }

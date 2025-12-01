@@ -55,15 +55,6 @@ impl State {
         }
     }
 
-    /// Process a key press (no context). Equivalent to `handle_key_with_context` with empty app/title.
-    pub fn handle_key(
-        &mut self,
-        cfg: &config::Config,
-        key: &Chord,
-    ) -> Result<KeyResponse, KeymodeError> {
-        self.handle_key_with_context(cfg, key, "", "")
-    }
-
     /// Execute an action with the given attributes
     fn execute_action(
         &mut self,
@@ -244,7 +235,7 @@ impl State {
     }
 
     /// Reset to root (clear path and hide viewing_root).
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.cursor.clear();
         self.cursor.viewing_root = false;
     }
@@ -290,13 +281,21 @@ mod tests {
         mac_keycode::Chord::parse(s).unwrap()
     }
 
+    fn press(
+        state: &mut State,
+        cfg: &config::Config,
+        chord: &Chord,
+    ) -> Result<KeyResponse, KeymodeError> {
+        state.handle_key_with_context(cfg, chord, "", "")
+    }
+
     #[test]
     fn test_unknown_keys() {
         let keys: Keys = ron::from_str("[(\"a\", \"Action\", shell(\"test\"))]").unwrap();
         let cfg = config::Config::from_parts(keys, config::Style::default());
         let mut state = State::new();
-        state.handle_key(&cfg, &chord("z")).unwrap();
-        state.handle_key(&cfg, &chord("x")).unwrap();
+        press(&mut state, &cfg, &chord("z")).unwrap();
+        press(&mut state, &cfg, &chord("x")).unwrap();
         assert_eq!(state.depth(), 0);
     }
 
@@ -316,22 +315,22 @@ mod tests {
         let cfg = config::Config::from_parts(keys, config::Style::default());
         let mut state = State::new();
 
-        state.handle_key(&cfg, &chord("m")).unwrap();
+        press(&mut state, &cfg, &chord("m")).unwrap();
         assert_eq!(state.depth(), 1);
-        state.handle_key(&cfg, &chord("n")).unwrap();
+        press(&mut state, &cfg, &chord("n")).unwrap();
         assert_eq!(state.depth(), 0);
-        state.handle_key(&cfg, &chord("m")).unwrap();
+        press(&mut state, &cfg, &chord("m")).unwrap();
         assert_eq!(state.depth(), 1);
-        state.handle_key(&cfg, &chord("s")).unwrap();
+        press(&mut state, &cfg, &chord("s")).unwrap();
         assert_eq!(state.depth(), 1);
-        state.handle_key(&cfg, &chord("d")).unwrap();
+        press(&mut state, &cfg, &chord("d")).unwrap();
         assert_eq!(state.depth(), 2);
-        state.handle_key(&cfg, &chord("x")).unwrap();
+        press(&mut state, &cfg, &chord("x")).unwrap();
         assert_eq!(state.depth(), 0);
-        state.handle_key(&cfg, &chord("m")).unwrap();
-        state.handle_key(&cfg, &chord("d")).unwrap();
+        press(&mut state, &cfg, &chord("m")).unwrap();
+        press(&mut state, &cfg, &chord("d")).unwrap();
         assert_eq!(state.depth(), 2);
-        state.handle_key(&cfg, &chord("y")).unwrap();
+        press(&mut state, &cfg, &chord("y")).unwrap();
         assert_eq!(state.depth(), 2);
     }
 
@@ -341,7 +340,7 @@ mod tests {
         let keys: Keys = ron::from_str("[(\"r\", \"Reload\", reload_config)]").unwrap();
         let cfg = config::Config::from_parts(keys, config::Style::default());
         let mut state = State::new();
-        match state.handle_key(&cfg, &chord("r")).unwrap() {
+        match press(&mut state, &cfg, &chord("r")).unwrap() {
             KeyResponse::Ui(MsgToUI::ReloadConfig) => {}
             other => panic!("{:?}", other),
         }
@@ -359,9 +358,9 @@ mod tests {
         .unwrap();
         let cfg2 = config::Config::from_parts(keys2, config::Style::default());
         let mut state2 = State::new();
-        state2.handle_key(&cfg2, &chord("m")).unwrap();
+        press(&mut state2, &cfg2, &chord("m")).unwrap();
         assert_eq!(state2.depth(), 1);
-        match state2.handle_key(&cfg2, &chord("c")).unwrap() {
+        match press(&mut state2, &cfg2, &chord("c")).unwrap() {
             KeyResponse::Ui(MsgToUI::ClearNotifications) => {}
             other => panic!("{:?}", other),
         }
@@ -383,7 +382,7 @@ mod tests {
         let keys: Keys = ron::from_str(ron_text).unwrap();
         let cfg = config::Config::from_parts(keys, config::Style::default());
         let mut state = State::new();
-        state.handle_key(&cfg, &chord("shift+cmd+0")).unwrap();
+        press(&mut state, &cfg, &chord("shift+cmd+0")).unwrap();
         assert_eq!(state.depth(), 1);
     }
 }

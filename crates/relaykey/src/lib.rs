@@ -225,14 +225,6 @@ impl RelayKey {
         }
     }
 
-    /// Create a relayer that does NOT tag events with HOTK_TAG.
-    /// Use in tools/smoketests to drive the event tap like real user input.
-    pub fn new_unlabeled() -> Self {
-        Self {
-            poster: Arc::new(MacPoster { untagged: true }),
-        }
-    }
-
     /// Test helper to inject a custom poster.
     #[cfg(test)]
     pub(crate) fn new_with_poster(poster: Arc<dyn Poster>) -> Self {
