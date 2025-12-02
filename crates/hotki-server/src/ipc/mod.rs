@@ -4,7 +4,7 @@ use std::{
 };
 
 mod client;
-pub mod rpc;
+pub use hotki_protocol::rpc;
 mod server;
 mod service;
 
@@ -87,4 +87,65 @@ fn encode_deadline(deadline: Instant) -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hotki_protocol::rpc::{HotkeyNotification, InjectKeyReq, InjectKind};
+    use mrpc::Value;
+
+    #[test]
+    fn notify_name_is_notify() {
+        assert_eq!(HotkeyNotification::Notify.as_str(), "notify");
+    }
+
+    #[test]
+    fn set_config_roundtrip() {
+        let cfg = config::Config::default();
+        let v = client::enc_set_config(&cfg).expect("encode");
+        let dec = service::dec_set_config_param(&v).expect("decode");
+        // Default roundtrip should preserve style key font size default, etc.
+        assert_eq!(
+            format!("{:?}", cfg.hud(&config::Cursor::default()).mode),
+            format!("{:?}", dec.hud(&config::Cursor::default()).mode)
+        );
+    }
+
+    #[test]
+    fn set_config_invalid_type_error_code() {
+        let err = service::dec_set_config_param(&Value::String("oops".into())).expect_err("should error");
+        match err {
+            mrpc::RpcError::Service(se) => {
+                assert_eq!(se.name, crate::error::RpcErrorCode::InvalidType.to_string());
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_config_invalid_binary_error_code() {
+        let err = service::dec_set_config_param(&Value::Binary(vec![1, 2, 3])).expect_err("should error");
+        match err {
+            mrpc::RpcError::Service(se) => {
+                assert_eq!(
+                    se.name,
+                    crate::error::RpcErrorCode::InvalidConfig.to_string()
+                );
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inject_key_roundtrip() {
+        let req = InjectKeyReq {
+            ident: "shift+cmd+0".into(),
+            kind: InjectKind::Down,
+            repeat: false,
+        };
+        let v = client::enc_inject_key(&req).expect("encode");
+        let dec = service::dec_inject_key_param(&v).expect("decode inject");
+        assert_eq!(req, dec);
+    }
 }

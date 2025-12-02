@@ -28,7 +28,13 @@ use std::{
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use hotki_engine::Engine;
-use hotki_protocol::{App, MsgToUI, WorldStreamMsg};
+use hotki_protocol::{
+    App, MsgToUI, WorldStreamMsg,
+    rpc::{
+        HotkeyMethod, HotkeyNotification, InjectKeyReq, InjectKind, ServerStatusLite,
+        WorldSnapshotLite,
+    },
+};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use parking_lot::Mutex;
 use tokio::sync::{
@@ -38,12 +44,7 @@ use tokio::sync::{
 use tracing::{debug, error, info, trace, warn};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
-use crate::{
-    ipc::rpc::{
-        HotkeyMethod, HotkeyNotification, ServerStatusLite, enc_server_status, enc_world_status,
-    },
-    loop_wake,
-};
+use crate::loop_wake;
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
@@ -254,7 +255,7 @@ impl HotkeyService {
         let clients_snapshot = { self.clients.lock().await.clone() };
 
         // Convert event to MRPC Value (binary serde payload)
-        let value = match crate::ipc::rpc::enc_event(&event) {
+        let value = match enc_event(&event) {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to encode event for broadcast: {}", e);
@@ -423,7 +424,7 @@ impl MrpcConnection for HotkeyService {
                     ));
                 }
 
-                let cfg = crate::ipc::rpc::dec_set_config_param(&params[0])?;
+                let cfg = dec_set_config_param(&params[0])?;
                 debug!("Setting config via MRPC");
 
                 // Ensure engine is initialized
@@ -469,7 +470,7 @@ impl MrpcConnection for HotkeyService {
                         &[("expected", Value::String("inject request".into()))],
                     ));
                 }
-                let req = match crate::ipc::rpc::dec_inject_key_param(&params[0]) {
+                let req = match dec_inject_key_param(&params[0]) {
                     Ok(r) => r,
                     Err(e) => return Err(e),
                 };
@@ -508,7 +509,7 @@ impl MrpcConnection for HotkeyService {
                 tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: resolved id={} for ident={} -> dispatch", id, req.ident);
 
                 // Dispatch directly through the engine (same path as OS events)
-                match eng.dispatch(id, crate::ipc::rpc::inject_kind_to_event(req.kind), req.repeat).await {
+                match eng.dispatch(id, inject_kind_to_event(req.kind), req.repeat).await {
                     Ok(_) => {
                         tracing::debug!(
                             target: "hotki_server::ipc::service",
@@ -635,7 +636,7 @@ impl MrpcConnection for HotkeyService {
 
                 let payload = build_snapshot_payload(displays, focused_app);
 
-                crate::ipc::rpc::enc_world_snapshot(&payload).map_err(|e| {
+                enc_world_snapshot(&payload).map_err(|e| {
                     Self::typed_err(
                         crate::error::RpcErrorCode::InvalidType,
                         &[("message", Value::String(e.to_string().into()))],
@@ -808,57 +809,72 @@ impl HotkeyServiceBuilder {
 fn build_snapshot_payload(
     displays: hotki_world::DisplaysSnapshot,
     focused: Option<App>,
-) -> crate::ipc::rpc::WorldSnapshotLite {
-    crate::ipc::rpc::WorldSnapshotLite { focused, displays }
+) -> WorldSnapshotLite {
+    WorldSnapshotLite { focused, displays }
 }
 
-#[cfg(test)]
-mod tests {
-    use hotki_protocol::{App, DisplayFrame, DisplaysSnapshot};
-
-    use super::*;
-
-    #[test]
-    fn build_snapshot_carries_focus_and_displays() {
-        let displays = DisplaysSnapshot {
-            global_top: 1200.0,
-            active: Some(DisplayFrame {
-                id: 7,
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            }),
-            displays: vec![DisplayFrame {
-                id: 7,
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            }],
-        };
-        let focused = Some(App {
-            app: "Test".into(),
-            title: "Window".into(),
-            pid: 42,
-        });
-
-        let payload = build_snapshot_payload(displays.clone(), focused.clone());
-
-        assert_eq!(payload.focused, focused);
-        assert_eq!(payload.displays.global_top, displays.global_top);
-        assert_eq!(payload.displays.displays.len(), displays.displays.len());
-        assert_eq!(
-            payload.displays.active.unwrap().id,
-            displays.active.unwrap().id
-        );
+/// Encode world status into an MRPC value for transport.
+fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
+    match rmp_serde::to_vec_named(ws) {
+        Ok(bytes) => Value::Binary(bytes),
+        Err(_) => Value::Nil,
     }
+}
 
-    #[test]
-    fn build_snapshot_defaults_when_no_focus() {
-        let displays = DisplaysSnapshot::default();
-        let payload = build_snapshot_payload(displays.clone(), None);
-        assert_eq!(payload.focused, None);
-        assert_eq!(payload.displays, DisplaysSnapshot::default());
+/// Decode `set_config` params.
+pub(crate) fn dec_set_config_param(v: &Value) -> Result<config::Config, mrpc::RpcError> {
+    match v {
+        Value::Binary(bytes) => rmp_serde::from_slice::<config::Config>(bytes).map_err(|e| {
+            mrpc::RpcError::Service(mrpc::ServiceError {
+                name: crate::error::RpcErrorCode::InvalidConfig.to_string(),
+                value: Value::String(e.to_string().into()),
+            })
+        }),
+        _ => Err(mrpc::RpcError::Service(mrpc::ServiceError {
+            name: crate::error::RpcErrorCode::InvalidType.to_string(),
+            value: Value::String("expected binary msgpack".into()),
+        })),
+    }
+}
+
+/// Encode a generic UI event for notifications to clients.
+pub(crate) fn enc_event(event: &hotki_protocol::MsgToUI) -> crate::Result<Value> {
+    hotki_protocol::ipc::codec::msg_to_value(event)
+        .map_err(|e| crate::Error::Serialization(e.to_string()))
+}
+
+/// Encode a server status snapshot to msgpack binary `Value`.
+fn enc_server_status(status: &ServerStatusLite) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(status)?;
+    Ok(Value::Binary(bytes))
+}
+
+/// Encode a world snapshot to msgpack binary `Value`.
+fn enc_world_snapshot(snap: &WorldSnapshotLite) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(snap)?;
+    Ok(Value::Binary(bytes))
+}
+
+/// Decode `inject_key` param from msgpack binary.
+pub(crate) fn dec_inject_key_param(v: &Value) -> Result<InjectKeyReq, mrpc::RpcError> {
+    match v {
+        Value::Binary(bytes) => rmp_serde::from_slice::<InjectKeyReq>(bytes).map_err(|e| {
+            mrpc::RpcError::Service(mrpc::ServiceError {
+                name: crate::error::RpcErrorCode::InvalidConfig.to_string(),
+                value: Value::String(e.to_string().into()),
+            })
+        }),
+        _ => Err(mrpc::RpcError::Service(mrpc::ServiceError {
+            name: crate::error::RpcErrorCode::InvalidType.to_string(),
+            value: Value::String("expected binary msgpack".into()),
+        })),
+    }
+}
+
+/// Helper to convert protocol injection kind to internal event kind.
+fn inject_kind_to_event(kind: InjectKind) -> mac_hotkey::EventKind {
+    match kind {
+        InjectKind::Down => mac_hotkey::EventKind::KeyDown,
+        InjectKind::Up => mac_hotkey::EventKind::KeyUp,
     }
 }

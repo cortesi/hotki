@@ -3,15 +3,18 @@
 use std::{result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
-use hotki_protocol::MsgToUI;
+use hotki_protocol::{
+    MsgToUI,
+    rpc::{
+        HotkeyMethod, HotkeyNotification, InjectKeyReq, InjectKind, ServerStatusLite,
+        WorldSnapshotLite,
+    },
+};
 use mrpc::{Client as MrpcClient, Connection as MrpcConnection, RpcError, RpcSender, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
 
-use crate::{
-    Error, Result,
-    ipc::rpc::{HotkeyMethod, HotkeyNotification, ServerStatusLite, WorldSnapshotLite},
-};
+use crate::{Error, Result};
 
 /// Active IPC connection.
 ///
@@ -67,7 +70,7 @@ impl Connection {
     /// Set the full configuration (typed convenience method).
     pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
         debug!("Sending set_config request");
-        let param = super::rpc::enc_set_config(&cfg)?;
+        let param = enc_set_config(&cfg)?;
         let response = self
             .client
             .send_request(HotkeyMethod::SetConfig.as_str(), &[param])
@@ -109,16 +112,16 @@ impl Connection {
     async fn inject_key(&mut self, ident: &str, kind: &str, repeat: bool) -> Result<()> {
         // Build a typed request and encode it via serde to msgpack
         let kind_enum = match kind {
-            "down" => crate::ipc::rpc::InjectKind::Down,
-            "up" => crate::ipc::rpc::InjectKind::Up,
+            "down" => InjectKind::Down,
+            "up" => InjectKind::Up,
             other => return Err(Error::Ipc(format!("invalid kind: {}", other))),
         };
-        let req = crate::ipc::rpc::InjectKeyReq {
+        let req = InjectKeyReq {
             ident: ident.to_string(),
             kind: kind_enum,
             repeat,
         };
-        let param = super::rpc::enc_inject_key(&req)?;
+        let param = enc_inject_key(&req)?;
         let response = self
             .client
             .send_request(HotkeyMethod::InjectKey.as_str(), &[param])
@@ -271,7 +274,7 @@ impl MrpcConnection for ClientHandler {
 
         if method == HotkeyNotification::Notify.as_str() && !params.is_empty() {
             // Parse event and send to channel
-            match super::rpc::dec_event(params[0].clone()) {
+            match dec_event(params[0].clone()) {
                 Ok(msg) => {
                     if let Err(err) = self.event_tx.send(msg) {
                         if self.event_tx.is_closed() {
@@ -289,4 +292,22 @@ impl MrpcConnection for ClientHandler {
 
         Ok(())
     }
+}
+
+/// Encode `set_config` params.
+pub(crate) fn enc_set_config(cfg: &config::Config) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(cfg)?;
+    Ok(Value::Binary(bytes))
+}
+
+/// Encode `inject_key` params as msgpack binary.
+pub(crate) fn enc_inject_key(req: &InjectKeyReq) -> crate::Result<Value> {
+    let bytes = rmp_serde::to_vec_named(req)?;
+    Ok(Value::Binary(bytes))
+}
+
+/// Decode a generic UI event from a notification param value.
+pub(crate) fn dec_event(v: Value) -> crate::Result<hotki_protocol::MsgToUI> {
+    hotki_protocol::ipc::codec::value_to_msg(v)
+        .map_err(|e| crate::Error::Serialization(e.to_string()))
 }
