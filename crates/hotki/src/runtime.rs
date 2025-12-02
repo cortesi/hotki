@@ -4,7 +4,6 @@
 use std::{
     collections::VecDeque,
     convert::TryInto,
-    env,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -20,9 +19,9 @@ use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
 use hotki_server::{
     Client,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
-        BridgeKeyKind, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
-        BridgeTimestampMs,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind,
+        BridgeNotifications, BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
+        control_socket_path, drain_bridge_events, handshake_response,
     },
 };
 use tokio::{
@@ -30,7 +29,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
     sync::{broadcast, mpsc, oneshot},
-    time::{Duration, Instant as TokioInstant, Sleep, sleep, timeout},
+    time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
 use tracing::{debug, error, info};
 
@@ -75,7 +74,7 @@ struct ConnectionDriver {
     /// Broadcast channel used to stream bridge updates to the smoketest harness.
     bridge_events: broadcast::Sender<BridgeEvent>,
     /// Pending notifications tracked for smoketest handshake responses.
-    bridge_notifications: VecDeque<BridgeNotification>,
+    bridge_notifications: BridgeNotifications,
 }
 
 impl ConnectionDriver {
@@ -91,53 +90,6 @@ impl ConnectionDriver {
         }
     }
 
-    /// Track a notification for inclusion in smoketest handshakes.
-    fn record_bridge_notification(&mut self, kind: NotifyKind, title: &str, text: &str) {
-        if self.bridge_notifications.len() >= Self::MAX_BRIDGE_NOTIFICATIONS {
-            self.bridge_notifications.pop_front();
-        }
-        self.bridge_notifications.push_back(BridgeNotification {
-            kind,
-            title: title.to_string(),
-            text: text.to_string(),
-        });
-    }
-
-    /// Clear tracked notifications (e.g., when the UI requests a clear).
-    fn clear_bridge_notifications(&mut self) {
-        self.bridge_notifications.clear();
-    }
-
-    /// Collect the currently tracked notifications as a Vec for responses.
-    fn pending_bridge_notifications(&self) -> Vec<BridgeNotification> {
-        self.bridge_notifications.iter().cloned().collect()
-    }
-
-    /// Drain any remaining server events after issuing a shutdown request.
-    async fn drain_pending_bridge_events(&self, conn: &mut hotki_server::Connection) {
-        let mut processed = 0usize;
-        while processed < Self::MAX_SHUTDOWN_DRAIN_EVENTS {
-            match timeout(Duration::from_secs(1), conn.recv_event()).await {
-                Ok(Ok(_msg)) => {
-                    processed += 1;
-                    // Events observed during shutdown are dropped to avoid
-                    // triggering additional world status RPCs.
-                }
-                Ok(Err(hotki_server::Error::Ipc(ref s))) if s == "Event channel closed" => {
-                    break;
-                }
-                Ok(Err(err)) => {
-                    tracing::debug!(?err, "bridge drain aborted");
-                    break;
-                }
-                Err(_) => break,
-            }
-        }
-        if processed >= Self::MAX_SHUTDOWN_DRAIN_EVENTS {
-            tracing::debug!("bridge drain reached event limit");
-        }
-    }
-
     /// Build the handshake payload returned to the smoketest harness.
     async fn make_handshake_response(
         &self,
@@ -147,17 +99,8 @@ impl ConnectionDriver {
             .get_server_status()
             .await
             .map_err(|err| err.to_string())?;
-        let idle_timer = BridgeIdleTimerState {
-            timeout_secs: status.idle_timeout_secs,
-            armed: status.idle_timer_armed,
-            deadline_ms: status.idle_deadline_ms,
-            clients_connected: status.clients_connected,
-        };
-        let notifications = self.pending_bridge_notifications();
-        Ok(BridgeResponse::Handshake {
-            idle_timer,
-            notifications,
-        })
+        let notifications = self.bridge_notifications.snapshot();
+        Ok(handshake_response(&status, notifications))
     }
 
     /// Record the latest world reconcile sequence and wake pending waiters.
@@ -179,12 +122,8 @@ impl ConnectionDriver {
                 config::Config::default()
             }
         };
-        let test_bridge_path = env::var_os("HOTKI_CONTROL_SOCKET")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let derived = hotki_server::socket_path_for_pid(process::id());
-                Some(PathBuf::from(format!("{}.bridge", derived)))
-            });
+        let server_socket = hotki_server::socket_path_for_pid(process::id());
+        let test_bridge_path = Some(PathBuf::from(control_socket_path(&server_socket)));
         let (bridge_events, _rx) = broadcast::channel(128);
 
         Self {
@@ -199,7 +138,7 @@ impl ConnectionDriver {
             dumpworld,
             test_bridge_path,
             bridge_events,
-            bridge_notifications: VecDeque::new(),
+            bridge_notifications: BridgeNotifications::new(Self::MAX_BRIDGE_NOTIFICATIONS),
         }
     }
 
@@ -358,7 +297,7 @@ impl ConnectionDriver {
 
     /// Helper to send a UI notification.
     fn notify(&mut self, kind: NotifyKind, title: &str, text: &str) {
-        self.record_bridge_notification(kind, title, text);
+        self.bridge_notifications.record(kind, title, text);
         if self
             .tx_keys
             .send(AppEvent::Notify {
@@ -490,7 +429,12 @@ impl ConnectionDriver {
             },
             BridgeRequest::Shutdown => match conn.shutdown().await {
                 Ok(()) => {
-                    self.drain_pending_bridge_events(conn).await;
+                    drain_bridge_events(
+                        conn,
+                        Self::MAX_SHUTDOWN_DRAIN_EVENTS,
+                        Duration::from_secs(1),
+                    )
+                    .await;
                     BridgeResponse::Ok
                 }
                 Err(err) => BridgeResponse::Err {
@@ -565,7 +509,7 @@ impl ConnectionDriver {
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
-                self.clear_bridge_notifications();
+                self.bridge_notifications.clear();
                 if self.tx_keys.send(AppEvent::ClearNotifications).is_err() {
                     tracing::warn!("failed to send ClearNotifications");
                 }
