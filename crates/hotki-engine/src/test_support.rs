@@ -2,11 +2,15 @@
 //! These helpers are public to avoid dead_code warnings and are lightweight.
 //! They are intended for use by the test suite only.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
+use config::Keys;
 use hotki_protocol::MsgToUI;
-use hotki_world::WorldView;
-use tokio::time::{Instant, sleep};
+use hotki_world::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, sleep},
+};
 
 /// Create a low-latency `hotki_world` configuration suitable for tests.
 pub fn fast_world_cfg() -> hotki_world::WorldCfg {
@@ -65,6 +69,68 @@ pub async fn recv_error_with_title(
     })
     .await
     .unwrap_or(false)
+}
+
+/// Construct a test engine with default mock components and optional relay support.
+pub async fn create_test_engine_with_relay(
+    relay_enabled: bool,
+) -> (crate::Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
+    let (tx, rx) = mpsc::channel(128);
+    let api = Arc::new(crate::MockHotkeyApi::new());
+    let world = Arc::new(TestWorld::new());
+    let engine = crate::Engine::new_with_api_and_world(api, tx, relay_enabled, world.clone());
+    (engine, rx, world)
+}
+
+/// Construct a test engine with relay disabled (common default).
+pub async fn create_test_engine() -> (crate::Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
+    create_test_engine_with_relay(false).await
+}
+
+/// Hook to assert no platform interaction occurs during tests (currently a no-op).
+pub fn ensure_no_os_interaction() {}
+
+/// Seed the world focus to a specific window and wait for it to be observed.
+pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32) {
+    let window = WorldWindow {
+        app: app.into(),
+        title: title.into(),
+        pid,
+        id: 1,
+        display_id: None,
+        focused: true,
+    };
+    let key = WindowKey { pid, id: window.id };
+    world.set_snapshot(vec![window], Some(key));
+    world.push_event(WorldEvent::FocusChanged(FocusChange {
+        key: Some(key),
+        app: Some(app.into()),
+        title: Some(title.into()),
+        pid: Some(pid),
+        display_id: None,
+    }));
+
+    let ready = wait_snapshot_until(world, 200, |snap| {
+        snap.iter().any(|w| w.pid == pid && w.focused)
+    })
+    .await;
+    assert!(
+        ready,
+        "world failed to observe focused window pid={pid} app={app} title={title}"
+    );
+}
+
+/// Minimal Keys configuration used across engine tests.
+pub fn create_test_keys() -> Keys {
+    let config = r#"[
+        ("cmd+k", "test", keys([
+            ("a", "action", pop),
+            ("b", "nested", keys([
+                ("c", "deep", pop)
+            ]))
+        ]))
+    ]"#;
+    Keys::from_ron(config).expect("valid test config")
 }
 
 /// Receive UI messages until `pred` matches or `timeout_ms` elapses.

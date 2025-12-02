@@ -8,77 +8,16 @@ use std::{
 
 use config::Keys;
 use hotki_engine::{
-    Engine, MockHotkeyApi, NotificationDispatcher, RelayHandler, RepeatSpec, Repeater,
-    test_support::{recv_until, run_engine_test, wait_snapshot_until},
+    NotificationDispatcher, RelayHandler, RepeatSpec, Repeater,
+    test_support::{
+        create_test_engine, create_test_engine_with_relay, create_test_keys,
+        ensure_no_os_interaction, recv_until, run_engine_test, set_world_focus,
+    },
 };
 use hotki_protocol::MsgToUI;
-use hotki_world::{
-    DisplayFrame, DisplaysSnapshot, FocusChange, TestWorld, WindowKey, WorldEvent, WorldWindow,
-};
+use hotki_world::{DisplayFrame, DisplaysSnapshot};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
-
-/// Ensure tests run without invoking real OS intercepts
-fn ensure_no_os_interaction() {}
-
-/// Test helper to create a test engine with mock components
-async fn create_test_engine() -> (Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
-    create_test_engine_with_relay(false).await
-}
-
-async fn create_test_engine_with_relay(
-    relay_enabled: bool,
-) -> (Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
-    ensure_no_os_interaction();
-    let (tx, rx) = mpsc::channel(128);
-    let api = Arc::new(MockHotkeyApi::new());
-    let world = Arc::new(TestWorld::new());
-    let engine = Engine::new_with_api_and_world(api, tx, relay_enabled, world.clone());
-    (engine, rx, world)
-}
-
-async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32) {
-    let window = WorldWindow {
-        app: app.into(),
-        title: title.into(),
-        pid,
-        id: 1,
-        display_id: None,
-        focused: true,
-    };
-    let key = WindowKey { pid, id: window.id };
-    world.set_snapshot(vec![window], Some(key));
-    world.push_event(WorldEvent::FocusChanged(FocusChange {
-        key: Some(key),
-        app: Some(app.into()),
-        title: Some(title.into()),
-        pid: Some(pid),
-        display_id: None,
-    }));
-
-    let ready = wait_snapshot_until(world, 200, |snap| {
-        snap.iter().any(|w| w.pid == pid && w.focused)
-    })
-    .await;
-    assert!(
-        ready,
-        "world failed to observe focused window pid={pid} app={app} title={title}"
-    );
-}
-
-/// Test helper to create a minimal Keys configuration
-fn create_test_keys() -> Keys {
-    // Create a simple test configuration using RON syntax
-    let config = r#"[
-        ("cmd+k", "test", keys([
-            ("a", "action", pop),
-            ("b", "nested", keys([
-                ("c", "deep", pop)
-            ]))
-        ]))
-    ]"#;
-    Keys::from_ron(config).expect("valid test config")
-}
 
 #[test]
 fn test_rebind_on_depth_change() {

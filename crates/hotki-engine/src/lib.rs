@@ -304,8 +304,7 @@ impl Engine {
             st.current_cursor()
         };
         let cursor = self.cursor_with_current_app(cursor);
-        self.notifier.send_hud_update_cursor(cursor, snapshot)?;
-        Ok(())
+        self.publish_hud_with_displays(cursor, snapshot).await
     }
 
     async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
@@ -333,12 +332,8 @@ impl Engine {
             let cursor = self.cursor_with_current_app(cursor);
             debug!("HUD update: cursor {:?}", cursor.path());
             let displays_snapshot = self.world.displays().await;
-            {
-                let mut cache = self.display_snapshot.lock().await;
-                *cache = displays_snapshot.clone();
-            }
-            self.notifier
-                .send_hud_update_cursor(cursor, displays_snapshot)?;
+            self.publish_hud_with_displays(cursor, displays_snapshot)
+                .await?;
         }
 
         // Determine capture policy via Config + Location
@@ -393,6 +388,20 @@ impl Engine {
                 elapsed, key_count
             );
         }
+        Ok(())
+    }
+
+    /// Update HUD with a new cursor + display snapshot and refresh the cache.
+    async fn publish_hud_with_displays(
+        &self,
+        cursor: hotki_protocol::Cursor,
+        snapshot: DisplaysSnapshot,
+    ) -> Result<()> {
+        {
+            let mut cache = self.display_snapshot.lock().await;
+            *cache = snapshot.clone();
+        }
+        self.notifier.send_hud_update_cursor(cursor, snapshot)?;
         Ok(())
     }
 
