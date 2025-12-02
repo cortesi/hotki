@@ -48,10 +48,11 @@ use events::{DEFAULT_EVENT_CAPACITY, EventHub as InternalHub};
 pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot};
 use parking_lot::RwLock;
 use permissions::{accessibility_ok, screen_recording_ok};
+use serde::{Deserialize, Serialize};
 use tokio::time::{self, Instant as TokioInstant};
 
 /// Unique key for a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WindowKey {
     /// Process identifier that owns the window.
     pub pid: i32,
@@ -61,7 +62,7 @@ pub struct WindowKey {
 
 /// Snapshot of a single window. This is intentionally minimal: app/title/pid/id
 /// plus focus and display linkage.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldWindow {
     /// Human-readable application name.
     pub app: String,
@@ -89,7 +90,7 @@ impl WorldWindow {
 }
 
 /// Context describing the current focus selection accompanying focus events.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusChange {
     /// Window key for the focused window, when available.
     pub key: Option<WindowKey>,
@@ -104,7 +105,7 @@ pub struct FocusChange {
 }
 
 /// World events stream payloads.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorldEvent {
     /// A new window was observed. Carries the initial snapshot of that window.
     Added(WorldWindow),
@@ -117,7 +118,7 @@ pub enum WorldEvent {
 }
 
 /// Capability snapshot describing permissions relevant to focus/read-only operation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     /// Accessibility permission status.
     pub accessibility: PermissionState,
@@ -126,7 +127,7 @@ pub struct Capabilities {
 }
 
 /// Permission state for a given capability.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionState {
     /// Permission granted.
     Granted,
@@ -138,7 +139,7 @@ pub enum PermissionState {
 }
 
 /// Diagnostic snapshot of world internals.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldStatus {
     /// Number of windows currently tracked.
     pub windows_count: usize,

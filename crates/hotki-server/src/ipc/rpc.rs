@@ -11,45 +11,10 @@ use mrpc::Value;
 
 /// Encode world status into an MRPC value for transport.
 pub fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
-    use mrpc::Value as V;
-    let focused = match ws.focused {
-        Some(k) => V::Map(vec![
-            (V::String("pid".into()), V::Integer((k.pid as i64).into())),
-            (V::String("id".into()), V::Integer((k.id as i64).into())),
-        ]),
-        None => V::Nil,
-    };
-    let cap_to_i = |p: &hotki_world::PermissionState| match p {
-        hotki_world::PermissionState::Granted => 1,
-        hotki_world::PermissionState::Denied => 0,
-        hotki_world::PermissionState::Unknown => -1,
-    };
-    let caps = V::Map(vec![
-        (
-            V::String("accessibility".into()),
-            V::Integer(cap_to_i(&ws.capabilities.accessibility).into()),
-        ),
-        (
-            V::String("screen_recording".into()),
-            V::Integer(cap_to_i(&ws.capabilities.screen_recording).into()),
-        ),
-    ]);
-    V::Map(vec![
-        (
-            V::String("windows_count".into()),
-            V::Integer((ws.windows_count as i64).into()),
-        ),
-        (V::String("focused".into()), focused),
-        (
-            V::String("last_tick_ms".into()),
-            V::Integer((ws.last_tick_ms as i64).into()),
-        ),
-        (
-            V::String("current_poll_ms".into()),
-            V::Integer((ws.current_poll_ms as i64).into()),
-        ),
-        (V::String("capabilities".into()), caps),
-    ])
+    match rmp_serde::to_vec_named(ws) {
+        Ok(bytes) => Value::Binary(bytes),
+        Err(_) => Value::Nil, // Should propagate error ideally, but signature returns Value
+    }
 }
 
 /// Encode `set_config` params.

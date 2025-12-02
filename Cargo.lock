@@ -2145,6 +2145,7 @@ dependencies = [
  "egui_extras",
  "hotki-protocol",
  "hotki-server",
+ "hotki-world",
  "image",
  "logging",
  "objc2 0.6.2",
@@ -2238,6 +2239,7 @@ dependencies = [
  "hotki-protocol",
  "parking_lot",
  "permissions",
+ "serde",
  "tokio",
 ]
 
