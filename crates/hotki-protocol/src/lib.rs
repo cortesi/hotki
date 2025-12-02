@@ -208,6 +208,9 @@ pub mod ipc {
     }
 }
 
+/// Typed RPC definitions.
+pub mod rpc;
+
 /// Messages sent from the server to UI clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MsgToUI {
