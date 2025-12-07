@@ -481,12 +481,7 @@ impl Details {
 
 /// Foreground color for a notification kind using the active theme.
 fn kind_color(theme: &NotifyTheme, kind: NotifyKind) -> Color32 {
-    let (r, g, b) = match kind {
-        NotifyKind::Info | NotifyKind::Ignore => theme.info.title_fg,
-        NotifyKind::Warn => theme.warn.title_fg,
-        NotifyKind::Error => theme.error.title_fg,
-        NotifyKind::Success => theme.success.title_fg,
-    };
+    let (r, g, b) = theme.style_for(kind).title_fg;
     Color32::from_rgb(r, g, b)
 }
 

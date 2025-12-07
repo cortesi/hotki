@@ -95,16 +95,6 @@ impl NotificationCenter {
         }
     }
 
-    /// Pick the appropriate window style for a given kind.
-    fn style_for(kind: NotifyKind, theme: &NotifyTheme) -> &config::NotifyWindowStyle {
-        match kind {
-            NotifyKind::Info | NotifyKind::Ignore => &theme.info,
-            NotifyKind::Warn => &theme.warn,
-            NotifyKind::Error => &theme.error,
-            NotifyKind::Success => &theme.success,
-        }
-    }
-
     /// Generate the next unique viewport id for a notification.
     fn next_id(&mut self) -> ViewportId {
         self.counter += 1;
@@ -235,7 +225,7 @@ impl NotificationCenter {
 
         // Measure each notification to compute height using the same fonts and paddings as render
         for item in &mut self.items {
-            let style = Self::style_for(item.kind, &self.theme);
+            let style = self.theme.style_for(item.kind);
             let title_font = egui::FontId::new(
                 style.title_font_size,
                 fonts::weight_family(style.title_font_weight),
@@ -378,68 +368,17 @@ impl NotificationCenter {
             ctx.send_viewport_cmd_to(it.id, ViewportCommand::OuterPosition(it.current_pos));
 
             ctx.show_viewport_immediate(it.id, builder, |nctx, _| {
-                if let Err(e) = nswindow::apply_transparent_rounded(
-                    "Hotki Notification",
-                    self.radius as f64,
-                ) {
+                if let Err(e) =
+                    nswindow::apply_transparent_rounded("Hotki Notification", self.radius as f64)
+                {
                     tracing::error!("{}", e);
                 }
 
-                let (bg, title_fg, body_fg, title_size, title_weight, body_size, body_weight, icon) =
-                    match it.kind {
-                        NotifyKind::Info | NotifyKind::Ignore => {
-                            let s = &self.theme.info;
-                            (
-                                Color32::from_rgb(s.bg.0, s.bg.1, s.bg.2),
-                                Color32::from_rgb(s.title_fg.0, s.title_fg.1, s.title_fg.2),
-                                Color32::from_rgb(s.body_fg.0, s.body_fg.1, s.body_fg.2),
-                                s.title_font_size,
-                                s.title_font_weight,
-                                s.body_font_size,
-                                s.body_font_weight,
-                                s.icon.clone(),
-                            )
-                        }
-                        NotifyKind::Warn => {
-                            let s = &self.theme.warn;
-                            (
-                                Color32::from_rgb(s.bg.0, s.bg.1, s.bg.2),
-                                Color32::from_rgb(s.title_fg.0, s.title_fg.1, s.title_fg.2),
-                                Color32::from_rgb(s.body_fg.0, s.body_fg.1, s.body_fg.2),
-                                s.title_font_size,
-                                s.title_font_weight,
-                                s.body_font_size,
-                                s.body_font_weight,
-                                s.icon.clone(),
-                            )
-                        }
-                        NotifyKind::Error => {
-                            let s = &self.theme.error;
-                            (
-                                Color32::from_rgb(s.bg.0, s.bg.1, s.bg.2),
-                                Color32::from_rgb(s.title_fg.0, s.title_fg.1, s.title_fg.2),
-                                Color32::from_rgb(s.body_fg.0, s.body_fg.1, s.body_fg.2),
-                                s.title_font_size,
-                                s.title_font_weight,
-                                s.body_font_size,
-                                s.body_font_weight,
-                                s.icon.clone(),
-                            )
-                        }
-                        NotifyKind::Success => {
-                            let s = &self.theme.success;
-                            (
-                                Color32::from_rgb(s.bg.0, s.bg.1, s.bg.2),
-                                Color32::from_rgb(s.title_fg.0, s.title_fg.1, s.title_fg.2),
-                                Color32::from_rgb(s.body_fg.0, s.body_fg.1, s.body_fg.2),
-                                s.title_font_size,
-                                s.title_font_weight,
-                                s.body_font_size,
-                                s.body_font_weight,
-                                s.icon.clone(),
-                            )
-                        }
-                    };
+                let style = self.theme.style_for(it.kind);
+                let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
+                let title_fg =
+                    Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
+                let body_fg = Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
                 let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                 let frame = Frame::new()
                     .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
@@ -457,9 +396,9 @@ impl NotificationCenter {
                             ui,
                             nctx,
                             &it.title,
-                            icon.as_ref(),
-                            title_size,
-                            title_weight,
+                            style.icon.as_ref(),
+                            style.title_font_size,
+                            style.title_font_weight,
                             title_fg,
                         );
                     });
@@ -471,8 +410,8 @@ impl NotificationCenter {
                             egui::TextFormat {
                                 color: body_fg,
                                 font_id: egui::FontId::new(
-                                    body_size,
-                                    fonts::weight_family(body_weight),
+                                    style.body_font_size,
+                                    fonts::weight_family(style.body_font_weight),
                                 ),
                                 ..Default::default()
                             },

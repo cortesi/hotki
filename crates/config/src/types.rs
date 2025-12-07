@@ -96,3 +96,16 @@ pub struct NotifyTheme {
     pub error: NotifyWindowStyle,
     pub success: NotifyWindowStyle,
 }
+
+impl NotifyTheme {
+    /// Pick the appropriate window style for a given notification kind.
+    pub fn style_for(&self, kind: hotki_protocol::NotifyKind) -> &NotifyWindowStyle {
+        use hotki_protocol::NotifyKind;
+        match kind {
+            NotifyKind::Info | NotifyKind::Ignore => &self.info,
+            NotifyKind::Warn => &self.warn,
+            NotifyKind::Error => &self.error,
+            NotifyKind::Success => &self.success,
+        }
+    }
+}
