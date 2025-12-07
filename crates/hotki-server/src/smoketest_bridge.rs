@@ -6,7 +6,7 @@ use std::{
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
-use hotki_protocol::{Cursor, DisplaysSnapshot, NotifyKind};
+use hotki_protocol::{Cursor, DisplaysSnapshot, NotifyKind, rpc::InjectKind};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
@@ -47,7 +47,7 @@ pub enum BridgeRequest {
         /// Identifier to inject (e.g., chord string).
         ident: String,
         /// Key action to perform.
-        kind: BridgeKeyKind,
+        kind: InjectKind,
         #[serde(default)]
         /// When true, treat the event as a repeat key down.
         repeat: bool,
@@ -58,16 +58,6 @@ pub enum BridgeRequest {
     GetDepth,
     /// Request a graceful backend shutdown.
     Shutdown,
-}
-
-/// Key event kind forwarded through the bridge.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BridgeKeyKind {
-    /// Simulate a key-down event.
-    Down,
-    /// Simulate a key-up event.
-    Up,
 }
 
 /// Response type for the smoketest bridge.
@@ -99,7 +89,7 @@ pub enum BridgeResponse {
     /// Initial handshake response with server/runtime state.
     Handshake {
         /// Current server idle timer snapshot.
-        idle_timer: BridgeIdleTimerState,
+        idle_timer: ServerStatusLite,
         /// Pending notifications queued on the UI side.
         notifications: Vec<BridgeNotification>,
     },
@@ -143,19 +133,6 @@ pub struct BridgeHudKey {
     pub description: String,
     /// True when the key represents a mode binding.
     pub is_mode: bool,
-}
-
-/// Snapshot of the server idle timer state returned during handshake.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BridgeIdleTimerState {
-    /// Idle timeout configuration in seconds.
-    pub timeout_secs: u64,
-    /// True when the timer is currently armed on the server.
-    pub armed: bool,
-    /// Optional wall-clock deadline for the idle timer in milliseconds since epoch.
-    pub deadline_ms: Option<u64>,
-    /// Number of clients currently connected to the server.
-    pub clients_connected: usize,
 }
 
 /// Pending notification payload returned during handshake.
@@ -253,14 +230,8 @@ pub fn handshake_response(
     status: &ServerStatusLite,
     notifications: Vec<BridgeNotification>,
 ) -> BridgeResponse {
-    let idle_timer = BridgeIdleTimerState {
-        timeout_secs: status.idle_timeout_secs,
-        armed: status.idle_timer_armed,
-        deadline_ms: status.idle_deadline_ms,
-        clients_connected: status.clients_connected,
-    };
     BridgeResponse::Handshake {
-        idle_timer,
+        idle_timer: status.clone(),
         notifications,
     }
 }

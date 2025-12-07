@@ -15,7 +15,26 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 const CONNECT_MAX_ATTEMPTS: u32 = 5;
 const CONNECT_RETRY_DELAY_MS: u64 = 200;
 
-// Use centralized permissions crate
+/// Replace any existing `--socket <value>` pair in `args` with a new one at the end.
+fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
+    let mut new_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--socket" {
+            // Skip option and its value if present
+            i += 1;
+            if i < args.len() {
+                i += 1;
+            }
+        } else {
+            new_args.push(args[i].clone());
+            i += 1;
+        }
+    }
+    new_args.push("--socket".to_string());
+    new_args.push(socket_path.to_string());
+    *args = new_args;
+}
 
 /// A client for connecting to a hotkey server.
 ///
@@ -76,26 +95,8 @@ impl Client {
     /// Set the socket path
     pub fn with_socket_path(mut self, socket_path: impl Into<String>) -> Self {
         self.socket_path = socket_path.into();
-        // Simplified: remove any existing "--socket <...>" pair and append one
-        // fresh pair at the end. Preserve all other args as-is.
         if let Some(ref mut config) = self.server_config {
-            let mut new_args: Vec<String> = Vec::with_capacity(config.args.len() + 2);
-            let mut i = 0;
-            while i < config.args.len() {
-                if config.args[i] == "--socket" {
-                    // Skip option and its value if present
-                    i += 1;
-                    if i < config.args.len() {
-                        i += 1;
-                    }
-                } else {
-                    new_args.push(config.args[i].clone());
-                    i += 1;
-                }
-            }
-            new_args.push("--socket".to_string());
-            new_args.push(self.socket_path.clone());
-            config.args = new_args;
+            replace_socket_arg(&mut config.args, &self.socket_path);
         }
         self
     }
@@ -122,24 +123,7 @@ impl Client {
             if !config.args.iter().any(|a| a == "--server") {
                 config.args.insert(0, "--server".to_string());
             }
-            // Remove any existing --socket option and its value
-            let mut new_args: Vec<String> = Vec::with_capacity(config.args.len() + 2);
-            let mut i = 0;
-            while i < config.args.len() {
-                if config.args[i] == "--socket" {
-                    i += 1;
-                    if i < config.args.len() {
-                        i += 1;
-                    }
-                } else {
-                    new_args.push(config.args[i].clone());
-                    i += 1;
-                }
-            }
-            // Append a single, authoritative --socket pair
-            new_args.push("--socket".to_string());
-            new_args.push(self.socket_path.clone());
-            config.args = new_args;
+            replace_socket_arg(&mut config.args, &self.socket_path);
 
             // Propagate/refresh parent PID so server exits with the UI process
             let ppid = std::process::id().to_string();

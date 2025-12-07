@@ -13,13 +13,13 @@ use std::{
 
 use config::themes;
 use egui::Context;
-use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
+use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat, rpc::InjectKind};
 use hotki_server::{
     Client,
     smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind,
-        BridgeNotifications, BridgeReply, BridgeRequest, BridgeResponse, control_socket_path,
-        drain_bridge_events, handshake_response, now_millis,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeNotifications,
+        BridgeReply, BridgeRequest, BridgeResponse, control_socket_path, drain_bridge_events,
+        handshake_response, now_millis,
     },
 };
 use tokio::{
@@ -402,9 +402,9 @@ impl ConnectionDriver {
                 repeat,
             } => {
                 let result = match (kind, repeat) {
-                    (BridgeKeyKind::Down, true) => conn.inject_key_repeat(&ident).await,
-                    (BridgeKeyKind::Down, false) => conn.inject_key_down(&ident).await,
-                    (BridgeKeyKind::Up, _) => conn.inject_key_up(&ident).await,
+                    (InjectKind::Down, true) => conn.inject_key_repeat(&ident).await,
+                    (InjectKind::Down, false) => conn.inject_key_down(&ident).await,
+                    (InjectKind::Up, _) => conn.inject_key_up(&ident).await,
                 };
                 match result {
                     Ok(()) => BridgeResponse::Ok,

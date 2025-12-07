@@ -9,11 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_protocol::{Cursor, DisplaysSnapshot};
+use hotki_protocol::{Cursor, DisplaysSnapshot, rpc::InjectKind, rpc::ServerStatusLite};
 use hotki_server::smoketest_bridge::{
-    BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeIdleTimerState, BridgeKeyKind,
-    BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
-    control_socket_path, now_millis,
+    BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeNotification, BridgeReply, BridgeRequest,
+    BridgeResponse, BridgeTimestampMs, control_socket_path, now_millis,
 };
 pub use hotki_server::smoketest_bridge::{BridgeEvent, ControlSocketScope};
 use thiserror::Error;
@@ -31,11 +30,11 @@ fn log_bindings_enabled() -> bool {
 
 /// Validate invariants returned by the bridge handshake before running tests.
 fn ensure_clean_handshake(handshake: &BridgeHandshake) -> DriverResult<()> {
-    if handshake.idle_timer.armed {
+    if handshake.idle_timer.idle_timer_armed {
         return Err(DriverError::BridgeFailure {
             message: format!(
                 "server idle timer armed during handshake (deadline_ms={:?})",
-                handshake.idle_timer.deadline_ms
+                handshake.idle_timer.idle_deadline_ms
             ),
         });
     }
@@ -276,7 +275,7 @@ pub struct HudSnapshot {
 #[derive(Debug, Clone)]
 pub struct BridgeHandshake {
     /// Idle timer snapshot reported by the UI runtime.
-    pub idle_timer: BridgeIdleTimerState,
+    pub idle_timer: ServerStatusLite,
     /// Pending notifications surfaced by the UI.
     pub notifications: Vec<BridgeNotification>,
 }
@@ -880,7 +879,7 @@ impl BridgeClient {
             let baseline = self.latest_hud.as_ref().map(|snapshot| snapshot.event_id);
             match self.call_ok(&BridgeRequest::InjectKey {
                 ident: ident.clone(),
-                kind: BridgeKeyKind::Down,
+                kind: InjectKind::Down,
                 repeat: false,
             }) {
                 Ok(()) => {
@@ -913,7 +912,7 @@ impl BridgeClient {
 
         match self.call_ok(&BridgeRequest::InjectKey {
             ident,
-            kind: BridgeKeyKind::Up,
+            kind: InjectKind::Up,
             repeat: false,
         }) {
             Ok(()) => Ok(()),
@@ -1008,10 +1007,10 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use hotki_protocol::Cursor;
+    use hotki_protocol::{Cursor, rpc::ServerStatusLite};
     use hotki_server::smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeIdleTimerState,
-        BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeReply, BridgeRequest,
+        BridgeResponse, BridgeTimestampMs,
     };
     use parking_lot::Mutex as ParkingMutex;
 
@@ -1093,7 +1092,7 @@ mod tests {
                         repeat,
                     } => {
                         assert_eq!(ident, "cmd+b");
-                        assert!(matches!(kind, BridgeKeyKind::Down));
+                        assert!(matches!(kind, InjectKind::Down));
                         assert!(!repeat);
                     }
                     other => panic!("expected InjectKey down, got {:?}", other),
@@ -1109,7 +1108,7 @@ mod tests {
                         repeat,
                     } => {
                         assert_eq!(ident, "cmd+b");
-                        assert!(matches!(kind, BridgeKeyKind::Up));
+                        assert!(matches!(kind, InjectKind::Up));
                         assert!(!repeat);
                     }
                     other => panic!("expected InjectKey up, got {:?}", other),
@@ -1247,10 +1246,10 @@ mod tests {
 
     fn send_handshake(writer: &mut UnixStream, command_id: BridgeCommandId, clients: usize) {
         let response = BridgeResponse::Handshake {
-            idle_timer: BridgeIdleTimerState {
-                timeout_secs: 60,
-                armed: false,
-                deadline_ms: None,
+            idle_timer: ServerStatusLite {
+                idle_timeout_secs: 60,
+                idle_timer_armed: false,
+                idle_deadline_ms: None,
                 clients_connected: clients,
             },
             notifications: Vec::new(),

@@ -76,13 +76,19 @@ impl HotkeyNotification {
 }
 
 /// Lightweight server status snapshot surfaced for smoketest diagnostics.
+///
+/// Field names use `#[serde(rename)]` to emit shorter keys for bridge protocol
+/// compatibility while keeping descriptive Rust identifiers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerStatusLite {
     /// Idle timeout configured on the server, in seconds.
+    #[serde(rename = "timeout_secs")]
     pub idle_timeout_secs: u64,
     /// True when the idle timer is currently armed.
+    #[serde(rename = "armed")]
     pub idle_timer_armed: bool,
     /// Optional wall-clock deadline in milliseconds since the Unix epoch.
+    #[serde(rename = "deadline_ms")]
     pub idle_deadline_ms: Option<u64>,
     /// Count of connected clients observed by the server.
     pub clients_connected: usize,
