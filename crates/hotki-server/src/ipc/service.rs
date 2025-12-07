@@ -509,7 +509,10 @@ impl MrpcConnection for HotkeyService {
                 tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: resolved id={} for ident={} -> dispatch", id, req.ident);
 
                 // Dispatch directly through the engine (same path as OS events)
-                match eng.dispatch(id, inject_kind_to_event(req.kind), req.repeat).await {
+                match eng
+                    .dispatch(id, inject_kind_to_event(req.kind), req.repeat)
+                    .await
+                {
                     Ok(_) => {
                         tracing::debug!(
                             target: "hotki_server::ipc::service",

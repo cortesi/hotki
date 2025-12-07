@@ -114,7 +114,8 @@ mod tests {
 
     #[test]
     fn set_config_invalid_type_error_code() {
-        let err = service::dec_set_config_param(&Value::String("oops".into())).expect_err("should error");
+        let err =
+            service::dec_set_config_param(&Value::String("oops".into())).expect_err("should error");
         match err {
             mrpc::RpcError::Service(se) => {
                 assert_eq!(se.name, crate::error::RpcErrorCode::InvalidType.to_string());
@@ -125,7 +126,8 @@ mod tests {
 
     #[test]
     fn set_config_invalid_binary_error_code() {
-        let err = service::dec_set_config_param(&Value::Binary(vec![1, 2, 3])).expect_err("should error");
+        let err =
+            service::dec_set_config_param(&Value::Binary(vec![1, 2, 3])).expect_err("should error");
         match err {
             mrpc::RpcError::Service(se) => {
                 assert_eq!(

@@ -1,5 +1,10 @@
 //! Test bridge protocol used by the smoketest harness to proxy RPCs through the UI.
-use std::{collections::VecDeque, env, sync::OnceLock};
+use std::{
+    collections::VecDeque,
+    env,
+    sync::OnceLock,
+    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
+};
 
 use hotki_protocol::{Cursor, DisplaysSnapshot, NotifyKind};
 use parking_lot::Mutex;
@@ -326,4 +331,14 @@ pub fn control_socket_path(server_socket: &str) -> String {
         return value.to_string();
     }
     format!("{server_socket}.bridge")
+}
+
+/// Return the current wall-clock timestamp in milliseconds since the Unix epoch.
+pub fn now_millis() -> BridgeTimestampMs {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| StdDuration::from_secs(0))
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }

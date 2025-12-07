@@ -1,20 +1,19 @@
 use std::{
     collections::{BTreeSet, VecDeque},
-    convert::TryInto,
     env,
     io::{self, BufRead, BufReader, Write},
     os::unix::net::UnixStream,
     path::Path,
     sync::OnceLock,
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use hotki_protocol::{Cursor, DisplaysSnapshot};
 use hotki_server::smoketest_bridge::{
     BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeIdleTimerState, BridgeKeyKind,
     BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
-    control_socket_path,
+    control_socket_path, now_millis,
 };
 pub use hotki_server::smoketest_bridge::{BridgeEvent, ControlSocketScope};
 use thiserror::Error;
@@ -995,14 +994,6 @@ fn connection_lost(err: &io::Error) -> bool {
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionAborted
     )
-}
-
-/// Return the current wall-clock timestamp in milliseconds since the Unix epoch.
-fn now_millis() -> BridgeTimestampMs {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0));
-    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

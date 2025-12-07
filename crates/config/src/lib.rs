@@ -417,11 +417,6 @@ impl Config {
         cur.keys.get(last).map(|(_, desc, _, _)| desc.as_str())
     }
 
-    /// Logical depth equals the path length (viewing_root does not add depth).
-    pub fn depth(&self, loc: &Cursor) -> usize {
-        loc.depth()
-    }
-
     /// HUD is visible when viewing_root is set or depth > 0.
     pub fn hud_visible(&self, loc: &Cursor) -> bool {
         loc.viewing_root || !loc.path().is_empty()
@@ -632,11 +627,7 @@ impl Config {
                     if seen.contains(&key_s) {
                         continue;
                     }
-                    let ok = match parent.get_with_attrs(&k) {
-                        Some((Action::Keys(_), _)) => entry_matches(&eff, app, app_title),
-                        _ => entry_matches(&eff, app, app_title),
-                    };
-                    if !ok {
+                    if !entry_matches(&eff, app, app_title) {
                         continue;
                     }
                     let is_mode = matches!(parent.get_with_attrs(&k), Some((Action::Keys(_), _)));

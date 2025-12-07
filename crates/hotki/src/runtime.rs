@@ -3,14 +3,12 @@
 //! convenience actions for opening macOS settings.
 use std::{
     collections::VecDeque,
-    convert::TryInto,
     future::Future,
     io,
     path::{Path, PathBuf},
     pin::Pin,
     process::{self, Command},
     thread,
-    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
 use config::themes;
@@ -20,8 +18,8 @@ use hotki_server::{
     Client,
     smoketest_bridge::{
         BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeKeyKind,
-        BridgeNotifications, BridgeReply, BridgeRequest, BridgeResponse, BridgeTimestampMs,
-        control_socket_path, drain_bridge_events, handshake_response,
+        BridgeNotifications, BridgeReply, BridgeRequest, BridgeResponse, control_socket_path,
+        drain_bridge_events, handshake_response, now_millis,
     },
 };
 use tokio::{
@@ -460,7 +458,7 @@ impl ConnectionDriver {
                     .filter(|(_, _, attrs, _)| !attrs.hide())
                     .map(|(k, desc, _attrs, is_mode)| (k.to_string(), desc, is_mode))
                     .collect();
-                let depth = self.ui_config.depth(&self.current_cursor);
+                let depth = self.current_cursor.depth();
                 let parent_title = self
                     .ui_config
                     .parent_title(&self.current_cursor)
@@ -1001,7 +999,6 @@ async fn drive_queue(
 }
 
 /// Serialize a bridge reply to the client stream.
-/// Serialize a bridge reply to the client stream.
 async fn write_bridge_reply(
     writer: &mut BufWriter<OwnedWriteHalf>,
     reply: BridgeReply,
@@ -1010,16 +1007,6 @@ async fn write_bridge_reply(
     writer.write_all(encoded.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await
-}
-
-/// Return the current wall-clock timestamp in milliseconds since the Unix epoch.
-fn now_millis() -> BridgeTimestampMs {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| StdDuration::from_secs(0))
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 /// Control messages routed to the runtime event loop.
