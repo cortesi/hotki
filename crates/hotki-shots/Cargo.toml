@@ -6,9 +6,10 @@ publish = false
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+core-foundation = "0.10.1"
+core-graphics = "0.25.0"
 hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
 hotki-server = { path = "../hotki-server" }
-hotki-world = { path = "../hotki-world" }
 mac-keycode = { version = "0.0.2", path = "../mac-keycode" }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

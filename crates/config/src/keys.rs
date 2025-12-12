@@ -113,6 +113,7 @@ pub struct Config {
 // Note: Config derives Deserialize for the direct wire shape only.
 // RON parsing uses loader::{load_from_path, load_from_str}, which go via RawConfig.
 
+/// Traversal state when resolving a chord path within nested key scopes.
 struct KeysScope<'a> {
     /// Keys node being searched in this scope.
     keys: &'a Keys,
@@ -465,6 +466,7 @@ pub struct ServerTunables {
     pub exit_if_no_clients: bool,
 }
 
+/// Return true when the binding's match rules accept the current app/title context.
 fn entry_matches(attrs: &KeysAttrs, app: &str, title: &str) -> bool {
     let ma = attrs
         .match_app

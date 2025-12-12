@@ -1,14 +1,25 @@
 use std::{
+    cmp, env,
     ffi::{OsStr, OsString},
-    fs,
+    fs, io,
     path::{Path, PathBuf},
-    process::{Child, Command},
-    sync::Arc,
+    process::{self, Child, Command},
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
-use hotki_world::{World, WorldView};
+use core_foundation::{
+    array::CFArray,
+    base::{CFType, TCFType},
+    dictionary::CFDictionary,
+    number::CFNumber,
+    string::CFString,
+};
+use core_graphics::window::{
+    copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
+    kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,20 +43,20 @@ struct Cli {
 }
 
 fn resolve_hotki_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("HOTKI_BIN") {
+    if let Ok(p) = env::var("HOTKI_BIN") {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return Some(pb);
         }
     }
-    std::env::current_exe()
+    env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("hotki")))
         .filter(|p| p.exists())
 }
 
-fn used_config_path(theme: &Option<String>) -> std::io::Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
+fn used_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
+    let cwd = env::current_dir()?;
     let cfg_path = cwd.join("examples/test.ron");
     if theme.is_none() {
         return Ok(cfg_path);
@@ -68,9 +79,9 @@ fn used_config_path(theme: &Option<String>) -> std::io::Result<PathBuf> {
             } else {
                 out = s;
             }
-            let tmp = std::env::temp_dir().join(format!(
+            let tmp = env::temp_dir().join(format!(
                 "hotki-shots-{}-{}.ron",
-                std::process::id(),
+                process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -83,11 +94,11 @@ fn used_config_path(theme: &Option<String>) -> std::io::Result<PathBuf> {
     }
 }
 
-fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> std::io::Result<Child> {
+fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
     let mut cmd = Command::new(bin);
     if logs {
         // Respect parent's RUST_LOG if set; otherwise default to info for server logs
-        if std::env::var_os("RUST_LOG").is_none() {
+        if env::var_os("RUST_LOG").is_none() {
             cmd.env("RUST_LOG", "info");
         }
     }
@@ -99,13 +110,7 @@ fn socket_path_for_pid(pid: u32) -> String {
     hotki_server::socket_path_for_pid(pid)
 }
 
-fn wait_for_hud(
-    rt: &tokio::runtime::Runtime,
-    world: &Arc<dyn WorldView>,
-    sock: &str,
-    hotki_pid: u32,
-    timeout_ms: u64,
-) -> bool {
+fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
     // Connect client with retry
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut client = loop {
@@ -121,7 +126,7 @@ fn wait_for_hud(
                 if Instant::now() >= deadline {
                     return false;
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(100));
                 continue;
             }
         }
@@ -133,7 +138,7 @@ fn wait_for_hud(
         let poll = Duration::from_millis(200);
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
-            let chunk = std::cmp::min(left, poll);
+            let chunk = cmp::min(left, poll);
             match rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await }) {
                 Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor, .. })) => {
                     let visible = cursor.viewing_root || cursor.depth() > 0;
@@ -144,15 +149,7 @@ fn wait_for_hud(
                 Ok(Ok(_)) => {}
                 Ok(Err(_)) | Err(_) => {}
             }
-            // Side-check using CG list
-            world.hint_refresh();
-            let hud_visible = rt.block_on(async {
-                world
-                    .window_by_pid_title(hotki_pid as i32, "Hotki HUD")
-                    .await
-                    .is_some()
-            });
-            if hud_visible {
+            if find_window_by_pid_title(hotki_pid, "Hotki HUD").is_some() {
                 return true;
             }
             inject_key(rt, conn, "shift+cmd+0");
@@ -166,72 +163,50 @@ fn inject_key(rt: &tokio::runtime::Runtime, conn: &mut hotki_server::Connection,
         .map(|c| c.to_string())
         .unwrap_or_else(|| ident.to_string());
     let _ = rt.block_on(async { conn.inject_key_down(&ident).await });
-    std::thread::sleep(Duration::from_millis(60));
+    thread::sleep(Duration::from_millis(60));
     let _ = rt.block_on(async { conn.inject_key_up(&ident).await });
 }
 
-type Rect = (i32, i32, i32, i32);
-fn find_window_by_title(
-    rt: &tokio::runtime::Runtime,
-    world: &Arc<dyn WorldView>,
-    pid: u32,
-    title: &str,
-) -> Option<(u32, Option<Rect>)> {
-    world.hint_refresh();
-    rt.block_on(async {
-        world
-            .window_by_pid_title(pid as i32, title)
-            .await
-            .map(|w| (w.id, None))
-    })
-}
+fn capture_window_by_id(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
+    let Some(win_id) = find_window_by_pid_title(pid, title).or_else(|| find_window_by_title(title))
+    else {
+        eprintln!(
+            "WARN: window not found for capture (pid={}, title={})",
+            pid, title
+        );
+        return false;
+    };
 
-fn capture_window_by_id_or_rect(
-    rt: &tokio::runtime::Runtime,
-    world: &Arc<dyn WorldView>,
-    pid: u32,
-    title: &str,
-    dir: &Path,
-    name: &str,
-) -> bool {
-    if let Some((win_id, rect_opt)) = find_window_by_title(rt, world, pid, title) {
-        let sanitized = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let path = dir.join(format!("{}.png", sanitized));
-        // First, try capture by window id
-        let status = Command::new("screencapture")
-            .args([
-                OsStr::new("-x"),
-                OsStr::new("-o"),
-                OsStr::new("-l"),
-                OsString::from(win_id.to_string()).as_os_str(),
-                path.as_os_str(),
-            ])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            return true;
-        }
-        if let Some((x, y, w, h)) = rect_opt {
-            let rect_arg = format!("{},{},{},{}", x, y, w, h);
-            let status = Command::new("screencapture")
-                .args([
-                    OsStr::new("-x"),
-                    OsStr::new("-R"),
-                    OsStr::new(&rect_arg),
-                    path.as_os_str(),
-                ])
-                .status();
-            return matches!(status, Ok(s) if s.success());
-        }
+    let sanitized = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = dir.join(format!("{}.png", sanitized));
+
+    // Capture by window id
+    let status = Command::new("screencapture")
+        .args([
+            OsStr::new("-x"),
+            OsStr::new("-o"),
+            OsStr::new("-l"),
+            OsString::from(win_id.to_string()).as_os_str(),
+            path.as_os_str(),
+        ])
+        .status();
+    if matches!(status, Ok(s) if s.success()) {
+        return true;
     }
+
+    eprintln!(
+        "WARN: screencapture failed (pid={}, title={}, window_id={})",
+        pid, title, win_id
+    );
     false
 }
 
@@ -244,7 +219,7 @@ fn main() {
             eprintln!(
                 "ERROR: could not locate 'hotki' binary (set HOTKI_BIN or cargo build --bin hotki)"
             );
-            std::process::exit(2);
+            process::exit(2);
         }
     };
 
@@ -252,7 +227,7 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("ERROR: unable to read or write config: {}", e);
-            std::process::exit(2);
+            process::exit(2);
         }
     };
 
@@ -260,7 +235,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("ERROR: failed to spawn hotki: {}", e);
-            std::process::exit(2);
+            process::exit(2);
         }
     };
     let hotki_pid = child.id();
@@ -272,21 +247,15 @@ fn main() {
             eprintln!("ERROR: failed to create Tokio runtime: {}", e);
             let _ = child.kill();
             let _ = child.wait();
-            std::process::exit(2);
+            process::exit(2);
         }
     };
-    let world = {
-        let guard = rt.enter();
-        let world = World::spawn_default_view(hotki_world::WorldCfg::default());
-        drop(guard);
-        world
-    };
 
-    if !wait_for_hud(&rt, &world, &sock, hotki_pid, cli.timeout) {
+    if !wait_for_hud(&rt, &sock, hotki_pid, cli.timeout) {
         let _ = child.kill();
         let _ = child.wait();
         eprintln!("ERROR: HUD did not appear within {} ms", cli.timeout);
-        std::process::exit(2);
+        process::exit(2);
     }
 
     let _ = fs::create_dir_all(&cli.dir);
@@ -301,7 +270,7 @@ fn main() {
             eprintln!("ERROR: failed to connect to server: {}", e);
             let _ = child.kill();
             let _ = child.wait();
-            std::process::exit(2);
+            process::exit(2);
         }
     };
     let conn = match client.connection() {
@@ -310,12 +279,16 @@ fn main() {
             eprintln!("ERROR: failed to get connection: {}", e);
             let _ = child.kill();
             let _ = child.wait();
-            std::process::exit(2);
+            process::exit(2);
         }
     };
 
     // Capture HUD first
-    let hud_ok = capture_window_by_id_or_rect(&rt, &world, hotki_pid, "Hotki HUD", &cli.dir, "hud");
+    let mut failed = Vec::new();
+    let hud_ok = capture_window_by_id(hotki_pid, "Hotki HUD", &cli.dir, "hud");
+    if !hud_ok {
+        failed.push("hud");
+    }
 
     // Trigger notifications via chords and capture
     let gap = Duration::from_millis(160);
@@ -327,17 +300,13 @@ fn main() {
         ("e", Some("notify_error")),
     ] {
         inject_key(&rt, conn, k);
-        std::thread::sleep(gap);
+        thread::sleep(gap);
         if let Some(n) = name {
-            std::thread::sleep(Duration::from_millis(120));
-            let _ = capture_window_by_id_or_rect(
-                &rt,
-                &world,
-                hotki_pid,
-                "Hotki Notification",
-                &cli.dir,
-                n,
-            );
+            thread::sleep(Duration::from_millis(120));
+            let ok = capture_window_by_id(hotki_pid, "Hotki Notification", &cli.dir, n);
+            if !ok {
+                failed.push(n);
+            }
         }
     }
 
@@ -347,9 +316,69 @@ fn main() {
     let _ = child.kill();
     let _ = child.wait();
 
+    if !failed.is_empty() {
+        eprintln!(
+            "ERROR: failed to capture screenshots: {}",
+            failed.join(", ")
+        );
+        process::exit(1);
+    }
+
     println!(
         "screenshots: OK (hud_seen={}, dir={})",
         hud_ok,
         cli.dir.display()
     );
+}
+
+fn find_window_by_pid_title(pid: u32, title: &str) -> Option<u32> {
+    find_window_impl(Some(pid as i32), title)
+}
+
+fn find_window_by_title(title: &str) -> Option<u32> {
+    find_window_impl(None, title)
+}
+
+fn find_window_impl(pid: Option<i32>, title: &str) -> Option<u32> {
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let arr: CFArray = copy_window_info(options, kCGNullWindowID)?;
+    let key_owner_pid = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
+    let key_name = unsafe { CFString::wrap_under_get_rule(kCGWindowName) };
+    let key_number = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
+
+    for raw in arr.iter() {
+        let dict_ptr = *raw;
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
+        let owner_pid = dict_value_i32(&dict, &key_owner_pid)?;
+        if let Some(pid) = pid
+            && owner_pid != pid
+        {
+            continue;
+        }
+        let name = dict_value_string(&dict, &key_name).unwrap_or_default();
+        if name != title {
+            continue;
+        }
+        return dict_value_u32(&dict, &key_number);
+    }
+
+    None
+}
+
+fn dict_value_string(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<String> {
+    dict.find(key)
+        .and_then(|v| v.downcast::<CFString>())
+        .map(|s| s.to_string())
+}
+
+fn dict_value_i32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i32> {
+    dict.find(key)
+        .and_then(|v| v.downcast::<CFNumber>())
+        .and_then(|n: CFNumber| n.to_i64())
+        .map(|n| n as i32)
+}
+
+fn dict_value_u32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u32> {
+    dict_value_i32(dict, key).map(|v| v as u32)
 }

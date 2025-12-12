@@ -24,6 +24,7 @@ pub struct BacklogEntry {
     pub text: String,
 }
 
+/// Runtime state for an on-screen notification viewport.
 struct NotificationItem {
     /// Stable viewport id for this notification window.
     id: ViewportId,

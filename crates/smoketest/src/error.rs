@@ -35,6 +35,7 @@ pub enum Error {
     InvalidState(String),
 }
 
+/// Smoketest-local result type.
 pub type Result<T> = StdResult<T, Error>;
 
 /// Print helpful hints for common errors.

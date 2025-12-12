@@ -2222,9 +2222,10 @@ name = "hotki-shots"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "hotki-protocol",
  "hotki-server",
- "hotki-world",
  "mac-keycode",
  "regex",
  "tokio",
