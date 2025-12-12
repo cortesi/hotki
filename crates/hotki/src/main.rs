@@ -16,6 +16,10 @@ use crate::logs::client_layer;
 
 /// Application state and event wiring.
 mod app;
+/// MRPC connection driver for the UI runtime.
+mod connection_driver;
+/// Control message types shared between UI and runtime.
+mod control;
 /// Details window (notifications/config/logs/about).
 mod details;
 /// Display geometry helpers.
@@ -29,6 +33,10 @@ mod nswindow;
 mod permissions;
 /// Background UI runtime glue (server connection + event loop).
 mod runtime;
+/// Config reload and apply helpers for the UI.
+mod settings;
+/// UI-side smoketest bridge listener and queue.
+mod smoketest_bridge;
 mod tray;
 
 use config::{Config, default_config_path, load_from_path};

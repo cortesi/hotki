@@ -34,3 +34,4 @@ clap = { workspace = true, features = ["derive"] }
 parking_lot = "0.12.4"
 objc2-quartz-core = "0.3.1"
 hotki-world = { version = "0.1.0", path = "../hotki-world" }
+mac-keycode = { version = "0.0.2", path = "../mac-keycode" }

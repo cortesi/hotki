@@ -1,6 +1,9 @@
+use std::process::Command;
+
 use egui::{
     CentralPanel, Color32, Context, RichText, ViewportBuilder, ViewportCommand, ViewportId, vec2,
 };
+use hotki_protocol::NotifyKind;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::runtime::ControlMsg;
@@ -87,7 +90,8 @@ impl PermissionsHelp {
                                           enabled: bool,
                                           name: &str,
                                           help: &str,
-                                          msg: ControlMsg| {
+                                          open_fn: fn(),
+                                          notice_text: &str| {
                     ui.horizontal(|ui| {
                         let (icon, color, status) = if enabled {
                             (icon_ok, green, "Enabled")
@@ -103,11 +107,18 @@ impl PermissionsHelp {
                     ui.add_space(4.0);
                     ui.label(help);
                     ui.add_space(6.0);
-                    if ui.button(format!("Open {} Settings", name)).clicked()
-                        && let Some(ref tx) = self.tx_ctrl
-                        && tx.send(msg).is_err()
-                    {
-                        tracing::warn!("failed to request opening {} settings", name);
+                    if ui.button(format!("Open {} Settings", name)).clicked() {
+                        open_fn();
+                        if let Some(ref tx) = self.tx_ctrl
+                            && tx.send(ControlMsg::Notice {
+                                kind: NotifyKind::Info,
+                                title: name.to_string(),
+                                text: notice_text.to_string(),
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!("failed to send open-settings notice for {}", name);
+                        }
                     }
                 };
 
@@ -116,7 +127,8 @@ impl PermissionsHelp {
                     access_ok,
                     "Accessibility",
                     "Grant permission in System Settings → Privacy & Security → Accessibility. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
-                    ControlMsg::OpenAccessibility,
+                    open_accessibility_settings,
+                    "Opening Accessibility settings...",
                 );
                 ui.add_space(10.0);
 
@@ -128,7 +140,8 @@ impl PermissionsHelp {
                     input_ok,
                     "Input Monitoring",
                     "Grant permission in System Settings → Privacy & Security → Input Monitoring. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
-                    ControlMsg::OpenInputMonitoring,
+                    open_input_monitoring_settings,
+                    "Opening Input Monitoring settings...",
                 );
 
                 ui.add_space(14.0);
@@ -156,5 +169,27 @@ pub fn check_permissions() -> PermissionsStatus {
     PermissionsStatus {
         accessibility_ok: st.accessibility_ok,
         input_ok: st.input_ok,
+    }
+}
+
+/// Open macOS Accessibility settings in System Settings.
+fn open_accessibility_settings() {
+    if Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .spawn()
+        .is_err()
+    {
+        tracing::warn!("failed to open Accessibility settings");
+    }
+}
+
+/// Open macOS Input Monitoring settings in System Settings.
+fn open_input_monitoring_settings() {
+    if Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+        .spawn()
+        .is_err()
+    {
+        tracing::warn!("failed to open Input Monitoring settings");
     }
 }

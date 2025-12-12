@@ -4,6 +4,7 @@ use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
+use mac_keycode::{Chord, Modifier};
 
 use crate::{
     display::DisplayMetrics,
@@ -37,8 +38,8 @@ pub struct Hud {
     cfg: config::Hud,
     /// Stable viewport identifier for the HUD window.
     id: ViewportId,
-    /// Keys to display as `(token, description, is_modifier)` triplets.
-    keys: Vec<(String, String, bool)>,
+    /// Keys to display as `(chord, description, is_mode)` triplets.
+    keys: Vec<(Chord, String, bool)>,
     /// Optional parent window title used for placement.
     parent_title: Option<String>,
     /// Last computed position (for smooth movement).
@@ -67,31 +68,43 @@ impl Hud {
         }
     }
 
-    /// Return true if a token represents a modifier key.
-    fn is_modifier(tok: &str) -> bool {
-        matches!(
-            tok.to_ascii_lowercase().as_str(),
-            "ctrl"
-                | "control"
-                | "cmd"
-                | "command"
-                | "super"
-                | "win"
-                | "windows"
-                | "meta"
-                | "alt"
-                | "option"
-                | "opt"
-                | "shift"
-        )
+    /// Deterministic sort order for modifier tokens.
+    ///
+    /// This matches the usual macOS visual ordering for key chords.
+    fn modifier_order(m: &Modifier) -> usize {
+        match m {
+            Modifier::Command => 0,
+            Modifier::Option => 1,
+            Modifier::Control => 2,
+            Modifier::Shift => 3,
+            Modifier::Function => 4,
+            Modifier::CapsLock => 5,
+            Modifier::RightCommand => 6,
+            Modifier::RightControl => 7,
+            Modifier::RightOption => 8,
+            Modifier::RightShift => 9,
+        }
     }
 
-    /// Render rounded key token boxes for a key sequence.
-    fn render_key_tokens(&self, ui: &mut egui::Ui, key: &str) {
-        let tokens: Vec<&str> = self.parse_tokens(key);
+    /// Convert a chord into ordered `(token, is_modifier)` pairs for display.
+    fn tokens_for_chord(&self, chord: &Chord) -> Vec<(String, bool)> {
+        let mut mods: Vec<Modifier> = chord.modifiers.iter().copied().collect();
+        mods.sort_by_key(Self::modifier_order);
+        let mut tokens = Vec::with_capacity(mods.len() + 1);
+        for m in mods {
+            tokens.push((m.to_spec(), true));
+        }
+        let key_is_mod = Modifier::try_from(chord.key).is_ok();
+        tokens.push((chord.key.to_spec(), key_is_mod));
+        tokens
+    }
+
+    /// Render rounded key token boxes for a chord.
+    fn render_key_tokens(&self, ui: &mut egui::Ui, chord: &Chord) {
+        let tokens = self.tokens_for_chord(chord);
         let rounding = egui::CornerRadius::same(self.cfg.key_radius as u8);
         let visuals = ui.visuals().clone();
-        for (i, tok) in tokens.iter().enumerate() {
+        for (i, (tok, is_mod)) in tokens.iter().enumerate() {
             if i > 0 {
                 ui.add_space(KEY_PLUS_GAP);
                 let prev = ui.style().override_font_id.clone();
@@ -100,14 +113,13 @@ impl Hud {
                 ui.style_mut().override_font_id = prev;
                 ui.add_space(KEY_PLUS_GAP);
             }
-            let is_mod = Self::is_modifier(tok);
-            let (fg, bg) = if is_mod {
+            let (fg, bg) = if *is_mod {
                 (self.cfg.mod_fg, self.cfg.mod_bg)
             } else {
                 (self.cfg.key_fg, self.cfg.key_bg)
             };
             let fill = Color32::from_rgb(bg.0, bg.1, bg.2);
-            let stroke = visuals.widgets.inactive.bg_stroke; // keep default stroke
+            let stroke = visuals.widgets.inactive.bg_stroke;
             let frame = Frame::new()
                 .fill(fill)
                 .stroke(stroke)
@@ -119,9 +131,8 @@ impl Hud {
                     bottom: self.cfg.key_pad_y as i8,
                 });
             frame.show(ui, |ui| {
-                // Use key-specific font size inside key boxes
                 let prev = ui.style().override_font_id.clone();
-                let fam = if is_mod {
+                let fam = if *is_mod {
                     fonts::weight_family(self.cfg.mod_font_weight)
                 } else {
                     fonts::weight_family(self.cfg.key_font_weight)
@@ -130,8 +141,7 @@ impl Hud {
                     Some(egui::FontId::new(self.cfg.key_font_size, fam));
                 let style = ui.style_mut();
                 style.visuals.override_text_color = Some(Color32::from_rgb(fg.0, fg.1, fg.2));
-                ui.label(*tok);
-                // restore previous font override
+                ui.label(tok.as_str());
                 ui.style_mut().override_font_id = prev;
             });
         }
@@ -153,7 +163,7 @@ impl Hud {
         ui: &mut egui::Ui,
         hud_ctx: &egui::Context,
         avail: Vec2,
-        key: &str,
+        key: &Chord,
         desc: &str,
         is_mode: bool,
     ) {
@@ -202,7 +212,7 @@ impl Hud {
     /// Update the displayed keys, externally-computed visibility, and parent title.
     pub fn set_keys(
         &mut self,
-        keys: Vec<(String, String, bool)>,
+        keys: Vec<(Chord, String, bool)>,
         visible: bool,
         parent_title: Option<String>,
     ) {
@@ -216,7 +226,7 @@ impl Hud {
     }
 
     /// Get the current keys and visibility state (returns keys and visible flag)
-    pub fn get_state(&self) -> (Vec<(String, String, bool)>, bool, Option<String>) {
+    pub fn get_state(&self) -> (Vec<(Chord, String, bool)>, bool, Option<String>) {
         (self.keys.clone(), self.visible, self.parent_title.clone())
     }
 
@@ -255,17 +265,9 @@ impl Hud {
         )
     }
 
-    /// Split a key sequence like "Ctrl+C" into tokens.
-    fn parse_tokens<'a>(&self, key: &'a str) -> Vec<&'a str> {
-        key.split('+')
-            .map(|t| t.trim())
-            .filter(|t| !t.is_empty())
-            .collect()
-    }
-
     /// Measure combined width and height of the rendered token boxes.
-    fn measure_token_boxes(&self, ctx: &Context, key: &str) -> (f32, f32) {
-        let tokens = self.parse_tokens(key);
+    fn measure_token_boxes(&self, ctx: &Context, chord: &Chord) -> (f32, f32) {
+        let tokens = self.tokens_for_chord(chord);
         let key_font = self.key_font_id();
         let (tokens_text_w, token_text_h, plus_w) = ctx.fonts(|f| {
             let plus_w = f
@@ -274,8 +276,8 @@ impl Hud {
                 .x;
             let mut w = 0.0f32;
             let mut h = 0.0f32;
-            for (i, tok) in tokens.iter().enumerate() {
-                let gal = f.layout_no_wrap((*tok).to_owned(), key_font.clone(), Color32::WHITE);
+            for (i, (tok, _)) in tokens.iter().enumerate() {
+                let gal = f.layout_no_wrap(tok.clone(), key_font.clone(), Color32::WHITE);
                 w += gal.size().x;
                 h = h.max(gal.size().y);
                 if i > 0 {
@@ -371,7 +373,7 @@ impl Hud {
 
     /// Compute the anchored top-left position for the HUD window.
     fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
-        let (sx, sy, sw, sh, global_top) = self.display.active_screen_frame();
+        let (sx, sy, sw, sh, _global_top) = self.display.active_screen_frame();
         let m = 12.0;
         // Guard against invalid or negative sizes; ensure a minimal positive window size.
         let size = vec2(size.x.max(1.0), size.y.max(1.0));
@@ -389,9 +391,9 @@ impl Hud {
         };
         // Convert to top-left global coordinates expected by winit/egui OuterPosition
         let mut x_top = x_b + self.cfg.offset.x;
-        let mut y_top = global_top - (y_b + size.y) + self.cfg.offset.y;
+        let mut y_top = self.display.to_top_left_y(y_b, size.y) + self.cfg.offset.y;
         // Clamp within the chosen screen bounds in top-left coordinates
-        let screen_top_y = global_top - (sy + sh);
+        let screen_top_y = self.display.active_frame_top_left_y();
         let min_x = sx;
         let mut max_x = sx + sw - size.x;
         let min_y = screen_top_y;

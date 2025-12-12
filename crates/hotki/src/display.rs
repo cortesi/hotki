@@ -51,6 +51,27 @@ impl DisplayMetrics {
         }
     }
 
+    /// Convert a bottom-left origin `y` plus `height` into a top-left origin `y`.
+    ///
+    /// AppKit/CoreGraphics use bottom-left origins; egui/winit expect top-left.
+    #[must_use]
+    pub fn to_top_left_y(&self, y_bottom: f32, height: f32) -> f32 {
+        self.global_top() - (y_bottom + height)
+    }
+
+    /// Top-left origin `y` coordinate of the active display's top edge.
+    #[must_use]
+    pub fn active_frame_top_left_y(&self) -> f32 {
+        let frame = self.active_frame();
+        self.to_top_left_y(frame.y, frame.height)
+    }
+
+    /// Convert a top-left origin `y` plus `height` into a bottom-left origin `y`.
+    #[must_use]
+    pub fn to_bottom_left_y(&self, y_top: f32, height: f32) -> f32 {
+        self.global_top() - y_top - height
+    }
+
     /// Active screen frame as `(x, y, width, height, global_top)`.
     ///
     /// Coordinates follow AppKit semantics:

@@ -211,7 +211,7 @@ impl NotificationCenter {
     fn layout(&mut self, ctx: &Context) {
         let m = 12.0; // screen margin
         let gap = 8.0; // vertical gap between notifications
-        let (sx, sy, sw, sh, global_top) = self.display.active_screen_frame();
+        let (sx, sy, sw, sh, _global_top) = self.display.active_screen_frame();
         let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
         // Guard against invalid/negative configured width.
         let width = self.width.max(1.0);
@@ -278,7 +278,7 @@ impl NotificationCenter {
             };
             // Convert to top-left coordinates for egui
             let mut x_top = x_b;
-            let y_top = global_top - (pos_b + total_h);
+            let y_top = self.display.to_top_left_y(pos_b, total_h);
             // Clamp top-left x into the screen bounds.
             let min_x = sx + m;
             let mut max_x = sx + sw - width - m;
@@ -323,7 +323,7 @@ impl NotificationCenter {
         self.layout(ctx);
         let mut any_animating = false;
 
-        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, global_top) =
+        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, _global_top) =
             self.display.active_screen_frame();
 
         // Update animation and draw. Items that would fall below the bottom of the active
@@ -346,7 +346,7 @@ impl NotificationCenter {
             }
 
             // Skip rendering windows that would be completely off-screen below the bottom.
-            let pos_b = global_top - it.target_pos.y - it.size.y;
+            let pos_b = self.display.to_bottom_left_y(it.target_pos.y, it.size.y);
             if pos_b < sy_frame {
                 // Hide viewport if it was shown previously
                 ctx.send_viewport_cmd_to(it.id, ViewportCommand::Visible(false));

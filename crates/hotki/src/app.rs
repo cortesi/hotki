@@ -3,6 +3,7 @@ use config::Config;
 use eframe::{App, Frame};
 use egui::Context;
 use hotki_protocol::{DisplaysSnapshot, NotifyKind};
+use mac_keycode::Chord;
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
@@ -23,8 +24,8 @@ pub enum AppEvent {
     ShowPermissionsHelp,
     /// Update visible key hints and associated context for the HUD.
     KeyUpdate {
-        /// Keys to render: (tokens, description, is_mode).
-        visible_keys: Vec<(String, String, bool)>,
+        /// Keys to render: (chord, description, is_mode).
+        visible_keys: Vec<(Chord, String, bool)>,
         /// Depth of the current mode stack.
         depth: usize,
         /// Current UI location and styling context.
@@ -186,8 +187,8 @@ impl App for HotkiApp {
 enum KeysState {
     /// Use a freshly received update.
     FromUpdate {
-        /// New keys to display: (tokens, description, is_mode).
-        keys: Vec<(String, String, bool)>,
+        /// New keys to display: (chord, description, is_mode).
+        keys: Vec<(Chord, String, bool)>,
         /// Updated mode stack depth.
         depth: usize,
         /// Optional parent title for mini-HUD.

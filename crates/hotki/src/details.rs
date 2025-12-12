@@ -130,10 +130,9 @@ impl Details {
     /// Query the current Details window geometry converted to a top-left origin.
     fn current_geom_top_left(&self) -> Option<WindowGeom> {
         // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
-        let global_top = self.display.global_top();
         let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
         let x_t = x_b;
-        let y_t = global_top - (y_b + h);
+        let y_t = self.display.to_top_left_y(y_b, h);
         Some(WindowGeom {
             pos: (x_t, y_t),
             size: (w, h),
@@ -143,17 +142,16 @@ impl Details {
     /// Clamp a window geometry to the current active screen's visible frame.
     fn clamp_to_active_frame(&self, g: WindowGeom) -> WindowGeom {
         let frame = self.display.active_frame();
-        let global_top = self.display.global_top();
         let sx_b = frame.x;
-        let sy_b = frame.y;
+        let _sy_b = frame.y;
         let sw = frame.width;
         let sh = frame.height;
 
         // Convert active screen rect to top-left origin
         let screen_left = sx_b;
         let screen_right = sx_b + sw;
-        let screen_top_tl = global_top - (sy_b + sh);
-        let screen_bottom_tl = global_top - sy_b;
+        let screen_top_tl = self.display.active_frame_top_left_y();
+        let screen_bottom_tl = screen_top_tl + sh;
 
         // Ensure minimally positive size and at most screen size
         let min_w = 100.0_f32;
