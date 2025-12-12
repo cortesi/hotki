@@ -299,35 +299,32 @@ fn resolve_notify_style(
     raw: &RawNotifyWindowStyle,
     defaults: &RawNotifyWindowStyle,
 ) -> NotifyWindowStyle {
-    fn choose<'a>(s: &'a Option<String>, d: &'a Option<String>) -> &'a str {
-        s.as_deref().unwrap_or_else(|| d.as_deref().unwrap())
+    /// Resolve a color from raw/default options with a fallback.
+    fn color(raw: &Option<String>, def: &Option<String>) -> (u8, u8, u8) {
+        let val = raw.as_deref().or(def.as_deref()).unwrap();
+        let fallback = def.as_deref().unwrap();
+        parse_rgb(val).unwrap_or_else(|| parse_rgb(fallback).unwrap())
     }
-    fn parse_color(val: &str, def: &str) -> (u8, u8, u8) {
-        parse_rgb(val).unwrap_or_else(|| parse_rgb(def).unwrap())
+    /// Choose a string value from raw or default.
+    fn str_val<'a>(raw: &'a Option<String>, def: &'a Option<String>) -> &'a str {
+        raw.as_deref().or(def.as_deref()).unwrap()
     }
 
     NotifyWindowStyle {
-        bg: parse_color(
-            choose(&raw.bg, &defaults.bg),
-            defaults.bg.as_deref().unwrap(),
-        ),
-        title_fg: parse_color(
-            choose(&raw.title_fg, &defaults.title_fg),
-            defaults.title_fg.as_deref().unwrap(),
-        ),
-        body_fg: parse_color(
-            choose(&raw.body_fg, &defaults.body_fg),
-            defaults.body_fg.as_deref().unwrap(),
-        ),
+        bg: color(&raw.bg, &defaults.bg),
+        title_fg: color(&raw.title_fg, &defaults.title_fg),
+        body_fg: color(&raw.body_fg, &defaults.body_fg),
         title_font_size: raw
             .title_font_size
-            .unwrap_or(defaults.title_font_size.unwrap_or(14.0)),
+            .or(defaults.title_font_size)
+            .unwrap_or(14.0),
         title_font_weight: raw.title_font_weight.unwrap_or(FontWeight::Regular),
         body_font_size: raw
             .body_font_size
-            .unwrap_or(defaults.body_font_size.unwrap_or(12.0)),
+            .or(defaults.body_font_size)
+            .unwrap_or(12.0),
         body_font_weight: raw.body_font_weight.unwrap_or(FontWeight::Regular),
-        icon: Some(choose(&raw.icon, &defaults.icon).to_string()),
+        icon: Some(str_val(&raw.icon, &defaults.icon).to_string()),
     }
 }
 

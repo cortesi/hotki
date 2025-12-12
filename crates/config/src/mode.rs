@@ -64,31 +64,24 @@ pub struct KeysAttrs {
     pub capture: Option<bool>,
 }
 
+/// Generate boolean accessor methods that return `false` when the field is `None`.
+macro_rules! bool_accessors {
+    ($($field:ident),+ $(,)?) => {
+        $(
+            #[doc = concat!("Return `", stringify!($field), "` (defaults to false when unset).")]
+            pub fn $field(&self) -> bool {
+                self.$field.unwrap_or(false)
+            }
+        )+
+    };
+}
+
 impl KeysAttrs {
+    bool_accessors!(noexit, global, hide, hud_only, capture);
+
     /// Effective repeat value; defaults to `noexit` when unset.
     pub fn repeat_effective(&self) -> bool {
         self.repeat.unwrap_or(self.noexit())
-    }
-
-    /// Return `noexit` (defaults to false when unset).
-    pub fn noexit(&self) -> bool {
-        self.noexit.unwrap_or(false)
-    }
-    /// Return `global` (defaults to false when unset).
-    pub fn global(&self) -> bool {
-        self.global.unwrap_or(false)
-    }
-    /// Return `hide` (defaults to false when unset).
-    pub fn hide(&self) -> bool {
-        self.hide.unwrap_or(false)
-    }
-    /// Return `hud_only` (defaults to false when unset).
-    pub fn hud_only(&self) -> bool {
-        self.hud_only.unwrap_or(false)
-    }
-    /// Return `capture` (defaults to false when unset).
-    pub fn capture(&self) -> bool {
-        self.capture.unwrap_or(false)
     }
 
     /// Merge another (child) attribute set on top of `self` (parent), obeying
