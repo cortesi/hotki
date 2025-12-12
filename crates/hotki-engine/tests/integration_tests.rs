@@ -159,6 +159,7 @@ fn test_binding_diff_correctness() {
 fn test_ticker_cancel_semantics() {
     run_engine_test(async move {
         ensure_no_os_interaction();
+        tokio::time::pause();
         // Test repeater stop vs stop_sync semantics instead
         // since ticker module is private
         let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
@@ -179,7 +180,8 @@ fn test_ticker_cancel_semantics() {
         );
 
         // Let it run briefly
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::advance(Duration::from_millis(30)).await;
+        tokio::task::yield_now().await;
 
         // Stop should be immediate
         let start = std::time::Instant::now();
@@ -201,7 +203,8 @@ fn test_ticker_cancel_semantics() {
         );
 
         // Let it run briefly
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::advance(Duration::from_millis(30)).await;
+        tokio::task::yield_now().await;
 
         // Stop_sync should wait briefly
         let start = std::time::Instant::now();
@@ -234,7 +237,8 @@ fn test_ticker_cancel_semantics() {
         );
 
         // Let them run
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::advance(Duration::from_millis(30)).await;
+        tokio::task::yield_now().await;
 
         // Clear all should complete within timeout
         let start = std::time::Instant::now();
@@ -253,6 +257,7 @@ fn test_ticker_cancel_semantics() {
 fn test_repeater_with_observer() {
     run_engine_test(async move {
         ensure_no_os_interaction();
+        tokio::time::pause();
         // Test repeat callback integration
 
         let relay_count = Arc::new(AtomicUsize::new(0));
@@ -292,7 +297,8 @@ fn test_repeater_with_observer() {
         );
 
         // Wait long enough for initial delay + several repeat intervals
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::advance(Duration::from_millis(150)).await;
+        tokio::task::yield_now().await;
         repeater.stop_sync("test_relay");
 
         let relay_repeats = relay_count.load(Ordering::SeqCst);
@@ -315,7 +321,8 @@ fn test_repeater_with_observer() {
         );
 
         // Wait long enough for initial delay + several repeat intervals
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::advance(Duration::from_millis(150)).await;
+        tokio::task::yield_now().await;
         repeater.stop_sync("test_shell");
 
         let shell_repeats = shell_count.load(Ordering::SeqCst);
@@ -336,6 +343,7 @@ fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
         // Verify that when focus PID changes at the first tick, the repeater performs a
         // stop/start handoff and does NOT emit a repeat on that tick; repeats then resume.
         ensure_no_os_interaction();
+        tokio::time::pause();
 
         let relay_count = Arc::new(AtomicUsize::new(0));
 
@@ -363,18 +371,30 @@ fn test_relay_repeater_handoff_skips_repeat_and_resumes() {
         );
 
         // Change PID midway before the first tick to trigger the handoff path
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
         *focus_ctx.lock() = Some(("app2".into(), "win2".into(), 2222));
 
         // Wait past the first tick (hand-off should have occurred; no repeat yet)
-        tokio::time::sleep(Duration::from_millis(70)).await;
+        tokio::time::advance(Duration::from_millis(70)).await;
+        tokio::task::yield_now().await;
         let after_handoff = relay_count.load(Ordering::SeqCst);
         assert_eq!(after_handoff, 0, "Handoff tick should not emit a repeat");
 
-        // Wait into the next interval; repeats should now resume on the new PID
-        tokio::time::sleep(Duration::from_millis(130)).await;
-        repeater.stop_sync("handoff1");
+        // Step through a few intervals, yielding between them. Under paused time the first
+        // interval tick may be delayed until after the sleep completes and the interval is created.
+        // Advancing a few intervals guarantees at least one repeat after any handoff.
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_millis(110)).await;
+            for _ in 0..3 {
+                tokio::task::yield_now().await;
+            }
+            if relay_count.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+        }
         let repeats_total = relay_count.load(Ordering::SeqCst);
+        repeater.stop_sync("handoff1");
         assert!(repeats_total >= 1, "Repeats should resume after handoff");
     });
 }
@@ -385,6 +405,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         // Verify multiple consecutive PID handoffs within a repeat session never emit repeats on
         // the switch ticks and that repeats continue afterwards.
         ensure_no_os_interaction();
+        tokio::time::pause();
 
         let relay_count = Arc::new(AtomicUsize::new(0));
 
@@ -410,9 +431,11 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         );
 
         // Switch 1 before first tick
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
         *focus_ctx.lock() = Some(("app2".into(), "win2".into(), 2222));
-        tokio::time::sleep(Duration::from_millis(70)).await; // past first (handoff) tick
+        tokio::time::advance(Duration::from_millis(70)).await; // past first (handoff) tick
+        tokio::task::yield_now().await;
         assert_eq!(
             relay_count.load(Ordering::SeqCst),
             0,
@@ -420,9 +443,11 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         );
 
         // Switch 2 before second tick
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
         *focus_ctx.lock() = Some(("app3".into(), "win3".into(), 3333));
-        tokio::time::sleep(Duration::from_millis(70)).await; // past second (handoff) tick
+        tokio::time::advance(Duration::from_millis(70)).await; // past second (handoff) tick
+        tokio::task::yield_now().await;
         assert_eq!(
             relay_count.load(Ordering::SeqCst),
             0,
@@ -430,7 +455,8 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
         );
 
         // Allow a subsequent repeat tick to fire
-        tokio::time::sleep(Duration::from_millis(130)).await;
+        tokio::time::advance(Duration::from_millis(130)).await;
+        tokio::task::yield_now().await;
         repeater.stop_sync("handoff2");
         assert!(
             relay_count.load(Ordering::SeqCst) >= 1,

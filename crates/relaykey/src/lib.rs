@@ -75,22 +75,10 @@ impl MacPoster {
     fn build_event(&self, chord: &Chord, down: bool, is_repeat: bool) -> Result<cge::CGEvent> {
         let e = self.build_keycode_event(chord.key as u16, down)?;
         // Apply modifier flags
-        let mut bits: u64 = 0;
-        if !chord.modifiers.is_empty() {
-            let m = &chord.modifiers;
-            if m.contains(&Modifier::Control) || m.contains(&Modifier::RightControl) {
-                bits |= 1 << 18;
-            }
-            if m.contains(&Modifier::Option) || m.contains(&Modifier::RightOption) {
-                bits |= 1 << 19;
-            }
-            if m.contains(&Modifier::Shift) || m.contains(&Modifier::RightShift) {
-                bits |= 1 << 17;
-            }
-            if m.contains(&Modifier::Command) || m.contains(&Modifier::RightCommand) {
-                bits |= 1 << 20;
-            }
-        }
+        let bits: u64 = chord
+            .modifiers
+            .iter()
+            .fold(0_u64, |acc, m| acc | m.cg_flag_bits());
         e.set_flags(cge::CGEventFlags::from_bits_retain(bits));
         if is_repeat {
             e.set_integer_value_field(cge::EventField::KEYBOARD_EVENT_AUTOREPEAT, 1);
@@ -130,35 +118,25 @@ impl Poster for MacPoster {
     fn post_modifiers(&self, _pid: pid_t, mods: &HashSet<Modifier>, down: bool) -> Result<()> {
         // Map modifiers to virtual keycodes (left-side by default)
         fn mod_keycodes(m: &HashSet<Modifier>) -> Vec<u16> {
+            fn choose(m: &HashSet<Modifier>, left: Modifier, right: Modifier) -> Option<Modifier> {
+                if m.contains(&right) && !m.contains(&left) {
+                    Some(right)
+                } else if m.contains(&left) || m.contains(&right) {
+                    Some(left)
+                } else {
+                    None
+                }
+            }
+
             let mut v = Vec::new();
-            // Use left variants when only generic specified
-            if m.contains(&Modifier::Control) || m.contains(&Modifier::RightControl) {
-                // Prefer left control unless only right is specified
-                if m.contains(&Modifier::RightControl) && !m.contains(&Modifier::Control) {
-                    v.push(0x3E); // right control
-                } else {
-                    v.push(0x3B); // left control
-                }
-            }
-            if m.contains(&Modifier::Option) || m.contains(&Modifier::RightOption) {
-                if m.contains(&Modifier::RightOption) && !m.contains(&Modifier::Option) {
-                    v.push(0x3D); // right option (alt)
-                } else {
-                    v.push(0x3A); // left option (alt)
-                }
-            }
-            if m.contains(&Modifier::Shift) || m.contains(&Modifier::RightShift) {
-                if m.contains(&Modifier::RightShift) && !m.contains(&Modifier::Shift) {
-                    v.push(0x3C); // right shift
-                } else {
-                    v.push(0x38); // left shift
-                }
-            }
-            if m.contains(&Modifier::Command) || m.contains(&Modifier::RightCommand) {
-                if m.contains(&Modifier::RightCommand) && !m.contains(&Modifier::Command) {
-                    v.push(0x36); // right command
-                } else {
-                    v.push(0x37); // left command
+            for (left, right) in [
+                (Modifier::Control, Modifier::RightControl),
+                (Modifier::Option, Modifier::RightOption),
+                (Modifier::Shift, Modifier::RightShift),
+                (Modifier::Command, Modifier::RightCommand),
+            ] {
+                if let Some(chosen) = choose(m, left, right) {
+                    v.push(chosen.keycode());
                 }
             }
             v

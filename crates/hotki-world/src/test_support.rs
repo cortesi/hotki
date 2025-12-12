@@ -24,8 +24,7 @@ where
     }
 
     let guard = RuntimeGuard(Some(
-        Builder::new_multi_thread()
-            .worker_threads(2)
+        Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("build test runtime"),

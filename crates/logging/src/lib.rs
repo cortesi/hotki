@@ -120,14 +120,5 @@ pub fn env_filter_from_spec(spec: &str) -> EnvFilter {
 /// If the environment already specifies `RUST_LOG`, return that; otherwise return
 /// a default crate-scoped `info` configuration (with mrpc suppression).
 pub fn log_config_for_child() -> String {
-    env::var("RUST_LOG").map_or_else(
-        |_| level_spec_for("info"),
-        |spec| {
-            if spec.contains("mrpc::connection") {
-                spec
-            } else {
-                join_with_mrpc(vec![spec])
-            }
-        },
-    )
+    compute_spec(false, false, None, None)
 }

@@ -81,6 +81,27 @@ impl Modifier {
             _ => Key::from(self).name().to_ascii_lowercase(),
         }
     }
+
+    /// CGEventFlags bitmask corresponding to this modifier.
+    ///
+    /// Only primary modifier flags are represented in CGEventFlags. Right-side variants map to
+    /// the same flag bits as their left-side counterparts. Non-flag modifiers return 0.
+    #[must_use]
+    pub fn cg_flag_bits(self) -> u64 {
+        match self {
+            Modifier::Shift | Modifier::RightShift => 1 << 17,
+            Modifier::Control | Modifier::RightControl => 1 << 18,
+            Modifier::Option | Modifier::RightOption => 1 << 19,
+            Modifier::Command | Modifier::RightCommand => 1 << 20,
+            Modifier::CapsLock | Modifier::Function => 0,
+        }
+    }
+
+    /// Virtual keycode for this modifier key.
+    #[must_use]
+    pub fn keycode(self) -> u16 {
+        Key::from(self) as u16
+    }
 }
 
 /// Construct a modifier set from macOS CGEventFlags bits.

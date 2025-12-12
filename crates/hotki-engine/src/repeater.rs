@@ -439,12 +439,12 @@ mod tests {
 
     use tokio::{
         sync::mpsc,
-        time::{Duration, Instant, sleep},
+        time::{Duration, advance, sleep},
     };
 
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn shell_first_run_coalesces_then_unblocks_repeats() {
         let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
         let relay = crate::RelayHandler::new_with_enabled(false);
@@ -458,9 +458,9 @@ mod tests {
             shell_count2.fetch_add(1, AtomicOrdering::SeqCst);
         }));
 
-        // Command blocks briefly so the initial run overlaps the first repeat tick
-        // but finishes quickly afterwards.
-        let cmd = "sleep 0.15".to_string();
+        // Use a fast command, but hold the per-id gate so the initial run overlaps
+        // the first repeat tick without relying on real time.
+        let cmd = "true".to_string();
 
         repeater.start(
             "shell-coalesce".to_string(),
@@ -476,18 +476,37 @@ mod tests {
         );
 
         // After ~150ms the first repeat tick would have fired; ensure it was coalesced
-        sleep(Duration::from_millis(150)).await;
+        let state = repeater.shell_state("shell-coalesce");
+        let gate_guard = state.gate.lock().await;
+        tokio::task::yield_now().await; // let ticker + initial run tasks start and register timers
+        advance(Duration::from_millis(150)).await;
+        sleep(Duration::from_millis(0)).await; // yield so ticker task observes time advance
         assert_eq!(
             shell_count.load(AtomicOrdering::SeqCst),
             0,
             "No shell repeats during the first blocking run",
         );
 
-        // Wait until at least one repeat completes, with a generous deadline to
-        // avoid flakiness on slow runners. Check every 50ms up to 1.5s total.
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        while Instant::now() < deadline && shell_count.load(AtomicOrdering::SeqCst) == 0 {
-            sleep(Duration::from_millis(50)).await;
+        drop(gate_guard);
+        tokio::task::yield_now().await; // allow initial run to start
+        let real_start = std::time::Instant::now();
+        while state.running.load(AtomicOrdering::SeqCst)
+            && real_start.elapsed() < std::time::Duration::from_secs(1)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !state.running.load(AtomicOrdering::SeqCst),
+            "initial shell run should complete"
+        );
+
+        // Advance far enough for the next repeat ticks to execute after initial completion.
+        advance(Duration::from_millis(250)).await;
+        let real_start_repeat = std::time::Instant::now();
+        while shell_count.load(AtomicOrdering::SeqCst) == 0
+            && real_start_repeat.elapsed() < std::time::Duration::from_secs(1)
+        {
+            tokio::task::yield_now().await;
         }
         let repeats = shell_count.load(AtomicOrdering::SeqCst);
         repeater.stop_sync("shell-coalesce");
