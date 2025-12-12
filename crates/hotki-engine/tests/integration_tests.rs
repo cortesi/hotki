@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 #[test]
 fn test_rebind_on_depth_change() {
     run_engine_test(async move {
-        let (mut engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
         let keys = create_test_keys();
 
         // Set initial mode
@@ -84,7 +84,7 @@ fn test_rebind_on_depth_change() {
 fn test_binding_diff_correctness() {
     run_engine_test(async move {
         // For this test, we'll use the Engine's binding snapshot functionality
-        let (mut engine, _rx, _world) = create_test_engine().await;
+        let (engine, _rx, _world) = create_test_engine().await;
 
         // Test 1: Set initial bindings
         let keys1 = Keys::from_ron(
@@ -443,7 +443,7 @@ fn test_relay_repeater_multiple_handoffs_no_repeat_on_switch() {
 fn test_binding_registration_order_stability() {
     run_engine_test(async move {
         // Test that binding order remains stable across updates
-        let (mut engine, _rx, _world) = create_test_engine().await;
+        let (engine, _rx, _world) = create_test_engine().await;
 
         // Add bindings in random order
         let keys = Keys::from_ron(
@@ -487,7 +487,7 @@ fn test_binding_registration_order_stability() {
 fn test_capture_all_mode_transitions() {
     run_engine_test(async move {
         // Test capture-all mode transitions via engine depth changes
-        let (mut engine, _rx, _world) = create_test_engine().await;
+        let (engine, _rx, _world) = create_test_engine().await;
 
         // Set a mode with capture capability
         // Note: capture attribute would need to be specified in config syntax if supported
@@ -526,7 +526,7 @@ fn test_capture_all_mode_transitions() {
 #[test]
 fn test_match_app_rebinds_on_focus_change() {
     run_engine_test(async move {
-        let (mut engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
         let keys = Keys::from_ron(
             r#"[
         ("cmd+a", "app-only", relay("cmd+1"), (match_app: "Safari")),
@@ -581,7 +581,7 @@ fn test_match_app_rebinds_on_focus_change() {
 #[test]
 fn test_display_snapshot_reaches_hud_updates() {
     run_engine_test(async move {
-        let (mut engine, mut rx, world) = create_test_engine().await;
+        let (engine, mut rx, world) = create_test_engine().await;
         let keys = Keys::from_ron(r#"[("cmd+k", "noop", pop)]"#).expect("valid keys");
         let cfg = config::Config::from_parts(keys, config::Style::default());
         engine.set_config(cfg).await.expect("set config");

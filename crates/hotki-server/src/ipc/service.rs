@@ -38,7 +38,7 @@ use hotki_protocol::{
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
 use parking_lot::Mutex;
 use tokio::sync::{
-    Mutex as AsyncMutex,
+    Mutex as AsyncMutex, OnceCell,
     mpsc::{Receiver, Sender},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -50,7 +50,7 @@ use crate::loop_wake;
 #[derive(Clone)]
 pub struct HotkeyService {
     /// The hotkey engine
-    engine: Arc<tokio::sync::Mutex<Option<Engine>>>,
+    engine: Arc<OnceCell<Engine>>,
     /// Mac hotkey manager
     manager: Arc<mac_hotkey::Manager>,
     /// Event sender for UI messages (bounded)
@@ -61,8 +61,6 @@ pub struct HotkeyService {
     clients: Arc<AsyncMutex<Vec<RpcSender>>>,
     /// When set to true, the outer server event loop should exit.
     shutdown: Arc<AtomicBool>,
-    /// Optional cap on per-id in-flight events (worker queue capacity)
-    per_id_capacity: Option<usize>,
     /// Ensure we only spawn one heartbeat loop across clones.
     hb_running: Arc<AtomicBool>,
     world_forwarder_running: Arc<AtomicBool>,
@@ -93,33 +91,15 @@ impl HotkeyService {
         let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
 
         Self {
-            engine: Arc::new(tokio::sync::Mutex::new(None)),
+            engine: Arc::new(OnceCell::new()),
             manager,
             event_tx,
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
             clients: Arc::new(AsyncMutex::new(Vec::new())),
             shutdown,
-            per_id_capacity: None,
             hb_running: Arc::new(AtomicBool::new(false)),
             world_forwarder_running: Arc::new(AtomicBool::new(false)),
             auto_shutdown_on_empty: Arc::new(AtomicBool::new(false)),
-            idle_state,
-        }
-    }
-
-    /// Create a builder to configure and construct a `HotkeyService`.
-    ///
-    /// Use this when you need to tweak knobs (e.g., max in-flight events).
-    pub fn builder(
-        manager: Arc<mac_hotkey::Manager>,
-        shutdown: Arc<AtomicBool>,
-        idle_state: Arc<IdleTimerState>,
-    ) -> HotkeyServiceBuilder {
-        HotkeyServiceBuilder {
-            manager,
-            shutdown,
-            per_id_capacity: None,
-            auto_shutdown_on_empty: false,
             idle_state,
         }
     }
@@ -129,26 +109,10 @@ impl HotkeyService {
         self.shutdown.clone()
     }
 
-    /// Initialize the engine (must be called within Tokio runtime)
-    async fn ensure_engine_initialized(&self) -> crate::Result<()> {
-        // First check if already initialized without holding lock long
-        {
-            let engine_guard = self.engine.lock().await;
-            if engine_guard.is_some() {
-                return Ok(());
-            }
-        }
-
-        // Acquire sync lock first (following lock ordering: sync before async)
-        let event_tx = self.event_tx.clone();
-
-        // Now acquire async lock
-        let mut engine_guard = self.engine.lock().await;
-        // Double-check in case of race condition
-        if engine_guard.is_none() {
-            *engine_guard = Some(Engine::new(self.manager.clone(), event_tx));
-        }
-        Ok(())
+    async fn engine(&self) -> &Engine {
+        self.engine
+            .get_or_init(|| async { Engine::new(self.manager.clone(), self.event_tx.clone()) })
+            .await
     }
 
     /// Gather a lightweight server status snapshot for diagnostics.
@@ -183,25 +147,14 @@ impl HotkeyService {
     }
 
     /// Start forwarding world events to the UI channel as MsgToUI::World.
-    fn start_world_forwarder(&self) {
+    async fn start_world_forwarder(&self) {
         if self.world_forwarder_running.swap(true, Ordering::SeqCst) {
             return; // already running
         }
         let shutdown = self.shutdown.clone();
         let event_tx = self.event_tx.clone();
-        let engine = self.engine.clone();
+        let world = self.engine().await.world();
         tokio::spawn(async move {
-            // Ensure engine exists and get world view
-            let world = loop {
-                if shutdown.load(Ordering::SeqCst) {
-                    return;
-                }
-                if let Some(eng) = engine.lock().await.as_ref() {
-                    break eng.world();
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            };
-
             let mut cursor = world.subscribe();
             loop {
                 if shutdown.load(Ordering::SeqCst) {
@@ -313,8 +266,9 @@ impl MrpcConnection for HotkeyService {
             });
         }
 
-        // Begin world forwarder if not already running
-        self.start_world_forwarder();
+        // Ensure engine and begin world forwarder if not already running.
+        let _ = self.engine().await;
+        self.start_world_forwarder().await;
 
         // Set up log forwarding to this client
         // Bind the global log sink to the single event channel. Logs are then
@@ -322,13 +276,6 @@ impl MrpcConnection for HotkeyService {
         // connected clients by `forward_events`.
         logging::forward::set_sink(self.event_tx.clone());
 
-        // Proactively send an initial status snapshot to this client
-        if let Err(e) = self.ensure_engine_initialized().await {
-            return Err(Self::typed_err(
-                crate::error::RpcErrorCode::EngineInit,
-                &[("message", Value::String(e.to_string().into()))],
-            ));
-        }
         // No initial status snapshot; UI derives state from HudUpdate events.
 
         // Start a single heartbeat loop. The loop exits when shutdown is set.
@@ -427,25 +374,7 @@ impl MrpcConnection for HotkeyService {
                 let cfg = dec_set_config_param(&params[0])?;
                 debug!("Setting config via MRPC");
 
-                // Ensure engine is initialized
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-
-                let mut engine_guard = self.engine.lock().await;
-                let engine = match engine_guard.as_mut() {
-                    Some(eng) => eng,
-                    None => {
-                        error!("Engine not initialized when setting config");
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("Engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let engine = self.engine().await;
                 if let Err(e) = engine.set_config(cfg.clone()).await {
                     return Err(Self::typed_err(
                         crate::error::RpcErrorCode::EngineSetConfig,
@@ -456,8 +385,6 @@ impl MrpcConnection for HotkeyService {
                 // Update auto-shutdown flag from config if present.
                 self.auto_shutdown_on_empty
                     .store(cfg.server().exit_if_no_clients, Ordering::SeqCst);
-
-                drop(engine_guard);
 
                 Ok(Value::Boolean(true))
             }
@@ -476,24 +403,7 @@ impl MrpcConnection for HotkeyService {
                 };
                 tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: ident={} kind={:?} repeat={}", req.ident, req.kind, req.repeat);
 
-                // Ensure engine is initialized
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-
-                // Access engine and resolve ident → id
-                let eng = match self.engine.lock().await.as_ref() {
-                    Some(e) => e.clone(),
-                    None => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let eng = self.engine().await;
 
                 let maybe_id = eng.resolve_id_for_ident(&req.ident).await;
                 let id = match maybe_id {
@@ -538,22 +448,7 @@ impl MrpcConnection for HotkeyService {
             }
 
             Some(HotkeyMethod::GetBindings) => {
-                // Ensure engine
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-                let eng = match self.engine.lock().await.as_ref() {
-                    Some(e) => e.clone(),
-                    None => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let eng = self.engine().await;
                 let mut idents: Vec<String> = eng
                     .bindings_snapshot()
                     .await
@@ -571,64 +466,19 @@ impl MrpcConnection for HotkeyService {
             }
 
             Some(HotkeyMethod::GetDepth) => {
-                // Ensure engine
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-                let eng = match self.engine.lock().await.as_ref() {
-                    Some(e) => e.clone(),
-                    None => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let eng = self.engine().await;
                 let depth = eng.get_depth().await as u64;
                 Ok(Value::Integer(depth.into()))
             }
 
             Some(HotkeyMethod::GetWorldStatus) => {
-                // Ensure engine
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-                let eng = match self.engine.lock().await.as_ref() {
-                    Some(e) => e.clone(),
-                    None => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let eng = self.engine().await;
                 let st = eng.world_status().await;
                 Ok(enc_world_status(&st))
             }
 
             Some(HotkeyMethod::GetWorldSnapshot) => {
-                // Ensure engine
-                if let Err(e) = self.ensure_engine_initialized().await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineInit,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-                let eng = match self.engine.lock().await.as_ref() {
-                    Some(e) => e.clone(),
-                    None => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineNotInitialized,
-                            &[("message", Value::String("engine not initialized".into()))],
-                        ));
-                    }
-                };
+                let eng = self.engine().await;
                 let world = eng.world();
                 let displays = world.displays().await;
                 let focused_app =
@@ -683,31 +533,17 @@ impl HotkeyService {
         let manager = self.manager.clone();
         let engine = self.engine.clone();
         let shutdown = self.shutdown.clone();
+        let event_tx = self.event_tx.clone();
 
         // Bridge: dedicated OS thread blocks on crossbeam and forwards to Tokio mpsc
         let rx_cross = manager.events();
         let mut rx_ev = crate::util::bridge_crossbeam_to_tokio(rx_cross);
 
         // Async task consumes Tokio channel and dispatches events with per-id ordering
-        let per_id_capacity = self.per_id_capacity;
         tokio::spawn(async move {
-            // Store heterogeneous senders via a small enum so we can support
-            // either bounded or unbounded queues per id.
-            enum WorkerSender {
-                Bounded(tokio::sync::mpsc::Sender<mac_hotkey::Event>),
-                Unbounded(tokio::sync::mpsc::UnboundedSender<mac_hotkey::Event>),
-            }
-
-            impl WorkerSender {
-                fn try_send(&self, ev: mac_hotkey::Event) -> bool {
-                    match self {
-                        WorkerSender::Unbounded(tx) => tx.send(ev).is_ok(),
-                        WorkerSender::Bounded(tx) => tx.try_send(ev).is_ok(),
-                    }
-                }
-            }
-
-            let mut workers: HashMap<u32, WorkerSender> = HashMap::new();
+            const PER_ID_QUEUE_CAPACITY: usize = 64;
+            let mut workers: HashMap<u32, tokio::sync::mpsc::Sender<mac_hotkey::Event>> =
+                HashMap::new();
 
             while let Some(ev) = rx_ev.recv().await {
                 if shutdown.load(Ordering::SeqCst) {
@@ -715,67 +551,50 @@ impl HotkeyService {
                 }
 
                 let id = ev.id;
-                let ev_clone = ev.clone();
-                if let Some(tx) = workers.get(&id)
-                    && tx.try_send(ev)
-                {
-                    continue;
-                }
-
-                // Create a new per-id worker
-                if let Some(cap) = per_id_capacity {
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<mac_hotkey::Event>(cap);
-                    let _ = tx.try_send(ev_clone);
-                    workers.insert(id, WorkerSender::Bounded(tx));
-
-                    let engine = engine.clone();
-                    let shutdown = shutdown.clone();
-                    tokio::spawn(async move {
-                        while let Some(ev) = rx.recv().await {
-                            if shutdown.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            let eng_guard = engine.lock().await;
-                            if let Some(eng) = eng_guard.as_ref()
-                                && let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await
-                            {
-                                tracing::trace!(
-                                    target: "hotki_server::ipc::service",
-                                    "OS dispatch failed id={} kind={:?}: {}",
-                                    ev.id,
-                                    ev.kind,
-                                    e
-                                );
-                            }
+                let ev = if let Some(tx) = workers.get(&id) {
+                    match tx.try_send(ev) {
+                        Ok(()) => continue,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            trace!(id, "per_id_queue_full_drop");
+                            continue;
                         }
-                    });
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(ev)) => {
+                            workers.remove(&id);
+                            ev
+                        }
+                    }
                 } else {
-                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<mac_hotkey::Event>();
-                    let _ = tx.send(ev_clone);
-                    workers.insert(id, WorkerSender::Unbounded(tx));
+                    ev
+                };
 
-                    let engine = engine.clone();
-                    let shutdown = shutdown.clone();
-                    tokio::spawn(async move {
-                        while let Some(ev) = rx.recv().await {
-                            if shutdown.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            let eng_guard = engine.lock().await;
-                            if let Some(eng) = eng_guard.as_ref()
-                                && let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await
-                            {
-                                tracing::trace!(
-                                    target: "hotki_server::ipc::service",
-                                    "OS dispatch failed id={} kind={:?}: {}",
-                                    ev.id,
-                                    ev.kind,
-                                    e
-                                );
-                            }
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::channel::<mac_hotkey::Event>(PER_ID_QUEUE_CAPACITY);
+                let _ = tx.try_send(ev);
+                workers.insert(id, tx.clone());
+
+                let engine = engine.clone();
+                let manager = manager.clone();
+                let event_tx = event_tx.clone();
+                let shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    let eng = engine
+                        .get_or_init(|| async { Engine::new(manager, event_tx) })
+                        .await;
+                    while let Some(ev) = rx.recv().await {
+                        if shutdown.load(Ordering::SeqCst) {
+                            break;
                         }
-                    });
-                }
+                        if let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await {
+                            trace!(
+                                target: "hotki_server::ipc::service",
+                                "OS dispatch failed id={} kind={:?}: {}",
+                                ev.id,
+                                ev.kind,
+                                e
+                            );
+                        }
+                    }
+                });
             }
         });
 
@@ -783,32 +602,6 @@ impl HotkeyService {
     }
 }
 
-/// Builder for `HotkeyService`.
-pub struct HotkeyServiceBuilder {
-    manager: Arc<mac_hotkey::Manager>,
-    shutdown: Arc<AtomicBool>,
-    per_id_capacity: Option<usize>,
-    auto_shutdown_on_empty: bool,
-    idle_state: Arc<IdleTimerState>,
-}
-
-impl HotkeyServiceBuilder {
-    /// Limit in-flight events per key id. When set, queues are bounded
-    /// and new events are dropped when the queue is full.
-    pub fn max_in_flight_per_id(mut self, capacity: usize) -> Self {
-        self.per_id_capacity = Some(capacity.max(1));
-        self
-    }
-
-    /// Build the service with the configured options.
-    pub fn build(self) -> HotkeyService {
-        let mut svc = HotkeyService::new(self.manager, self.shutdown, self.idle_state);
-        svc.per_id_capacity = self.per_id_capacity;
-        svc.auto_shutdown_on_empty
-            .store(self.auto_shutdown_on_empty, Ordering::SeqCst);
-        svc
-    }
-}
 fn build_snapshot_payload(
     displays: hotki_world::DisplaysSnapshot,
     focused: Option<App>,

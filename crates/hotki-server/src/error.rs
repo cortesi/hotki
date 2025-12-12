@@ -59,10 +59,6 @@ pub enum RpcErrorCode {
     InvalidConfig,
     #[error("MethodNotFound")]
     MethodNotFound,
-    #[error("EngineInit")]
-    EngineInit,
-    #[error("EngineNotInitialized")]
-    EngineNotInitialized,
     #[error("EngineSetConfig")]
     EngineSetConfig,
     #[error("KeyNotBound")]

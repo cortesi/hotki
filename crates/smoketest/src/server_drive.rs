@@ -9,7 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hotki_protocol::{Cursor, DisplaysSnapshot, rpc::InjectKind, rpc::ServerStatusLite};
+use hotki_protocol::{
+    Cursor, DisplaysSnapshot,
+    rpc::{InjectKind, ServerStatusLite},
+};
 use hotki_server::smoketest_bridge::{
     BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeNotification, BridgeReply, BridgeRequest,
     BridgeResponse, BridgeTimestampMs, control_socket_path, now_millis,

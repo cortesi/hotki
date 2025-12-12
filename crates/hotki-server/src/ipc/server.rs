@@ -1,7 +1,7 @@
 //! IPC server implementation for hotkey manager
 
 use std::{
-    env, fs,
+    fs,
     os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
     path::Path,
     sync::{
@@ -33,14 +33,7 @@ impl IPCServer {
         _proxy: tao::event_loop::EventLoopProxy<()>,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
-        let mut builder = HotkeyService::builder(Arc::new(manager), shutdown, idle_state);
-        if let Ok(v) = env::var("HOTKI_MAX_INFLIGHT_PER_ID")
-            && let Ok(n) = v.parse::<usize>()
-        {
-            builder = builder.max_in_flight_per_id(n);
-        }
-        // Default off; can be enabled via UI config (SetConfig).
-        let service = builder.build();
+        let service = HotkeyService::new(Arc::new(manager), shutdown, idle_state);
 
         Self {
             socket_path: socket_path.into(),

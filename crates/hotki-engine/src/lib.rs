@@ -412,7 +412,7 @@ impl Engine {
     /// We intentionally do not reset the engine `State` here so that the current
     /// HUD location (depth/path) remains stable across theme or config updates.
     /// Path invalidation is handled by `Config::ensure_context` during rebind.
-    pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
+    pub async fn set_config(&self, cfg: config::Config) -> Result<()> {
         // LOCK ORDER: config (write) must be released before rebind_current_context
         // which acquires config (read) -> state -> binding_manager.
         {

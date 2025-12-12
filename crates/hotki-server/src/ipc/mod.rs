@@ -91,9 +91,10 @@ fn encode_deadline(deadline: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use hotki_protocol::rpc::{HotkeyNotification, InjectKeyReq, InjectKind};
     use mrpc::Value;
+
+    use super::*;
 
     #[test]
     fn notify_name_is_notify() {

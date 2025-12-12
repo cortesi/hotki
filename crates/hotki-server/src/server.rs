@@ -46,14 +46,9 @@ impl Default for Server {
 impl Server {
     /// Create a new hotkey server with default configuration
     pub fn new() -> Self {
-        // Allow environment override; fallback to default.
-        let idle_timeout_secs = env::var("HOTKI_SERVER_IDLE_TIMEOUT_SECS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
         Self {
             socket_path: default_socket_path().to_string(),
-            idle_timeout_secs,
+            idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
         }
     }
 

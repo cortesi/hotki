@@ -11,6 +11,7 @@ use hotki_protocol::{
     },
 };
 use mrpc::{Client as MrpcClient, Connection as MrpcConnection, RpcError, RpcSender, Value};
+use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
 
@@ -53,33 +54,52 @@ impl Connection {
         Ok(Connection { event_rx, client })
     }
 
+    async fn request(&mut self, method: HotkeyMethod, params: &[Value]) -> Result<Value> {
+        self.client
+            .send_request(method.as_str(), params)
+            .await
+            .map_err(|e| Error::Ipc(format!("{} request failed: {}", method.as_str(), e)))
+    }
+
+    async fn request_ok(&mut self, method: HotkeyMethod, params: &[Value]) -> Result<()> {
+        match self.request(method, params).await? {
+            Value::Boolean(true) => Ok(()),
+            other => Err(Error::Ipc(format!(
+                "Unexpected {} response: {:?}",
+                method.as_str(),
+                other
+            ))),
+        }
+    }
+
+    async fn request_binary<T: DeserializeOwned>(
+        &mut self,
+        method: HotkeyMethod,
+        params: &[Value],
+    ) -> Result<T> {
+        match self.request(method, params).await? {
+            Value::Binary(bytes) => {
+                rmp_serde::from_slice::<T>(&bytes).map_err(|e| Error::Serialization(e.to_string()))
+            }
+            other => Err(Error::Ipc(format!(
+                "Unexpected {} response: {:?}",
+                method.as_str(),
+                other
+            ))),
+        }
+    }
+
     /// Send shutdown request to server (typed convenience method).
     pub async fn shutdown(&mut self) -> Result<()> {
         debug!("Sending shutdown request");
-        let response = self
-            .client
-            .send_request(HotkeyMethod::Shutdown.as_str(), &[])
-            .await
-            .map_err(|e| Error::Ipc(format!("Shutdown request failed: {}", e)))?;
-        match response {
-            Value::Boolean(true) => Ok(()),
-            _ => Err(Error::Ipc("Unexpected shutdown response".into())),
-        }
+        self.request_ok(HotkeyMethod::Shutdown, &[]).await
     }
 
     /// Set the full configuration (typed convenience method).
     pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
         debug!("Sending set_config request");
         let param = enc_set_config(&cfg)?;
-        let response = self
-            .client
-            .send_request(HotkeyMethod::SetConfig.as_str(), &[param])
-            .await
-            .map_err(|e| Error::Ipc(format!("Set config request failed: {}", e)))?;
-        match response {
-            Value::Boolean(true) => Ok(()),
-            _ => Err(Error::Ipc("Unexpected set_config response".into())),
-        }
+        self.request_ok(HotkeyMethod::SetConfig, &[param]).await
     }
 
     /// Receive the next UI/log event from the server.
@@ -122,28 +142,12 @@ impl Connection {
             repeat,
         };
         let param = enc_inject_key(&req)?;
-        let response = self
-            .client
-            .send_request(HotkeyMethod::InjectKey.as_str(), &[param])
-            .await
-            .map_err(|e| Error::Ipc(format!("inject_key request failed: {}", e)))?;
-        match response {
-            Value::Boolean(true) => Ok(()),
-            other => Err(Error::Ipc(format!(
-                "Unexpected inject_key response: {:?}",
-                other
-            ))),
-        }
+        self.request_ok(HotkeyMethod::InjectKey, &[param]).await
     }
 
     /// Get a snapshot of currently bound identifiers (sorted).
     pub async fn get_bindings(&mut self) -> Result<Vec<String>> {
-        let response = self
-            .client
-            .send_request(HotkeyMethod::GetBindings.as_str(), &[])
-            .await
-            .map_err(|e| Error::Ipc(format!("get_bindings request failed: {}", e)))?;
-        match response {
+        match self.request(HotkeyMethod::GetBindings, &[]).await? {
             Value::Array(vals) => {
                 let mut out = Vec::with_capacity(vals.len());
                 for v in vals {
@@ -168,12 +172,7 @@ impl Connection {
 
     /// Get the current depth (0 = root).
     pub async fn get_depth(&mut self) -> Result<usize> {
-        let response = self
-            .client
-            .send_request(HotkeyMethod::GetDepth.as_str(), &[])
-            .await
-            .map_err(|e| Error::Ipc(format!("get_depth request failed: {}", e)))?;
-        match response {
+        match self.request(HotkeyMethod::GetDepth, &[]).await? {
             Value::Integer(i) => match i.as_u64() {
                 Some(u) => Ok(u as usize),
                 None => Err(Error::Ipc("Invalid depth value".into())),
@@ -187,53 +186,19 @@ impl Connection {
 
     /// Get a diagnostic world status snapshot.
     pub async fn get_world_status(&mut self) -> Result<hotki_world::WorldStatus> {
-        let response = self
-            .client
-            .send_request(HotkeyMethod::GetWorldStatus.as_str(), &[])
-            .await
-            .map_err(|e| Error::Ipc(format!("get_world_status request failed: {}", e)))?;
-        match response {
-            Value::Binary(bytes) => rmp_serde::from_slice::<hotki_world::WorldStatus>(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string())),
-            other => Err(Error::Ipc(format!(
-                "Unexpected get_world_status response: {:?}",
-                other
-            ))),
-        }
+        self.request_binary(HotkeyMethod::GetWorldStatus, &[]).await
     }
 
     /// Retrieve the current server status snapshot.
     pub async fn get_server_status(&mut self) -> Result<ServerStatusLite> {
-        let response = self
-            .client
-            .send_request(HotkeyMethod::GetServerStatus.as_str(), &[])
+        self.request_binary(HotkeyMethod::GetServerStatus, &[])
             .await
-            .map_err(|e| Error::Ipc(format!("get_server_status request failed: {}", e)))?;
-        match response {
-            Value::Binary(bytes) => rmp_serde::from_slice::<ServerStatusLite>(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string())),
-            other => Err(Error::Ipc(format!(
-                "Unexpected get_server_status response: {:?}",
-                other
-            ))),
-        }
     }
 
     /// Get a lightweight world snapshot (windows + focused context).
     pub async fn get_world_snapshot(&mut self) -> Result<WorldSnapshotLite> {
-        let response = self
-            .client
-            .send_request(HotkeyMethod::GetWorldSnapshot.as_str(), &[])
+        self.request_binary(HotkeyMethod::GetWorldSnapshot, &[])
             .await
-            .map_err(|e| Error::Ipc(format!("get_world_snapshot request failed: {}", e)))?;
-        match response {
-            Value::Binary(bytes) => rmp_serde::from_slice::<WorldSnapshotLite>(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string())),
-            other => Err(Error::Ipc(format!(
-                "Unexpected get_world_snapshot response: {:?}",
-                other
-            ))),
-        }
     }
 }
 
