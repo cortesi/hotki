@@ -107,14 +107,10 @@ pub struct FocusChange {
 /// World events stream payloads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorldEvent {
-    /// A new window was observed. Carries the initial snapshot of that window.
-    Added(WorldWindow),
-    /// A previously observed window disappeared.
-    Removed(WindowKey),
-    /// A window's properties changed.
-    Updated(WindowKey, WorldWindow),
     /// The focused window changed, including best-effort context.
     FocusChanged(FocusChange),
+    /// Display geometry snapshot changed.
+    DisplaysChanged,
 }
 
 /// Capability snapshot describing permissions relevant to focus/read-only operation.
@@ -349,7 +345,13 @@ impl PollingWorld {
     async fn poll_once(&self) {
         let platform = capture_platform_snapshot();
         let displays = platform.displays.clone();
-        *self.inner.displays.write() = displays.clone();
+        {
+            let mut disp_guard = self.inner.displays.write();
+            if *disp_guard != displays {
+                *disp_guard = displays.clone();
+                self.hub.publish(WorldEvent::DisplaysChanged);
+            }
+        }
 
         let mut snapshot_guard = self.inner.snapshot.write();
         let mut focus_guard = self.inner.focused.write();
@@ -391,13 +393,6 @@ impl PollingWorld {
 
         // Snapshot changes are wholesale for now.
         if *snapshot_guard != new_snapshot {
-            // Emit removes for missing entries
-            for w in snapshot_guard.iter() {
-                self.hub.publish(WorldEvent::Removed(w.world_id()));
-            }
-            for w in new_snapshot.iter() {
-                self.hub.publish(WorldEvent::Added(w.clone()));
-            }
             *snapshot_guard = new_snapshot;
         }
 
@@ -740,26 +735,33 @@ impl TestWorld {
     pub fn set_snapshot(&self, snapshot: Vec<WorldWindow>, focused: Option<WindowKey>) {
         let mut snap_guard = self.inner.snapshot.write();
         let mut foc_guard = self.inner.focused.write();
-
-        // Emit removals for previous snapshot
-        for w in snap_guard.iter() {
-            self.hub.publish(WorldEvent::Removed(w.world_id()));
-        }
-
+        let prev_focus = *foc_guard;
         *snap_guard = snapshot.clone();
         *foc_guard = focused;
 
-        for w in snapshot {
-            self.hub.publish(WorldEvent::Added(w.clone()));
-            if w.focused {
-                self.hub.publish(WorldEvent::FocusChanged(FocusChange {
-                    key: Some(w.world_id()),
-                    app: Some(w.app.clone()),
-                    title: Some(w.title.clone()),
-                    pid: Some(w.pid),
-                    display_id: w.display_id,
-                }));
-            }
+        if prev_focus != focused {
+            let change = if let Some(key) = focused {
+                snapshot
+                    .iter()
+                    .find(|w| w.world_id() == key)
+                    .map(|w| FocusChange {
+                        key: Some(key),
+                        app: Some(w.app.clone()),
+                        title: Some(w.title.clone()),
+                        pid: Some(w.pid),
+                        display_id: w.display_id,
+                    })
+                    .unwrap_or(FocusChange {
+                        key: Some(key),
+                        app: None,
+                        title: None,
+                        pid: Some(key.pid),
+                        display_id: None,
+                    })
+            } else {
+                FocusChange::default()
+            };
+            self.hub.publish(WorldEvent::FocusChanged(change));
         }
     }
 
@@ -770,18 +772,8 @@ impl TestWorld {
 
     /// Replace the tracked display snapshot.
     pub fn set_displays(&self, displays: DisplaysSnapshot) {
-        *self.inner.displays.write() = displays.clone();
-        self.hub.publish(WorldEvent::Updated(
-            WindowKey { pid: -1, id: 0 },
-            WorldWindow {
-                app: "".into(),
-                title: "".into(),
-                pid: -1,
-                id: 0,
-                display_id: displays.active.map(|d| d.id),
-                focused: false,
-            },
-        ));
+        *self.inner.displays.write() = displays;
+        self.hub.publish(WorldEvent::DisplaysChanged);
     }
 }
 

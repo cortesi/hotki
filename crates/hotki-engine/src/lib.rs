@@ -439,7 +439,7 @@ impl Engine {
         self.world.snapshot().await
     }
 
-    /// Re-export: subscribe to world events (Added/Updated/Removed/FocusChanged).
+    /// Re-export: subscribe to world events (FocusChanged/DisplaysChanged).
     pub fn world_events(&self) -> hotki_world::EventCursor {
         self.world.subscribe()
     }
