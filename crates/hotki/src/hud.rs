@@ -1,5 +1,5 @@
 //! Heads-up display (HUD) rendering for key hints.
-use config::{FontWeight, Mode, Pos};
+use config::{Mode, Pos};
 use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
@@ -47,8 +47,6 @@ pub struct Hud {
     last_opacity: Option<f32>,
     /// Last applied size for the HUD.
     last_size: Option<Vec2>,
-    /// Cached width of the '+' glyph for current key font (size, weight -> width).
-    plus_w_cache: Option<(f32, FontWeight, f32)>,
     /// Cached display metrics used for positioning.
     display: DisplayMetrics,
 }
@@ -65,24 +63,7 @@ impl Hud {
             last_pos: None,
             last_opacity: None,
             last_size: None,
-            plus_w_cache: None,
             display: DisplayMetrics::default(),
-        }
-    }
-
-    /// Create a shallow clone for measurement helpers without changing state.
-    fn clone_for_measure(&self) -> Self {
-        Self {
-            visible: self.visible,
-            cfg: self.cfg.clone(),
-            id: self.id,
-            keys: self.keys.clone(),
-            parent_title: self.parent_title.clone(),
-            last_pos: self.last_pos,
-            last_opacity: self.last_opacity,
-            last_size: self.last_size,
-            plus_w_cache: self.plus_w_cache,
-            display: self.display.clone(),
         }
     }
 
@@ -178,18 +159,11 @@ impl Hud {
     ) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.spacing_mut().item_spacing.x = 0.0;
             self.render_key_tokens(ui, key);
             ui.add_space(KEY_DESC_GAP);
             ui.label(desc);
             if is_mode {
-                let (token_boxes_w, _) = {
-                    let mut tmp = Self {
-                        plus_w_cache: None,
-                        ..self.clone_for_measure()
-                    };
-                    tmp.measure_token_boxes(hud_ctx, key)
-                };
+                let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, key);
                 let desc_w = hud_ctx.fonts(|f| {
                     f.layout_no_wrap(desc.to_string(), self.title_font_id(), Color32::WHITE)
                         .size()
@@ -281,23 +255,6 @@ impl Hud {
         )
     }
 
-    /// Cached width of the plus separator for the current key font.
-    fn plus_width(&mut self, ctx: &Context) -> f32 {
-        if let Some((sz, wt, w)) = self.plus_w_cache
-            && (sz - self.cfg.key_font_size).abs() < f32::EPSILON
-            && wt == self.cfg.key_font_weight
-        {
-            return w;
-        }
-        let w = ctx.fonts(|f| {
-            f.layout_no_wrap("+".to_owned(), self.key_font_id(), Color32::WHITE)
-                .size()
-                .x
-        });
-        self.plus_w_cache = Some((self.cfg.key_font_size, self.cfg.key_font_weight, w));
-        w
-    }
-
     /// Split a key sequence like "Ctrl+C" into tokens.
     fn parse_tokens<'a>(&self, key: &'a str) -> Vec<&'a str> {
         key.split('+')
@@ -307,21 +264,27 @@ impl Hud {
     }
 
     /// Measure combined width and height of the rendered token boxes.
-    fn measure_token_boxes(&mut self, ctx: &Context, key: &str) -> (f32, f32) {
+    fn measure_token_boxes(&self, ctx: &Context, key: &str) -> (f32, f32) {
         let tokens = self.parse_tokens(key);
-        let mut tokens_text_w = 0.0f32;
-        let mut token_text_h: f32 = 0.0;
-        let plus_w = self.plus_width(ctx);
-        ctx.fonts(|f| {
+        let key_font = self.key_font_id();
+        let (tokens_text_w, token_text_h, plus_w) = ctx.fonts(|f| {
+            let plus_w = f
+                .layout_no_wrap("+".to_owned(), key_font.clone(), Color32::WHITE)
+                .size()
+                .x;
+            let mut w = 0.0f32;
+            let mut h = 0.0f32;
             for (i, tok) in tokens.iter().enumerate() {
-                let gal = f.layout_no_wrap((*tok).to_owned(), self.key_font_id(), Color32::WHITE);
-                tokens_text_w += gal.size().x;
-                token_text_h = token_text_h.max(gal.size().y);
+                let gal = f.layout_no_wrap((*tok).to_owned(), key_font.clone(), Color32::WHITE);
+                w += gal.size().x;
+                h = h.max(gal.size().y);
                 if i > 0 {
-                    tokens_text_w += plus_w + 2.0 * KEY_PLUS_GAP;
+                    w += plus_w + 2.0 * KEY_PLUS_GAP;
                 }
             }
+            (w, h, plus_w)
         });
+        let _ = plus_w; // computed inline, not cached
         let boxes_w = tokens_text_w + (tokens.len() as f32) * (2.0 * self.cfg.key_pad_x);
         let boxes_h = token_text_h + 2.0 * self.cfg.key_pad_y;
         (boxes_w, boxes_h)
@@ -346,15 +309,7 @@ impl Hud {
             .x
         });
         for (k, d, is_mode) in &self.keys {
-            let (token_boxes_w, token_boxes_h) = {
-                // self is not mutable here, but plus width cache is an optimization.
-                // Use a temporary mutable borrow of a clone of self to reuse the helper.
-                let mut tmp = Self {
-                    plus_w_cache: None,
-                    ..self.clone_for_measure()
-                };
-                tmp.measure_token_boxes(ctx, k)
-            };
+            let (token_boxes_w, token_boxes_h) = self.measure_token_boxes(ctx, k);
             // Description width/height
             let (desc_w, desc_h) = ctx.fonts(|f| {
                 let g = f.layout_no_wrap(d.clone(), font_id_desc.clone(), Color32::WHITE);

@@ -82,88 +82,60 @@ impl PermissionsHelp {
                 ui.separator();
                 ui.add_space(8.0);
 
-                // Accessibility section
-                ui.horizontal(|ui| {
-                    if access_ok {
-                        ui.label(
-                            RichText::new(icon_ok.to_string())
-                                .size(26.0)
-                                .color(green)
-                                .strong(),
-                        );
+                // Helper to render a permission section
+                let render_section = |ui: &mut egui::Ui,
+                                          enabled: bool,
+                                          name: &str,
+                                          help: &str,
+                                          msg: ControlMsg| {
+                    ui.horizontal(|ui| {
+                        let (icon, color, status) = if enabled {
+                            (icon_ok, green, "Enabled")
+                        } else {
+                            (icon_bad, red, "Not enabled yet")
+                        };
+                        ui.label(RichText::new(icon.to_string()).size(26.0).color(color).strong());
                         ui.add_space(6.0);
-                        ui.label(RichText::new("Accessibility").color(green).strong());
+                        ui.label(RichText::new(name).color(color).strong());
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Enabled").color(green));
-                    } else {
-                        ui.label(
-                            RichText::new(icon_bad.to_string())
-                                .size(26.0)
-                                .color(red)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("Accessibility").color(red).strong());
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("Not enabled yet").color(red));
+                        ui.label(RichText::new(status).color(color));
+                    });
+                    ui.add_space(4.0);
+                    ui.label(help);
+                    ui.add_space(6.0);
+                    if ui.button(format!("Open {} Settings", name)).clicked()
+                        && let Some(ref tx) = self.tx_ctrl
+                        && tx.send(msg).is_err()
+                    {
+                        tracing::warn!("failed to request opening {} settings", name);
                     }
-                });
-                ui.add_space(4.0);
-                ui.label("Grant permission in System Settings → Privacy & Security → Accessibility. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.");
-                ui.add_space(6.0);
-                if ui.button("Open Accessibility Settings").clicked()
-                    && let Some(ref tx) = self.tx_ctrl
-                    && tx.send(ControlMsg::OpenAccessibility).is_err()
-                {
-                    tracing::warn!("failed to request opening Accessibility settings");
-                }
+                };
+
+                render_section(
+                    ui,
+                    access_ok,
+                    "Accessibility",
+                    "Grant permission in System Settings → Privacy & Security → Accessibility. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
+                    ControlMsg::OpenAccessibility,
+                );
                 ui.add_space(10.0);
 
                 ui.separator();
                 ui.add_space(8.0);
-                // Input Monitoring section
-                ui.horizontal(|ui| {
-                    if input_ok {
-                        ui.label(
-                            RichText::new(icon_ok.to_string())
-                                .size(26.0)
-                                .color(green)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("Input Monitoring").color(green).strong());
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("Enabled").color(green));
-                    } else {
-                        ui.label(
-                            RichText::new(icon_bad.to_string())
-                                .size(26.0)
-                                .color(red)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("Input Monitoring").color(red).strong());
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("Not enabled yet").color(red));
-                    }
-                });
-                ui.add_space(4.0);
 
-                ui.label("Grant permission in System Settings → Privacy & Security → Input Monitoring. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.");
-
-                ui.add_space(6.0);
-                if ui.button("Open Input Monitoring Settings").clicked()
-                    && let Some(ref tx) = self.tx_ctrl
-                    && tx.send(ControlMsg::OpenInputMonitoring).is_err()
-                {
-                    tracing::warn!("failed to request opening Input Monitoring settings");
-                }
+                render_section(
+                    ui,
+                    input_ok,
+                    "Input Monitoring",
+                    "Grant permission in System Settings → Privacy & Security → Input Monitoring. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
+                    ControlMsg::OpenInputMonitoring,
+                );
 
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(8.0);
                 ui.label(RichText::new("Tip").strong());
-                ui.label("After changing permissions, restart Hotki if keys still don’t respond.");
+                ui.label("After changing permissions, restart Hotki if keys still don't respond.");
             });
         });
     }

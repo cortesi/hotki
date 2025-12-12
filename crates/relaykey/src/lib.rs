@@ -70,33 +70,11 @@ impl MacPoster {
         }
         Ok(e)
     }
+
     /// Build a keyboard event for a `Chord` including modifiers and repeat flag.
     fn build_event(&self, chord: &Chord, down: bool, is_repeat: bool) -> Result<cge::CGEvent> {
-        // Create event source inline - it's lightweight
-        let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-            Ok(s) => s,
-            Err(_) => {
-                if !permissions::accessibility_ok() {
-                    warn!("accessibility_permission_missing_for_event_source");
-                    return Err(Error::PermissionDenied("Accessibility"));
-                }
-                return Err(Error::EventSource);
-            }
-        };
-        let e = match cge::CGEvent::new_keyboard_event(
-            source,
-            cge::CGKeyCode::from(chord.key as u16),
-            down,
-        ) {
-            Ok(e) => e,
-            Err(_) => {
-                if !permissions::accessibility_ok() {
-                    warn!("accessibility_permission_missing_for_event_create");
-                    return Err(Error::PermissionDenied("Accessibility"));
-                }
-                return Err(Error::EventCreate);
-            }
-        };
+        let e = self.build_keycode_event(chord.key as u16, down)?;
+        // Apply modifier flags
         let mut bits: u64 = 0;
         if !chord.modifiers.is_empty() {
             let m = &chord.modifiers;
@@ -114,10 +92,6 @@ impl MacPoster {
             }
         }
         e.set_flags(cge::CGEventFlags::from_bits_retain(bits));
-        // Tag all injected events unless explicitly untagged.
-        if !self.untagged {
-            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
-        }
         if is_repeat {
             e.set_integer_value_field(cge::EventField::KEYBOARD_EVENT_AUTOREPEAT, 1);
         }

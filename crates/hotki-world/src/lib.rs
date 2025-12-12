@@ -412,66 +412,80 @@ impl PollingWorld {
     }
 }
 
-#[async_trait]
-impl WorldView for PollingWorld {
-    fn subscribe(&self) -> EventCursor {
-        self.hub.subscribe()
-    }
+/// Implement `WorldView` for a type with `inner: Arc<WorldState>` and `hub: Arc<InternalHub>`.
+/// The `hint_refresh` implementation must be provided separately as it differs between types.
+macro_rules! impl_world_view_common {
+    ($ty:ty) => {
+        #[async_trait]
+        impl WorldView for $ty {
+            fn subscribe(&self) -> EventCursor {
+                self.hub.subscribe()
+            }
 
-    async fn next_event_until(
-        &self,
-        cursor: &mut EventCursor,
-        deadline: TokioInstant,
-    ) -> Option<WorldEvent> {
-        self.hub.next_event_until(cursor, deadline).await
-    }
+            async fn next_event_until(
+                &self,
+                cursor: &mut EventCursor,
+                deadline: TokioInstant,
+            ) -> Option<WorldEvent> {
+                self.hub.next_event_until(cursor, deadline).await
+            }
 
-    async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
-        let cursor = self.subscribe();
-        let ctx = self.focused_context().await;
-        (cursor, ctx)
-    }
+            async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
+                let cursor = self.subscribe();
+                let ctx = self.focused_context().await;
+                (cursor, ctx)
+            }
 
-    async fn snapshot(&self) -> Vec<WorldWindow> {
-        self.inner.snapshot().await
-    }
+            async fn snapshot(&self) -> Vec<WorldWindow> {
+                self.inner.snapshot().await
+            }
 
-    async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-        self.inner.get(key).await
-    }
+            async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
+                self.inner.get(key).await
+            }
 
-    async fn focused(&self) -> Option<WindowKey> {
-        self.inner.focused().await
-    }
+            async fn focused(&self) -> Option<WindowKey> {
+                self.inner.focused().await
+            }
 
-    async fn focused_window(&self) -> Option<WorldWindow> {
-        self.inner.focused_window().await
-    }
+            async fn focused_window(&self) -> Option<WorldWindow> {
+                self.inner.focused_window().await
+            }
 
-    async fn focused_context(&self) -> Option<(String, String, i32)> {
-        self.inner.focused_context().await
-    }
+            async fn focused_context(&self) -> Option<(String, String, i32)> {
+                self.inner.focused_context().await
+            }
 
-    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-        self.inner.context_for_key(key).await
-    }
+            async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
+                self.inner.context_for_key(key).await
+            }
 
-    async fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities().await
-    }
+            async fn capabilities(&self) -> Capabilities {
+                self.inner.capabilities().await
+            }
 
-    async fn status(&self) -> WorldStatus {
-        self.inner.status().await
-    }
+            async fn status(&self) -> WorldStatus {
+                self.inner.status().await
+            }
 
-    async fn displays(&self) -> DisplaysSnapshot {
-        self.inner.displays().await
-    }
+            async fn displays(&self) -> DisplaysSnapshot {
+                self.inner.displays().await
+            }
 
-    fn hint_refresh(&self) {
+            fn hint_refresh(&self) {
+                self.hint_refresh_impl()
+            }
+        }
+    };
+}
+
+impl PollingWorld {
+    fn hint_refresh_impl(&self) {
         self.poll_tuner.reset();
     }
 }
+
+impl_world_view_common!(PollingWorld);
 
 #[derive(Clone, Debug, Default)]
 struct PlatformWindow {
@@ -777,63 +791,10 @@ impl Default for TestWorld {
     }
 }
 
-#[async_trait]
-impl WorldView for TestWorld {
-    fn subscribe(&self) -> EventCursor {
-        self.hub.subscribe()
-    }
-
-    async fn next_event_until(
-        &self,
-        cursor: &mut EventCursor,
-        deadline: TokioInstant,
-    ) -> Option<WorldEvent> {
-        self.hub.next_event_until(cursor, deadline).await
-    }
-
-    async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
-        let cursor = self.subscribe();
-        let ctx = self.focused_context().await;
-        (cursor, ctx)
-    }
-
-    async fn snapshot(&self) -> Vec<WorldWindow> {
-        self.inner.snapshot().await
-    }
-
-    async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-        self.inner.get(key).await
-    }
-
-    async fn focused(&self) -> Option<WindowKey> {
-        self.inner.focused().await
-    }
-
-    async fn focused_window(&self) -> Option<WorldWindow> {
-        self.inner.focused_window().await
-    }
-
-    async fn focused_context(&self) -> Option<(String, String, i32)> {
-        self.inner.focused_context().await
-    }
-
-    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-        self.inner.context_for_key(key).await
-    }
-
-    async fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities().await
-    }
-
-    async fn status(&self) -> WorldStatus {
-        self.inner.status().await
-    }
-
-    async fn displays(&self) -> DisplaysSnapshot {
-        self.inner.displays().await
-    }
-
-    fn hint_refresh(&self) {
-        // No-op for test world.
+impl TestWorld {
+    fn hint_refresh_impl(&self) {
+        // No-op for test world
     }
 }
+
+impl_world_view_common!(TestWorld);
