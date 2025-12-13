@@ -64,8 +64,8 @@ impl CursorEnsureExt for Cursor {
     }
 }
 
-/// Public input form of user configuration that carries keys, optional base theme name,
-/// and an optional raw style overlay. This type is suitable for reading
+/// Input form of user configuration that carries keys, optional base theme name,
+/// an optional raw style overlay, and optional server tunables. This type is suitable for reading
 /// user configuration from RON without exposing raw internals.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ConfigInput {
@@ -75,6 +75,8 @@ pub struct ConfigInput {
     pub base_theme: Option<String>,
     /// Optional raw style overlay (applied over base theme).
     pub style: Option<raw::RawStyle>,
+    /// Optional server tunables (primarily for tests/smoketests).
+    pub server: Option<ServerTunables>,
 }
 
 impl<'de> Deserialize<'de> for ConfigInput {
@@ -87,6 +89,7 @@ impl<'de> Deserialize<'de> for ConfigInput {
             keys: raw.keys,
             base_theme: raw.base_theme.as_option().cloned(),
             style: raw.style.into_option(),
+            server: raw.server.into_option().map(|s| s.into_server_tunables()),
         })
     }
 }
@@ -189,7 +192,7 @@ impl Config {
         for idx in loc.path().iter() {
             let i = *idx as usize;
             if let Some((_, _, action, attrs)) = cur.keys.get(i) {
-                if let Some(ov) = &attrs.style {
+                if let Some(ov) = attrs.style.as_option() {
                     chain.push(ov.clone());
                 }
                 if let Action::Keys(next) = action {
@@ -470,7 +473,7 @@ pub struct ServerTunables {
 fn entry_matches(attrs: &KeysAttrs, app: &str, title: &str) -> bool {
     let ma = attrs
         .match_app
-        .as_ref()
+        .as_option()
         .and_then(|s| regex::Regex::new(s).ok());
     if let Some(r) = &ma
         && !r.is_match(app)
@@ -479,7 +482,7 @@ fn entry_matches(attrs: &KeysAttrs, app: &str, title: &str) -> bool {
     }
     let mt = attrs
         .match_title
-        .as_ref()
+        .as_option()
         .and_then(|s| regex::Regex::new(s).ok());
     if let Some(r) = &mt
         && !r.is_match(title)

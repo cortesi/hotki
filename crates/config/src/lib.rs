@@ -6,7 +6,6 @@ use std::{env, path::PathBuf};
 
 mod defaults;
 mod error;
-pub mod keymode;
 mod keys;
 mod loader;
 mod mode;
@@ -15,6 +14,11 @@ mod raw;
 mod style;
 pub mod themes;
 mod types;
+
+#[cfg(test)]
+mod test_merge;
+#[cfg(test)]
+mod test_parse;
 
 pub use error::Error;
 pub use hotki_protocol::{Cursor, Toggle};

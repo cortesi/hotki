@@ -7,13 +7,12 @@
 //! (directly or indirectly) tries to access the same `themes()` initializer,
 //! or we’d re-enter the `OnceLock` initialization and deadlock.
 //!
-//! Therefore, theme files are parsed via `ron::from_str` into a `RawConfig`
-//! wrapper and then converted into a `Style`, instead of going through the
-//! higher-level loader API. Do not replace this with a call that resolves
-//! themes dynamically.
+//! Therefore, theme files are parsed via `ron::from_str` into a `RawStyle`
+//! and then converted into a `Style`, instead of going through the higher-level
+//! loader API. Do not replace this with a call that resolves themes dynamically.
 use std::{collections::HashMap, sync::OnceLock};
 
-use crate::Style;
+use crate::{Hud, Notify, Style, raw::RawStyle};
 
 /// All available themes, loaded at compile time
 fn themes() -> &'static HashMap<String, Style> {
@@ -25,13 +24,21 @@ fn themes() -> &'static HashMap<String, Style> {
         macro_rules! load_theme {
             ($name:expr, $file:expr) => {
                 let content = include_str!(concat!("../../themes/", $file));
-                // Parse theme content via RawConfig to avoid re-entering theme loading.
+                // Parse theme content via RawStyle to avoid re-entering theme loading.
                 // Using loader here would call load_theme() again during OnceLock init and deadlock.
-                let wrapped = format!("(style: {})", content);
-                let raw = ron::from_str::<crate::raw::RawConfig>(&wrapped)
+                let raw = ron::from_str::<RawStyle>(content)
                     .expect(concat!("Failed to parse theme: ", $file));
-                let cfg = raw.into_config();
-                let theme = cfg.base_style();
+                let hud = raw
+                    .hud
+                    .into_option()
+                    .map(|h| h.into_hud())
+                    .unwrap_or_else(Hud::default);
+                let notify = raw
+                    .notify
+                    .into_option()
+                    .map(|n| n.into_notify())
+                    .unwrap_or_else(Notify::default);
+                let theme = Style { hud, notify };
                 themes.insert($name.to_string(), theme);
             };
         }

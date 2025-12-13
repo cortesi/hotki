@@ -12,47 +12,47 @@ use crate::{Toggle, raw};
 pub struct KeysAttrs {
     /// Don't exit the mode after executing this action
     #[serde(default)]
-    pub noexit: Option<bool>,
+    pub noexit: raw::Maybe<bool>,
 
     /// Key binding is global to this and all submodes
     #[serde(default)]
-    pub global: Option<bool>,
+    pub global: raw::Maybe<bool>,
 
     /// Hide this key binding from the HUD
     #[serde(default)]
-    pub hide: Option<bool>,
+    pub hide: raw::Maybe<bool>,
 
     /// Only bind this key when the HUD is visible. Useful for setting global top-level bindings
     /// like "escape" to exit the HUD, while making sure they are only bound if the HUD is actually
     /// shown.
     #[serde(default)]
-    pub hud_only: Option<bool>,
+    pub hud_only: raw::Maybe<bool>,
 
     /// Regex that must match the frontmost application name for a Mode action to be available
     #[serde(default)]
-    pub match_app: Option<String>,
+    pub match_app: raw::Maybe<String>,
 
     /// Regex that must match the frontmost window title for a Mode action to be available
     #[serde(default)]
-    pub match_title: Option<String>,
+    pub match_title: raw::Maybe<String>,
 
     /// Enable hold-to-repeat behavior for this binding (applies to shell and relay actions).
     /// If omitted, defaults to `noexit` (i.e., repeat=true when noexit=true).
     #[serde(default)]
-    pub repeat: Option<bool>,
+    pub repeat: raw::Maybe<bool>,
 
     /// Optional initial repeat delay override in milliseconds
     #[serde(default)]
-    pub repeat_delay: Option<u64>,
+    pub repeat_delay: raw::Maybe<u64>,
 
     /// Optional repeat interval override in milliseconds
     #[serde(default)]
-    pub repeat_interval: Option<u64>,
+    pub repeat_interval: raw::Maybe<u64>,
 
     /// Optional theme overlay (raw form) to apply when this binding's mode is active
     /// This is crate-internal to minimize the public API surface.
     #[serde(default)]
-    pub(crate) style: Option<raw::RawStyle>,
+    pub(crate) style: raw::Maybe<raw::RawStyle>,
 
     /// Capture all keys while this mode is active (when HUD is visible).
     ///
@@ -61,16 +61,16 @@ pub struct KeysAttrs {
     /// explicitly bound in the current mode (including inherited globals)
     /// are processed; everything else is ignored.
     #[serde(default)]
-    pub capture: Option<bool>,
+    pub capture: raw::Maybe<bool>,
 }
 
-/// Generate boolean accessor methods that return `false` when the field is `None`.
+/// Generate boolean accessor methods that return `false` when the field is unset.
 macro_rules! bool_accessors {
     ($($field:ident),+ $(,)?) => {
         $(
             #[doc = concat!("Return `", stringify!($field), "` (defaults to false when unset).")]
             pub fn $field(&self) -> bool {
-                self.$field.unwrap_or(false)
+                self.$field.as_option().copied().unwrap_or(false)
             }
         )+
     };
@@ -81,24 +81,34 @@ impl KeysAttrs {
 
     /// Effective repeat value; defaults to `noexit` when unset.
     pub fn repeat_effective(&self) -> bool {
-        self.repeat.unwrap_or(self.noexit())
+        self.repeat.as_option().copied().unwrap_or(self.noexit())
     }
 
     /// Merge another (child) attribute set on top of `self` (parent), obeying
     /// inheritance semantics for options: child's `Some` overrides; otherwise parent is kept.
     pub(crate) fn merged_with(&self, child: &Self) -> Self {
+        fn merge_maybe<T: Clone>(parent: &raw::Maybe<T>, child: &raw::Maybe<T>) -> raw::Maybe<T> {
+            match child.as_option() {
+                Some(v) => raw::Maybe::Value(v.clone()),
+                None => match parent.as_option() {
+                    Some(v) => raw::Maybe::Value(v.clone()),
+                    None => raw::Maybe::Unit(()),
+                },
+            }
+        }
+
         Self {
-            noexit: child.noexit.or(self.noexit),
-            global: child.global.or(self.global),
-            hide: child.hide.or(self.hide),
-            hud_only: child.hud_only.or(self.hud_only),
-            match_app: child.match_app.clone().or(self.match_app.clone()),
-            match_title: child.match_title.clone().or(self.match_title.clone()),
-            repeat: child.repeat.or(self.repeat),
-            repeat_delay: child.repeat_delay.or(self.repeat_delay),
-            repeat_interval: child.repeat_interval.or(self.repeat_interval),
+            noexit: merge_maybe(&self.noexit, &child.noexit),
+            global: merge_maybe(&self.global, &child.global),
+            hide: merge_maybe(&self.hide, &child.hide),
+            hud_only: merge_maybe(&self.hud_only, &child.hud_only),
+            match_app: merge_maybe(&self.match_app, &child.match_app),
+            match_title: merge_maybe(&self.match_title, &child.match_title),
+            repeat: merge_maybe(&self.repeat, &child.repeat),
+            repeat_delay: merge_maybe(&self.repeat_delay, &child.repeat_delay),
+            repeat_interval: merge_maybe(&self.repeat_interval, &child.repeat_interval),
             style: child.style.clone(),
-            capture: child.capture.or(self.capture),
+            capture: merge_maybe(&self.capture, &child.capture),
         }
     }
 }

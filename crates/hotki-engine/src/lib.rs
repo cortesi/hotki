@@ -51,6 +51,7 @@ mod deps;
 mod error;
 mod key_binding;
 mod key_state;
+mod keymode;
 mod notification;
 mod relay;
 mod repeater;
@@ -60,7 +61,6 @@ mod ticker;
 const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
 
-use config::keymode::{KeyResponse, State};
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
@@ -76,6 +76,8 @@ pub use relay::RelayHandler;
 use repeater::ExecSpec;
 pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
 use tracing::{debug, trace, warn};
+
+use crate::keymode::{KeyResponse, State};
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -553,13 +555,14 @@ impl Engine {
 
             let repeat = if attrs.repeat_effective() && !cmd_like {
                 Some(RepeatSpec {
-                    initial_delay_ms: attrs.repeat_delay,
-                    interval_ms: attrs.repeat_interval,
+                    initial_delay_ms: attrs.repeat_delay.as_option().copied(),
+                    interval_ms: attrs.repeat_interval.as_option().copied(),
                 })
             } else {
                 None
             };
-            let has_custom_timing = attrs.repeat_delay.is_some() || attrs.repeat_interval.is_some();
+            let has_custom_timing = attrs.repeat_delay.as_option().is_some()
+                || attrs.repeat_interval.as_option().is_some();
             let allow_os_repeat = repeat.is_some() && !has_custom_timing;
             self.key_tracker
                 .set_repeat_allowed(identifier, allow_os_repeat);
@@ -583,7 +586,7 @@ impl Engine {
         command: String,
         ok_notify: config::NotifyKind,
         err_notify: config::NotifyKind,
-        repeat: Option<config::keymode::ShellRepeatConfig>,
+        repeat: Option<crate::keymode::ShellRepeatConfig>,
     ) -> Result<()> {
         let exec = ExecSpec::Shell {
             command,

@@ -20,10 +20,10 @@ pub struct Style {
 impl Style {
     /// Overlay raw style overrides onto this base style using current values as defaults.
     pub(crate) fn overlay_raw(mut self, overrides: &raw::RawStyle) -> Self {
-        if let Some(h) = &overrides.hud {
+        if let Some(h) = overrides.hud.as_option() {
             self.hud = h.clone().into_hud_over(&self.hud);
         }
-        if let Some(n) = &overrides.notify {
+        if let Some(n) = overrides.notify.as_option() {
             self.notify = n.clone().into_notify_over(&self.notify);
         }
         self

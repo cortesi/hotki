@@ -3,9 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Config, Hud, Keys, Notify, Style,
-    defaults::TAG_SUBMENU,
-    parse_rgb,
+    Hud, Keys, Notify, parse_rgb,
     types::{FontWeight, NotifyPos, Offset, Pos},
 };
 
@@ -20,7 +18,7 @@ use super::{
 ///
 /// This wrapper lets top‑level and nested style sections be succinct while still
 /// allowing explicit nulling where supported.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum Maybe<T> {
     /// Explicit unit `()` treated as not provided.
@@ -57,26 +55,6 @@ impl<T> Maybe<T> {
     }
 }
 
-// Helper: accept either a plain string or an Option<String>
-/// Helper deserializer that accepts either a plain string or `Option<String>`.
-fn de_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Helper {
-        /// Plain string value.
-        S(String),
-        /// Optional string value.
-        Opt(Option<String>),
-    }
-    match Helper::deserialize(deserializer)? {
-        Helper::S(s) => Ok(Some(s)),
-        Helper::Opt(o) => Ok(o),
-    }
-}
-
 // ===== RAW NOTIFICATION STYLE =====
 
 /// Raw notification style with all optional fields for merging
@@ -85,42 +63,54 @@ where
 pub struct RawNotifyStyle {
     /// Background color name or hex string.
     #[serde(default)]
-    pub bg: Option<String>,
+    pub bg: Maybe<String>,
     /// Title foreground color name or hex string.
     #[serde(default)]
-    pub title_fg: Option<String>,
+    pub title_fg: Maybe<String>,
     /// Body foreground color name or hex string.
     #[serde(default)]
-    pub body_fg: Option<String>,
+    pub body_fg: Maybe<String>,
     /// Title font size in points.
     #[serde(default)]
-    pub title_font_size: Option<f32>,
+    pub title_font_size: Maybe<f32>,
     /// Title font weight.
     #[serde(default)]
-    pub title_font_weight: Option<FontWeight>,
+    pub title_font_weight: Maybe<FontWeight>,
     /// Body font size in points.
     #[serde(default)]
-    pub body_font_size: Option<f32>,
+    pub body_font_size: Maybe<f32>,
     /// Body font weight.
     #[serde(default)]
-    pub body_font_weight: Option<FontWeight>,
+    pub body_font_weight: Maybe<FontWeight>,
     /// Optional leading icon string.
     #[serde(default)]
-    pub icon: Option<String>,
+    pub icon: Maybe<String>,
 }
 
 impl RawNotifyStyle {
     /// Convert to final NotifyStyle with defaults applied
     pub fn into_notify_style(self, defaults: RawNotifyWindowStyle) -> RawNotifyWindowStyle {
         RawNotifyWindowStyle {
-            bg: self.bg.or(defaults.bg),
-            title_fg: self.title_fg.or(defaults.title_fg),
-            body_fg: self.body_fg.or(defaults.body_fg),
-            title_font_size: self.title_font_size.or(defaults.title_font_size),
-            title_font_weight: self.title_font_weight.or(defaults.title_font_weight),
-            body_font_size: self.body_font_size.or(defaults.body_font_size),
-            body_font_weight: self.body_font_weight.or(defaults.body_font_weight),
-            icon: self.icon.or(defaults.icon),
+            bg: self.bg.into_option().or(defaults.bg),
+            title_fg: self.title_fg.into_option().or(defaults.title_fg),
+            body_fg: self.body_fg.into_option().or(defaults.body_fg),
+            title_font_size: self
+                .title_font_size
+                .into_option()
+                .or(defaults.title_font_size),
+            title_font_weight: self
+                .title_font_weight
+                .into_option()
+                .or(defaults.title_font_weight),
+            body_font_size: self
+                .body_font_size
+                .into_option()
+                .or(defaults.body_font_size),
+            body_font_weight: self
+                .body_font_weight
+                .into_option()
+                .or(defaults.body_font_weight),
+            icon: self.icon.into_option().or(defaults.icon),
         }
     }
 }
@@ -162,34 +152,34 @@ pub struct RawNotifyWindowStyle {
 pub struct RawNotify {
     /// Width of notification window (px).
     #[serde(default)]
-    pub width: Option<f32>,
+    pub width: Maybe<f32>,
     /// Screen side to stack notifications.
     #[serde(default)]
-    pub pos: Option<NotifyPos>,
+    pub pos: Maybe<NotifyPos>,
     /// Window opacity (0.0–1.0).
     #[serde(default)]
-    pub opacity: Option<f32>,
+    pub opacity: Maybe<f32>,
     /// Auto-dismiss timeout in seconds.
     #[serde(default)]
-    pub timeout: Option<f32>,
+    pub timeout: Maybe<f32>,
     /// Ring buffer length for notifications.
     #[serde(default)]
-    pub buffer: Option<usize>,
+    pub buffer: Maybe<usize>,
     /// Corner radius (px).
     #[serde(default)]
-    pub radius: Option<f32>,
+    pub radius: Maybe<f32>,
     /// Style overrides for info notifications.
     #[serde(default)]
-    pub info: Option<RawNotifyStyle>,
+    pub info: Maybe<RawNotifyStyle>,
     /// Style overrides for warning notifications.
     #[serde(default)]
-    pub warn: Option<RawNotifyStyle>,
+    pub warn: Maybe<RawNotifyStyle>,
     /// Style overrides for error notifications.
     #[serde(default)]
-    pub error: Option<RawNotifyStyle>,
+    pub error: Maybe<RawNotifyStyle>,
     /// Style overrides for success notifications.
     #[serde(default)]
-    pub success: Option<RawNotifyStyle>,
+    pub success: Maybe<RawNotifyStyle>,
 }
 
 impl RawNotify {
@@ -198,7 +188,7 @@ impl RawNotify {
         let defaults = base.clone();
         macro_rules! or_field {
             ($field:ident) => {
-                self.$field.unwrap_or(defaults.$field)
+                self.$field.into_option().unwrap_or(defaults.$field)
             };
         }
         Notify {
@@ -210,18 +200,22 @@ impl RawNotify {
             radius: or_field!(radius),
             info: self
                 .info
+                .into_option()
                 .map(|s| s.into_notify_style(defaults.info.clone()))
                 .unwrap_or(defaults.info),
             warn: self
                 .warn
+                .into_option()
                 .map(|s| s.into_notify_style(defaults.warn.clone()))
                 .unwrap_or(defaults.warn),
             error: self
                 .error
+                .into_option()
                 .map(|s| s.into_notify_style(defaults.error.clone()))
                 .unwrap_or(defaults.error),
             success: self
                 .success
+                .into_option()
                 .map(|s| s.into_notify_style(defaults.success.clone()))
                 .unwrap_or(defaults.success),
         }
@@ -246,79 +240,79 @@ impl RawNotify {
 pub struct RawHud {
     /// HUD display mode.
     #[serde(default)]
-    pub mode: Option<crate::Mode>,
+    pub mode: Maybe<crate::Mode>,
     /// HUD position on screen.
     #[serde(default)]
-    pub pos: Option<Pos>,
+    pub pos: Maybe<Pos>,
     /// HUD offset from `pos` in pixels.
     #[serde(default)]
-    pub offset: Option<Offset>,
+    pub offset: Maybe<Offset>,
     /// Title font size in points.
     #[serde(default)]
-    pub font_size: Option<f32>,
+    pub font_size: Maybe<f32>,
     /// Title font weight.
     #[serde(default)]
-    pub title_font_weight: Option<FontWeight>,
+    pub title_font_weight: Maybe<FontWeight>,
     /// Key glyph font size in points.
     #[serde(default)]
-    pub key_font_size: Option<f32>,
+    pub key_font_size: Maybe<f32>,
     /// Key glyph font weight.
     #[serde(default)]
-    pub key_font_weight: Option<FontWeight>,
+    pub key_font_weight: Maybe<FontWeight>,
     /// Tag font size in points.
     #[serde(default)]
-    pub tag_font_size: Option<f32>,
+    pub tag_font_size: Maybe<f32>,
     /// Tag font weight.
     #[serde(default)]
-    pub tag_font_weight: Option<FontWeight>,
+    pub tag_font_weight: Maybe<FontWeight>,
     /// Title foreground color name or hex string.
     #[serde(default)]
-    pub title_fg: Option<String>,
+    pub title_fg: Maybe<String>,
     /// HUD background color.
     #[serde(default)]
-    pub bg: Option<String>,
+    pub bg: Maybe<String>,
     /// Key foreground color.
     #[serde(default)]
-    pub key_fg: Option<String>,
+    pub key_fg: Maybe<String>,
     /// Key background color.
     #[serde(default)]
-    pub key_bg: Option<String>,
+    pub key_bg: Maybe<String>,
     /// Modifier key foreground color.
     #[serde(default)]
-    pub mod_fg: Option<String>,
+    pub mod_fg: Maybe<String>,
     /// Modifier key font weight.
     #[serde(default)]
-    pub mod_font_weight: Option<FontWeight>,
+    pub mod_font_weight: Maybe<FontWeight>,
     /// Modifier key background color.
     #[serde(default)]
-    pub mod_bg: Option<String>,
+    pub mod_bg: Maybe<String>,
     /// Tag foreground color.
     #[serde(default)]
-    pub tag_fg: Option<String>,
+    pub tag_fg: Maybe<String>,
     /// HUD opacity (0.0–1.0).
     #[serde(default)]
-    pub opacity: Option<f32>,
+    pub opacity: Maybe<f32>,
     /// Key corner radius (px).
     #[serde(default)]
-    pub key_radius: Option<f32>,
+    pub key_radius: Maybe<f32>,
     /// Horizontal key padding (px).
     #[serde(default)]
-    pub key_pad_x: Option<f32>,
+    pub key_pad_x: Maybe<f32>,
     /// Vertical key padding (px).
     #[serde(default)]
-    pub key_pad_y: Option<f32>,
+    pub key_pad_y: Maybe<f32>,
     /// HUD corner radius (px).
     #[serde(default)]
-    pub radius: Option<f32>,
+    pub radius: Maybe<f32>,
     /// Tag submenu glyph.
     #[serde(default)]
-    pub tag_submenu: Option<String>,
+    pub tag_submenu: Maybe<String>,
 }
 
 // Shared color fallback for HUD
 /// Use `src` color if provided, otherwise fall back to `default`.
-fn color_or(src: &Option<String>, default: (u8, u8, u8)) -> (u8, u8, u8) {
-    match src.as_deref() {
+fn color_or(src: Option<&str>, default: (u8, u8, u8)) -> (u8, u8, u8) {
+    match src {
         Some(s) => match parse_rgb(s) {
             Some(rgb) => rgb,
             None => {
@@ -333,53 +327,55 @@ fn color_or(src: &Option<String>, default: (u8, u8, u8)) -> (u8, u8, u8) {
 impl RawHud {
     /// Internal helper: apply overrides over a base Hud
     fn apply_over(self, base: &Hud) -> Hud {
+        let defaults = base.clone();
         macro_rules! or_field {
-            ($self_:expr, $defaults:expr, $field:ident) => {
-                $self_.$field.unwrap_or($defaults.$field)
+            ($field:ident) => {
+                self.$field.into_option().unwrap_or(defaults.$field)
             };
         }
         macro_rules! color_field {
-            ($self_:expr, $defaults:expr, $field:ident) => {
-                color_or(&$self_.$field, $defaults.$field)
+            ($field:ident) => {
+                color_or(self.$field.as_option().map(|s| s.as_str()), defaults.$field)
             };
         }
-        let defaults = base.clone();
-        let mode = or_field!(self, defaults, mode);
-        let font_size = or_field!(self, defaults, font_size);
-        let title_fg = color_field!(self, defaults, title_fg);
-        let bg = color_field!(self, defaults, bg);
-        let key_fg = color_field!(self, defaults, key_fg);
-        let key_bg = color_field!(self, defaults, key_bg);
-        let mod_fg = color_field!(self, defaults, mod_fg);
-        let mod_bg = color_field!(self, defaults, mod_bg);
-        let tag_fg = color_field!(self, defaults, tag_fg);
+
+        let mode = or_field!(mode);
+        let font_size = or_field!(font_size);
+        let title_fg = color_field!(title_fg);
+        let bg = color_field!(bg);
+        let key_fg = color_field!(key_fg);
+        let key_bg = color_field!(key_bg);
+        let mod_fg = color_field!(mod_fg);
+        let mod_bg = color_field!(mod_bg);
+        let tag_fg = color_field!(tag_fg);
 
         Hud {
             mode,
-            pos: or_field!(self, defaults, pos),
-            offset: or_field!(self, defaults, offset),
+            pos: or_field!(pos),
+            offset: or_field!(offset),
             font_size,
-            title_font_weight: or_field!(self, defaults, title_font_weight),
+            title_font_weight: or_field!(title_font_weight),
             // key_font_size and tag_font_size default to font_size if not specified
-            key_font_size: self.key_font_size.unwrap_or(font_size),
-            key_font_weight: or_field!(self, defaults, key_font_weight),
-            tag_font_size: self.tag_font_size.unwrap_or(font_size),
-            tag_font_weight: or_field!(self, defaults, tag_font_weight),
+            key_font_size: self.key_font_size.into_option().unwrap_or(font_size),
+            key_font_weight: or_field!(key_font_weight),
+            tag_font_size: self.tag_font_size.into_option().unwrap_or(font_size),
+            tag_font_weight: or_field!(tag_font_weight),
             title_fg,
             bg,
             key_fg,
             key_bg,
             mod_fg,
-            mod_font_weight: or_field!(self, defaults, mod_font_weight),
+            mod_font_weight: or_field!(mod_font_weight),
             mod_bg,
             tag_fg,
-            opacity: or_field!(self, defaults, opacity),
-            key_radius: or_field!(self, defaults, key_radius),
-            key_pad_x: or_field!(self, defaults, key_pad_x),
-            key_pad_y: or_field!(self, defaults, key_pad_y),
-            radius: or_field!(self, defaults, radius),
+            opacity: or_field!(opacity),
+            key_radius: or_field!(key_radius),
+            key_pad_x: or_field!(key_pad_x),
+            key_pad_y: or_field!(key_pad_y),
+            radius: or_field!(radius),
             tag_submenu: self
                 .tag_submenu
+                .into_option()
                 .unwrap_or_else(|| defaults.tag_submenu.clone()),
         }
     }
@@ -401,10 +397,10 @@ impl RawHud {
 pub struct RawStyle {
     /// Optional HUD style overrides.
     #[serde(default)]
-    pub hud: Option<RawHud>,
+    pub hud: Maybe<RawHud>,
     /// Optional notification style overrides.
     #[serde(default)]
-    pub notify: Option<RawNotify>,
+    pub notify: Maybe<RawNotify>,
 }
 
 /// Raw configuration with all optional fields for conversion
@@ -419,10 +415,6 @@ pub struct RawConfig {
     #[serde(default)]
     pub base_theme: Maybe<String>,
 
-    /// Submenu tag text displayed in HUD for nested modes.
-    #[serde(default, deserialize_with = "de_opt_string")]
-    pub tag_submenu: Option<String>,
-
     /// Theme configuration overlay (HUD + notify).
     #[serde(default)]
     pub style: Maybe<RawStyle>,
@@ -430,32 +422,6 @@ pub struct RawConfig {
     /// Server-side tunables. Optional; primarily for tests/smoketests.
     #[serde(default)]
     pub server: Maybe<RawServerTunables>,
-}
-
-impl RawConfig {
-    /// Convert to final Config with defaults applied
-    pub fn into_config(self) -> Config {
-        let (hud, notify) = match self.style.into_option() {
-            Some(t) => {
-                let h = t.hud.map(|h| h.into_hud()).unwrap_or_else(Hud::default);
-                let n = t
-                    .notify
-                    .map(|n| n.into_notify())
-                    .unwrap_or_else(Notify::default);
-                (h, n)
-            }
-            None => (Hud::default(), Notify::default()),
-        };
-        // Top-level tag_submenu (legacy) overrides HUD tag text
-        let tag_text = self.tag_submenu.unwrap_or_else(|| TAG_SUBMENU.to_string());
-        let mut style = Style { hud, notify };
-        style.hud.tag_submenu = tag_text;
-        let mut cfg = Config::from_parts(self.keys, style);
-        if let Some(s) = self.server.into_option() {
-            cfg.server = s.into_server_tunables();
-        }
-        cfg
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -473,5 +439,16 @@ impl RawServerTunables {
         crate::ServerTunables {
             exit_if_no_clients: self.exit_if_no_clients,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RawHud;
+
+    #[test]
+    fn raw_struct_accepts_bare_maybe_field_values() {
+        let hud: RawHud = ron::from_str("(radius: 8.0)").unwrap();
+        assert_eq!(hud.radius.as_option().copied(), Some(8.0));
     }
 }

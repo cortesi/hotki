@@ -9,7 +9,7 @@ mod tests {
             style: (hud: (tag_submenu: ">>")),
         )"#;
         let cfg: Config = loader::load_from_str(ron, None).unwrap();
-        let loc = Location::default();
+        let loc = Cursor::default();
         assert_eq!(cfg.hud(&loc).tag_submenu, ">>");
     }
 
@@ -43,7 +43,9 @@ mod tests {
         // Build a RON config with one entry per chord
         let mut items = String::new();
         for (i, c) in chords.iter().enumerate() {
-            if i > 0 { items.push_str(",\n"); }
+            if i > 0 {
+                items.push_str(",\n");
+            }
             items.push_str(&format!("(\"{}\", \"Desc{}\", exit)", c, i));
         }
         let ron = format!("(keys: [\n{}\n])", items);
@@ -75,5 +77,15 @@ mod tests {
         )"#;
         let res = loader::load_from_str(ron, None);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn server_tunables_parse() {
+        let ron = r#"(
+            keys: [],
+            server: (exit_if_no_clients: true),
+        )"#;
+        let cfg: Config = loader::load_from_str(ron, None).unwrap();
+        assert!(cfg.server().exit_if_no_clients);
     }
 }

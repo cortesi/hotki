@@ -1,9 +1,8 @@
-use config::keymode::KeyResponse;
 use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
 use tokio::sync::mpsc::Sender;
 use tracing::info;
 
-use crate::{Error, Result};
+use crate::{Error, Result, keymode::KeyResponse};
 
 /// Sends HUD updates and notifications to the UI layer.
 #[derive(Clone)]
@@ -39,7 +38,7 @@ impl NotificationDispatcher {
     }
 
     /// Handle a `KeyResponse` by converting it to notifications/UI messages.
-    pub fn handle_key_response(&self, response: KeyResponse) -> Result<()> {
+    pub(crate) fn handle_key_response(&self, response: KeyResponse) -> Result<()> {
         match response {
             KeyResponse::Ok => Ok(()),
             KeyResponse::Info { title, text } => {

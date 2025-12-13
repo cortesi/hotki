@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{parse_rgb, Config};
+    use crate::{Config, parse_rgb, raw::RawStyle};
 
     #[test]
     fn theme_overlay_hud_fields() {
@@ -8,7 +8,7 @@ mod tests {
         let base = Config::default();
 
         // User overrides some HUD fields via raw overlay form
-        let user_overlay = ron::from_str::<crate::raw::RawStyle>(
+        let user_overlay = ron::from_str::<RawStyle>(
             "(hud: (font_size: 20.0, title_fg: \"red\", bg: \"#222222\"))",
         )
         .unwrap();
@@ -28,10 +28,8 @@ mod tests {
         let base = Config::default();
 
         // User overrides notification timeout and some style bits (raw form)
-        let user_overlay = ron::from_str::<crate::raw::RawStyle>(
-            "(notify: (timeout: 3.0, info: (bg: \"#333333\")))",
-        )
-        .unwrap();
+        let user_overlay =
+            ron::from_str::<RawStyle>("(notify: (timeout: 3.0, info: (bg: \"#333333\")))").unwrap();
 
         let final_style = base.style.clone().overlay_raw(&user_overlay);
 

@@ -16,13 +16,15 @@ use std::{
     },
 };
 
-use config::{NotifyKind, keymode::KeyResponse};
+use config::NotifyKind;
 use mac_keycode::Chord;
 use parking_lot::Mutex;
 use tokio::time::Duration;
 use tracing::trace;
 
-use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
+use crate::{
+    RelayHandler, keymode::KeyResponse, notification::NotificationDispatcher, ticker::Ticker,
+};
 
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.
@@ -253,14 +255,12 @@ impl Repeater {
         self.stop(&id);
 
         // First run (notifications ignored)
-        let _ = self
-            .notifier
-            .handle_key_response(config::keymode::KeyResponse::ShellAsync {
-                command: command.clone(),
-                ok_notify: NotifyKind::Ignore,
-                err_notify: NotifyKind::Ignore,
-                repeat: None,
-            });
+        let _ = self.notifier.handle_key_response(KeyResponse::ShellAsync {
+            command: command.clone(),
+            ok_notify: NotifyKind::Ignore,
+            err_notify: NotifyKind::Ignore,
+            repeat: None,
+        });
 
         if repeat.is_some() {
             self.spawn_shell_repeater(id, command, repeat);
@@ -291,7 +291,7 @@ impl Repeater {
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Shell task join error: {}", e);
-                        config::keymode::KeyResponse::Warn {
+                        KeyResponse::Warn {
                             title: "Shell command".to_string(),
                             text: "Execution task failed".to_string(),
                         }
