@@ -17,6 +17,7 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     result::Result as StdResult,
     slice,
     sync::{
@@ -387,6 +388,81 @@ impl MrpcConnection for HotkeyService {
                     .store(cfg.server().exit_if_no_clients, Ordering::SeqCst);
 
                 Ok(Value::Boolean(true))
+            }
+
+            Some(HotkeyMethod::SetConfigPath) => {
+                if params.is_empty() {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::MissingParams,
+                        &[
+                            (
+                                "method",
+                                Value::String(HotkeyMethod::SetConfigPath.as_str().into()),
+                            ),
+                            ("expected", Value::String("path".into())),
+                        ],
+                    ));
+                }
+
+                let raw_path = match &params[0] {
+                    Value::String(s) => match s.as_str() {
+                        Some(v) => v.to_string(),
+                        None => {
+                            return Err(Self::typed_err(
+                                crate::error::RpcErrorCode::InvalidType,
+                                &[("expected", Value::String("utf8 string path".into()))],
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::InvalidType,
+                            &[("expected", Value::String("string path".into()))],
+                        ));
+                    }
+                };
+
+                let path = PathBuf::from(raw_path.clone());
+                let loaded = config::load_for_server_from_path(&path).map_err(|e| {
+                    Self::typed_err(
+                        crate::error::RpcErrorCode::InvalidConfig,
+                        &[
+                            ("path", Value::String(raw_path.clone().into())),
+                            ("message", Value::String(e.pretty().into())),
+                        ],
+                    )
+                })?;
+                let cfg = loaded.config;
+                let rhai = loaded.rhai;
+
+                let engine = self.engine().await;
+                if let Err(e) = engine.set_config_with_rhai(cfg.clone(), rhai).await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineSetConfig,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+
+                // Update auto-shutdown flag from config if present.
+                self.auto_shutdown_on_empty
+                    .store(cfg.server().exit_if_no_clients, Ordering::SeqCst);
+
+                let bytes = rmp_serde::to_vec_named(&cfg).map_err(|e| {
+                    Self::typed_err(
+                        crate::error::RpcErrorCode::InvalidConfig,
+                        &[("message", Value::String(e.to_string().into()))],
+                    )
+                })?;
+
+                // Notify the UI of the loaded config for local rendering.
+                self.event_tx
+                    .try_send(MsgToUI::ConfigLoaded {
+                        path: raw_path,
+                        config: bytes.clone(),
+                    })
+                    .ok();
+
+                Ok(Value::Binary(bytes))
             }
 
             Some(HotkeyMethod::InjectKey) => {

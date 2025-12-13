@@ -57,30 +57,22 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
 
 fn used_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.ron");
+    let cfg_path = cwd.join("examples/test.rhai");
     if theme.is_none() {
         return Ok(cfg_path);
     }
     let name = theme.as_ref().unwrap();
     match fs::read_to_string(&cfg_path) {
         Ok(s) => {
-            let mut out = String::new();
-            if s.contains("base_theme:") {
-                let re = regex::Regex::new("base_theme\\s*:\\s*\"[^\"]*\"").unwrap();
-                out = re
-                    .replace(&s, format!("base_theme: \"{}\"", name))
-                    .to_string();
-            } else if let Some(pos) = s.find('(') {
-                let (head, tail) = s.split_at(pos + 1);
-                out.push_str(head);
-                out.push('\n');
-                out.push_str(&format!("    base_theme: \"{}\",\n", name));
-                out.push_str(tail);
+            let re = regex::Regex::new("base_theme\\(\\s*\"[^\"]*\"\\s*\\)\\s*;").unwrap();
+            let out = if re.is_match(&s) {
+                re.replace(&s, format!("base_theme(\"{}\");", name))
+                    .to_string()
             } else {
-                out = s;
-            }
+                format!("base_theme(\"{}\");\n{}", name, s)
+            };
             let tmp = env::temp_dir().join(format!(
-                "hotki-shots-{}-{}.ron",
+                "hotki-shots-{}-{}.rhai",
                 process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -102,7 +94,7 @@ fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
             cmd.env("RUST_LOG", "info");
         }
     }
-    cmd.arg(cfg);
+    cmd.arg("--config").arg(cfg);
     cmd.spawn()
 }
 

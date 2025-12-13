@@ -7,47 +7,333 @@
 //! (directly or indirectly) tries to access the same `themes()` initializer,
 //! or we’d re-enter the `OnceLock` initialization and deadlock.
 //!
-//! Therefore, theme files are parsed via `ron::from_str` into a `RawStyle`
-//! and then converted into a `Style`, instead of going through the higher-level
-//! loader API. Do not replace this with a call that resolves themes dynamically.
+//! Therefore, themes are defined as Rust values and inserted directly into the
+//! registry, avoiding any dynamic theme loading during initialization.
 use std::{collections::HashMap, sync::OnceLock};
 
-use crate::{Hud, Notify, Style, raw::RawStyle};
+use crate::{FontWeight, NotifyPos, Offset, Pos, Style, parse_rgb, raw::RawNotifyWindowStyle};
 
 /// All available themes, loaded at compile time
 fn themes() -> &'static HashMap<String, Style> {
     static THEMES: OnceLock<HashMap<String, Style>> = OnceLock::new();
     THEMES.get_or_init(|| {
-        let mut themes = HashMap::new();
-
-        // Load each theme at compile time
-        macro_rules! load_theme {
-            ($name:expr, $file:expr) => {
-                let content = include_str!(concat!("../../themes/", $file));
-                // Parse theme content via RawStyle to avoid re-entering theme loading.
-                // Using loader here would call load_theme() again during OnceLock init and deadlock.
-                let raw = ron::from_str::<RawStyle>(content)
-                    .expect(concat!("Failed to parse theme: ", $file));
-                let hud = raw
-                    .hud
-                    .into_option()
-                    .map(|h| h.into_hud())
-                    .unwrap_or_else(Hud::default);
-                let notify = raw
-                    .notify
-                    .into_option()
-                    .map(|n| n.into_notify())
-                    .unwrap_or_else(Notify::default);
-                let theme = Style { hud, notify };
-                themes.insert($name.to_string(), theme);
-            };
+        fn rgb(s: &str) -> (u8, u8, u8) {
+            parse_rgb(s).unwrap_or_else(|| panic!("invalid theme color: {}", s))
         }
 
-        load_theme!("default", "default.ron");
-        load_theme!("charcoal", "charcoal.ron");
-        load_theme!("dark-blue", "dark-blue.ron");
-        load_theme!("solarized-dark", "solarized-dark.ron");
-        load_theme!("solarized-light", "solarized-light.ron");
+        fn set_notify_style(
+            style: &mut RawNotifyWindowStyle,
+            bg: &str,
+            title_fg: &str,
+            body_fg: &str,
+            title_font_weight: FontWeight,
+        ) {
+            style.bg = Some(bg.to_string());
+            style.title_fg = Some(title_fg.to_string());
+            style.body_fg = Some(body_fg.to_string());
+            style.title_font_weight = Some(title_font_weight);
+        }
+
+        fn theme_default() -> Style {
+            let mut style = Style::default();
+
+            style.hud.radius = 8.0;
+            style.hud.pos = Pos::Center;
+            style.hud.offset = Offset { x: 0.0, y: 0.0 };
+            style.hud.font_size = 14.0;
+            style.hud.title_font_weight = FontWeight::Regular;
+            style.hud.key_font_size = 19.0;
+            style.hud.tag_font_size = 20.0;
+            style.hud.tag_font_weight = FontWeight::Regular;
+            style.hud.title_fg = rgb("#d0d0d0");
+            style.hud.bg = rgb("#101010");
+            style.hud.key_radius = 4.0;
+            style.hud.key_fg = rgb("#d0d0d0");
+            style.hud.key_bg = rgb("#2c3471");
+            style.hud.key_font_weight = FontWeight::Bold;
+            style.hud.mod_fg = rgb("white");
+            style.hud.mod_font_weight = FontWeight::Regular;
+            style.hud.mod_bg = rgb("#43414d");
+            style.hud.tag_fg = rgb("#374f8a");
+            style.hud.opacity = 1.0;
+
+            style.notify.width = 420.0;
+            style.notify.pos = NotifyPos::Right;
+            style.notify.opacity = 0.95;
+            style.notify.timeout = 4.0;
+            style.notify.buffer = 200;
+
+            set_notify_style(
+                &mut style.notify.info,
+                "#222222",
+                "white",
+                "white",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.warn,
+                "#442a00",
+                "#ffc100",
+                "#ffc100",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.error,
+                "#3a0000",
+                "#ff6666",
+                "#ff6666",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.success,
+                "#0c2d0c",
+                "#8bff8b",
+                "#8bff8b",
+                FontWeight::Bold,
+            );
+
+            style
+        }
+
+        fn theme_charcoal() -> Style {
+            let mut style = Style::default();
+
+            style.hud.pos = Pos::Center;
+            style.hud.offset = Offset { x: 0.0, y: 0.0 };
+            style.hud.font_size = 14.0;
+            style.hud.title_font_weight = FontWeight::Regular;
+            style.hud.key_font_size = 14.0;
+            style.hud.key_font_weight = FontWeight::Regular;
+            style.hud.tag_font_size = 14.0;
+            style.hud.tag_font_weight = FontWeight::Regular;
+            style.hud.title_fg = rgb("white");
+            style.hud.bg = rgb("#202020");
+            style.hud.key_fg = rgb("white");
+            style.hud.key_bg = rgb("#505050");
+            style.hud.mod_fg = rgb("white");
+            style.hud.mod_font_weight = FontWeight::Regular;
+            style.hud.mod_bg = rgb("#404040");
+            style.hud.tag_fg = rgb("white");
+            style.hud.opacity = 1.0;
+
+            style.notify.width = 420.0;
+            style.notify.pos = NotifyPos::Right;
+            style.notify.opacity = 0.95;
+            style.notify.timeout = 4.0;
+            style.notify.buffer = 200;
+
+            set_notify_style(
+                &mut style.notify.info,
+                "#222222",
+                "white",
+                "white",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.warn,
+                "#442a00",
+                "#ffc100",
+                "#ffc100",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.error,
+                "#3a0000",
+                "#ff6666",
+                "#ff6666",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.success,
+                "#0c2d0c",
+                "#8bff8b",
+                "#8bff8b",
+                FontWeight::Bold,
+            );
+
+            style
+        }
+
+        fn theme_dark_blue() -> Style {
+            let mut style = Style::default();
+
+            style.hud.pos = Pos::Center;
+            style.hud.font_size = 16.0;
+            style.hud.title_fg = rgb("#a0c4ff");
+            style.hud.bg = rgb("#0a1628");
+            style.hud.key_fg = rgb("#ffffff");
+            style.hud.key_bg = rgb("#1e3a5f");
+            style.hud.mod_fg = rgb("#a0c4ff");
+            style.hud.mod_bg = rgb("#2c5282");
+            style.hud.tag_fg = rgb("#63b3ed");
+            style.hud.opacity = 0.95;
+
+            style.notify.width = 420.0;
+            style.notify.pos = NotifyPos::Right;
+            style.notify.opacity = 0.9;
+            style.notify.timeout = 4.0;
+            style.notify.buffer = 200;
+
+            set_notify_style(
+                &mut style.notify.info,
+                "#1a365d",
+                "#a0c4ff",
+                "#a0c4ff",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.warn,
+                "#451a03",
+                "#fbbf24",
+                "#fbbf24",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.error,
+                "#450a0a",
+                "#f87171",
+                "#f87171",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.success,
+                "#052e16",
+                "#86efac",
+                "#86efac",
+                FontWeight::Bold,
+            );
+
+            style
+        }
+
+        fn theme_solarized_dark() -> Style {
+            let mut style = Style::default();
+
+            style.hud.radius = 8.0;
+            style.hud.pos = Pos::Center;
+            style.hud.offset = Offset { x: 0.0, y: 0.0 };
+            style.hud.font_size = 14.0;
+            style.hud.title_font_weight = FontWeight::Regular;
+            style.hud.key_font_size = 19.0;
+            style.hud.tag_font_size = 20.0;
+            style.hud.tag_font_weight = FontWeight::Regular;
+            style.hud.title_fg = rgb("#93a1a1");
+            style.hud.bg = rgb("#002b36");
+            style.hud.key_radius = 4.0;
+            style.hud.key_fg = rgb("#fdf6e3");
+            style.hud.key_bg = rgb("#268bd2");
+            style.hud.key_font_weight = FontWeight::Bold;
+            style.hud.mod_fg = rgb("#eee8d5");
+            style.hud.mod_font_weight = FontWeight::Regular;
+            style.hud.mod_bg = rgb("#b58900");
+            style.hud.tag_fg = rgb("#2aa198");
+            style.hud.opacity = 0.95;
+
+            style.notify.width = 420.0;
+            style.notify.pos = NotifyPos::Right;
+            style.notify.opacity = 0.9;
+            style.notify.timeout = 4.0;
+            style.notify.buffer = 200;
+
+            set_notify_style(
+                &mut style.notify.info,
+                "#073642",
+                "#93a1a1",
+                "#839496",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.warn,
+                "#073642",
+                "#cb4b16",
+                "#b58900",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.error,
+                "#073642",
+                "#dc322f",
+                "#dc322f",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.success,
+                "#073642",
+                "#859900",
+                "#859900",
+                FontWeight::Bold,
+            );
+
+            style
+        }
+
+        fn theme_solarized_light() -> Style {
+            let mut style = Style::default();
+
+            style.hud.radius = 8.0;
+            style.hud.pos = Pos::Center;
+            style.hud.offset = Offset { x: 0.0, y: 0.0 };
+            style.hud.font_size = 14.0;
+            style.hud.title_font_weight = FontWeight::Regular;
+            style.hud.key_font_size = 19.0;
+            style.hud.tag_font_size = 20.0;
+            style.hud.tag_font_weight = FontWeight::Regular;
+            style.hud.title_fg = rgb("#586e75");
+            style.hud.bg = rgb("#fdf6e3");
+            style.hud.key_radius = 4.0;
+            style.hud.key_fg = rgb("#fdf6e3");
+            style.hud.key_bg = rgb("#6c71c4");
+            style.hud.key_font_weight = FontWeight::Bold;
+            style.hud.mod_fg = rgb("#073642");
+            style.hud.mod_font_weight = FontWeight::Regular;
+            style.hud.mod_bg = rgb("#b58900");
+            style.hud.tag_fg = rgb("#2aa198");
+            style.hud.opacity = 0.95;
+
+            style.notify.width = 420.0;
+            style.notify.pos = NotifyPos::Right;
+            style.notify.opacity = 0.9;
+            style.notify.timeout = 4.0;
+            style.notify.buffer = 200;
+
+            set_notify_style(
+                &mut style.notify.info,
+                "#eee8d5",
+                "#586e75",
+                "#657b83",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.warn,
+                "#eee8d5",
+                "#cb4b16",
+                "#b58900",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.error,
+                "#eee8d5",
+                "#dc322f",
+                "#dc322f",
+                FontWeight::Bold,
+            );
+            set_notify_style(
+                &mut style.notify.success,
+                "#eee8d5",
+                "#859900",
+                "#859900",
+                FontWeight::Bold,
+            );
+
+            style
+        }
+
+        let mut themes = HashMap::new();
+        themes.insert("default".to_string(), theme_default());
+        themes.insert("charcoal".to_string(), theme_charcoal());
+        themes.insert("dark-blue".to_string(), theme_dark_blue());
+        themes.insert("solarized-dark".to_string(), theme_solarized_dark());
+        themes.insert("solarized-light".to_string(), theme_solarized_light());
 
         themes
     })
@@ -122,7 +408,6 @@ pub fn load_theme(theme_name: Option<&str>) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw::RawStyle;
 
     #[test]
     fn test_default_theme_exists() {
@@ -194,141 +479,131 @@ mod tests {
 
     #[test]
     fn test_theme_merging_with_user_config() {
-        use crate::ConfigInput;
+        use crate::{Cursor, rhai};
 
-        // Load default theme as base
-        let theme_base = load_theme(None);
+        let cfg = rhai::load_from_str_with_runtime(
+            r#"
+            style(#{
+              hud: #{ font_size: 20.0, title_fg: "red" },
+            });
 
-        // Create a minimal user config that overrides some theme values
-        let user_config_str = r#"(
-            keys: [
-                ("a", "Test action", shell("echo test")),
-            ],
-            style: (hud: (font_size: 20.0, title_fg: "red")),
-        )"#;
+            global.bind("a", "Test action", shell("echo test"));
+            "#,
+            None,
+        )
+        .expect("loads")
+        .config;
 
-        // Parse user config
-        let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
+        let loc = Cursor::default();
+        let hud = cfg.hud(&loc);
 
-        // Build base theme, then overlay user theme
-        let mut final_theme = theme_base;
-        if let Some(user_theme_raw) = &user_raw.style {
-            final_theme = final_theme.overlay_raw(user_theme_raw);
-        }
-        // Use user keys since provided
-        let final_keys = user_raw.keys;
+        // Verify user overrides are applied.
+        assert_eq!(hud.font_size, 20.0);
+        assert_eq!(hud.title_fg, (255, 0, 0));
 
-        // Verify user overrides are applied
-        assert_eq!(final_theme.hud.font_size, 20.0);
-        assert_eq!(final_theme.hud.title_fg, (255, 0, 0));
+        // Verify theme defaults are preserved for unspecified fields.
+        assert_eq!(hud.bg, (0x10, 0x10, 0x10));
+        assert_eq!(hud.opacity, 1.0);
 
-        // Verify theme defaults are preserved for unspecified fields
-        assert_eq!(final_theme.hud.bg, (0x10, 0x10, 0x10)); // from default theme
-        assert_eq!(final_theme.hud.opacity, 1.0); // from default theme
-
-        // Verify keys are from user config
-        assert_eq!(final_keys.keys().count(), 1);
+        // Verify keys are from user config.
+        assert_eq!(cfg.keys.key_objects().count(), 1);
     }
 
     #[test]
     fn test_empty_user_config_uses_theme_defaults() {
-        use crate::ConfigInput;
+        use crate::{Cursor, rhai};
 
-        // Load default theme as base
-        let theme_base = load_theme(None);
+        let cfg = rhai::load_from_str_with_runtime("", None)
+            .expect("loads")
+            .config;
 
-        // Create an empty user config
-        let user_config_str = r#"(keys: [])"#;
+        let loc = Cursor::default();
+        let hud = cfg.hud(&loc);
 
-        // Parse user config
-        let _user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
-
-        // Verify all theme defaults are used on the base theme directly
-        assert_eq!(theme_base.hud.font_size, 14.0); // from default theme
-        assert_eq!(theme_base.hud.title_fg, (0xd0, 0xd0, 0xd0)); // from default theme
-        assert_eq!(theme_base.hud.bg, (0x10, 0x10, 0x10)); // from default theme
-        assert_eq!(theme_base.hud.opacity, 1.0); // from default theme
+        // Verify all theme defaults are used when there is no user overlay.
+        assert_eq!(hud.font_size, 14.0);
+        assert_eq!(hud.title_fg, (0xd0, 0xd0, 0xd0));
+        assert_eq!(hud.bg, (0x10, 0x10, 0x10));
+        assert_eq!(hud.opacity, 1.0);
     }
 
     #[test]
     fn test_theme_field_parsing() {
-        use crate::ConfigInput;
+        use crate::{Cursor, rhai};
 
-        // Test parsing with theme specified
-        let config_with_theme = r#"(
-            base_theme: charcoal,
-            keys: [],
-        )"#;
+        let cfg_charcoal = rhai::load_from_str_with_runtime(r#"base_theme("charcoal");"#, None)
+            .expect("loads")
+            .config;
+        let cfg_default = rhai::load_from_str_with_runtime("", None)
+            .expect("loads")
+            .config;
 
-        let parsed: ConfigInput = ron::from_str(config_with_theme).unwrap();
-        let t = parsed.base_theme.expect("theme parsed");
-        assert_eq!(t, "charcoal");
+        let loc = Cursor::default();
+        let charcoal = cfg_charcoal.hud(&loc);
+        let default = cfg_default.hud(&loc);
 
-        // Test parsing without theme specified
-        let config_without_theme = r#"(
-            keys: [],
-        )"#;
-
-        let parsed: ConfigInput = ron::from_str(config_without_theme).unwrap();
-        assert!(parsed.base_theme.is_none());
+        // Sanity check: different base themes should result in different style values.
+        assert_ne!(charcoal.title_fg, default.title_fg);
     }
 
     #[test]
     fn test_different_theme_as_base() {
-        use crate::ConfigInput;
+        use crate::{Cursor, rhai};
 
-        // Load dark-blue theme as base
-        let theme_base = load_theme(Some("dark-blue"));
+        let cfg = rhai::load_from_str_with_runtime(
+            r#"
+            base_theme("dark-blue");
+            style(#{ hud: #{ font_size: 18.0 } });
+            "#,
+            None,
+        )
+        .expect("loads")
+        .config;
 
-        // Create a minimal user config
-        let user_config_str = r#"(
-            keys: [],
-            style: (hud: (font_size: 18.0)),
-        )"#;
+        let loc = Cursor::default();
+        let hud = cfg.hud(&loc);
 
-        // Parse user config
-        let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
+        // Verify user override is applied.
+        assert_eq!(hud.font_size, 18.0);
 
-        // Build base theme and overlay user theme
-        let mut final_theme = theme_base;
-        if let Some(user_theme_raw) = &user_raw.style {
-            final_theme = final_theme.overlay_raw(user_theme_raw);
-        }
-
-        // Verify user override is applied
-        assert_eq!(final_theme.hud.font_size, 18.0);
-
-        // Verify dark-blue theme values are used
-        assert_eq!(final_theme.hud.title_fg, (0xa0, 0xc4, 0xff)); // from dark-blue theme
-        assert_eq!(final_theme.hud.bg, (0x0a, 0x16, 0x28)); // from dark-blue theme
+        // Verify dark-blue theme values are used.
+        assert_eq!(hud.title_fg, (0xa0, 0xc4, 0xff));
+        assert_eq!(hud.bg, (0x0a, 0x16, 0x28));
     }
 
     #[test]
     fn test_theme_overlay_on_base_switch() {
-        use crate::ConfigInput;
+        use crate::{Cursor, rhai};
 
-        // User overrides only font_size; other fields should follow base theme
-        let user_config_str = r#"(
-            keys: [],
-            style: (
-                hud: (font_size: 20.0),
-            ),
-        )"#;
+        let default_cfg = rhai::load_from_str_with_runtime(
+            r#"
+            base_theme("default");
+            style(#{ hud: #{ font_size: 20.0 } });
+            "#,
+            None,
+        )
+        .expect("loads")
+        .config;
+        let dark_cfg = rhai::load_from_str_with_runtime(
+            r#"
+            base_theme("dark-blue");
+            style(#{ hud: #{ font_size: 20.0 } });
+            "#,
+            None,
+        )
+        .expect("loads")
+        .config;
 
-        let user_raw: ConfigInput = ron::from_str(user_config_str).unwrap();
-        let user_theme_raw: &RawStyle = user_raw.style.as_ref().expect("user theme present");
+        let loc = Cursor::default();
+        let default_hud = default_cfg.hud(&loc);
+        let dark_hud = dark_cfg.hud(&loc);
 
-        // Base: default
-        let base_default = load_theme(None);
-        let merged_default = base_default.overlay_raw(user_theme_raw);
-        assert_eq!(merged_default.hud.font_size, 20.0);
-        // Title color should come from base (not overridden by user)
-        assert_eq!(merged_default.hud.title_fg, (0xd0, 0xd0, 0xd0));
+        // User override is applied on both base themes.
+        assert_eq!(default_hud.font_size, 20.0);
+        assert_eq!(dark_hud.font_size, 20.0);
 
-        // Switch base: dark-blue
-        let base_dark = load_theme(Some("dark-blue"));
-        let merged_dark = base_dark.overlay_raw(user_theme_raw);
-        assert_eq!(merged_dark.hud.font_size, 20.0);
-        assert_eq!(merged_dark.hud.title_fg, (0xa0, 0xc4, 0xff));
+        // Title color should come from the base theme (not overridden by user).
+        assert_eq!(default_hud.title_fg, (0xd0, 0xd0, 0xd0));
+        assert_eq!(dark_hud.title_fg, (0xa0, 0xc4, 0xff));
     }
 }

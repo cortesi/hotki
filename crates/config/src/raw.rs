@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Hud, Keys, Notify, parse_rgb,
+    Hud, Notify, parse_rgb,
     types::{FontWeight, NotifyPos, Offset, Pos},
 };
 
@@ -58,7 +58,7 @@ impl<T> Maybe<T> {
 // ===== RAW NOTIFICATION STYLE =====
 
 /// Raw notification style with all optional fields for merging
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RawNotifyStyle {
     /// Background color name or hex string.
@@ -147,7 +147,7 @@ pub struct RawNotifyWindowStyle {
 // ===== RAW NOTIFICATION CONFIG =====
 
 /// Raw notification config with all optional fields for conversion
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RawNotify {
     /// Width of notification window (px).
@@ -219,11 +219,6 @@ impl RawNotify {
                 .map(|s| s.into_notify_style(defaults.success.clone()))
                 .unwrap_or(defaults.success),
         }
-    }
-
-    /// Convert to final Notify with defaults applied
-    pub fn into_notify(self) -> Notify {
-        self.apply_over(&Notify::default())
     }
 
     /// Convert to final Notify using the provided base as defaults
@@ -380,11 +375,6 @@ impl RawHud {
         }
     }
 
-    /// Convert to final Hud with defaults applied
-    pub fn into_hud(self) -> Hud {
-        self.apply_over(&Hud::default())
-    }
-
     /// Convert to final Hud using the provided base as defaults
     pub fn into_hud_over(self, base: &Hud) -> Hud {
         self.apply_over(base)
@@ -401,27 +391,6 @@ pub struct RawStyle {
     /// Optional notification style overrides.
     #[serde(default)]
     pub notify: Maybe<RawNotify>,
-}
-
-/// Raw configuration with all optional fields for conversion
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawConfig {
-    /// User key bindings.
-    #[serde(default)]
-    pub keys: Keys,
-
-    /// Base theme selection name (used by host for theming).
-    #[serde(default)]
-    pub base_theme: Maybe<String>,
-
-    /// Theme configuration overlay (HUD + notify).
-    #[serde(default)]
-    pub style: Maybe<RawStyle>,
-
-    /// Server-side tunables. Optional; primarily for tests/smoketests.
-    #[serde(default)]
-    pub server: Maybe<RawServerTunables>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -444,11 +413,16 @@ impl RawServerTunables {
 
 #[cfg(test)]
 mod tests {
+    use rhai::{Dynamic, Map, serde::from_dynamic};
+
     use super::RawHud;
 
     #[test]
     fn raw_struct_accepts_bare_maybe_field_values() {
-        let hud: RawHud = ron::from_str("(radius: 8.0)").unwrap();
+        let mut map = Map::new();
+        map.insert("radius".into(), Dynamic::from(8.0_f64));
+        let dyn_map = Dynamic::from_map(map);
+        let hud: RawHud = from_dynamic(&dyn_map).unwrap();
         assert_eq!(hud.radius.as_option().copied(), Some(8.0));
     }
 }

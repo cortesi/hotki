@@ -9,6 +9,12 @@ pub(crate) enum KeymodeError {
     /// Invalid relay keyspec string.
     #[error("Invalid relay keyspec '{spec}'")]
     InvalidRelayKeyspec { spec: String },
+    /// Script actions are not allowed to synthesize nested key trees at runtime.
+    #[error("Script actions cannot synthesize nested key trees at runtime")]
+    ScriptSynthesizedKeys,
+    /// Script actions are not allowed to return other script action references.
+    #[error("Script actions cannot return other script actions")]
+    ScriptSynthesizedScriptAction,
 }
 
 /// Result of handling a key press.
@@ -36,6 +42,8 @@ pub(crate) enum KeyResponse {
         /// Optional software repeat configuration (only populated when attrs.noexit() && repeat).
         repeat: Option<ShellRepeatConfig>,
     },
+    /// Execute a script action (resolved by the server at runtime).
+    Script { id: u64, attrs: Box<KeysAttrs> },
 }
 
 /// Optional repeat configuration for shell actions.
@@ -70,6 +78,10 @@ impl State {
         entered_index: Option<usize>,
     ) -> Result<KeyResponse, KeymodeError> {
         match action {
+            Action::Rhai { id } => Ok(KeyResponse::Script {
+                id: *id,
+                attrs: Box::new(attrs.clone()),
+            }),
             Action::Keys(_new_mode) => {
                 if let Some(i) = entered_index {
                     self.cursor.push(i as u32);
@@ -272,11 +284,150 @@ impl State {
         }
         Ok(KeyResponse::Ok)
     }
+
+    /// Apply a sequence of actions produced by a script action binding.
+    ///
+    /// - A single resolved action is executed with normal semantics (including repeat/noexit).
+    /// - A multi-action "macro" executes in-order without implicit exit between steps; only the
+    ///   original binding's `noexit` controls whether we exit after the macro when no navigation
+    ///   occurred.
+    pub(crate) fn apply_script_actions(
+        &mut self,
+        actions: &[Action],
+        binding_attrs: &KeysAttrs,
+    ) -> Result<Vec<KeyResponse>, KeymodeError> {
+        let Some((first, rest)) = actions.split_first() else {
+            if !binding_attrs.noexit() {
+                self.reset();
+            }
+            return Ok(Vec::new());
+        };
+
+        if rest.is_empty() {
+            return Ok(vec![self.execute_action(first, binding_attrs, None)?]);
+        }
+
+        // Pre-validate so we can preserve mode state on error.
+        for action in actions {
+            match action {
+                Action::Keys(_) => return Err(KeymodeError::ScriptSynthesizedKeys),
+                Action::Rhai { .. } => return Err(KeymodeError::ScriptSynthesizedScriptAction),
+                Action::Relay(spec) if Chord::parse(spec).is_none() => {
+                    return Err(KeymodeError::InvalidRelayKeyspec {
+                        spec: spec.to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let mut cursor = self.cursor.clone();
+        let mut responses = Vec::new();
+        let mut navigated = false;
+
+        for action in actions {
+            match action {
+                Action::Keys(_) | Action::Rhai { .. } => unreachable!("validated above"),
+                Action::Pop => {
+                    if cursor.depth() > 0 {
+                        let _ = cursor.pop();
+                        navigated = true;
+                    } else if cursor.viewing_root {
+                        cursor.viewing_root = false;
+                        navigated = true;
+                    }
+                }
+                Action::Exit => {
+                    cursor.clear();
+                    cursor.viewing_root = false;
+                    navigated = true;
+                }
+                Action::ShowHudRoot => {
+                    cursor.clear();
+                    cursor.viewing_root = true;
+                    navigated = true;
+                }
+                Action::Relay(spec) => {
+                    let chord = Chord::parse(spec).expect("validated above");
+                    responses.push(KeyResponse::Relay {
+                        chord,
+                        attrs: Box::new(KeysAttrs::default()),
+                    });
+                }
+                Action::Shell(spec) => responses.push(KeyResponse::ShellAsync {
+                    command: spec.command().to_string(),
+                    ok_notify: spec.ok_notify(),
+                    err_notify: spec.err_notify(),
+                    repeat: None,
+                }),
+                Action::ReloadConfig => responses.push(KeyResponse::Ui(MsgToUI::ReloadConfig)),
+                Action::ClearNotifications => {
+                    responses.push(KeyResponse::Ui(MsgToUI::ClearNotifications));
+                }
+                Action::ShowDetails(arg) => {
+                    responses.push(KeyResponse::Ui(MsgToUI::ShowDetails(*arg)));
+                }
+                Action::ThemeNext => responses.push(KeyResponse::Ui(MsgToUI::ThemeNext)),
+                Action::ThemePrev => responses.push(KeyResponse::Ui(MsgToUI::ThemePrev)),
+                Action::ThemeSet(name) => {
+                    responses.push(KeyResponse::Ui(MsgToUI::ThemeSet(name.clone())));
+                }
+                Action::SetVolume(level) => {
+                    let script = format!("set volume output volume {}", (*level).min(100));
+                    responses.push(KeyResponse::ShellAsync {
+                        command: format!("osascript -e '{}'", script),
+                        ok_notify: NotifyKind::Ignore,
+                        err_notify: NotifyKind::Warn,
+                        repeat: None,
+                    });
+                }
+                Action::ChangeVolume(delta) => {
+                    let script = format!(
+                        "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
+                        delta
+                    );
+                    responses.push(KeyResponse::ShellAsync {
+                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+                        ok_notify: NotifyKind::Ignore,
+                        err_notify: NotifyKind::Warn,
+                        repeat: None,
+                    });
+                }
+                Action::Mute(arg) => {
+                    let script = match arg {
+                        Toggle::On => "set volume output muted true".to_string(),
+                        Toggle::Off => "set volume output muted false".to_string(),
+                        Toggle::Toggle => {
+                            "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
+                        }
+                    };
+                    responses.push(KeyResponse::ShellAsync {
+                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+                        ok_notify: NotifyKind::Ignore,
+                        err_notify: NotifyKind::Warn,
+                        repeat: None,
+                    });
+                }
+                Action::UserStyle(arg) => {
+                    responses.push(KeyResponse::Ui(MsgToUI::UserStyle(*arg)));
+                }
+            }
+        }
+
+        if !binding_attrs.noexit() && !navigated {
+            cursor.clear();
+            cursor.viewing_root = false;
+        }
+
+        self.cursor = cursor;
+        Ok(responses)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::load_test_config;
 
     fn chord(s: &str) -> Chord {
         mac_keycode::Chord::parse(s).unwrap()
@@ -288,8 +439,7 @@ mod tests {
 
     #[test]
     fn test_unknown_keys() {
-        let keys = config::Keys::from_ron("[(\"a\", \"Action\", shell(\"test\"))]").unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = load_test_config(r#"global.bind("a", "Action", shell("test"));"#);
         let mut state = State::new();
         press(&mut state, &cfg, &chord("z")).unwrap();
         press(&mut state, &cfg, &chord("x")).unwrap();
@@ -298,18 +448,18 @@ mod tests {
 
     #[test]
     fn test_noexit_behavior() {
-        let ron_text = r#"[
-            ("m", "Menu", keys([
-                ("n", "Normal", shell("echo normal")),
-                ("s", "Sticky", shell("echo sticky"), (noexit: true)),
-                ("d", "Deep", keys([
-                    ("x", "Execute", shell("echo deep")),
-                    ("y", "Sticky Deep", shell("echo sticky deep"), (noexit: true)),
-                ])),
-            ])),
-        ]"#;
-        let keys = config::Keys::from_ron(ron_text).unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = load_test_config(
+            r#"
+            global.mode("m", "Menu", |m| {
+              m.bind("n", "Normal", shell("echo normal"));
+              m.bind("s", "Sticky", shell("echo sticky")).no_exit();
+              m.mode("d", "Deep", |sub| {
+                sub.bind("x", "Execute", shell("echo deep"));
+                sub.bind("y", "Sticky Deep", shell("echo sticky deep")).no_exit();
+              });
+            });
+            "#,
+        );
         let mut state = State::new();
 
         press(&mut state, &cfg, &chord("m")).unwrap();
@@ -334,8 +484,7 @@ mod tests {
     #[test]
     fn test_reload_and_clear_notifications() {
         // Reload non-sticky.
-        let keys = config::Keys::from_ron("[(\"r\", \"Reload\", reload_config)]").unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = load_test_config(r#"global.bind("r", "Reload", reload_config);"#);
         let mut state = State::new();
         match press(&mut state, &cfg, &chord("r")).unwrap() {
             KeyResponse::Ui(MsgToUI::ReloadConfig) => {}
@@ -344,16 +493,14 @@ mod tests {
         assert_eq!(state.depth(), 0);
 
         // Clear sticky inside submenu.
-        let keys2 = config::Keys::from_ron(
-            r#"[
-                ("m", "Menu", keys([
-                    ("c", "Clear", clear_notifications, (noexit: true)),
-                    ("p", "Back", pop),
-                ])),
-            ]"#,
-        )
-        .unwrap();
-        let cfg2 = config::Config::from_parts(keys2, config::Style::default());
+        let cfg2 = load_test_config(
+            r#"
+            global.mode("m", "Menu", |m| {
+              m.bind("c", "Clear", clear_notifications).no_exit();
+              m.bind("p", "Back", pop);
+            });
+            "#,
+        );
         let mut state2 = State::new();
         press(&mut state2, &cfg2, &chord("m")).unwrap();
         assert_eq!(state2.depth(), 1);
@@ -366,18 +513,16 @@ mod tests {
 
     #[test]
     fn test_demo_config_depth() {
-        let ron_text = r#"[
-            ("shift+cmd+0", "activate", keys([
-                ("t", "Theme tester", keys([
-                    ("h", "Theme Prev", theme_prev, (noexit: true)),
-                    ("l", "Theme Next", theme_next, (noexit: true)),
-                ])),
-            ])),
-            ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-            ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-        ]"#;
-        let keys = config::Keys::from_ron(ron_text).unwrap();
-        let cfg = config::Config::from_parts(keys, config::Style::default());
+        let cfg = load_test_config(
+            r#"
+            global.mode("shift+cmd+0", "activate", |m| {
+              m.mode("t", "Theme tester", |sub| {
+                sub.bind("h", "Theme Prev", theme_prev).no_exit();
+                sub.bind("l", "Theme Next", theme_next).no_exit();
+              });
+            });
+            "#,
+        );
         let mut state = State::new();
         press(&mut state, &cfg, &chord("shift+cmd+0")).unwrap();
         assert_eq!(state.depth(), 1);

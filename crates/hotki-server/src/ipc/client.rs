@@ -102,6 +102,14 @@ impl Connection {
         self.request_ok(HotkeyMethod::SetConfig, &[param]).await
     }
 
+    /// Set the config file path (server loads config from disk).
+    pub async fn set_config_path(&mut self, path: &str) -> Result<config::Config> {
+        debug!("Sending set_config_path request");
+        let param = Value::String(path.into());
+        self.request_binary(HotkeyMethod::SetConfigPath, &[param])
+            .await
+    }
+
     /// Receive the next UI/log event from the server.
     ///
     /// Returns a `MsgToUI` value. Keep polling this to avoid backpressure on
@@ -152,7 +160,14 @@ impl Connection {
                 let mut out = Vec::with_capacity(vals.len());
                 for v in vals {
                     match v {
-                        Value::String(s) => out.push(s.to_string()),
+                        Value::String(s) => match s.as_str() {
+                            Some(v) => out.push(v.to_string()),
+                            None => {
+                                return Err(Error::Ipc(
+                                    "Unexpected non-utf8 string in get_bindings".into(),
+                                ));
+                            }
+                        },
                         other => {
                             return Err(Error::Ipc(format!(
                                 "Unexpected element in get_bindings: {:?}",

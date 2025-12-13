@@ -29,9 +29,12 @@ pub async fn reload_and_broadcast(
     tx_keys: &mpsc::UnboundedSender<AppEvent>,
     egui_ctx: &Context,
 ) {
-    match config::load_from_path(config_path) {
+    match conn
+        .set_config_path(config_path.to_string_lossy().as_ref())
+        .await
+    {
         Ok(new_cfg) => {
-            *ui_config = new_cfg.clone();
+            *ui_config = new_cfg;
             if tx_keys
                 .send(AppEvent::Notify {
                     kind: NotifyKind::Success,
@@ -42,9 +45,6 @@ pub async fn reload_and_broadcast(
             {
                 tracing::warn!("failed to send reload success notification");
             }
-            if conn.set_config(ui_config.clone()).await.is_err() {
-                tracing::warn!("failed to push config to server on reload");
-            }
             apply_ui_config(ui_config, tx_keys, egui_ctx).await;
         }
         Err(e) => {
@@ -52,7 +52,7 @@ pub async fn reload_and_broadcast(
                 .send(AppEvent::Notify {
                     kind: NotifyKind::Error,
                     title: "Config".to_string(),
-                    text: e.pretty(),
+                    text: e.to_string(),
                 })
                 .is_err()
             {
@@ -60,5 +60,5 @@ pub async fn reload_and_broadcast(
             }
             egui_ctx.request_repaint();
         }
-    }
+    };
 }

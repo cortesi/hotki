@@ -62,6 +62,7 @@ impl NotificationDispatcher {
                 // Relay is handled elsewhere (event handler / repeater).
                 Ok(())
             }
+            KeyResponse::Script { .. } => Ok(()),
         }
     }
 

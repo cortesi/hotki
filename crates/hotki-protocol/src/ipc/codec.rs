@@ -57,6 +57,10 @@ mod tests {
                 text: "Body".to_string(),
             },
             MsgToUI::ReloadConfig,
+            MsgToUI::ConfigLoaded {
+                path: "/tmp/config.rhai".into(),
+                config: vec![1, 2, 3],
+            },
             MsgToUI::ClearNotifications,
             MsgToUI::ShowDetails(Toggle::Toggle),
             MsgToUI::ThemeNext,

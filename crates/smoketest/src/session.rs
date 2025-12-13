@@ -20,7 +20,7 @@ use crate::{
 pub struct HotkiSessionConfig {
     /// Path to the hotki binary to run.
     binary_path: PathBuf,
-    /// Optional path to a config RON file to load.
+    /// Optional path to a config file to load.
     config_path: Option<PathBuf>,
     /// Whether to enable verbose logs for the child.
     with_logs: bool,
@@ -129,6 +129,7 @@ impl HotkiSession {
             cmd.env("RUST_LOG", logshared::log_config_for_child());
         }
         if let Some(cfg) = &config_path {
+            cmd.arg("--config");
             cmd.arg(cfg);
         }
         cmd.env("HOTKI_CONTROL_SOCKET", &control_socket);

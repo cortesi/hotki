@@ -13,7 +13,6 @@ use crate::{app::AppEvent, connection_driver::ConnectionDriver};
 /// Start background key runtime and server connection driver on a dedicated thread.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_key_runtime(
-    cfg: &config::Config,
     config_path: &Path,
     tx_keys: &mpsc::UnboundedSender<AppEvent>,
     egui_ctx: &Context,
@@ -22,7 +21,6 @@ pub fn spawn_key_runtime(
     server_log_filter: Option<String>,
     dumpworld: bool,
 ) {
-    let cfg = cfg.clone();
     let config_path = config_path.to_path_buf();
     let tx_keys = tx_keys.clone();
     let egui_ctx = egui_ctx.clone();
@@ -47,7 +45,7 @@ pub fn spawn_key_runtime(
                 tx_ctrl_runtime,
                 dumpworld,
             );
-            if let Some(mut client) = driver.connect(cfg).await {
+            if let Some(mut client) = driver.connect().await {
                 driver.drive_events(&mut client).await;
             }
         });

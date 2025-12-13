@@ -2,7 +2,7 @@
 //! Binary entrypoint for the Hotki macOS app.
 use std::{path::PathBuf, process};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use eframe::NativeOptions;
 use hotki_server::Server;
 use logging::{self as logshared, forward};
@@ -39,7 +39,7 @@ mod settings;
 mod smoketest_bridge;
 mod tray;
 
-use config::{Config, default_config_path, load_from_path};
+use config::{Config, load_from_path, resolve_config_path};
 
 use crate::{
     app::{AppEvent, HotkiApp},
@@ -53,6 +53,10 @@ use crate::{
 #[command(name = "hotki", about = "A macOS hotkey application", version)]
 /// Command-line interface for the `hotki` binary.
 struct Cli {
+    /// Optional subcommand.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Run as server (headless)
     #[arg(long)]
     server: bool,
@@ -70,11 +74,19 @@ struct Cli {
     log: logshared::LogArgs,
 
     /// Optional path to the config file
-    config: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 
     /// Periodically dump a formatted world snapshot to logs (every ~5s)
     #[arg(long)]
     dumpworld: bool,
+}
+
+#[derive(Subcommand, Debug)]
+/// Top-level CLI subcommands.
+enum Command {
+    /// Load and validate the configuration then exit.
+    Check,
 }
 
 fn main() -> eframe::Result<()> {
@@ -107,6 +119,27 @@ fn main() -> eframe::Result<()> {
     // the same level plus our extra directive to silence mrpc disconnect noise.
     let server_filter: String = final_spec;
 
+    if let Some(Command::Check) = &cli.command {
+        let explicit = cli.config.as_deref();
+        let path = match resolve_config_path(explicit) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{}", e.pretty());
+                process::exit(1);
+            }
+        };
+        match load_from_path(&path) {
+            Ok(_) => {
+                println!("OK");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("{}", e.pretty());
+                process::exit(1);
+            }
+        }
+    }
+
     if cli.server {
         debug!("Starting server mode");
         let mut server = if let Some(path) = cli.socket {
@@ -126,21 +159,18 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
-    // Load config via config module; explicit path overrides default
-    let (app_cfg, config_path): (Config, PathBuf) = {
-        let path = if let Some(cfg) = &cli.config {
-            PathBuf::from(cfg)
-        } else {
-            default_config_path()
-        };
-        match load_from_path(&path) {
-            Ok(cfg) => (cfg, path),
+    // Resolve config path (server loads and validates after connect).
+    let config_path: PathBuf = {
+        let explicit = cli.config.as_deref();
+        match resolve_config_path(explicit) {
+            Ok(p) => p,
             Err(e) => {
                 error!("{}", e.pretty());
                 process::exit(1);
             }
         }
     };
+    let app_cfg = Config::default();
 
     let options: NativeOptions = NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -166,7 +196,6 @@ fn main() -> eframe::Result<()> {
             fonts::install_fonts(&cc.egui_ctx);
 
             runtime::spawn_key_runtime(
-                &app_cfg,
                 config_path.as_path(),
                 &tx,
                 &cc.egui_ctx,

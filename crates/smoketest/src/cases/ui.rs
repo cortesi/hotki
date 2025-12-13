@@ -327,36 +327,44 @@ fn remaining_ms(deadline: Instant) -> Option<u64> {
 const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
 
 /// Standard HUD demo configuration (full HUD mode anchored bottom-right).
-const UI_DEMO_CONFIG: &str = r#"(
-    keys: [
-        ("shift+cmd+0", "activate", keys([
-                ("t", "Theme tester", keys([
-                    ("h", "Theme Prev", theme_prev, (noexit: true)),
-                    ("l", "Theme Next", theme_next, (noexit: true)),
-                    ("n", "Notify", shell("echo notify", (ok_notify: info)), (noexit: true)),
-                ])),
-            ])),
-        ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-        ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-    ],
-    style: (hud: (mode: hud, pos: se)),
-)"#;
+const UI_DEMO_CONFIG: &str = r#"
+style(#{
+  hud: #{
+    mode: hud_full,
+    pos: se,
+  },
+});
+
+global.mode("shift+cmd+0", "activate", |m| {
+  m.mode("t", "Theme tester", |sub| {
+    sub.bind("h", "Theme Prev", theme_prev).no_exit();
+    sub.bind("l", "Theme Next", theme_next).no_exit();
+    sub.bind("n", "Notify", shell("echo notify").notify(info, warn)).no_exit();
+  });
+});
+
+global.bind("esc", "Back", pop).global().hidden().hud_only();
+"#;
 
 /// Mini HUD demo configuration that mirrors the standard flow in mini mode.
-const MINUI_DEMO_CONFIG: &str = r#"(
-    keys: [
-        ("shift+cmd+0", "activate", keys([
-                ("t", "Theme tester", keys([
-                    ("h", "Theme Prev", theme_prev, (noexit: true)),
-                    ("l", "Theme Next", theme_next, (noexit: true)),
-                    ("n", "Notify", shell("echo notify", (ok_notify: info)), (noexit: true)),
-                ])),
-            ])),
-        ("shift+cmd+0", "exit", exit, (global: true, hide: true)),
-        ("esc", "Back", pop, (global: true, hide: true, hud_only: true)),
-    ],
-    style: (hud: (mode: mini, pos: se)),
-)"#;
+const MINUI_DEMO_CONFIG: &str = r#"
+style(#{
+  hud: #{
+    mode: hud_mini,
+    pos: se,
+  },
+});
+
+global.mode("shift+cmd+0", "activate", |m| {
+  m.mode("t", "Theme tester", |sub| {
+    sub.bind("h", "Theme Prev", theme_prev).no_exit();
+    sub.bind("l", "Theme Next", theme_next).no_exit();
+    sub.bind("n", "Notify", shell("echo notify").notify(info, warn)).no_exit();
+  });
+});
+
+global.bind("esc", "Back", pop).global().hidden().hud_only();
+"#;
 
 /// Execute the standard HUD demo flow using the registry runner.
 pub fn ui_demo_standard(ctx: &mut CaseCtx<'_>) -> Result<()> {
@@ -364,7 +372,7 @@ pub fn ui_demo_standard(ctx: &mut CaseCtx<'_>) -> Result<()> {
         ctx,
         &UiCaseSpec {
             slug: "ui.demo.standard",
-            ron_config: UI_DEMO_CONFIG,
+            rhai_config: UI_DEMO_CONFIG,
             with_logs: true,
         },
     )
@@ -376,7 +384,7 @@ pub fn ui_demo_mini(ctx: &mut CaseCtx<'_>) -> Result<()> {
         ctx,
         &UiCaseSpec {
             slug: "ui.demo.mini",
-            ron_config: MINUI_DEMO_CONFIG,
+            rhai_config: MINUI_DEMO_CONFIG,
             with_logs: false,
         },
     )
@@ -388,7 +396,7 @@ pub fn ui_display_mapping(ctx: &mut CaseCtx<'_>) -> Result<()> {
         ctx,
         &UiCaseSpec {
             slug: "ui.display.mapping",
-            ron_config: UI_DEMO_CONFIG,
+            rhai_config: UI_DEMO_CONFIG,
             with_logs: true,
         },
         verify_display_alignment,
@@ -399,8 +407,8 @@ pub fn ui_display_mapping(ctx: &mut CaseCtx<'_>) -> Result<()> {
 struct UiCaseSpec {
     /// Registry slug recorded in artifacts.
     slug: &'static str,
-    /// RON configuration injected into the hotki session.
-    ron_config: &'static str,
+    /// Rhai configuration injected into the hotki session.
+    rhai_config: &'static str,
     /// Whether to enable verbose logging for the child process.
     with_logs: bool,
 }
@@ -412,7 +420,7 @@ struct UiCaseState {
     session: HotkiSession,
     /// Registry slug mirrored when logging diagnostics or creating scratch configs.
     slug: &'static str,
-    /// Filesystem path to the RON configuration applied for this demo.
+    /// Filesystem path to the Rhai configuration applied for this demo.
     config_path: PathBuf,
     /// Observed time in milliseconds until the HUD became visible.
     time_to_hud_ms: Option<u64>,
@@ -435,9 +443,9 @@ where
     let mut state: Option<UiCaseState> = None;
 
     ctx.setup(|ctx| {
-        let filename = format!("{}_config.ron", sanitize_slug(spec.slug));
+        let filename = format!("{}_config.rhai", sanitize_slug(spec.slug));
         let config_path = ctx.scratch_path(filename);
-        fs::write(&config_path, spec.ron_config.as_bytes())?;
+        fs::write(&config_path, spec.rhai_config.as_bytes())?;
 
         let session = HotkiSession::spawn(
             HotkiSessionConfig::from_env()?

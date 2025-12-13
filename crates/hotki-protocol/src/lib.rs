@@ -238,6 +238,16 @@ pub enum MsgToUI {
     /// Request the UI to reload the configuration from disk
     ReloadConfig,
 
+    /// Server loaded a new config from disk and is notifying clients.
+    ///
+    /// The config payload is msgpack-encoded `config::Config` bytes.
+    ConfigLoaded {
+        /// The config path the server loaded.
+        path: String,
+        /// The msgpack-encoded config payload.
+        config: Vec<u8>,
+    },
+
     /// Clear notifications request for the UI
     ClearNotifications,
 

@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     fmt::Write as _,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{self},
 };
 
@@ -107,13 +107,7 @@ impl ConnectionDriver {
         tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
         dumpworld: bool,
     ) -> Self {
-        let ui_config = match config::load_from_path(&config_path) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to load UI config: {}", e.pretty());
-                config::Config::default()
-            }
-        };
+        let ui_config = config::Config::default();
         let server_socket = hotki_server::socket_path_for_pid(process::id());
         let test_bridge_path = Some(PathBuf::from(control_socket_path(&server_socket)));
         let (bridge_events, _rx) = broadcast::channel(128);
@@ -347,17 +341,15 @@ impl ConnectionDriver {
                 Ok(r) => r,
                 Err(err) => BridgeResponse::Err { message: err },
             },
-            BridgeRequest::SetConfig { path } => match config::load_from_path(Path::new(&path)) {
+            BridgeRequest::SetConfig { path } => match conn.set_config_path(&path).await {
                 Ok(new_cfg) => {
+                    self.config_path = PathBuf::from(path);
                     self.ui_config = new_cfg.clone();
-                    if conn.set_config(new_cfg.clone()).await.is_err() {
-                        tracing::warn!("failed to push config to server on bridge set_config");
-                    }
                     apply_ui_config(&new_cfg, &self.tx_keys, &self.egui_ctx).await;
                     BridgeResponse::Ok
                 }
-                Err(e) => BridgeResponse::Err {
-                    message: e.pretty(),
+                Err(err) => BridgeResponse::Err {
+                    message: err.to_string(),
                 },
             },
             BridgeRequest::InjectKey {
@@ -469,6 +461,23 @@ impl ConnectionDriver {
                 self.tx_ctrl_runtime.send(ControlMsg::Reload).ok();
                 self.egui_ctx.request_repaint();
             }
+            hotki_protocol::MsgToUI::ConfigLoaded { path, config } => {
+                match rmp_serde::from_slice::<config::Config>(&config) {
+                    Ok(cfg) => {
+                        self.config_path = PathBuf::from(path);
+                        self.ui_config = cfg.clone();
+                        apply_ui_config(&cfg, &self.tx_keys, &self.egui_ctx).await;
+                    }
+                    Err(err) => {
+                        self.notify(
+                            NotifyKind::Error,
+                            "Config",
+                            &format!("Failed to decode ConfigLoaded payload: {}", err),
+                        );
+                    }
+                }
+                self.egui_ctx.request_repaint();
+            }
             hotki_protocol::MsgToUI::ClearNotifications => {
                 self.bridge_notifications.clear();
                 self.tx_keys.send(AppEvent::ClearNotifications).ok();
@@ -526,7 +535,7 @@ impl ConnectionDriver {
     }
 
     /// Connect to the server, draining any queued control messages after connect.
-    pub(crate) async fn connect(&mut self, initial_cfg: config::Config) -> Option<Client> {
+    pub(crate) async fn connect(&mut self) -> Option<Client> {
         let perms = check_permissions();
         if !perms.accessibility_ok || !perms.input_ok {
             self.tx_keys.send(AppEvent::ShowPermissionsHelp).ok();
@@ -563,11 +572,19 @@ impl ConnectionDriver {
                 return None;
             }
         };
-        if let Err(e) = conn.set_config(initial_cfg).await {
-            error!("Failed to set config on server: {}", e);
-            return None;
-        }
-        debug!("Config sent to server engine");
+        let loaded_cfg = match conn
+            .set_config_path(self.config_path.to_string_lossy().as_ref())
+            .await
+        {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                error!("Failed to set config path on server: {}", e);
+                return None;
+            }
+        };
+        self.ui_config = loaded_cfg;
+        apply_ui_config(&self.ui_config, &self.tx_keys, &self.egui_ctx).await;
+        debug!("Config path sent to server engine; UI updated");
 
         self.ensure_test_bridge().await;
 

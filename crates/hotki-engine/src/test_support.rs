@@ -2,9 +2,18 @@
 //! These helpers are public to avoid dead_code warnings and are lightweight.
 //! They are intended for use by the test suite only.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    env, fs,
+    future::Future,
+    path::PathBuf,
+    process,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
-use config::Keys;
 use hotki_protocol::MsgToUI;
 use hotki_world::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow};
 use tokio::{
@@ -120,17 +129,33 @@ pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32
     );
 }
 
-/// Minimal Keys configuration used across engine tests.
-pub fn create_test_keys() -> Keys {
-    let config = r#"[
-        ("cmd+k", "test", keys([
-            ("a", "action", pop),
-            ("b", "nested", keys([
-                ("c", "deep", pop)
-            ]))
-        ]))
-    ]"#;
-    Keys::from_ron(config).expect("valid test config")
+fn temp_config_path(prefix: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    env::temp_dir().join(format!("{prefix}-{}-{counter}.rhai", process::id()))
+}
+
+/// Load a Rhai config script from an in-memory string for tests.
+pub fn load_test_config(script: &str) -> config::Config {
+    let path = temp_config_path("hotki-test-config");
+    fs::write(&path, script).expect("write test config");
+    let loaded = config::load_for_server_from_path(&path).expect("load test config");
+    let _ignored = fs::remove_file(&path);
+    loaded.config
+}
+
+/// Minimal configuration used across engine tests.
+pub fn create_test_config() -> config::Config {
+    load_test_config(
+        r#"
+        global.mode("cmd+k", "test", |m| {
+          m.bind("a", "action", pop);
+          m.mode("b", "nested", |sub| {
+            sub.bind("c", "deep", pop);
+          });
+        });
+        "#,
+    )
 }
 
 /// Receive UI messages until `pred` matches or `timeout_ms` elapses.

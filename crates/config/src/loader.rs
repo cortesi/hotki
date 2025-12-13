@@ -1,41 +1,34 @@
-//! Parse and load configuration from RON sources.
+//! Parse and load user configuration.
 
-use std::{fs, path::Path};
+use std::{ffi::OsStr, path::Path};
 
-use crate::{Config, ConfigInput, Error, themes};
+use crate::{Config, Error, RhaiRuntime, rhai::load_from_path_with_runtime};
 
-/// Load a fully resolved `Config` from a RON file at `path`.
-///
-/// - Selects the base theme using the `base_theme` field in the file (or
-///   falls back to the default theme when absent).
-/// - Applies any style overrides on top of the chosen base theme.
-/// - Uses the user's keys when provided; otherwise falls back to empty keys.
-pub fn load_from_path(path: &Path) -> Result<Config, Error> {
-    let s = fs::read_to_string(path).map_err(|e| Error::Read {
-        path: Some(path.to_path_buf()),
-        message: e.to_string(),
-    })?;
-    load_from_str(&s, Some(path))
+/// Fully loaded configuration for server execution.
+pub struct LoadedConfig {
+    /// Parsed and resolved configuration.
+    pub config: Config,
+    /// Optional Rhai runtime for executing script actions.
+    pub rhai: Option<RhaiRuntime>,
 }
 
-/// Parse a RON config string into a resolved `Config`.
-///
-/// `path` is only used to enrich error messages.
-pub fn load_from_str(s: &str, path: Option<&Path>) -> Result<Config, Error> {
-    match ron::from_str::<ConfigInput>(s) {
-        Ok(user_in) => {
-            // Determine base theme from the input (defaults to "default")
-            let theme_to_use = user_in.base_theme.as_deref();
-            let style_base = themes::load_theme(theme_to_use);
+/// Load a fully resolved `Config` from a Rhai file at `path`.
+pub fn load_from_path(path: &Path) -> Result<Config, Error> {
+    Ok(load_for_server_from_path(path)?.config)
+}
 
-            // Build config; user overlay stored for later application.
-            let mut cfg = Config::from_parts(user_in.keys, style_base);
-            cfg.user_overlay = user_in.style;
-            if let Some(tunables) = user_in.server {
-                cfg.server = tunables;
-            }
-            Ok(cfg)
-        }
-        Err(err) => Err(Error::from_ron(s, &err, path)),
+/// Load a config from disk and include any Rhai runtime needed for script actions.
+pub fn load_for_server_from_path(path: &Path) -> Result<LoadedConfig, Error> {
+    if path.extension() != Some(OsStr::new("rhai")) {
+        return Err(Error::Read {
+            path: Some(path.to_path_buf()),
+            message: "Unsupported config format (expected a .rhai file)".to_string(),
+        });
     }
+
+    let loaded = load_from_path_with_runtime(path)?;
+    Ok(LoadedConfig {
+        config: loaded.config,
+        rhai: loaded.runtime,
+    })
 }

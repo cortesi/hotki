@@ -13,9 +13,10 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-ron = { workspace = true }
 colornames = "0.0.6"
 mac-keycode = { path = "../mac-keycode" }
 thiserror = { workspace = true }
 regex = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
+rhai = { version = "1.23.6", features = ["serde", "sync"] }
+tracing.workspace = true

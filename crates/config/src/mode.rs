@@ -122,6 +122,8 @@ pub enum Action {
     /// Relay a keystroke (with optional modifiers) to the currently
     /// focused application. Example: relay("cmd+shift+n").
     Relay(String),
+    /// Execute a script action registered by a Rhai config at load time.
+    Rhai { id: u64 },
     /// Enter a nested keys section
     Keys(Keys),
     /// Return to the previous mode
@@ -292,14 +294,6 @@ impl<'de> Deserialize<'de> for Keys {
 }
 
 impl Keys {
-    /// Create a `Keys` from a RON string.
-    pub fn from_ron(ron_str: &str) -> Result<Self, crate::Error> {
-        match ron::from_str::<Self>(ron_str) {
-            Ok(mode) => Ok(mode),
-            Err(e) => Err(crate::Error::from_ron(ron_str, &e, None)),
-        }
-    }
-
     /// Get the action and attributes associated with a key.
     pub(crate) fn get_with_attrs(&self, key: &Chord) -> Option<(&Action, &KeysAttrs)> {
         self.keys
@@ -330,20 +324,6 @@ impl Keys {
     }
 
     // Note: additional convenience getters were removed as unused to keep API minimal.
-}
-
-#[cfg(test)]
-mod mode_err_tests {
-    use super::*;
-
-    #[test]
-    fn mode_from_ron_error_is_config_error() {
-        let ron = "[(\"BAD_KEY\", \"Desc\", exit)]"; // BAD_KEY is not a valid chord
-        let err = Keys::from_ron(ron).unwrap_err();
-        let pretty = err.pretty();
-        assert!(pretty.contains("parse error"));
-        assert!(pretty.contains("^"));
-    }
 }
 
 // Window-management parsing tests removed alongside the action variants.

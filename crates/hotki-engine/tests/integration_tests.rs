@@ -1,17 +1,19 @@
 use std::{
+    env, fs,
+    path::PathBuf,
+    process,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use config::Keys;
 use hotki_engine::{
     NotificationDispatcher, RelayHandler, RepeatSpec, Repeater,
     test_support::{
-        create_test_engine, create_test_engine_with_relay, create_test_keys,
-        ensure_no_os_interaction, recv_until, run_engine_test, set_world_focus,
+        create_test_config, create_test_engine, create_test_engine_with_relay,
+        ensure_no_os_interaction, load_test_config, recv_until, run_engine_test, set_world_focus,
     },
 };
 use hotki_protocol::MsgToUI;
@@ -20,14 +22,57 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 #[test]
+fn test_rhai_script_action_end_to_end() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine().await;
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time since epoch")
+            .as_nanos();
+        let path: PathBuf =
+            env::temp_dir().join(format!("hotki-script-action-{}-{}.rhai", process::id(), ts));
+
+        let script = r#"
+            global.bind("a", "Macro", || [theme_next, theme_prev]);
+        "#;
+        fs::write(&path, script).expect("write script");
+
+        let loaded = config::load_for_server_from_path(&path).expect("load config");
+        engine
+            .set_config_with_rhai(loaded.config, loaded.rhai)
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "Safari", "Window", 123).await;
+        while rx.try_recv().is_ok() {}
+
+        let id = engine
+            .resolve_id_for_ident("a")
+            .await
+            .expect("registered id for a");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch a");
+
+        let got_next = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::ThemeNext)).await;
+        let got_prev = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::ThemePrev)).await;
+        assert!(got_next, "expected ThemeNext from script macro");
+        assert!(got_prev, "expected ThemePrev from script macro");
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
 fn test_rebind_on_depth_change() {
     run_engine_test(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
-        let keys = create_test_keys();
-
-        // Set initial mode
-        let cfg = config::Config::from_parts(keys, config::Style::default());
-        engine.set_config(cfg).await.expect("set config");
+        engine
+            .set_config(create_test_config())
+            .await
+            .expect("set config");
 
         // Seed world focus to trigger initial binding
         set_world_focus(world.as_ref(), "TestApp", "TestWindow", 1234).await;
@@ -87,16 +132,13 @@ fn test_binding_diff_correctness() {
         let (engine, _rx, _world) = create_test_engine().await;
 
         // Test 1: Set initial bindings
-        let keys1 = Keys::from_ron(
-            r#"[
-        ("cmd+a", "action a", pop),
-        ("cmd+b", "action b", pop),
-        ("cmd+c", "action c", pop)
-    ]"#,
-        )
-        .expect("valid keys");
-
-        let cfg1 = config::Config::from_parts(keys1.clone(), config::Style::default());
+        let cfg1 = load_test_config(
+            r#"
+            global.bind("cmd+a", "action a", pop);
+            global.bind("cmd+b", "action b", pop);
+            global.bind("cmd+c", "action c", pop);
+            "#,
+        );
         engine.set_config(cfg1).await.expect("set config");
         let snapshot1 = engine.bindings_snapshot().await;
         assert_eq!(snapshot1.len(), 3, "Should have 3 bindings");
@@ -107,22 +149,25 @@ fn test_binding_diff_correctness() {
         assert_eq!(snapshot1[2].0, "cmd+c");
 
         // Test 2: Set same bindings again (no change)
-        let cfg1b = config::Config::from_parts(keys1, config::Style::default());
+        let cfg1b = load_test_config(
+            r#"
+            global.bind("cmd+a", "action a", pop);
+            global.bind("cmd+b", "action b", pop);
+            global.bind("cmd+c", "action c", pop);
+            "#,
+        );
         engine.set_config(cfg1b).await.expect("set config");
         let snapshot2 = engine.bindings_snapshot().await;
         assert_eq!(snapshot1, snapshot2, "Should have identical bindings");
 
         // Test 3: Partial change (remove cmd+c, add cmd+d)
-        let keys2 = Keys::from_ron(
-            r#"[
-        ("cmd+a", "action a", pop),
-        ("cmd+b", "action b", pop),
-        ("cmd+d", "action d", pop)
-    ]"#,
-        )
-        .expect("valid keys");
-
-        let cfg2 = config::Config::from_parts(keys2, config::Style::default());
+        let cfg2 = load_test_config(
+            r#"
+            global.bind("cmd+a", "action a", pop);
+            global.bind("cmd+b", "action b", pop);
+            global.bind("cmd+d", "action d", pop);
+            "#,
+        );
         engine.set_config(cfg2).await.expect("set config");
         let snapshot3 = engine.bindings_snapshot().await;
         assert_eq!(snapshot3.len(), 3, "Should still have 3 bindings");
@@ -131,15 +176,12 @@ fn test_binding_diff_correctness() {
         assert_eq!(snapshot3[2].0, "cmd+d");
 
         // Test 4: Complete replacement
-        let keys3 = Keys::from_ron(
-            r#"[
-        ("ctrl+x", "action x", pop),
-        ("ctrl+y", "action y", pop)
-    ]"#,
-        )
-        .expect("valid keys");
-
-        let cfg3 = config::Config::from_parts(keys3, config::Style::default());
+        let cfg3 = load_test_config(
+            r#"
+            global.bind("ctrl+x", "action x", pop);
+            global.bind("ctrl+y", "action y", pop);
+            "#,
+        );
         engine.set_config(cfg3).await.expect("set config");
         let snapshot4 = engine.bindings_snapshot().await;
         assert_eq!(snapshot4.len(), 2, "Should have 2 bindings");
@@ -147,8 +189,7 @@ fn test_binding_diff_correctness() {
         assert_eq!(snapshot4[1].0, "ctrl+y");
 
         // Test 5: Clear all bindings
-        let keys4 = Keys::from_ron("[]").expect("valid keys");
-        let cfg4 = config::Config::from_parts(keys4, config::Style::default());
+        let cfg4 = load_test_config("");
         engine.set_config(cfg4).await.expect("set config");
         let snapshot5 = engine.bindings_snapshot().await;
         assert!(snapshot5.is_empty(), "Should have no bindings");
@@ -472,22 +513,26 @@ fn test_binding_registration_order_stability() {
         let (engine, _rx, _world) = create_test_engine().await;
 
         // Add bindings in random order
-        let keys = Keys::from_ron(
-            r#"[
-        ("cmd+z", "action z", pop),
-        ("cmd+a", "action a", pop),
-        ("cmd+m", "action m", pop),
-        ("cmd+b", "action b", pop)
-    ]"#,
-        )
-        .expect("valid keys");
-
-        let cfg_a = config::Config::from_parts(keys.clone(), config::Style::default());
+        let cfg_a = load_test_config(
+            r#"
+            global.bind("cmd+z", "action z", pop);
+            global.bind("cmd+a", "action a", pop);
+            global.bind("cmd+m", "action m", pop);
+            global.bind("cmd+b", "action b", pop);
+            "#,
+        );
         engine.set_config(cfg_a).await.expect("set config");
         let snapshot1 = engine.bindings_snapshot().await;
 
         // Set same keys again
-        let cfg_b = config::Config::from_parts(keys, config::Style::default());
+        let cfg_b = load_test_config(
+            r#"
+            global.bind("cmd+z", "action z", pop);
+            global.bind("cmd+a", "action a", pop);
+            global.bind("cmd+m", "action m", pop);
+            global.bind("cmd+b", "action b", pop);
+            "#,
+        );
         engine.set_config(cfg_b).await.expect("set config");
         let snapshot2 = engine.bindings_snapshot().await;
 
@@ -515,29 +560,19 @@ fn test_capture_all_mode_transitions() {
         // Test capture-all mode transitions via engine depth changes
         let (engine, _rx, _world) = create_test_engine().await;
 
-        // Set a mode with capture capability
-        // Note: capture attribute would need to be specified in config syntax if supported
-        let keys = Keys::from_ron(
-            r#"[
-        ("cmd+k", "test", keys([
-            ("a", "action", pop)
-        ]), (capture: true))
-    ]"#,
-        )
-        .unwrap_or_else(|_| {
-            // If capture attribute not supported in RON, use a simple mode
-            Keys::from_ron(
-                r#"[
-            ("cmd+k", "test", keys([
-                ("a", "action", pop)
-            ]))
-        ]"#,
-            )
-            .expect("valid keys")
-        });
-
-        let cfg_c = config::Config::from_parts(keys, config::Style::default());
-        engine.set_config(cfg_c).await.expect("set config");
+        // Set a mode with capture enabled.
+        engine
+            .set_config(load_test_config(
+                r#"
+                global
+                  .mode("cmd+k", "test", |m| {
+                    m.bind("a", "action", pop);
+                  })
+                  .capture();
+                "#,
+            ))
+            .await
+            .expect("set config");
 
         // At depth 0, capture should be inactive even if mode requests it
         let depth = engine.get_depth().await;
@@ -553,16 +588,17 @@ fn test_capture_all_mode_transitions() {
 fn test_match_app_rebinds_on_focus_change() {
     run_engine_test(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
-        let keys = Keys::from_ron(
-            r#"[
-        ("cmd+a", "app-only", relay("cmd+1"), (match_app: "Safari")),
-        ("cmd+b", "global", relay("cmd+2"))
-    ]"#,
-        )
-        .expect("valid keys");
-
-        let cfg = config::Config::from_parts(keys, config::Style::default());
-        engine.set_config(cfg).await.expect("set config");
+        engine
+            .set_config(load_test_config(
+                r#"
+                global
+                  .bind("cmd+a", "app-only", relay("cmd+1"))
+                  .match_app("Safari");
+                global.bind("cmd+b", "global", relay("cmd+2"));
+                "#,
+            ))
+            .await
+            .expect("set config");
 
         // Focus Safari -> both bindings available
         set_world_focus(world.as_ref(), "Safari", "Doc", 1111).await;
@@ -608,9 +644,10 @@ fn test_match_app_rebinds_on_focus_change() {
 fn test_display_snapshot_reaches_hud_updates() {
     run_engine_test(async move {
         let (engine, mut rx, world) = create_test_engine().await;
-        let keys = Keys::from_ron(r#"[("cmd+k", "noop", pop)]"#).expect("valid keys");
-        let cfg = config::Config::from_parts(keys, config::Style::default());
-        engine.set_config(cfg).await.expect("set config");
+        engine
+            .set_config(load_test_config(r#"global.bind("cmd+k", "noop", pop);"#))
+            .await
+            .expect("set config");
 
         // Seed displays before focus to ensure snapshot is ready.
         let displays = DisplaysSnapshot {

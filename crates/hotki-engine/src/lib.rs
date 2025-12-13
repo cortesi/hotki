@@ -99,6 +99,8 @@ pub struct Engine {
     key_tracker: KeyStateTracker,
     /// Configuration
     config: Arc<tokio::sync::RwLock<config::Config>>,
+    /// Optional Rhai runtime used to resolve script actions at dispatch time.
+    rhai: Arc<tokio::sync::RwLock<Option<Arc<config::RhaiRuntime>>>>,
     /// Cached focus context from World events: `(app, title, pid)`.
     focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
     /// If true, hint world refresh on dispatch; else trust cached context.
@@ -164,6 +166,7 @@ impl Engine {
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
             config: config_arc,
+            rhai: Arc::new(tokio::sync::RwLock::new(None)),
             focus_ctx,
             sync_on_dispatch,
             display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
@@ -414,14 +417,29 @@ impl Engine {
     /// We intentionally do not reset the engine `State` here so that the current
     /// HUD location (depth/path) remains stable across theme or config updates.
     /// Path invalidation is handled by `Config::ensure_context` during rebind.
-    pub async fn set_config(&self, cfg: config::Config) -> Result<()> {
+    pub async fn set_config_with_rhai(
+        &self,
+        cfg: config::Config,
+        rhai: Option<config::RhaiRuntime>,
+    ) -> Result<()> {
         // LOCK ORDER: config (write) must be released before rebind_current_context
         // which acquires config (read) -> state -> binding_manager.
         {
             let mut g = self.config.write().await;
             *g = cfg;
         }
+        {
+            let mut guard = self.rhai.write().await;
+            *guard = rhai.map(Arc::new);
+        }
         self.rebind_current_context().await
+    }
+
+    /// Set full configuration and clear any loaded Rhai runtime.
+    ///
+    /// Use [`Engine::set_config_with_rhai`] when loading configs that contain script actions.
+    pub async fn set_config(&self, cfg: config::Config) -> Result<()> {
+        self.set_config_with_rhai(cfg, None).await
     }
 
     // (No legacy focus snapshot hook; engine relies solely on world.)
@@ -458,7 +476,7 @@ impl Engine {
         if self.sync_on_dispatch {
             self.world.hint_refresh();
         }
-        let (app_ctx, title_ctx, _pid) = self.current_context();
+        let (app_ctx, title_ctx, pid) = self.current_context();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
@@ -468,7 +486,7 @@ impl Engine {
         // LOCK ORDER: config (read) -> state. Response handling and rebind happen
         // after releasing state lock to avoid holding guards across async calls.
         let cfg_for_handle = self.config.read().await;
-        let (loc_before, loc_after, response) = {
+        let (loc_before, mut loc_after, response) = {
             let mut st = self.state.lock().await;
             let loc_before = st.current_cursor();
             let resp = st.handle_key_with_context(&cfg_for_handle, chord, &app_ctx, &title_ctx);
@@ -486,6 +504,90 @@ impl Engine {
 
         // Handle the response (outside the lock for better concurrency)
         match response {
+            Ok(KeyResponse::Script { id, attrs }) => {
+                let rhai = { self.rhai.read().await.clone() };
+                let Some(rhai) = rhai else {
+                    self.notifier.send_error(
+                        "Rhai",
+                        "No Rhai runtime loaded for script actions".to_string(),
+                    )?;
+                    return Ok(false);
+                };
+
+                let resolved = match rhai.eval_action(id, &app_ctx, &title_ctx, pid, &loc_before) {
+                    Ok(actions) => actions,
+                    Err(err) => {
+                        self.notifier.send_error("Rhai", err)?;
+                        return Ok(false);
+                    }
+                };
+
+                if resolved
+                    .iter()
+                    .any(|a| matches!(a, config::Action::Keys(_)))
+                {
+                    self.notifier.send_error(
+                        "Rhai",
+                        "Script actions cannot synthesize nested key trees at runtime".to_string(),
+                    )?;
+                    return Ok(false);
+                }
+                if resolved
+                    .iter()
+                    .any(|a| matches!(a, config::Action::Rhai { .. }))
+                {
+                    self.notifier.send_error(
+                        "Rhai",
+                        "Script actions cannot return other script actions".to_string(),
+                    )?;
+                    return Ok(false);
+                }
+
+                let is_macro = resolved.len() != 1;
+                let (responses, next_cursor) = {
+                    let mut st = self.state.lock().await;
+                    let out = st.apply_script_actions(&resolved, &attrs);
+                    let cursor = st.current_cursor();
+                    (out, cursor)
+                };
+                let responses = match responses {
+                    Ok(responses) => {
+                        loc_after = next_cursor;
+                        responses
+                    }
+                    Err(err) => {
+                        self.notifier.send_error("Rhai", err.to_string())?;
+                        return Ok(false);
+                    }
+                };
+
+                for (idx, resp) in responses.into_iter().enumerate() {
+                    let step_ident;
+                    let ident = if is_macro {
+                        step_ident = format!("{identifier}#{idx}");
+                        step_ident.as_str()
+                    } else {
+                        identifier.as_str()
+                    };
+
+                    match resp {
+                        KeyResponse::Relay {
+                            chord: target,
+                            attrs,
+                        } => self.handle_action_relay(ident, target, &attrs).await?,
+                        KeyResponse::ShellAsync {
+                            command,
+                            ok_notify,
+                            err_notify,
+                            repeat,
+                        } => {
+                            self.handle_action_shell(ident, command, ok_notify, err_notify, repeat)
+                                .await?
+                        }
+                        other => self.notifier.handle_key_response(other)?,
+                    }
+                }
+            }
             Ok(KeyResponse::Relay {
                 chord: target,
                 attrs,

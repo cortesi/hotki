@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Action, Cursor, Keys, KeysAttrs, NotifyKind, Style,
-    raw::{self, RawConfig},
+    raw::{self},
     themes,
 };
 
@@ -64,36 +64,6 @@ impl CursorEnsureExt for Cursor {
     }
 }
 
-/// Input form of user configuration that carries keys, optional base theme name,
-/// an optional raw style overlay, and optional server tunables. This type is suitable for reading
-/// user configuration from RON without exposing raw internals.
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct ConfigInput {
-    /// User key bindings.
-    pub keys: Keys,
-    /// Optional base theme name.
-    pub base_theme: Option<String>,
-    /// Optional raw style overlay (applied over base theme).
-    pub style: Option<raw::RawStyle>,
-    /// Optional server tunables (primarily for tests/smoketests).
-    pub server: Option<ServerTunables>,
-}
-
-impl<'de> Deserialize<'de> for ConfigInput {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = RawConfig::deserialize(deserializer)?;
-        Ok(Self {
-            keys: raw.keys,
-            base_theme: raw.base_theme.as_option().cloned(),
-            style: raw.style.into_option(),
-            server: raw.server.into_option().map(|s| s.into_server_tunables()),
-        })
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// User configuration for keys and UI theme (HUD + notifications).
@@ -114,7 +84,7 @@ pub struct Config {
 }
 
 // Note: Config derives Deserialize for the direct wire shape only.
-// RON parsing uses loader::{load_from_path, load_from_str}, which go via RawConfig.
+// User config loading is performed via the Rhai loader.
 
 /// Traversal state when resolving a chord path within nested key scopes.
 struct KeysScope<'a> {
