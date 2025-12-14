@@ -1,6 +1,9 @@
 #![deny(clippy::disallowed_methods)]
 //! Binary entrypoint for the Hotki macOS app.
-use std::{path::PathBuf, process};
+use std::{
+    path::{Path, PathBuf},
+    process,
+};
 
 use clap::{Parser, Subcommand};
 use eframe::NativeOptions;
@@ -86,7 +89,14 @@ struct Cli {
 /// Top-level CLI subcommands.
 enum Command {
     /// Load and validate the configuration then exit.
-    Check,
+    Check {
+        /// Path to configuration file to check (defaults to ~/.hotki/config.rhai)
+        path: Option<String>,
+
+        /// Dump the parsed configuration as JSON to stdout
+        #[arg(long)]
+        dump: bool,
+    },
 }
 
 fn main() -> eframe::Result<()> {
@@ -119,18 +129,28 @@ fn main() -> eframe::Result<()> {
     // the same level plus our extra directive to silence mrpc disconnect noise.
     let server_filter: String = final_spec;
 
-    if let Some(Command::Check) = &cli.command {
-        let explicit = cli.config.as_deref();
-        let path = match resolve_config_path(explicit) {
+    if let Some(Command::Check { path, dump }) = &cli.command {
+        let explicit = path.as_deref().map(Path::new).or(cli.config.as_deref());
+        let resolved = match resolve_config_path(explicit) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("{}", e.pretty());
                 process::exit(1);
             }
         };
-        match load_from_path(&path) {
-            Ok(_) => {
-                println!("OK");
+        match load_from_path(&resolved) {
+            Ok(cfg) => {
+                if *dump {
+                    match serde_json::to_string_pretty(&cfg) {
+                        Ok(json) => println!("{json}"),
+                        Err(e) => {
+                            eprintln!("Failed to serialize config: {e}");
+                            process::exit(1);
+                        }
+                    }
+                } else {
+                    println!("OK");
+                }
                 return Ok(());
             }
             Err(e) => {
