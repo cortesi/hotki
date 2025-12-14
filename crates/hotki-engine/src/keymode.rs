@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_unknown_keys() {
-        let cfg = load_test_config(r#"global.bind("a", "Action", shell("test"));"#);
+        let cfg = load_test_config(r#"global.bind("a", "Action", action.shell("test"));"#);
         let mut state = State::new();
         press(&mut state, &cfg, &chord("z")).unwrap();
         press(&mut state, &cfg, &chord("x")).unwrap();
@@ -451,11 +451,11 @@ mod tests {
         let cfg = load_test_config(
             r#"
             global.mode("m", "Menu", |m| {
-              m.bind("n", "Normal", shell("echo normal"));
-              m.bind("s", "Sticky", shell("echo sticky")).no_exit();
+              m.bind("n", "Normal", action.shell("echo normal"));
+              m.bind("s", "Sticky", action.shell("echo sticky")).no_exit();
               m.mode("d", "Deep", |sub| {
-                sub.bind("x", "Execute", shell("echo deep"));
-                sub.bind("y", "Sticky Deep", shell("echo sticky deep")).no_exit();
+                sub.bind("x", "Execute", action.shell("echo deep"));
+                sub.bind("y", "Sticky Deep", action.shell("echo sticky deep")).no_exit();
               });
             });
             "#,
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn test_reload_and_clear_notifications() {
         // Reload non-sticky.
-        let cfg = load_test_config(r#"global.bind("r", "Reload", reload_config);"#);
+        let cfg = load_test_config(r#"global.bind("r", "Reload", action.reload_config);"#);
         let mut state = State::new();
         match press(&mut state, &cfg, &chord("r")).unwrap() {
             KeyResponse::Ui(MsgToUI::ReloadConfig) => {}
@@ -496,8 +496,8 @@ mod tests {
         let cfg2 = load_test_config(
             r#"
             global.mode("m", "Menu", |m| {
-              m.bind("c", "Clear", clear_notifications).no_exit();
-              m.bind("p", "Back", pop);
+              m.bind("c", "Clear", action.clear_notifications).no_exit();
+              m.bind("p", "Back", action.pop);
             });
             "#,
         );
@@ -517,8 +517,8 @@ mod tests {
             r#"
             global.mode("shift+cmd+0", "activate", |m| {
               m.mode("t", "Theme tester", |sub| {
-                sub.bind("h", "Theme Prev", theme_prev).no_exit();
-                sub.bind("l", "Theme Next", theme_next).no_exit();
+                sub.bind("h", "Theme Prev", action.theme_prev).no_exit();
+                sub.bind("l", "Theme Next", action.theme_next).no_exit();
               });
             });
             "#,

@@ -56,7 +56,7 @@ mod tests {
         let cfg = load(
             r#"
             base_theme("default");
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
         )
         .unwrap();
@@ -68,7 +68,7 @@ mod tests {
         let cfg = load(
             r#"
             global.mode("shift+cmd+0", "Main", |m| {
-              m.bind("a", "Exit", exit);
+              m.bind("a", "Exit", action.exit);
             });
             "#,
         )
@@ -82,7 +82,8 @@ mod tests {
 
     #[test]
     fn fluent_attrs_apply_to_bindings() {
-        let cfg = load(r#"global.bind("a", "Exit", exit).global().hidden().hud_only();"#).unwrap();
+        let cfg =
+            load(r#"global.bind("a", "Exit", action.exit).global().hidden().hud_only();"#).unwrap();
         let attrs = cfg
             .attrs_for_key(&Cursor::default(), &chord("a"))
             .expect("attrs");
@@ -95,7 +96,7 @@ mod tests {
     fn actions_are_immutable_in_fluent_calls() {
         let cfg = load(
             r#"
-            let base = shell("echo hi");
+            let base = action.shell("echo hi");
             let silent = base.silent();
             let loud = base.notify(success, error);
             global.bind("a", "Base", base);
@@ -126,20 +127,21 @@ mod tests {
 
     #[test]
     fn action_methods_are_type_checked() {
-        let err = load(r#"global.bind("a", "Bad", exit.notify(success, error));"#).unwrap_err();
+        let err =
+            load(r#"global.bind("a", "Bad", action.exit.notify(success, error));"#).unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
         assert!(err.pretty().contains("notify is only valid"));
     }
 
     #[test]
     fn binding_attribute_applicability_is_enforced() {
-        let err = load(r#"global.bind("a", "Exit", exit).capture();"#).unwrap_err();
+        let err = load(r#"global.bind("a", "Exit", action.exit).capture();"#).unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
 
         let err = load(r#"global.mode("m", "Main", |m| {}).no_exit();"#).unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
 
-        let err = load(r#"global.bind("a", "Exit", exit).style(#{});"#).unwrap_err();
+        let err = load(r#"global.bind("a", "Exit", action.exit).style(#{});"#).unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
     }
 
@@ -147,8 +149,8 @@ mod tests {
     fn duplicate_chords_error() {
         let err = load(
             r#"
-            global.bind("a", "One", exit);
-            global.bind("a", "Two", exit);
+            global.bind("a", "One", action.exit);
+            global.bind("a", "Two", action.exit);
             "#,
         )
         .unwrap_err();
@@ -160,8 +162,8 @@ mod tests {
     fn duplicate_chords_are_allowed_when_guarded() {
         let cfg = load(
             r#"
-            global.bind("a", "One", shell("echo one")).match_app("Foo");
-            global.bind("a", "Two", shell("echo two")).match_app("Bar");
+            global.bind("a", "One", action.shell("echo one")).match_app("Foo");
+            global.bind("a", "Two", action.shell("echo two")).match_app("Bar");
             "#,
         )
         .unwrap();
@@ -188,7 +190,7 @@ mod tests {
 
     #[test]
     fn invalid_chords_error() {
-        let err = load(r#"global.bind("BAD_KEY", "Bad", exit);"#).unwrap_err();
+        let err = load(r#"global.bind("BAD_KEY", "Bad", action.exit);"#).unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
         assert!(err.pretty().contains("invalid chord"));
     }
@@ -200,7 +202,7 @@ mod tests {
             style(#{
               hud: #{ pos: ne, definitely_not_real: 123 },
             });
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
         )
         .unwrap_err();
@@ -209,7 +211,7 @@ mod tests {
         let err = load(
             r#"
             server(#{ wat: true });
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
         )
         .unwrap_err();
@@ -221,7 +223,7 @@ mod tests {
         let cfg = load(
             r#"
             server(#{ exit_if_no_clients: true });
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
         )
         .unwrap();
@@ -233,7 +235,7 @@ mod tests {
         let cfg = load(
             r#"
             let v = env("__HOTKI_ENV_SHOULD_NOT_EXIST__");
-            global.bind("a", "Cmd", shell("x" + v));
+            global.bind("a", "Cmd", action.shell("x" + v));
             "#,
         )
         .unwrap();
@@ -251,7 +253,7 @@ mod tests {
               hud: #{ pos: ne, title_font_weight: medium },
               notify: #{ pos: right },
             });
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
         )
         .unwrap();
@@ -269,7 +271,7 @@ mod tests {
         let err = load_from_str_with_runtime(
             r#"
             import "../evil";
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
             Some(&cfg_path),
         )
@@ -298,7 +300,7 @@ mod tests {
         let err = load_from_str_with_runtime(
             r#"
             import "evil_link";
-            global.bind("a", "Exit", exit);
+            global.bind("a", "Exit", action.exit);
             "#,
             Some(&cfg_path),
         )
@@ -310,7 +312,7 @@ mod tests {
 
     #[test]
     fn script_actions_can_return_single_action() {
-        let (cfg, rt) = load_with_runtime(r#"global.bind("a", "Next", || theme_next);"#);
+        let (cfg, rt) = load_with_runtime(r#"global.bind("a", "Next", || action.theme_next);"#);
         let Action::Rhai { id } = find_action(&cfg, "a") else {
             panic!("expected rhai action");
         };
@@ -322,8 +324,9 @@ mod tests {
 
     #[test]
     fn script_actions_can_return_macro_array() {
-        let (cfg, rt) =
-            load_with_runtime(r#"global.bind("a", "Macro", || [theme_next, theme_prev]);"#);
+        let (cfg, rt) = load_with_runtime(
+            r#"global.bind("a", "Macro", || [action.theme_next, action.theme_prev]);"#,
+        );
         let Action::Rhai { id } = find_action(&cfg, "a") else {
             panic!("expected rhai action");
         };
@@ -338,7 +341,7 @@ mod tests {
         let (cfg, rt) = load_with_runtime(
             r#"
             global.bind("a", "Ctx", |ctx| {
-              if ctx.app.contains("Safari") { theme_next } else { theme_prev }
+              if ctx.app.contains("Safari") { action.theme_next } else { action.theme_prev }
             });
             "#,
         );
@@ -365,7 +368,8 @@ mod tests {
 
     #[test]
     fn script_action_array_elements_are_type_checked() {
-        let (cfg, rt) = load_with_runtime(r#"global.bind("a", "Bad", || [theme_next, 42]);"#);
+        let (cfg, rt) =
+            load_with_runtime(r#"global.bind("a", "Bad", || [action.theme_next, 42]);"#);
         let Action::Rhai { id } = find_action(&cfg, "a") else {
             panic!("expected rhai action");
         };
@@ -380,7 +384,7 @@ mod tests {
         let (cfg, rt) = load_with_runtime(
             r#"
             fn spotify(cmd) {
-              shell("spotify " + cmd).notify(ignore, warn)
+              action.shell("spotify " + cmd).notify(ignore, warn)
             }
 
             global.bind("a", "Pause", || spotify("pause"));

@@ -149,9 +149,9 @@ pub fn create_test_config() -> config::Config {
     load_test_config(
         r#"
         global.mode("cmd+k", "test", |m| {
-          m.bind("a", "action", pop);
+          m.bind("a", "action", action.pop);
           m.mode("b", "nested", |sub| {
-            sub.bind("c", "deep", pop);
+            sub.bind("c", "deep", action.pop);
           });
         });
         "#,

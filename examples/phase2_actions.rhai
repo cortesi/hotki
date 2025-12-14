@@ -3,7 +3,7 @@
 base_theme("default");
 
 fn spotify(cmd) {
-  shell("spotify " + cmd).notify(ignore, warn)
+  action.shell("spotify " + cmd).notify(ignore, warn)
 }
 
 global.mode("shift+cmd+m", "Music", |m| {
@@ -13,17 +13,17 @@ global.mode("shift+cmd+m", "Music", |m| {
   // Context-aware closure action: branch based on focused app.
   m.bind("o", "Open Logs", |ctx| {
     if ctx.app.contains("Obsidian") {
-      shell("open -a Obsidian ~/logs/obsidian.log")
+      action.shell("open -a Obsidian ~/logs/obsidian.log")
     } else {
-      shell("open ~/logs/system.log")
+      action.shell("open ~/logs/system.log")
     }
   });
 
   // "Macro" action: return a sequence of Actions (executed in-order).
   m.bind("s", "Save + Beep", || [
-    relay("cmd+s"),
-    shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
+    action.relay("cmd+s"),
+    action.shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
   ]);
 
-  m.bind("esc", "Back", pop).global().hidden();
+  m.bind("esc", "Back", action.pop).global().hidden();
 }).capture();

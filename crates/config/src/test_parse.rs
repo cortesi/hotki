@@ -44,7 +44,7 @@ mod tests {
         // Parse each chord spec in isolation so aliases that canonicalize to the same
         // chord (e.g. enter/ret/return) don't trip duplicate validation.
         for (i, chord) in chords.iter().enumerate() {
-            let script = format!(r#"global.bind("{}", "Desc{}", exit);"#, chord, i);
+            let script = format!(r#"global.bind("{}", "Desc{}", action.exit);"#, chord, i);
             let cfg = load(&script).unwrap();
             assert_eq!(cfg.keys.key_objects().count(), 1);
         }

@@ -34,7 +34,7 @@ fn test_rhai_script_action_end_to_end() {
             env::temp_dir().join(format!("hotki-script-action-{}-{}.rhai", process::id(), ts));
 
         let script = r#"
-            global.bind("a", "Macro", || [theme_next, theme_prev]);
+            global.bind("a", "Macro", || [action.theme_next, action.theme_prev]);
         "#;
         fs::write(&path, script).expect("write script");
 
@@ -134,9 +134,9 @@ fn test_binding_diff_correctness() {
         // Test 1: Set initial bindings
         let cfg1 = load_test_config(
             r#"
-            global.bind("cmd+a", "action a", pop);
-            global.bind("cmd+b", "action b", pop);
-            global.bind("cmd+c", "action c", pop);
+            global.bind("cmd+a", "action a", action.pop);
+            global.bind("cmd+b", "action b", action.pop);
+            global.bind("cmd+c", "action c", action.pop);
             "#,
         );
         engine.set_config(cfg1).await.expect("set config");
@@ -151,9 +151,9 @@ fn test_binding_diff_correctness() {
         // Test 2: Set same bindings again (no change)
         let cfg1b = load_test_config(
             r#"
-            global.bind("cmd+a", "action a", pop);
-            global.bind("cmd+b", "action b", pop);
-            global.bind("cmd+c", "action c", pop);
+            global.bind("cmd+a", "action a", action.pop);
+            global.bind("cmd+b", "action b", action.pop);
+            global.bind("cmd+c", "action c", action.pop);
             "#,
         );
         engine.set_config(cfg1b).await.expect("set config");
@@ -163,9 +163,9 @@ fn test_binding_diff_correctness() {
         // Test 3: Partial change (remove cmd+c, add cmd+d)
         let cfg2 = load_test_config(
             r#"
-            global.bind("cmd+a", "action a", pop);
-            global.bind("cmd+b", "action b", pop);
-            global.bind("cmd+d", "action d", pop);
+            global.bind("cmd+a", "action a", action.pop);
+            global.bind("cmd+b", "action b", action.pop);
+            global.bind("cmd+d", "action d", action.pop);
             "#,
         );
         engine.set_config(cfg2).await.expect("set config");
@@ -178,8 +178,8 @@ fn test_binding_diff_correctness() {
         // Test 4: Complete replacement
         let cfg3 = load_test_config(
             r#"
-            global.bind("ctrl+x", "action x", pop);
-            global.bind("ctrl+y", "action y", pop);
+            global.bind("ctrl+x", "action x", action.pop);
+            global.bind("ctrl+y", "action y", action.pop);
             "#,
         );
         engine.set_config(cfg3).await.expect("set config");
@@ -515,10 +515,10 @@ fn test_binding_registration_order_stability() {
         // Add bindings in random order
         let cfg_a = load_test_config(
             r#"
-            global.bind("cmd+z", "action z", pop);
-            global.bind("cmd+a", "action a", pop);
-            global.bind("cmd+m", "action m", pop);
-            global.bind("cmd+b", "action b", pop);
+            global.bind("cmd+z", "action z", action.pop);
+            global.bind("cmd+a", "action a", action.pop);
+            global.bind("cmd+m", "action m", action.pop);
+            global.bind("cmd+b", "action b", action.pop);
             "#,
         );
         engine.set_config(cfg_a).await.expect("set config");
@@ -527,10 +527,10 @@ fn test_binding_registration_order_stability() {
         // Set same keys again
         let cfg_b = load_test_config(
             r#"
-            global.bind("cmd+z", "action z", pop);
-            global.bind("cmd+a", "action a", pop);
-            global.bind("cmd+m", "action m", pop);
-            global.bind("cmd+b", "action b", pop);
+            global.bind("cmd+z", "action z", action.pop);
+            global.bind("cmd+a", "action a", action.pop);
+            global.bind("cmd+m", "action m", action.pop);
+            global.bind("cmd+b", "action b", action.pop);
             "#,
         );
         engine.set_config(cfg_b).await.expect("set config");
@@ -566,7 +566,7 @@ fn test_capture_all_mode_transitions() {
                 r#"
                 global
                   .mode("cmd+k", "test", |m| {
-                    m.bind("a", "action", pop);
+                    m.bind("a", "action", action.pop);
                   })
                   .capture();
                 "#,
@@ -592,9 +592,9 @@ fn test_match_app_rebinds_on_focus_change() {
             .set_config(load_test_config(
                 r#"
                 global
-                  .bind("cmd+a", "app-only", relay("cmd+1"))
+                  .bind("cmd+a", "app-only", action.relay("cmd+1"))
                   .match_app("Safari");
-                global.bind("cmd+b", "global", relay("cmd+2"));
+                global.bind("cmd+b", "global", action.relay("cmd+2"));
                 "#,
             ))
             .await
@@ -645,7 +645,9 @@ fn test_display_snapshot_reaches_hud_updates() {
     run_engine_test(async move {
         let (engine, mut rx, world) = create_test_engine().await;
         engine
-            .set_config(load_test_config(r#"global.bind("cmd+k", "noop", pop);"#))
+            .set_config(load_test_config(
+                r#"global.bind("cmd+k", "noop", action.pop);"#,
+            ))
             .await
             .expect("set config");
 

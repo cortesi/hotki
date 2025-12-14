@@ -53,22 +53,22 @@ global.mode("shift+cmd+0", "Activate", |m| {
   // This submode appears only when the focused application name
   // matches the provided regex (Safari, Arc, or Google Chrome).
   m.mode("b", "Browser", |sub| {
-    sub.bind("r", "Reload Tab", relay("cmd+r"));
-    sub.bind("t", "New Tab", relay("cmd+t"));
-    sub.bind("p", "Back", pop);
+    sub.bind("r", "Reload Tab", action.relay("cmd+r"));
+    sub.bind("t", "New Tab", action.relay("cmd+t"));
+    sub.bind("p", "Back", action.pop);
   }).match_app("Safari|Arc|Google Chrome");
 
   // This submode appears only when the focused window title matches
   // the regex (any title containing "Readme" case-insensitively).
   m.mode("r", "Reader", |sub| {
-    sub.bind("m", "Mark Read", shell("echo marked"));
-    sub.bind("p", "Back", pop);
+    sub.bind("m", "Mark Read", action.shell("echo marked"));
+    sub.bind("p", "Back", action.pop);
   }).match_title(".*(?i:readme).*");
 
   // Normal always-visible action
-  m.bind("h", "Hello", shell("echo hello"));
+  m.bind("h", "Hello", action.shell("echo hello"));
 
   // Global navigation keys, hidden from HUD
-  m.bind("shift+cmd+0", "Exit", exit).global().hidden();
-  m.bind("esc", "Back", pop).global().hidden();
+  m.bind("shift+cmd+0", "Exit", action.exit).global().hidden();
+  m.bind("esc", "Back", action.pop).global().hidden();
 });

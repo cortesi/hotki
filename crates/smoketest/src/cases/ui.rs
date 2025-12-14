@@ -337,13 +337,13 @@ style(#{
 
 global.mode("shift+cmd+0", "activate", |m| {
   m.mode("t", "Theme tester", |sub| {
-    sub.bind("h", "Theme Prev", theme_prev).no_exit();
-    sub.bind("l", "Theme Next", theme_next).no_exit();
-    sub.bind("n", "Notify", shell("echo notify").notify(info, warn)).no_exit();
+    sub.bind("h", "Theme Prev", action.theme_prev).no_exit();
+    sub.bind("l", "Theme Next", action.theme_next).no_exit();
+    sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).no_exit();
   });
 });
 
-global.bind("esc", "Back", pop).global().hidden().hud_only();
+global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
 /// Mini HUD demo configuration that mirrors the standard flow in mini mode.
@@ -357,13 +357,13 @@ style(#{
 
 global.mode("shift+cmd+0", "activate", |m| {
   m.mode("t", "Theme tester", |sub| {
-    sub.bind("h", "Theme Prev", theme_prev).no_exit();
-    sub.bind("l", "Theme Next", theme_next).no_exit();
-    sub.bind("n", "Notify", shell("echo notify").notify(info, warn)).no_exit();
+    sub.bind("h", "Theme Prev", action.theme_prev).no_exit();
+    sub.bind("l", "Theme Next", action.theme_next).no_exit();
+    sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).no_exit();
   });
 });
 
-global.bind("esc", "Back", pop).global().hidden().hud_only();
+global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
 /// Execute the standard HUD demo flow using the registry runner.

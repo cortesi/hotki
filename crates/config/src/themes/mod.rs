@@ -487,7 +487,7 @@ mod tests {
               hud: #{ font_size: 20.0, title_fg: "red" },
             });
 
-            global.bind("a", "Test action", shell("echo test"));
+            global.bind("a", "Test action", action.shell("echo test"));
             "#,
             None,
         )

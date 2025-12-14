@@ -531,52 +531,6 @@ fn register_dsl(engine: &mut Engine, builder: Arc<Mutex<BuilderState>>) {
         env::var(name).unwrap_or_default()
     });
 
-    // Action constructors.
-    engine.register_fn("shell", |cmd: &str| {
-        Action::Shell(crate::ShellSpec::Cmd(cmd.to_string()))
-    });
-    engine.register_fn("relay", |spec: &str| Action::Relay(spec.to_string()));
-    engine.register_fn("show_details", |t: Toggle| Action::ShowDetails(t));
-    engine.register_fn("theme_set", |name: &str| Action::ThemeSet(name.to_string()));
-    engine.register_fn(
-        "set_volume",
-        |ctx: NativeCallContext, level: i64| -> Result<Action, Box<EvalAltResult>> {
-            if !(0..=100).contains(&level) {
-                return Err(boxed_validation_error(
-                    format!("set_volume: level must be 0..=100, got {}", level),
-                    ctx.call_position(),
-                ));
-            }
-            let level_u8: u8 = level.try_into().map_err(|_| {
-                boxed_validation_error(
-                    "set_volume: level out of range".to_string(),
-                    ctx.call_position(),
-                )
-            })?;
-            Ok(Action::SetVolume(level_u8))
-        },
-    );
-    engine.register_fn(
-        "change_volume",
-        |ctx: NativeCallContext, delta: i64| -> Result<Action, Box<EvalAltResult>> {
-            if !(-100..=100).contains(&delta) {
-                return Err(boxed_validation_error(
-                    format!("change_volume: delta must be -100..=100, got {}", delta),
-                    ctx.call_position(),
-                ));
-            }
-            let delta_i8: i8 = delta.try_into().map_err(|_| {
-                boxed_validation_error(
-                    "change_volume: delta out of range".to_string(),
-                    ctx.call_position(),
-                )
-            })?;
-            Ok(Action::ChangeVolume(delta_i8))
-        },
-    );
-    engine.register_fn("mute", |t: Toggle| Action::Mute(t));
-    engine.register_fn("user_style", |t: Toggle| Action::UserStyle(t));
-
     // Action fluent methods.
     engine.register_fn("clone", |a: Action| a);
     engine.register_fn(
@@ -756,14 +710,98 @@ fn register_constants(engine: &mut Engine, builder: &Arc<Mutex<BuilderState>>) {
     module.set_var("extrabold", "extrabold");
     module.set_var("black", "black");
 
-    module.set_var("pop", Action::Pop);
-    module.set_var("exit", Action::Exit);
-    module.set_var("reload_config", Action::ReloadConfig);
-    module.set_var("clear_notifications", Action::ClearNotifications);
-    module.set_var("theme_next", Action::ThemeNext);
-    module.set_var("theme_prev", Action::ThemePrev);
-    module.set_var("show_hud_root", Action::ShowHudRoot);
+    engine.register_global_module(module.into());
 
+    // Register the `action` namespace object.
+    register_action_namespace(engine);
+}
+
+/// Unit type representing the `action` namespace for accessing action constructors.
+#[derive(Debug, Clone, Copy)]
+struct ActionNamespace;
+
+/// Register the `action` namespace with all action constructors and constants.
+fn register_action_namespace(engine: &mut Engine) {
+    engine.register_type_with_name::<ActionNamespace>("ActionNamespace");
+
+    // Action constructor methods on the `action` namespace.
+    engine.register_fn("shell", |_: ActionNamespace, cmd: &str| {
+        Action::Shell(crate::ShellSpec::Cmd(cmd.to_string()))
+    });
+    engine.register_fn("relay", |_: ActionNamespace, spec: &str| {
+        Action::Relay(spec.to_string())
+    });
+    engine.register_fn("show_details", |_: ActionNamespace, t: Toggle| {
+        Action::ShowDetails(t)
+    });
+    engine.register_fn("theme_set", |_: ActionNamespace, name: &str| {
+        Action::ThemeSet(name.to_string())
+    });
+    engine.register_fn(
+        "set_volume",
+        |ctx: NativeCallContext,
+         _: ActionNamespace,
+         level: i64|
+         -> Result<Action, Box<EvalAltResult>> {
+            if !(0..=100).contains(&level) {
+                return Err(boxed_validation_error(
+                    format!("set_volume: level must be 0..=100, got {}", level),
+                    ctx.call_position(),
+                ));
+            }
+            let level_u8: u8 = level.try_into().map_err(|_| {
+                boxed_validation_error(
+                    "set_volume: level out of range".to_string(),
+                    ctx.call_position(),
+                )
+            })?;
+            Ok(Action::SetVolume(level_u8))
+        },
+    );
+    engine.register_fn(
+        "change_volume",
+        |ctx: NativeCallContext,
+         _: ActionNamespace,
+         delta: i64|
+         -> Result<Action, Box<EvalAltResult>> {
+            if !(-100..=100).contains(&delta) {
+                return Err(boxed_validation_error(
+                    format!("change_volume: delta must be -100..=100, got {}", delta),
+                    ctx.call_position(),
+                ));
+            }
+            let delta_i8: i8 = delta.try_into().map_err(|_| {
+                boxed_validation_error(
+                    "change_volume: delta out of range".to_string(),
+                    ctx.call_position(),
+                )
+            })?;
+            Ok(Action::ChangeVolume(delta_i8))
+        },
+    );
+    engine.register_fn("mute", |_: ActionNamespace, t: Toggle| Action::Mute(t));
+    engine.register_fn("user_style", |_: ActionNamespace, t: Toggle| {
+        Action::UserStyle(t)
+    });
+
+    // Predefined action constant getters on the `action` namespace.
+    engine.register_get("pop", |_: &mut ActionNamespace| Action::Pop);
+    engine.register_get("exit", |_: &mut ActionNamespace| Action::Exit);
+    engine.register_get("reload_config", |_: &mut ActionNamespace| {
+        Action::ReloadConfig
+    });
+    engine.register_get("clear_notifications", |_: &mut ActionNamespace| {
+        Action::ClearNotifications
+    });
+    engine.register_get("theme_next", |_: &mut ActionNamespace| Action::ThemeNext);
+    engine.register_get("theme_prev", |_: &mut ActionNamespace| Action::ThemePrev);
+    engine.register_get("show_hud_root", |_: &mut ActionNamespace| {
+        Action::ShowHudRoot
+    });
+
+    // Register the global `action` variable.
+    let mut module = Module::new();
+    module.set_var("action", ActionNamespace);
     engine.register_global_module(module.into());
 }
 

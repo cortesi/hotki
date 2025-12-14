@@ -108,66 +108,66 @@ style(#{
 global.mode("shift+cmd+0", "Main", |m| {
 
   // === Action Types (each shown once) ===
-  // shell: Execute a shell command
-  m.bind("s", "Shell Command", shell("echo 'Hello'"));
+  // action.shell: Execute a shell command
+  m.bind("s", "Shell Command", action.shell("echo 'Hello'"));
 
-  // shell with notifications: Execute command and show success/error notifications
+  // action.shell with notifications: Execute command and show success/error notifications
   m.bind(
     "shift+S",
     "Shell with Notifications",
-    shell("echo 'Success'").notify(success, error),
+    action.shell("echo 'Success'").notify(success, error),
   );
 
-  // relay: Send keystrokes to the active application
-  m.bind("r", "Relay Keystroke", relay("cmd+c"));
+  // action.relay: Send keystrokes to the active application
+  m.bind("r", "Relay Keystroke", action.relay("cmd+c"));
 
-  // clear_notifications: Remove all on-screen notifications
-  m.bind("c", "Clear Notifications", clear_notifications);
+  // action.clear_notifications: Remove all on-screen notifications
+  m.bind("c", "Clear Notifications", action.clear_notifications);
 
-  // show_details: Control details window: on/off/toggle
-  m.bind("d", "Toggle Details", show_details(toggle));
+  // action.show_details: Control details window: on/off/toggle
+  m.bind("d", "Toggle Details", action.show_details(toggle));
 
-  // reload_config: Reload the configuration file
-  m.bind("shift+R", "Reload Config", reload_config);
+  // action.reload_config: Reload the configuration file
+  m.bind("shift+R", "Reload Config", action.reload_config);
 
-  // show_hud_root: Display the root-level HUD
-  m.bind("h", "Show HUD Root", show_hud_root);
+  // action.show_hud_root: Display the root-level HUD
+  m.bind("h", "Show HUD Root", action.show_hud_root);
 
-  // theme_next: Switch to the next theme
-  m.bind("n", "Next Theme", theme_next);
+  // action.theme_next: Switch to the next theme
+  m.bind("n", "Next Theme", action.theme_next);
 
-  // theme_prev: Switch to the previous theme
-  m.bind("p", "Previous Theme", theme_prev);
+  // action.theme_prev: Switch to the previous theme
+  m.bind("p", "Previous Theme", action.theme_prev);
 
-  // theme_set: Set a specific theme by name
-  m.bind("1", "Dark Blue Theme", theme_set("dark-blue"));
-  m.bind("2", "Charcoal Theme", theme_set("charcoal"));
-  m.bind("3", "Default Theme", theme_set("default"));
+  // action.theme_set: Set a specific theme by name
+  m.bind("1", "Dark Blue Theme", action.theme_set("dark-blue"));
+  m.bind("2", "Charcoal Theme", action.theme_set("charcoal"));
+  m.bind("3", "Default Theme", action.theme_set("default"));
 
-  // set_volume: Set system volume to absolute value (0-100)
-  m.bind("v", "Set Volume 50%", set_volume(50));
+  // action.set_volume: Set system volume to absolute value (0-100)
+  m.bind("v", "Set Volume 50%", action.set_volume(50));
 
-  // change_volume: Adjust volume by relative amount (-100 to +100)
-  m.bind("shift+V", "Change Volume +10", change_volume(10));
+  // action.change_volume: Adjust volume by relative amount (-100 to +100)
+  m.bind("shift+V", "Change Volume +10", action.change_volume(10));
 
-  // mute: Control mute: on/off/toggle
-  m.bind("m", "Mute", mute(on));
-  m.bind("u", "Unmute", mute(off));
-  m.bind("shift+M", "Toggle Mute", mute(toggle));
+  // action.mute: Control mute: on/off/toggle
+  m.bind("m", "Mute", action.mute(on));
+  m.bind("u", "Unmute", action.mute(off));
+  m.bind("shift+M", "Toggle Mute", action.mute(toggle));
 
   // === User UI Control ===
-  // user_style: Control user style configuration (HUD and notifications): on/off/toggle
-  m.bind("t", "Toggle User UI", user_style(toggle));
-  m.bind("shift+T", "Disable User UI", user_style(off));
-  m.bind("shift+U", "Enable User UI", user_style(on));
+  // action.user_style: Control user style configuration (HUD and notifications): on/off/toggle
+  m.bind("t", "Toggle User UI", action.user_style(toggle));
+  m.bind("shift+T", "Disable User UI", action.user_style(off));
+  m.bind("shift+U", "Enable User UI", action.user_style(on));
 
   // === Mode Navigation ===
   // mode: Enter a nested mode with its own key bindings
   m.mode("shift+K", "Nested Mode", |sub| {
-    // pop: Return to the previous mode
-    sub.bind("b", "Back One Level", pop);
-    // exit: Exit all modes and return to root
-    sub.bind("e", "Exit All", exit);
+    // action.pop: Return to the previous mode
+    sub.bind("b", "Back One Level", action.pop);
+    // action.exit: Exit all modes and return to root
+    sub.bind("e", "Exit All", action.exit);
   })
   .style(#{ hud: #{ mode: hud_mini } });
 
@@ -175,30 +175,30 @@ global.mode("shift+cmd+0", "Main", |m| {
   m.bind(
     "a",
     "No Exit + Repeat (custom timings)",
-    shell("echo 'Stay'"),
+    action.shell("echo 'Stay'"),
   )
   .no_exit()
   .repeat_ms(250, 350);
 
-  m.bind("g", "Global Key", shell("echo 'Global'")).global();
-  m.bind("shift+H", "Hidden Key", shell("echo 'Hidden'")).hidden();
-  m.bind("o", "HUD Only", shell("echo 'HUD Only'")).hud_only();
+  m.bind("g", "Global Key", action.shell("echo 'Global'")).global();
+  m.bind("shift+H", "Hidden Key", action.shell("echo 'Hidden'")).hidden();
+  m.bind("o", "HUD Only", action.shell("echo 'HUD Only'")).hud_only();
 
   // capture: Swallow all non-bound keys while HUD is visible for this mode.
   // Only keys explicitly bound in the current mode (including globals) are handled.
   m.mode("shift+C", "Capture Mode", |sub| {
-    sub.bind("b", "Back One Level", pop);
+    sub.bind("b", "Back One Level", action.pop);
   }).capture();
 
   // === App/Title Matching ===
   m.mode("b", "Browser Mode", |sub| {
-    sub.bind("r", "Reload", relay("cmd+r"));
+    sub.bind("r", "Reload", action.relay("cmd+r"));
   }).match_app("Safari|Chrome");
 
   m.mode("shift+ctrl+t", "Title Match Mode", |sub| {
-    sub.bind("s", "Save", relay("cmd+s"));
+    sub.bind("s", "Save", action.relay("cmd+s"));
   }).match_title(".*\\.md$");
 
   // Global navigation (combined attributes)
-  m.bind("esc", "Back", pop).global().hidden();
+  m.bind("esc", "Back", action.pop).global().hidden();
 });
