@@ -393,24 +393,6 @@ pub struct RawStyle {
     pub notify: Maybe<RawNotify>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(deny_unknown_fields)]
-/// Test-only server tunables carried through the Config for smoketests.
-pub struct RawServerTunables {
-    /// When true, server exits if no UI clients connect for a short window.
-    #[serde(default)]
-    pub exit_if_no_clients: bool,
-}
-
-impl RawServerTunables {
-    /// Convert to concrete `ServerTunables` used at runtime.
-    pub fn into_server_tunables(self) -> crate::ServerTunables {
-        crate::ServerTunables {
-            exit_if_no_clients: self.exit_if_no_clients,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rhai::{Dynamic, Map, serde::from_dynamic};

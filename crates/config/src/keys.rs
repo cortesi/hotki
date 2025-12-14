@@ -77,10 +77,6 @@ pub struct Config {
     /// Optional user-provided raw style overlay parsed from the config file.
     #[serde(default)]
     pub(crate) user_overlay: Option<raw::RawStyle>,
-
-    /// Server tunables: primarily used during tests/smoketests.
-    #[serde(default)]
-    pub(crate) server: ServerTunables,
 }
 
 // Note: Config derives Deserialize for the direct wire shape only.
@@ -108,7 +104,6 @@ impl Config {
             keys,
             style,
             user_overlay: None,
-            server: ServerTunables::default(),
         }
     }
 
@@ -421,22 +416,6 @@ impl Config {
         let eff = self.merged_mode_attrs(loc.path());
         eff.capture()
     }
-
-    /// Server tunables accessor.
-    pub fn server(&self) -> &ServerTunables {
-        &self.server
-    }
-}
-
-/// Server-side tunables carried in the user Config so the UI can influence
-/// how the embedded server behaves while exercising tests.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServerTunables {
-    /// When true, the server will auto-shutdown if it has no connected UI
-    /// clients for a short grace period. Intended for smoketests only.
-    #[serde(default)]
-    pub exit_if_no_clients: bool,
 }
 
 /// Return true when the binding's match rules accept the current app/title context.

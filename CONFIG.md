@@ -31,7 +31,6 @@ from which all bindings are created.
 |----------|------------|---------|-------------|
 | `base_theme(name)` | `String` | — | Set the base theme |
 | `style(map)` | `Map` | — | Set user style overlay |
-| `server(map)` | `Map` | — | Set server tunables |
 | `env(var)` | `String` | `String` | Get environment variable (empty string if unset) |
 
 #### base_theme
@@ -53,14 +52,6 @@ style(#{
 
 Position values: [`Pos`](#pos) for HUD, [`NotifyPos`](#notifypos) for notifications.
 See `examples/complete.rhai` for all style options.
-
-#### server
-
-```rust
-server(#{
-  exit_if_no_clients: true,  // Auto-shutdown when no UI clients connected
-});
-```
 
 #### env
 

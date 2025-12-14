@@ -49,10 +49,4 @@ mod tests {
             assert_eq!(cfg.keys.key_objects().count(), 1);
         }
     }
-
-    #[test]
-    fn server_tunables_parse() {
-        let cfg = load(r#"server(#{ exit_if_no_clients: true });"#).unwrap();
-        assert!(cfg.server().exit_if_no_clients);
-    }
 }

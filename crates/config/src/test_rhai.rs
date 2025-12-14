@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn style_and_server_maps_reject_unknown_keys() {
+    fn style_maps_reject_unknown_keys() {
         let err = load(
             r#"
             style(#{
@@ -207,27 +207,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::Validation { .. }));
-
-        let err = load(
-            r#"
-            server(#{ wat: true });
-            global.bind("a", "Exit", action.exit);
-            "#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, Error::Validation { .. }));
-    }
-
-    #[test]
-    fn server_tunables_roundtrip() {
-        let cfg = load(
-            r#"
-            server(#{ exit_if_no_clients: true });
-            global.bind("a", "Exit", action.exit);
-            "#,
-        )
-        .unwrap();
-        assert!(cfg.server().exit_if_no_clients);
     }
 
     #[test]

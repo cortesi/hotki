@@ -18,7 +18,7 @@ use tracing::{debug, info};
 
 use crate::{
     Action, Config, Cursor, Error, FontWeight, Keys, KeysAttrs, Mode, NotifyKind, NotifyPos, Pos,
-    ServerTunables, Toggle, error::excerpt_at, raw, themes,
+    Toggle, error::excerpt_at, raw, themes,
 };
 
 #[derive(Clone)]
@@ -77,8 +77,6 @@ struct BuilderState {
     base_theme: Option<String>,
     /// Optional user style overlay set by `style(...)`.
     style: Option<raw::RawStyle>,
-    /// Optional server tunables set by `server(...)`.
-    server: Option<ServerTunables>,
     /// Root mode state that becomes `Config::keys`.
     root: Arc<Mutex<ModeState>>,
     /// Next stable identifier to assign to a script action.
@@ -131,9 +129,6 @@ pub fn load_from_str_with_runtime(source: &str, path: Option<&Path>) -> Result<R
     let style_base = themes::load_theme(builder_guard.base_theme.as_deref());
     let mut cfg = Config::from_parts(keys, style_base);
     cfg.user_overlay = builder_guard.style.clone();
-    if let Some(tunables) = &builder_guard.server {
-        cfg.server = tunables.clone();
-    }
 
     let script_actions = mem::take(&mut builder_guard.script_actions);
     let runtime = if script_actions.is_empty() {
@@ -143,7 +138,6 @@ pub fn load_from_str_with_runtime(source: &str, path: Option<&Path>) -> Result<R
         // of the parsed config in memory.
         builder_guard.base_theme = None;
         builder_guard.style = None;
-        builder_guard.server = None;
         lock_unpoisoned(&root).entries.clear();
 
         Some(RhaiRuntime::new(
@@ -504,23 +498,6 @@ fn register_dsl(engine: &mut Engine, builder: Arc<Mutex<BuilderState>>) {
                     boxed_validation_error(format!("invalid style map: {}", e), ctx.call_position())
                 })?;
                 lock_unpoisoned(&builder).style = Some(style);
-                Ok(())
-            },
-        );
-    }
-    {
-        let builder = builder.clone();
-        engine.register_fn(
-            "server",
-            move |ctx: NativeCallContext, map: Map| -> Result<(), Box<EvalAltResult>> {
-                let dyn_map = Dynamic::from_map(map);
-                let raw_tunables: raw::RawServerTunables = from_dynamic(&dyn_map).map_err(|e| {
-                    boxed_validation_error(
-                        format!("invalid server map: {}", e),
-                        ctx.call_position(),
-                    )
-                })?;
-                lock_unpoisoned(&builder).server = Some(raw_tunables.into_server_tunables());
                 Ok(())
             },
         );
