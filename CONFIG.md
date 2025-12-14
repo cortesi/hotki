@@ -8,23 +8,70 @@ Split configuration across multiple files using `import "foo"` to load
 `foo.rhai` relative to your config directory. Import paths must be relative
 with no `..` segments, and symlinks outside the config directory are rejected.
 
-The entry point is the `global` variable, a `Mode` representing the root from
-which all bindings are created.
+The entry point is the `global` variable, a [`Mode`](#mode) representing the root
+from which all bindings are created.
 
 ## API
 
-### Mode Methods
+- [Global Functions](#global-functions)
+- [Binding Modifiers](#binding-modifiers)
+- [Actions](#actions)
+  - [Shell Commands](#shell-commands)
+  - [Key Relay](#key-relay)
+  - [Mode Navigation](#mode-navigation)
+  - [Volume Control](#volume-control)
+  - [Theme Control](#theme-control)
+  - [UI Control](#ui-control)
+- [Constants](#constants)
+- [Types](#types)
 
-| Method | Parameters | Returns | Description |
-|--------|------------|---------|-------------|
-| `mode.bind(chord, desc, action)` | `String`, `String`, `Action` | `Binding` | Create a leaf binding |
-| `mode.mode(chord, desc, \|m\| { ... })` | `String`, `String`, `Fn(Mode)` | `Binding` | Create a sub-mode |
+### Global Functions
 
-Chord strings: `shift+cmd+0`, `cmd+c`, `esc`, etc.
+| Function | Parameters | Returns | Description |
+|----------|------------|---------|-------------|
+| `base_theme(name)` | `String` | — | Set the base theme |
+| `style(map)` | `Map` | — | Set user style overlay |
+| `server(map)` | `Map` | — | Set server tunables |
+| `env(var)` | `String` | `String` | Get environment variable (empty string if unset) |
+
+#### base_theme
+
+```rust
+base_theme("charcoal");
+```
+
+Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
+
+#### style
+
+```rust
+style(#{
+  hud: #{ pos: ne, bg: "#1a1a1a", opacity: 0.95 },
+  notify: #{ pos: right, timeout: 3.5 },
+});
+```
+
+Position values: [`Pos`](#pos) for HUD, [`NotifyPos`](#notifypos) for notifications.
+See `examples/complete.rhai` for all style options.
+
+#### server
+
+```rust
+server(#{
+  exit_if_no_clients: true,  // Auto-shutdown when no UI clients connected
+});
+```
+
+#### env
+
+```rust
+let home = env("HOME");
+action.shell(`open ${env("HOME")}/Documents`)
+```
 
 ### Binding Modifiers
 
-All modifiers return `Binding` for chaining.
+All modifiers return [`Binding`](#binding) for chaining.
 
 **Valid on both `.bind()` and `.mode()`:**
 
@@ -55,7 +102,23 @@ Duplicate chords within a mode require `match_app` or `match_title` guards.
 
 ### Actions
 
-All actions are in the `action` namespace and return `Action`.
+Actions are created via the `action` namespace. Bindings accept either a bare
+[`Action`](#action) or a closure that returns an [`Action`](#action) (or array of
+actions). Closures with a parameter receive an [`ActionCtx`](#actionctx). Script
+closures are sandboxed; I/O is only possible via action constructors.
+
+```rust
+m.bind("c", "Copy", action.relay("cmd+c"));                    // bare action
+m.bind("p", "Play", || action.shell("spotify pause"));         // closure
+m.bind("o", "Open", |ctx| {                                    // closure with context
+  if ctx.app.contains("Safari") { action.shell("open ~/safari.log") }
+  else { action.shell("open ~/system.log") }
+});
+m.bind("s", "Save+Beep", || [                                  // action sequence
+  action.relay("cmd+s"),
+  action.shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
+]);
+```
 
 #### Shell Commands
 
@@ -68,7 +131,7 @@ action.shell("echo quiet").silent()
 | Method | Parameters | Description |
 |--------|------------|-------------|
 | `action.shell(cmd)` | `String` | Execute shell command |
-| `.notify(ok, err)` | `NotifyKind`, `NotifyKind` | Notification on success/failure |
+| `.notify(ok, err)` | [`NotifyKind`](#notifykind), [`NotifyKind`](#notifykind) | Notification on success/failure |
 | `.silent()` | — | Suppress all notifications |
 
 #### Key Relay
@@ -95,7 +158,7 @@ action.relay("shift+tab")
 |--------|------------|-------------|
 | `action.set_volume(level)` | `i64` (0–100) | Set absolute volume |
 | `action.change_volume(delta)` | `i64` (-100–+100) | Adjust by delta |
-| `action.mute(toggle)` | `Toggle` | Control mute state |
+| `action.mute(toggle)` | [`Toggle`](#toggle) | Control mute state |
 
 #### Theme Control
 
@@ -111,9 +174,9 @@ Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
 
 | Action | Parameters | Description |
 |--------|------------|-------------|
-| `action.show_details(toggle)` | `Toggle` | Control details window |
+| `action.show_details(toggle)` | [`Toggle`](#toggle) | Control details window |
 | `action.show_hud_root` | — | Display root-level HUD |
-| `action.user_style(toggle)` | `Toggle` | Enable/disable user style overlay |
+| `action.user_style(toggle)` | [`Toggle`](#toggle) | Enable/disable user style overlay |
 | `action.clear_notifications` | — | Clear notifications |
 | `action.reload_config` | — | Reload configuration |
 
@@ -121,91 +184,11 @@ Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
 
 | Method | Parameters | Returns | Description |
 |--------|------------|---------|-------------|
-| `.clone()` | — | `Action` | Clone an action (all actions are immutable) |
-
-### Script Actions
-
-Bind a closure instead of an `Action`. Must return an `Action` or `[Action, ...]`.
-
-```rust
-// Zero-argument closure
-m.bind("p", "Play", || action.shell("spotify pause"));
-
-// Context-aware closure
-m.bind("o", "Open", |ctx| {
-  if ctx.app.contains("Safari") {
-    action.shell("open ~/logs/safari.log")
-  } else {
-    action.shell("open ~/logs/system.log")
-  }
-});
-
-// Macro: array of actions executed in sequence
-m.bind("s", "Save+Beep", || [
-  action.relay("cmd+s"),
-  action.shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
-]);
-```
-
-#### ActionCtx Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `ctx.app` | String | Focused app name |
-| `ctx.title` | String | Focused window title |
-| `ctx.pid` | i64 | Focused app PID |
-| `ctx.depth` | i64 | Current mode depth (0 = root) |
-| `ctx.path` | Array | Cursor indices from root |
-
-Script actions are sandboxed with conservative limits. I/O is only possible via
-built-in action constructors.
-
-### Top-Level Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `base_theme(name)` | `String` | — | Set the base theme |
-| `style(map)` | `Map` | — | Set user style overlay |
-| `server(map)` | `Map` | — | Set server tunables |
-| `env(var)` | `String` | `String` | Get environment variable (empty string if unset) |
-
-#### base_theme
-
-```rust
-base_theme("charcoal");
-```
-
-Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
-
-#### style
-
-```rust
-style(#{
-  hud: #{ pos: ne, bg: "#1a1a1a", opacity: 0.95 },
-  notify: #{ pos: right, timeout: 3.5 },
-});
-```
-
-See `examples/complete.rhai` for all style options.
-
-#### server
-
-```rust
-server(#{
-  exit_if_no_clients: true,  // Auto-shutdown when no UI clients connected
-});
-```
-
-#### env
-
-```rust
-let home = env("HOME");
-action.shell(`open ${env("HOME")}/Documents`)
-```
+| `.clone()` | — | [`Action`](#action) | Clone an action (all actions are immutable) |
 
 ### Constants
 
-#### Toggle Values
+#### Toggle
 
 | Value | Description |
 |-------|-------------|
@@ -213,23 +196,59 @@ action.shell(`open ${env("HOME")}/Documents`)
 | `off` | Disable |
 | `toggle` | Flip current state |
 
-#### Notification Kinds
+#### NotifyKind
 
 `ignore`, `info`, `warn`, `error`, `success`
 
-#### HUD Positions
+#### Pos
 
-`center`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`
+HUD position: `center`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`
 
-#### Notification Positions
+#### NotifyPos
 
-`left`, `right`
+Notification position: `left`, `right`
 
-#### HUD Display Modes
+#### HudMode
 
 `hud_full`, `hud_mini`, `hud_hide`
 
-#### Font Weights
+#### FontWeight
 
 `thin`, `extralight`, `light`, `regular`, `medium`, `semibold`, `bold`,
 `extrabold`, `black`
+
+### Types
+
+#### Mode
+
+A container for key bindings. The `global` variable is the root `Mode`. Sub-modes
+are created via `mode.mode()`.
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| `.bind(chord, desc, action)` | `String`, `String`, [`Action`](#action) | [`Binding`](#binding) | Create a leaf binding |
+| `.mode(chord, desc, \|m\| { ... })` | `String`, `String`, `Fn(Mode)` | [`Binding`](#binding) | Create a sub-mode |
+
+Chord strings: `shift+cmd+0`, `cmd+c`, `esc`, etc.
+
+#### Binding
+
+Returned by `Mode.bind()` and `Mode.mode()`. Supports chained modifiers—see
+[Binding Modifiers](#binding-modifiers).
+
+#### Action
+
+An executable action created via the `action` namespace. Immutable; use
+`.clone()` to duplicate. See [Actions](#actions) for all constructors.
+
+#### ActionCtx
+
+Context passed to script action closures that take a parameter.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ctx.app` | `String` | Focused app name |
+| `ctx.title` | `String` | Focused window title |
+| `ctx.pid` | `i64` | Focused app PID |
+| `ctx.depth` | `i64` | Current mode depth (0 = root) |
+| `ctx.path` | `Array` | Cursor indices from root |
