@@ -1,162 +1,211 @@
 # Hotki Configuration Reference
 
-Hotki configuration files are written in [Rhai](https://rhai.rs/), a simple
-scripting language. Configuration files typically use the `.rhai` extension
-and are loaded from `~/.hotki/config.rhai` by default.
+Configuration files are [Rhai](https://rhai.rs/) scripts, typically at
+`~/.hotki/config.rhai`.
+
+## File Resolution
+
+1. `--config <path>` if provided
+2. `~/.hotki/config.rhai` if it exists
+3. Error with hint to copy `examples/complete.rhai`
+
+Validate without starting UI:
+
+```bash
+hotki check --config /path/to/config.rhai
+hotki check  # uses default resolution
+```
+
+## Imports
+
+```rust
+import "foo"  // loads foo.rhai relative to config directory
+```
+
+- Paths must be relative (no absolute paths, no `..` segments)
+- Symlinks outside config directory are rejected
+
+## Entry Point
+
+The `global` variable is a `Mode` representing the root. All bindings are
+created from this.
+
+## Mode Methods
+
+| Method | Description |
+|--------|-------------|
+| `mode.bind(chord, desc, action)` | Create a leaf binding |
+| `mode.mode(chord, desc, \|m\| { ... })` | Create a sub-mode |
+
+Chord strings: `shift+cmd+0`, `cmd+c`, `esc`, etc.
+
+## Binding Modifiers
+
+**Valid on both `.bind()` and `.mode()`:**
+
+| Modifier | Description |
+|----------|-------------|
+| `.global()` | Active in this mode and all sub-modes |
+| `.hidden()` | Works but hidden from HUD |
+| `.hud_only()` | Only activates while HUD is visible |
+| `.match_app(pattern)` | Regex filter by focused app name |
+| `.match_title(pattern)` | Regex filter by focused window title |
+
+**Only valid on `.bind()`:**
+
+| Modifier | Description |
+|----------|-------------|
+| `.no_exit()` | Stay in current mode after action |
+| `.repeat()` | Enable hold-to-repeat with defaults |
+| `.repeat_ms(delay, interval)` | Hold-to-repeat with custom timing (ms) |
+
+**Only valid on `.mode()`:**
+
+| Modifier | Description |
+|----------|-------------|
+| `.capture()` | Capture all unbound keys in this mode |
+| `.style(map)` | Per-mode style overlay |
+
+Duplicate chords within a mode require `match_app` or `match_title` guards.
 
 ## Actions
 
-Actions are operations that hotki executes when a bound key is pressed. All
-actions are accessed through the `action` namespace.
+All actions are in the `action` namespace.
 
 ### Shell Commands
 
-Execute a shell command.
-
-```rhai
+```rust
 action.shell("echo hello")
-```
-
-**Modifiers:**
-
-- `.notify(ok_kind, err_kind)` - Display notifications based on command
-  success/failure. Kinds: `ignore`, `info`, `warn`, `error`, `success`.
-- `.silent()` - Suppress all notifications (equivalent to `.notify(ignore, ignore)`).
-
-```rhai
-// Show success notification on success, error notification on failure
 action.shell("make build").notify(success, error)
-
-// Never show notifications
 action.shell("echo quiet").silent()
 ```
 
+| Method | Description |
+|--------|-------------|
+| `.notify(ok, err)` | Notification on success/failure |
+| `.silent()` | Suppress all notifications |
+
 ### Key Relay
 
-Send keystrokes to the focused application.
-
-```rhai
-action.relay("cmd+c")     // Send Cmd+C
-action.relay("shift+tab") // Send Shift+Tab
+```rust
+action.relay("cmd+c")
+action.relay("shift+tab")
 ```
 
 ### Mode Navigation
 
-Control navigation through the modal key hierarchy.
-
 | Action | Description |
 |--------|-------------|
-| `action.pop` | Return to the previous mode (go up one level) |
-| `action.exit` | Exit all modes and return to root |
-
-```rhai
-m.bind("esc", "Back", action.pop);
-m.bind("q", "Quit", action.exit);
-```
+| `action.pop` | Return to previous mode |
+| `action.exit` | Exit to root |
 
 ### Volume Control
 
-Control system volume.
-
 | Action | Description |
 |--------|-------------|
-| `action.set_volume(level)` | Set absolute volume (0-100) |
-| `action.change_volume(delta)` | Adjust volume by delta (-100 to +100) |
+| `action.set_volume(level)` | Set absolute volume (0–100) |
+| `action.change_volume(delta)` | Adjust by delta (-100 to +100) |
 | `action.mute(toggle)` | Control mute state |
-
-```rhai
-action.set_volume(50)      // Set to 50%
-action.change_volume(10)   // Increase by 10
-action.change_volume(-10)  // Decrease by 10
-action.mute(on)            // Mute
-action.mute(off)           // Unmute
-action.mute(toggle)        // Toggle mute state
-```
 
 ### Theme Control
 
-Control the visual theme.
-
 | Action | Description |
 |--------|-------------|
-| `action.theme_next` | Switch to the next theme |
-| `action.theme_prev` | Switch to the previous theme |
-| `action.theme_set(name)` | Set a specific theme by name |
+| `action.theme_next` | Next theme |
+| `action.theme_prev` | Previous theme |
+| `action.theme_set(name)` | Set theme by name |
 
-```rhai
-action.theme_next
-action.theme_prev
-action.theme_set("dark-blue")
-```
-
-Available themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`,
-`solarized-light`.
+Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
 
 ### UI Control
 
-Control the hotki user interface.
-
 | Action | Description |
 |--------|-------------|
-| `action.show_details(toggle)` | Control the details window |
-| `action.show_hud_root` | Display the root-level HUD |
+| `action.show_details(toggle)` | Control details window |
+| `action.show_hud_root` | Display root-level HUD |
 | `action.user_style(toggle)` | Enable/disable user style overlay |
-| `action.clear_notifications` | Clear all on-screen notifications |
-| `action.reload_config` | Reload the configuration file |
+| `action.clear_notifications` | Clear notifications |
+| `action.reload_config` | Reload configuration |
 
-```rhai
-action.show_details(toggle)   // Toggle details window
-action.show_details(on)       // Show details
-action.show_details(off)      // Hide details
+### Action Fluent Methods
 
-action.user_style(toggle)     // Toggle user styling
-action.clear_notifications    // Clear notifications
-action.reload_config          // Reload config file
-```
+| Method | Description |
+|--------|-------------|
+| `action.clone()` | Clone an action (all actions are immutable) |
 
-### Script Actions (Closures)
+## Script Actions
 
-Actions can be computed at runtime using closures. These are useful for
-conditional logic or returning multiple actions.
+Bind a closure instead of an `Action`. Must return an `Action` or `[Action, ...]`.
 
-```rhai
-// Simple closure returning an action
-m.bind("p", "Play/Pause", || action.shell("spotify pause"));
+```rust
+// Zero-argument closure
+m.bind("p", "Play", || action.shell("spotify pause"));
 
-// Context-aware action (receives ctx with app, title, pid, depth, path)
+// Context-aware closure
 m.bind("o", "Open", |ctx| {
   if ctx.app.contains("Safari") {
-    action.shell("open -a Safari ~/logs/safari.log")
+    action.shell("open ~/logs/safari.log")
   } else {
     action.shell("open ~/logs/system.log")
   }
 });
 
-// Macro action: return an array of actions executed in sequence
-m.bind("s", "Save + Beep", || [
+// Macro: array of actions executed in sequence
+m.bind("s", "Save+Beep", || [
   action.relay("cmd+s"),
   action.shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
 ]);
 ```
 
-### Toggle Values
+### ActionCtx Properties
 
-Several actions accept a toggle parameter:
+| Property | Type | Description |
+|----------|------|-------------|
+| `ctx.app` | String | Focused app name |
+| `ctx.title` | String | Focused window title |
+| `ctx.pid` | i64 | Focused app PID |
+| `ctx.depth` | i64 | Current mode depth (0 = root) |
+| `ctx.path` | Array | Cursor indices from root |
+
+Script actions are sandboxed with conservative limits. I/O is only possible via
+built-in action constructors.
+
+## Top-Level Functions
+
+| Function | Description |
+|----------|-------------|
+| `base_theme(name)` | Set the base theme |
+| `style(map)` | Set user style overlay |
+| `server(map)` | Set server tunables |
+| `env(var)` | Get environment variable (empty string if unset) |
+
+## Constants
+
+### Toggle Values
 
 | Value | Description |
 |-------|-------------|
 | `on` | Enable |
 | `off` | Disable |
-| `toggle` | Flip the current state |
+| `toggle` | Flip current state |
 
 ### Notification Kinds
 
-Used with `.notify()` modifier on shell actions:
+`ignore`, `info`, `warn`, `error`, `success`
 
-| Kind | Description |
-|------|-------------|
-| `ignore` | No notification |
-| `info` | Informational notification |
-| `warn` | Warning notification |
-| `error` | Error notification |
-| `success` | Success notification |
+### HUD Positions
+
+`center`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`
+
+### Notification Positions
+
+`left`, `right`
+
+### HUD Display Modes
+
+`hud_full`, `hud_mini`, `hud_hide`
+
+### Font Weights
+
+`thin`, `extralight`, `light`, `regular`, `medium`, `semibold`, `bold`,
+`extrabold`, `black`

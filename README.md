@@ -23,31 +23,11 @@ below for how to build it. Next steps:
 - Window groups
 
 
-## Window State Architecture
-
-Hotki relies on the `hotki-world` crate for read-only focus and display
-snapshots. Engines, smoketests, and auxiliary tooling subscribe to the
-[`WorldView`](crates/hotki-world/src/view.rs) trait instead of calling
-platform APIs directly. This keeps macOS-specific reads in one place and
-simplifies testing via the in-memory `TestWorld`.
-
-Display geometry (active display bounds and the `global_top` conversion helper)
-also flows through `WorldView::displays()` / `WorldHandle::displays_snapshot()`.
-UI components and smoketests should use these helpers rather than invoking
-platform APIs directly. All window mutation now happens out-of-process via an
-external CLI invoked through `shell(...)` bindings.
-
-## Contributor Docs
-
-- [Testing Principles](docs/testing-principles.md) – relay + HUD guidance, budgets, skip semantics,
-  message style, and "Do Not Do" guidance.
-
-
 ## Configuration
 
 Hotki configuration lives at `~/.hotki/config.rhai` and is written in Rhai.
 
-- Full DSL reference: `docs/rhai-config.md`
+- [Full reference](CONFIG.md)
 - Examples: `examples/complete.rhai`, `examples/phase2_actions.rhai`, `examples/match.rhai`
 
 Validate a config without starting the UI:
@@ -59,7 +39,7 @@ hotki check  # uses the default resolution policy
 
 Minimal example:
 
-```rhai
+```rust
 base_theme("default");
 
 style(#{

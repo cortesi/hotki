@@ -38,13 +38,14 @@ command -v cargo >/dev/null 2>&1 || abort "cargo not found. Install Rust toolcha
 
 # Extract version from the workspace Cargo.toml [workspace.package]
 VERSION=$(awk '
-  /^\[workspace\.package\]/ { in_section=1 }
-  in_section && /^version\s*=/ {
-    match($0, /"([^"]+)"/, arr)
-    print arr[1]
+  /^\[workspace\.package\]/ { in_section=1; next }
+  /^\[/ { in_section=0 }
+  in_section && /^version[[:space:]]*=/ {
+    sub(/^[^"]*"/, "")
+    sub(/".*/, "")
+    print
     exit
   }
-  /^\[/ && !/^\[workspace\.package\]/ { in_section=0 }
 ' Cargo.toml)
 
 [[ -n "$VERSION" ]] || abort "Could not extract version from Cargo.toml"
