@@ -1,27 +1,19 @@
 //! Configuration constants and defaults for smoketests.
 
-use std::{
-    process,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::Duration;
 
 /// Default test-wide tunables.
 #[derive(Debug, Clone, Copy)]
 pub struct Defaults {
-    /// Default duration for repeat tests in milliseconds.
-    pub duration_ms: u64,
     /// Default timeout for UI readiness and waits in milliseconds.
     pub timeout_ms: u64,
-    /// Minimum duration for volume tests to reduce flakiness.
-    pub min_volume_duration_ms: u64,
 }
 
-/// Default test duration and timeout settings.
-pub const DEFAULTS: Defaults = Defaults {
-    duration_ms: 1000,
-    timeout_ms: 3000,
-    min_volume_duration_ms: 2000,
-};
+/// Default timeout settings.
+pub const DEFAULTS: Defaults = Defaults { timeout_ms: 3000 };
+
+/// Delay between theme switches to make transitions visible (milliseconds).
+pub const THEME_SWITCH_DELAY_MS: u64 = 150;
 
 /// Input-event pacing constants.
 #[derive(Debug, Clone, Copy)]
@@ -34,8 +26,8 @@ pub struct InputDelays {
 
 /// Default input-event timings.
 pub const INPUT_DELAYS: InputDelays = InputDelays {
-    poll_interval_ms: 10,
-    retry_delay_ms: 80,
+    poll_interval_ms: 5,
+    retry_delay_ms: 30,
 };
 
 /// Connection retry tuning.
@@ -68,7 +60,7 @@ pub struct BindingGates {
 }
 
 /// Default RPC readiness gate tunables.
-pub const BINDING_GATES: BindingGates = BindingGates { default_ms: 2000 };
+pub const BINDING_GATES: BindingGates = BindingGates { default_ms: 500 };
 
 /// Warn overlay tuning.
 #[derive(Debug, Clone, Copy)]
@@ -83,19 +75,10 @@ pub struct WarnOverlayConfig {
 
 /// Default warning overlay geometry and timing.
 pub const WARN_OVERLAY: WarnOverlayConfig = WarnOverlayConfig {
-    initial_delay_ms: 2000,
+    initial_delay_ms: 0,
     width_px: 520.0,
     height_px: 140.0,
 };
-
-/// Generate a unique window title with a simple prefix.
-pub fn test_title(prefix: &str) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("hotki smoketest: {} {}-{}", prefix, process::id(), now)
-}
 
 /// Convert milliseconds to `Duration`.
 pub const fn ms(millis: u64) -> Duration {

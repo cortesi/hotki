@@ -2,7 +2,6 @@ use std::{
     env, fs,
     path::PathBuf,
     process::{self as std_process, Command, Stdio},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -72,7 +71,7 @@ pub struct OverlaySession {
 }
 
 impl OverlaySession {
-    /// Start the overlay and wait for the initial countdown to complete.
+    /// Start the overlay helper process.
     pub fn start() -> Option<Self> {
         let status_path = status_file_path();
         if fs::write(&status_path, b"").is_err() {
@@ -83,10 +82,7 @@ impl OverlaySession {
             // best effort, ignore failure
         }
         match spawn_overlay_child() {
-            Ok(child) => {
-                thread::sleep(Duration::from_millis(config::WARN_OVERLAY.initial_delay_ms));
-                Some(Self { child })
-            }
+            Ok(child) => Some(Self { child }),
             Err(_) => None,
         }
     }

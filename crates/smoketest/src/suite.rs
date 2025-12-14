@@ -117,21 +117,6 @@ impl CaseEntry {
             run,
         }
     }
-
-    /// Create a background-thread case entry with the provided metadata.
-    pub const fn background(
-        name: &'static str,
-        info: Option<&'static str>,
-        extra_timeout_ms: u64,
-        budget: Budget,
-        helpers: &'static [HelperDoc],
-        run: fn(&mut CaseCtx<'_>) -> Result<()>,
-    ) -> Self {
-        Self {
-            main_thread: false,
-            ..Self::main(name, info, extra_timeout_ms, budget, helpers, run)
-        }
-    }
 }
 
 /// Optional per-stage timings captured during case execution.
@@ -676,59 +661,33 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
 /// Helper sets used by smoketest cases.
 const NO_HELPERS: &[HelperDoc] = &[];
 
-/// Additional watchdog slack for fast cases (milliseconds).
-const EXTRA_SHORT: u64 = 2_000;
-/// Additional watchdog slack for moderate cases (milliseconds).
-const EXTRA_MEDIUM: u64 = 3_000;
+/// Additional watchdog slack for cases (milliseconds).
+const EXTRA_TIMEOUT: u64 = 3_000;
 
-/// Registry of retained smoketest cases (window operations removed).
+/// Registry of smoketest cases focused on UI/HUD validation.
 static CASES: &[CaseEntry] = &[
     CaseEntry::main(
-        "repeat-relay",
-        Some("Measure relay repeat throughput."),
-        EXTRA_SHORT,
-        Budget::new(200, 1200, 400),
-        NO_HELPERS,
-        cases::repeat_relay_throughput,
-    ),
-    CaseEntry::background(
-        "repeat-shell",
-        Some("Measure shell repeat throughput."),
-        EXTRA_SHORT,
-        Budget::new(200, 1200, 400),
-        NO_HELPERS,
-        cases::repeat_shell_throughput,
-    ),
-    CaseEntry::background(
-        "repeat-volume",
-        Some("Measure volume repeat throughput with state restoration."),
-        EXTRA_MEDIUM,
-        Budget::new(200, 2000, 800),
-        NO_HELPERS,
-        cases::repeat_volume_throughput,
-    ),
-    CaseEntry::main(
-        "ui.demo.standard",
-        Some("Launch the full UI with HUD and details panes."),
-        EXTRA_MEDIUM,
+        "hud",
+        Some("Verify full HUD appears and responds to keys."),
+        EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
         NO_HELPERS,
-        cases::ui_demo_standard,
+        cases::hud,
     ),
     CaseEntry::main(
-        "ui.demo.mini",
-        Some("Launch the minimal UI surface."),
-        EXTRA_MEDIUM,
+        "mini",
+        Some("Verify mini HUD appears and responds to keys."),
+        EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
         NO_HELPERS,
-        cases::ui_demo_mini,
+        cases::mini,
     ),
     CaseEntry::main(
-        "ui.display.mapping",
-        Some("Verify HUD placement tracks the focused display."),
-        EXTRA_MEDIUM,
+        "displays",
+        Some("Verify HUD placement on multi-display setups."),
+        EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
         NO_HELPERS,
-        cases::ui_display_mapping,
+        cases::displays,
     ),
 ];

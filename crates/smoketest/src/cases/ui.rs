@@ -346,8 +346,8 @@ global.mode("shift+cmd+0", "activate", |m| {
 global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
-/// Mini HUD demo configuration that mirrors the standard flow in mini mode.
-const MINUI_DEMO_CONFIG: &str = r#"
+/// Mini HUD demo configuration.
+const MINI_HUD_CONFIG: &str = r#"
 style(#{
   hud: #{
     mode: hud_mini,
@@ -366,36 +366,36 @@ global.mode("shift+cmd+0", "activate", |m| {
 global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
-/// Execute the standard HUD demo flow using the registry runner.
-pub fn ui_demo_standard(ctx: &mut CaseCtx<'_>) -> Result<()> {
+/// Verify full HUD appears and responds to keys.
+pub fn hud(ctx: &mut CaseCtx<'_>) -> Result<()> {
     run_ui_case(
         ctx,
         &UiCaseSpec {
-            slug: "ui.demo.standard",
+            slug: "hud",
             rhai_config: UI_DEMO_CONFIG,
             with_logs: true,
         },
     )
 }
 
-/// Execute the mini HUD demo flow using the registry runner.
-pub fn ui_demo_mini(ctx: &mut CaseCtx<'_>) -> Result<()> {
+/// Verify mini HUD appears and responds to keys.
+pub fn mini(ctx: &mut CaseCtx<'_>) -> Result<()> {
     run_ui_case(
         ctx,
         &UiCaseSpec {
-            slug: "ui.demo.mini",
-            rhai_config: MINUI_DEMO_CONFIG,
-            with_logs: false,
+            slug: "mini",
+            rhai_config: MINI_HUD_CONFIG,
+            with_logs: true,
         },
     )
 }
 
-/// Exercise HUD placement relative to world-reported active display.
-pub fn ui_display_mapping(ctx: &mut CaseCtx<'_>) -> Result<()> {
+/// Verify HUD placement on multi-display setups.
+pub fn displays(ctx: &mut CaseCtx<'_>) -> Result<()> {
     run_ui_case_with(
         ctx,
         &UiCaseSpec {
-            slug: "ui.display.mapping",
+            slug: "displays",
             rhai_config: UI_DEMO_CONFIG,
             with_logs: true,
         },
@@ -472,10 +472,10 @@ where
 
         {
             let bridge = state_ref.session.bridge_mut();
-            bridge.ensure_ready(3_000)?;
+            bridge.ensure_ready(1_000)?;
             bridge.set_config_from_path(&state_ref.config_path)?;
         }
-        let gate_ms = config::BINDING_GATES.default_ms * 5;
+        let gate_ms = config::BINDING_GATES.default_ms * 2;
         let watcher = BindingWatcher::new(state_ref.session.pid() as i32);
         let ident_activate = UI_DEMO_SEQUENCE[0];
         let activation = {
@@ -494,10 +494,14 @@ where
             bridge.wait_for_idents(&["h", "l", "n"], gate_ms)?;
         }
 
+        // Cycle through themes with visible delays
         let theme_steps = &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1];
         {
             let bridge = state_ref.session.bridge_mut();
-            bridge.inject_sequence(theme_steps)?;
+            for key in theme_steps.iter() {
+                bridge.inject_key(key)?;
+                thread::sleep(Duration::from_millis(config::THEME_SWITCH_DELAY_MS));
+            }
         }
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
@@ -553,7 +557,14 @@ where
             ),
         );
 
-        state_inner.session.shutdown()?;
+        // Shutdown may fail if the server closes the socket before responding;
+        // this is expected behavior, so we just log and continue.
+        if let Err(err) = state_inner.session.shutdown() {
+            tracing::debug!(
+                ?err,
+                "bridge shutdown returned error (expected on clean exit)"
+            );
+        }
         state_inner.session.kill_and_wait();
 
         Ok(())

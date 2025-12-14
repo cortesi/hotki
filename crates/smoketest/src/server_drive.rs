@@ -165,15 +165,6 @@ impl BridgeDriver {
         self.client_mut()?.inject_key(seq)
     }
 
-    /// Inject a sequence of key presses with UI delays.
-    pub fn inject_sequence(&mut self, sequences: &[&str]) -> DriverResult<()> {
-        let conn = self.client_mut()?;
-        for seq in sequences {
-            conn.inject_key(seq)?;
-        }
-        Ok(())
-    }
-
     /// Load a configuration from disk and apply it to the running server.
     pub fn set_config_from_path(&mut self, path: &Path) -> DriverResult<()> {
         let path_str = path.to_str().ok_or_else(|| DriverError::BridgeFailure {
@@ -871,7 +862,7 @@ impl BridgeClient {
     /// Inject a key chord by issuing down/up events once the HUD reports readiness.
     fn inject_key(&mut self, seq: &str) -> DriverResult<()> {
         let ident = canonicalize_ident(seq);
-        let gate_ms = config::BINDING_GATES.default_ms.saturating_mul(3);
+        let gate_ms = config::BINDING_GATES.default_ms;
         let mut targets = BTreeSet::new();
         targets.insert(ident.clone());
 

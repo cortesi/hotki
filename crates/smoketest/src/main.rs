@@ -1,10 +1,10 @@
 #![allow(clippy::disallowed_methods)]
-//! Smoketest binary for Hotki. Provides repeat and UI validation helpers.
+//! Smoketest binary for Hotki. Provides UI/HUD validation tests.
 use clap::Parser;
 use logging as logshared;
 use tracing_subscriber::{fmt, prelude::*};
 
-/// Scenario-specific smoketest cases for relay + UI only.
+/// Scenario-specific smoketest cases for UI/HUD validation.
 mod cases;
 mod cli;
 mod config;
@@ -119,15 +119,10 @@ fn main() {
     init_tracing_from_cli(&cli);
 
     let perms = permissions::check_permissions();
-    let fake_mode = (!perms.accessibility_ok || !perms.input_ok) && env::var_os("CI").is_some();
-    if fake_mode && !cli.quiet {
-        println!("smoketest: Accessibility/Input permissions missing; running limited fake smoke");
-    }
-
-    enforce_permissions_or_exit(perms, fake_mode);
+    enforce_permissions_or_exit(perms);
     build_hotki_or_exit(&cli);
 
-    dispatch_command(&cli, fake_mode);
+    dispatch_command(&cli);
 }
 
 /// Initialize tracing/logging according to CLI flags and defaults.
@@ -150,10 +145,7 @@ fn init_tracing_from_cli(cli: &Cli) {
 }
 
 /// Ensure required macOS permissions are granted; exit with a helpful message if not.
-fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus, fake_mode: bool) {
-    if fake_mode {
-        return;
-    }
+fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus) {
     if !perms.accessibility_ok || !perms.input_ok {
         eprintln!(
             "ERROR: required permissions missing (accessibility={}, input_monitoring={})",
@@ -183,37 +175,29 @@ fn build_hotki_or_exit(cli: &Cli) {
 }
 
 /// Dispatch to the concrete smoketest command handlers.
-fn dispatch_command(cli: &Cli, fake_mode: bool) {
+fn dispatch_command(cli: &Cli) {
     let total = cli.repeat;
     for iteration in 1..=total {
         if total > 1 && !cli.quiet {
             heading(&format!("Run {iteration}/{total}"));
         }
-        dispatch_command_once(cli, fake_mode);
+        dispatch_command_once(cli);
     }
 }
 
 /// Execute one iteration of the smoketest command dispatch.
-fn dispatch_command_once(cli: &Cli, fake_mode: bool) {
-    if let Some((slug, opts)) = cli.command.case_info(fake_mode) {
+fn dispatch_command_once(cli: &Cli) {
+    if let Some((slug, opts)) = cli.command.case_info(false) {
         run_case_by_slug(cli, slug, opts);
         return;
     }
 
     match &cli.command {
         Commands::All => {
-            if fake_mode {
-                let fake_opts = CaseRunOpts {
-                    warn_overlay: Some(false),
-                    fail_fast: Some(true),
-                };
-                run_case_by_slug(cli, "place.fake.adapter", fake_opts);
-            } else {
-                let config = runner_config(cli, &CaseRunOpts::default());
-                if let Err(err) = suite::run_all(&config) {
-                    eprintln!("smoketest all failed: {err}");
-                    exit(1);
-                }
+            let config = runner_config(cli, &CaseRunOpts::default());
+            if let Err(err) = suite::run_all(&config) {
+                eprintln!("smoketest all failed: {err}");
+                exit(1);
             }
         }
         Commands::Seq { tests } => {

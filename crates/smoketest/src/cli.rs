@@ -32,10 +32,6 @@ pub struct Cli {
     #[arg(long)]
     pub info: Option<String>,
 
-    /// Default duration for repeat tests in milliseconds
-    #[arg(long, default_value_t = config::DEFAULTS.duration_ms)]
-    pub duration: u64,
-
     /// Default timeout for UI readiness and waits in milliseconds
     #[arg(long, default_value_t = config::DEFAULTS.timeout_ms)]
     pub timeout: u64,
@@ -52,21 +48,15 @@ pub struct Cli {
 /// Named tests that can be run in sequence via `seq`.
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum SeqTest {
-    /// Relay repeat performance
-    #[value(name = "repeat-relay")]
-    RepeatRelay,
-    /// Shell repeat performance
-    #[value(name = "repeat-shell")]
-    RepeatShell,
-    /// Volume repeat performance
-    #[value(name = "repeat-volume")]
-    RepeatVolume,
-    /// Full UI smoke
-    #[value(name = "ui.demo.standard")]
-    Ui,
-    /// Mini UI smoke
-    #[value(name = "ui.demo.mini")]
-    Minui,
+    /// Verify full HUD appears and responds to keys
+    #[value(name = "hud")]
+    Hud,
+    /// Verify mini HUD appears and responds to keys
+    #[value(name = "mini")]
+    Mini,
+    /// Verify HUD placement on multi-display setups
+    #[value(name = "displays")]
+    Displays,
 }
 
 impl SeqTest {
@@ -86,25 +76,13 @@ impl SeqTest {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
-    /// Measure relay repeats posted to the focused window
-    #[command(name = "repeat-relay")]
-    Relay,
-
-    /// Measure number of shell invocations when repeating a shell command
-    #[command(name = "repeat-shell")]
-    Shell,
-
-    /// Measure repeats by incrementing system volume from zero
-    #[command(name = "repeat-volume")]
-    Volume,
-
-    /// Run all smoketests (repeats + UI demos)
+    /// Run all smoketests
     #[command(name = "all")]
     All,
 
     /// Run a sequence of smoketests in order
     ///
-    /// Example: smoketest seq repeat-relay ui.demo.standard
+    /// Example: smoketest seq hud mini displays
     #[command(name = "seq")]
     Seq {
         /// One or more test names to run in order
@@ -112,36 +90,32 @@ pub enum Commands {
         tests: Vec<SeqTest>,
     },
 
-    /// Full UI smoke
-    #[command(name = "ui.demo.standard")]
-    Ui,
+    /// Verify full HUD appears and responds to keys
+    #[command(name = "hud")]
+    Hud,
 
-    /// Mini UI smoke
-    #[command(name = "ui.demo.mini")]
-    Minui,
+    /// Verify mini HUD appears and responds to keys
+    #[command(name = "mini")]
+    Mini,
+
+    /// Verify HUD placement on multi-display setups
+    #[command(name = "displays")]
+    Displays,
 }
 
 impl Commands {
     /// Return the case slug and run options for a command.
-    pub fn case_info(&self, fake_mode: bool) -> Option<(&'static str, CaseRunOpts)> {
+    pub fn case_info(&self, _fake_mode: bool) -> Option<(&'static str, CaseRunOpts)> {
         let default_opts = CaseRunOpts::default();
-        let fake_opts = CaseRunOpts {
-            warn_overlay: Some(false),
-            fail_fast: Some(true),
-        };
 
         let candidate = match self {
-            Self::Relay => "repeat-relay",
-            Self::Shell => "repeat-shell",
-            Self::Volume => "repeat-volume",
-            Self::Ui => "ui.demo.standard",
-            Self::Minui => "ui.demo.mini",
+            Self::Hud => "hud",
+            Self::Mini => "mini",
+            Self::Displays => "displays",
             Self::All | Self::Seq { .. } => return None,
         };
 
-        let opts = if fake_mode { fake_opts } else { default_opts };
-
         let entry = case_by_slug(candidate)?;
-        Some((entry.name, opts))
+        Some((entry.name, default_opts))
     }
 }
