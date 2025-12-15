@@ -95,19 +95,11 @@ impl Connection {
         self.request_ok(HotkeyMethod::Shutdown, &[]).await
     }
 
-    /// Set the full configuration (typed convenience method).
-    pub async fn set_config(&mut self, cfg: config::Config) -> Result<()> {
-        debug!("Sending set_config request");
-        let param = enc_set_config(&cfg)?;
-        self.request_ok(HotkeyMethod::SetConfig, &[param]).await
-    }
-
     /// Set the config file path (server loads config from disk).
-    pub async fn set_config_path(&mut self, path: &str) -> Result<config::Config> {
+    pub async fn set_config_path(&mut self, path: &str) -> Result<()> {
         debug!("Sending set_config_path request");
         let param = Value::String(path.into());
-        self.request_binary(HotkeyMethod::SetConfigPath, &[param])
-            .await
+        self.request_ok(HotkeyMethod::SetConfigPath, &[param]).await
     }
 
     /// Set the active theme by name.
@@ -279,12 +271,6 @@ impl MrpcConnection for ClientHandler {
 
         Ok(())
     }
-}
-
-/// Encode `set_config` params.
-pub(crate) fn enc_set_config(cfg: &config::Config) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(cfg)?;
-    Ok(Value::Binary(bytes))
 }
 
 /// Encode `inject_key` params as msgpack binary.

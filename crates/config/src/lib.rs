@@ -1,5 +1,5 @@
 //! Shared configuration types (modes, themes, parsing) used by Hotki.
-#![allow(missing_docs)]
+#![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{
@@ -7,36 +7,24 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod cursor;
 mod defaults;
 pub mod dynamic;
 mod error;
-mod keys;
-mod loader;
 mod mode;
 mod notify;
 mod raw;
-mod rhai;
 mod style;
 pub mod themes;
 mod types;
 
 #[cfg(test)]
 mod test_merge;
-#[cfg(test)]
-mod test_parse;
-#[cfg(test)]
-mod test_rhai;
 
-pub use cursor::Cursor;
-pub use dynamic::load_dynamic_config;
+pub use dynamic::{DynamicConfig, load_dynamic_config};
 pub use error::Error;
-pub use hotki_protocol::Toggle;
-pub use keys::{Config, CursorEnsureExt};
-pub use loader::{LoadedConfig, load_for_server_from_path, load_from_path};
-pub use mode::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};
+pub use hotki_protocol::{NotifyKind, Toggle};
+pub use mode::{Action, ShellModifiers, ShellSpec};
 pub use notify::Notify;
-pub use rhai::RhaiRuntime;
 pub use style::{Hud, Style};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 

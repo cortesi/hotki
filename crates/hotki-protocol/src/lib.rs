@@ -485,36 +485,11 @@ pub enum MsgToUI {
         text: String,
     },
 
-    /// Request the UI to reload the configuration from disk
-    ReloadConfig,
-
-    /// Server loaded a new config from disk and is notifying clients.
-    ///
-    /// The config payload is msgpack-encoded `config::Config` bytes.
-    ConfigLoaded {
-        /// The config path the server loaded.
-        path: String,
-        /// The msgpack-encoded config payload.
-        config: Vec<u8>,
-    },
-
     /// Clear notifications request for the UI
     ClearNotifications,
 
     /// Control the details window visibility
     ShowDetails(Toggle),
-
-    /// Switch to the next theme
-    ThemeNext,
-
-    /// Switch to the previous theme
-    ThemePrev,
-
-    /// Set a specific theme by name
-    ThemeSet(String),
-
-    /// Control user style configuration (HUD and notifications): on/off/toggle
-    UserStyle(Toggle),
 
     /// Streaming log message from the server
     Log {

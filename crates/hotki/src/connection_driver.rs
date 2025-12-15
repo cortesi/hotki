@@ -241,7 +241,7 @@ impl ConnectionDriver {
             .set_config_path(self.config_path.to_string_lossy().as_ref())
             .await
         {
-            Ok(_ignored) => {
+            Ok(()) => {
                 self.notify(NotifyKind::Success, "Config", "Reloaded successfully");
                 self.tx_keys
                     .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
@@ -275,7 +275,7 @@ impl ConnectionDriver {
                 Err(err) => BridgeResponse::Err { message: err },
             },
             BridgeRequest::SetConfig { path } => match conn.set_config_path(&path).await {
-                Ok(_ignored) => {
+                Ok(()) => {
                     self.config_path = PathBuf::from(&path);
                     self.tx_keys
                         .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
@@ -356,17 +356,6 @@ impl ConnectionDriver {
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
                 self.notify(kind, &title, &text);
             }
-            hotki_protocol::MsgToUI::ReloadConfig => {
-                self.tx_ctrl_runtime.send(ControlMsg::Reload).ok();
-                self.egui_ctx.request_repaint();
-            }
-            hotki_protocol::MsgToUI::ConfigLoaded { path, config: _ } => {
-                self.config_path = PathBuf::from(path);
-                self.tx_keys
-                    .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
-                    .ok();
-                self.egui_ctx.request_repaint();
-            }
             hotki_protocol::MsgToUI::ClearNotifications => {
                 self.bridge_notifications.clear();
                 self.tx_keys.send(AppEvent::ClearNotifications).ok();
@@ -386,10 +375,6 @@ impl ConnectionDriver {
                 }
                 self.egui_ctx.request_repaint();
             }
-            hotki_protocol::MsgToUI::ThemeNext
-            | hotki_protocol::MsgToUI::ThemePrev
-            | hotki_protocol::MsgToUI::ThemeSet(_)
-            | hotki_protocol::MsgToUI::UserStyle(_) => {}
             hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
             hotki_protocol::MsgToUI::Log {
                 level,
@@ -457,7 +442,7 @@ impl ConnectionDriver {
             .set_config_path(self.config_path.to_string_lossy().as_ref())
             .await
         {
-            Ok(_ignored) => {}
+            Ok(()) => {}
             Err(e) => {
                 error!("Failed to set config path on server: {}", e);
                 return None;

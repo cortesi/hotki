@@ -333,35 +333,6 @@ impl MrpcConnection for HotkeyService {
                 Ok(Value::Boolean(true))
             }
 
-            Some(HotkeyMethod::SetConfig) => {
-                if params.is_empty() {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::MissingParams,
-                        &[
-                            (
-                                "method",
-                                Value::String(HotkeyMethod::SetConfig.as_str().into()),
-                            ),
-                            ("expected", Value::String("config".into())),
-                        ],
-                    ));
-                }
-
-                let cfg = dec_set_config_param(&params[0])?;
-                debug!("Setting config via MRPC");
-
-                let _ignored = cfg;
-                Err(Self::typed_err(
-                    crate::error::RpcErrorCode::EngineSetConfig,
-                    &[(
-                        "message",
-                        Value::String(
-                            "set_config is not supported with dynamic configuration".into(),
-                        ),
-                    )],
-                ))
-            }
-
             Some(HotkeyMethod::SetConfigPath) => {
                 if params.is_empty() {
                     return Err(Self::typed_err(
@@ -403,23 +374,7 @@ impl MrpcConnection for HotkeyService {
                     ));
                 }
 
-                let cfg = config::Config::default();
-                let bytes = rmp_serde::to_vec_named(&cfg).map_err(|e| {
-                    Self::typed_err(
-                        crate::error::RpcErrorCode::InvalidConfig,
-                        &[("message", Value::String(e.to_string().into()))],
-                    )
-                })?;
-
-                // Notify the UI of the loaded config for local rendering.
-                self.event_tx
-                    .try_send(MsgToUI::ConfigLoaded {
-                        path: raw_path,
-                        config: bytes.clone(),
-                    })
-                    .ok();
-
-                Ok(Value::Binary(bytes))
+                Ok(Value::Boolean(true))
             }
 
             Some(HotkeyMethod::SetTheme) => {
@@ -690,22 +645,6 @@ fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
     match rmp_serde::to_vec_named(ws) {
         Ok(bytes) => Value::Binary(bytes),
         Err(_) => Value::Nil,
-    }
-}
-
-/// Decode `set_config` params.
-pub(crate) fn dec_set_config_param(v: &Value) -> Result<config::Config, mrpc::RpcError> {
-    match v {
-        Value::Binary(bytes) => rmp_serde::from_slice::<config::Config>(bytes).map_err(|e| {
-            mrpc::RpcError::Service(mrpc::ServiceError {
-                name: crate::error::RpcErrorCode::InvalidConfig.to_string(),
-                value: Value::String(e.to_string().into()),
-            })
-        }),
-        _ => Err(mrpc::RpcError::Service(mrpc::ServiceError {
-            name: crate::error::RpcErrorCode::InvalidType.to_string(),
-            value: Value::String("expected binary msgpack".into()),
-        })),
     }
 }
 

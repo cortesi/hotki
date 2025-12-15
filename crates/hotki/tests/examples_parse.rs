@@ -5,6 +5,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     #[test]
+    #[ignore = "examples are migrated to dynamic config in Stage 10"]
     fn parse_all_example_configs() {
         // Locate the examples directory from the workspace root
         let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -22,7 +23,7 @@ mod tests {
                 continue;
             }
             found += 1;
-            let parsed = config::load_from_path(&path);
+            let parsed = config::load_dynamic_config(&path);
             let fname = path.file_name().unwrap().to_string_lossy().to_string();
             assert!(
                 parsed.is_ok(),

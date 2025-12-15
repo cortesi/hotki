@@ -17,7 +17,9 @@ use crate::{
 /// Output of rendering a full stack, including user-visible warnings.
 #[derive(Debug, Clone)]
 pub struct RenderOutput {
+    /// Fully rendered state snapshot (bindings + HUD rows + effective style).
     pub rendered: RenderedState,
+    /// Warning effects emitted during rendering (e.g., duplicate chords).
     pub warnings: Vec<Effect>,
 }
 
@@ -373,6 +375,7 @@ fn resolve_binding_style(
     Ok(ResolvedBindingStyle { hidden, overlay })
 }
 
+/// Resolve a chord against the flattened rendered bindings, returning the first match.
 pub fn resolve_binding<'a>(state: &'a RenderedState, chord: &Chord) -> Option<&'a Binding> {
     state
         .bindings

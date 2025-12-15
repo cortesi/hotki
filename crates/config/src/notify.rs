@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Notification configuration section.
 pub struct Notify {
     /// Fixed width in pixels for each notification window.
     #[serde(default = "defaults::default_notify_width")]
@@ -100,6 +101,7 @@ fn resolve_notify_style(
 }
 
 impl Notify {
+    /// Resolve the effective notification theme by applying defaults and parsing colors.
     pub fn theme(&self) -> NotifyTheme {
         let d = Self::default();
         NotifyTheme {

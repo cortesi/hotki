@@ -129,18 +129,8 @@ mod tests {
                 title: "Title".to_string(),
                 text: "Body".to_string(),
             },
-            MsgToUI::ReloadConfig,
-            MsgToUI::ConfigLoaded {
-                path: "/tmp/config.rhai".into(),
-                config: vec![1, 2, 3],
-            },
             MsgToUI::ClearNotifications,
             MsgToUI::ShowDetails(Toggle::Toggle),
-            MsgToUI::ThemeNext,
-            MsgToUI::ThemePrev,
-            MsgToUI::ThemeSet("night".into()),
-            MsgToUI::UserStyle(Toggle::Toggle),
-            MsgToUI::UserStyle(Toggle::On),
             MsgToUI::Log {
                 level: "info".into(),
                 target: "test".into(),

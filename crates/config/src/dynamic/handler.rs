@@ -6,11 +6,15 @@ use crate::Error;
 /// Result of executing a handler closure.
 #[derive(Debug)]
 pub struct HandlerResult {
+    /// Side effects queued by the handler (actions, notifications, navigation).
     pub effects: Vec<super::Effect>,
+    /// Optional navigation request emitted by the handler.
     pub nav: Option<NavRequest>,
+    /// True when the handler requested to suppress auto-exit behavior.
     pub stay: bool,
 }
 
+/// Execute a handler closure and collect its queued effects.
 pub fn execute_handler(
     cfg: &DynamicConfig,
     handler: &HandlerRef,

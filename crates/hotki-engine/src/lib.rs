@@ -26,7 +26,7 @@
 //! Concurrency and Lock Ordering
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
 //!   inversions, follow this order when multiple guards are needed:
-//!   1) `config: RwLock<Config>` (read guard), 2) `state: Mutex<State>`,
+//!   1) `config: RwLock<Option<DynamicConfig>>` (read guard), 2) `runtime: Mutex<RuntimeState>`,
 //!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
 //!      guard across any call that can block or `await`.
 //! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
@@ -35,7 +35,7 @@
 //! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
 //!   not be awaited while any of the async engine mutexes are held. Acquire,
 //!   compute, drop guards, then perform async work.
-//! - `set_config` acquires a write guard, replaces the config, drops the guard,
+//! - `set_config_path` acquires a write guard, replaces the config, drops the guard,
 //!   then triggers a rebind. Do not re-enter config while a write guard is held.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -89,7 +89,7 @@ use crate::runtime::{FocusInfo, RuntimeState};
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
-/// [`Engine::dispatch`]. Use [`Engine::set_config`] to install a full configuration.
+/// [`Engine::dispatch`]. Use [`Engine::set_config_path`] to install a configuration.
 ///
 /// # Focus Context
 ///
@@ -733,7 +733,7 @@ impl Engine {
             config::Action::Exit => Ok(self
                 .apply_nav_request(config::dynamic::NavRequest::Exit)
                 .await),
-            config::Action::ShowHudRoot | config::Action::ShowRoot => Ok(self
+            config::Action::ShowRoot => Ok(self
                 .apply_nav_request(config::dynamic::NavRequest::ShowRoot)
                 .await),
             config::Action::HideHud => Ok(self
@@ -835,14 +835,6 @@ impl Engine {
             config::Action::UserStyle(arg) => {
                 let mut rt = self.runtime.lock().await;
                 rt.user_style_enabled = apply_toggle(rt.user_style_enabled, *arg);
-                Ok(DispatchOutcome::default())
-            }
-            config::Action::Rhai { .. } | config::Action::Keys(_) => {
-                self.notifier.send_notification(
-                    config::NotifyKind::Warn,
-                    "Config".to_string(),
-                    "Legacy actions are not supported in dynamic config".to_string(),
-                )?;
                 Ok(DispatchOutcome::default())
             }
         }

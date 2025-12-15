@@ -19,10 +19,16 @@ progresses.
 
 ## Stage 6
 
-- `hotki-server` `set_config_path` still returns a msgpack-encoded `config::Config::default()` to
-  keep the existing UI compiling until Stages 7–9 remove the static-config UI path.
+- `hotki-server` `set_config_path` temporarily returned a msgpack-encoded
+  `config::Config::default()` to keep the existing UI compiling; this was removed in Stage 9 when
+  the static-config UI path was deleted.
 
 ## Stage 7
 
 - `hotki-protocol::HudState.style` is a full `Style` (HUD + notification config + resolved theme)
   rather than a HUD-only `HudStyle`, so notifications can be styled without additional messages.
+
+## Stage 9
+
+- `crates/hotki/tests/examples_parse.rs` is temporarily `#[ignore]` until Stage 10 migrates the
+  `examples/*.rhai` configs to the new `hotki.mode` DSL.

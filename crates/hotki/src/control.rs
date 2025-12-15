@@ -9,7 +9,7 @@ pub enum ControlMsg {
     Reload,
     /// Gracefully shut down the UI and exit the process.
     Shutdown,
-    /// Request a theme switch by name (handled on the live Config).
+    /// Request a server-side theme switch by name.
     SwitchTheme(String),
     /// Open the in-app permissions help view.
     OpenPermissionsHelp,

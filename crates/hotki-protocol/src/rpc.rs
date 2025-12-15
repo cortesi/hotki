@@ -12,8 +12,6 @@ use crate::{App, DisplaysSnapshot};
 pub enum HotkeyMethod {
     /// Request a server shutdown.
     Shutdown,
-    /// Set the configuration.
-    SetConfig,
     /// Set the configuration path (server loads config from disk).
     SetConfigPath,
     /// Set the active theme by name.
@@ -37,7 +35,6 @@ impl HotkeyMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             HotkeyMethod::Shutdown => "shutdown",
-            HotkeyMethod::SetConfig => "set_config",
             HotkeyMethod::SetConfigPath => "set_config_path",
             HotkeyMethod::SetTheme => "set_theme",
             HotkeyMethod::InjectKey => "inject_key",
@@ -53,7 +50,6 @@ impl HotkeyMethod {
     pub fn try_from_str(s: &str) -> Option<Self> {
         match s {
             "shutdown" => Some(HotkeyMethod::Shutdown),
-            "set_config" => Some(HotkeyMethod::SetConfig),
             "set_config_path" => Some(HotkeyMethod::SetConfigPath),
             "set_theme" => Some(HotkeyMethod::SetTheme),
             "inject_key" => Some(HotkeyMethod::InjectKey),

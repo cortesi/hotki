@@ -9,26 +9,42 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone)]
+/// Errors produced while loading, parsing, or validating a configuration.
 pub enum Error {
     #[error("{message}")]
+    /// I/O or filesystem read error.
     Read {
+        /// Optional path associated with the read error.
         path: Option<PathBuf>,
+        /// Human-readable error message.
         message: String,
     },
     #[error("{message}")]
+    /// Rhai parse error with a concrete line/column location and excerpt.
     Parse {
+        /// Optional path associated with the parse error.
         path: Option<PathBuf>,
+        /// 1-based line number.
         line: usize,
+        /// 1-based column number.
         col: usize,
+        /// Human-readable error message.
         message: String,
+        /// Rendered excerpt including a caret at the error location.
         excerpt: String,
     },
     #[error("{message}")]
+    /// Validation or runtime error, optionally including location and excerpt.
     Validation {
+        /// Optional path associated with the validation error.
         path: Option<PathBuf>,
+        /// Optional 1-based line number.
         line: Option<usize>,
+        /// Optional 1-based column number.
         col: Option<usize>,
+        /// Human-readable error message.
         message: String,
+        /// Optional excerpt including a caret at the error location.
         excerpt: Option<String>,
     },
 }
