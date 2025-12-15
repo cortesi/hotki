@@ -22,7 +22,6 @@ pub(crate) struct DynamicConfigScriptState {
     pub(crate) base_theme: Option<String>,
     pub(crate) user_style: Option<raw::RawStyle>,
     pub(crate) root: Option<ModeRef>,
-    pub(crate) render_warnings: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Debug, Default)]
@@ -82,8 +81,8 @@ struct HotkiNamespace {
 }
 
 #[derive(Debug, Clone)]
-struct ValidationError {
-    message: String,
+pub(crate) struct ValidationError {
+    pub(crate) message: String,
 }
 
 impl fmt::Display for ValidationError {

@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use rhai::{AST, Engine};
@@ -18,7 +18,6 @@ pub struct DynamicConfig {
     pub(crate) ast: AST,
     pub(crate) source: Arc<str>,
     pub(crate) path: Option<PathBuf>,
-    pub(crate) render_warnings: Arc<Mutex<Vec<String>>>,
 }
 
 impl DynamicConfig {

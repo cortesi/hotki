@@ -29,6 +29,7 @@ mod test_rhai;
 
 pub use error::Error;
 pub use hotki_protocol::{Cursor, Toggle};
+pub use dynamic::load_dynamic_config;
 pub use keys::{Config, CursorEnsureExt};
 pub use loader::{LoadedConfig, load_for_server_from_path, load_from_path};
 pub use mode::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};
