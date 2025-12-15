@@ -9,6 +9,7 @@ use std::{
 
 mod defaults;
 mod error;
+pub mod dynamic;
 mod keys;
 mod loader;
 mod mode;
