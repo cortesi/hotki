@@ -10,12 +10,12 @@ use std::{
 };
 
 use hotki_protocol::{
-    Cursor, DisplaysSnapshot,
+    DisplaysSnapshot,
     rpc::{InjectKind, ServerStatusLite},
 };
 use hotki_server::smoketest_bridge::{
-    BridgeCommand, BridgeCommandId, BridgeHudKey, BridgeNotification, BridgeReply, BridgeRequest,
-    BridgeResponse, BridgeTimestampMs, control_socket_path, now_millis,
+    BridgeCommand, BridgeCommandId, BridgeNotification, BridgeReply, BridgeRequest, BridgeResponse,
+    BridgeTimestampMs, control_socket_path, now_millis,
 };
 pub use hotki_server::smoketest_bridge::{BridgeEvent, ControlSocketScope};
 use thiserror::Error;
@@ -251,14 +251,8 @@ pub struct HudSnapshot {
     pub event_id: BridgeCommandId,
     /// Millisecond timestamp when the snapshot was observed.
     pub received_ms: BridgeTimestampMs,
-    /// Cursor context backing the HUD rendering.
-    pub cursor: Cursor,
-    /// Logical depth of the HUD stack for the cursor.
-    pub depth: usize,
-    /// Optional parent title when the HUD is nested.
-    pub parent_title: Option<String>,
-    /// Keys rendered by the HUD for the current cursor.
-    pub keys: Vec<BridgeHudKey>,
+    /// Fully rendered HUD state payload.
+    pub hud: hotki_protocol::HudState,
     /// Display geometry snapshot carried with the HUD update.
     pub displays: DisplaysSnapshot,
     /// Canonicalized identifiers rendered by the HUD for readiness checks.
@@ -636,28 +630,20 @@ impl BridgeClient {
     /// Record an asynchronous event emitted by the bridge.
     fn record_event(&mut self, reply: BridgeReply) {
         if let BridgeResponse::Event { event } = reply.response {
+            let event = *event;
             if self.event_buffer.len() >= Self::EVENT_BUFFER_CAPACITY {
                 self.event_buffer.pop_front();
             }
-            if let BridgeEvent::Hud {
-                cursor,
-                depth,
-                parent_title,
-                keys,
-                displays,
-            } = &event
-            {
-                let idents: BTreeSet<String> = keys
+            if let BridgeEvent::Hud { hud, displays } = &event {
+                let idents: BTreeSet<String> = hud
+                    .rows
                     .iter()
-                    .map(|key| canonicalize_ident(&key.ident))
+                    .map(|row| canonicalize_ident(&row.chord.to_string()))
                     .collect();
                 self.latest_hud = Some(HudSnapshot {
                     event_id: reply.command_id,
                     received_ms: reply.timestamp_ms,
-                    cursor: cursor.clone(),
-                    depth: *depth,
-                    parent_title: parent_title.clone(),
-                    keys: keys.clone(),
+                    hud: (**hud).clone(),
                     displays: displays.clone(),
                     idents,
                 });
@@ -1001,14 +987,72 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use hotki_protocol::{Cursor, rpc::ServerStatusLite};
-    use hotki_server::smoketest_bridge::{
-        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeHudKey, BridgeReply, BridgeRequest,
-        BridgeResponse, BridgeTimestampMs,
+    use hotki_protocol::{
+        FontWeight, HudRow, HudState, HudStyle, Mode, NotifyConfig, NotifyPos, NotifyTheme,
+        NotifyWindowStyle, Offset, Pos, Style, rpc::ServerStatusLite,
     };
+    use hotki_server::smoketest_bridge::{
+        BridgeCommand, BridgeCommandId, BridgeEvent, BridgeReply, BridgeRequest, BridgeResponse,
+        BridgeTimestampMs,
+    };
+    use mac_keycode::Chord;
     use parking_lot::Mutex as ParkingMutex;
 
     use super::*;
+
+    fn sample_style() -> Style {
+        let window = NotifyWindowStyle {
+            bg: (0, 0, 0),
+            title_fg: (255, 255, 255),
+            body_fg: (255, 255, 255),
+            title_font_size: 14.0,
+            title_font_weight: FontWeight::Regular,
+            body_font_size: 12.0,
+            body_font_weight: FontWeight::Regular,
+            icon: None,
+        };
+        Style {
+            hud: HudStyle {
+                mode: Mode::Hud,
+                pos: Pos::Center,
+                offset: Offset::default(),
+                font_size: 14.0,
+                title_font_weight: FontWeight::Regular,
+                key_font_size: 14.0,
+                key_font_weight: FontWeight::Regular,
+                tag_font_size: 14.0,
+                tag_font_weight: FontWeight::Regular,
+                title_fg: (255, 255, 255),
+                bg: (0, 0, 0),
+                key_fg: (255, 255, 255),
+                key_bg: (0, 0, 0),
+                mod_fg: (255, 255, 255),
+                mod_font_weight: FontWeight::Regular,
+                mod_bg: (0, 0, 0),
+                tag_fg: (255, 255, 255),
+                opacity: 1.0,
+                key_radius: 6.0,
+                key_pad_x: 6.0,
+                key_pad_y: 6.0,
+                radius: 10.0,
+                tag_submenu: "…".to_string(),
+            },
+            notify: NotifyConfig {
+                width: 400.0,
+                pos: NotifyPos::Right,
+                opacity: 1.0,
+                timeout: 2.0,
+                buffer: 10,
+                radius: 10.0,
+                theme: NotifyTheme {
+                    info: window.clone(),
+                    warn: window.clone(),
+                    error: window.clone(),
+                    success: window,
+                },
+            },
+        }
+    }
 
     fn unique_control_socket() -> String {
         let nanos = SystemTime::now()
@@ -1059,10 +1103,11 @@ mod tests {
                 send_custom_hud_event(
                     &mut writer,
                     cmd.command_id + 10,
-                    vec![BridgeHudKey {
-                        ident: "h".into(),
-                        description: "Help".into(),
+                    vec![HudRow {
+                        chord: Chord::parse("h").unwrap(),
+                        desc: "Help".into(),
                         is_mode: false,
+                        style: None,
                     }],
                 );
                 assert!(try_read_command(&mut reader, 100).is_none());
@@ -1071,10 +1116,11 @@ mod tests {
                 send_custom_hud_event(
                     &mut writer,
                     cmd.command_id + 11,
-                    vec![BridgeHudKey {
-                        ident: "cmd+b".into(),
-                        description: "Binding".into(),
+                    vec![HudRow {
+                        chord: Chord::parse("cmd+b").unwrap(),
+                        desc: "Binding".into(),
                         is_mode: false,
+                        style: None,
                     }],
                 );
 
@@ -1259,16 +1305,21 @@ mod tests {
     fn send_custom_hud_event(
         writer: &mut UnixStream,
         event_id: BridgeCommandId,
-        keys: Vec<BridgeHudKey>,
+        rows: Vec<HudRow>,
     ) {
+        let hud = HudState {
+            visible: true,
+            rows,
+            depth: 1,
+            breadcrumbs: vec!["Test".into()],
+            style: sample_style(),
+            capture: false,
+        };
         let response = BridgeResponse::Event {
-            event: BridgeEvent::Hud {
-                cursor: Cursor::default(),
-                depth: 1,
-                parent_title: Some("Test".into()),
-                keys,
+            event: Box::new(BridgeEvent::Hud {
+                hud: Box::new(hud),
                 displays: DisplaysSnapshot::default(),
-            },
+            }),
         };
         let reply = BridgeReply {
             command_id: event_id,
@@ -1282,10 +1333,11 @@ mod tests {
         send_custom_hud_event(
             writer,
             event_id,
-            vec![BridgeHudKey {
-                ident: "k".into(),
-                description: "Key".into(),
+            vec![HudRow {
+                chord: Chord::parse("k").unwrap(),
+                desc: "Key".into(),
                 is_mode: false,
+                style: None,
             }],
         );
     }
@@ -1390,10 +1442,11 @@ mod tests {
                 send_custom_hud_event(
                     &mut writer,
                     cmd.command_id + 10,
-                    vec![BridgeHudKey {
-                        ident: "h".into(),
-                        description: "Help".into(),
+                    vec![HudRow {
+                        chord: Chord::parse("h").unwrap(),
+                        desc: "Help".into(),
                         is_mode: false,
+                        style: None,
                     }],
                 );
 
@@ -1401,10 +1454,11 @@ mod tests {
                 send_custom_hud_event(
                     &mut writer,
                     cmd.command_id + 11,
-                    vec![BridgeHudKey {
-                        ident: "cmd+b".into(),
-                        description: "Binding".into(),
+                    vec![HudRow {
+                        chord: Chord::parse("cmd+b").unwrap(),
+                        desc: "Binding".into(),
                         is_mode: false,
+                        style: None,
                     }],
                 );
 

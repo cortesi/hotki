@@ -2200,6 +2200,7 @@ dependencies = [
 name = "hotki-protocol"
 version = "0.0.1"
 dependencies = [
+ "mac-keycode",
  "mrpc",
  "rmp-serde",
  "serde",

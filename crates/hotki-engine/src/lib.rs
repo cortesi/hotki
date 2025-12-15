@@ -308,9 +308,11 @@ impl Engine {
             *cache = snapshot.clone();
         }
 
-        let cursor = self.cursor_for_ui().await;
-        let cursor = self.cursor_with_current_app(cursor);
-        self.publish_hud_with_displays(cursor, snapshot).await
+        let hud = {
+            let rt = self.runtime.lock().await;
+            hud_state_for_ui_from_state(&rt)
+        };
+        self.publish_hud_with_displays(hud, snapshot).await
     }
 
     async fn rebind_and_refresh(&self, app: &str, title: &str, pid: i32) -> Result<()> {
@@ -319,7 +321,7 @@ impl Engine {
         let mut warnings = Vec::new();
         let mut key_pairs: Vec<(String, Chord)> = Vec::new();
         let mut capture_all = false;
-        let cursor = {
+        let hud = {
             let cfg_guard = self.config.read().await;
             let mut rt = self.runtime.lock().await;
             rt.focus = FocusInfo {
@@ -401,7 +403,7 @@ impl Engine {
                 };
             }
 
-            cursor_for_ui_from_state(&rt)
+            hud_state_for_ui_from_state(&rt)
         };
 
         for effect in warnings {
@@ -424,8 +426,7 @@ impl Engine {
         }
 
         let displays_snapshot = self.world.displays().await;
-        let cursor = self.cursor_with_current_app(cursor);
-        self.publish_hud_with_displays(cursor, displays_snapshot)
+        self.publish_hud_with_displays(hud, displays_snapshot)
             .await?;
 
         let elapsed = start.elapsed();
@@ -444,17 +445,17 @@ impl Engine {
         Ok(())
     }
 
-    /// Update HUD with a new cursor + display snapshot and refresh the cache.
+    /// Update HUD with a new HUD state + display snapshot and refresh the cache.
     async fn publish_hud_with_displays(
         &self,
-        cursor: hotki_protocol::Cursor,
+        hud: hotki_protocol::HudState,
         snapshot: DisplaysSnapshot,
     ) -> Result<()> {
         {
             let mut cache = self.display_snapshot.lock().await;
             *cache = snapshot.clone();
         }
-        self.notifier.send_hud_update_cursor(cursor, snapshot)?;
+        self.notifier.send_hud_update(hud, snapshot)?;
         Ok(())
     }
 
@@ -992,23 +993,135 @@ impl Engine {
         }
         (String::new(), String::new(), -1)
     }
+}
 
-    async fn cursor_for_ui(&self) -> hotki_protocol::Cursor {
-        let rt = self.runtime.lock().await;
-        cursor_for_ui_from_state(&rt)
-    }
-
-    fn cursor_with_current_app(&self, cursor: hotki_protocol::Cursor) -> hotki_protocol::Cursor {
-        let (app, title, pid) = self.current_context();
-        cursor.with_app(hotki_protocol::App { app, title, pid })
+fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::HudState {
+    hotki_protocol::HudState {
+        visible: rt.hud_visible,
+        rows: rt
+            .rendered
+            .hud_rows
+            .iter()
+            .map(|row| hotki_protocol::HudRow {
+                chord: row.chord.clone(),
+                desc: row.desc.clone(),
+                is_mode: row.is_mode,
+                style: row.style.map(|s| hotki_protocol::HudRowStyle {
+                    key_fg: s.key_fg,
+                    key_bg: s.key_bg,
+                    mod_fg: s.mod_fg,
+                    mod_bg: s.mod_bg,
+                    tag_fg: s.tag_fg,
+                }),
+            })
+            .collect(),
+        depth: rt.depth(),
+        breadcrumbs: rt.stack.iter().skip(1).map(|f| f.title.clone()).collect(),
+        style: style_for_ui(&rt.rendered.style),
+        capture: rt.hud_visible && rt.rendered.capture,
     }
 }
 
-fn cursor_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::Cursor {
-    let mut cursor = hotki_protocol::Cursor::new(Vec::new(), rt.hud_visible);
-    cursor.set_theme(Some(theme_name_for_index(rt.theme_index)));
-    cursor.set_user_style_enabled(rt.user_style_enabled);
-    cursor
+fn style_for_ui(style: &config::Style) -> hotki_protocol::Style {
+    hotki_protocol::Style {
+        hud: hud_style_for_ui(&style.hud),
+        notify: notify_config_for_ui(&style.notify),
+    }
+}
+
+fn hud_style_for_ui(hud: &config::Hud) -> hotki_protocol::HudStyle {
+    hotki_protocol::HudStyle {
+        mode: match hud.mode {
+            config::Mode::Hud => hotki_protocol::Mode::Hud,
+            config::Mode::Hide => hotki_protocol::Mode::Hide,
+            config::Mode::Mini => hotki_protocol::Mode::Mini,
+        },
+        pos: match hud.pos {
+            config::Pos::Center => hotki_protocol::Pos::Center,
+            config::Pos::N => hotki_protocol::Pos::N,
+            config::Pos::NE => hotki_protocol::Pos::NE,
+            config::Pos::E => hotki_protocol::Pos::E,
+            config::Pos::SE => hotki_protocol::Pos::SE,
+            config::Pos::S => hotki_protocol::Pos::S,
+            config::Pos::SW => hotki_protocol::Pos::SW,
+            config::Pos::W => hotki_protocol::Pos::W,
+            config::Pos::NW => hotki_protocol::Pos::NW,
+        },
+        offset: hotki_protocol::Offset {
+            x: hud.offset.x,
+            y: hud.offset.y,
+        },
+        font_size: hud.font_size,
+        title_font_weight: font_weight_for_ui(hud.title_font_weight),
+        key_font_size: hud.key_font_size,
+        key_font_weight: font_weight_for_ui(hud.key_font_weight),
+        tag_font_size: hud.tag_font_size,
+        tag_font_weight: font_weight_for_ui(hud.tag_font_weight),
+        title_fg: hud.title_fg,
+        bg: hud.bg,
+        key_fg: hud.key_fg,
+        key_bg: hud.key_bg,
+        mod_fg: hud.mod_fg,
+        mod_font_weight: font_weight_for_ui(hud.mod_font_weight),
+        mod_bg: hud.mod_bg,
+        tag_fg: hud.tag_fg,
+        opacity: hud.opacity,
+        key_radius: hud.key_radius,
+        key_pad_x: hud.key_pad_x,
+        key_pad_y: hud.key_pad_y,
+        radius: hud.radius,
+        tag_submenu: hud.tag_submenu.clone(),
+    }
+}
+
+fn notify_config_for_ui(notify: &config::Notify) -> hotki_protocol::NotifyConfig {
+    let theme = notify.theme();
+    hotki_protocol::NotifyConfig {
+        width: notify.width,
+        pos: match notify.pos {
+            config::NotifyPos::Left => hotki_protocol::NotifyPos::Left,
+            config::NotifyPos::Right => hotki_protocol::NotifyPos::Right,
+        },
+        opacity: notify.opacity,
+        timeout: notify.timeout,
+        buffer: notify.buffer,
+        radius: notify.radius,
+        theme: hotki_protocol::NotifyTheme {
+            info: notify_window_style_for_ui(theme.info),
+            warn: notify_window_style_for_ui(theme.warn),
+            error: notify_window_style_for_ui(theme.error),
+            success: notify_window_style_for_ui(theme.success),
+        },
+    }
+}
+
+fn notify_window_style_for_ui(
+    style: config::NotifyWindowStyle,
+) -> hotki_protocol::NotifyWindowStyle {
+    hotki_protocol::NotifyWindowStyle {
+        bg: style.bg,
+        title_fg: style.title_fg,
+        body_fg: style.body_fg,
+        title_font_size: style.title_font_size,
+        title_font_weight: font_weight_for_ui(style.title_font_weight),
+        body_font_size: style.body_font_size,
+        body_font_weight: font_weight_for_ui(style.body_font_weight),
+        icon: style.icon,
+    }
+}
+
+fn font_weight_for_ui(weight: config::FontWeight) -> hotki_protocol::FontWeight {
+    match weight {
+        config::FontWeight::Thin => hotki_protocol::FontWeight::Thin,
+        config::FontWeight::ExtraLight => hotki_protocol::FontWeight::ExtraLight,
+        config::FontWeight::Light => hotki_protocol::FontWeight::Light,
+        config::FontWeight::Regular => hotki_protocol::FontWeight::Regular,
+        config::FontWeight::Medium => hotki_protocol::FontWeight::Medium,
+        config::FontWeight::SemiBold => hotki_protocol::FontWeight::SemiBold,
+        config::FontWeight::Bold => hotki_protocol::FontWeight::Bold,
+        config::FontWeight::ExtraBold => hotki_protocol::FontWeight::ExtraBold,
+        config::FontWeight::Black => hotki_protocol::FontWeight::Black,
+    }
 }
 
 fn theme_name_for_index(index: usize) -> &'static str {

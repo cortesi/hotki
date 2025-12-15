@@ -5,6 +5,7 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+use mac_keycode::Chord;
 use serde::{Deserialize, Serialize};
 
 /// Focused application context used by UI/HUD rendering.
@@ -18,93 +19,264 @@ pub struct App {
     pub pid: i32,
 }
 
-/// Pointer into the loaded config's key hierarchy and UI overrides.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Cursor {
-    /// Indices into the parent `Keys.keys` vector for each descent step.
-    path: Vec<u32>,
-
-    /// True when showing the root HUD via a root view (no logical descent).
-    #[serde(default)]
-    pub viewing_root: bool,
-
-    /// Optional override of the base theme name for this view.
-    /// When `None`, uses the theme bundled in the loaded config.
-    #[serde(default)]
-    pub override_theme: Option<String>,
-
-    /// When true, ignore user overlay and render the theme without user UI tweaks.
-    #[serde(default)]
-    pub user_ui_disabled: bool,
-
-    /// Optional focused application context carried with the cursor for UI/HUD
-    /// rendering. When absent, callers may fall back to empty strings.
-    #[serde(default)]
-    pub app: Option<App>,
+/// Display mode selection for the HUD.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Full HUD is visible.
+    Hud,
+    /// HUD is hidden.
+    Hide,
+    /// Minimal HUD variant.
+    Mini,
 }
 
-impl Cursor {
-    /// Construct a new Cursor from parts.
-    pub fn new(path: Vec<u32>, viewing_root: bool) -> Self {
-        Self {
-            path,
-            viewing_root,
-            override_theme: None,
-            user_ui_disabled: false,
-            app: None,
+/// Font weight used throughout UI elements.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FontWeight {
+    /// Thin weight.
+    Thin,
+    /// Extra-light weight.
+    ExtraLight,
+    /// Light weight.
+    Light,
+    /// Regular weight.
+    Regular,
+    /// Medium weight.
+    Medium,
+    /// Semi-bold weight.
+    SemiBold,
+    /// Bold weight.
+    Bold,
+    /// Extra-bold weight.
+    ExtraBold,
+    /// Black weight.
+    Black,
+}
+
+/// Screen anchor position for HUD placement.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Pos {
+    /// Center of the active display.
+    Center,
+    /// North (top center).
+    N,
+    /// Northeast (top right).
+    NE,
+    /// East (right center).
+    E,
+    /// Southeast (bottom right).
+    SE,
+    /// South (bottom center).
+    S,
+    /// Southwest (bottom left).
+    SW,
+    /// West (left center).
+    W,
+    /// Northwest (top left).
+    NW,
+}
+
+/// Pixel offset relative to an anchor position (x moves right, y moves up).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Offset {
+    /// Horizontal offset in pixels.
+    pub x: f32,
+    /// Vertical offset in pixels.
+    pub y: f32,
+}
+
+/// Side of the screen used to stack notifications.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyPos {
+    /// Left side of the active display.
+    #[serde(alias = "l")]
+    Left,
+    /// Right side of the active display.
+    #[serde(alias = "r")]
+    Right,
+}
+
+/// Concrete per-window styling with fully parsed colors and sizes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyWindowStyle {
+    /// Background fill color.
+    pub bg: (u8, u8, u8),
+    /// Foreground color for the notification title text.
+    pub title_fg: (u8, u8, u8),
+    /// Foreground color for the notification body text.
+    pub body_fg: (u8, u8, u8),
+    /// Title font size.
+    pub title_font_size: f32,
+    /// Title font weight.
+    pub title_font_weight: FontWeight,
+    /// Body font size.
+    pub body_font_size: f32,
+    /// Body font weight.
+    pub body_font_weight: FontWeight,
+    /// Optional icon/glyph to show next to the title.
+    pub icon: Option<String>,
+}
+
+/// Fully resolved notification theme for all kinds (info/warn/error/success).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyTheme {
+    /// Styling for Info notifications.
+    pub info: NotifyWindowStyle,
+    /// Styling for Warn notifications.
+    pub warn: NotifyWindowStyle,
+    /// Styling for Error notifications.
+    pub error: NotifyWindowStyle,
+    /// Styling for Success notifications.
+    pub success: NotifyWindowStyle,
+}
+
+impl NotifyTheme {
+    /// Pick the appropriate window style for a given notification kind.
+    pub fn style_for(&self, kind: NotifyKind) -> &NotifyWindowStyle {
+        match kind {
+            NotifyKind::Info | NotifyKind::Ignore => &self.info,
+            NotifyKind::Warn => &self.warn,
+            NotifyKind::Error => &self.error,
+            NotifyKind::Success => &self.success,
         }
     }
+}
 
-    /// Logical depth equals the number of elements in the path (root = 0).
-    pub fn depth(&self) -> usize {
-        self.path.len()
-    }
+/// Fully resolved notification configuration (layout + per-kind styling).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyConfig {
+    /// Fixed width in pixels for each notification window.
+    pub width: f32,
+    /// Screen side where the notification stack is anchored (left or right).
+    pub pos: NotifyPos,
+    /// Overall window opacity in the range [0.0, 1.0].
+    pub opacity: f32,
+    /// Auto-dismiss timeout for a notification, in seconds.
+    pub timeout: f32,
+    /// Maximum number of notifications kept in the on-screen stack.
+    pub buffer: usize,
+    /// Corner radius for notification windows.
+    pub radius: f32,
+    /// Resolved per-kind styling.
+    pub theme: NotifyTheme,
+}
 
-    /// Push an index step into the location path.
-    pub fn push(&mut self, idx: u32) {
-        self.path.push(idx);
-    }
+/// HUD style configuration with parsed colors and typography settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HudStyle {
+    /// Display mode selection for the HUD.
+    pub mode: Mode,
+    /// Screen anchor position for the HUD window.
+    pub pos: Pos,
+    /// Pixel offset added to the anchored position.
+    pub offset: Offset,
+    /// Base font size for descriptions and general HUD text.
+    pub font_size: f32,
+    /// Font weight for title/description text.
+    pub title_font_weight: FontWeight,
+    /// Font size for key tokens inside their rounded boxes.
+    pub key_font_size: f32,
+    /// Font weight for non-modifier key tokens.
+    pub key_font_weight: FontWeight,
+    /// Font size for the tag indicator shown for sub-modes.
+    pub tag_font_size: f32,
+    /// Font weight for the sub-mode tag indicator.
+    pub tag_font_weight: FontWeight,
+    /// Foreground color for title/description text.
+    pub title_fg: (u8, u8, u8),
+    /// HUD background fill color.
+    pub bg: (u8, u8, u8),
+    /// Foreground color for non-modifier key tokens.
+    pub key_fg: (u8, u8, u8),
+    /// Background color for non-modifier key tokens.
+    pub key_bg: (u8, u8, u8),
+    /// Foreground color for modifier key tokens.
+    pub mod_fg: (u8, u8, u8),
+    /// Font weight for modifier key tokens.
+    pub mod_font_weight: FontWeight,
+    /// Background color for modifier key tokens.
+    pub mod_bg: (u8, u8, u8),
+    /// Foreground color for the sub-mode tag indicator.
+    pub tag_fg: (u8, u8, u8),
+    /// Window opacity in the range [0.0, 1.0].
+    pub opacity: f32,
+    /// Corner radius for key boxes.
+    pub key_radius: f32,
+    /// Horizontal padding inside key boxes.
+    pub key_pad_x: f32,
+    /// Vertical padding inside key boxes.
+    pub key_pad_y: f32,
+    /// Corner radius for the HUD window itself.
+    pub radius: f32,
+    /// Text tag shown for sub-modes at the end of rows.
+    pub tag_submenu: String,
+}
 
-    /// Pop a step from the location path. Returns the popped index if any.
-    pub fn pop(&mut self) -> Option<u32> {
-        self.path.pop()
-    }
+/// Effective UI style state computed on the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Style {
+    /// HUD style settings.
+    pub hud: HudStyle,
+    /// Notification style settings.
+    pub notify: NotifyConfig,
+}
 
-    /// Clear the path, returning to root (does not change viewing_root flag).
-    pub fn clear(&mut self) {
-        self.path.clear();
-    }
+/// Optional per-binding HUD style overrides after resolution.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HudRowStyle {
+    /// Foreground color for non-modifier key tokens.
+    pub key_fg: (u8, u8, u8),
+    /// Background color for non-modifier key tokens.
+    pub key_bg: (u8, u8, u8),
+    /// Foreground color for modifier key tokens.
+    pub mod_fg: (u8, u8, u8),
+    /// Background color for modifier key tokens.
+    pub mod_bg: (u8, u8, u8),
+    /// Foreground color for the mode tag token.
+    pub tag_fg: (u8, u8, u8),
+}
 
-    /// Borrow the immutable path for inspection/logging.
-    pub fn path(&self) -> &[u32] {
-        &self.path
-    }
+/// One HUD row entry produced by server-side rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HudRow {
+    /// Key chord that triggers the binding.
+    pub chord: Chord,
+    /// Human-readable description.
+    pub desc: String,
+    /// True when the binding enters a child mode.
+    pub is_mode: bool,
+    /// Optional per-row style overrides.
+    pub style: Option<HudRowStyle>,
+}
 
-    /// Attach an App context to this cursor and return it.
-    pub fn with_app(mut self, app: App) -> Self {
-        self.app = Some(app);
-        self
-    }
-
-    /// Borrow the App context if present.
-    pub fn app_ref(&self) -> Option<&App> {
-        self.app.as_ref()
-    }
-
-    /// Set a theme override for this location. Use `None` to fall back to the
-    /// theme loaded from disk.
-    pub fn set_theme(&mut self, name: Option<&str>) {
-        self.override_theme = name.map(|s| s.to_string());
-    }
-
-    /// Enable or disable user style overlays at this location.
-    ///
-    /// - `true` enables user-provided overlays
-    /// - `false` disables them (rendering the base theme only)
-    pub fn set_user_style_enabled(&mut self, enabled: bool) {
-        self.user_ui_disabled = !enabled;
-    }
+/// HUD snapshot pushed from the server to the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HudState {
+    /// Whether the HUD should be visible.
+    pub visible: bool,
+    /// Rows to display.
+    pub rows: Vec<HudRow>,
+    /// Current stack depth (root = 0).
+    pub depth: usize,
+    /// Mode titles from root→current (excluding the synthetic root frame).
+    pub breadcrumbs: Vec<String>,
+    /// Effective computed style (HUD + notifications).
+    pub style: Style,
+    /// True when capture-all mode is active.
+    pub capture: bool,
 }
 
 /// Three-state toggle used for boolean-like actions.
@@ -217,10 +389,10 @@ pub enum MsgToUI {
     /// Asynchronous event sent when a hotkey is triggered.
     HotkeyTriggered(String),
 
-    /// HUD update containing the current cursor (with optional App context)
+    /// HUD update containing the fully rendered state.
     HudUpdate {
-        /// Cursor state describing the current key mode and overrides.
-        cursor: Cursor,
+        /// HUD state snapshot.
+        hud: Box<HudState>,
         /// Display geometry snapshot for UI placement.
         displays: DisplaysSnapshot,
     },

@@ -16,14 +16,17 @@ impl NotificationDispatcher {
         Self { tx }
     }
 
-    /// Send a HUD update with the current cursor and focus snapshot.
-    pub fn send_hud_update_cursor(
+    /// Send a HUD update with the current rendered HUD state.
+    pub fn send_hud_update(
         &self,
-        cursor: config::Cursor,
+        hud: hotki_protocol::HudState,
         displays: DisplaysSnapshot,
     ) -> Result<()> {
         self.tx
-            .try_send(MsgToUI::HudUpdate { cursor, displays })
+            .try_send(MsgToUI::HudUpdate {
+                hud: Box::new(hud),
+                displays,
+            })
             .map_err(|_| Error::ChannelClosed)
     }
 

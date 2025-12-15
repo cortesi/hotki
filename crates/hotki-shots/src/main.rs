@@ -132,9 +132,8 @@ fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeou
             let left = deadline.saturating_duration_since(Instant::now());
             let chunk = cmp::min(left, poll);
             match rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await }) {
-                Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { cursor, .. })) => {
-                    let visible = cursor.viewing_root || cursor.depth() > 0;
-                    if visible {
+                Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { hud, .. })) => {
+                    if hud.visible {
                         return true;
                     }
                 }

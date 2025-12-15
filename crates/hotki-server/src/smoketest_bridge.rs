@@ -6,7 +6,7 @@ use std::{
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
-use hotki_protocol::{Cursor, DisplaysSnapshot, NotifyKind, rpc::InjectKind};
+use hotki_protocol::{DisplaysSnapshot, HudState, NotifyKind, rpc::InjectKind};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
@@ -84,7 +84,7 @@ pub enum BridgeResponse {
     /// Asynchronous event emitted by the UI runtime.
     Event {
         /// Event payload describing the observed state change.
-        event: BridgeEvent,
+        event: Box<BridgeEvent>,
     },
     /// Initial handshake response with server/runtime state.
     Handshake {
@@ -104,16 +104,10 @@ pub enum BridgeResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BridgeEvent {
-    /// HUD state changed after evaluating a cursor update.
+    /// HUD state changed after evaluating a new render.
     Hud {
-        /// Cursor context describing the HUD state.
-        cursor: Cursor,
-        /// Logical depth associated with the cursor.
-        depth: usize,
-        /// Optional parent title when the HUD is nested under another item.
-        parent_title: Option<String>,
-        /// Keys currently visible in the HUD.
-        keys: Vec<BridgeHudKey>,
+        /// Fully rendered HUD state payload.
+        hud: Box<HudState>,
         /// Display geometry snapshot backing the HUD placement.
         displays: DisplaysSnapshot,
     },
@@ -122,17 +116,6 @@ pub enum BridgeEvent {
         /// Optional focused app/title/pid context (None when unfocused).
         app: Option<hotki_protocol::App>,
     },
-}
-
-/// HUD key metadata forwarded to the smoketest harness.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BridgeHudKey {
-    /// Key chord string as rendered by the HUD.
-    pub ident: String,
-    /// Human-readable description provided by the config.
-    pub description: String,
-    /// True when the key represents a mode binding.
-    pub is_mode: bool,
 }
 
 /// Pending notification payload returned during handshake.

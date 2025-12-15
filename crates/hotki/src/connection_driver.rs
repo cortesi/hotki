@@ -11,8 +11,8 @@ use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat, rpc::InjectKind
 use hotki_server::{
     Client,
     smoketest_bridge::{
-        BridgeEvent, BridgeHudKey, BridgeNotifications, BridgeRequest, BridgeResponse,
-        control_socket_path, drain_bridge_events, handshake_response,
+        BridgeEvent, BridgeNotifications, BridgeRequest, BridgeResponse, control_socket_path,
+        drain_bridge_events, handshake_response,
     },
 };
 use mac_keycode::Chord;
@@ -405,36 +405,26 @@ impl ConnectionDriver {
         msg: hotki_protocol::MsgToUI,
     ) {
         match msg {
-            hotki_protocol::MsgToUI::HudUpdate { cursor, displays } => {
-                self.current_cursor = cursor;
-                let vks = self.ui_config.hud_keys_ctx(&self.current_cursor);
-                let visible_keys: Vec<(Chord, String, bool)> = vks
-                    .into_iter()
-                    .filter(|(_, _, attrs, _)| !attrs.hide())
-                    .map(|(k, desc, _attrs, is_mode)| (k, desc, is_mode))
-                    .collect();
-                let depth = self.current_cursor.depth();
-                let parent_title = self
-                    .ui_config
-                    .parent_title(&self.current_cursor)
-                    .map(|s| s.to_string());
-
-                let bridge_keys: Vec<BridgeHudKey> = visible_keys
+            hotki_protocol::MsgToUI::HudUpdate { hud, displays } => {
+                let visible_keys: Vec<(Chord, String, bool)> = hud
+                    .rows
                     .iter()
-                    .map(|(chord, desc, is_mode)| BridgeHudKey {
-                        ident: chord.to_string(),
-                        description: desc.clone(),
-                        is_mode: *is_mode,
-                    })
+                    .map(|row| (row.chord.clone(), row.desc.clone(), row.is_mode))
                     .collect();
-                let bridge_parent_title = parent_title.clone();
+                let depth = hud.depth;
+                let parent_title = hud.breadcrumbs.last().cloned();
+
+                let mut cursor = self.current_cursor.clone();
+                cursor.viewing_root = hud.visible;
+                cursor.clear();
+                self.current_cursor = cursor.clone();
 
                 if self
                     .tx_keys
                     .send(AppEvent::KeyUpdate {
                         visible_keys,
                         depth,
-                        cursor: self.current_cursor.clone(),
+                        cursor,
                         parent_title,
                         displays: displays.clone(),
                     })
@@ -443,16 +433,7 @@ impl ConnectionDriver {
                     tracing::warn!("failed to send KeyUpdate");
                 }
                 self.egui_ctx.request_repaint();
-                self.emit_bridge_event(BridgeEvent::Hud {
-                    cursor: self.current_cursor.clone(),
-                    depth,
-                    parent_title: bridge_parent_title,
-                    keys: bridge_keys,
-                    displays,
-                });
-                self.emit_bridge_event(BridgeEvent::Focus {
-                    app: self.current_cursor.app.clone(),
-                });
+                self.emit_bridge_event(BridgeEvent::Hud { hud, displays });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
                 self.notify(kind, &title, &text);

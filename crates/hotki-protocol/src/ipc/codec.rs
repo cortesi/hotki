@@ -40,15 +40,88 @@ pub fn value_to_msg(value: Value) -> Result<MsgToUI, Error> {
 
 #[cfg(test)]
 mod tests {
+    use mac_keycode::Chord;
+
     use super::*;
-    use crate::{Cursor, DisplaysSnapshot, NotifyKind, Toggle};
+    use crate::{
+        DisplaysSnapshot, FontWeight, HudRow, HudState, HudStyle, Mode, NotifyConfig, NotifyKind,
+        NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, Style, Toggle,
+    };
+
+    fn sample_style() -> Style {
+        let window = NotifyWindowStyle {
+            bg: (0, 0, 0),
+            title_fg: (255, 255, 255),
+            body_fg: (255, 255, 255),
+            title_font_size: 14.0,
+            title_font_weight: FontWeight::Regular,
+            body_font_size: 12.0,
+            body_font_weight: FontWeight::Regular,
+            icon: None,
+        };
+        Style {
+            hud: HudStyle {
+                mode: Mode::Hud,
+                pos: Pos::Center,
+                offset: Offset::default(),
+                font_size: 14.0,
+                title_font_weight: FontWeight::Regular,
+                key_font_size: 14.0,
+                key_font_weight: FontWeight::Regular,
+                tag_font_size: 14.0,
+                tag_font_weight: FontWeight::Regular,
+                title_fg: (255, 255, 255),
+                bg: (0, 0, 0),
+                key_fg: (255, 255, 255),
+                key_bg: (0, 0, 0),
+                mod_fg: (255, 255, 255),
+                mod_font_weight: FontWeight::Regular,
+                mod_bg: (0, 0, 0),
+                tag_fg: (255, 255, 255),
+                opacity: 1.0,
+                key_radius: 6.0,
+                key_pad_x: 6.0,
+                key_pad_y: 6.0,
+                radius: 10.0,
+                tag_submenu: "…".to_string(),
+            },
+            notify: NotifyConfig {
+                width: 400.0,
+                pos: NotifyPos::Right,
+                opacity: 1.0,
+                timeout: 2.0,
+                buffer: 10,
+                radius: 10.0,
+                theme: NotifyTheme {
+                    info: window.clone(),
+                    warn: window.clone(),
+                    error: window.clone(),
+                    success: window,
+                },
+            },
+        }
+    }
 
     #[test]
     fn roundtrip_all_msg_variants() {
+        let style = sample_style();
+        let hud = HudState {
+            visible: true,
+            rows: vec![HudRow {
+                chord: Chord::parse("cmd+k").unwrap(),
+                desc: "Test".to_string(),
+                is_mode: false,
+                style: None,
+            }],
+            depth: 0,
+            breadcrumbs: Vec::new(),
+            style,
+            capture: false,
+        };
         let samples: Vec<MsgToUI> = vec![
             MsgToUI::HotkeyTriggered("cmd-h".to_string()),
             MsgToUI::HudUpdate {
-                cursor: Cursor::new(vec![1, 2], false),
+                hud: Box::new(hud),
                 displays: DisplaysSnapshot::default(),
             },
             MsgToUI::Notify {

@@ -117,19 +117,15 @@ impl BindingWatcher {
                 Ok(events) => {
                     for event in events {
                         match event.payload {
-                            BridgeEvent::Hud {
-                                ref cursor,
-                                depth,
-                                ref parent_title,
-                                ..
-                            } => {
-                                metrics.focus_event_seen |= cursor.app.is_some();
+                            BridgeEvent::Hud { ref hud, .. } => {
+                                let parent_title = hud.breadcrumbs.last();
                                 debug!(
                                     event_id = event.id,
                                     event_ms = event.timestamp_ms,
-                                    depth,
+                                    depth = hud.depth,
                                     parent = ?parent_title,
-                                    viewing_root = cursor.viewing_root,
+                                    visible = hud.visible,
+                                    row_count = hud.rows.len(),
                                     "hud_event_observed"
                                 );
                                 if last_hud_event == Some(event.id) {
@@ -139,14 +135,13 @@ impl BindingWatcher {
                                 metrics.record_frontmost();
                                 last_hud_event = Some(event.id);
                                 if let Ok(Some(snapshot)) = bridge.latest_hud() {
-                                    metrics.focus_event_seen |= snapshot.cursor.app.is_some();
                                     debug!(
                                         hud_event_id = snapshot.event_id,
-                                        depth = snapshot.depth,
-                                        parent = ?snapshot.parent_title,
+                                        depth = snapshot.hud.depth,
+                                        parent = ?snapshot.hud.breadcrumbs.last(),
                                         received_ms = snapshot.received_ms,
-                                        viewing_root = snapshot.cursor.viewing_root,
-                                        key_count = snapshot.keys.len(),
+                                        visible = snapshot.hud.visible,
+                                        row_count = snapshot.hud.rows.len(),
                                         "hud_snapshot_state"
                                     );
                                 }

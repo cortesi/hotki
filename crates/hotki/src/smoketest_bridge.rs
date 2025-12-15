@@ -110,7 +110,9 @@ async fn handle_test_bridge_client(
                         let reply = BridgeReply {
                             command_id: next_event_id,
                             timestamp_ms: now_millis(),
-                            response: BridgeResponse::Event { event },
+                            response: BridgeResponse::Event {
+                                event: Box::new(event),
+                            },
                         };
                         write_bridge_reply(&mut writer, reply).await?;
                         next_event_id = next_event_id.wrapping_add(1);

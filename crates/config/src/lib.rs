@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod cursor;
 mod defaults;
 pub mod dynamic;
 mod error;
@@ -27,9 +28,10 @@ mod test_parse;
 #[cfg(test)]
 mod test_rhai;
 
+pub use cursor::Cursor;
 pub use dynamic::load_dynamic_config;
 pub use error::Error;
-pub use hotki_protocol::{Cursor, Toggle};
+pub use hotki_protocol::Toggle;
 pub use keys::{Config, CursorEnsureExt};
 pub use loader::{LoadedConfig, load_for_server_from_path, load_from_path};
 pub use mode::{Action, Keys, KeysAttrs, NotifyKind, ShellModifiers, ShellSpec};

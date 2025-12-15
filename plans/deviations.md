@@ -21,3 +21,8 @@ progresses.
 
 - `hotki-server` `set_config_path` still returns a msgpack-encoded `config::Config::default()` to
   keep the existing UI compiling until Stages 7–9 remove the static-config UI path.
+
+## Stage 7
+
+- `hotki-protocol::HudState.style` is a full `Style` (HUD + notification config + resolved theme)
+  rather than a HUD-only `HudStyle`, so notifications can be styled without additional messages.
