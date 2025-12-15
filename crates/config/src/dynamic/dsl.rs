@@ -1,6 +1,7 @@
 use std::{
     error::Error as StdError,
     fmt,
+    mem,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -41,6 +42,23 @@ impl ModeBuilder {
         Self {
             state: Arc::new(Mutex::new(ModeBuildState::default())),
         }
+    }
+
+    pub(crate) fn new_for_render(style: Option<StyleOverlay>, capture: bool) -> Self {
+        let mut state = ModeBuildState::default();
+        state.style = style;
+        state.capture = capture;
+        Self {
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    pub(crate) fn finish(self) -> (Vec<Binding>, Option<StyleOverlay>, bool) {
+        let mut guard = lock_unpoisoned(&self.state);
+        let bindings = mem::take(&mut guard.bindings);
+        let style = guard.style.take();
+        let capture = guard.capture;
+        (bindings, style, capture)
     }
 }
 
@@ -422,6 +440,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 style: None,
                 mode_style: None,
                 mode_capture: false,
+                pos: ctx.call_position(),
             });
             Ok(BindingRef {
                 state: m.state.clone(),
@@ -450,6 +469,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 style: None,
                 mode_style: None,
                 mode_capture: false,
+                pos: ctx.call_position(),
             });
             Ok(BindingRef {
                 state: m.state.clone(),
@@ -483,6 +503,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 style: None,
                 mode_style: None,
                 mode_capture: false,
+                pos: ctx.call_position(),
             });
             Ok(BindingRef {
                 state: m.state.clone(),
@@ -516,6 +537,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 style: None,
                 mode_style: None,
                 mode_capture: false,
+                pos: ctx.call_position(),
             });
             Ok(BindingRef {
                 state: m.state.clone(),

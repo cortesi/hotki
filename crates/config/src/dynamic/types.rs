@@ -1,7 +1,7 @@
 use std::fmt;
 
 use mac_keycode::Chord;
-use rhai::FnPtr;
+use rhai::{FnPtr, Position};
 
 use crate::{Action, NotifyKind};
 
@@ -159,6 +159,7 @@ pub struct Binding {
     pub(crate) style: Option<StyleOverlay>,
     pub(crate) mode_style: Option<StyleOverlay>,
     pub(crate) mode_capture: bool,
+    pub(crate) pos: Position,
 }
 
 /// A stack frame representing an active mode.
@@ -178,7 +179,17 @@ pub struct HudRow {
     pub(crate) chord: Chord,
     pub(crate) desc: String,
     pub(crate) is_mode: bool,
-    pub(crate) style: Option<StyleOverlay>,
+    pub(crate) style: Option<HudRowStyle>,
+}
+
+/// Optional per-binding HUD style overrides after resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HudRowStyle {
+    pub(crate) key_fg: (u8, u8, u8),
+    pub(crate) key_bg: (u8, u8, u8),
+    pub(crate) mod_fg: (u8, u8, u8),
+    pub(crate) mod_bg: (u8, u8, u8),
+    pub(crate) tag_fg: (u8, u8, u8),
 }
 
 /// Render output for the current runtime state.
@@ -189,4 +200,3 @@ pub struct RenderedState {
     pub(crate) style: crate::Style,
     pub(crate) capture: bool,
 }
-

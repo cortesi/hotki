@@ -22,7 +22,14 @@ pub struct DynamicConfig {
 }
 
 impl DynamicConfig {
-    pub(crate) fn base_style_theme(&self) -> Style {
-        crate::themes::load_theme(self.base_theme.as_deref())
+    pub(crate) fn base_style(&self, theme_override: Option<&str>, user_style_enabled: bool) -> Style {
+        let theme = theme_override.or(self.base_theme.as_deref());
+        let mut style = crate::themes::load_theme(theme);
+        if user_style_enabled
+            && let Some(overlay) = self.user_style.as_ref()
+        {
+            style = style.overlay_raw(overlay);
+        }
+        style
     }
 }

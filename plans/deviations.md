@@ -11,3 +11,8 @@ progresses.
   `base_style`) so `action.theme_*` and `action.user_style` can be applied dynamically.
 - `ActionCtx.push(mode_ref)` without an explicit title currently has no reliable “declared title”
   fallback (it records `None`).
+
+## Stage 3
+
+- `render_stack` returns a `RenderOutput` wrapper so render-time warnings (duplicate chords) can be
+  surfaced to the engine for notification delivery.
