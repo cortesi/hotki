@@ -546,11 +546,11 @@ impl Engine {
             identifier, app_ctx, title_ctx
         );
 
-        let cfg_guard = self.config.read().await;
-        let Some(cfg) = cfg_guard.as_ref() else {
+        let mut cfg_guard = Some(self.config.read().await);
+        if cfg_guard.as_ref().is_some_and(|g| g.as_ref().is_none()) {
             trace!("No dynamic config loaded; ignoring key");
             return Ok(());
-        };
+        }
 
         let (binding, ctx) = {
             let rt = self.runtime.lock().await;
@@ -588,6 +588,10 @@ impl Engine {
                 });
             }
             config::dynamic::BindingKind::Action(action) => {
+                if matches!(action, config::Action::ReloadConfig) {
+                    // Reload needs the config write lock; drop the read guard first.
+                    cfg_guard.take();
+                }
                 let outcome = self
                     .apply_action(&identifier, &action, binding.flags.repeat)
                     .await?;
@@ -595,13 +599,22 @@ impl Engine {
                 entered_mode = outcome.entered_mode;
             }
             config::dynamic::BindingKind::Handler(handler) => {
-                let result = match config::dynamic::execute_handler(cfg, &handler, &ctx) {
-                    Ok(r) => r,
-                    Err(err) => {
-                        self.notifier.send_error("Handler", err.pretty())?;
+                let result = {
+                    let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
+                        trace!("No dynamic config loaded; ignoring handler");
                         return Ok(());
+                    };
+                    match config::dynamic::execute_handler(cfg, &handler, &ctx) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            self.notifier.send_error("Handler", err.pretty())?;
+                            return Ok(());
+                        }
                     }
                 };
+
+                // Effects can include `action.reload_config`, which requires the config write lock.
+                cfg_guard.take();
 
                 stay = stay || result.stay;
 

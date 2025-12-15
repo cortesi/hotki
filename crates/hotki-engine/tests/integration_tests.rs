@@ -12,7 +12,7 @@ use hotki_engine::test_support::{
     set_on_relay_repeat, set_world_focus, write_test_config,
 };
 use hotki_protocol::MsgToUI;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 #[test]
 fn focus_change_triggers_rerender() {
@@ -212,6 +212,43 @@ fn capture_mode_sets_capture_all() {
             !capture_all_active(&engine).await,
             "capture_all should be disabled after popping to root and hiding HUD"
         );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn reload_config_action_does_not_deadlock() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            hotki.mode(|m, ctx| {
+              m.bind("r", "reload", action.reload_config);
+            });
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        while rx.try_recv().is_ok() {}
+
+        let r = engine.resolve_id_for_ident("r").await.expect("id for r");
+        let outcome = timeout(
+            Duration::from_millis(2_000),
+            engine.dispatch(r, mac_hotkey::EventKind::KeyDown, false),
+        )
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "reload_config dispatch timed out (possible deadlock)"
+        );
+        outcome.unwrap().expect("dispatch ok");
 
         let _ignored = fs::remove_file(&path);
     });
