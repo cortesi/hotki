@@ -2,6 +2,25 @@
 
 base_theme("default");
 
+fn long_notification_text() {
+  let out = "";
+  for i in 0..10 {
+    if i > 0 {
+      out += "\n";
+    }
+    out += `line ${i}: lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua`;
+  }
+  out
+}
+
+fn long_notification_cmd(should_fail) {
+  if should_fail {
+    `printf '%s' '${long_notification_text()}' && false`
+  } else {
+    `printf '%s' '${long_notification_text()}'`
+  }
+}
+
 hotki.mode(|m, ctx| {
   // Global navigation key, hidden from HUD.
   if ctx.hud {
@@ -116,21 +135,7 @@ hotki.mode(|m, ctx| {
         .bind(
           "shift+s",
           "Long Success",
-          action.shell(
-            `
-                      awk -v F=%c '
-                      BEGIN{
-                        srand()
-                        for(i=10;i--;){
-                          for(j=int(rand()*10)+1;j--;){
-                            for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
-                            printf j?OFS:ORS
-                          }
-                        }
-                        exit
-                      }'
-                  `
-          )
+          action.shell(long_notification_cmd(false))
             .notify(success, warn)
         )
         .stay();
@@ -138,21 +143,7 @@ hotki.mode(|m, ctx| {
         .bind(
           "shift+i",
           "Long Info",
-          action.shell(
-            `
-                      awk -v F=%c '
-                      BEGIN{
-                        srand()
-                        for(i=10;i--;){
-                          for(j=int(rand()*10)+1;j--;){
-                            for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
-                            printf j?OFS:ORS
-                          }
-                        }
-                        exit
-                      }'
-                  `
-          )
+          action.shell(long_notification_cmd(false))
             .notify(info, warn)
         )
         .stay();
@@ -160,42 +151,14 @@ hotki.mode(|m, ctx| {
         .bind(
           "shift+w",
           "Long Warning",
-          action.shell(
-            `
-                      awk -v F=%c '
-                      BEGIN{
-                        srand()
-                        for(i=10;i--;){
-                          for(j=int(rand()*10)+1;j--;){
-                            for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
-                            printf j?OFS:ORS
-                          }
-                        }
-                        exit
-                      }'  && false
-                  `
-          )
+          action.shell(long_notification_cmd(true))
         )
         .stay();
       sub
         .bind(
           "shift+e",
           "Long Error",
-          action.shell(
-            `
-                      awk -v F=%c '
-                      BEGIN{
-                        srand()
-                        for(i=10;i--;){
-                          for(j=int(rand()*10)+1;j--;){
-                            for(k=int(rand()*9)+2;k--;) printf F, 97+int(rand()*26)
-                            printf j?OFS:ORS
-                          }
-                        }
-                        exit
-                      }'  && false
-                  `
-          )
+          action.shell(long_notification_cmd(true))
             .notify(ignore, error)
         )
         .stay();

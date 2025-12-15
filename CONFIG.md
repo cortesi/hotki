@@ -15,6 +15,55 @@ the config directory are rejected.
 
 ---
 
+## Introduction: Modes, Closures, and Re-rendering
+
+Hotki treats your configuration as a **program** that renders menus on demand.
+
+### Modes are closures
+
+A “mode” is a Rhai closure with the shape:
+
+```rhai
+|m, ctx| { ... }
+```
+
+When Hotki needs to know “what keys are active right now?”, it **executes the active mode
+closures** to produce a list of bindings. There is no static, precomputed tree: your closure
+logic (including `if` statements) decides what exists.
+
+### The mode stack
+
+At runtime, Hotki keeps a **stack of modes**:
+
+- The **root** mode is always at the bottom of the stack.
+- Entering a mode (a `m.mode(...)` binding) pushes a new mode closure onto the stack.
+- `ctx.depth` is the current stack depth (0 at root, 1 in the first child mode, etc).
+
+### Re-rendering when state changes
+
+Mode closures are re-evaluated frequently. In the current implementation, Hotki re-renders the
+stack (and rebinds OS hotkeys / updates the HUD) at least when:
+
+- Focus context changes (`ctx.app`, `ctx.title`, `ctx.pid`).
+- A bound key is pressed (after actions/handlers run).
+- The config is loaded/reloaded.
+- Theme or user-style state changes (e.g. `action.theme_*`, `action.user_style(...)`).
+- HUD visibility changes (`ctx.hud`) via navigation actions (`action.show_root`, `action.hide_hud`,
+  `action.pop`, `action.exit`, and auto-exit).
+
+Because render closures can run often, they should stay lightweight and side-effect-free; use
+`action.*` and `handler(...)` for effects.
+
+### Auto-pop and orphaning
+
+While rendering, Hotki may adjust the stack to keep it consistent with what your closures render:
+
+- A **non-root** mode that renders **zero bindings** is automatically popped.
+- A mode entered via a chord is popped if its entry binding disappears or now points at a
+  different mode closure (this is what makes `if/else`-selected submenus work reliably).
+
+---
+
 ## Entry Point
 
 Every config must register a single root mode:
