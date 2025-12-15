@@ -4,56 +4,72 @@ use mac_keycode::Chord;
 use rhai::{Dynamic, EvalAltResult, Map, Position, serde::from_dynamic};
 use tracing::warn;
 
-use crate::{Error, Style, error::excerpt_at};
-
 use super::{
-    Binding, BindingKind, Effect, HudRow, HudRowStyle, ModeCtx, ModeFrame, RenderedState,
-    StyleOverlay,
+    Binding, BindingKind, DynamicConfig, Effect, HudRow, HudRowStyle, ModeCtx, ModeFrame,
+    RenderedState, StyleOverlay, dsl::ModeBuilder,
 };
-
-use super::{DynamicConfig, dsl::ModeBuilder};
+use crate::{
+    Error, NotifyKind, Style,
+    error::excerpt_at,
+    raw::{Maybe, RawHud, RawStyle},
+};
 
 /// Output of rendering a full stack, including user-visible warnings.
 #[derive(Debug, Clone)]
 pub struct RenderOutput {
-    pub(crate) rendered: RenderedState,
-    pub(crate) warnings: Vec<Effect>,
+    pub rendered: RenderedState,
+    pub warnings: Vec<Effect>,
 }
 
 #[derive(Debug)]
+/// Internal representation of a single mode render output.
 struct ModeView {
+    /// Bindings produced by the mode closure.
     bindings: Vec<Binding>,
+    /// Optional mode-level style overlay.
     style: Option<StyleOverlay>,
+    /// Whether the mode requests capture-all.
     capture: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Deserializable subset of binding style fields returned by style closures.
 struct RawBindingStyle {
     #[serde(default)]
+    /// Whether the binding should be hidden from the HUD.
     hidden: Option<bool>,
     #[serde(default)]
+    /// Foreground color for non-modifier key tokens.
     key_fg: Option<String>,
     #[serde(default)]
+    /// Background color for non-modifier key tokens.
     key_bg: Option<String>,
     #[serde(default)]
+    /// Foreground color for modifier key tokens.
     mod_fg: Option<String>,
     #[serde(default)]
+    /// Background color for modifier key tokens.
     mod_bg: Option<String>,
     #[serde(default)]
+    /// Foreground color for the mode tag token.
     tag_fg: Option<String>,
 }
 
+/// Resolved binding style result after evaluating optional style overlays.
 struct ResolvedBindingStyle {
+    /// Whether to hide the binding from the HUD.
     hidden: bool,
-    overlay: Option<crate::raw::RawStyle>,
+    /// Optional raw style overlay.
+    overlay: Option<RawStyle>,
 }
 
+/// Render the full mode stack, applying empty/orphan truncation and producing HUD rows.
 pub fn render_stack(
     cfg: &DynamicConfig,
     stack: &mut Vec<ModeFrame>,
     ctx: &ModeCtx,
-    base_style: Style,
+    base_style: &Style,
 ) -> Result<RenderOutput, Error> {
     let mut warnings = Vec::new();
 
@@ -94,7 +110,7 @@ pub fn render_stack(
         }
     }
 
-    let effective_style = compute_effective_style(&base_style, stack);
+    let effective_style = compute_effective_style(base_style, stack);
     let capture = stack.last().is_some_and(|f| f.capture);
 
     let bindings = flatten_bindings(stack);
@@ -111,6 +127,7 @@ pub fn render_stack(
     })
 }
 
+/// Render a single mode frame by invoking its closure and collecting bindings.
 fn render_mode(
     cfg: &DynamicConfig,
     frame: &ModeFrame,
@@ -122,7 +139,8 @@ fn render_mode(
     frame
         .closure
         .func
-        .call::<()>(&cfg.engine, &cfg.ast, (builder_for_rhai, ctx.clone()))
+        .call::<Dynamic>(&cfg.engine, &cfg.ast, (builder_for_rhai, ctx.clone()))
+        .map(|_| ())
         .map_err(|err| rhai_error_to_config(cfg, &err))?;
 
     let (bindings, style, capture) = builder.finish();
@@ -139,6 +157,7 @@ fn render_mode(
     ))
 }
 
+/// Deduplicate bindings within a single mode render, emitting warnings for duplicates.
 fn dedup_mode_bindings(cfg: &DynamicConfig, bindings: &[Binding]) -> (Vec<Binding>, Vec<Effect>) {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::with_capacity(bindings.len());
@@ -173,7 +192,7 @@ fn dedup_mode_bindings(cfg: &DynamicConfig, bindings: &[Binding]) -> (Vec<Bindin
 
         warn!(target: "config::dynamic", "{}", body);
         warnings.push(Effect::Notify {
-            kind: crate::NotifyKind::Warn,
+            kind: NotifyKind::Warn,
             title: "Config".to_string(),
             body,
         });
@@ -182,6 +201,7 @@ fn dedup_mode_bindings(cfg: &DynamicConfig, bindings: &[Binding]) -> (Vec<Bindin
     (out, warnings)
 }
 
+/// Compute the effective style by layering mode overlays on top of the base style.
 fn compute_effective_style(base: &Style, stack: &[ModeFrame]) -> Style {
     let mut overlays = Vec::new();
     for frame in stack {
@@ -197,6 +217,7 @@ fn compute_effective_style(base: &Style, stack: &[ModeFrame]) -> Style {
     base.clone().overlay_all_raw(&overlays)
 }
 
+/// Flatten the rendered stack into an active binding list (top + parent globals).
 fn flatten_bindings(stack: &[ModeFrame]) -> Vec<(Chord, Binding)> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -224,6 +245,7 @@ fn flatten_bindings(stack: &[ModeFrame]) -> Vec<(Chord, Binding)> {
     out
 }
 
+/// Build visible HUD rows using per-binding style overlays and the effective base style.
 fn build_hud_rows(
     cfg: &DynamicConfig,
     ctx: &ModeCtx,
@@ -261,6 +283,7 @@ fn build_hud_rows(
     Ok(rows)
 }
 
+/// Resolve the optional per-binding style overlay for a binding.
 fn resolve_binding_style(
     cfg: &DynamicConfig,
     ctx: &ModeCtx,
@@ -316,21 +339,21 @@ fn resolve_binding_style(
 
     let hidden = style.hidden.unwrap_or(false);
 
-    let mut hud = crate::raw::RawHud::default();
+    let mut hud = RawHud::default();
     if let Some(v) = style.key_fg {
-        hud.key_fg = crate::raw::Maybe::Value(v);
+        hud.key_fg = Maybe::Value(v);
     }
     if let Some(v) = style.key_bg {
-        hud.key_bg = crate::raw::Maybe::Value(v);
+        hud.key_bg = Maybe::Value(v);
     }
     if let Some(v) = style.mod_fg {
-        hud.mod_fg = crate::raw::Maybe::Value(v);
+        hud.mod_fg = Maybe::Value(v);
     }
     if let Some(v) = style.mod_bg {
-        hud.mod_bg = crate::raw::Maybe::Value(v);
+        hud.mod_bg = Maybe::Value(v);
     }
     if let Some(v) = style.tag_fg {
-        hud.tag_fg = crate::raw::Maybe::Value(v);
+        hud.tag_fg = Maybe::Value(v);
     }
 
     let overlay = if hud.key_fg.as_option().is_some()
@@ -339,9 +362,9 @@ fn resolve_binding_style(
         || hud.mod_bg.as_option().is_some()
         || hud.tag_fg.as_option().is_some()
     {
-        Some(crate::raw::RawStyle {
-            hud: crate::raw::Maybe::Value(hud),
-            notify: crate::raw::Maybe::Unit(()),
+        Some(RawStyle {
+            hud: Maybe::Value(hud),
+            notify: Maybe::Unit(()),
         })
     } else {
         None
@@ -357,13 +380,15 @@ pub fn resolve_binding<'a>(state: &'a RenderedState, chord: &Chord) -> Option<&'
         .find_map(|(ch, b)| if ch == chord { Some(b) } else { None })
 }
 
+/// Extract 1-based line/column from a Rhai position.
 fn pos_to_line_col(pos: Position) -> (Option<usize>, Option<usize>) {
     let line = pos.line().map(|l| l.max(1));
     let col = pos.position().map(|c| c.max(1));
     (line, col)
 }
 
-pub(crate) fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
+/// Convert a Rhai runtime error into a `config::Error` with an excerpt.
+pub fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
     let (line, col) = pos_to_line_col(err.position());
     let excerpt = match (line, col) {
         (Some(l), Some(c)) => Some(excerpt_at(cfg.source.as_ref(), l, c)),

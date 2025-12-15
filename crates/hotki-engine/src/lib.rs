@@ -43,6 +43,7 @@
 /// Test support utilities exported for the test suite.
 pub mod test_support;
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -51,15 +52,21 @@ mod deps;
 mod error;
 mod key_binding;
 mod key_state;
-mod keymode;
 mod notification;
 mod relay;
 mod repeater;
+mod runtime;
 mod ticker;
 
 // Timing constants for warning thresholds
 const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DispatchOutcome {
+    is_nav: bool,
+    entered_mode: bool,
+}
 
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
@@ -77,7 +84,7 @@ use repeater::ExecSpec;
 pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
 use tracing::{debug, trace, warn};
 
-use crate::keymode::{KeyResponse, State};
+use crate::runtime::{FocusInfo, RuntimeState};
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -91,16 +98,16 @@ use crate::keymode::{KeyResponse, State};
 /// lookup. Do not hold this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
-    /// Keymode state (tracks only location). Always present.
-    state: Arc<tokio::sync::Mutex<State>>,
+    /// Stack-based runtime state (mode stack + focus + theme/user-style).
+    runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     /// Key binding manager
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
     /// Configuration
-    config: Arc<tokio::sync::RwLock<config::Config>>,
-    /// Optional Rhai runtime used to resolve script actions at dispatch time.
-    rhai: Arc<tokio::sync::RwLock<Option<Arc<config::RhaiRuntime>>>>,
+    config: Arc<tokio::sync::RwLock<Option<config::dynamic::DynamicConfig>>>,
+    /// Optional path used for `action.reload_config`.
+    config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
     /// Cached focus context from World events: `(app, title, pid)`.
     focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
     /// If true, hint world refresh on dispatch; else trust cached context.
@@ -156,17 +163,14 @@ impl Engine {
         let relay = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
-        let config_arc = Arc::new(tokio::sync::RwLock::new(config::Config::from_parts(
-            config::Keys::default(),
-            config::Style::default(),
-        )));
+        let config_arc = Arc::new(tokio::sync::RwLock::new(None));
 
         let eng = Self {
-            state: Arc::new(tokio::sync::Mutex::new(State::new())),
+            runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::empty())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
             config: config_arc,
-            rhai: Arc::new(tokio::sync::RwLock::new(None)),
+            config_path: Arc::new(tokio::sync::RwLock::new(None)),
             focus_ctx,
             sync_on_dispatch,
             display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
@@ -289,9 +293,9 @@ impl Engine {
     }
 
     async fn rebind_current_context(&self) -> Result<()> {
-        let (app, title, _pid) = self.current_context();
+        let (app, title, pid) = self.current_context();
         debug!("Rebinding with context: app={}, title={}", app, title);
-        self.rebind_and_refresh(&app, &title).await
+        self.rebind_and_refresh(&app, &title, pid).await
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
@@ -304,82 +308,125 @@ impl Engine {
             *cache = snapshot.clone();
         }
 
-        let cursor = {
-            let st = self.state.lock().await;
-            st.current_cursor()
-        };
+        let cursor = self.cursor_for_ui().await;
         let cursor = self.cursor_with_current_app(cursor);
         self.publish_hud_with_displays(cursor, snapshot).await
     }
 
-    async fn rebind_and_refresh(&self, app: &str, title: &str) -> Result<()> {
+    async fn rebind_and_refresh(&self, app: &str, title: &str, pid: i32) -> Result<()> {
         tracing::debug!("start app={} title={}", app, title);
-        // LOCK ORDER: config (read) -> state -> binding_manager.
-        // The config read guard is held for the duration of this function because
-        // we reference its data for key resolution. State and binding_manager
-        // guards are acquired and released in separate scopes to avoid holding
-        // multiple locks simultaneously. Async service calls happen outside all guards.
-        let cfg_guard = self.config.read().await;
 
-        // Ensure valid context first
-        {
-            let mut st = self.state.lock().await;
-            let _ = st.ensure_context(&cfg_guard, app, title);
-        }
-
-        // Update HUD next to reflect current state
-        {
-            trace!("Updating HUD for app={}, title={}", app, title);
-            let cursor = {
-                let st = self.state.lock().await;
-                st.current_cursor()
-            };
-            let cursor = self.cursor_with_current_app(cursor);
-            debug!("HUD update: cursor {:?}", cursor.path());
-            let displays_snapshot = self.world.displays().await;
-            self.publish_hud_with_displays(cursor, displays_snapshot)
-                .await?;
-        }
-
-        // Determine capture policy via Config + Location
-        let cur = {
-            let st = self.state.lock().await;
-            st.current_cursor()
-        };
-        let cur_with_app = self.cursor_with_current_app(cur.clone());
-        let hud_visible = cfg_guard.hud_visible(&cur);
-        let capture = cfg_guard.mode_requests_capture(&cur);
-        {
-            let mut mgr = self.binding_manager.lock().await;
-            mgr.set_capture_all(hud_visible && capture);
-        }
-
-        // Bind keys and perform cleanup on change
-        let start = Instant::now();
+        let mut warnings = Vec::new();
         let mut key_pairs: Vec<(String, Chord)> = Vec::new();
-        let mut dedup = std::collections::HashSet::new();
-        let detailed = cfg_guard.hud_keys_ctx(&cur_with_app);
-        for (ch, _desc, _attrs, _is_mode) in detailed {
-            let ident = ch.to_string();
-            if dedup.insert(ident.clone()) {
-                key_pairs.push((ident, ch));
+        let mut capture_all = false;
+        let cursor = {
+            let cfg_guard = self.config.read().await;
+            let mut rt = self.runtime.lock().await;
+            rt.focus = FocusInfo {
+                app: app.to_string(),
+                title: title.to_string(),
+                pid,
+            };
+
+            if let Some(cfg) = cfg_guard.as_ref() {
+                if rt.stack.is_empty() {
+                    rt.stack.push(config::dynamic::ModeFrame {
+                        title: "root".to_string(),
+                        closure: cfg.root(),
+                        entered_via: None,
+                        rendered: Vec::new(),
+                        style: None,
+                        capture: false,
+                    });
+                }
+
+                let theme = theme_name_for_index(rt.theme_index);
+                let base_style = cfg.base_style(Some(theme), rt.user_style_enabled);
+
+                let mut ctx = config::dynamic::ModeCtx {
+                    app: rt.focus.app.clone(),
+                    title: rt.focus.title.clone(),
+                    pid: rt.focus.pid as i64,
+                    hud: rt.hud_visible,
+                    depth: rt.depth() as i64,
+                };
+
+                let output =
+                    match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, &base_style) {
+                        Ok(o) => Some(o),
+                        Err(err) => {
+                            self.notifier.send_error("Config", err.pretty())?;
+                            rt.stack.truncate(1);
+                            ctx.depth = 0;
+                            match config::dynamic::render_stack(
+                                cfg,
+                                &mut rt.stack,
+                                &ctx,
+                                &base_style,
+                            ) {
+                                Ok(o) => Some(o),
+                                Err(err) => {
+                                    self.notifier.send_error("Config", err.pretty())?;
+                                    rt.rendered = config::dynamic::RenderedState {
+                                        bindings: Vec::new(),
+                                        hud_rows: Vec::new(),
+                                        style: base_style,
+                                        capture: false,
+                                    };
+                                    None
+                                }
+                            }
+                        }
+                    };
+
+                if let Some(output) = output {
+                    warnings = output.warnings;
+                    rt.rendered = output.rendered;
+
+                    for (ch, _binding) in rt.rendered.bindings.iter() {
+                        key_pairs.push((ch.to_string(), ch.clone()));
+                    }
+                    key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+                    capture_all = rt.hud_visible && rt.rendered.capture;
+                }
+            } else {
+                rt.hud_visible = false;
+                rt.stack.clear();
+                rt.rendered = config::dynamic::RenderedState {
+                    bindings: Vec::new(),
+                    hud_rows: Vec::new(),
+                    style: config::Style::default(),
+                    capture: false,
+                };
+            }
+
+            cursor_for_ui_from_state(&rt)
+        };
+
+        for effect in warnings {
+            if let config::dynamic::Effect::Notify { kind, title, body } = effect {
+                self.notifier.send_notification(kind, title, body)?;
             }
         }
-        // Keep bind ordering stable for reduced churn and better diffs/logging
-        key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let start = Instant::now();
         let key_count = key_pairs.len();
-        // Update bindings without awaiting while the manager lock is held.
         let bindings_changed = {
             let mut manager = self.binding_manager.lock().await;
+            manager.set_capture_all(capture_all);
             manager.update_bindings(key_pairs)?
         };
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
-            // Perform async work after dropping manager guard.
             self.repeater.clear_async().await;
-            // Stop all active relays; each relay uses its original target PID.
             self.relay.stop_all();
         }
+
+        let displays_snapshot = self.world.displays().await;
+        let cursor = self.cursor_with_current_app(cursor);
+        self.publish_hud_with_displays(cursor, displays_snapshot)
+            .await?;
 
         let elapsed = start.elapsed();
         if elapsed > Duration::from_millis(BIND_UPDATE_WARN_MS) {
@@ -393,6 +440,7 @@ impl Engine {
                 elapsed, key_count
             );
         }
+
         Ok(())
     }
 
@@ -410,43 +458,45 @@ impl Engine {
         Ok(())
     }
 
-    // set_mode removed; use set_config with a full Config instead.
+    /// Load and install a dynamic configuration from `path`.
+    pub async fn set_config_path(&self, path: PathBuf) -> Result<()> {
+        let dyn_cfg = config::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
+        let root = dyn_cfg.root();
+        let theme_index = theme_index_for_name(dyn_cfg.base_theme().unwrap_or("default"));
 
-    /// Set full configuration (keys + style) and rebind while preserving UI state.
-    ///
-    /// We intentionally do not reset the engine `State` here so that the current
-    /// HUD location (depth/path) remains stable across theme or config updates.
-    /// Path invalidation is handled by `Config::ensure_context` during rebind.
-    pub async fn set_config_with_rhai(
-        &self,
-        cfg: config::Config,
-        rhai: Option<config::RhaiRuntime>,
-    ) -> Result<()> {
-        // LOCK ORDER: config (write) must be released before rebind_current_context
-        // which acquires config (read) -> state -> binding_manager.
+        // LOCK ORDER: config (write) must be released before rebind_current_context.
         {
             let mut g = self.config.write().await;
-            *g = cfg;
+            *g = Some(dyn_cfg);
         }
         {
-            let mut guard = self.rhai.write().await;
-            *guard = rhai.map(Arc::new);
+            let mut g = self.config_path.write().await;
+            *g = Some(path);
+        }
+        {
+            let (app, title, pid) = self.current_context();
+            let mut rt = self.runtime.lock().await;
+            rt.hud_visible = false;
+            rt.theme_index = theme_index;
+            rt.user_style_enabled = true;
+            rt.focus = FocusInfo { app, title, pid };
+            rt.stack = vec![config::dynamic::ModeFrame {
+                title: "root".to_string(),
+                closure: root,
+                entered_via: None,
+                rendered: Vec::new(),
+                style: None,
+                capture: false,
+            }];
         }
         self.rebind_current_context().await
-    }
-
-    /// Set full configuration and clear any loaded Rhai runtime.
-    ///
-    /// Use [`Engine::set_config_with_rhai`] when loading configs that contain script actions.
-    pub async fn set_config(&self, cfg: config::Config) -> Result<()> {
-        self.set_config_with_rhai(cfg, None).await
     }
 
     // (No legacy focus snapshot hook; engine relies solely on world.)
 
     /// Get the current depth (0 = root) if state is initialized.
     pub async fn get_depth(&self) -> usize {
-        self.state.lock().await.depth()
+        self.runtime.lock().await.depth()
     }
 
     /// Get a read-only snapshot of currently bound keys as (identifier, chord) pairs.
@@ -469,8 +519,8 @@ impl Engine {
         self.world.status().await
     }
 
-    /// Process a key event and return whether depth changed (requiring rebind)
-    async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<bool> {
+    /// Process a key-down event for a bound chord.
+    async fn handle_key_event(&self, chord: &Chord, identifier: String) -> Result<()> {
         let start = Instant::now();
         // On dispatch, nudge world to refresh and proceed with cached context
         if self.sync_on_dispatch {
@@ -483,16 +533,89 @@ impl Engine {
             identifier, app_ctx, title_ctx
         );
 
-        // LOCK ORDER: config (read) -> state. Response handling and rebind happen
-        // after releasing state lock to avoid holding guards across async calls.
-        let cfg_for_handle = self.config.read().await;
-        let (loc_before, mut loc_after, response) = {
-            let mut st = self.state.lock().await;
-            let loc_before = st.current_cursor();
-            let resp = st.handle_key_with_context(&cfg_for_handle, chord, &app_ctx, &title_ctx);
-            let loc_after = st.current_cursor();
-            (loc_before, loc_after, resp)
+        let cfg_guard = self.config.read().await;
+        let Some(cfg) = cfg_guard.as_ref() else {
+            trace!("No dynamic config loaded; ignoring key");
+            return Ok(());
         };
+
+        let (binding, ctx) = {
+            let rt = self.runtime.lock().await;
+            let Some(binding) = config::dynamic::resolve_binding(&rt.rendered, chord).cloned()
+            else {
+                trace!("No binding for chord {}", chord);
+                return Ok(());
+            };
+            let ctx = config::dynamic::ModeCtx {
+                app: app_ctx.clone(),
+                title: title_ctx.clone(),
+                pid: pid as i64,
+                hud: rt.hud_visible,
+                depth: rt.depth() as i64,
+            };
+            (binding, ctx)
+        };
+
+        let mut stay = binding.flags.stay;
+        let mut nav_occurred = false;
+        let mut entered_mode = false;
+
+        match binding.kind.clone() {
+            config::dynamic::BindingKind::Mode(mode) => {
+                entered_mode = true;
+                let mut rt = self.runtime.lock().await;
+                rt.hud_visible = true;
+                rt.stack.push(config::dynamic::ModeFrame {
+                    title: binding.desc.clone(),
+                    closure: mode,
+                    entered_via: binding.mode_id.map(|id| (binding.chord.clone(), id)),
+                    rendered: Vec::new(),
+                    style: binding.mode_style.clone(),
+                    capture: binding.mode_capture,
+                });
+            }
+            config::dynamic::BindingKind::Action(action) => {
+                let outcome = self
+                    .apply_action(&identifier, &action, binding.flags.repeat)
+                    .await?;
+                nav_occurred = outcome.is_nav;
+                entered_mode = outcome.entered_mode;
+            }
+            config::dynamic::BindingKind::Handler(handler) => {
+                let result = match config::dynamic::execute_handler(cfg, &handler, &ctx) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        self.notifier.send_error("Handler", err.pretty())?;
+                        return Ok(());
+                    }
+                };
+
+                stay = stay || result.stay;
+
+                for effect in result.effects {
+                    match effect {
+                        config::dynamic::Effect::Exec(action) => {
+                            let outcome = self.apply_action(&identifier, &action, None).await?;
+                            nav_occurred |= outcome.is_nav;
+                            entered_mode |= outcome.entered_mode;
+                        }
+                        config::dynamic::Effect::Notify { kind, title, body } => {
+                            self.notifier.send_notification(kind, title, body)?;
+                        }
+                    }
+                }
+
+                if let Some(nav) = result.nav {
+                    let outcome = self.apply_nav_request(nav).await;
+                    nav_occurred |= outcome.is_nav;
+                    entered_mode |= outcome.entered_mode;
+                }
+            }
+        }
+
+        if !stay && !nav_occurred && !entered_mode {
+            self.auto_exit().await;
+        }
 
         let processing_time = start.elapsed();
         if processing_time > Duration::from_millis(KEY_PROC_WARN_MS) {
@@ -502,204 +625,12 @@ impl Engine {
             );
         }
 
-        // Handle the response (outside the lock for better concurrency)
-        match response {
-            Ok(KeyResponse::Script { id, attrs }) => {
-                let rhai = { self.rhai.read().await.clone() };
-                let Some(rhai) = rhai else {
-                    self.notifier.send_error(
-                        "Rhai",
-                        "No Rhai runtime loaded for script actions".to_string(),
-                    )?;
-                    return Ok(false);
-                };
-
-                let resolved = match rhai.eval_action(id, &app_ctx, &title_ctx, pid, &loc_before) {
-                    Ok(actions) => actions,
-                    Err(err) => {
-                        self.notifier.send_error("Rhai", err)?;
-                        return Ok(false);
-                    }
-                };
-
-                if resolved
-                    .iter()
-                    .any(|a| matches!(a, config::Action::Keys(_)))
-                {
-                    self.notifier.send_error(
-                        "Rhai",
-                        "Script actions cannot synthesize nested key trees at runtime".to_string(),
-                    )?;
-                    return Ok(false);
-                }
-                if resolved
-                    .iter()
-                    .any(|a| matches!(a, config::Action::Rhai { .. }))
-                {
-                    self.notifier.send_error(
-                        "Rhai",
-                        "Script actions cannot return other script actions".to_string(),
-                    )?;
-                    return Ok(false);
-                }
-
-                let is_macro = resolved.len() != 1;
-                let (responses, next_cursor) = {
-                    let mut st = self.state.lock().await;
-                    let out = st.apply_script_actions(&resolved, &attrs);
-                    let cursor = st.current_cursor();
-                    (out, cursor)
-                };
-                let responses = match responses {
-                    Ok(responses) => {
-                        loc_after = next_cursor;
-                        responses
-                    }
-                    Err(err) => {
-                        self.notifier.send_error("Rhai", err.to_string())?;
-                        return Ok(false);
-                    }
-                };
-
-                for (idx, resp) in responses.into_iter().enumerate() {
-                    let step_ident;
-                    let ident = if is_macro {
-                        step_ident = format!("{identifier}#{idx}");
-                        step_ident.as_str()
-                    } else {
-                        identifier.as_str()
-                    };
-
-                    match resp {
-                        KeyResponse::Relay {
-                            chord: target,
-                            attrs,
-                        } => self.handle_action_relay(ident, target, &attrs).await?,
-                        KeyResponse::ShellAsync {
-                            command,
-                            ok_notify,
-                            err_notify,
-                            repeat,
-                        } => {
-                            self.handle_action_shell(ident, command, ok_notify, err_notify, repeat)
-                                .await?
-                        }
-                        other => self.notifier.handle_key_response(other)?,
-                    }
-                }
-            }
-            Ok(KeyResponse::Relay {
-                chord: target,
-                attrs,
-            }) => {
-                self.handle_action_relay(&identifier, target, &attrs)
-                    .await?
-            }
-            Ok(KeyResponse::ShellAsync {
-                command,
-                ok_notify,
-                err_notify,
-                repeat,
-            }) => {
-                self.handle_action_shell(&identifier, command, ok_notify, err_notify, repeat)
-                    .await?
-            }
-            Ok(other) => {
-                trace!("Key response: {:?}", other);
-                self.notifier.handle_key_response(other)?;
-            }
-            Err(e) => {
-                warn!("Key handler error for {}: {}", identifier, e);
-                self.notifier.send_error("Key", e.to_string())?;
-            }
-        };
-
-        let location_changed = loc_before != loc_after;
-        if location_changed {
-            debug!(
-                "Location changed: {:?} -> {:?} (triggered by key: {})",
-                loc_before.path(),
-                loc_after.path(),
-                identifier
-            );
-            // Invoke hook to rebind and refresh HUD using current context
-            self.rebind_and_refresh(&app_ctx, &title_ctx).await?;
-        }
+        self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
         trace!(
-            "Key event completed in {:?}: {} (location_changed: {})",
+            "Key event completed in {:?}: {}",
             start.elapsed(),
-            identifier,
-            location_changed
+            identifier
         );
-        Ok(location_changed)
-    }
-
-    // Extracted action handlers for clarity and testability
-    async fn handle_action_relay(
-        &self,
-        identifier: &str,
-        target: Chord,
-        attrs: &config::KeysAttrs,
-    ) -> Result<()> {
-        debug!(
-            "Relay action {} -> {} (noexit={})",
-            identifier,
-            target,
-            attrs.noexit()
-        );
-        let pid = self.current_context().2;
-        if attrs.noexit() {
-            let mods = &target.modifiers;
-            let cmd_like = mods.contains(&mac_keycode::Modifier::Command)
-                || mods.contains(&mac_keycode::Modifier::RightCommand)
-                || mods.contains(&mac_keycode::Modifier::Option)
-                || mods.contains(&mac_keycode::Modifier::RightOption);
-
-            let repeat = if attrs.repeat_effective() && !cmd_like {
-                Some(RepeatSpec {
-                    initial_delay_ms: attrs.repeat_delay.as_option().copied(),
-                    interval_ms: attrs.repeat_interval.as_option().copied(),
-                })
-            } else {
-                None
-            };
-            let has_custom_timing = attrs.repeat_delay.as_option().is_some()
-                || attrs.repeat_interval.as_option().is_some();
-            let allow_os_repeat = repeat.is_some() && !has_custom_timing;
-            self.key_tracker
-                .set_repeat_allowed(identifier, allow_os_repeat);
-            self.repeater.start(
-                identifier.to_string(),
-                ExecSpec::Relay { chord: target },
-                repeat,
-            );
-        } else {
-            self.key_tracker.set_repeat_allowed(identifier, false);
-            self.relay
-                .start_relay(identifier.to_string(), target.clone(), pid, false);
-            let _ = self.relay.stop_relay(identifier, pid);
-        }
-        Ok(())
-    }
-
-    async fn handle_action_shell(
-        &self,
-        id: &str,
-        command: String,
-        ok_notify: config::NotifyKind,
-        err_notify: config::NotifyKind,
-        repeat: Option<crate::keymode::ShellRepeatConfig>,
-    ) -> Result<()> {
-        let exec = ExecSpec::Shell {
-            command,
-            ok_notify,
-            err_notify,
-        };
-        let rep = repeat.map(|r| RepeatSpec {
-            initial_delay_ms: r.initial_delay_ms,
-            interval_ms: r.interval_ms,
-        });
-        self.repeater.start(id.to_string(), exec, rep);
         Ok(())
     }
 
@@ -723,6 +654,286 @@ impl Engine {
             }
             debug!("Repeated relay for {}", identifier);
         }
+    }
+
+    async fn apply_action(
+        &self,
+        identifier: &str,
+        action: &config::Action,
+        repeat: Option<config::dynamic::RepeatSpec>,
+    ) -> Result<DispatchOutcome> {
+        // Default to ignoring OS repeats for non-relay actions.
+        self.key_tracker.set_repeat_allowed(identifier, false);
+
+        match action {
+            config::Action::Shell(spec) => {
+                let repeat = repeat.map(|r| RepeatSpec {
+                    initial_delay_ms: r.delay_ms,
+                    interval_ms: r.interval_ms,
+                });
+
+                self.repeater.start(
+                    identifier.to_string(),
+                    ExecSpec::Shell {
+                        command: spec.command().to_string(),
+                        ok_notify: spec.ok_notify(),
+                        err_notify: spec.err_notify(),
+                    },
+                    repeat,
+                );
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::Relay(spec) => {
+                let Some(target) = Chord::parse(spec) else {
+                    self.notifier
+                        .send_error("Relay", format!("Invalid relay chord string: {}", spec))?;
+                    return Ok(DispatchOutcome::default());
+                };
+
+                let repeat = repeat.map(|r| RepeatSpec {
+                    initial_delay_ms: r.delay_ms,
+                    interval_ms: r.interval_ms,
+                });
+
+                if let Some(repeat) = repeat {
+                    let allow_os_repeat =
+                        repeat.initial_delay_ms.is_none() && repeat.interval_ms.is_none();
+                    self.key_tracker
+                        .set_repeat_allowed(identifier, allow_os_repeat);
+                    self.repeater.start(
+                        identifier.to_string(),
+                        ExecSpec::Relay { chord: target },
+                        Some(repeat),
+                    );
+                    return Ok(DispatchOutcome::default());
+                }
+
+                let pid = self.current_context().2;
+                self.relay
+                    .start_relay(identifier.to_string(), target.clone(), pid, false);
+                let _ = self.relay.stop_relay(identifier, pid);
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::Pop => Ok(self
+                .apply_nav_request(config::dynamic::NavRequest::Pop)
+                .await),
+            config::Action::Exit => Ok(self
+                .apply_nav_request(config::dynamic::NavRequest::Exit)
+                .await),
+            config::Action::ShowHudRoot | config::Action::ShowRoot => Ok(self
+                .apply_nav_request(config::dynamic::NavRequest::ShowRoot)
+                .await),
+            config::Action::HideHud => Ok(self
+                .apply_nav_request(config::dynamic::NavRequest::HideHud)
+                .await),
+            config::Action::ReloadConfig => {
+                if let Err(err) = self.reload_dynamic_config().await {
+                    self.notifier.send_error("Config", err.to_string())?;
+                }
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ClearNotifications => {
+                self.notifier.send_ui(MsgToUI::ClearNotifications)?;
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ShowDetails(arg) => {
+                self.notifier.send_ui(MsgToUI::ShowDetails(*arg))?;
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ThemeNext => {
+                let mut rt = self.runtime.lock().await;
+                rt.theme_index = theme_next_index(rt.theme_index);
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ThemePrev => {
+                let mut rt = self.runtime.lock().await;
+                rt.theme_index = theme_prev_index(rt.theme_index);
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ThemeSet(name) => {
+                if config::themes::theme_exists(name.as_str()) {
+                    let mut rt = self.runtime.lock().await;
+                    rt.theme_index = theme_index_for_name(name.as_str());
+                } else {
+                    self.notifier.send_notification(
+                        config::NotifyKind::Warn,
+                        "Theme".to_string(),
+                        format!("Unknown theme: {}", name),
+                    )?;
+                }
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::SetVolume(level) => {
+                let repeat = repeat.map(|r| RepeatSpec {
+                    initial_delay_ms: r.delay_ms,
+                    interval_ms: r.interval_ms,
+                });
+                let script = format!("set volume output volume {}", (*level).min(100));
+                self.repeater.start(
+                    identifier.to_string(),
+                    ExecSpec::Shell {
+                        command: format!("osascript -e '{}'", script),
+                        ok_notify: config::NotifyKind::Ignore,
+                        err_notify: config::NotifyKind::Warn,
+                    },
+                    repeat,
+                );
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::ChangeVolume(delta) => {
+                let repeat = repeat.map(|r| RepeatSpec {
+                    initial_delay_ms: r.delay_ms,
+                    interval_ms: r.interval_ms,
+                });
+                let script = format!(
+                    "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
+                    delta
+                );
+                self.repeater.start(
+                    identifier.to_string(),
+                    ExecSpec::Shell {
+                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+                        ok_notify: config::NotifyKind::Ignore,
+                        err_notify: config::NotifyKind::Warn,
+                    },
+                    repeat,
+                );
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::Mute(arg) => {
+                let script = match arg {
+                    config::Toggle::On => "set volume output muted true".to_string(),
+                    config::Toggle::Off => "set volume output muted false".to_string(),
+                    config::Toggle::Toggle => {
+                        "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
+                    }
+                };
+                self.repeater.start(
+                    identifier.to_string(),
+                    ExecSpec::Shell {
+                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
+                        ok_notify: config::NotifyKind::Ignore,
+                        err_notify: config::NotifyKind::Warn,
+                    },
+                    None,
+                );
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::UserStyle(arg) => {
+                let mut rt = self.runtime.lock().await;
+                rt.user_style_enabled = apply_toggle(rt.user_style_enabled, *arg);
+                Ok(DispatchOutcome::default())
+            }
+            config::Action::Rhai { .. } | config::Action::Keys(_) => {
+                self.notifier.send_notification(
+                    config::NotifyKind::Warn,
+                    "Config".to_string(),
+                    "Legacy actions are not supported in dynamic config".to_string(),
+                )?;
+                Ok(DispatchOutcome::default())
+            }
+        }
+    }
+
+    async fn apply_nav_request(&self, nav: config::dynamic::NavRequest) -> DispatchOutcome {
+        let mut rt = self.runtime.lock().await;
+        match nav {
+            config::dynamic::NavRequest::Push { mode, title } => {
+                rt.hud_visible = true;
+                let title = title
+                    .or_else(|| mode.default_title().map(|t| t.to_string()))
+                    .unwrap_or_else(|| "mode".to_string());
+                rt.stack.push(config::dynamic::ModeFrame {
+                    title,
+                    closure: mode,
+                    entered_via: None,
+                    rendered: Vec::new(),
+                    style: None,
+                    capture: false,
+                });
+                DispatchOutcome {
+                    is_nav: true,
+                    entered_mode: true,
+                }
+            }
+            config::dynamic::NavRequest::Pop => {
+                if rt.stack.len() > 1 {
+                    rt.stack.pop();
+                }
+                if rt.stack.len() <= 1 {
+                    rt.hud_visible = false;
+                }
+                DispatchOutcome {
+                    is_nav: true,
+                    entered_mode: false,
+                }
+            }
+            config::dynamic::NavRequest::Exit => {
+                if rt.stack.len() > 1 {
+                    rt.stack.truncate(1);
+                }
+                rt.hud_visible = false;
+                DispatchOutcome {
+                    is_nav: true,
+                    entered_mode: false,
+                }
+            }
+            config::dynamic::NavRequest::ShowRoot => {
+                if rt.stack.len() > 1 {
+                    rt.stack.truncate(1);
+                }
+                rt.hud_visible = true;
+                DispatchOutcome {
+                    is_nav: true,
+                    entered_mode: false,
+                }
+            }
+            config::dynamic::NavRequest::HideHud => {
+                rt.hud_visible = false;
+                DispatchOutcome {
+                    is_nav: true,
+                    entered_mode: false,
+                }
+            }
+        }
+    }
+
+    async fn auto_exit(&self) {
+        let mut rt = self.runtime.lock().await;
+        if rt.stack.len() > 1 {
+            rt.stack.truncate(1);
+        }
+        rt.hud_visible = false;
+    }
+
+    async fn reload_dynamic_config(&self) -> Result<()> {
+        let path = { self.config_path.read().await.clone() };
+        let Some(path) = path else {
+            return Err(Error::Msg(
+                "No config path set; cannot reload config".to_string(),
+            ));
+        };
+
+        let dyn_cfg = config::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
+        let root = dyn_cfg.root();
+
+        {
+            let mut g = self.config.write().await;
+            *g = Some(dyn_cfg);
+        }
+        {
+            let mut rt = self.runtime.lock().await;
+            rt.stack = vec![config::dynamic::ModeFrame {
+                title: "root".to_string(),
+                closure: root,
+                entered_via: None,
+                rendered: Vec::new(),
+                style: None,
+                capture: false,
+            }];
+        }
+
+        Ok(())
     }
 
     /// Dispatch a hotkey event by id, handling all lookups and callback execution internally.
@@ -753,12 +964,9 @@ impl Engine {
 
                 self.key_tracker.on_key_down(&ident);
 
-                match self.handle_key_event(&chord, ident.clone()).await {
-                    Ok(_depth_changed) => {}
-                    Err(e) => {
-                        warn!("Key handler failed: {}", e);
-                        return Err(e);
-                    }
+                if let Err(e) = self.handle_key_event(&chord, ident.clone()).await {
+                    warn!("Key handler failed: {}", e);
+                    return Err(e);
                 }
             }
             mac_hotkey::EventKind::KeyUp => {
@@ -785,8 +993,61 @@ impl Engine {
         (String::new(), String::new(), -1)
     }
 
+    async fn cursor_for_ui(&self) -> hotki_protocol::Cursor {
+        let rt = self.runtime.lock().await;
+        cursor_for_ui_from_state(&rt)
+    }
+
     fn cursor_with_current_app(&self, cursor: hotki_protocol::Cursor) -> hotki_protocol::Cursor {
         let (app, title, pid) = self.current_context();
         cursor.with_app(hotki_protocol::App { app, title, pid })
+    }
+}
+
+fn cursor_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::Cursor {
+    let mut cursor = hotki_protocol::Cursor::new(Vec::new(), rt.hud_visible);
+    cursor.set_theme(Some(theme_name_for_index(rt.theme_index)));
+    cursor.set_user_style_enabled(rt.user_style_enabled);
+    cursor
+}
+
+fn theme_name_for_index(index: usize) -> &'static str {
+    let themes = config::themes::list_themes();
+    if themes.is_empty() {
+        return "default";
+    }
+    themes[index % themes.len()]
+}
+
+fn theme_index_for_name(name: &str) -> usize {
+    let themes = config::themes::list_themes();
+    if let Some(idx) = themes.iter().position(|t| *t == name) {
+        return idx;
+    }
+    themes.iter().position(|t| *t == "default").unwrap_or(0)
+}
+
+fn theme_next_index(index: usize) -> usize {
+    let themes = config::themes::list_themes();
+    if themes.is_empty() {
+        return 0;
+    }
+    (index % themes.len() + 1) % themes.len()
+}
+
+fn theme_prev_index(index: usize) -> usize {
+    let themes = config::themes::list_themes();
+    if themes.is_empty() {
+        return 0;
+    }
+    let idx = index % themes.len();
+    if idx == 0 { themes.len() - 1 } else { idx - 1 }
+}
+
+fn apply_toggle(current: bool, toggle: config::Toggle) -> bool {
+    match toggle {
+        config::Toggle::On => true,
+        config::Toggle::Off => false,
+        config::Toggle::Toggle => !current,
     }
 }

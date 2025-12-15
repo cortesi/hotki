@@ -3,7 +3,7 @@
 //! They are intended for use by the test suite only.
 
 use std::{
-    env, fs,
+    fs,
     future::Future,
     path::PathBuf,
     process,
@@ -129,33 +129,33 @@ pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32
     );
 }
 
+fn workspace_tmp_dir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    fs::create_dir_all(&dir).expect("create tmp dir");
+    dir
+}
+
 fn temp_config_path(prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    env::temp_dir().join(format!("{prefix}-{}-{counter}.rhai", process::id()))
+    workspace_tmp_dir().join(format!("{prefix}-{}-{counter}.rhai", process::id()))
 }
 
-/// Load a Rhai config script from an in-memory string for tests.
-pub fn load_test_config(script: &str) -> config::Config {
+/// Write a dynamic config script to a temporary file and return the path.
+pub fn write_test_config(script: &str) -> PathBuf {
     let path = temp_config_path("hotki-test-config");
     fs::write(&path, script).expect("write test config");
-    let loaded = config::load_for_server_from_path(&path).expect("load test config");
-    let _ignored = fs::remove_file(&path);
-    loaded.config
+    path
 }
 
-/// Minimal configuration used across engine tests.
-pub fn create_test_config() -> config::Config {
-    load_test_config(
-        r#"
-        global.mode("cmd+k", "test", |m| {
-          m.bind("a", "action", action.pop);
-          m.mode("b", "nested", |sub| {
-            sub.bind("c", "deep", action.pop);
-          });
-        });
-        "#,
-    )
+/// Read capture-all state from the engine's key binding manager.
+pub async fn capture_all_active(engine: &crate::Engine) -> bool {
+    engine.binding_manager.lock().await.capture_all_active()
+}
+
+/// Install an on-relay-repeat callback on the engine's repeater.
+pub fn set_on_relay_repeat(engine: &crate::Engine, cb: crate::OnRelayRepeat) {
+    engine.repeater.set_on_relay_repeat(cb);
 }
 
 /// Receive UI messages until `pred` matches or `timeout_ms` elapses.

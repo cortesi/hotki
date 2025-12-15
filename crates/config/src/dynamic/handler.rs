@@ -1,17 +1,14 @@
-use rhai::EvalAltResult;
+use rhai::Dynamic;
 
+use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest};
 use crate::Error;
-
-use super::{ActionCtx, HandlerRef, ModeCtx, NavRequest};
-
-use super::DynamicConfig;
 
 /// Result of executing a handler closure.
 #[derive(Debug)]
 pub struct HandlerResult {
-    pub(crate) effects: Vec<super::Effect>,
-    pub(crate) nav: Option<NavRequest>,
-    pub(crate) stay: bool,
+    pub effects: Vec<super::Effect>,
+    pub nav: Option<NavRequest>,
+    pub stay: bool,
 }
 
 pub fn execute_handler(
@@ -29,8 +26,9 @@ pub fn execute_handler(
 
     handler
         .func
-        .call::<()>(&cfg.engine, &cfg.ast, (action_ctx.clone(),))
-        .map_err(|err| rhai_error_to_config(cfg, &err))?;
+        .call::<Dynamic>(&cfg.engine, &cfg.ast, (action_ctx.clone(),))
+        .map(|_| ())
+        .map_err(|err| super::render::rhai_error_to_config(cfg, &err))?;
 
     Ok(HandlerResult {
         effects: action_ctx.take_effects(),
@@ -38,8 +36,3 @@ pub fn execute_handler(
         stay: action_ctx.stay(),
     })
 }
-
-fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
-    super::render::rhai_error_to_config(cfg, err)
-}
-

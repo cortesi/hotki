@@ -31,6 +31,8 @@ pub struct KeyBindingManager {
     last_bound: HashSet<String>,
     /// Guard that keeps capture-all active while present
     capture_guard: Option<Box<dyn CaptureToken>>,
+    /// Capture-all requested by the engine (tracked even in fake mode).
+    capture_all_active: bool,
     /// Test mode: when true, simulate registrations without OS intercepts.
     fake: bool,
     next_id: u32,
@@ -45,6 +47,7 @@ impl KeyBindingManager {
             inv_map: HashMap::new(),
             last_bound: HashSet::new(),
             capture_guard: None,
+            capture_all_active: false,
             fake: false, // default; updated below
             next_id: 1000,
         }
@@ -139,6 +142,7 @@ impl KeyBindingManager {
 
     /// Enable/disable capture-all mode atomically using a guard.
     pub fn set_capture_all(&mut self, active: bool) {
+        self.capture_all_active = active;
         if self.fake {
             tracing::debug!("capture_all(fake) {}", active);
             return;
@@ -161,6 +165,10 @@ impl KeyBindingManager {
         let ident = self.id_map.get(&id).cloned()?;
         let chord = self.chord_map.get(&id).cloned()?;
         Some((ident, chord))
+    }
+
+    pub(crate) fn capture_all_active(&self) -> bool {
+        self.capture_all_active
     }
 }
 

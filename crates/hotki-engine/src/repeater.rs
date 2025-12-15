@@ -8,7 +8,6 @@ use std::{
     cmp,
     collections::HashMap,
     env,
-    option::Option,
     process::Command,
     sync::{
         Arc,
@@ -22,17 +21,26 @@ use parking_lot::Mutex;
 use tokio::time::Duration;
 use tracing::trace;
 
-use crate::{
-    RelayHandler, keymode::KeyResponse, notification::NotificationDispatcher, ticker::Ticker,
-};
+use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
+
+#[derive(Debug, Clone)]
+struct ShellNotification {
+    kind: NotifyKind,
+    title: String,
+    text: String,
+}
 
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.
 pub const STOP_WAIT_TIMEOUT_MS: u64 = 50;
 
-/// Run a command using the user's shell, mapping output to a KeyResponse.
+/// Run a command using the user's shell, returning an optional notification.
 /// This function is blocking and intended to be called inside `spawn_blocking`.
-fn run_shell_blocking(command: &str, ok_notify: NotifyKind, err_notify: NotifyKind) -> KeyResponse {
+fn run_shell_blocking(
+    command: &str,
+    ok_notify: NotifyKind,
+    err_notify: NotifyKind,
+) -> Option<ShellNotification> {
     tracing::info!("Executing shell command: {}", command);
     let shell_path: String = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     match Command::new(&shell_path).arg("-lc").arg(command).output() {
@@ -70,29 +78,19 @@ fn run_shell_blocking(command: &str, ok_notify: NotifyKind, err_notify: NotifyKi
             };
 
             match notify_type {
-                NotifyKind::Ignore => KeyResponse::Ok,
-                NotifyKind::Info => KeyResponse::Info {
+                NotifyKind::Ignore => None,
+                kind => Some(ShellNotification {
+                    kind,
                     title: "Shell command".to_string(),
                     text: combined,
-                },
-                NotifyKind::Warn => KeyResponse::Warn {
-                    title: "Shell command".to_string(),
-                    text: combined,
-                },
-                NotifyKind::Error => KeyResponse::Error {
-                    title: "Shell command".to_string(),
-                    text: combined,
-                },
-                NotifyKind::Success => KeyResponse::Success {
-                    title: "Shell command".to_string(),
-                    text: combined,
-                },
+                }),
             }
         }
-        Err(e) => KeyResponse::Warn {
+        Err(e) => Some(ShellNotification {
+            kind: NotifyKind::Warn,
             title: "Shell command".to_string(),
             text: format!("Failed to execute: {}", e),
-        },
+        }),
     }
 }
 
@@ -252,19 +250,15 @@ impl Repeater {
 
     /// Convenience helper for shell repeating start (testing/tools)
     pub fn start_shell_repeat(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
-        self.stop(&id);
-
-        // First run (notifications ignored)
-        let _ = self.notifier.handle_key_response(KeyResponse::ShellAsync {
-            command: command.clone(),
-            ok_notify: NotifyKind::Ignore,
-            err_notify: NotifyKind::Ignore,
-            repeat: None,
-        });
-
-        if repeat.is_some() {
-            self.spawn_shell_repeater(id, command, repeat);
-        }
+        self.start(
+            id,
+            ExecSpec::Shell {
+                command,
+                ok_notify: NotifyKind::Ignore,
+                err_notify: NotifyKind::Ignore,
+            },
+            repeat,
+        );
     }
 
     /// Start execution for a binding id. Runs the first action immediately and schedules repeats if provided.
@@ -285,19 +279,22 @@ impl Repeater {
                 state.running.store(true, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let _guard = state.gate.lock().await;
-                    let resp = tokio::task::spawn_blocking(move || {
+                    let notify = tokio::task::spawn_blocking(move || {
                         run_shell_blocking(&cmd, ok_notify, err_notify)
                     })
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Shell task join error: {}", e);
-                        KeyResponse::Warn {
+                        Some(ShellNotification {
+                            kind: NotifyKind::Warn,
                             title: "Shell command".to_string(),
                             text: "Execution task failed".to_string(),
-                        }
+                        })
                     });
-                    if let Err(e) = notifier.handle_key_response(resp) {
-                        tracing::warn!("Failed to deliver shell response: {}", e);
+                    if let Some(n) = notify
+                        && let Err(e) = notifier.send_notification(n.kind, n.title, n.text)
+                    {
+                        tracing::warn!("Failed to deliver shell notification: {}", e);
                     }
                     state.running.store(false, Ordering::SeqCst);
                 });
@@ -340,7 +337,7 @@ impl Repeater {
             tokio::spawn(async move {
                 let _guard = state2.gate.lock().await;
                 let _ = tokio::task::spawn_blocking(move || {
-                    run_shell_blocking(&cmd, NotifyKind::Ignore, NotifyKind::Ignore)
+                    let _ = run_shell_blocking(&cmd, NotifyKind::Ignore, NotifyKind::Ignore);
                 })
                 .await;
                 // Notify shell repeat callback if set

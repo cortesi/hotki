@@ -16,3 +16,8 @@ progresses.
 
 - `render_stack` returns a `RenderOutput` wrapper so render-time warnings (duplicate chords) can be
   surfaced to the engine for notification delivery.
+
+## Stage 6
+
+- `hotki-server` `set_config_path` still returns a msgpack-encoded `config::Config::default()` to
+  keep the existing UI compiling until Stages 7–9 remove the static-config UI path.

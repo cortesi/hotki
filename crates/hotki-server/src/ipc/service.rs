@@ -350,15 +350,16 @@ impl MrpcConnection for HotkeyService {
                 let cfg = dec_set_config_param(&params[0])?;
                 debug!("Setting config via MRPC");
 
-                let engine = self.engine().await;
-                if let Err(e) = engine.set_config(cfg.clone()).await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineSetConfig,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-
-                Ok(Value::Boolean(true))
+                let _ignored = cfg;
+                Err(Self::typed_err(
+                    crate::error::RpcErrorCode::EngineSetConfig,
+                    &[(
+                        "message",
+                        Value::String(
+                            "set_config is not supported with dynamic configuration".into(),
+                        ),
+                    )],
+                ))
             }
 
             Some(HotkeyMethod::SetConfigPath) => {
@@ -394,26 +395,15 @@ impl MrpcConnection for HotkeyService {
                 };
 
                 let path = PathBuf::from(raw_path.clone());
-                let loaded = config::load_for_server_from_path(&path).map_err(|e| {
-                    Self::typed_err(
-                        crate::error::RpcErrorCode::InvalidConfig,
-                        &[
-                            ("path", Value::String(raw_path.clone().into())),
-                            ("message", Value::String(e.pretty().into())),
-                        ],
-                    )
-                })?;
-                let cfg = loaded.config;
-                let rhai = loaded.rhai;
-
                 let engine = self.engine().await;
-                if let Err(e) = engine.set_config_with_rhai(cfg.clone(), rhai).await {
+                if let Err(e) = engine.set_config_path(path).await {
                     return Err(Self::typed_err(
                         crate::error::RpcErrorCode::EngineSetConfig,
                         &[("message", Value::String(e.to_string().into()))],
                     ));
                 }
 
+                let cfg = config::Config::default();
                 let bytes = rmp_serde::to_vec_named(&cfg).map_err(|e| {
                     Self::typed_err(
                         crate::error::RpcErrorCode::InvalidConfig,

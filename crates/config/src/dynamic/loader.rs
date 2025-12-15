@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
 use rhai::{
@@ -11,10 +11,12 @@ use rhai::{
 };
 use tracing::{debug, info};
 
+use super::{
+    DynamicConfig, ModeCtx,
+    dsl::{DynamicConfigScriptState, ModeBuilder, ValidationError, register_dsl},
+    util::lock_unpoisoned,
+};
 use crate::{Error, error::excerpt_at};
-
-use super::{DynamicConfig, ModeCtx};
-use super::dsl::{DynamicConfigScriptState, ModeBuilder, ValidationError, register_dsl};
 
 /// Load a dynamic config from a Rhai file at `path`.
 pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
@@ -33,7 +35,8 @@ pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
     load_dynamic_config_from_string(source, Some(path.to_path_buf()))
 }
 
-pub(crate) fn load_dynamic_config_from_string(
+/// Load a dynamic config from Rhai source text and an optional origin path.
+pub fn load_dynamic_config_from_string(
     source: String,
     path: Option<PathBuf>,
 ) -> Result<DynamicConfig, Error> {
@@ -75,6 +78,7 @@ pub(crate) fn load_dynamic_config_from_string(
     })
 }
 
+/// Validate that the root mode closure can be executed successfully.
 fn validate_root_closure(
     engine: &Engine,
     ast: &AST,
@@ -92,10 +96,12 @@ fn validate_root_closure(
     };
 
     root.func
-        .call::<()>(engine, ast, (builder, ctx))
+        .call::<Dynamic>(engine, ast, (builder, ctx))
+        .map(|_| ())
         .map_err(|e| error_from_rhai(source, &e, path))
 }
 
+/// Configure the Rhai engine with logging, module resolution, and resource limits.
 fn configure_engine(engine: &mut Engine, path: Option<&Path>) {
     engine.on_print(|s| info!(target: "config::dynamic", "{}", s));
     engine.on_debug(|s, src, pos| {
@@ -114,13 +120,18 @@ fn configure_engine(engine: &mut Engine, path: Option<&Path>) {
 }
 
 #[derive(Debug)]
+/// Module resolver that restricts imports to within the config directory tree.
 struct ConfigModuleResolver {
+    /// Root config directory as provided.
     root: PathBuf,
+    /// Canonicalized root directory for escape detection.
     root_canon: PathBuf,
+    /// Underlying file resolver used for actual module loading.
     inner: FileModuleResolver,
 }
 
 impl ConfigModuleResolver {
+    /// Create a resolver rooted at the given directory.
     fn new(root: PathBuf) -> Self {
         let root_canon = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
         Self {
@@ -130,6 +141,7 @@ impl ConfigModuleResolver {
         }
     }
 
+    /// Validate an import path for security and portability.
     fn validate_import_path(&self, path: &str, pos: Position) -> Result<(), Box<EvalAltResult>> {
         if Path::new(path).is_absolute() {
             return Err(self.invalid_import_path(
@@ -162,10 +174,12 @@ impl ConfigModuleResolver {
         Ok(())
     }
 
+    /// Construct a Rhai runtime error for invalid imports.
     fn invalid_import_path(&self, message: String, pos: Position) -> Box<EvalAltResult> {
         Box::new(EvalAltResult::ErrorRuntime(Dynamic::from(message), pos))
     }
 
+    /// Ensure a resolved file does not escape the configured root directory.
     fn ensure_within_root(
         &self,
         file_path: &Path,
@@ -177,7 +191,10 @@ impl ConfigModuleResolver {
         }
 
         let canon = fs::canonicalize(file_path).map_err(|e| {
-            Box::new(EvalAltResult::ErrorRuntime(Dynamic::from(e.to_string()), pos))
+            Box::new(EvalAltResult::ErrorRuntime(
+                Dynamic::from(e.to_string()),
+                pos,
+            ))
         })?;
 
         if canon.starts_with(&self.root_canon) {
@@ -229,6 +246,7 @@ impl ModuleResolver for ConfigModuleResolver {
     }
 }
 
+/// Compile source code into an AST, converting errors to `config::Error`.
 fn compile(engine: &Engine, source: &str, path: Option<&Path>) -> Result<AST, Error> {
     engine.compile(source).map_err(|err| {
         let err: EvalAltResult = err.into();
@@ -236,6 +254,7 @@ fn compile(engine: &Engine, source: &str, path: Option<&Path>) -> Result<AST, Er
     })
 }
 
+/// Evaluate a previously compiled AST, converting errors to `config::Error`.
 fn eval(
     engine: &Engine,
     scope: &mut Scope,
@@ -249,10 +268,7 @@ fn eval(
         .map_err(|err| error_from_rhai(source, &err, path))
 }
 
-fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
+/// Convert a Rhai execution error into a user-facing config error with an excerpt.
 fn error_from_rhai(source: &str, err: &EvalAltResult, path: Option<&Path>) -> Error {
     if let Some((pos, message)) = validation_error_from_rhai(err) {
         let (line, col, excerpt) = match pos_to_line_col(pos) {
@@ -278,6 +294,7 @@ fn error_from_rhai(source: &str, err: &EvalAltResult, path: Option<&Path>) -> Er
     }
 }
 
+/// Extract a structured validation error previously emitted by the DSL.
 fn validation_error_from_rhai(err: &EvalAltResult) -> Option<(Position, String)> {
     match err {
         EvalAltResult::ErrorRuntime(d, pos) if d.is::<ValidationError>() => {
@@ -290,6 +307,7 @@ fn validation_error_from_rhai(err: &EvalAltResult) -> Option<(Position, String)>
     }
 }
 
+/// Convert a Rhai source position into 1-based line/column.
 fn pos_to_line_col(pos: Position) -> Option<(usize, usize)> {
     let line = pos.line()?;
     let col = pos.position().unwrap_or(1);

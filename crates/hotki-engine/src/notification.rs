@@ -2,7 +2,7 @@ use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
 use tokio::sync::mpsc::Sender;
 use tracing::info;
 
-use crate::{Error, Result, keymode::KeyResponse};
+use crate::{Error, Result};
 
 /// Sends HUD updates and notifications to the UI layer.
 #[derive(Clone)]
@@ -37,33 +37,9 @@ impl NotificationDispatcher {
             .map_err(|_| Error::ChannelClosed)
     }
 
-    /// Handle a `KeyResponse` by converting it to notifications/UI messages.
-    pub(crate) fn handle_key_response(&self, response: KeyResponse) -> Result<()> {
-        match response {
-            KeyResponse::Ok => Ok(()),
-            KeyResponse::Info { title, text } => {
-                self.send_notification(NotifyKind::Info, title, text)
-            }
-            KeyResponse::Warn { title, text } => {
-                self.send_notification(NotifyKind::Warn, title, text)
-            }
-            KeyResponse::Error { title, text } => {
-                self.send_notification(NotifyKind::Error, title, text)
-            }
-            KeyResponse::Success { title, text } => {
-                self.send_notification(NotifyKind::Success, title, text)
-            }
-            KeyResponse::ShellAsync { .. } => {
-                // Engine repeater is responsible for execution.
-                Ok(())
-            }
-            KeyResponse::Ui(msg) => self.tx.try_send(msg).map_err(|_| Error::ChannelClosed),
-            KeyResponse::Relay { .. } => {
-                // Relay is handled elsewhere (event handler / repeater).
-                Ok(())
-            }
-            KeyResponse::Script { .. } => Ok(()),
-        }
+    /// Send an arbitrary UI message.
+    pub(crate) fn send_ui(&self, msg: MsgToUI) -> Result<()> {
+        self.tx.try_send(msg).map_err(|_| Error::ChannelClosed)
     }
 
     /// Convenience helper to send an error notification.

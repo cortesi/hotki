@@ -1,57 +1,74 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     error::Error as StdError,
     fmt,
+    hash::{Hash, Hasher},
     mem,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
 use mac_keycode::Chord;
 use rhai::{
-    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, Position, serde::from_dynamic,
+    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, Position,
+    serde::from_dynamic,
 };
-
-use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw};
 
 use super::{
-    ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef, NavRequest,
-    RepeatSpec, StyleOverlay,
+    ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef,
+    NavRequest, RepeatSpec, StyleOverlay, util::lock_unpoisoned,
 };
+use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw};
 
 #[derive(Debug, Default)]
-pub(crate) struct DynamicConfigScriptState {
+/// Script-global state captured while evaluating a dynamic config.
+pub struct DynamicConfigScriptState {
+    /// Base theme name declared via `base_theme("...")`.
     pub(crate) base_theme: Option<String>,
+    /// User style overlay declared via `style(#{...})`.
     pub(crate) user_style: Option<raw::RawStyle>,
+    /// Root mode closure declared via `hotki.mode(...)`.
     pub(crate) root: Option<ModeRef>,
 }
 
 #[derive(Debug, Default)]
+/// Mutable build state for a single mode render.
 struct ModeBuildState {
+    /// Rendered bindings declared by the mode closure.
     bindings: Vec<Binding>,
+    /// Optional mode-level style overlay.
     style: Option<StyleOverlay>,
+    /// Whether this mode requests capture-all while HUD-visible.
     capture: bool,
 }
 
 #[derive(Clone)]
-pub(crate) struct ModeBuilder {
+/// Builder passed into mode closures for declaring bindings and modifiers.
+pub struct ModeBuilder {
+    /// Shared state so Rhai can mutate it by reference.
     state: Arc<Mutex<ModeBuildState>>,
 }
 
 impl ModeBuilder {
+    /// Create a fresh builder for a new mode render.
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(ModeBuildState::default())),
         }
     }
 
+    /// Create a builder seeded with inherited mode style/capture state.
     pub(crate) fn new_for_render(style: Option<StyleOverlay>, capture: bool) -> Self {
-        let mut state = ModeBuildState::default();
-        state.style = style;
-        state.capture = capture;
+        let state = ModeBuildState {
+            style,
+            capture,
+            ..ModeBuildState::default()
+        };
         Self {
             state: Arc::new(Mutex::new(state)),
         }
     }
 
+    /// Consume the builder and return its collected bindings and modifiers.
     pub(crate) fn finish(self) -> (Vec<Binding>, Option<StyleOverlay>, bool) {
         let mut guard = lock_unpoisoned(&self.state);
         let bindings = mem::take(&mut guard.bindings);
@@ -62,8 +79,11 @@ impl ModeBuilder {
 }
 
 #[derive(Clone)]
-pub(crate) struct BindingRef {
+/// Opaque handle returned by `bind()`/`mode()` to apply fluent binding modifiers.
+pub struct BindingRef {
+    /// Shared builder state used to mutate the referenced binding.
     state: Arc<Mutex<ModeBuildState>>,
+    /// Index into `ModeBuildState.bindings`.
     index: usize,
 }
 
@@ -76,12 +96,16 @@ impl fmt::Debug for BindingRef {
 }
 
 #[derive(Clone)]
+/// Namespace object exported to Rhai scripts as `hotki`.
 struct HotkiNamespace {
+    /// Shared config script state.
     state: Arc<Mutex<DynamicConfigScriptState>>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ValidationError {
+/// Validation error used to surface user-facing diagnostics with a source location.
+pub struct ValidationError {
+    /// Error message to surface.
     pub(crate) message: String,
 }
 
@@ -93,6 +117,7 @@ impl fmt::Display for ValidationError {
 
 impl StdError for ValidationError {}
 
+/// Create a boxed Rhai runtime error tagged as a validation error.
 fn boxed_validation_error(message: String, pos: Position) -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorRuntime(
         Dynamic::from(ValidationError { message }),
@@ -100,10 +125,7 @@ fn boxed_validation_error(message: String, pos: Position) -> Box<EvalAltResult> 
     ))
 }
 
-fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
+/// Parse a chord string or return a validation error.
 fn parse_chord(ctx: &NativeCallContext, spec: &str) -> Result<Chord, Box<EvalAltResult>> {
     Chord::parse(spec).ok_or_else(|| {
         boxed_validation_error(
@@ -113,15 +135,15 @@ fn parse_chord(ctx: &NativeCallContext, spec: &str) -> Result<Chord, Box<EvalAlt
     })
 }
 
+/// Derive a stable-ish identity for a mode closure for orphan detection.
 fn mode_id_for(func: &FnPtr) -> ModeId {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     func.fn_name().hash(&mut hasher);
     ModeId::new(hasher.finish())
 }
 
-pub(crate) fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
+/// Register all dynamic config DSL types and functions into a Rhai engine.
+pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
     engine.register_type::<ModeBuilder>();
     engine.register_type::<BindingRef>();
     engine.register_type::<Action>();
@@ -135,7 +157,7 @@ pub(crate) fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigSc
     register_global_constants(engine);
     register_hotki_namespace(engine, state.clone());
     register_action_namespace(engine);
-    register_style_globals(engine, state.clone());
+    register_style_globals(engine, state);
     register_mode_builder(engine);
     register_handler(engine);
     register_action_fluent(engine);
@@ -143,6 +165,7 @@ pub(crate) fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigSc
     register_string_matches(engine);
 }
 
+/// Register global constants used by the DSL (toggles, positions, weights, etc.).
 fn register_global_constants(engine: &mut Engine) {
     let mut module = Module::new();
 
@@ -185,12 +208,16 @@ fn register_global_constants(engine: &mut Engine) {
     engine.register_global_module(module.into());
 }
 
+/// Register the global `hotki` namespace used to define the root mode.
 fn register_hotki_namespace(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
     engine.register_type_with_name::<HotkiNamespace>("HotkiNamespace");
 
     engine.register_fn(
         "mode",
-        move |ctx: NativeCallContext, ns: HotkiNamespace, func: FnPtr| -> Result<(), Box<EvalAltResult>> {
+        move |ctx: NativeCallContext,
+              ns: HotkiNamespace,
+              func: FnPtr|
+              -> Result<(), Box<EvalAltResult>> {
             let mut guard = lock_unpoisoned(&ns.state);
             if guard.root.is_some() {
                 return Err(boxed_validation_error(
@@ -209,15 +236,11 @@ fn register_hotki_namespace(engine: &mut Engine, state: Arc<Mutex<DynamicConfigS
     );
 
     let mut module = Module::new();
-    module.set_var(
-        "hotki",
-        HotkiNamespace {
-            state: state.clone(),
-        },
-    );
+    module.set_var("hotki", HotkiNamespace { state });
     engine.register_global_module(module.into());
 }
 
+/// Register top-level style globals (`base_theme`, `style`).
 fn register_style_globals(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
     {
         let state = state.clone();
@@ -240,8 +263,10 @@ fn register_style_globals(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScr
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Namespace object exported to Rhai scripts as `action`.
 struct ActionNamespace;
 
+/// Register the global `action.*` factories and constants.
 fn register_action_namespace(engine: &mut Engine) {
     engine.register_type_with_name::<ActionNamespace>("ActionNamespace");
 
@@ -259,7 +284,10 @@ fn register_action_namespace(engine: &mut Engine) {
     });
     engine.register_fn(
         "set_volume",
-        |ctx: NativeCallContext, _: ActionNamespace, level: i64| -> Result<Action, Box<EvalAltResult>> {
+        |ctx: NativeCallContext,
+         _: ActionNamespace,
+         level: i64|
+         -> Result<Action, Box<EvalAltResult>> {
             if !(0..=100).contains(&level) {
                 return Err(boxed_validation_error(
                     format!("set_volume: level must be 0..=100, got {}", level),
@@ -267,14 +295,20 @@ fn register_action_namespace(engine: &mut Engine) {
                 ));
             }
             let level_u8: u8 = level.try_into().map_err(|_| {
-                boxed_validation_error("set_volume: level out of range".to_string(), ctx.call_position())
+                boxed_validation_error(
+                    "set_volume: level out of range".to_string(),
+                    ctx.call_position(),
+                )
             })?;
             Ok(Action::SetVolume(level_u8))
         },
     );
     engine.register_fn(
         "change_volume",
-        |ctx: NativeCallContext, _: ActionNamespace, delta: i64| -> Result<Action, Box<EvalAltResult>> {
+        |ctx: NativeCallContext,
+         _: ActionNamespace,
+         delta: i64|
+         -> Result<Action, Box<EvalAltResult>> {
             if !(-100..=100).contains(&delta) {
                 return Err(boxed_validation_error(
                     format!("change_volume: delta must be -100..=100, got {}", delta),
@@ -291,13 +325,17 @@ fn register_action_namespace(engine: &mut Engine) {
         },
     );
     engine.register_fn("mute", |_: ActionNamespace, t: Toggle| Action::Mute(t));
-    engine.register_fn("user_style", |_: ActionNamespace, t: Toggle| Action::UserStyle(t));
+    engine.register_fn("user_style", |_: ActionNamespace, t: Toggle| {
+        Action::UserStyle(t)
+    });
 
     engine.register_get("pop", |_: &mut ActionNamespace| Action::Pop);
     engine.register_get("exit", |_: &mut ActionNamespace| Action::Exit);
     engine.register_get("show_root", |_: &mut ActionNamespace| Action::ShowRoot);
     engine.register_get("hide_hud", |_: &mut ActionNamespace| Action::HideHud);
-    engine.register_get("reload_config", |_: &mut ActionNamespace| Action::ReloadConfig);
+    engine.register_get("reload_config", |_: &mut ActionNamespace| {
+        Action::ReloadConfig
+    });
     engine.register_get("clear_notifications", |_: &mut ActionNamespace| {
         Action::ClearNotifications
     });
@@ -309,12 +347,14 @@ fn register_action_namespace(engine: &mut Engine) {
     engine.register_global_module(module.into());
 }
 
+/// Register fluent modifiers on action values (e.g., `shell(...).notify(...)`).
 fn register_action_fluent(engine: &mut Engine) {
     engine.register_fn("clone", |a: Action| a);
     engine.register_fn(
         "notify",
         |ctx: NativeCallContext, a: Action, ok: NotifyKind, err: NotifyKind| match a {
-            Action::Shell(crate::ShellSpec::Cmd(cmd)) | Action::Shell(crate::ShellSpec::WithMods(cmd, _)) => {
+            Action::Shell(crate::ShellSpec::Cmd(cmd))
+            | Action::Shell(crate::ShellSpec::WithMods(cmd, _)) => {
                 Ok(Action::Shell(crate::ShellSpec::WithMods(
                     cmd,
                     crate::ShellModifiers {
@@ -330,7 +370,8 @@ fn register_action_fluent(engine: &mut Engine) {
         },
     );
     engine.register_fn("silent", |ctx: NativeCallContext, a: Action| match a {
-        Action::Shell(crate::ShellSpec::Cmd(cmd)) | Action::Shell(crate::ShellSpec::WithMods(cmd, _)) => {
+        Action::Shell(crate::ShellSpec::Cmd(cmd))
+        | Action::Shell(crate::ShellSpec::WithMods(cmd, _)) => {
             Ok(Action::Shell(crate::ShellSpec::WithMods(
                 cmd,
                 crate::ShellModifiers {
@@ -346,6 +387,7 @@ fn register_action_fluent(engine: &mut Engine) {
     });
 }
 
+/// Register the `handler(...)` factory.
 fn register_handler(engine: &mut Engine) {
     engine.register_type::<HandlerRef>();
     engine.register_fn("handler", |func: FnPtr| HandlerRef { func });
@@ -353,21 +395,29 @@ fn register_handler(engine: &mut Engine) {
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Binding-level style overrides accepted by the DSL.
 struct RawBindingStyle {
     #[serde(default)]
+    /// When true, hide the binding from the HUD.
     hidden: Option<bool>,
     #[serde(default)]
+    /// Override key foreground color.
     key_fg: Option<String>,
     #[serde(default)]
+    /// Override key background color.
     key_bg: Option<String>,
     #[serde(default)]
+    /// Override modifier foreground color.
     mod_fg: Option<String>,
     #[serde(default)]
+    /// Override modifier background color.
     mod_bg: Option<String>,
     #[serde(default)]
+    /// Override submenu tag color.
     tag_fg: Option<String>,
 }
 
+/// Apply a binding style overlay from a Rhai map.
 fn binding_style_overlay(
     ctx: &NativeCallContext,
     binding: &mut Binding,
@@ -375,7 +425,10 @@ fn binding_style_overlay(
 ) -> Result<(), Box<EvalAltResult>> {
     let dyn_map = Dynamic::from_map(map);
     let style: RawBindingStyle = from_dynamic(&dyn_map).map_err(|e| {
-        boxed_validation_error(format!("invalid binding style map: {}", e), ctx.call_position())
+        boxed_validation_error(
+            format!("invalid binding style map: {}", e),
+            ctx.call_position(),
+        )
     })?;
 
     if style.hidden.unwrap_or(false) {
@@ -418,6 +471,7 @@ fn binding_style_overlay(
     Ok(())
 }
 
+/// Register the `ModeBuilder` and `BindingRef` APIs (`bind`, `mode`, and modifiers).
 fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "bind",
@@ -494,7 +548,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 default_title: Some(desc.to_string()),
             };
             guard.bindings.push(Binding {
-                chord: chord.clone(),
+                chord,
                 desc: desc.to_string(),
                 kind: BindingKind::Mode(mode.clone()),
                 mode_id: Some(mode.id),
@@ -528,7 +582,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 default_title: Some(title.to_string()),
             };
             guard.bindings.push(Binding {
-                chord: chord.clone(),
+                chord,
                 desc: title.to_string(),
                 kind: BindingKind::Mode(mode.clone()),
                 mode_id: Some(mode.id),
@@ -553,8 +607,9 @@ fn register_mode_builder(engine: &mut Engine) {
         "style",
         |ctx: NativeCallContext, m: &mut ModeBuilder, map: Map| -> Result<(), Box<EvalAltResult>> {
             let dyn_map = Dynamic::from_map(map);
-            let style: raw::RawStyle = from_dynamic(&dyn_map)
-                .map_err(|e| boxed_validation_error(format!("invalid style map: {}", e), ctx.call_position()))?;
+            let style: raw::RawStyle = from_dynamic(&dyn_map).map_err(|e| {
+                boxed_validation_error(format!("invalid style map: {}", e), ctx.call_position())
+            })?;
             lock_unpoisoned(&m.state).style = Some(StyleOverlay {
                 func: None,
                 raw: Some(style),
@@ -804,9 +859,9 @@ fn register_mode_builder(engine: &mut Engine) {
             Ok(b)
         },
     );
-
 }
 
+/// Register `String.matches(regex)` used in render and handler contexts.
 fn register_string_matches(engine: &mut Engine) {
     engine.register_fn(
         "matches",
@@ -822,6 +877,7 @@ fn register_string_matches(engine: &mut Engine) {
     );
 }
 
+/// Register `ModeCtx` and `ActionCtx` types and methods.
 fn register_context_types(engine: &mut Engine) {
     engine.register_type::<ModeCtx>();
     engine.register_get("app", |ctx: &mut ModeCtx| ctx.app.clone());

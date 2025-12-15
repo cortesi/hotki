@@ -1,23 +1,22 @@
-use std::fmt;
-use std::mem;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    fmt, mem,
+    sync::{Arc, Mutex},
+};
 
 use mac_keycode::Chord;
 use rhai::{FnPtr, Position};
 
-use crate::{Action, NotifyKind};
+use super::util::lock_unpoisoned;
+use crate::{Action, NotifyKind, Style, raw::RawStyle};
 
 /// Unique identifier for a mode closure.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModeId(u64);
 
 impl ModeId {
+    /// Create a new `ModeId` from a stable identifier.
     pub(crate) fn new(id: u64) -> Self {
         Self(id)
-    }
-
-    pub(crate) fn get(self) -> u64 {
-        self.0
     }
 }
 
@@ -30,8 +29,11 @@ impl fmt::Debug for ModeId {
 /// Opaque wrapper around a Rhai mode closure.
 #[derive(Clone)]
 pub struct ModeRef {
+    /// Stable identifier for the mode closure (used for orphan detection).
     pub(crate) id: ModeId,
+    /// Rhai function pointer for invoking the mode closure.
     pub(crate) func: FnPtr,
+    /// Default title declared at mode creation time, if any.
     pub(crate) default_title: Option<String>,
 }
 
@@ -44,9 +46,20 @@ impl fmt::Debug for ModeRef {
     }
 }
 
+impl ModeRef {
+    pub fn id(&self) -> ModeId {
+        self.id
+    }
+
+    pub fn default_title(&self) -> Option<&str> {
+        self.default_title.as_deref()
+    }
+}
+
 /// Opaque wrapper around a Rhai handler closure.
 #[derive(Clone)]
 pub struct HandlerRef {
+    /// Rhai function pointer for invoking the handler closure.
     pub(crate) func: FnPtr,
 }
 
@@ -59,11 +72,11 @@ impl fmt::Debug for HandlerRef {
 /// Render-time context passed into mode closures.
 #[derive(Debug, Clone)]
 pub struct ModeCtx {
-    pub(crate) app: String,
-    pub(crate) title: String,
-    pub(crate) pid: i64,
-    pub(crate) hud: bool,
-    pub(crate) depth: i64,
+    pub app: String,
+    pub title: String,
+    pub pid: i64,
+    pub hud: bool,
+    pub depth: i64,
 }
 
 /// Effect emitted by handlers (and render warnings) for the engine to apply.
@@ -83,7 +96,10 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub enum NavRequest {
     /// Push a mode onto the stack.
-    Push { mode: ModeRef, title: Option<String> },
+    Push {
+        mode: ModeRef,
+        title: Option<String>,
+    },
     /// Pop the current mode.
     Pop,
     /// Clear to root and hide HUD.
@@ -97,26 +113,33 @@ pub enum NavRequest {
 /// Handler execution context passed into handler closures.
 #[derive(Debug, Clone)]
 pub struct ActionCtx {
+    /// Focused application name.
     pub(crate) app: String,
+    /// Focused window title.
     pub(crate) title: String,
+    /// Focused process id.
     pub(crate) pid: i64,
+    /// Current HUD visibility.
     pub(crate) hud: bool,
+    /// Current stack depth (root = 0).
     pub(crate) depth: i64,
+    /// Shared mutable handler output state.
     shared: Arc<Mutex<ActionCtxShared>>,
 }
 
 #[derive(Debug, Default)]
+/// Shared mutable state for an executing handler closure.
 struct ActionCtxShared {
+    /// Queued effects to apply after handler completion.
     effects: Vec<Effect>,
+    /// Optional navigation request to apply after handler completion.
     nav: Option<NavRequest>,
+    /// Whether the handler requested staying in the current mode.
     stay: bool,
 }
 
-fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 impl ActionCtx {
+    /// Create a new handler context for a given focused app/window state.
     pub(crate) fn new(app: String, title: String, pid: i64, hud: bool, depth: i64) -> Self {
         Self {
             app,
@@ -128,26 +151,32 @@ impl ActionCtx {
         }
     }
 
+    /// Push a new effect into the handler result queue.
     pub(crate) fn push_effect(&self, effect: Effect) {
         lock_unpoisoned(&self.shared).effects.push(effect);
     }
 
+    /// Set the navigation request, replacing any previously requested navigation.
     pub(crate) fn set_nav(&self, nav: NavRequest) {
         lock_unpoisoned(&self.shared).nav = Some(nav);
     }
 
+    /// Request that the engine stays in the current mode after executing the handler.
     pub(crate) fn set_stay(&self) {
         lock_unpoisoned(&self.shared).stay = true;
     }
 
+    /// Drain and return all queued effects.
     pub(crate) fn take_effects(&self) -> Vec<Effect> {
         mem::take(&mut lock_unpoisoned(&self.shared).effects)
     }
 
+    /// Take and clear the navigation request, if any.
     pub(crate) fn take_nav(&self) -> Option<NavRequest> {
         lock_unpoisoned(&self.shared).nav.take()
     }
 
+    /// Return whether the handler requested staying in the current mode.
     pub(crate) fn stay(&self) -> bool {
         lock_unpoisoned(&self.shared).stay
     }
@@ -156,24 +185,26 @@ impl ActionCtx {
 /// Software repeat configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepeatSpec {
-    pub(crate) delay_ms: Option<u64>,
-    pub(crate) interval_ms: Option<u64>,
+    pub delay_ms: Option<u64>,
+    pub interval_ms: Option<u64>,
 }
 
 /// Binding-level flags.
 #[derive(Debug, Clone, Default)]
 pub struct BindingFlags {
-    pub(crate) hidden: bool,
-    pub(crate) global: bool,
-    pub(crate) stay: bool,
-    pub(crate) repeat: Option<RepeatSpec>,
+    pub hidden: bool,
+    pub global: bool,
+    pub stay: bool,
+    pub repeat: Option<RepeatSpec>,
 }
 
 /// Opaque style overlay attached to modes and bindings.
 #[derive(Clone)]
 pub struct StyleOverlay {
+    /// Dynamic style closure, invoked with `(ctx)` to produce a map.
     pub(crate) func: Option<FnPtr>,
-    pub(crate) raw: Option<crate::raw::RawStyle>,
+    /// Static raw style overlay.
+    pub(crate) raw: Option<RawStyle>,
 }
 
 impl fmt::Debug for StyleOverlay {
@@ -199,52 +230,53 @@ pub enum BindingKind {
 /// A rendered binding entry.
 #[derive(Debug, Clone)]
 pub struct Binding {
-    pub(crate) chord: Chord,
-    pub(crate) desc: String,
-    pub(crate) kind: BindingKind,
-    pub(crate) mode_id: Option<ModeId>,
-    pub(crate) flags: BindingFlags,
-    pub(crate) style: Option<StyleOverlay>,
-    pub(crate) mode_style: Option<StyleOverlay>,
-    pub(crate) mode_capture: bool,
+    pub chord: Chord,
+    pub desc: String,
+    pub kind: BindingKind,
+    pub mode_id: Option<ModeId>,
+    pub flags: BindingFlags,
+    pub style: Option<StyleOverlay>,
+    pub mode_style: Option<StyleOverlay>,
+    pub mode_capture: bool,
+    /// Source position of the binding declaration for diagnostics.
     pub(crate) pos: Position,
 }
 
 /// A stack frame representing an active mode.
 #[derive(Debug, Clone)]
 pub struct ModeFrame {
-    pub(crate) title: String,
-    pub(crate) closure: ModeRef,
-    pub(crate) entered_via: Option<(Chord, ModeId)>,
-    pub(crate) rendered: Vec<Binding>,
-    pub(crate) style: Option<StyleOverlay>,
-    pub(crate) capture: bool,
+    pub title: String,
+    pub closure: ModeRef,
+    pub entered_via: Option<(Chord, ModeId)>,
+    pub rendered: Vec<Binding>,
+    pub style: Option<StyleOverlay>,
+    pub capture: bool,
 }
 
 /// One HUD row entry produced by rendering.
 #[derive(Debug, Clone)]
 pub struct HudRow {
-    pub(crate) chord: Chord,
-    pub(crate) desc: String,
-    pub(crate) is_mode: bool,
-    pub(crate) style: Option<HudRowStyle>,
+    pub chord: Chord,
+    pub desc: String,
+    pub is_mode: bool,
+    pub style: Option<HudRowStyle>,
 }
 
 /// Optional per-binding HUD style overrides after resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HudRowStyle {
-    pub(crate) key_fg: (u8, u8, u8),
-    pub(crate) key_bg: (u8, u8, u8),
-    pub(crate) mod_fg: (u8, u8, u8),
-    pub(crate) mod_bg: (u8, u8, u8),
-    pub(crate) tag_fg: (u8, u8, u8),
+    pub key_fg: (u8, u8, u8),
+    pub key_bg: (u8, u8, u8),
+    pub mod_fg: (u8, u8, u8),
+    pub mod_bg: (u8, u8, u8),
+    pub tag_fg: (u8, u8, u8),
 }
 
 /// Render output for the current runtime state.
 #[derive(Debug, Clone)]
 pub struct RenderedState {
-    pub(crate) bindings: Vec<(Chord, Binding)>,
-    pub(crate) hud_rows: Vec<HudRow>,
-    pub(crate) style: crate::Style,
-    pub(crate) capture: bool,
+    pub bindings: Vec<(Chord, Binding)>,
+    pub hud_rows: Vec<HudRow>,
+    pub style: Style,
+    pub capture: bool,
 }
