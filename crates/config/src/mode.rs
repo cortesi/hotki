@@ -144,6 +144,10 @@ pub enum Action {
     ThemeSet(String),
     /// Show the HUD with root-level key bindings
     ShowHudRoot,
+    /// Clear to root and show HUD.
+    ShowRoot,
+    /// Hide the HUD without changing the mode stack.
+    HideHud,
     /// Set the system volume to an absolute value (0-100)
     SetVolume(u8),
     /// Change the system volume by a relative amount (-100 to +100)
