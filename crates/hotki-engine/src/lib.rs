@@ -493,6 +493,18 @@ impl Engine {
         self.rebind_current_context().await
     }
 
+    /// Set the active theme by name and re-render the stack.
+    pub async fn set_theme(&self, name: &str) -> Result<()> {
+        if !config::themes::theme_exists(name) {
+            return Err(Error::Msg(format!("Unknown theme: {}", name)));
+        }
+        {
+            let mut rt = self.runtime.lock().await;
+            rt.theme_index = theme_index_for_name(name);
+        }
+        self.rebind_current_context().await
+    }
+
     // (No legacy focus snapshot hook; engine relies solely on world.)
 
     /// Get the current depth (0 = root) if state is initialized.

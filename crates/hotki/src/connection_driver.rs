@@ -5,9 +5,8 @@ use std::{
     process::{self},
 };
 
-use config::themes;
 use egui::Context;
-use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat, rpc::InjectKind};
+use hotki_protocol::{NotifyKind, Toggle, WorldStreamMsg, ipc::heartbeat, rpc::InjectKind};
 use hotki_server::{
     Client,
     smoketest_bridge::{
@@ -15,7 +14,6 @@ use hotki_server::{
         drain_bridge_events, handshake_response,
     },
 };
-use mac_keycode::Chord;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
@@ -27,22 +25,8 @@ use crate::{
     control::{ControlMsg, TestCommand},
     logs,
     permissions::check_permissions,
-    settings::{apply_ui_config, reload_and_broadcast},
     smoketest_bridge::init_test_bridge,
 };
-
-/// Actions that adjust UI overrides on the current cursor (theme and user style).
-#[derive(Debug, Clone)]
-enum UiOverride {
-    /// Cycle to the next theme in order.
-    ThemeNext,
-    /// Cycle to the previous theme in order.
-    ThemePrev,
-    /// Set the theme override to an explicit name.
-    ThemeSet(String),
-    /// Enable, disable, or toggle the user-style UI override.
-    UserStyle(config::Toggle),
-}
 
 /// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
 pub struct ConnectionDriver {
@@ -58,11 +42,6 @@ pub struct ConnectionDriver {
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
     /// Sender for control messages back into the runtime.
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
-
-    /// Last loaded UI configuration.
-    ui_config: config::Config,
-    /// Current focus and UI override cursor.
-    current_cursor: config::Cursor,
     /// Whether to log periodic world snapshots.
     dumpworld: bool,
     /// Pending smoketest bridge socket to initialize after connect.
@@ -107,7 +86,6 @@ impl ConnectionDriver {
         tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
         dumpworld: bool,
     ) -> Self {
-        let ui_config = config::Config::default();
         let server_socket = hotki_server::socket_path_for_pid(process::id());
         let test_bridge_path = Some(PathBuf::from(control_socket_path(&server_socket)));
         let (bridge_events, _rx) = broadcast::channel(128);
@@ -119,8 +97,6 @@ impl ConnectionDriver {
             egui_ctx,
             rx_ctrl,
             tx_ctrl_runtime,
-            ui_config,
-            current_cursor: config::Cursor::default(),
             dumpworld,
             test_bridge_path,
             bridge_events,
@@ -186,18 +162,11 @@ impl ConnectionDriver {
                 true
             }
             ControlMsg::Reload => {
-                reload_and_broadcast(
-                    conn,
-                    &mut self.ui_config,
-                    &self.config_path,
-                    &self.tx_keys,
-                    &self.egui_ctx,
-                )
-                .await;
+                self.reload_config(conn).await;
                 false
             }
             ControlMsg::SwitchTheme(name) => {
-                self.apply_ui_override(UiOverride::ThemeSet(name));
+                self.switch_theme(conn, &name).await;
                 false
             }
             ControlMsg::Test(cmd) => {
@@ -266,68 +235,32 @@ impl ConnectionDriver {
         self.egui_ctx.request_repaint();
     }
 
-    /// Push an updated cursor to the UI and request repaint.
-    fn push_cursor_update(&self, context: &str) {
-        if self
-            .tx_keys
-            .send(AppEvent::UpdateCursor(self.current_cursor.clone()))
-            .is_err()
+    /// Reload the current config path on the server and notify the UI.
+    async fn reload_config(&mut self, conn: &mut hotki_server::Connection) {
+        match conn
+            .set_config_path(self.config_path.to_string_lossy().as_ref())
+            .await
         {
-            tracing::warn!("failed to send UpdateCursor ({})", context);
+            Ok(_ignored) => {
+                self.notify(NotifyKind::Success, "Config", "Reloaded successfully");
+                self.tx_keys
+                    .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                    .ok();
+            }
+            Err(e) => {
+                self.notify(NotifyKind::Error, "Config", &e.to_string());
+            }
         }
         self.egui_ctx.request_repaint();
     }
 
-    /// Apply a theme/user-style override to the current cursor.
-    fn apply_ui_override(&mut self, action: UiOverride) {
-        let mut update_reason: Option<&str> = None;
-        match action {
-            UiOverride::ThemeNext => {
-                let cur = self
-                    .current_cursor
-                    .override_theme
-                    .as_deref()
-                    .unwrap_or("default");
-                let next = themes::get_next_theme(cur);
-                self.current_cursor.set_theme(Some(next));
-                update_reason = Some("next theme");
-            }
-            UiOverride::ThemePrev => {
-                let cur = self
-                    .current_cursor
-                    .override_theme
-                    .as_deref()
-                    .unwrap_or("default");
-                let prev = themes::get_prev_theme(cur);
-                self.current_cursor.set_theme(Some(prev));
-                update_reason = Some("prev theme");
-            }
-            UiOverride::ThemeSet(name) => {
-                if themes::theme_exists(&name) {
-                    self.current_cursor.set_theme(Some(&name));
-                    update_reason = Some("set theme");
-                } else {
-                    self.notify(NotifyKind::Error, "Theme", "Theme not found");
-                }
-            }
-            UiOverride::UserStyle(tg) => {
-                match tg {
-                    config::Toggle::On => self.current_cursor.set_user_style_enabled(true),
-                    config::Toggle::Off => self.current_cursor.set_user_style_enabled(false),
-                    config::Toggle::Toggle => {
-                        let currently_enabled = !self.current_cursor.user_ui_disabled;
-                        self.current_cursor
-                            .set_user_style_enabled(!currently_enabled);
-                    }
-                }
-                update_reason = Some("user style toggle");
-            }
+    /// Switch the server-side theme by name and request an updated HUD/style.
+    async fn switch_theme(&mut self, conn: &mut hotki_server::Connection, name: &str) {
+        match conn.set_theme(name).await {
+            Ok(()) => {}
+            Err(e) => self.notify(NotifyKind::Error, "Theme", &e.to_string()),
         }
-
-        if let Some(reason) = update_reason {
-            debug!(%reason, "apply_ui_override");
-            self.push_cursor_update(reason);
-        }
+        self.egui_ctx.request_repaint();
     }
 
     /// Handle a smoketest bridge request against the live server.
@@ -342,10 +275,11 @@ impl ConnectionDriver {
                 Err(err) => BridgeResponse::Err { message: err },
             },
             BridgeRequest::SetConfig { path } => match conn.set_config_path(&path).await {
-                Ok(new_cfg) => {
-                    self.config_path = PathBuf::from(path);
-                    self.ui_config = new_cfg.clone();
-                    apply_ui_config(&new_cfg, &self.tx_keys, &self.egui_ctx).await;
+                Ok(_ignored) => {
+                    self.config_path = PathBuf::from(&path);
+                    self.tx_keys
+                        .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                        .ok();
                     BridgeResponse::Ok
                 }
                 Err(err) => BridgeResponse::Err {
@@ -406,31 +340,15 @@ impl ConnectionDriver {
     ) {
         match msg {
             hotki_protocol::MsgToUI::HudUpdate { hud, displays } => {
-                let visible_keys: Vec<(Chord, String, bool)> = hud
-                    .rows
-                    .iter()
-                    .map(|row| (row.chord.clone(), row.desc.clone(), row.is_mode))
-                    .collect();
-                let depth = hud.depth;
-                let parent_title = hud.breadcrumbs.last().cloned();
-
-                let mut cursor = self.current_cursor.clone();
-                cursor.viewing_root = hud.visible;
-                cursor.clear();
-                self.current_cursor = cursor.clone();
-
                 if self
                     .tx_keys
-                    .send(AppEvent::KeyUpdate {
-                        visible_keys,
-                        depth,
-                        cursor,
-                        parent_title,
+                    .send(AppEvent::HudUpdate {
+                        hud: hud.clone(),
                         displays: displays.clone(),
                     })
                     .is_err()
                 {
-                    tracing::warn!("failed to send KeyUpdate");
+                    tracing::warn!("failed to send HudUpdate");
                 }
                 self.egui_ctx.request_repaint();
                 self.emit_bridge_event(BridgeEvent::Hud { hud, displays });
@@ -442,21 +360,11 @@ impl ConnectionDriver {
                 self.tx_ctrl_runtime.send(ControlMsg::Reload).ok();
                 self.egui_ctx.request_repaint();
             }
-            hotki_protocol::MsgToUI::ConfigLoaded { path, config } => {
-                match rmp_serde::from_slice::<config::Config>(&config) {
-                    Ok(cfg) => {
-                        self.config_path = PathBuf::from(path);
-                        self.ui_config = cfg.clone();
-                        apply_ui_config(&cfg, &self.tx_keys, &self.egui_ctx).await;
-                    }
-                    Err(err) => {
-                        self.notify(
-                            NotifyKind::Error,
-                            "Config",
-                            &format!("Failed to decode ConfigLoaded payload: {}", err),
-                        );
-                    }
-                }
+            hotki_protocol::MsgToUI::ConfigLoaded { path, config: _ } => {
+                self.config_path = PathBuf::from(path);
+                self.tx_keys
+                    .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                    .ok();
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
@@ -466,30 +374,22 @@ impl ConnectionDriver {
             }
             hotki_protocol::MsgToUI::ShowDetails(arg) => {
                 match arg {
-                    config::Toggle::On => {
+                    Toggle::On => {
                         self.tx_keys.send(AppEvent::ShowDetails).ok();
                     }
-                    config::Toggle::Off => {
+                    Toggle::Off => {
                         self.tx_keys.send(AppEvent::HideDetails).ok();
                     }
-                    config::Toggle::Toggle => {
+                    Toggle::Toggle => {
                         self.tx_keys.send(AppEvent::ToggleDetails).ok();
                     }
                 }
                 self.egui_ctx.request_repaint();
             }
-            hotki_protocol::MsgToUI::ThemeNext => {
-                self.apply_ui_override(UiOverride::ThemeNext);
-            }
-            hotki_protocol::MsgToUI::ThemePrev => {
-                self.apply_ui_override(UiOverride::ThemePrev);
-            }
-            hotki_protocol::MsgToUI::ThemeSet(name) => {
-                self.apply_ui_override(UiOverride::ThemeSet(name));
-            }
-            hotki_protocol::MsgToUI::UserStyle(arg) => {
-                self.apply_ui_override(UiOverride::UserStyle(arg));
-            }
+            hotki_protocol::MsgToUI::ThemeNext
+            | hotki_protocol::MsgToUI::ThemePrev
+            | hotki_protocol::MsgToUI::ThemeSet(_)
+            | hotki_protocol::MsgToUI::UserStyle(_) => {}
             hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
             hotki_protocol::MsgToUI::Log {
                 level,
@@ -553,19 +453,21 @@ impl ConnectionDriver {
                 return None;
             }
         };
-        let loaded_cfg = match conn
+        match conn
             .set_config_path(self.config_path.to_string_lossy().as_ref())
             .await
         {
-            Ok(cfg) => cfg,
+            Ok(_ignored) => {}
             Err(e) => {
                 error!("Failed to set config path on server: {}", e);
                 return None;
             }
         };
-        self.ui_config = loaded_cfg;
-        apply_ui_config(&self.ui_config, &self.tx_keys, &self.egui_ctx).await;
-        debug!("Config path sent to server engine; UI updated");
+        self.tx_keys
+            .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+            .ok();
+        self.egui_ctx.request_repaint();
+        debug!("Config path sent to server engine");
 
         self.ensure_test_bridge().await;
 

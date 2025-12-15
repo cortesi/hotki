@@ -1,12 +1,11 @@
 //! Transient in-app notifications with stacking, animation, and theming.
 use std::time::{Duration, Instant};
 
-use config::{Notify, NotifyPos, NotifyTheme};
 use egui::{
     Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2,
     text::LayoutJob,
 };
-use hotki_protocol::NotifyKind;
+use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
 use crate::{display::DisplayMetrics, fonts, nswindow};
 
@@ -80,7 +79,7 @@ pub struct NotificationCenter {
 
 impl NotificationCenter {
     /// Initialize a new notification center with defaults from `cfg`.
-    pub fn new(cfg: &Notify) -> Self {
+    pub fn new(cfg: &NotifyConfig) -> Self {
         Self {
             items: Vec::new(),
             backlog: Vec::new(),
@@ -90,7 +89,7 @@ impl NotificationCenter {
             opacity: cfg.opacity,
             timeout: Duration::from_secs_f32(cfg.timeout.max(0.1)),
             counter: 0,
-            theme: cfg.theme(),
+            theme: cfg.theme.clone(),
             radius: cfg.radius,
             display: DisplayMetrics::default(),
         }
@@ -121,7 +120,7 @@ impl NotificationCenter {
         title: &str,
         icon: Option<&String>,
         title_size: f32,
-        title_weight: config::FontWeight,
+        title_weight: FontWeight,
         title_fg: Color32,
     ) {
         let title_fmt = egui::TextFormat {
@@ -430,13 +429,13 @@ impl NotificationCenter {
 
     /// Update sizing/placement/opacity config without clearing existing notifications.
     /// Trims the stack if the new buffer is smaller than the current number of items.
-    pub fn reconfigure(&mut self, cfg: &config::Notify) {
+    pub fn reconfigure(&mut self, cfg: &NotifyConfig) {
         self.max_items = cfg.buffer;
         self.width = cfg.width;
         self.side = cfg.pos;
         self.opacity = cfg.opacity;
         self.timeout = Duration::from_secs_f32(cfg.timeout.max(0.1));
-        self.theme = cfg.theme();
+        self.theme = cfg.theme.clone();
         self.radius = cfg.radius;
         // Trim backlog to the new buffer size if necessary
         if self.backlog.len() > self.max_items {

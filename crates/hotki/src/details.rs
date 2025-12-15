@@ -1,12 +1,11 @@
 use std::{fs, path::PathBuf};
 
-use config::NotifyTheme;
 use egui::{
     CentralPanel, Color32, Context, Layout, RichText, ScrollArea, ViewportBuilder, ViewportCommand,
     ViewportId, vec2,
 };
 use egui_extras::{Column, TableBuilder};
-use hotki_protocol::NotifyKind;
+use hotki_protocol::{NotifyKind, NotifyTheme};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{

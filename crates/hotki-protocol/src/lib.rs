@@ -149,6 +149,38 @@ impl NotifyTheme {
     }
 }
 
+impl Default for NotifyTheme {
+    fn default() -> Self {
+        let mk = |bg, title_fg, body_fg, icon: Option<&str>| NotifyWindowStyle {
+            bg,
+            title_fg,
+            body_fg,
+            title_font_size: 14.0,
+            title_font_weight: FontWeight::Bold,
+            body_font_size: 12.0,
+            body_font_weight: FontWeight::Regular,
+            icon: icon.map(|s| s.to_string()),
+        };
+        Self {
+            info: mk((34, 34, 34), (255, 255, 255), (255, 255, 255), Some("ℹ")),
+            warn: mk((68, 42, 0), (255, 193, 0), (255, 193, 0), Some("⚠")),
+            // Nerdfont nf-cod-error
+            error: mk(
+                (58, 0, 0),
+                (255, 102, 102),
+                (255, 102, 102),
+                Some("\u{ea87}"),
+            ),
+            success: mk(
+                (12, 45, 12),
+                (139, 255, 139),
+                (139, 255, 139),
+                Some("\u{f05d}"),
+            ),
+        }
+    }
+}
+
 /// Fully resolved notification configuration (layout + per-kind styling).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +199,20 @@ pub struct NotifyConfig {
     pub radius: f32,
     /// Resolved per-kind styling.
     pub theme: NotifyTheme,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            width: 420.0,
+            pos: NotifyPos::Right,
+            opacity: 0.95,
+            timeout: 4.0,
+            buffer: 200,
+            radius: 12.0,
+            theme: NotifyTheme::default(),
+        }
+    }
 }
 
 /// HUD style configuration with parsed colors and typography settings.
@@ -221,9 +267,41 @@ pub struct HudStyle {
     pub tag_submenu: String,
 }
 
+impl Default for HudStyle {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Hud,
+            pos: Pos::Center,
+            offset: Offset { x: 0.0, y: 0.0 },
+            font_size: 14.0,
+            title_font_weight: FontWeight::Regular,
+            key_font_size: 19.0,
+            key_font_weight: FontWeight::Bold,
+            tag_font_size: 20.0,
+            tag_font_weight: FontWeight::Regular,
+            title_fg: (208, 208, 208),
+            bg: (16, 16, 16),
+            key_fg: (208, 208, 208),
+            key_bg: (44, 52, 113),
+            mod_fg: (255, 255, 255),
+            mod_font_weight: FontWeight::Regular,
+            mod_bg: (67, 65, 77),
+            tag_fg: (55, 79, 138),
+            opacity: 1.0,
+            key_radius: 4.0,
+            key_pad_x: 6.0,
+            key_pad_y: 2.0,
+            radius: 8.0,
+            // SF Symbols codepoint used by default config themes.
+            tag_submenu: "\u{f035f}".to_string(),
+        }
+    }
+}
+
 /// Effective UI style state computed on the server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct Style {
     /// HUD style settings.
     pub hud: HudStyle,

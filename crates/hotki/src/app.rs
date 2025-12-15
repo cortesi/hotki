@@ -1,9 +1,9 @@
 //! App-level state and event handling for the Hotki UI.
-use config::Config;
+use std::path::PathBuf;
+
 use eframe::{App, Frame};
 use egui::Context;
-use hotki_protocol::{DisplaysSnapshot, NotifyKind};
-use mac_keycode::Chord;
+use hotki_protocol::{DisplaysSnapshot, HudState, NotifyKind};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
@@ -16,22 +16,18 @@ use crate::{
 pub enum AppEvent {
     /// Request a graceful shutdown of all UI and background tasks.
     Shutdown,
+    /// Update the config path displayed in Details.
+    SetConfigPath(Option<PathBuf>),
     /// Show the Details window.
     ShowDetails,
     /// Hide the Details window.
     HideDetails,
     /// Show the permissions helper window.
     ShowPermissionsHelp,
-    /// Update visible key hints and associated context for the HUD.
-    KeyUpdate {
-        /// Keys to render: (chord, description, is_mode).
-        visible_keys: Vec<(Chord, String, bool)>,
-        /// Depth of the current mode stack.
-        depth: usize,
-        /// Current UI location and styling context.
-        cursor: config::Cursor,
-        /// Optional parent application title for mini-HUD.
-        parent_title: Option<String>,
+    /// Replace HUD state from the server.
+    HudUpdate {
+        /// Fully rendered HUD snapshot.
+        hud: Box<HudState>,
         /// Display geometry snapshot for HUD/notification placement.
         displays: DisplaysSnapshot,
     },
@@ -48,11 +44,6 @@ pub enum AppEvent {
     ClearNotifications,
     /// Toggle the Details window.
     ToggleDetails,
-    /// Replace UI configuration live.
-    ReloadUI(Box<Config>),
-    /// Update the current UI Location (used for theme/user-style flags now stored on Location)
-    /// Update the current UI location (cursor) for theme/style decisions.
-    UpdateCursor(config::Cursor),
 }
 
 /// Top-level UI application state and channels.
@@ -69,10 +60,6 @@ pub struct HotkiApp {
     pub(crate) details: Details,
     /// Permissions helper window state.
     pub(crate) permissions: PermissionsHelp,
-    /// Active configuration snapshot.
-    pub(crate) config: config::Config,
-    /// Last known cursor/location info.
-    pub(crate) last_cursor: config::Cursor,
     /// True when a graceful shutdown is in progress; allows window close.
     pub(crate) shutdown_in_progress: bool,
     /// Cached display metrics for HUD/notification placement.
@@ -99,8 +86,6 @@ impl App for HotkiApp {
                 AppEvent::Shutdown => {
                     self.shutdown_in_progress = true;
                     // Hide all viewports and remove tray icon to allow a graceful exit
-                    let (keys, _visible, parent_title) = self.hud.get_state();
-                    // Ensure HUD viewport is hidden and stop rendering
                     self.hud.hide(ctx);
                     // Clear notifications and hide their windows
                     self.notifications.clear_all(ctx);
@@ -109,11 +94,12 @@ impl App for HotkiApp {
                     self.permissions.hide();
                     // Drop tray icon
                     self._tray = None;
-                    // Preserve last cursor and config, but request a repaint to flush hides
-                    // Optionally keep keys invisible
-                    self.hud.set_keys(keys, false, parent_title);
                     // Ask the native window to close; runtime has a fallback timer.
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                }
+                AppEvent::SetConfigPath(path) => {
+                    self.details.set_config_path(path);
                     ctx.request_repaint();
                 }
                 AppEvent::ShowDetails => {
@@ -128,24 +114,18 @@ impl App for HotkiApp {
                     self.permissions.show();
                     ctx.request_repaint();
                 }
-                AppEvent::KeyUpdate {
-                    visible_keys,
-                    depth,
-                    cursor,
-                    parent_title,
-                    displays,
-                } => {
+                AppEvent::HudUpdate { hud, displays } => {
                     self.display_metrics = DisplayMetrics::from_snapshot(&displays);
-                    self.apply_effective_theme(
-                        &cursor,
-                        KeysState::FromUpdate {
-                            keys: visible_keys,
-                            depth,
-                            parent_title,
-                        },
-                    );
-                    // Remember cursor so theme switches reapply immediately
-                    self.last_cursor = cursor;
+                    self.sync_display_metrics();
+
+                    self.hud.set_style(hud.style.hud.clone());
+                    self.hud
+                        .set_state(hud.rows.clone(), hud.visible, hud.breadcrumbs.clone());
+
+                    self.notifications.reconfigure(&hud.style.notify);
+                    self.details.update_theme(hud.style.notify.theme.clone());
+
+                    ctx.request_repaint();
                 }
                 AppEvent::Notify { kind, title, text } => {
                     self.notifications.push(kind, title, text);
@@ -159,19 +139,6 @@ impl App for HotkiApp {
                     self.details.toggle();
                     ctx.request_repaint();
                 }
-                AppEvent::ReloadUI(cfg) => {
-                    // Replace config and reapply theme at last known cursor while preserving HUD keys
-                    self.config = *cfg;
-                    let cur = self.last_cursor.clone();
-                    self.apply_effective_theme(&cur, KeysState::PreserveCurrent);
-                    self.details.reload_config_contents();
-                }
-                AppEvent::UpdateCursor(loc) => {
-                    // Preserve HUD state, then update theme/notify based on new location
-                    self.last_cursor = loc;
-                    let cur = self.last_cursor.clone();
-                    self.apply_effective_theme(&cur, KeysState::PreserveCurrent);
-                }
             }
         }
 
@@ -183,21 +150,6 @@ impl App for HotkiApp {
     }
 }
 
-/// How to obtain the next HUD key state this frame.
-enum KeysState {
-    /// Use a freshly received update.
-    FromUpdate {
-        /// New keys to display: (chord, description, is_mode).
-        keys: Vec<(Chord, String, bool)>,
-        /// Updated mode stack depth.
-        depth: usize,
-        /// Optional parent title for mini-HUD.
-        parent_title: Option<String>,
-    },
-    /// Keep the current keys as-is.
-    PreserveCurrent,
-}
-
 impl HotkiApp {
     /// Propagate the cached display metrics to HUD, notifications, and details.
     fn sync_display_metrics(&mut self) {
@@ -205,38 +157,5 @@ impl HotkiApp {
         self.hud.set_display_metrics(metrics.clone());
         self.notifications.set_display_metrics(metrics.clone());
         self.details.set_display_metrics(metrics);
-    }
-
-    /// Compute and apply the effective UI theme (HUD + notifications + details) for a cursor.
-    /// When `keys_state` is `Some`, it sets those keys/visibility/parent title on the HUD;
-    /// when `None`, it preserves existing HUD keys state.
-    fn apply_effective_theme(&mut self, cursor: &config::Cursor, keys_state: KeysState) {
-        let hud_theme = self.config.hud(cursor);
-        let notify_cfg = self.config.notify_config(cursor);
-        // Preserve prior keys/visibility before replacing HUD
-        let (cur_keys, cur_visible, cur_parent_title) = self.hud.get_state();
-        // Recreate HUD with new theme
-        self.hud = Hud::new(&hud_theme);
-        self.sync_display_metrics();
-        match keys_state {
-            KeysState::FromUpdate {
-                keys,
-                depth,
-                parent_title,
-            } => {
-                // Derive visibility from depth and parent title for Mini/Hud modes
-                let visible = match hud_theme.mode {
-                    config::Mode::Hide => false,
-                    config::Mode::Hud => self.config.hud_visible(cursor),
-                    config::Mode::Mini => depth > 0 && parent_title.as_ref().is_some(),
-                };
-                self.hud.set_keys(keys, visible, parent_title);
-            }
-            KeysState::PreserveCurrent => {
-                self.hud.set_keys(cur_keys, cur_visible, cur_parent_title);
-            }
-        }
-        self.notifications.reconfigure(&notify_cfg);
-        self.details.update_theme(notify_cfg.theme());
     }
 }

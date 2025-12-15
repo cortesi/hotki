@@ -36,13 +36,11 @@ mod nswindow;
 mod permissions;
 /// Background UI runtime glue (server connection + event loop).
 mod runtime;
-/// Config reload and apply helpers for the UI.
-mod settings;
 /// UI-side smoketest bridge listener and queue.
 mod smoketest_bridge;
 mod tray;
 
-use config::{Config, load_from_path, resolve_config_path};
+use config::{load_dynamic_config, resolve_config_path};
 
 use crate::{
     app::{AppEvent, HotkiApp},
@@ -138,13 +136,14 @@ fn main() -> eframe::Result<()> {
                 process::exit(1);
             }
         };
-        match load_from_path(&resolved) {
+        match load_dynamic_config(&resolved) {
             Ok(cfg) => {
                 if *dump {
-                    match serde_json::to_string_pretty(&cfg) {
+                    let style = cfg.base_style(None, true);
+                    match serde_json::to_string_pretty(&style) {
                         Ok(json) => println!("{json}"),
                         Err(e) => {
-                            eprintln!("Failed to serialize config: {e}");
+                            eprintln!("Failed to serialize style: {e}");
                             process::exit(1);
                         }
                     }
@@ -190,7 +189,7 @@ fn main() -> eframe::Result<()> {
             }
         }
     };
-    let app_cfg = Config::default();
+    let initial_style = hotki_protocol::Style::default();
 
     let options: NativeOptions = NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -227,12 +226,9 @@ fn main() -> eframe::Result<()> {
 
             let tray_icon = tray::build_tray_and_listeners(&tx, &tx_ctrl, &cc.egui_ctx);
 
-            let root_cursor = config::Cursor::default();
-            let n = app_cfg.notify_config(&root_cursor);
-            let theme = n.theme();
-            let mut notifications = NotificationCenter::new(&n);
+            let mut notifications = NotificationCenter::new(&initial_style.notify);
 
-            let mut details = Details::new(theme);
+            let mut details = Details::new(initial_style.notify.theme.clone());
             details.set_config_path(Some(config_path.clone()));
             details.set_control_sender(tx_ctrl.clone());
 
@@ -240,7 +236,7 @@ fn main() -> eframe::Result<()> {
             permissions.set_control_sender(tx_ctrl.clone());
 
             let metrics = DisplayMetrics::default();
-            let mut hud = Hud::new(&app_cfg.hud(&root_cursor));
+            let mut hud = Hud::new(&initial_style.hud);
             hud.set_display_metrics(metrics.clone());
             notifications.set_display_metrics(metrics.clone());
             details.set_display_metrics(metrics.clone());
@@ -252,8 +248,6 @@ fn main() -> eframe::Result<()> {
                 notifications,
                 details,
                 permissions,
-                config: app_cfg,
-                last_cursor: root_cursor,
                 shutdown_in_progress: false,
                 display_metrics: metrics,
             }))

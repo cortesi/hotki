@@ -68,7 +68,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-use config::FontWeight;
+use hotki_protocol::FontWeight;
 
 /// Choose an `egui::FontFamily` name for a configuration weight.
 pub fn weight_family(w: FontWeight) -> egui::FontFamily {

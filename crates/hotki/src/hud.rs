@@ -1,9 +1,9 @@
 //! Heads-up display (HUD) rendering for key hints.
-use config::{Mode, Pos};
 use egui::{
     CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, pos2, vec2,
 };
+use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode, Pos};
 use mac_keycode::{Chord, Modifier};
 
 use crate::{
@@ -34,14 +34,14 @@ const HUD_TAG_GAP: f32 = 8.0;
 pub struct Hud {
     /// Whether the HUD is currently shown.
     visible: bool,
-    /// Full HUD configuration copied from config.
-    cfg: config::Hud,
+    /// Full HUD configuration copied from the server-provided style.
+    cfg: HudStyle,
     /// Stable viewport identifier for the HUD window.
     id: ViewportId,
-    /// Keys to display as `(chord, description, is_mode)` triplets.
-    keys: Vec<(Chord, String, bool)>,
-    /// Optional parent window title used for placement.
-    parent_title: Option<String>,
+    /// Rows to display.
+    rows: Vec<HudRow>,
+    /// Breadcrumb titles for the current mode stack.
+    breadcrumbs: Vec<String>,
     /// Last computed position (for smooth movement).
     last_pos: Option<Pos2>,
     /// Last applied opacity.
@@ -54,17 +54,27 @@ pub struct Hud {
 
 impl Hud {
     /// Create a new HUD instance from configuration.
-    pub fn new(cfg: &config::Hud) -> Self {
+    pub fn new(cfg: &HudStyle) -> Self {
         Self {
             visible: false,
             cfg: cfg.clone(),
             id: ViewportId::from_hash_of("hotki_hud"),
-            keys: Vec::new(),
-            parent_title: None,
+            rows: Vec::new(),
+            breadcrumbs: Vec::new(),
             last_pos: None,
             last_opacity: None,
             last_size: None,
             display: DisplayMetrics::default(),
+        }
+    }
+
+    /// Update the HUD style in-place and clear cached placement when it changes.
+    pub fn set_style(&mut self, cfg: HudStyle) {
+        if self.cfg != cfg {
+            self.cfg = cfg;
+            self.last_pos = None;
+            self.last_opacity = None;
+            self.last_size = None;
         }
     }
 
@@ -99,8 +109,8 @@ impl Hud {
         tokens
     }
 
-    /// Render rounded key token boxes for a chord.
-    fn render_key_tokens(&self, ui: &mut egui::Ui, chord: &Chord) {
+    /// Render rounded key token boxes for a chord, applying optional per-row style overrides.
+    fn render_key_tokens(&self, ui: &mut egui::Ui, chord: &Chord, row_style: Option<&HudRowStyle>) {
         let tokens = self.tokens_for_chord(chord);
         let rounding = egui::CornerRadius::same(self.cfg.key_radius as u8);
         let visuals = ui.visuals().clone();
@@ -114,9 +124,13 @@ impl Hud {
                 ui.add_space(KEY_PLUS_GAP);
             }
             let (fg, bg) = if *is_mod {
-                (self.cfg.mod_fg, self.cfg.mod_bg)
+                row_style
+                    .map(|s| (s.mod_fg, s.mod_bg))
+                    .unwrap_or((self.cfg.mod_fg, self.cfg.mod_bg))
             } else {
-                (self.cfg.key_fg, self.cfg.key_bg)
+                row_style
+                    .map(|s| (s.key_fg, s.key_bg))
+                    .unwrap_or((self.cfg.key_fg, self.cfg.key_bg))
             };
             let fill = Color32::from_rgb(bg.0, bg.1, bg.2);
             let stroke = visuals.widgets.inactive.bg_stroke;
@@ -151,8 +165,8 @@ impl Hud {
     fn render_full_hud_rows(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, avail: Vec2) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = KEY_ROW_GAP;
-            for (k, d, is_mode) in &self.keys {
-                self.render_key_row(ui, hud_ctx, avail, k, d, *is_mode);
+            for row in &self.rows {
+                self.render_key_row(ui, hud_ctx, avail, row);
             }
         });
     }
@@ -163,19 +177,17 @@ impl Hud {
         ui: &mut egui::Ui,
         hud_ctx: &egui::Context,
         avail: Vec2,
-        key: &Chord,
-        desc: &str,
-        is_mode: bool,
+        row: &HudRow,
     ) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            self.render_key_tokens(ui, key);
+            self.render_key_tokens(ui, &row.chord, row.style.as_ref());
             ui.add_space(KEY_DESC_GAP);
-            ui.label(desc);
-            if is_mode {
-                let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, key);
+            ui.label(&row.desc);
+            if row.is_mode {
+                let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, &row.chord);
                 let desc_w = hud_ctx.fonts(|f| {
-                    f.layout_no_wrap(desc.to_string(), self.title_font_id(), Color32::WHITE)
+                    f.layout_no_wrap(row.desc.clone(), self.title_font_id(), Color32::WHITE)
                         .size()
                         .x
                 });
@@ -199,7 +211,7 @@ impl Hud {
                 let prev_font = ui.style().override_font_id.clone();
                 ui.style_mut().override_font_id = Some(self.tag_font_id());
                 let prev_color = ui.style().visuals.override_text_color;
-                let (tag_r, tag_g, tag_b) = self.cfg.tag_fg;
+                let (tag_r, tag_g, tag_b) = row.style.map(|s| s.tag_fg).unwrap_or(self.cfg.tag_fg);
                 ui.style_mut().visuals.override_text_color =
                     Some(Color32::from_rgb(tag_r, tag_g, tag_b));
                 ui.label(self.cfg.tag_submenu.as_str());
@@ -209,15 +221,10 @@ impl Hud {
         });
     }
 
-    /// Update the displayed keys, externally-computed visibility, and parent title.
-    pub fn set_keys(
-        &mut self,
-        keys: Vec<(Chord, String, bool)>,
-        visible: bool,
-        parent_title: Option<String>,
-    ) {
-        self.keys = keys;
-        self.parent_title = parent_title.filter(|s| !s.trim().is_empty());
+    /// Update the current HUD state: rows, visibility, and breadcrumbs.
+    pub fn set_state(&mut self, rows: Vec<HudRow>, visible: bool, breadcrumbs: Vec<String>) {
+        self.rows = rows;
+        self.breadcrumbs = breadcrumbs;
         if visible && !self.visible {
             // Force a position recompute and apply on next show
             self.last_pos = None;
@@ -225,9 +232,12 @@ impl Hud {
         self.visible = visible;
     }
 
-    /// Get the current keys and visibility state (returns keys and visible flag)
-    pub fn get_state(&self) -> (Vec<(Chord, String, bool)>, bool, Option<String>) {
-        (self.keys.clone(), self.visible, self.parent_title.clone())
+    /// Hide the HUD window immediately.
+    pub fn hide(&mut self, ctx: &Context) {
+        self.visible = false;
+        self.rows.clear();
+        self.breadcrumbs.clear();
+        ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
     }
 
     /// Update display metrics used for positioning and clear cached placement when the
@@ -297,7 +307,7 @@ impl Hud {
         let font_id_desc = self.title_font_id();
         let mut max_row_content_w: f32 = 0.0;
         let mut total_h: f32 = 0.0;
-        let rows = self.keys.len();
+        let rows = self.rows.len();
         let mut any_tag = false;
 
         // Pre-measure tag text once
@@ -310,14 +320,14 @@ impl Hud {
             .size()
             .x
         });
-        for (k, d, is_mode) in &self.keys {
-            let (token_boxes_w, token_boxes_h) = self.measure_token_boxes(ctx, k);
+        for row in &self.rows {
+            let (token_boxes_w, token_boxes_h) = self.measure_token_boxes(ctx, &row.chord);
             // Description width/height
             let (desc_w, desc_h) = ctx.fonts(|f| {
-                let g = f.layout_no_wrap(d.clone(), font_id_desc.clone(), Color32::WHITE);
+                let g = f.layout_no_wrap(row.desc.clone(), font_id_desc.clone(), Color32::WHITE);
                 (g.size().x, g.size().y)
             });
-            if *is_mode {
+            if row.is_mode {
                 any_tag = true;
             }
             // Row content width (without the right-aligned tag column)
@@ -346,8 +356,8 @@ impl Hud {
     /// Desired HUD window size including padding and minimums.
     fn desired_size(&self, ctx: &Context) -> Vec2 {
         if matches!(self.cfg.mode, Mode::Mini) {
-            // Compact size based only on parent_title
-            if let Some(title) = &self.parent_title {
+            // Compact size based only on the active breadcrumb title.
+            if let Some(title) = self.breadcrumbs.last().filter(|s| !s.trim().is_empty()) {
                 let (w, h) = ctx.fonts(|f| {
                     let g = f.layout_no_wrap(title.clone(), self.title_font_id(), Color32::WHITE);
                     (g.size().x, g.size().y)
@@ -483,7 +493,7 @@ impl Hud {
 
                 if matches!(self.cfg.mode, Mode::Mini) {
                     // Compact: center vertically; left padding; single title line
-                    if let Some(title) = &self.parent_title {
+                    if let Some(title) = self.breadcrumbs.last().filter(|s| !s.trim().is_empty()) {
                         let avail = ui.available_size();
                         // compute text height to center vertically
                         let text_h = hud_ctx.fonts(|f| {
@@ -524,9 +534,5 @@ impl Hud {
         self.last_size = Some(size);
     }
 
-    /// Hide the HUD viewport and stop rendering until made visible again.
-    pub fn hide(&mut self, ctx: &Context) {
-        self.visible = false;
-        ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
-    }
+    // (hide method is defined alongside state setters)
 }

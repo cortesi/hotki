@@ -2171,7 +2171,6 @@ dependencies = [
  "objc2-quartz-core 0.3.1",
  "parking_lot",
  "permissions",
- "rmp-serde",
  "serde_json",
  "tokio",
  "tracing",

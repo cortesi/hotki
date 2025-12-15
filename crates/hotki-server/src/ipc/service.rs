@@ -422,6 +422,49 @@ impl MrpcConnection for HotkeyService {
                 Ok(Value::Binary(bytes))
             }
 
+            Some(HotkeyMethod::SetTheme) => {
+                if params.is_empty() {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::MissingParams,
+                        &[
+                            (
+                                "method",
+                                Value::String(HotkeyMethod::SetTheme.as_str().into()),
+                            ),
+                            ("expected", Value::String("theme name".into())),
+                        ],
+                    ));
+                }
+
+                let raw_name = match &params[0] {
+                    Value::String(s) => match s.as_str() {
+                        Some(v) => v.to_string(),
+                        None => {
+                            return Err(Self::typed_err(
+                                crate::error::RpcErrorCode::InvalidType,
+                                &[("expected", Value::String("utf8 string theme name".into()))],
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(Self::typed_err(
+                            crate::error::RpcErrorCode::InvalidType,
+                            &[("expected", Value::String("string theme name".into()))],
+                        ));
+                    }
+                };
+
+                let engine = self.engine().await;
+                if let Err(e) = engine.set_theme(raw_name.as_str()).await {
+                    return Err(Self::typed_err(
+                        crate::error::RpcErrorCode::EngineSetConfig,
+                        &[("message", Value::String(e.to_string().into()))],
+                    ));
+                }
+
+                Ok(Value::Boolean(true))
+            }
+
             Some(HotkeyMethod::InjectKey) => {
                 // Expect a single Binary param with msgpack-encoded InjectKeyReq
                 if params.is_empty() {
