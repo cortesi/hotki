@@ -49,26 +49,30 @@ style(#{
   },
 });
 
-global.mode("shift+cmd+0", "Activate", |m| {
-  // This submode appears only when the focused application name
-  // matches the provided regex (Safari, Arc, or Google Chrome).
-  m.mode("b", "Browser", |sub| {
-    sub.bind("r", "Reload Tab", action.relay("cmd+r"));
-    sub.bind("t", "New Tab", action.relay("cmd+t"));
-    sub.bind("p", "Back", action.pop);
-  }).match_app("Safari|Arc|Google Chrome");
+hotki.mode(|m, ctx| {
+  m.mode("shift+cmd+0", "Activate", |m, ctx| {
+    // App matching is just conditional rendering.
+    if ctx.app.matches("Safari|Arc|Google Chrome") {
+      m.mode("b", "Browser", |sub, ctx| {
+        sub.bind("r", "Reload Tab", action.relay("cmd+r"));
+        sub.bind("t", "New Tab", action.relay("cmd+t"));
+        sub.bind("p", "Back", action.pop);
+      });
+    }
 
-  // This submode appears only when the focused window title matches
-  // the regex (any title containing "Readme" case-insensitively).
-  m.mode("r", "Reader", |sub| {
-    sub.bind("m", "Mark Read", action.shell("echo marked"));
-    sub.bind("p", "Back", action.pop);
-  }).match_title(".*(?i:readme).*");
+    // Title matching is also a conditional.
+    if ctx.title.matches(".*(?i:readme).*") {
+      m.mode("r", "Reader", |sub, ctx| {
+        sub.bind("m", "Mark Read", action.shell("echo marked"));
+        sub.bind("p", "Back", action.pop);
+      });
+    }
 
-  // Normal always-visible action
-  m.bind("h", "Hello", action.shell("echo hello"));
+    // Normal always-visible action.
+    m.bind("h", "Hello", action.shell("echo hello"));
 
-  // Global navigation keys, hidden from HUD
-  m.bind("shift+cmd+0", "Exit", action.exit).global().hidden();
-  m.bind("esc", "Back", action.pop).global().hidden();
+    // Global navigation keys (hidden from the HUD).
+    m.bind("shift+cmd+0", "Exit", action.exit).global().hidden();
+    m.bind("esc", "Back", action.pop).global().hidden();
+  });
 });

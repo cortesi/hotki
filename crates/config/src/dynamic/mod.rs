@@ -15,6 +15,9 @@ mod types;
 /// Small internal utilities shared across dynamic config modules.
 mod util;
 
+#[cfg(test)]
+mod test_dynamic;
+
 pub use config::DynamicConfig;
 pub use handler::{HandlerResult, execute_handler};
 pub use loader::load_dynamic_config;

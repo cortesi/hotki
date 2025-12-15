@@ -1,7 +1,7 @@
-// Complete reference demonstrating all hotki configuration options and action types.
-// Each option and action type is shown exactly once with minimal redundancy.
+// Complete reference demonstrating hotki configuration options and action types.
+// Each option and action type is shown at least once with minimal redundancy.
 
-// Choose a built-in theme: default, charcoal, dark_blue, solarized_dark, solarized_light
+// Choose a built-in theme: default, charcoal, dark-blue, solarized-dark, solarized-light
 base_theme("default");
 
 // === Style overlay (HUD + notifications) ===
@@ -104,101 +104,118 @@ style(#{
 
 // === Key Bindings ===
 
-// Main modal entry point
-global.mode("shift+cmd+0", "Main", |m| {
+hotki.mode(|m, ctx| {
+  // Global navigation keys (active across all modes while the HUD is visible).
+  if ctx.hud {
+    m.bind("esc", "Back", action.pop).global().hidden();
+  }
 
-  // === Action Types (each shown once) ===
-  // action.shell: Execute a shell command
-  m.bind("s", "Shell Command", action.shell("echo 'Hello'"));
+  // Main modal entry point.
+  m.mode("shift+cmd+0", "Main", |m, ctx| {
 
-  // action.shell with notifications: Execute command and show success/error notifications
-  m.bind(
-    "shift+S",
-    "Shell with Notifications",
-    action.shell("echo 'Success'").notify(success, error),
-  );
+    // Exit (override the parent mode entry chord).
+    m.bind("shift+cmd+0", "Exit", action.exit).global().hidden();
 
-  // action.relay: Send keystrokes to the active application
-  m.bind("r", "Relay Keystroke", action.relay("cmd+c"));
+    // === Action Types (each shown at least once) ===
 
-  // action.clear_notifications: Remove all on-screen notifications
-  m.bind("c", "Clear Notifications", action.clear_notifications);
+    // action.shell: execute a shell command.
+    m.bind("s", "Shell Command", action.shell("echo 'Hello'"));
 
-  // action.show_details: Control details window: on/off/toggle
-  m.bind("d", "Toggle Details", action.show_details(toggle));
+    // action.shell with notifications: show success/error notifications.
+    m.bind(
+      "shift+S",
+      "Shell with Notifications",
+      action.shell("echo 'Success'").notify(success, error),
+    );
 
-  // action.reload_config: Reload the configuration file
-  m.bind("shift+R", "Reload Config", action.reload_config);
+    // action.shell.silent: suppress all notifications.
+    m.bind("shift+Q", "Shell Silent", action.shell("echo 'Quiet'").silent());
 
-  // action.show_hud_root: Display the root-level HUD
-  m.bind("h", "Show HUD Root", action.show_hud_root);
+    // action.relay: send keystrokes to the active application.
+    m.bind("r", "Relay Keystroke", action.relay("cmd+c"));
 
-  // action.theme_next: Switch to the next theme
-  m.bind("n", "Next Theme", action.theme_next);
+    // action.clear_notifications: remove all on-screen notifications.
+    m.bind("c", "Clear Notifications", action.clear_notifications);
 
-  // action.theme_prev: Switch to the previous theme
-  m.bind("p", "Previous Theme", action.theme_prev);
+    // action.show_details: control details window: on/off/toggle.
+    m.bind("d", "Toggle Details", action.show_details(toggle)).stay();
 
-  // action.theme_set: Set a specific theme by name
-  m.bind("1", "Dark Blue Theme", action.theme_set("dark-blue"));
-  m.bind("2", "Charcoal Theme", action.theme_set("charcoal"));
-  m.bind("3", "Default Theme", action.theme_set("default"));
+    // action.reload_config: reload the configuration file.
+    m.bind("shift+R", "Reload Config", action.reload_config);
 
-  // action.set_volume: Set system volume to absolute value (0-100)
-  m.bind("v", "Set Volume 50%", action.set_volume(50));
+    // action.show_root: clear to root and show the HUD.
+    m.bind("h", "Show Root HUD", action.show_root);
 
-  // action.change_volume: Adjust volume by relative amount (-100 to +100)
-  m.bind("shift+V", "Change Volume +10", action.change_volume(10));
+    // action.hide_hud: hide HUD while keeping the current stack active.
+    m.bind("shift+H", "Hide HUD", action.hide_hud);
 
-  // action.mute: Control mute: on/off/toggle
-  m.bind("m", "Mute", action.mute(on));
-  m.bind("u", "Unmute", action.mute(off));
-  m.bind("shift+M", "Toggle Mute", action.mute(toggle));
+    // action.theme_*: change theme (stay in the mode for repeated changes).
+    m.bind("n", "Next Theme", action.theme_next).stay();
+    m.bind("p", "Previous Theme", action.theme_prev).stay();
+    m.bind("1", "Dark Blue Theme", action.theme_set("dark-blue")).stay();
+    m.bind("2", "Charcoal Theme", action.theme_set("charcoal")).stay();
+    m.bind("3", "Default Theme", action.theme_set("default")).stay();
 
-  // === User UI Control ===
-  // action.user_style: Control user style configuration (HUD and notifications): on/off/toggle
-  m.bind("t", "Toggle User UI", action.user_style(toggle));
-  m.bind("shift+T", "Disable User UI", action.user_style(off));
-  m.bind("shift+U", "Enable User UI", action.user_style(on));
+    // action.set_volume: set system volume to absolute value (0-100).
+    m.bind("v", "Set Volume 50%", action.set_volume(50)).stay();
 
-  // === Mode Navigation ===
-  // mode: Enter a nested mode with its own key bindings
-  m.mode("shift+K", "Nested Mode", |sub| {
-    // action.pop: Return to the previous mode
-    sub.bind("b", "Back One Level", action.pop);
-    // action.exit: Exit all modes and return to root
-    sub.bind("e", "Exit All", action.exit);
-  })
-  .style(#{ hud: #{ mode: hud_mini } });
+    // action.change_volume: adjust volume by relative amount (-100 to +100).
+    m.bind("shift+V", "Change Volume +10", action.change_volume(10)).stay();
 
-  // === Mode Attributes ===
-  m.bind(
-    "a",
-    "No Exit + Repeat (custom timings)",
-    action.shell("echo 'Stay'"),
-  )
-  .no_exit()
-  .repeat_ms(250, 350);
+    // action.mute: control mute: on/off/toggle.
+    m.bind("m", "Mute", action.mute(on)).stay();
+    m.bind("u", "Unmute", action.mute(off)).stay();
+    m.bind("shift+M", "Toggle Mute", action.mute(toggle)).stay();
 
-  m.bind("g", "Global Key", action.shell("echo 'Global'")).global();
-  m.bind("shift+H", "Hidden Key", action.shell("echo 'Hidden'")).hidden();
-  m.bind("o", "HUD Only", action.shell("echo 'HUD Only'")).hud_only();
+    // action.user_style: enable/disable/toggle user style overlay.
+    m.bind("t", "Toggle User UI", action.user_style(toggle)).stay();
+    m.bind("shift+T", "Disable User UI", action.user_style(off)).stay();
+    m.bind("shift+U", "Enable User UI", action.user_style(on)).stay();
 
-  // capture: Swallow all non-bound keys while HUD is visible for this mode.
-  // Only keys explicitly bound in the current mode (including globals) are handled.
-  m.mode("shift+C", "Capture Mode", |sub| {
-    sub.bind("b", "Back One Level", action.pop);
-  }).capture();
+    // === Handler ===
+    m.bind("x", "Complex Action", handler(|ctx| {
+      ctx.exec(action.shell("echo hello").silent());
+      ctx.notify(success, "Handler", "Queued a shell command + notification");
+      ctx.stay();
+    }));
 
-  // === App/Title Matching ===
-  m.mode("b", "Browser Mode", |sub| {
-    sub.bind("r", "Reload", action.relay("cmd+r"));
-  }).match_app("Safari|Chrome");
+    // === Binding modifiers ===
+    m.bind("g", "Global Key", action.shell("echo 'Global'")).global();
+    m.bind("shift+X", "Hidden Key", action.shell("echo 'Hidden'")).hidden();
 
-  m.mode("shift+ctrl+t", "Title Match Mode", |sub| {
-    sub.bind("s", "Save", action.relay("cmd+s"));
-  }).match_title(".*\\.md$");
+    // "HUD-only" bindings are just conditional renders.
+    if ctx.hud {
+      m.bind("o", "HUD Only", action.shell("echo 'HUD Only'"));
+    }
 
-  // Global navigation (combined attributes)
-  m.bind("esc", "Back", action.pop).global().hidden();
+    // Hold-to-repeat: repeat settings imply `.stay()`.
+    m.bind("a", "Repeat Shell (custom timings)", action.shell("echo tick"))
+      .repeat_ms(250, 350);
+    m.bind("b", "Repeat Relay (defaults)", action.relay("cmd+c"))
+      .repeat();
+
+    // === Mode navigation ===
+    m.mode("shift+K", "Nested Mode", |sub, ctx| {
+      sub.bind("b", "Back One Level", action.pop);
+      sub.bind("e", "Exit All", action.exit);
+    }).style(#{ hud: #{ mode: mini } });
+
+    // `.capture()` on a mode entry: capture all keys while HUD is visible.
+    m.mode("shift+C", "Capture Mode", |sub, ctx| {
+      sub.bind("b", "Back One Level", action.pop);
+    }).capture();
+
+    // === Context matching patterns (conditional bindings) ===
+    if ctx.app.matches("Safari|Chrome") {
+      m.mode("shift+B", "Browser Mode", |sub, ctx| {
+        sub.bind("r", "Reload", action.relay("cmd+r"));
+      });
+    }
+
+    if ctx.title.matches(".*\\.md$") {
+      m.mode("shift+ctrl+t", "Title Match Mode", |sub, ctx| {
+        sub.bind("s", "Save", action.relay("cmd+s"));
+      });
+    }
+  });
 });

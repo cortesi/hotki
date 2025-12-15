@@ -1,245 +1,222 @@
 # Hotki Configuration Reference
 
-Configuration files are [Rhai](https://rhai.rs/) scripts. Hotki looks for
-`~/.hotki/config.rhai` by default, or use `--config <path>` to specify an
-alternative. Validate your config without starting the UI with `hotki check`.
+Configuration files are [Rhai](https://rhai.rs/) scripts. Hotki looks for `~/.hotki/config.rhai`
+by default, or use `--config <path>` to specify an alternative. Validate your config without
+starting the UI with:
 
-Split configuration across multiple files using `import "foo"` to load
-`foo.rhai` relative to your config directory. Import paths must be relative
-with no `..` segments, and symlinks outside the config directory are rejected.
-
-The entry point is the `global` variable, a [`Mode`](#mode) representing the root
-from which all bindings are created.
-
-## API
-
-- [Global Functions](#global-functions)
-- [Binding Modifiers](#binding-modifiers)
-- [Actions](#actions)
-  - [Shell Commands](#shell-commands)
-  - [Key Relay](#key-relay)
-  - [Mode Navigation](#mode-navigation)
-  - [Volume Control](#volume-control)
-  - [Theme Control](#theme-control)
-  - [UI Control](#ui-control)
-- [Constants](#constants)
-- [Types](#types)
-
-### Global Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `base_theme(name)` | `String` | — | Set the base theme |
-| `style(map)` | `Map` | — | Set user style overlay |
-| `env(var)` | `String` | `String` | Get environment variable (empty string if unset) |
-
-#### base_theme
-
-```rust
-base_theme("charcoal");
+```bash
+hotki check --config ~/.hotki/config.rhai
+hotki check # uses the default resolution policy
 ```
+
+Split configuration across multiple files using `import "foo"` to load `foo.rhai` relative to
+your config directory. Import paths must be relative with no `..` segments, and symlinks outside
+the config directory are rejected.
+
+---
+
+## Entry Point
+
+Every config must register a single root mode:
+
+```rhai
+hotki.mode(|m, ctx| {
+  // root bindings
+});
+```
+
+- `m` is a `ModeBuilder` used to declare bindings and sub-modes.
+- `ctx` is a `ModeCtx` (focused app/title, HUD visibility, stack depth).
+
+Modes are **re-rendered** whenever context changes (focus/title, HUD visibility, theme/user-style,
+etc), so use `if` statements for conditional bindings.
+
+---
+
+## Global Functions
+
+| Function | Parameters | Description |
+|----------|------------|-------------|
+| `base_theme(name)` | `String` | Set the base theme |
+| `style(map)` | `Map` | Set user style overlay |
 
 Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
 
-#### style
+---
 
-```rust
-style(#{
-  hud: #{ pos: ne, bg: "#1a1a1a", opacity: 0.95 },
-  notify: #{ pos: right, timeout: 3.5 },
-});
+## ModeBuilder (`m`)
+
+### Bindings
+
+```rhai
+m.bind(chord, desc, target) -> BindingRef
 ```
 
-Position values: [`Pos`](#pos) for HUD, [`NotifyPos`](#notifypos) for notifications.
-See `examples/complete.rhai` for all style options.
+Where `target` is one of:
+- `action.*` (primitive action)
+- `handler(|ctx| { ... })`
+- `|m, ctx| { ... }` (a child mode closure)
 
-#### env
+### Modes
 
-```rust
-let home = env("HOME");
-action.shell(`open ${env("HOME")}/Documents`)
+```rhai
+m.mode(chord, title, |m, ctx| { ... }) -> BindingRef
 ```
 
-### Binding Modifiers
+Shorthand for `m.bind(chord, title, |m, ctx| { ... })`.
 
-All modifiers return [`Binding`](#binding) for chaining.
+### Mode-Level Modifiers (inside a mode closure)
 
-**Valid on both `.bind()` and `.mode()`:**
-
-| Modifier | Parameters | Description |
-|----------|------------|-------------|
-| `.global()` | — | Active in this mode and all sub-modes |
-| `.hidden()` | — | Works but hidden from HUD |
-| `.hud_only()` | — | Only activates while HUD is visible |
-| `.match_app(pattern)` | `String` | Regex filter by focused app name |
-| `.match_title(pattern)` | `String` | Regex filter by focused window title |
-
-**Only valid on `.bind()`:**
-
-| Modifier | Parameters | Description |
-|----------|------------|-------------|
-| `.no_exit()` | — | Stay in current mode after action |
-| `.repeat()` | — | Enable hold-to-repeat with defaults |
-| `.repeat_ms(delay, interval)` | `i64`, `i64` | Hold-to-repeat with custom timing (ms) |
-
-**Only valid on `.mode()`:**
-
-| Modifier | Parameters | Description |
-|----------|------------|-------------|
-| `.capture()` | — | Capture all unbound keys in this mode |
-| `.style(map)` | `Map` | Per-mode style overlay |
-
-Duplicate chords within a mode require `match_app` or `match_title` guards.
-
-### Actions
-
-Actions are created via the `action` namespace. Bindings accept either a bare
-[`Action`](#action) or a closure that returns an [`Action`](#action) (or array of
-actions). Closures with a parameter receive an [`ActionCtx`](#actionctx). Script
-closures are sandboxed; I/O is only possible via action constructors.
-
-```rust
-m.bind("c", "Copy", action.relay("cmd+c"));                    // bare action
-m.bind("p", "Play", || action.shell("spotify pause"));         // closure
-m.bind("o", "Open", |ctx| {                                    // closure with context
-  if ctx.app.contains("Safari") { action.shell("open ~/safari.log") }
-  else { action.shell("open ~/system.log") }
-});
-m.bind("s", "Save+Beep", || [                                  // action sequence
-  action.relay("cmd+s"),
-  action.shell("afplay /System/Library/Sounds/Pop.aiff").silent(),
-]);
+```rhai
+m.capture();            // swallow unbound keys while HUD is visible
+m.style(#{ ... });      // style overlay for this mode (inherited by children)
 ```
 
-#### Shell Commands
+---
 
-```rust
+## BindingRef Modifiers
+
+All modifiers return `BindingRef` for chaining.
+
+| Modifier | Valid On | Description |
+|----------|----------|-------------|
+| `.hidden()` | bindings + mode entries | Active but hidden from HUD |
+| `.stay()` | bindings + handlers | Suppress auto-exit after execution |
+| `.repeat()` | bindings | Hold-to-repeat (shell/relay/volume only) |
+| `.repeat_ms(delay, interval)` | bindings | Repeat with custom timings (ms) |
+| `.global()` | bindings | Inherit into child modes (not allowed on mode entries) |
+| `.style(map)` | bindings | Per-binding HUD style override |
+| `.capture()` | mode entries | Enable capture-all in the entered mode |
+| `.style(map)` | mode entries | Style overlay for the entered mode |
+
+Notes:
+- `.global()` is rejected on mode entries to keep orphan detection simple.
+- `.repeat()`/`.repeat_ms()` implicitly set `.stay()`.
+- There is no built-in `.hud_only()`; use `if ctx.hud { ... }` in the render closure.
+
+---
+
+## Actions (`action.*`)
+
+### Shell
+
+```rhai
 action.shell("echo hello")
 action.shell("make build").notify(success, error)
 action.shell("echo quiet").silent()
 ```
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `action.shell(cmd)` | `String` | Execute shell command |
-| `.notify(ok, err)` | [`NotifyKind`](#notifykind), [`NotifyKind`](#notifykind) | Notification on success/failure |
-| `.silent()` | — | Suppress all notifications |
+### Relay
 
-#### Key Relay
-
-```rust
+```rhai
 action.relay("cmd+c")
 action.relay("shift+tab")
 ```
 
-| Method | Parameters | Description |
-|--------|------------|-------------|
-| `action.relay(chord)` | `String` | Send keystroke to active app |
+### Navigation
 
-#### Mode Navigation
+| Action | Description |
+|--------|-------------|
+| `action.pop` | Pop one mode frame (if now at root, hide HUD) |
+| `action.exit` | Clear stack to root and hide HUD |
+| `action.show_root` | Clear stack to root and show HUD |
+| `action.hide_hud` | Hide HUD (keep stack position) |
 
-| Action | Parameters | Description |
-|--------|------------|-------------|
-| `action.pop` | — | Return to previous mode |
-| `action.exit` | — | Exit to root |
+### Config / UI
 
-#### Volume Control
+| Action | Description |
+|--------|-------------|
+| `action.reload_config` | Reload configuration |
+| `action.clear_notifications` | Dismiss all notifications |
+| `action.show_details(toggle)` | Control details window |
+| `action.user_style(toggle)` | Toggle user style overlay |
 
-| Action | Parameters | Description |
-|--------|------------|-------------|
-| `action.set_volume(level)` | `i64` (0–100) | Set absolute volume |
-| `action.change_volume(delta)` | `i64` (-100–+100) | Adjust by delta |
-| `action.mute(toggle)` | [`Toggle`](#toggle) | Control mute state |
+### Themes
 
-#### Theme Control
+| Action | Description |
+|--------|-------------|
+| `action.theme_next` | Next theme |
+| `action.theme_prev` | Previous theme |
+| `action.theme_set(name)` | Set theme by name |
 
-| Action | Parameters | Description |
-|--------|------------|-------------|
-| `action.theme_next` | — | Next theme |
-| `action.theme_prev` | — | Previous theme |
-| `action.theme_set(name)` | `String` | Set theme by name |
-
-Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
-
-#### UI Control
+### Volume
 
 | Action | Parameters | Description |
 |--------|------------|-------------|
-| `action.show_details(toggle)` | [`Toggle`](#toggle) | Control details window |
-| `action.show_hud_root` | — | Display root-level HUD |
-| `action.user_style(toggle)` | [`Toggle`](#toggle) | Enable/disable user style overlay |
-| `action.clear_notifications` | — | Clear notifications |
-| `action.reload_config` | — | Reload configuration |
+| `action.set_volume(level)` | `0..=100` | Set absolute volume |
+| `action.change_volume(delta)` | `-100..=100` | Adjust volume by delta |
+| `action.mute(toggle)` | `on/off/toggle` | Control mute state |
 
-#### Action Fluent Methods
+---
 
-| Method | Parameters | Returns | Description |
-|--------|------------|---------|-------------|
-| `.clone()` | — | [`Action`](#action) | Clone an action (all actions are immutable) |
+## Handlers
 
-### Constants
+Handlers are for compound actions (multiple effects, logic, conditional dispatch).
 
-#### Toggle
+```rhai
+m.bind("x", "Complex", handler(|ctx| {
+  ctx.exec(action.shell("echo hello").silent());
+  ctx.notify(success, "Done", "Completed");
+  ctx.stay(); // suppress auto-exit
+}));
+```
 
-| Value | Description |
-|-------|-------------|
-| `on` | Enable |
-| `off` | Disable |
-| `toggle` | Flip current state |
+`ActionCtx` fields:
+- `ctx.app`, `ctx.title`, `ctx.pid`
+- `ctx.hud` (bool), `ctx.depth` (stack depth)
 
-#### NotifyKind
+`ActionCtx` methods:
+- `ctx.exec(action)`
+- `ctx.notify(kind, title, body)`
+- `ctx.stay()`
+- `ctx.push(mode_closure, title?)`
+- `ctx.pop()`, `ctx.exit()`, `ctx.show_root()`
+
+---
+
+## Render Context (`ModeCtx`)
+
+Available in mode closures as `ctx`:
+- `ctx.app`, `ctx.title`, `ctx.pid`
+- `ctx.hud` (bool), `ctx.depth` (stack depth)
+
+String helpers:
+
+```rhai
+if ctx.app.matches("Safari|Chrome") { ... }
+if ctx.title.matches(".*\\.md$") { ... }
+```
+
+---
+
+## Constants
+
+### Toggle
+
+`on`, `off`, `toggle`
+
+### NotifyKind
 
 `ignore`, `info`, `warn`, `error`, `success`
 
-#### Pos
+### Positions
 
-HUD position: `center`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`
+HUD: `center`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw`  
+Notifications: `left`, `right`
 
-#### NotifyPos
+### HUD Mode
 
-Notification position: `left`, `right`
+`hud`, `mini`, `hide`
 
-#### HudMode
+### FontWeight
 
-`hud_full`, `hud_mini`, `hud_hide`
+`thin`, `light`, `regular`, `medium`, `semibold`, `bold`, `extrabold`, `black`
 
-#### FontWeight
+---
 
-`thin`, `extralight`, `light`, `regular`, `medium`, `semibold`, `bold`,
-`extrabold`, `black`
+## Behavior Notes
 
-### Types
-
-#### Mode
-
-A container for key bindings. The `global` variable is the root `Mode`. Sub-modes
-are created via `mode.mode()`.
-
-| Method | Parameters | Returns | Description |
-|--------|------------|---------|-------------|
-| `.bind(chord, desc, action)` | `String`, `String`, [`Action`](#action) | [`Binding`](#binding) | Create a leaf binding |
-| `.mode(chord, desc, \|m\| { ... })` | `String`, `String`, `Fn(Mode)` | [`Binding`](#binding) | Create a sub-mode |
-
-Chord strings: `shift+cmd+0`, `cmd+c`, `esc`, etc.
-
-#### Binding
-
-Returned by `Mode.bind()` and `Mode.mode()`. Supports chained modifiers—see
-[Binding Modifiers](#binding-modifiers).
-
-#### Action
-
-An executable action created via the `action` namespace. Immutable; use
-`.clone()` to duplicate. See [Actions](#actions) for all constructors.
-
-#### ActionCtx
-
-Context passed to script action closures that take a parameter.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `ctx.app` | `String` | Focused app name |
-| `ctx.title` | `String` | Focused window title |
-| `ctx.pid` | `i64` | Focused app PID |
-| `ctx.depth` | `i64` | Current mode depth (0 = root) |
-| `ctx.path` | `Array` | Cursor indices from root |
+- **Auto-exit**: after executing an action/handler, Hotki clears to root + hides HUD unless the
+  binding (or handler via `ctx.stay()`) requests `.stay()`.
+- **Duplicate chords**: within a single rendered mode, the first binding wins and later duplicates
+  are ignored with a warning; use `if/else` for mutually exclusive chord assignments.

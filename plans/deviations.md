@@ -28,7 +28,11 @@ progresses.
 - `hotki-protocol::HudState.style` is a full `Style` (HUD + notification config + resolved theme)
   rather than a HUD-only `HudStyle`, so notifications can be styled without additional messages.
 
-## Stage 9
+## Stage 10
 
-- `crates/hotki/tests/examples_parse.rs` is temporarily `#[ignore]` until Stage 10 migrates the
-  `examples/*.rhai` configs to the new `hotki.mode` DSL.
+- Built-in theme names remain hyphenated (`dark-blue`, `solarized-dark`, `solarized-light`) as
+  implemented in `crates/config/src/themes`, even though `plans/config.md` lists underscore
+  variants.
+- The UI smoketests no longer fail when no focus-change bridge events are observed during HUD
+  activation; focus changes are not guaranteed (the HUD is intentionally non-activating), so we log
+  instead. Focus-driven rerendering is covered by engine integration tests.

@@ -28,7 +28,7 @@ below for how to build it. Next steps:
 Hotki configuration lives at `~/.hotki/config.rhai` and is written in Rhai.
 
 - [Full reference](CONFIG.md)
-- Examples: `examples/complete.rhai`, `examples/phase2_actions.rhai`, `examples/match.rhai`
+- Examples: `examples/complete.rhai`, `examples/cortesi.rhai`, `examples/match.rhai`, `examples/test.rhai`
 
 Validate a config without starting the UI:
 
@@ -39,23 +39,28 @@ hotki check  # uses the default resolution policy
 
 Minimal example:
 
-```rust
+```rhai
 base_theme("default");
 
 style(#{
   hud: #{
     pos: ne,
-    mode: hud_full,
+    mode: hud,
   },
 });
 
-global.mode("shift+cmd+0", "Main", |m| {
-  m.bind("s", "Save", relay("cmd+s")).no_exit();
-  m.bind("n", "Next Theme", theme_next);
-  m.bind("p", "Previous Theme", theme_prev);
-});
+hotki.mode(|m, ctx| {
+  if ctx.hud {
+    m.bind("esc", "Back", action.pop).global().hidden();
+  }
 
-global.bind("esc", "Back", pop).global().hidden().hud_only();
+  m.mode("shift+cmd+0", "Main", |m, ctx| {
+    m.bind("s", "Save", action.relay("cmd+s")).stay();
+    m.bind("n", "Next Theme", action.theme_next).stay();
+    m.bind("p", "Previous Theme", action.theme_prev).stay();
+    m.bind("shift+cmd+0", "Exit", action.exit).global().hidden();
+  });
+});
 ```
 
 ## Themes and Styling

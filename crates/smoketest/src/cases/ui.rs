@@ -325,40 +325,42 @@ const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
 const UI_DEMO_CONFIG: &str = r#"
 style(#{
   hud: #{
-    mode: hud_full,
+    mode: hud,
     pos: se,
   },
 });
 
-global.mode("shift+cmd+0", "activate", |m| {
-  m.mode("t", "Theme tester", |sub| {
-    sub.bind("h", "Theme Prev", action.theme_prev).no_exit();
-    sub.bind("l", "Theme Next", action.theme_next).no_exit();
-    sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).no_exit();
+hotki.mode(|m, ctx| {
+  m.mode("shift+cmd+0", "activate", |m, ctx| {
+    m.mode("t", "Theme tester", |sub, ctx| {
+      sub.bind("h", "Theme Prev", action.theme_prev).stay();
+      sub.bind("l", "Theme Next", action.theme_next).stay();
+      sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).stay();
+      sub.bind("esc", "Exit", action.exit).hidden();
+    });
   });
 });
-
-global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
 /// Mini HUD demo configuration.
 const MINI_HUD_CONFIG: &str = r#"
 style(#{
   hud: #{
-    mode: hud_mini,
+    mode: mini,
     pos: se,
   },
 });
 
-global.mode("shift+cmd+0", "activate", |m| {
-  m.mode("t", "Theme tester", |sub| {
-    sub.bind("h", "Theme Prev", action.theme_prev).no_exit();
-    sub.bind("l", "Theme Next", action.theme_next).no_exit();
-    sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).no_exit();
+hotki.mode(|m, ctx| {
+  m.mode("shift+cmd+0", "activate", |m, ctx| {
+    m.mode("t", "Theme tester", |sub, ctx| {
+      sub.bind("h", "Theme Prev", action.theme_prev).stay();
+      sub.bind("l", "Theme Next", action.theme_next).stay();
+      sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).stay();
+      sub.bind("esc", "Exit", action.exit).hidden();
+    });
   });
 });
-
-global.bind("esc", "Back", action.pop).global().hidden().hud_only();
 "#;
 
 /// Verify full HUD appears and responds to keys.
@@ -478,9 +480,11 @@ where
             watcher.activate_until_ready(bridge, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
         };
         if !activation.focus_event_seen {
-            return Err(Error::InvalidState(
-                "no focus-change bridge events observed during activation".into(),
-            ));
+            info!(
+                target: LOG_TARGET,
+                pid = state_ref.session.pid(),
+                "no focus-change bridge events observed during activation"
+            );
         }
 
         {
