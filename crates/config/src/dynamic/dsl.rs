@@ -839,12 +839,12 @@ fn register_context_types(engine: &mut Engine) {
     engine.register_get("depth", |ctx: &mut ActionCtx| ctx.depth);
 
     engine.register_fn("exec", |ctx: &mut ActionCtx, a: Action| {
-        ctx.effects.push(super::Effect::Exec(a));
+        ctx.push_effect(super::Effect::Exec(a));
     });
     engine.register_fn(
         "notify",
         |ctx: &mut ActionCtx, kind: NotifyKind, title: &str, body: &str| {
-            ctx.effects.push(super::Effect::Notify {
+            ctx.push_effect(super::Effect::Notify {
                 kind,
                 title: title.to_string(),
                 body: body.to_string(),
@@ -852,10 +852,10 @@ fn register_context_types(engine: &mut Engine) {
         },
     );
     engine.register_fn("stay", |ctx: &mut ActionCtx| {
-        ctx.stay = true;
+        ctx.set_stay();
     });
     engine.register_fn("push", |ctx: &mut ActionCtx, func: FnPtr| {
-        ctx.nav = Some(NavRequest::Push {
+        ctx.set_nav(NavRequest::Push {
             mode: ModeRef {
                 id: mode_id_for(&func),
                 func,
@@ -866,7 +866,7 @@ fn register_context_types(engine: &mut Engine) {
     });
     engine.register_fn("push", |ctx: &mut ActionCtx, func: FnPtr, title: &str| {
         let title = title.to_string();
-        ctx.nav = Some(NavRequest::Push {
+        ctx.set_nav(NavRequest::Push {
             mode: ModeRef {
                 id: mode_id_for(&func),
                 func,
@@ -876,12 +876,12 @@ fn register_context_types(engine: &mut Engine) {
         });
     });
     engine.register_fn("pop", |ctx: &mut ActionCtx| {
-        ctx.nav = Some(NavRequest::Pop);
+        ctx.set_nav(NavRequest::Pop);
     });
     engine.register_fn("exit", |ctx: &mut ActionCtx| {
-        ctx.nav = Some(NavRequest::Exit);
+        ctx.set_nav(NavRequest::Exit);
     });
     engine.register_fn("show_root", |ctx: &mut ActionCtx| {
-        ctx.nav = Some(NavRequest::ShowRoot);
+        ctx.set_nav(NavRequest::ShowRoot);
     });
 }

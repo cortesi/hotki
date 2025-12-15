@@ -363,7 +363,7 @@ fn pos_to_line_col(pos: Position) -> (Option<usize>, Option<usize>) {
     (line, col)
 }
 
-fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
+pub(crate) fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
     let (line, col) = pos_to_line_col(err.position());
     let excerpt = match (line, col) {
         (Some(l), Some(c)) => Some(excerpt_at(cfg.source.as_ref(), l, c)),

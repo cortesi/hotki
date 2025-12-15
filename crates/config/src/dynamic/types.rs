@@ -1,4 +1,6 @@
 use std::fmt;
+use std::mem;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use mac_keycode::Chord;
 use rhai::{FnPtr, Position};
@@ -100,9 +102,55 @@ pub struct ActionCtx {
     pub(crate) pid: i64,
     pub(crate) hud: bool,
     pub(crate) depth: i64,
-    pub(crate) effects: Vec<Effect>,
-    pub(crate) nav: Option<NavRequest>,
-    pub(crate) stay: bool,
+    shared: Arc<Mutex<ActionCtxShared>>,
+}
+
+#[derive(Debug, Default)]
+struct ActionCtxShared {
+    effects: Vec<Effect>,
+    nav: Option<NavRequest>,
+    stay: bool,
+}
+
+fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl ActionCtx {
+    pub(crate) fn new(app: String, title: String, pid: i64, hud: bool, depth: i64) -> Self {
+        Self {
+            app,
+            title,
+            pid,
+            hud,
+            depth,
+            shared: Arc::new(Mutex::new(ActionCtxShared::default())),
+        }
+    }
+
+    pub(crate) fn push_effect(&self, effect: Effect) {
+        lock_unpoisoned(&self.shared).effects.push(effect);
+    }
+
+    pub(crate) fn set_nav(&self, nav: NavRequest) {
+        lock_unpoisoned(&self.shared).nav = Some(nav);
+    }
+
+    pub(crate) fn set_stay(&self) {
+        lock_unpoisoned(&self.shared).stay = true;
+    }
+
+    pub(crate) fn take_effects(&self) -> Vec<Effect> {
+        mem::take(&mut lock_unpoisoned(&self.shared).effects)
+    }
+
+    pub(crate) fn take_nav(&self) -> Option<NavRequest> {
+        lock_unpoisoned(&self.shared).nav.take()
+    }
+
+    pub(crate) fn stay(&self) -> bool {
+        lock_unpoisoned(&self.shared).stay
+    }
 }
 
 /// Software repeat configuration.
