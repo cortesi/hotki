@@ -134,7 +134,7 @@ m.bind(array) -> BindingsRef
 ```
 
 Pass an array of `[chord, desc, target]` tuples to create multiple bindings at once. Each `target`
-can be an action or a mode closure:
+can be an action, `action.run` (compound action), or a mode closure:
 
 ```rhai
 m.bind([
@@ -165,7 +165,7 @@ m.mode(chord, title, array) -> BindingRef
 ```
 
 For simple modes that only contain a flat list of bindings, pass an array directly instead of a
-closure. Each element can be an action or a nested mode closure:
+closure. Each element can be an action, `action.run` (compound action), or a nested mode closure:
 
 ```rhai
 m.mode("h", "Hotki", [

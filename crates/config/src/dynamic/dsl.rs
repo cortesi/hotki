@@ -689,11 +689,13 @@ fn register_mode_builder(engine: &mut Engine) {
                     )
                 })?;
 
-                // Try to extract an Action or FnPtr (mode closure) from the third element
+                // Try to extract an Action, HandlerRef, or FnPtr (mode closure) from the third element
                 let third = arr[2].clone();
                 let (kind, binding_mode_id) =
                     if let Some(action) = third.clone().try_cast::<Action>() {
                         (BindingKind::Action(action), None)
+                    } else if let Some(handler) = third.clone().try_cast::<HandlerRef>() {
+                        (BindingKind::Handler(handler), None)
                     } else if let Some(func) = third.try_cast::<FnPtr>() {
                         let nested_mode = ModeRef {
                             id: mode_id_for(&func),
@@ -706,7 +708,7 @@ fn register_mode_builder(engine: &mut Engine) {
                     } else {
                         return Err(boxed_validation_error(
                             format!(
-                                "mode bindings: element {} must have an Action or mode closure as third item",
+                                "mode bindings: element {} must have an Action, action.run, or mode closure as third item",
                                 i
                             ),
                             pos,
@@ -1048,11 +1050,13 @@ fn register_mode_builder(engine: &mut Engine) {
                     )
                 })?;
 
-                // Try to extract an Action or FnPtr (mode closure) from the third element
+                // Try to extract an Action, HandlerRef, or FnPtr (mode closure) from the third element
                 let third = arr[2].clone();
                 let (kind, mode_id) =
                     if let Some(action) = third.clone().try_cast::<Action>() {
                         (BindingKind::Action(action), None)
+                    } else if let Some(handler) = third.clone().try_cast::<HandlerRef>() {
+                        (BindingKind::Handler(handler), None)
                     } else if let Some(func) = third.try_cast::<FnPtr>() {
                         let mode = ModeRef {
                             id: mode_id_for(&func),
@@ -1065,7 +1069,7 @@ fn register_mode_builder(engine: &mut Engine) {
                     } else {
                         return Err(boxed_validation_error(
                             format!(
-                                "bind: element {} must have an Action or mode closure as third item",
+                                "bind: element {} must have an Action, action.run, or mode closure as third item",
                                 i
                             ),
                             ctx.call_position(),
