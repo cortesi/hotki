@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, hash_map::DefaultHasher},
     fmt,
     hash::{Hash, Hasher},
@@ -184,6 +185,12 @@ fn mode_id_for_static(bindings: &[Binding]) -> ModeId {
     for b in bindings {
         b.chord.to_string().hash(&mut hasher);
         b.desc.hash(&mut hasher);
+        // Include action identity so changing an action produces a different mode ID
+        match &b.kind {
+            BindingKind::Action(action) => action.hash(&mut hasher),
+            BindingKind::Handler(_) => "handler".hash(&mut hasher),
+            BindingKind::Mode(mode_ref) => mode_ref.id.hash(&mut hasher),
+        }
     }
     ModeId::new(hasher.finish())
 }
@@ -1266,18 +1273,31 @@ fn register_mode_builder(engine: &mut Engine) {
     );
 }
 
+thread_local! {
+    /// Thread-local cache for compiled regexes to avoid recompilation on every render.
+    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+}
+
 /// Register `String.matches(regex)` used in render and handler contexts.
 fn register_string_matches(engine: &mut Engine) {
     engine.register_fn(
         "matches",
         |ctx: NativeCallContext, s: &str, pat: &str| -> Result<bool, Box<EvalAltResult>> {
-            let re = regex::Regex::new(pat).map_err(|e| {
-                boxed_validation_error(
-                    format!("invalid regex '{}': {}", pat, e),
-                    ctx.call_position(),
-                )
-            })?;
-            Ok(re.is_match(s))
+            REGEX_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if let Some(re) = cache.get(pat) {
+                    return Ok(re.is_match(s));
+                }
+                let re = regex::Regex::new(pat).map_err(|e| {
+                    boxed_validation_error(
+                        format!("invalid regex '{}': {}", pat, e),
+                        ctx.call_position(),
+                    )
+                })?;
+                let result = re.is_match(s);
+                cache.insert(pat.to_string(), re);
+                Ok(result)
+            })
         },
     );
 }

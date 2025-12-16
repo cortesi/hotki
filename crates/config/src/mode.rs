@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::Toggle;
 
 /// Actions that can be triggered by hotkeys
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Execute a shell command (optionally with modifiers)
@@ -50,7 +50,7 @@ impl Action {
 }
 
 /// Optional modifiers applied to Shell actions
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellModifiers {
     /// Notification type for successful exit (status 0)
@@ -85,7 +85,7 @@ impl Default for ShellModifiers {
 
 /// Specification for a Shell action: either just a command string, or a command
 /// with modifiers, written as shell("cmd") or shell("cmd", (notify: info)).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ShellSpec {
     /// A bare shell command.

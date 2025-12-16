@@ -358,7 +358,7 @@ pub struct HudState {
 }
 
 /// Three-state toggle used for boolean-like actions.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Toggle {
     /// Set the option to enabled/on.
@@ -511,7 +511,7 @@ pub enum MsgToUI {
 }
 
 /// Notification kinds supported by the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NotifyKind {
     /// Informational notification.
