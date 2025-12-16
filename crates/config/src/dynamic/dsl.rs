@@ -138,6 +138,23 @@ impl fmt::Debug for BindingRef {
 }
 
 #[derive(Clone)]
+/// Opaque handle returned by `binds()` to apply fluent modifiers to multiple bindings.
+pub struct BindingsRef {
+    /// Shared builder state used to mutate the referenced bindings.
+    state: Arc<Mutex<ModeBuildState>>,
+    /// Indices into `ModeBuildState.bindings`.
+    indices: Vec<usize>,
+}
+
+impl fmt::Debug for BindingsRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindingsRef")
+            .field("indices", &self.indices)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
 /// Namespace object exported to Rhai scripts as `hotki`.
 struct HotkiNamespace {
     /// Shared config script state.
@@ -165,6 +182,7 @@ fn mode_id_for(func: &FnPtr) -> ModeId {
 pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
     engine.register_type::<ModeBuilder>();
     engine.register_type::<BindingRef>();
+    engine.register_type::<BindingsRef>();
     engine.register_type::<Action>();
     engine.register_type::<Toggle>();
     engine.register_type::<NotifyKind>();
@@ -830,6 +848,265 @@ fn register_mode_builder(engine: &mut Engine) {
                     raw: None,
                 });
             }
+            Ok(b)
+        },
+    );
+
+    // Register binds() for batch binding creation
+    engine.register_fn(
+        "binds",
+        |ctx: NativeCallContext,
+         m: &mut ModeBuilder,
+         bindings: rhai::Array|
+         -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut indices = Vec::with_capacity(bindings.len());
+            let mut guard = lock_unpoisoned(&m.state);
+
+            for (i, item) in bindings.into_iter().enumerate() {
+                let arr = item.into_array().map_err(|_| {
+                    boxed_validation_error(
+                        format!("binds: element {} must be an array [chord, desc, action]", i),
+                        ctx.call_position(),
+                    )
+                })?;
+
+                if arr.len() != 3 {
+                    return Err(boxed_validation_error(
+                        format!(
+                            "binds: element {} must have exactly 3 items [chord, desc, action], got {}",
+                            i,
+                            arr.len()
+                        ),
+                        ctx.call_position(),
+                    ));
+                }
+
+                let chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
+                    boxed_validation_error(
+                        format!("binds: element {} chord must be a string", i),
+                        ctx.call_position(),
+                    )
+                })?;
+
+                let desc = arr[1].clone().into_immutable_string().map_err(|_| {
+                    boxed_validation_error(
+                        format!("binds: element {} description must be a string", i),
+                        ctx.call_position(),
+                    )
+                })?;
+
+                let chord = Chord::parse(&chord_str).ok_or_else(|| {
+                    boxed_validation_error(
+                        format!("binds: element {} has invalid chord: {}", i, chord_str),
+                        ctx.call_position(),
+                    )
+                })?;
+
+                // Try to extract an Action from the third element
+                let action_dyn = arr[2].clone();
+                let action: Action = action_dyn.try_cast().ok_or_else(|| {
+                    boxed_validation_error(
+                        format!("binds: element {} action must be an Action", i),
+                        ctx.call_position(),
+                    )
+                })?;
+
+                let idx = guard.bindings.len();
+                guard.bindings.push(Binding {
+                    chord,
+                    desc: desc.to_string(),
+                    kind: BindingKind::Action(action),
+                    mode_id: None,
+                    flags: BindingFlags::default(),
+                    style: None,
+                    mode_capture: false,
+                    pos: ctx.call_position(),
+                });
+                indices.push(idx);
+            }
+
+            drop(guard);
+            Ok(BindingsRef {
+                state: m.state.clone(),
+                indices,
+            })
+        },
+    );
+
+    // Register modifier methods on BindingsRef
+    engine.register_fn(
+        "hidden",
+        |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                entry.flags.hidden = true;
+            }
+            drop(guard);
+            Ok(b)
+        },
+    );
+
+    engine.register_fn(
+        "stay",
+        |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                entry.flags.stay = true;
+            }
+            drop(guard);
+            Ok(b)
+        },
+    );
+
+    engine.register_fn(
+        "global",
+        |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                if matches!(entry.kind, BindingKind::Mode(_)) {
+                    return Err(boxed_validation_error(
+                        "global() is not allowed on mode entries".to_string(),
+                        ctx.call_position(),
+                    ));
+                }
+                entry.flags.global = true;
+            }
+            drop(guard);
+            Ok(b)
+        },
+    );
+
+    engine.register_fn(
+        "repeat",
+        |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                match &entry.kind {
+                    BindingKind::Action(Action::Shell(_))
+                    | BindingKind::Action(Action::Relay(_))
+                    | BindingKind::Action(Action::SetVolume(_))
+                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
+                    BindingKind::Action(_) => {
+                        return Err(boxed_validation_error(
+                            "repeat() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
+                            ctx.call_position(),
+                        ));
+                    }
+                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                        return Err(boxed_validation_error(
+                            "repeat() is not valid on handlers or mode entries".to_string(),
+                            ctx.call_position(),
+                        ));
+                    }
+                }
+                entry.flags.repeat = Some(RepeatSpec {
+                    delay_ms: None,
+                    interval_ms: None,
+                });
+                entry.flags.stay = true;
+            }
+            drop(guard);
+            Ok(b)
+        },
+    );
+
+    engine.register_fn(
+        "repeat_ms",
+        |ctx: NativeCallContext,
+         b: BindingsRef,
+         delay: i64,
+         interval: i64|
+         -> Result<BindingsRef, Box<EvalAltResult>> {
+            let delay_ms: u64 = delay.try_into().map_err(|_| {
+                boxed_validation_error(
+                    "repeat_ms: delay must be >= 0".to_string(),
+                    ctx.call_position(),
+                )
+            })?;
+            let interval_ms: u64 = interval.try_into().map_err(|_| {
+                boxed_validation_error(
+                    "repeat_ms: interval must be >= 0".to_string(),
+                    ctx.call_position(),
+                )
+            })?;
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                match &entry.kind {
+                    BindingKind::Action(Action::Shell(_))
+                    | BindingKind::Action(Action::Relay(_))
+                    | BindingKind::Action(Action::SetVolume(_))
+                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
+                    BindingKind::Action(_) => {
+                        return Err(boxed_validation_error(
+                            "repeat_ms() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
+                            ctx.call_position(),
+                        ));
+                    }
+                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                        return Err(boxed_validation_error(
+                            "repeat_ms() is not valid on handlers or mode entries".to_string(),
+                            ctx.call_position(),
+                        ));
+                    }
+                }
+                entry.flags.repeat = Some(RepeatSpec {
+                    delay_ms: Some(delay_ms),
+                    interval_ms: Some(interval_ms),
+                });
+                entry.flags.stay = true;
+            }
+            drop(guard);
+            Ok(b)
+        },
+    );
+
+    engine.register_fn(
+        "style",
+        |ctx: NativeCallContext,
+         b: BindingsRef,
+         map: Map|
+         -> Result<BindingsRef, Box<EvalAltResult>> {
+            let mut guard = lock_unpoisoned(&b.state);
+            for &idx in &b.indices {
+                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
+                    boxed_validation_error(
+                        "invalid binding handle".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                binding_style_overlay(&ctx, entry, map.clone())?;
+            }
+            drop(guard);
             Ok(b)
         },
     );

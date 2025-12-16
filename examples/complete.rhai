@@ -150,11 +150,13 @@ hotki.mode(|m, ctx| {
     m.bind("shift+H", "Hide HUD", action.hide_hud);
 
     // action.theme_*: change theme (stay in the mode for repeated changes).
-    m.bind("n", "Next Theme", action.theme_next).stay();
-    m.bind("p", "Previous Theme", action.theme_prev).stay();
-    m.bind("1", "Dark Blue Theme", action.theme_set("dark-blue")).stay();
-    m.bind("2", "Charcoal Theme", action.theme_set("charcoal")).stay();
-    m.bind("3", "Default Theme", action.theme_set("default")).stay();
+    m.binds([
+      ["n", "Next Theme", action.theme_next],
+      ["p", "Previous Theme", action.theme_prev],
+      ["1", "Dark Blue Theme", action.theme_set("dark-blue")],
+      ["2", "Charcoal Theme", action.theme_set("charcoal")],
+      ["3", "Default Theme", action.theme_set("default")],
+    ]).stay();
 
     // action.set_volume: set system volume to absolute value (0-100).
     m.bind("v", "Set Volume 50%", action.set_volume(50)).stay();
@@ -163,9 +165,11 @@ hotki.mode(|m, ctx| {
     m.bind("shift+V", "Change Volume +10", action.change_volume(10)).stay();
 
     // action.mute: control mute: on/off/toggle.
-    m.bind("m", "Mute", action.mute(on)).stay();
-    m.bind("u", "Unmute", action.mute(off)).stay();
-    m.bind("shift+M", "Toggle Mute", action.mute(toggle)).stay();
+    m.binds([
+      ["m", "Mute", action.mute(on)],
+      ["u", "Unmute", action.mute(off)],
+      ["shift+M", "Toggle Mute", action.mute(toggle)],
+    ]).stay();
 
     // === Handler ===
     m.bind("x", "Complex Action", handler(|ctx| {
@@ -192,8 +196,10 @@ hotki.mode(|m, ctx| {
     // === Mode navigation ===
     m.mode("shift+K", "Nested Mode", |sub, ctx| {
       sub.style(#{ hud: #{ mode: mini } });
-      sub.bind("b", "Back One Level", action.pop);
-      sub.bind("e", "Exit All", action.exit);
+      sub.binds([
+        ["b", "Back One Level", action.pop],
+        ["e", "Exit All", action.exit],
+      ]);
     });
 
     // `.capture()` on a mode entry: capture all keys while HUD is visible.
