@@ -203,11 +203,11 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
 
     register_global_constants(engine);
     register_hotki_namespace(engine, state.clone());
+    register_handler_type(engine);
     register_action_namespace(engine);
     super::style_api::register_style_type(engine);
     super::style_api::register_theme_api(engine, state);
     register_mode_builder(engine);
-    register_handler(engine);
     register_action_fluent(engine);
     register_context_types(engine);
     register_string_matches(engine);
@@ -366,6 +366,8 @@ fn register_action_namespace(engine: &mut Engine) {
     engine.register_get("theme_next", |_: &mut ActionNamespace| Action::ThemeNext);
     engine.register_get("theme_prev", |_: &mut ActionNamespace| Action::ThemePrev);
 
+    engine.register_fn("run", |_: ActionNamespace, func: FnPtr| HandlerRef { func });
+
     let mut module = Module::new();
     module.set_var("action", ActionNamespace);
     engine.register_global_module(module.into());
@@ -411,10 +413,9 @@ fn register_action_fluent(engine: &mut Engine) {
     });
 }
 
-/// Register the `handler(...)` factory.
-fn register_handler(engine: &mut Engine) {
+/// Register the `HandlerRef` type (used internally by `action.run(...)`).
+fn register_handler_type(engine: &mut Engine) {
     engine.register_type::<HandlerRef>();
-    engine.register_fn("handler", |func: FnPtr| HandlerRef { func });
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]

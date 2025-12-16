@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn handler_effects_preserve_enqueue_order() {
         let source = r#"hotki.mode(|m, ctx| {
-  m.bind("h", "handler", handler(|ctx| {
+  m.bind("h", "handler", action.run(|ctx| {
     ctx.exec(action.shell("echo one"));
     ctx.notify(info, "Test", "middle");
     ctx.exec(action.shell("echo two"));

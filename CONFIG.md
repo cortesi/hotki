@@ -52,7 +52,7 @@ stack (and rebinds OS hotkeys / updates the HUD) at least when:
   `action.pop`, `action.exit`, and auto-exit).
 
 Because render closures can run often, they should stay lightweight and side-effect-free; use
-`action.*` and `handler(...)` for effects.
+`action.*` for effects.
 
 ### Auto-pop and orphaning
 
@@ -124,8 +124,7 @@ m.bind(chord, desc, target) -> BindingRef
 ```
 
 Where `target` is one of:
-- `action.*` (primitive action)
-- `handler(|ctx| { ... })`
+- `action.*` (primitive action or compound action via `action.run`)
 - `|m, ctx| { ... }` (a child mode closure)
 
 #### Batch bindings
@@ -211,7 +210,7 @@ Returned by `m.bind(chord, desc, target)` and `m.mode(chord, title, ...)`. All m
 | Modifier | Valid On | Description |
 |----------|----------|-------------|
 | `.hidden()` | bindings + mode entries | Active but hidden from HUD |
-| `.stay()` | bindings + handlers | Suppress auto-exit after execution |
+| `.stay()` | bindings + compound actions | Suppress auto-exit after execution |
 | `.repeat()` | bindings | Hold-to-repeat (shell/relay/volume only) |
 | `.repeat_ms(delay, interval)` | bindings | Repeat with custom timings (ms) |
 | `.global()` | bindings | Inherit into child modes (not allowed on mode entries) |
@@ -289,12 +288,12 @@ action.relay("shift+tab")
 
 ---
 
-## Handlers
+## Compound Actions (`action.run`)
 
-Handlers are for compound actions (multiple effects, logic, conditional dispatch).
+Use `action.run` for compound actions (multiple effects, logic, conditional dispatch).
 
 ```rhai
-m.bind("x", "Complex", handler(|ctx| {
+m.bind("x", "Complex", action.run(|ctx| {
   ctx.exec(action.shell("echo hello").silent());
   ctx.notify(success, "Done", "Completed");
   ctx.stay(); // suppress auto-exit
@@ -356,7 +355,7 @@ Notifications: `left`, `right`
 
 ## Behavior Notes
 
-- **Auto-exit**: after executing an action/handler, Hotki clears to root + hides HUD unless the
-  binding (or handler via `ctx.stay()`) requests `.stay()`.
+- **Auto-exit**: after executing an action, Hotki clears to root + hides HUD unless the
+  binding (or compound action via `ctx.stay()`) requests `.stay()`.
 - **Duplicate chords**: within a single rendered mode, the first binding wins and later duplicates
   are ignored with a warning; use `if/else` for mutually exclusive chord assignments.

@@ -171,10 +171,10 @@ hotki.mode(|m, ctx| {
       ["shift+M", "Toggle Mute", action.mute(toggle)],
     ]).stay();
 
-    // === Handler ===
-    m.bind("x", "Complex Action", handler(|ctx| {
+    // === Compound Action ===
+    m.bind("x", "Complex Action", action.run(|ctx| {
       ctx.exec(action.shell("echo hello").silent());
-      ctx.notify(success, "Handler", "Queued a shell command + notification");
+      ctx.notify(success, "Done", "Queued a shell command + notification");
       ctx.stay();
     }));
 
