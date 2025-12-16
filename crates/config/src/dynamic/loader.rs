@@ -90,6 +90,21 @@ fn validate_root_closure(
     path: Option<&Path>,
     root: &super::ModeRef,
 ) -> Result<(), Error> {
+    // Static modes don't need validation (bindings are already parsed)
+    if root.static_bindings.is_some() {
+        return Ok(());
+    }
+
+    let Some(func) = &root.func else {
+        return Err(Error::Validation {
+            path: path.map(Path::to_path_buf),
+            line: None,
+            col: None,
+            message: "Root mode has neither closure nor static bindings".to_string(),
+            excerpt: None,
+        });
+    };
+
     let builder = ModeBuilder::new();
     let ctx = ModeCtx {
         app: String::new(),
@@ -99,8 +114,7 @@ fn validate_root_closure(
         depth: 0,
     };
 
-    root.func
-        .call::<Dynamic>(engine, ast, (builder, ctx))
+    func.call::<Dynamic>(engine, ast, (builder, ctx))
         .map(|_| ())
         .map_err(|e| error_from_rhai(source, &e, path))
 }

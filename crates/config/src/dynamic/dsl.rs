@@ -138,7 +138,7 @@ impl fmt::Debug for BindingRef {
 }
 
 #[derive(Clone)]
-/// Opaque handle returned by `binds()` to apply fluent modifiers to multiple bindings.
+/// Opaque handle returned by `bind()` (array form) to apply fluent modifiers to multiple bindings.
 pub struct BindingsRef {
     /// Shared builder state used to mutate the referenced bindings.
     state: Arc<Mutex<ModeBuildState>>,
@@ -175,6 +175,16 @@ fn parse_chord(ctx: &NativeCallContext, spec: &str) -> Result<Chord, Box<EvalAlt
 fn mode_id_for(func: &FnPtr) -> ModeId {
     let mut hasher = DefaultHasher::new();
     func.fn_name().hash(&mut hasher);
+    ModeId::new(hasher.finish())
+}
+
+/// Derive a stable identity for a static mode from its bindings.
+fn mode_id_for_static(bindings: &[Binding]) -> ModeId {
+    let mut hasher = DefaultHasher::new();
+    for b in bindings {
+        b.chord.to_string().hash(&mut hasher);
+        b.desc.hash(&mut hasher);
+    }
     ModeId::new(hasher.finish())
 }
 
@@ -266,7 +276,8 @@ fn register_hotki_namespace(engine: &mut Engine, state: Arc<Mutex<DynamicConfigS
 
             guard.root = Some(ModeRef {
                 id: mode_id_for(&func),
-                func,
+                func: Some(func),
+                static_bindings: None,
                 default_title: None,
             });
             Ok(())
@@ -555,7 +566,8 @@ fn register_mode_builder(engine: &mut Engine) {
             let idx = guard.bindings.len();
             let mode = ModeRef {
                 id: mode_id_for(&func),
-                func,
+                func: Some(func),
+                static_bindings: None,
                 default_title: Some(desc.to_string()),
             };
             guard.bindings.push(Binding {
@@ -588,7 +600,8 @@ fn register_mode_builder(engine: &mut Engine) {
             let idx = guard.bindings.len();
             let mode = ModeRef {
                 id: mode_id_for(&func),
-                func,
+                func: Some(func),
+                static_bindings: None,
                 default_title: Some(title.to_string()),
             };
             guard.bindings.push(Binding {
@@ -600,6 +613,131 @@ fn register_mode_builder(engine: &mut Engine) {
                 style: None,
                 mode_capture: false,
                 pos: ctx.call_position(),
+            });
+            Ok(BindingRef {
+                state: m.state.clone(),
+                index: idx,
+            })
+        },
+    );
+
+    // mode() with inline bindings array
+    engine.register_fn(
+        "mode",
+        |ctx: NativeCallContext,
+         m: &mut ModeBuilder,
+         chord: &str,
+         title: &str,
+         bindings: rhai::Array|
+         -> Result<BindingRef, Box<EvalAltResult>> {
+            let chord = parse_chord(&ctx, chord)?;
+            let pos = ctx.call_position();
+
+            // Parse the bindings array into Binding objects
+            let mut static_bindings = Vec::with_capacity(bindings.len());
+            for (i, item) in bindings.into_iter().enumerate() {
+                let arr = item.into_array().map_err(|_| {
+                    boxed_validation_error(
+                        format!(
+                            "mode bindings: element {} must be an array [chord, desc, action]",
+                            i
+                        ),
+                        pos,
+                    )
+                })?;
+
+                if arr.len() != 3 {
+                    return Err(boxed_validation_error(
+                        format!(
+                            "mode bindings: element {} must have exactly 3 items [chord, desc, action], got {}",
+                            i,
+                            arr.len()
+                        ),
+                        pos,
+                    ));
+                }
+
+                let binding_chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
+                    boxed_validation_error(
+                        format!("mode bindings: element {} chord must be a string", i),
+                        pos,
+                    )
+                })?;
+
+                let desc = arr[1].clone().into_immutable_string().map_err(|_| {
+                    boxed_validation_error(
+                        format!("mode bindings: element {} description must be a string", i),
+                        pos,
+                    )
+                })?;
+
+                let binding_chord = Chord::parse(&binding_chord_str).ok_or_else(|| {
+                    boxed_validation_error(
+                        format!(
+                            "mode bindings: element {} has invalid chord: {}",
+                            i, binding_chord_str
+                        ),
+                        pos,
+                    )
+                })?;
+
+                // Try to extract an Action or FnPtr (mode closure) from the third element
+                let third = arr[2].clone();
+                let (kind, binding_mode_id) =
+                    if let Some(action) = third.clone().try_cast::<Action>() {
+                        (BindingKind::Action(action), None)
+                    } else if let Some(func) = third.try_cast::<FnPtr>() {
+                        let nested_mode = ModeRef {
+                            id: mode_id_for(&func),
+                            func: Some(func),
+                            static_bindings: None,
+                            default_title: Some(desc.to_string()),
+                        };
+                        let id = nested_mode.id;
+                        (BindingKind::Mode(nested_mode), Some(id))
+                    } else {
+                        return Err(boxed_validation_error(
+                            format!(
+                                "mode bindings: element {} must have an Action or mode closure as third item",
+                                i
+                            ),
+                            pos,
+                        ));
+                    };
+
+                static_bindings.push(Binding {
+                    chord: binding_chord,
+                    desc: desc.to_string(),
+                    kind,
+                    mode_id: binding_mode_id,
+                    flags: BindingFlags::default(),
+                    style: None,
+                    mode_capture: false,
+                    pos,
+                });
+            }
+
+            // Generate a stable mode id from the bindings
+            let id = mode_id_for_static(&static_bindings);
+
+            let mode = ModeRef {
+                id,
+                func: None,
+                static_bindings: Some(static_bindings),
+                default_title: Some(title.to_string()),
+            };
+
+            let mut guard = lock_unpoisoned(&m.state);
+            let idx = guard.bindings.len();
+            guard.bindings.push(Binding {
+                chord,
+                desc: title.to_string(),
+                kind: BindingKind::Mode(mode.clone()),
+                mode_id: Some(mode.id),
+                flags: BindingFlags::default(),
+                style: None,
+                mode_capture: false,
+                pos,
             });
             Ok(BindingRef {
                 state: m.state.clone(),
@@ -852,9 +990,9 @@ fn register_mode_builder(engine: &mut Engine) {
         },
     );
 
-    // Register binds() for batch binding creation
+    // Register bind() overload for batch binding creation (array form)
     engine.register_fn(
-        "binds",
+        "bind",
         |ctx: NativeCallContext,
          m: &mut ModeBuilder,
          bindings: rhai::Array|
@@ -865,7 +1003,7 @@ fn register_mode_builder(engine: &mut Engine) {
             for (i, item) in bindings.into_iter().enumerate() {
                 let arr = item.into_array().map_err(|_| {
                     boxed_validation_error(
-                        format!("binds: element {} must be an array [chord, desc, action]", i),
+                        format!("bind: element {} must be an array [chord, desc, action]", i),
                         ctx.call_position(),
                     )
                 })?;
@@ -873,7 +1011,7 @@ fn register_mode_builder(engine: &mut Engine) {
                 if arr.len() != 3 {
                     return Err(boxed_validation_error(
                         format!(
-                            "binds: element {} must have exactly 3 items [chord, desc, action], got {}",
+                            "bind: element {} must have exactly 3 items [chord, desc, action], got {}",
                             i,
                             arr.len()
                         ),
@@ -883,40 +1021,55 @@ fn register_mode_builder(engine: &mut Engine) {
 
                 let chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
                     boxed_validation_error(
-                        format!("binds: element {} chord must be a string", i),
+                        format!("bind: element {} chord must be a string", i),
                         ctx.call_position(),
                     )
                 })?;
 
                 let desc = arr[1].clone().into_immutable_string().map_err(|_| {
                     boxed_validation_error(
-                        format!("binds: element {} description must be a string", i),
+                        format!("bind: element {} description must be a string", i),
                         ctx.call_position(),
                     )
                 })?;
 
                 let chord = Chord::parse(&chord_str).ok_or_else(|| {
                     boxed_validation_error(
-                        format!("binds: element {} has invalid chord: {}", i, chord_str),
+                        format!("bind: element {} has invalid chord: {}", i, chord_str),
                         ctx.call_position(),
                     )
                 })?;
 
-                // Try to extract an Action from the third element
-                let action_dyn = arr[2].clone();
-                let action: Action = action_dyn.try_cast().ok_or_else(|| {
-                    boxed_validation_error(
-                        format!("binds: element {} action must be an Action", i),
-                        ctx.call_position(),
-                    )
-                })?;
+                // Try to extract an Action or FnPtr (mode closure) from the third element
+                let third = arr[2].clone();
+                let (kind, mode_id) =
+                    if let Some(action) = third.clone().try_cast::<Action>() {
+                        (BindingKind::Action(action), None)
+                    } else if let Some(func) = third.try_cast::<FnPtr>() {
+                        let mode = ModeRef {
+                            id: mode_id_for(&func),
+                            func: Some(func),
+                            static_bindings: None,
+                            default_title: Some(desc.to_string()),
+                        };
+                        let id = mode.id;
+                        (BindingKind::Mode(mode), Some(id))
+                    } else {
+                        return Err(boxed_validation_error(
+                            format!(
+                                "bind: element {} must have an Action or mode closure as third item",
+                                i
+                            ),
+                            ctx.call_position(),
+                        ));
+                    };
 
                 let idx = guard.bindings.len();
                 guard.bindings.push(Binding {
                     chord,
                     desc: desc.to_string(),
-                    kind: BindingKind::Action(action),
-                    mode_id: None,
+                    kind,
+                    mode_id,
                     flags: BindingFlags::default(),
                     style: None,
                     mode_capture: false,
@@ -1164,7 +1317,8 @@ fn register_context_types(engine: &mut Engine) {
         ctx.set_nav(NavRequest::Push {
             mode: ModeRef {
                 id: mode_id_for(&func),
-                func,
+                func: Some(func),
+                static_bindings: None,
                 default_title: None,
             },
             title: None,
@@ -1175,7 +1329,8 @@ fn register_context_types(engine: &mut Engine) {
         ctx.set_nav(NavRequest::Push {
             mode: ModeRef {
                 id: mode_id_for(&func),
-                func,
+                func: Some(func),
+                static_bindings: None,
                 default_title: Some(title.clone()),
             },
             title: Some(title),

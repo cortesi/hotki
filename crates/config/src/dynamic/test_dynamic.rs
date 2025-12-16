@@ -318,6 +318,8 @@ hotki.mode(|_m, _ctx| {
         let result = cfg
             .root()
             .func
+            .as_ref()
+            .expect("expected closure")
             .call::<Dynamic>(&cfg.engine, &cfg.ast, (builder, ctx))
             .expect("call root");
 
@@ -375,6 +377,8 @@ hotki.mode(|_m, _ctx| names);
         let result = cfg
             .root()
             .func
+            .as_ref()
+            .expect("expected closure")
             .call::<Dynamic>(&cfg.engine, &cfg.ast, (builder, ctx))
             .expect("call root");
 

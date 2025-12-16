@@ -55,30 +55,26 @@ hotki.mode(|m, ctx| {
   m.mode("shift+cmd+0", "Activate", |m, ctx| {
     // App matching is just conditional rendering.
     if ctx.app.matches("Safari|Arc|Google Chrome") {
-      m.mode("b", "Browser", |sub, ctx| {
-        sub.binds([
-          ["r", "Reload Tab", action.relay("cmd+r")],
-          ["t", "New Tab", action.relay("cmd+t")],
-          ["p", "Back", action.pop],
-        ]);
-      });
+      m.mode("b", "Browser", [
+        ["r", "Reload Tab", action.relay("cmd+r")],
+        ["t", "New Tab", action.relay("cmd+t")],
+        ["p", "Back", action.pop],
+      ]);
     }
 
     // Title matching is also a conditional.
     if ctx.title.matches(".*(?i:readme).*") {
-      m.mode("r", "Reader", |sub, ctx| {
-        sub.binds([
-          ["m", "Mark Read", action.shell("echo marked")],
-          ["p", "Back", action.pop],
-        ]);
-      });
+      m.mode("r", "Reader", [
+        ["m", "Mark Read", action.shell("echo marked")],
+        ["p", "Back", action.pop],
+      ]);
     }
 
     // Normal always-visible action.
     m.bind("h", "Hello", action.shell("echo hello"));
 
     // Global navigation keys (hidden from the HUD).
-    m.binds([
+    m.bind([
       ["shift+cmd+0", "Exit", action.exit],
       ["esc", "Back", action.pop],
     ]).global().hidden();

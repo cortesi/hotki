@@ -150,7 +150,7 @@ hotki.mode(|m, ctx| {
     m.bind("shift+H", "Hide HUD", action.hide_hud);
 
     // action.theme_*: change theme (stay in the mode for repeated changes).
-    m.binds([
+    m.bind([
       ["n", "Next Theme", action.theme_next],
       ["p", "Previous Theme", action.theme_prev],
       ["1", "Dark Blue Theme", action.theme_set("dark-blue")],
@@ -165,7 +165,7 @@ hotki.mode(|m, ctx| {
     m.bind("shift+V", "Change Volume +10", action.change_volume(10)).stay();
 
     // action.mute: control mute: on/off/toggle.
-    m.binds([
+    m.bind([
       ["m", "Mute", action.mute(on)],
       ["u", "Unmute", action.mute(off)],
       ["shift+M", "Toggle Mute", action.mute(toggle)],
@@ -196,7 +196,7 @@ hotki.mode(|m, ctx| {
     // === Mode navigation ===
     m.mode("shift+K", "Nested Mode", |sub, ctx| {
       sub.style(#{ hud: #{ mode: mini } });
-      sub.binds([
+      sub.bind([
         ["b", "Back One Level", action.pop],
         ["e", "Exit All", action.exit],
       ]);

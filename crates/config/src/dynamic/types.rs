@@ -26,13 +26,15 @@ impl fmt::Debug for ModeId {
     }
 }
 
-/// Opaque wrapper around a Rhai mode closure.
+/// Opaque wrapper around a Rhai mode closure or static bindings.
 #[derive(Clone)]
 pub struct ModeRef {
     /// Stable identifier for the mode closure (used for orphan detection).
     pub(crate) id: ModeId,
-    /// Rhai function pointer for invoking the mode closure.
-    pub(crate) func: FnPtr,
+    /// Rhai function pointer for invoking the mode closure (None for static modes).
+    pub(crate) func: Option<FnPtr>,
+    /// Pre-built bindings for inline/static modes (None for closure modes).
+    pub(crate) static_bindings: Option<Vec<Binding>>,
     /// Default title declared at mode creation time, if any.
     pub(crate) default_title: Option<String>,
 }

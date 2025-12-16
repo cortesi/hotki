@@ -36,21 +36,19 @@ hotki.mode(|m, ctx| {
   }
 
   m.mode("shift+cmd+0", "activate", |m, ctx| {
-    m.mode("h", "Hotki", |sub, ctx| {
-      sub.binds([
-        ["c", "Clear Notifications", action.clear_notifications],
-        ["d", "Details", action.show_details(toggle)],
-        ["r", "Reload Config", action.reload_config],
-        ["o", "Show Root Keys", action.show_root],
-      ]);
-    });
+    m.mode("h", "Hotki", [
+      ["c", "Clear Notifications", action.clear_notifications],
+      ["d", "Details", action.show_details(toggle)],
+      ["r", "Reload Config", action.reload_config],
+      ["o", "Show Root Keys", action.show_root],
+    ]);
 
     m.mode("c", "Key Capture", |sub, ctx| {
       sub.bind("a", "Hi", action.shell("echo hi").notify(success, warn));
     }).capture();
 
     m.mode("s", "Shell", |sub, ctx| {
-      sub.binds([
+      sub.bind([
         ["e", "Simple echo", action.shell("echo hi").notify(success, warn)],
         ["s", "Sleep 5s", action.shell("sleep 5; echo slept 5s").notify(success, warn)],
       ]);
@@ -73,13 +71,13 @@ hotki.mode(|m, ctx| {
     m.mode("m", "Media", |sub, ctx| {
       // For media playback, use shell commands specific to your apps.
       // Examples for Spotify:
-      sub.binds([
+      sub.bind([
         ["space", "Play/Pause", action.shell("osascript -e 'tell application \"Spotify\" to playpause'")],
         ["n", "Next", action.shell("osascript -e 'tell application \"Spotify\" to next track'")],
         ["b", "Previous", action.shell("osascript -e 'tell application \"Spotify\" to previous track'")],
       ]);
 
-      sub.binds([
+      sub.bind([
         ["1", "10%", action.set_volume(10)],
         ["5", "50%", action.set_volume(50)],
         ["m", "mute", action.mute(toggle)],
@@ -89,7 +87,7 @@ hotki.mode(|m, ctx| {
     });
 
     m.mode("t", "Theme tester", |sub, ctx| {
-      sub.binds([
+      sub.bind([
         ["h", "Theme Prev", action.theme_prev],
         ["l", "Theme Next", action.theme_next],
       ]).stay();
@@ -104,7 +102,7 @@ hotki.mode(|m, ctx| {
         }
       });
 
-      sub.binds([
+      sub.bind([
         ["s", "Success", action.shell("echo this is a success window").notify(success, warn)],
         ["i", "Info", action.shell("echo this is an info window").notify(info, warn)],
         ["w", "Warning", action.shell("echo this is a warning window && false")],
@@ -113,14 +111,14 @@ hotki.mode(|m, ctx| {
 
       sub.mode("m", "Mini", |sub2, ctx| {
         sub2.style(#{ hud: #{ mode: mini } });
-        sub2.binds([
+        sub2.bind([
           ["h", "Theme Prev", action.theme_prev],
           ["l", "Theme Next", action.theme_next],
         ]).stay();
       });
 
       sub.mode("shift+l", "Long Submode", |long, ctx| {
-        long.binds([
+        long.bind([
           ["a", "Inner Action A", action.shell("echo here")],
           ["b", "Inner Action B", action.shell("echo here")],
           ["c", "Inner Action C", action.shell("echo here")],
@@ -130,12 +128,10 @@ hotki.mode(|m, ctx| {
           ["g", "Inner Action G", action.shell("echo here")],
           ["h", "Inner Action H", action.shell("echo here")],
         ]);
-        long.mode("ctrl+cmd+j", "Inner Mode with a very long title", |inner, ctx| {
-          inner.binds([
-            ["i", "Inner Mode", action.shell("echo Inner Mode")],
-            ["r", "Return to Main Menu", action.pop],
-          ]);
-        });
+        long.mode("ctrl+cmd+j", "Inner Mode with a very long title", [
+          ["i", "Inner Mode", action.shell("echo Inner Mode")],
+          ["r", "Return to Main Menu", action.pop],
+        ]);
         long.bind(
           "ctrl+cmd+i",
           "Inner Action with a very long title",
@@ -143,7 +139,7 @@ hotki.mode(|m, ctx| {
         );
       });
 
-      sub.binds([
+      sub.bind([
         ["shift+s", "Long Success", action.shell(long_notification_cmd(false)).notify(success, warn)],
         ["shift+i", "Long Info", action.shell(long_notification_cmd(false)).notify(info, warn)],
         ["shift+w", "Long Warning", action.shell(long_notification_cmd(true))],
@@ -155,7 +151,7 @@ hotki.mode(|m, ctx| {
       sub.style(#{ hud: #{ pos: nw } });
       sub.mode("u", "Sub Subtheme", |sub_sub, ctx| {
         sub_sub.style(#{ hud: #{ bg: "#ff0000" } });
-        sub_sub.binds([
+        sub_sub.bind([
           ["h", "Theme Prev", action.theme_prev],
           ["l", "Theme Next", action.theme_next],
         ]).stay();
@@ -166,7 +162,7 @@ hotki.mode(|m, ctx| {
   });
 
   m.mode("shift+cmd+9", "activate", |m, ctx| {
-    m.binds([
+    m.bind([
       ["a", "Inner Action A", action.shell("echo here")],
       ["b", "Inner Action B", action.shell("echo here")],
       ["c", "Inner Action C", action.shell("echo here")],

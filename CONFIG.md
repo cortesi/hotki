@@ -117,6 +117,8 @@ themes.solarized_dark  // "solarized-dark"
 
 ### Bindings
 
+#### Single binding
+
 ```rhai
 m.bind(chord, desc, target) -> BindingRef
 ```
@@ -126,13 +128,68 @@ Where `target` is one of:
 - `handler(|ctx| { ... })`
 - `|m, ctx| { ... }` (a child mode closure)
 
+#### Batch bindings
+
+```rhai
+m.bind(array) -> BindingsRef
+```
+
+Pass an array of `[chord, desc, target]` tuples to create multiple bindings at once. Each `target`
+can be an action or a mode closure:
+
+```rhai
+m.bind([
+  ["c", "Clear", action.clear_notifications],
+  ["r", "Reload", action.reload_config],
+  ["s", "Settings", |sub, ctx| {
+    sub.bind([
+      ["t", "Theme", action.theme_next],
+    ]);
+  }],
+]).stay();  // modifiers apply to all bindings
+```
+
 ### Modes
+
+#### Closure form
 
 ```rhai
 m.mode(chord, title, |m, ctx| { ... }) -> BindingRef
 ```
 
 Shorthand for `m.bind(chord, title, |m, ctx| { ... })`.
+
+#### Inline bindings form
+
+```rhai
+m.mode(chord, title, array) -> BindingRef
+```
+
+For simple modes that only contain a flat list of bindings, pass an array directly instead of a
+closure. Each element can be an action or a nested mode closure:
+
+```rhai
+m.mode("h", "Hotki", [
+  ["c", "Clear", action.clear_notifications],
+  ["r", "Reload", action.reload_config],
+  ["s", "Settings", |sub, ctx| {
+    // nested mode with its own logic
+    sub.bind("t", "Theme", action.theme_next);
+  }],
+]);
+```
+
+This is equivalent to:
+
+```rhai
+m.mode("h", "Hotki", |sub, ctx| {
+  sub.bind([
+    ["c", "Clear", action.clear_notifications],
+    ["r", "Reload", action.reload_config],
+    ["s", "Settings", |sub, ctx| { ... }],
+  ]);
+});
+```
 
 ### Mode-Level Modifiers (inside a mode closure)
 
@@ -144,9 +201,12 @@ m.style(Style(#{ ... })); // merge a Style object into this mode's style
 
 ---
 
-## BindingRef Modifiers
+## Binding Modifiers
 
-All modifiers return `BindingRef` for chaining.
+### BindingRef (single binding)
+
+Returned by `m.bind(chord, desc, target)` and `m.mode(chord, title, ...)`. All modifiers return
+`BindingRef` for chaining.
 
 | Modifier | Valid On | Description |
 |----------|----------|-------------|
@@ -157,6 +217,18 @@ All modifiers return `BindingRef` for chaining.
 | `.global()` | bindings | Inherit into child modes (not allowed on mode entries) |
 | `.style(map)` | bindings + mode entries | Per-binding HUD row style override |
 | `.capture()` | mode entries | Enable capture-all in the entered mode |
+
+### BindingsRef (batch bindings)
+
+Returned by `m.bind(array)`. Supports the same modifiers as `BindingRef`, applied to all bindings
+in the batch:
+
+```rhai
+m.bind([
+  ["h", "Left", action.relay("left")],
+  ["l", "Right", action.relay("right")],
+]).stay().global();  // both bindings get stay + global
+```
 
 Notes:
 - `.global()` is rejected on mode entries to keep orphan detection simple.

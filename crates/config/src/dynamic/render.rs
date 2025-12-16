@@ -129,19 +129,40 @@ pub fn render_stack(
     })
 }
 
-/// Render a single mode frame by invoking its closure and collecting bindings.
+/// Render a single mode frame by invoking its closure or using static bindings.
 fn render_mode(
     cfg: &DynamicConfig,
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
+    // Static modes: use pre-built bindings directly
+    if let Some(static_bindings) = &frame.closure.static_bindings {
+        let (bindings, warnings) = dedup_mode_bindings(cfg, static_bindings);
+        return Ok((
+            ModeView {
+                bindings,
+                style: frame.style.clone(),
+                capture: frame.capture,
+            },
+            warnings,
+        ));
+    }
+
+    // Closure modes: invoke the Rhai function
+    let Some(func) = &frame.closure.func else {
+        return Err(Error::Validation {
+            path: cfg.path.clone(),
+            line: None,
+            col: None,
+            message: "Mode has neither closure nor static bindings".to_string(),
+            excerpt: None,
+        });
+    };
+
     let builder = ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
     let builder_for_rhai = builder.clone();
 
-    frame
-        .closure
-        .func
-        .call::<Dynamic>(&cfg.engine, &cfg.ast, (builder_for_rhai, ctx.clone()))
+    func.call::<Dynamic>(&cfg.engine, &cfg.ast, (builder_for_rhai, ctx.clone()))
         .map(|_| ())
         .map_err(|err| rhai_error_to_config(cfg, &err))?;
 

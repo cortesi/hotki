@@ -54,26 +54,26 @@ hotki.mode(|m, ctx| {
     .global()
     .hidden();
 
-  m.binds([
+  m.bind([
     ["shift+cmd+y", "y scratchpad", action.shell("yabai -m window --toggle web")],
     ["shift+cmd+u", "u scratchpad", action.shell("yabai -m window --toggle web2")],
   ]).global();
 
   // Global navigation keys (hidden from HUD).
   if ctx.hud {
-    m.binds([
+    m.bind([
       ["esc", "Exit", action.exit],
       ["left", "Pop", action.pop],
     ]).global().hidden();
   }
 
   m.mode("shift+cmd+m", "music", |m, ctx| {
-    m.binds([
+    m.bind([
       ["k", "vol up", action.change_volume(5)],
       ["j", "vol down", action.change_volume(-5)],
     ]).repeat();
 
-    m.binds([
+    m.bind([
       ["l", "next >>", action.shell("spotify next")],
       ["h", "<< prev", action.shell("spotify prev")],
       ["p", "play/pause", action.shell("spotify pause")],
@@ -86,7 +86,7 @@ hotki.mode(|m, ctx| {
 
   m.mode("shift+cmd+space", "activate", |m, ctx| {
     m.mode("h", "hotki", |sub, ctx| {
-      sub.binds([
+      sub.bind([
         ["c", "Clear Notifications", action.clear_notifications],
         ["d", "Details", action.show_details(toggle)],
         ["r", "Reload Config", action.reload_config],
@@ -95,35 +95,31 @@ hotki.mode(|m, ctx| {
       sub.bind("t", "Theme", action.theme_next).stay();
     });
 
-    m.mode("g", "go", |sub, ctx| {
-      sub.binds([
-        ["u", "u scratchpad", action.shell("yabai -m window --toggle web2")],
-        ["y", "y scratchpad", action.shell("yabai -m window --toggle web")],
-      ]);
-    });
+    m.mode("g", "go", [
+      ["u", "u scratchpad", action.shell("yabai -m window --toggle web2")],
+      ["y", "y scratchpad", action.shell("yabai -m window --toggle web")],
+    ]);
 
     m.mode("w", "window", |sub, ctx| {
-      sub.mode("2", "2 Columns", |cols, ctx| {
-        cols.binds([
-          ["h", "left", yabai_cell(2, 1, 0, 0)],
-          ["l", "right", yabai_cell(2, 1, 1, 0)],
-        ]);
-      });
+      sub.mode("2", "2 Columns", [
+        ["h", "left", yabai_cell(2, 1, 0, 0)],
+        ["l", "right", yabai_cell(2, 1, 1, 0)],
+      ]);
 
       sub.mode("3", "3 Columns", |cols, ctx| {
-        cols.binds([
+        cols.bind([
           ["1", "Column 1", yabai_cell(3, 1, 0, 0)],
           ["2", "Column 2", yabai_cell(3, 1, 1, 0)],
           ["3", "Column 3", yabai_cell(3, 1, 2, 0)],
         ]);
-        cols.binds([
+        cols.bind([
           ["l", "left", yabai_cell_move(3, 1, 1, 0)],
           ["h", "right", yabai_cell_move(3, 1, -1, 0)],
         ]).stay();
       });
 
       sub.mode("g", "3x3 Grid", |grid, ctx| {
-        grid.binds([
+        grid.bind([
           ["l", "left", yabai_cell_move(3, 3, 1, 0)],
           ["h", "right", yabai_cell_move(3, 3, -1, 0)],
           ["k", "up", yabai_cell_move(3, 3, 0, -1)],
@@ -131,21 +127,19 @@ hotki.mode(|m, ctx| {
         ]).stay();
       });
 
-      sub.mode("s", "move to space", |spaces, ctx| {
-        spaces.binds([
-          ["1", "1", action.shell("yabai -m window --space 1")],
-          ["2", "2", action.shell("yabai -m window --space 2")],
-          ["3", "3", action.shell("yabai -m window --space 3")],
-          ["4", "4", action.shell("yabai -m window --space 4")],
-          ["5", "5", action.shell("yabai -m window --space 5")],
-          ["6", "6", action.shell("yabai -m window --space 6")],
-          ["7", "7", action.shell("yabai -m window --space 7")],
-          ["8", "8", action.shell("yabai -m window --space 8")],
-          ["9", "9", action.shell("yabai -m window --space 9")],
-        ]);
-      });
+      sub.mode("s", "move to space", [
+        ["1", "1", action.shell("yabai -m window --space 1")],
+        ["2", "2", action.shell("yabai -m window --space 2")],
+        ["3", "3", action.shell("yabai -m window --space 3")],
+        ["4", "4", action.shell("yabai -m window --space 4")],
+        ["5", "5", action.shell("yabai -m window --space 5")],
+        ["6", "6", action.shell("yabai -m window --space 6")],
+        ["7", "7", action.shell("yabai -m window --space 7")],
+        ["8", "8", action.shell("yabai -m window --space 8")],
+        ["9", "9", action.shell("yabai -m window --space 9")],
+      ]);
 
-      sub.binds([
+      sub.bind([
         ["f", "fullscreen", action.shell("yabai -m window --toggle zoom-fullscreen")],
         ["n", "native fullscreen", action.shell("yabai -m window --toggle native-fullscreen")],
         ["u", "set u scratchpad", action.shell("yabai -m window --scratchpad web2")],
@@ -161,7 +155,7 @@ hotki.mode(|m, ctx| {
   if ctx.app.matches("WezTerm") {
     m.mode("shift+cmd+j", "wezterm", |m, ctx| {
       m.mode("r", "resize pane", |sub, ctx| {
-        sub.binds([
+        sub.bind([
           ["k", "up", action.relay("ctrl+cmd+shift+k")],
           ["j", "down", action.relay("ctrl+cmd+shift+j")],
           ["h", "left", action.relay("ctrl+cmd+shift+h")],
@@ -169,14 +163,12 @@ hotki.mode(|m, ctx| {
         ]).stay();
       });
 
-      m.mode("s", "split pane", |sub, ctx| {
-        sub.binds([
-          ["h", "left", action.relay("ctrl+shift+cmd+a")],
-          ["l", "right", action.relay("ctrl+shift+cmd+s")],
-          ["k", "up", action.relay("ctrl+shift+cmd+d")],
-          ["j", "down", action.relay("ctrl+shift+cmd+f")],
-        ]);
-      });
+      m.mode("s", "split pane", [
+        ["h", "left", action.relay("ctrl+shift+cmd+a")],
+        ["l", "right", action.relay("ctrl+shift+cmd+s")],
+        ["k", "up", action.relay("ctrl+shift+cmd+d")],
+        ["j", "down", action.relay("ctrl+shift+cmd+f")],
+      ]);
 
       m.bind("t", "toggle tabs", action.relay("ctrl+shift+cmd+t"));
     });
@@ -189,19 +181,17 @@ hotki.mode(|m, ctx| {
   } else if ctx.app.matches("Obsidian") {
     m.mode("shift+cmd+j", "obsidian", |m, ctx| {
       m.mode("c", "content", |sub, ctx| {
-        sub.mode("i", "insert", |inner, ctx| {
-          inner.binds([
-            ["a", "attachment", action.relay("ctrl+shift+cmd+6")],
-            ["c", "code", action.relay("ctrl+shift+cmd+7")],
-            ["f", "footnote", action.relay("ctrl+shift+cmd+8")],
-            ["l", "link", action.relay("ctrl+shift+cmd+9")],
-          ]);
-        });
+        sub.mode("i", "insert", [
+          ["a", "attachment", action.relay("ctrl+shift+cmd+6")],
+          ["c", "code", action.relay("ctrl+shift+cmd+7")],
+          ["f", "footnote", action.relay("ctrl+shift+cmd+8")],
+          ["l", "link", action.relay("ctrl+shift+cmd+9")],
+        ]);
 
         sub.mode("t", "table", |inner, ctx| {
           inner.bind("n", "new", action.relay("ctrl+shift+cmd+y")).stay();
           inner.mode("i", "insert", |insert, ctx| {
-            insert.binds([
+            insert.bind([
               ["h", "column left", action.relay("ctrl+shift+cmd+u")],
               ["l", "column right", action.relay("ctrl+shift+cmd+i")],
               ["j", "column above", action.relay("ctrl+shift+cmd+o")],
@@ -209,7 +199,7 @@ hotki.mode(|m, ctx| {
             ]).stay();
           });
           inner.mode("d", "delete", |del, ctx| {
-            del.binds([
+            del.bind([
               ["r", "row", action.relay("ctrl+shift+cmd+m")],
               ["c", "column", action.relay("ctrl+shift+cmd+n")],
             ]).stay();
@@ -217,31 +207,25 @@ hotki.mode(|m, ctx| {
         });
       });
 
-      m.mode("f", "file", |sub, ctx| {
-        sub.binds([
-          ["f", "show in finder", action.relay("ctrl+shift+cmd+4")],
-          ["n", "rename", action.relay("ctrl+shift+cmd+5")],
-        ]);
-      });
+      m.mode("f", "file", [
+        ["f", "show in finder", action.relay("ctrl+shift+cmd+4")],
+        ["n", "rename", action.relay("ctrl+shift+cmd+5")],
+      ]);
 
-      m.mode("s", "split", |sub, ctx| {
-        sub.binds([
-          ["l", "right", action.relay("ctrl+shift+cmd+2")],
-          ["j", "down", action.relay("ctrl+shift+cmd+1")],
-        ]);
-      });
+      m.mode("s", "split", [
+        ["l", "right", action.relay("ctrl+shift+cmd+2")],
+        ["j", "down", action.relay("ctrl+shift+cmd+1")],
+      ]);
 
       m.mode("u", "utils", |sub, ctx| {
         sub.bind("s", "shell here", action.relay("ctrl+shift+cmd+s"));
       });
 
-      m.mode("w", "window", |sub, ctx| {
-        sub.binds([
-          ["h", "sidebar left", action.relay("ctrl+shift+cmd+h")],
-          ["l", "sidebar right", action.relay("ctrl+shift+cmd+l")],
-          ["s", "settings", action.relay("ctrl+shift+cmd+3")],
-        ]);
-      });
+      m.mode("w", "window", [
+        ["h", "sidebar left", action.relay("ctrl+shift+cmd+h")],
+        ["l", "sidebar right", action.relay("ctrl+shift+cmd+l")],
+        ["s", "settings", action.relay("ctrl+shift+cmd+3")],
+      ]);
     });
   }
 });
