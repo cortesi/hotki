@@ -17,7 +17,7 @@ use super::{
     util::lock_unpoisoned,
     validation::extract_validation_error,
 };
-use crate::{Error, error::excerpt_at};
+use crate::{Error, error::excerpt_at, themes};
 
 /// Load a dynamic config from a Rhai file at `path`.
 pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
@@ -41,7 +41,13 @@ pub fn load_dynamic_config_from_string(
     source: String,
     path: Option<PathBuf>,
 ) -> Result<DynamicConfig, Error> {
-    let state = Arc::new(Mutex::new(DynamicConfigScriptState::default()));
+    let mut init_state = DynamicConfigScriptState::default();
+    if let Some(dir) = path.as_deref().and_then(Path::parent) {
+        let themes_dir = dir.join("themes");
+        let user_themes = themes::load_user_themes(&themes_dir)?;
+        init_state.themes.extend(user_themes);
+    }
+    let state = Arc::new(Mutex::new(init_state));
 
     let mut engine = Engine::new();
     configure_engine(&mut engine, path.as_deref());

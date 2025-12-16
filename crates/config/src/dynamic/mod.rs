@@ -2,6 +2,8 @@
 
 /// Dynamic config container and style helpers.
 mod config;
+/// Global constant registration shared by the DSL and theme loader.
+pub(crate) mod constants;
 /// Rhai DSL registration and builder types.
 mod dsl;
 /// Handler execution helpers.

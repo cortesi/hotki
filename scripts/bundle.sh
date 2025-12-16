@@ -58,6 +58,12 @@ echo "==> Preparing bundle directories"
 rm -rf "$APP_DIR" "$ICONSET_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR" "$ICONSET_DIR"
 
+echo "==> Copying theme sources"
+THEMES_SRC="$ROOT_DIR/themes"
+if [[ -d "$THEMES_SRC" ]]; then
+  cp -R "$THEMES_SRC" "$RES_DIR/themes"
+fi
+
 echo "==> Generating .icns from $ICON_SRC"
 # Generate required iconset sizes
 declare -a sizes=(
@@ -124,4 +130,3 @@ chmod +x "$MACOS_DIR/$BIN_NAME"
 
 echo "==> Bundle ready: $APP_DIR"
 echo "You can run it with: open \"$APP_DIR\""
-

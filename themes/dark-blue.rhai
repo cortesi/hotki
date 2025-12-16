@@ -1,0 +1,47 @@
+// Built-in theme: dark-blue
+#{
+  hud: #{
+    pos: center,
+    font_size: 16.0,
+    title_fg: "#a0c4ff",
+    bg: "#0a1628",
+    key_fg: "#ffffff",
+    key_bg: "#1e3a5f",
+    mod_fg: "#a0c4ff",
+    mod_bg: "#2c5282",
+    tag_fg: "#63b3ed",
+    opacity: 0.95,
+  },
+  notify: #{
+    width: 420.0,
+    pos: right,
+    opacity: 0.9,
+    timeout: 4.0,
+    buffer: 200,
+    info: #{
+      bg: "#1a365d",
+      title_fg: "#a0c4ff",
+      body_fg: "#a0c4ff",
+      title_font_weight: bold,
+    },
+    warn: #{
+      bg: "#451a03",
+      title_fg: "#fbbf24",
+      body_fg: "#fbbf24",
+      title_font_weight: bold,
+    },
+    error: #{
+      bg: "#450a0a",
+      title_fg: "#f87171",
+      body_fg: "#f87171",
+      title_font_weight: bold,
+    },
+    success: #{
+      bg: "#052e16",
+      title_fg: "#86efac",
+      body_fg: "#86efac",
+      title_font_weight: bold,
+    },
+  },
+}
+

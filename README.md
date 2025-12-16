@@ -66,8 +66,9 @@ hotki.mode(|m, ctx| {
 ## Themes and Styling
 
 Every aspect of Hotki's UI is customizable. We have a few built-in
-[themes](./crates/config/themes) that you can build on, or you can override
-everything for complete control.
+[themes](./themes) that you can build on (embedded into the binary at compile
+time). To customize, copy one into your config directory's `themes/` folder
+(usually `~/.hotki/themes/`) and tweak it.
 
 
 <table>

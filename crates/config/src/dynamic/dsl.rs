@@ -14,7 +14,7 @@ use rhai::{
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef,
-    NavRequest, RepeatSpec, StyleOverlay, style_api::RhaiStyle, util::lock_unpoisoned,
+    NavRequest, RepeatSpec, StyleOverlay, constants, style_api::RhaiStyle, util::lock_unpoisoned,
     validation::boxed_validation_error,
 };
 use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw, themes};
@@ -32,12 +32,9 @@ pub struct DynamicConfigScriptState {
 
 impl Default for DynamicConfigScriptState {
     fn default() -> Self {
-        let themes = themes::list_themes()
-            .into_iter()
-            .map(|name| {
-                let theme = themes::load_theme(Some(name));
-                (name.to_string(), theme.to_raw())
-            })
+        let themes = themes::builtin_raw_themes()
+            .iter()
+            .map(|(name, raw)| ((*name).to_string(), raw.clone()))
             .collect();
 
         Self {
@@ -208,7 +205,7 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
     engine.register_type::<Mode>();
     engine.register_type::<FontWeight>();
 
-    register_global_constants(engine);
+    constants::register_dsl_constants(engine);
     register_hotki_namespace(engine, state.clone());
     register_handler_type(engine);
     register_action_namespace(engine);
@@ -218,49 +215,6 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
     register_action_fluent(engine);
     register_context_types(engine);
     register_string_matches(engine);
-}
-
-/// Register global constants used by the DSL (toggles, positions, weights, etc.).
-fn register_global_constants(engine: &mut Engine) {
-    let mut module = Module::new();
-
-    module.set_var("on", Toggle::On);
-    module.set_var("off", Toggle::Off);
-    module.set_var("toggle", Toggle::Toggle);
-
-    module.set_var("ignore", NotifyKind::Ignore);
-    module.set_var("info", NotifyKind::Info);
-    module.set_var("warn", NotifyKind::Warn);
-    module.set_var("error", NotifyKind::Error);
-    module.set_var("success", NotifyKind::Success);
-
-    module.set_var("center", "center");
-    module.set_var("n", "n");
-    module.set_var("ne", "ne");
-    module.set_var("e", "e");
-    module.set_var("se", "se");
-    module.set_var("s", "s");
-    module.set_var("sw", "sw");
-    module.set_var("w", "w");
-    module.set_var("nw", "nw");
-
-    module.set_var("left", "left");
-    module.set_var("right", "right");
-
-    module.set_var("hud", "hud");
-    module.set_var("mini", "mini");
-    module.set_var("hide", "hide");
-
-    module.set_var("thin", "thin");
-    module.set_var("light", "light");
-    module.set_var("regular", "regular");
-    module.set_var("medium", "medium");
-    module.set_var("semibold", "semibold");
-    module.set_var("bold", "bold");
-    module.set_var("extrabold", "extrabold");
-    module.set_var("black", "black");
-
-    engine.register_global_module(module.into());
 }
 
 /// Register the global `hotki` namespace used to define the root mode.

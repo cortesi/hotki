@@ -1,358 +1,48 @@
 //! Theme registry and helpers.
 //!
-//! Important: deadlock avoidance when loading themes.
-//!
-//! This module uses a `OnceLock<HashMap<..>>` to store compiled themes. When
-//! populating the map inside `get_or_init`, we must not call any function that
-//! (directly or indirectly) tries to access the same `themes()` initializer,
-//! or we’d re-enter the `OnceLock` initialization and deadlock.
-//!
-//! Therefore, themes are defined as Rust values and inserted directly into the
-//! registry, avoiding any dynamic theme loading during initialization.
-use std::{collections::HashMap, sync::OnceLock};
+//! Built-in themes are defined as Rhai source files embedded at compile time, then evaluated into
+//! `RawStyle` overlays at startup (or lazily on first access).
+use std::{collections::HashMap, path::Path, sync::OnceLock};
 
-use crate::{FontWeight, NotifyPos, Offset, Pos, Style, parse_rgb, raw::RawNotifyWindowStyle};
+use crate::{Style, raw};
 
-/// All available themes, loaded at compile time
-fn themes() -> &'static HashMap<String, Style> {
-    static THEMES: OnceLock<HashMap<String, Style>> = OnceLock::new();
-    THEMES.get_or_init(|| {
-        fn rgb(s: &str) -> (u8, u8, u8) {
-            parse_rgb(s).unwrap_or_else(|| panic!("invalid theme color: {}", s))
-        }
+/// Theme error types and conversions.
+mod error;
+/// Theme script loading and evaluation.
+mod loader;
 
-        fn set_notify_style(
-            style: &mut RawNotifyWindowStyle,
-            bg: &str,
-            title_fg: &str,
-            body_fg: &str,
-            title_font_weight: FontWeight,
-        ) {
-            style.bg = Some(bg.to_string());
-            style.title_fg = Some(title_fg.to_string());
-            style.body_fg = Some(body_fg.to_string());
-            style.title_font_weight = Some(title_font_weight);
-        }
+pub use error::ThemeError;
 
-        fn theme_default() -> Style {
-            let mut style = Style::default();
+/// Cached evaluated built-in theme overlays loaded from embedded Rhai sources.
+static BUILTIN_THEMES: OnceLock<HashMap<&'static str, raw::RawStyle>> = OnceLock::new();
 
-            style.hud.radius = 8.0;
-            style.hud.pos = Pos::Center;
-            style.hud.offset = Offset { x: 0.0, y: 0.0 };
-            style.hud.font_size = 14.0;
-            style.hud.title_font_weight = FontWeight::Regular;
-            style.hud.key_font_size = 19.0;
-            style.hud.tag_font_size = 20.0;
-            style.hud.tag_font_weight = FontWeight::Regular;
-            style.hud.title_fg = rgb("#d0d0d0");
-            style.hud.bg = rgb("#101010");
-            style.hud.key_radius = 4.0;
-            style.hud.key_fg = rgb("#d0d0d0");
-            style.hud.key_bg = rgb("#2c3471");
-            style.hud.key_font_weight = FontWeight::Bold;
-            style.hud.mod_fg = rgb("white");
-            style.hud.mod_font_weight = FontWeight::Regular;
-            style.hud.mod_bg = rgb("#43414d");
-            style.hud.tag_fg = rgb("#374f8a");
-            style.hud.opacity = 1.0;
+/// Force initialization of the embedded built-in theme registry.
+///
+/// The Hotki app calls this at startup so failures surface immediately.
+pub fn init_builtins() {
+    let _ignored = builtin_raw_themes();
+}
 
-            style.notify.width = 420.0;
-            style.notify.pos = NotifyPos::Right;
-            style.notify.opacity = 0.95;
-            style.notify.timeout = 4.0;
-            style.notify.buffer = 200;
-
-            set_notify_style(
-                &mut style.notify.info,
-                "#222222",
-                "white",
-                "white",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.warn,
-                "#442a00",
-                "#ffc100",
-                "#ffc100",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.error,
-                "#3a0000",
-                "#ff6666",
-                "#ff6666",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.success,
-                "#0c2d0c",
-                "#8bff8b",
-                "#8bff8b",
-                FontWeight::Bold,
-            );
-
-            style
-        }
-
-        fn theme_charcoal() -> Style {
-            let mut style = Style::default();
-
-            style.hud.pos = Pos::Center;
-            style.hud.offset = Offset { x: 0.0, y: 0.0 };
-            style.hud.font_size = 14.0;
-            style.hud.title_font_weight = FontWeight::Regular;
-            style.hud.key_font_size = 14.0;
-            style.hud.key_font_weight = FontWeight::Regular;
-            style.hud.tag_font_size = 14.0;
-            style.hud.tag_font_weight = FontWeight::Regular;
-            style.hud.title_fg = rgb("white");
-            style.hud.bg = rgb("#202020");
-            style.hud.key_fg = rgb("white");
-            style.hud.key_bg = rgb("#505050");
-            style.hud.mod_fg = rgb("white");
-            style.hud.mod_font_weight = FontWeight::Regular;
-            style.hud.mod_bg = rgb("#404040");
-            style.hud.tag_fg = rgb("white");
-            style.hud.opacity = 1.0;
-
-            style.notify.width = 420.0;
-            style.notify.pos = NotifyPos::Right;
-            style.notify.opacity = 0.95;
-            style.notify.timeout = 4.0;
-            style.notify.buffer = 200;
-
-            set_notify_style(
-                &mut style.notify.info,
-                "#222222",
-                "white",
-                "white",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.warn,
-                "#442a00",
-                "#ffc100",
-                "#ffc100",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.error,
-                "#3a0000",
-                "#ff6666",
-                "#ff6666",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.success,
-                "#0c2d0c",
-                "#8bff8b",
-                "#8bff8b",
-                FontWeight::Bold,
-            );
-
-            style
-        }
-
-        fn theme_dark_blue() -> Style {
-            let mut style = Style::default();
-
-            style.hud.pos = Pos::Center;
-            style.hud.font_size = 16.0;
-            style.hud.title_fg = rgb("#a0c4ff");
-            style.hud.bg = rgb("#0a1628");
-            style.hud.key_fg = rgb("#ffffff");
-            style.hud.key_bg = rgb("#1e3a5f");
-            style.hud.mod_fg = rgb("#a0c4ff");
-            style.hud.mod_bg = rgb("#2c5282");
-            style.hud.tag_fg = rgb("#63b3ed");
-            style.hud.opacity = 0.95;
-
-            style.notify.width = 420.0;
-            style.notify.pos = NotifyPos::Right;
-            style.notify.opacity = 0.9;
-            style.notify.timeout = 4.0;
-            style.notify.buffer = 200;
-
-            set_notify_style(
-                &mut style.notify.info,
-                "#1a365d",
-                "#a0c4ff",
-                "#a0c4ff",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.warn,
-                "#451a03",
-                "#fbbf24",
-                "#fbbf24",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.error,
-                "#450a0a",
-                "#f87171",
-                "#f87171",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.success,
-                "#052e16",
-                "#86efac",
-                "#86efac",
-                FontWeight::Bold,
-            );
-
-            style
-        }
-
-        fn theme_solarized_dark() -> Style {
-            let mut style = Style::default();
-
-            style.hud.radius = 8.0;
-            style.hud.pos = Pos::Center;
-            style.hud.offset = Offset { x: 0.0, y: 0.0 };
-            style.hud.font_size = 14.0;
-            style.hud.title_font_weight = FontWeight::Regular;
-            style.hud.key_font_size = 19.0;
-            style.hud.tag_font_size = 20.0;
-            style.hud.tag_font_weight = FontWeight::Regular;
-            style.hud.title_fg = rgb("#93a1a1");
-            style.hud.bg = rgb("#002b36");
-            style.hud.key_radius = 4.0;
-            style.hud.key_fg = rgb("#fdf6e3");
-            style.hud.key_bg = rgb("#268bd2");
-            style.hud.key_font_weight = FontWeight::Bold;
-            style.hud.mod_fg = rgb("#eee8d5");
-            style.hud.mod_font_weight = FontWeight::Regular;
-            style.hud.mod_bg = rgb("#b58900");
-            style.hud.tag_fg = rgb("#2aa198");
-            style.hud.opacity = 0.95;
-
-            style.notify.width = 420.0;
-            style.notify.pos = NotifyPos::Right;
-            style.notify.opacity = 0.9;
-            style.notify.timeout = 4.0;
-            style.notify.buffer = 200;
-
-            set_notify_style(
-                &mut style.notify.info,
-                "#073642",
-                "#93a1a1",
-                "#839496",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.warn,
-                "#073642",
-                "#cb4b16",
-                "#b58900",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.error,
-                "#073642",
-                "#dc322f",
-                "#dc322f",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.success,
-                "#073642",
-                "#859900",
-                "#859900",
-                FontWeight::Bold,
-            );
-
-            style
-        }
-
-        fn theme_solarized_light() -> Style {
-            let mut style = Style::default();
-
-            style.hud.radius = 8.0;
-            style.hud.pos = Pos::Center;
-            style.hud.offset = Offset { x: 0.0, y: 0.0 };
-            style.hud.font_size = 14.0;
-            style.hud.title_font_weight = FontWeight::Regular;
-            style.hud.key_font_size = 19.0;
-            style.hud.tag_font_size = 20.0;
-            style.hud.tag_font_weight = FontWeight::Regular;
-            style.hud.title_fg = rgb("#586e75");
-            style.hud.bg = rgb("#fdf6e3");
-            style.hud.key_radius = 4.0;
-            style.hud.key_fg = rgb("#fdf6e3");
-            style.hud.key_bg = rgb("#6c71c4");
-            style.hud.key_font_weight = FontWeight::Bold;
-            style.hud.mod_fg = rgb("#073642");
-            style.hud.mod_font_weight = FontWeight::Regular;
-            style.hud.mod_bg = rgb("#b58900");
-            style.hud.tag_fg = rgb("#2aa198");
-            style.hud.opacity = 0.95;
-
-            style.notify.width = 420.0;
-            style.notify.pos = NotifyPos::Right;
-            style.notify.opacity = 0.9;
-            style.notify.timeout = 4.0;
-            style.notify.buffer = 200;
-
-            set_notify_style(
-                &mut style.notify.info,
-                "#eee8d5",
-                "#586e75",
-                "#657b83",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.warn,
-                "#eee8d5",
-                "#cb4b16",
-                "#b58900",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.error,
-                "#eee8d5",
-                "#dc322f",
-                "#dc322f",
-                FontWeight::Bold,
-            );
-            set_notify_style(
-                &mut style.notify.success,
-                "#eee8d5",
-                "#859900",
-                "#859900",
-                FontWeight::Bold,
-            );
-
-            style
-        }
-
-        let mut themes = HashMap::new();
-        themes.insert("default".to_string(), theme_default());
-        themes.insert("charcoal".to_string(), theme_charcoal());
-        themes.insert("dark-blue".to_string(), theme_dark_blue());
-        themes.insert("solarized-dark".to_string(), theme_solarized_dark());
-        themes.insert("solarized-light".to_string(), theme_solarized_light());
-
-        themes
+/// Return the evaluated embedded built-in themes (initialized on first access).
+pub(crate) fn builtin_raw_themes() -> &'static HashMap<&'static str, raw::RawStyle> {
+    BUILTIN_THEMES.get_or_init(|| {
+        loader::load_builtin_raw_themes().expect("embedded built-in themes must load successfully")
     })
 }
 
-/// Get a theme by name (tests only)
-#[cfg(test)]
-pub fn get_theme(name: &str) -> Option<&'static Style> {
-    themes().get(name)
+/// Load and evaluate user theme files from a directory.
+pub(crate) fn load_user_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>, ThemeError> {
+    loader::load_user_raw_themes(dir)
 }
 
-/// List all available theme names
+/// List all available built-in theme names.
 pub fn list_themes() -> Vec<&'static str> {
-    let mut names: Vec<_> = themes().keys().map(|s| s.as_str()).collect();
+    let mut names = builtin_raw_themes().keys().copied().collect::<Vec<_>>();
     names.sort();
     names
 }
 
-/// Get the next theme in the sorted list
+/// Get the next built-in theme in the sorted list.
 pub fn get_next_theme(current: &str) -> &'static str {
     let theme_list = list_themes();
     let current_idx = theme_list.iter().position(|&t| t == current);
@@ -366,7 +56,7 @@ pub fn get_next_theme(current: &str) -> &'static str {
     }
 }
 
-/// Get the previous theme in the sorted list
+/// Get the previous built-in theme in the sorted list.
 pub fn get_prev_theme(current: &str) -> &'static str {
     let theme_list = list_themes();
     let current_idx = theme_list.iter().position(|&t| t == current);
@@ -384,25 +74,23 @@ pub fn get_prev_theme(current: &str) -> &'static str {
     }
 }
 
-/// Check if a theme exists
+/// Check if a built-in theme exists.
 pub fn theme_exists(name: &str) -> bool {
-    themes().contains_key(name)
+    builtin_raw_themes().contains_key(name)
 }
 
-/// Load a theme as the base configuration
+/// Load a built-in theme as the base configuration.
 pub fn load_theme(theme_name: Option<&str>) -> Style {
-    let theme = match theme_name {
-        Some(name) => themes().get(name).unwrap_or_else(|| {
+    let themes = builtin_raw_themes();
+    let raw = match theme_name {
+        Some(name) => themes.get(name).unwrap_or_else(|| {
             eprintln!("Warning: Theme '{}' not found, using default", name);
-            themes()
-                .get("default")
-                .expect("Default theme must always exist")
+            themes.get("default").expect("default theme must exist")
         }),
-        None => themes()
-            .get("default")
-            .expect("Default theme must always exist"),
+        None => themes.get("default").expect("default theme must exist"),
     };
-    theme.clone()
+
+    Style::default().overlay_raw(raw)
 }
 
 #[cfg(test)]
@@ -412,15 +100,15 @@ mod tests {
 
     #[test]
     fn test_default_theme_exists() {
-        assert!(get_theme("default").is_some());
+        assert!(builtin_raw_themes().contains_key("default"));
     }
 
     #[test]
     fn test_get_theme() {
-        assert!(get_theme("default").is_some());
-        assert!(get_theme("dark-blue").is_some());
-        assert!(get_theme("charcoal").is_some());
-        assert!(get_theme("nonexistent").is_none());
+        assert!(builtin_raw_themes().contains_key("default"));
+        assert!(builtin_raw_themes().contains_key("dark-blue"));
+        assert!(builtin_raw_themes().contains_key("charcoal"));
+        assert!(!builtin_raw_themes().contains_key("nonexistent"));
     }
 
     #[test]
@@ -429,7 +117,7 @@ mod tests {
         assert!(themes.contains(&"default"));
         assert!(themes.contains(&"charcoal"));
         assert!(themes.contains(&"dark-blue"));
-        assert_eq!(themes.len(), 5); // We have exactly 5 themes
+        assert_eq!(themes.len(), 5); // We have exactly 5 built-in themes
     }
 
     #[test]
@@ -471,6 +159,7 @@ mod tests {
         assert_eq!(get_prev_theme(second_theme), first_theme);
 
         // Test wrap around from first to last
+        let last_theme = theme_list[theme_list.len() - 1];
         assert_eq!(get_prev_theme(first_theme), last_theme);
 
         // Test with unknown theme defaults to first

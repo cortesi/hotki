@@ -93,7 +93,11 @@ Themes are stored in a registry exposed as the global `themes` variable.
 
 ### Theme Registry (`themes`)
 
-Built-in themes are pre-registered. You can add, overwrite, list, and remove themes:
+Built-in themes are embedded at compile time and pre-registered. If your config file is
+`/path/to/config.rhai`, Hotki will also load `*.rhai` theme files from `/path/to/themes/` before
+evaluating the config script, and these can override built-ins by name.
+
+You can add, overwrite, list, and remove themes:
 
 ```rhai
 themes.list()                 // ["charcoal", "dark-blue", "default", ...] (sorted)
@@ -110,6 +114,22 @@ themes.default_        // "default"
 themes.dark_blue       // "dark-blue"
 themes.solarized_dark  // "solarized-dark"
 ```
+
+### Theme Files (`themes/*.rhai`)
+
+Theme files are plain Rhai scripts that must evaluate to a single map with `hud` and/or `notify`
+sections (the same shape you would pass to `m.style(#{ ... })`).
+
+Theme names come from the filename stem, e.g. `dark-blue.rhai` → `"dark-blue"`.
+
+#### Troubleshooting
+
+- **Where are themes loaded from?** From `themes/` next to your `config.rhai` (defaults to
+  `~/.hotki/themes/`), plus the embedded built-ins.
+- **Which one wins?** Theme files override embedded built-ins by name; `themes.register(...)` in
+  `config.rhai` can override both.
+- **Common mistakes:** forgetting to return a final `#{ ... }` map, using unknown fields (schema is
+  strict), or using integers where `*.0` floats are required.
 
 ---
 

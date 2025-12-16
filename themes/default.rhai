@@ -1,0 +1,56 @@
+// Built-in theme: default
+#{
+  hud: #{
+    radius: 8.0,
+    pos: center,
+    offset: #{ x: 0.0, y: 0.0 },
+    font_size: 14.0,
+    title_font_weight: regular,
+    key_font_size: 19.0,
+    tag_font_size: 20.0,
+    tag_font_weight: regular,
+    title_fg: "#d0d0d0",
+    bg: "#101010",
+    key_radius: 4.0,
+    key_fg: "#d0d0d0",
+    key_bg: "#2c3471",
+    key_font_weight: bold,
+    mod_fg: "white",
+    mod_font_weight: regular,
+    mod_bg: "#43414d",
+    tag_fg: "#374f8a",
+    opacity: 1.0,
+  },
+  notify: #{
+    width: 420.0,
+    pos: right,
+    opacity: 0.95,
+    timeout: 4.0,
+    buffer: 200,
+    info: #{
+      bg: "#222222",
+      title_fg: "white",
+      body_fg: "white",
+      title_font_weight: bold,
+    },
+    warn: #{
+      bg: "#442a00",
+      title_fg: "#ffc100",
+      body_fg: "#ffc100",
+      title_font_weight: bold,
+    },
+    error: #{
+      bg: "#3a0000",
+      title_fg: "#ff6666",
+      body_fg: "#ff6666",
+      title_font_weight: bold,
+    },
+    success: #{
+      bg: "#0c2d0c",
+      title_fg: "#8bff8b",
+      body_fg: "#8bff8b",
+      title_font_weight: bold,
+    },
+  },
+}
+

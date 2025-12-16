@@ -1,0 +1,56 @@
+// Built-in theme: solarized-light
+#{
+  hud: #{
+    radius: 8.0,
+    pos: center,
+    offset: #{ x: 0.0, y: 0.0 },
+    font_size: 14.0,
+    title_font_weight: regular,
+    key_font_size: 19.0,
+    tag_font_size: 20.0,
+    tag_font_weight: regular,
+    title_fg: "#586e75",
+    bg: "#fdf6e3",
+    key_radius: 4.0,
+    key_fg: "#fdf6e3",
+    key_bg: "#6c71c4",
+    key_font_weight: bold,
+    mod_fg: "#073642",
+    mod_font_weight: regular,
+    mod_bg: "#b58900",
+    tag_fg: "#2aa198",
+    opacity: 0.95,
+  },
+  notify: #{
+    width: 420.0,
+    pos: right,
+    opacity: 0.9,
+    timeout: 4.0,
+    buffer: 200,
+    info: #{
+      bg: "#eee8d5",
+      title_fg: "#586e75",
+      body_fg: "#657b83",
+      title_font_weight: bold,
+    },
+    warn: #{
+      bg: "#eee8d5",
+      title_fg: "#cb4b16",
+      body_fg: "#b58900",
+      title_font_weight: bold,
+    },
+    error: #{
+      bg: "#eee8d5",
+      title_fg: "#dc322f",
+      body_fg: "#dc322f",
+      title_font_weight: bold,
+    },
+    success: #{
+      bg: "#eee8d5",
+      title_fg: "#859900",
+      body_fg: "#859900",
+      title_font_weight: bold,
+    },
+  },
+}
+

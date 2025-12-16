@@ -68,6 +68,12 @@ echo "Creating app bundle structure..."
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
+# Copy theme sources (for reference/customization)
+THEMES_SRC="$ROOT_DIR/themes"
+if [[ -d "$THEMES_SRC" ]]; then
+  cp -R "$THEMES_SRC" "$RES_DIR/themes"
+fi
+
 # Copy binary
 cp "$BINARY_PATH" "$MACOS_DIR/$BIN_NAME"
 

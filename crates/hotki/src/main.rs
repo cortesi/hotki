@@ -40,7 +40,7 @@ mod runtime;
 mod smoketest_bridge;
 mod tray;
 
-use config::{load_dynamic_config, resolve_config_path};
+use config::{load_dynamic_config, resolve_config_path, themes};
 
 use crate::{
     app::{AppEvent, HotkiApp},
@@ -99,6 +99,7 @@ enum Command {
 
 fn main() -> eframe::Result<()> {
     let cli = Cli::parse();
+    themes::init_builtins();
 
     // Compute final filter spec via shared helpers
     let final_spec: String = logshared::compute_spec(
