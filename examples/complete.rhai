@@ -193,7 +193,53 @@ hotki.mode(|m, ctx| {
     m.bind("b", "Repeat Relay (defaults)", action.relay("cmd+c"))
       .repeat();
 
-    // === Mode navigation ===
+    // === Binding Styles ===
+    // All the different ways to create bindings.
+
+    // 1. Single binding with primitive action
+    m.bind("f1", "Single Action", action.shell("echo 'single'"));
+
+    // 2. Single binding with compound action (action.run)
+    m.bind("f2", "Single Compound", action.run(|ctx| {
+      ctx.exec(action.shell("echo 'compound'").silent());
+      ctx.notify(info, "Compound", "Executed compound action");
+    }));
+
+    // 3. Single binding with inline mode closure (shorthand for m.mode)
+    m.bind("f3", "Inline Mode", |sub, ctx| {
+      sub.bind("x", "Exit", action.pop);
+    });
+
+    // 4. Batch bindings with array - can mix actions, action.run, and mode closures
+    m.bind([
+      ["f4", "Batch Action", action.shell("echo 'batch'")],
+      ["f5", "Batch Compound", action.run(|ctx| {
+        ctx.notify(info, "Batch", "From batch binding");
+      })],
+      ["f6", "Batch Mode", |sub, ctx| {
+        sub.bind("x", "Exit", action.pop);
+      }],
+    ]);
+
+    // 5. Mode with closure form
+    m.mode("f7", "Mode Closure", |sub, ctx| {
+      sub.bind("a", "Action A", action.shell("echo 'A'"));
+      sub.bind("b", "Action B", action.shell("echo 'B'"));
+    });
+
+    // 6. Mode with inline bindings array - simpler for static menus
+    m.mode("f8", "Mode Array", [
+      ["a", "Action A", action.shell("echo 'A'")],
+      ["b", "Action B", action.shell("echo 'B'")],
+      ["c", "Compound", action.run(|ctx| {
+        ctx.notify(success, "Mode Array", "Compound in array mode");
+      })],
+      ["d", "Nested", |sub, ctx| {
+        sub.bind("x", "Exit", action.pop);
+      }],
+    ]);
+
+    // === Mode Navigation ===
     m.mode("shift+K", "Nested Mode", |sub, ctx| {
       sub.style(#{ hud: #{ mode: mini } });
       sub.bind([
