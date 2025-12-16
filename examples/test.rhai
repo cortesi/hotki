@@ -1,6 +1,46 @@
 // Comprehensive config used by hotki-shots and manual testing.
 
-base_theme("default");
+theme("default");
+
+let theme_keys = [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "0",
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "o",
+  "p",
+  "q",
+  "r",
+  "s",
+  "t",
+  "u",
+  "v",
+  "w",
+  "x",
+  "y",
+  "z",
+];
+let theme_names = themes.list();
 
 fn long_notification_text() {
   let out = "";
@@ -83,6 +123,15 @@ hotki.mode(|m, ctx| {
     m.mode("t", "Theme tester", |sub, ctx| {
       sub.bind("h", "Theme Prev", action.theme_prev).stay();
       sub.bind("l", "Theme Next", action.theme_next).stay();
+      sub.mode("n", "Named theme", |named, ctx| {
+        for i in 0..theme_names.len() {
+          if i >= theme_keys.len() {
+            break;
+          }
+          let theme_name = theme_names[i];
+          named.bind(theme_keys[i], theme_name, action.theme_set(theme_name)).stay();
+        }
+      });
 
       sub
         .bind(
@@ -102,14 +151,12 @@ hotki.mode(|m, ctx| {
           action.shell("echo this is an error window && false").notify(ignore, error)
         )
         .stay();
-      sub.bind("u", "User Style", action.user_style(toggle)).stay();
 
-      sub
-        .mode("m", "Mini", |mini, ctx| {
-          mini.bind("h", "Theme Prev", action.theme_prev).stay();
-          mini.bind("l", "Theme Next", action.theme_next).stay();
-        })
-        .style(#{ hud: #{ mode: mini } });
+      sub.mode("m", "Mini", |sub2, ctx| {
+        sub2.style(#{ hud: #{ mode: mini } });
+        sub2.bind("h", "Theme Prev", action.theme_prev).stay();
+        sub2.bind("l", "Theme Next", action.theme_next).stay();
+      });
 
       sub.mode("shift+l", "Long Submode", |long, ctx| {
         long.bind("a", "Inner Action A", action.shell("echo here"));
@@ -165,14 +212,14 @@ hotki.mode(|m, ctx| {
     });
 
     m.mode("u", "Subtheme", |sub, ctx| {
+      sub.style(#{ hud: #{ pos: nw } });
       sub
         .mode("u", "Sub Subtheme", |sub_sub, ctx| {
+          sub_sub.style(#{ hud: #{ bg: "#ff0000" } });
           sub_sub.bind("h", "Theme Prev", action.theme_prev).stay();
           sub_sub.bind("l", "Theme Next", action.theme_next).stay();
-        })
-        .style(#{ hud: #{ bg: "#ff0000" } });
-    })
-      .style(#{ hud: #{ pos: nw } });
+        });
+    });
 
     m.bind("shift+cmd+0", "exit", action.exit).global().hidden();
   });

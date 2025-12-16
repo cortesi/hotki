@@ -40,16 +40,16 @@ hotki check  # uses the default resolution policy
 Minimal example:
 
 ```rhai
-base_theme("default");
-
-style(#{
-  hud: #{
-    pos: ne,
-    mode: hud,
-  },
-});
+theme("default");
 
 hotki.mode(|m, ctx| {
+  m.style(#{
+    hud: #{
+      pos: ne,
+      mode: hud,
+    },
+  });
+
   if ctx.hud {
     m.bind("esc", "Back", action.pop).global().hidden();
   }

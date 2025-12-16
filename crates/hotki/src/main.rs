@@ -139,7 +139,7 @@ fn main() -> eframe::Result<()> {
         match load_dynamic_config(&resolved) {
             Ok(cfg) => {
                 if *dump {
-                    let style = cfg.base_style(None, true);
+                    let style = cfg.base_style(None);
                     match serde_json::to_string_pretty(&style) {
                         Ok(json) => println!("{json}"),
                         Err(e) => {

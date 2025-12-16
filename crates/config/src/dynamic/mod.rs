@@ -10,10 +10,14 @@ mod handler;
 mod loader;
 /// Render pipeline turning closures into bindings.
 mod render;
+/// Style and theme APIs exposed to Rhai.
+mod style_api;
 /// Core dynamic configuration types.
 mod types;
 /// Small internal utilities shared across dynamic config modules.
 mod util;
+/// Shared validation error helpers for user-facing diagnostics.
+mod validation;
 
 #[cfg(test)]
 mod test_dynamic;

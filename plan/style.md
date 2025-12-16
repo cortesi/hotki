@@ -59,7 +59,7 @@ pub struct RhaiStyle {
 **Construction**:
 ```rhai
 // From a theme
-let s = themes.default;
+let s = themes.default_;
 
 // From a map (validates structure)
 let s = Style(#{ hud: #{ font_size: 18.0 } });
@@ -90,7 +90,7 @@ let s3 = s.set("notify.timeout", 5.0);
 let s2 = s.set("hud", #{ font_size: 18.0, opacity: 0.95 });
 
 // Chainable
-let s2 = themes.default
+let s2 = themes.default_
   .set("hud.font_size", 18.0)
   .set("hud.opacity", 0.95)
   .set("notify.timeout", 5.0);
@@ -108,7 +108,7 @@ let merged = s.merge(#{ hud: #{ opacity: 0.9 } });
 **Example: round-trip modification**:
 ```rhai
 // Get a value, compute new value, set it
-let s = themes.default;
+let s = themes.default_;
 let s2 = s.set("hud.font_size", s.hud.font_size * 1.2);
 
 // Copy property between themes
@@ -127,12 +127,12 @@ themes.list()              // ["charcoal", "dark-blue", "default", ...] (alphabe
 themes.get("dark-blue")    // Style object (error if not found)
 
 // Modify the registry
-themes.register("my-dark", themes.default.set("hud.bg", "#1a1a2e"));
-themes.register("default", themes.default.set("hud.font_size", 18.0));  // overwrite builtin
+themes.register("my-dark", themes.default_.set("hud.bg", "#1a1a2e"));
+themes.register("default", themes.default_.set("hud.font_size", 18.0));  // overwrite builtin
 themes.remove("solarized-light");  // remove from registry
 
 // Convenience accessors (read-only, hyphens become underscores)
-themes.default         // equivalent to themes.get("default")
+themes.default_        // "default" (note: `default` is reserved in Rhai)
 themes.charcoal        // equivalent to themes.get("charcoal")
 themes.dark_blue       // equivalent to themes.get("dark-blue")
 ```
@@ -183,7 +183,7 @@ must be registered. This is what `action.theme_next`, `action.theme_prev`, and
 theme("dark-blue");
 
 // Or register and use a custom theme
-themes.register("my-dark", themes.default.set("hud.font_size", 18.0));
+themes.register("my-dark", themes.default_.set("hud.font_size", 18.0));
 theme("my-dark");
 ```
 
@@ -290,7 +290,7 @@ hotki.mode(|m, ctx| {
 **Power user** (custom theme registry):
 ```rhai
 // Register a custom theme
-themes.register("my-dark", themes.default
+themes.register("my-dark", themes.default_
   .set("hud.bg", "#1a1a2e")
   .set("hud.key_bg", "#16213e")
   .set("notify.timeout", 2.0));
@@ -323,15 +323,15 @@ Add merging support to `RawStyle` for use by mode-level styling.
 flag pattern, single-style replacement semantics). The theme layer is preserved but
 accessed via `theme()` which accepts Style objects only.
 
-- [ ] Add `RawStyle::merge(&self, other: &RawStyle) -> RawStyle` method
-- [ ] Add `merge_maybe<T>()` helper for combining nested `Maybe<T>` fields
-- [ ] Add `RawHud::merge()` with field-level merging
-- [ ] Add `RawNotify::merge()` with field-level merging
-- [ ] Remove `user_style` field from `DynamicConfigScriptState`
-- [ ] Remove `style()` global function registration
-- [ ] Remove `base_theme()` function registration
-- [ ] Remove `user_style_enabled` flag and related code paths
-- [ ] Add tests for RawStyle merging (empty+empty, value+empty, nested override)
+- [x] Add `RawStyle::merge(&self, other: &RawStyle) -> RawStyle` method
+- [x] Add `merge_maybe<T>()` helper for combining nested `Maybe<T>` fields
+- [x] Add `RawHud::merge()` with field-level merging
+- [x] Add `RawNotify::merge()` with field-level merging
+- [x] Remove `user_style` field from `DynamicConfigScriptState`
+- [x] Remove `style()` global function registration
+- [x] Remove `base_theme()` function registration
+- [x] Remove `user_style_enabled` flag and related code paths
+- [x] Add tests for RawStyle merging (empty+empty, value+empty, nested override)
 
 ---
 
@@ -339,15 +339,15 @@ accessed via `theme()` which accepts Style objects only.
 
 **Goal**: Create a Rhai-exposed Style type with property getters, `set()`, and `merge()`.
 
-- [ ] Add `RhaiStyle` struct wrapping `RawStyle`
-- [ ] Implement `RhaiStyle::from_raw()` constructor
-- [ ] Register `RhaiStyle` as Rhai type named "Style"
-- [ ] Register `Style(map)` constructor function
-- [ ] Register `clone()` method
-- [ ] Register property getters for `hud` and `notify` (return maps)
-- [ ] Register `set("path", value)` method (single field or section map)
-- [ ] Register `merge(Style)` and `merge(map)` methods
-- [ ] Add tests for Style() constructor, property getters, set(), merge()
+- [x] Add `RhaiStyle` struct wrapping `RawStyle`
+- [x] Implement `RhaiStyle::from_raw()` constructor
+- [x] Register `RhaiStyle` as Rhai type named "Style"
+- [x] Register `Style(map)` constructor function
+- [x] Register `clone()` method
+- [x] Register property getters for `hud` and `notify` (return maps)
+- [x] Register `set("path", value)` method (single field or section map)
+- [x] Register `merge(Style)` and `merge(map)` methods
+- [x] Add tests for Style() constructor, property getters, set(), merge()
 
 ---
 
@@ -356,22 +356,22 @@ accessed via `theme()` which accepts Style objects only.
 **Goal**: Implement the theme registry with register/remove/list/get methods, and add
 the `theme("name")` global function.
 
-- [ ] Add `Style::to_raw(&self) -> RawStyle` method
-- [ ] Create theme registry (`HashMap<String, RawStyle>`) in `DynamicConfigScriptState`
-- [ ] Pre-populate registry with builtin themes at initialization
-- [ ] Create `ThemesNamespace` struct
-- [ ] Register `themes.get(name)` returning Style (error if not found)
-- [ ] Register `themes.list()` returning sorted array of theme names
-- [ ] Register `themes.register(name, Style)` to add/overwrite themes
-- [ ] Register `themes.remove(name)` to remove themes (error if "default"?)
-- [ ] Register convenience getters (`themes.default`, `themes.charcoal`, etc.)
-- [ ] Expose `themes` as global variable
-- [ ] Register `theme("name")` global function to set active theme by name
-- [ ] Store active theme name in `DynamicConfigScriptState`
-- [ ] Update `DynamicConfig::base_style()` to look up theme from registry
-- [ ] Handle removal of active theme (fallback to "default")
-- [ ] Add tests for registry operations
-- [ ] Add tests for `theme("name")` setting base theme
+- [x] Add `Style::to_raw(&self) -> RawStyle` method
+- [x] Create theme registry (`HashMap<String, RawStyle>`) in `DynamicConfigScriptState`
+- [x] Pre-populate registry with builtin themes at initialization
+- [x] Create `ThemesNamespace` struct
+- [x] Register `themes.get(name)` returning Style (error if not found)
+- [x] Register `themes.list()` returning sorted array of theme names
+- [x] Register `themes.register(name, Style)` to add/overwrite themes
+- [x] Register `themes.remove(name)` to remove themes (error if "default"?)
+- [x] Register convenience getters (`themes.default_`, `themes.charcoal`, etc.)
+- [x] Expose `themes` as global variable
+- [x] Register `theme("name")` global function to set active theme by name
+- [x] Store active theme name in `DynamicConfigScriptState`
+- [x] Update `DynamicConfig::base_style()` to look up theme from registry
+- [x] Handle removal of active theme (fallback to "default")
+- [x] Add tests for registry operations
+- [x] Add tests for `theme("name")` setting base theme
 
 ---
 
@@ -379,12 +379,12 @@ the `theme("name")` global function.
 
 **Goal**: Support multiple `m.style()` calls per mode that merge together.
 
-- [ ] Change `ModeBuildState::style` from `Option<StyleOverlay>` to `styles: Vec<RawStyle>`
-- [ ] Update `ModeBuilder::finish()` to merge accumulated styles
-- [ ] Update `m.style(map)` to push instead of replace
-- [ ] Add `m.style(RhaiStyle)` overload
-- [ ] Add tests for multiple m.style() calls merging
-- [ ] Add tests for mode inheriting and extending parent style
+- [x] Change `ModeBuildState::style` from `Option<StyleOverlay>` to `styles: Vec<RawStyle>`
+- [x] Update `ModeBuilder::finish()` to merge accumulated styles
+- [x] Update `m.style(map)` to push instead of replace
+- [x] Add `m.style(RhaiStyle)` overload
+- [x] Add tests for multiple m.style() calls merging
+- [x] Add tests for mode inheriting and extending parent style
 
 ---
 
@@ -392,10 +392,10 @@ the `theme("name")` global function.
 
 **Goal**: Update all examples to use the new `theme()` and `m.style()` API.
 
-- [ ] Update `examples/complete.rhai` with new style API
-- [ ] Update `examples/cortesi.rhai` with new style API
-- [ ] Verify all examples parse without error
-- [ ] Run full smoketest suite
+- [x] Update `examples/complete.rhai` with new style API
+- [x] Update `examples/cortesi.rhai` with new style API
+- [x] Verify all examples parse without error
+- [x] Run full smoketest suite
 
 ---
 

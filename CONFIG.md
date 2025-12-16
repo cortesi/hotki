@@ -47,7 +47,7 @@ stack (and rebinds OS hotkeys / updates the HUD) at least when:
 - Focus context changes (`ctx.app`, `ctx.title`, `ctx.pid`).
 - A bound key is pressed (after actions/handlers run).
 - The config is loaded/reloaded.
-- Theme or user-style state changes (e.g. `action.theme_*`, `action.user_style(...)`).
+- Theme state changes (e.g. `action.theme_*`).
 - HUD visibility changes (`ctx.hud`) via navigation actions (`action.show_root`, `action.hide_hud`,
   `action.pop`, `action.exit`, and auto-exit).
 
@@ -77,8 +77,8 @@ hotki.mode(|m, ctx| {
 - `m` is a `ModeBuilder` used to declare bindings and sub-modes.
 - `ctx` is a `ModeCtx` (focused app/title, HUD visibility, stack depth).
 
-Modes are **re-rendered** whenever context changes (focus/title, HUD visibility, theme/user-style,
-etc), so use `if` statements for conditional bindings.
+Modes are **re-rendered** whenever context changes (focus/title, HUD visibility, theme, etc), so
+use `if` statements for conditional bindings.
 
 ---
 
@@ -86,10 +86,30 @@ etc), so use `if` statements for conditional bindings.
 
 | Function | Parameters | Description |
 |----------|------------|-------------|
-| `base_theme(name)` | `String` | Set the base theme |
-| `style(map)` | `Map` | Set user style overlay |
+| `theme(name)` | `String` | Set the active theme by registered name |
+| `Style(map)` | `Map` | Construct a `Style` object (validates the map) |
 
-Themes: `default`, `charcoal`, `dark-blue`, `solarized-dark`, `solarized-light`
+Themes are stored in a registry exposed as the global `themes` variable.
+
+### Theme Registry (`themes`)
+
+Built-in themes are pre-registered. You can add, overwrite, list, and remove themes:
+
+```rhai
+themes.list()                 // ["charcoal", "dark-blue", "default", ...] (sorted)
+themes.get("dark-blue")       // Style (error if missing)
+themes.register("my", themes.default_.set("hud.opacity", 0.9))
+themes.remove("solarized-light") // cannot remove "default"
+```
+
+Convenience getters are provided for built-ins (hyphens become underscores):
+Note that `default` is a reserved keyword in Rhai, so the default theme getter is `default_`.
+
+```rhai
+themes.default_        // "default"
+themes.dark_blue       // "dark-blue"
+themes.solarized_dark  // "solarized-dark"
+```
 
 ---
 
@@ -118,7 +138,8 @@ Shorthand for `m.bind(chord, title, |m, ctx| { ... })`.
 
 ```rhai
 m.capture();            // swallow unbound keys while HUD is visible
-m.style(#{ ... });      // style overlay for this mode (inherited by children)
+m.style(#{ ... });      // merge map into this mode's style (inherited by children)
+m.style(Style(#{ ... })); // merge a Style object into this mode's style
 ```
 
 ---
@@ -134,9 +155,8 @@ All modifiers return `BindingRef` for chaining.
 | `.repeat()` | bindings | Hold-to-repeat (shell/relay/volume only) |
 | `.repeat_ms(delay, interval)` | bindings | Repeat with custom timings (ms) |
 | `.global()` | bindings | Inherit into child modes (not allowed on mode entries) |
-| `.style(map)` | bindings | Per-binding HUD style override |
+| `.style(map)` | bindings + mode entries | Per-binding HUD row style override |
 | `.capture()` | mode entries | Enable capture-all in the entered mode |
-| `.style(map)` | mode entries | Style overlay for the entered mode |
 
 Notes:
 - `.global()` is rejected on mode entries to keep orphan detection simple.
@@ -178,14 +198,13 @@ action.relay("shift+tab")
 | `action.reload_config` | Reload configuration |
 | `action.clear_notifications` | Dismiss all notifications |
 | `action.show_details(toggle)` | Control details window |
-| `action.user_style(toggle)` | Toggle user style overlay |
 
 ### Themes
 
 | Action | Description |
 |--------|-------------|
-| `action.theme_next` | Next theme |
-| `action.theme_prev` | Previous theme |
+| `action.theme_next` | Next theme (cycles `themes.list()` order) |
+| `action.theme_prev` | Previous theme (cycles `themes.list()` order) |
 | `action.theme_set(name)` | Set theme by name |
 
 ### Volume

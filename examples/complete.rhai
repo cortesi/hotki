@@ -2,109 +2,109 @@
 // Each option and action type is shown at least once with minimal redundancy.
 
 // Choose a built-in theme: default, charcoal, dark-blue, solarized-dark, solarized-light
-base_theme("default");
-
-// === Style overlay (HUD + notifications) ===
-style(#{
-  hud: #{
-    // Text shown at the right edge of HUD rows for nested modes
-    tag_submenu: ">>",
-
-    // Position: n, ne, e, se, s, sw, w, nw, center
-    pos: ne,
-    // Pixel offset from anchor (x: right, y: up)
-    offset: #{ x: -20.0, y: -40.0 },
-
-    // Font sizes
-    font_size: 16.0, // Description text
-    key_font_size: 14.0, // Key tokens
-    tag_font_size: 12.0, // Mode tags
-
-    // Font weights: light, regular, medium, semibold, bold, extrabold
-    title_font_weight: medium,
-    key_font_weight: semibold,
-    tag_font_weight: bold,
-    mod_font_weight: extrabold,
-
-    // Colors (CSS names or hex)
-    title_fg: "#ffffff",
-    bg: "#1a1a1a",
-    key_fg: "white",
-    key_bg: "#2a2a2a",
-    mod_fg: "#00ff00",
-    mod_bg: "#3a3a3a",
-    tag_fg: "yellow",
-
-    // Window properties
-    opacity: 0.95,
-    radius: 12.0, // Window corner radius
-
-    // Key box styling
-    key_radius: 4.0, // Key box corner radius
-    key_pad_x: 8.0, // Horizontal padding
-    key_pad_y: 4.0, // Vertical padding
-  },
-
-  notify: #{
-    // Window properties
-    width: 400.0,
-    pos: right, // left or right
-    opacity: 0.9,
-    timeout: 3.5,
-    buffer: 4,
-    radius: 8.0, // Notification corner radius
-
-    // === Per-kind Notification Styles ===
-    // Each supports all styling options
-    info: #{
-      bg: "#1e1e1e",
-      title_fg: "#88ccff",
-      body_fg: "#cccccc",
-      title_font_size: 14.0,
-      title_font_weight: bold,
-      body_font_size: 12.0,
-      body_font_weight: regular,
-      icon: "\uEA74",
-    },
-
-    warn: #{
-      bg: "#332200",
-      title_fg: "#ffaa00",
-      body_fg: "#ffcc66",
-      title_font_size: 14.0,
-      title_font_weight: semibold,
-      body_font_size: 12.0,
-      body_font_weight: light,
-      icon: "\uEA6C",
-    },
-
-    error: #{
-      bg: "#330000",
-      title_fg: "#ff4444",
-      body_fg: "#ff8888",
-      title_font_size: 15.0,
-      title_font_weight: extrabold,
-      body_font_size: 12.0,
-      body_font_weight: medium,
-      icon: "\uEA87",
-    },
-
-    success: #{
-      bg: "#003300",
-      title_fg: "#00ff00",
-      body_fg: "#88ff88",
-      title_font_size: 14.0,
-      title_font_weight: medium,
-      body_font_size: 12.0,
-      body_font_weight: regular,
-      icon: "\uF4B2",
-    },
-  },
-});
+theme("default");
 
 // === Key Bindings ===
 
 hotki.mode(|m, ctx| {
+  // === Style overlay (HUD + notifications) ===
+  m.style(#{
+    hud: #{
+      // Text shown at the right edge of HUD rows for nested modes
+      tag_submenu: ">>",
+
+      // Position: n, ne, e, se, s, sw, w, nw, center
+      pos: ne,
+      // Pixel offset from anchor (x: right, y: up)
+      offset: #{ x: -20.0, y: -40.0 },
+
+      // Font sizes
+      font_size: 16.0, // Description text
+      key_font_size: 14.0, // Key tokens
+      tag_font_size: 12.0, // Mode tags
+
+      // Font weights: light, regular, medium, semibold, bold, extrabold
+      title_font_weight: medium,
+      key_font_weight: semibold,
+      tag_font_weight: bold,
+      mod_font_weight: extrabold,
+
+      // Colors (CSS names or hex)
+      title_fg: "#ffffff",
+      bg: "#1a1a1a",
+      key_fg: "white",
+      key_bg: "#2a2a2a",
+      mod_fg: "#00ff00",
+      mod_bg: "#3a3a3a",
+      tag_fg: "yellow",
+
+      // Window properties
+      opacity: 0.95,
+      radius: 12.0, // Window corner radius
+
+      // Key box styling
+      key_radius: 4.0, // Key box corner radius
+      key_pad_x: 8.0, // Horizontal padding
+      key_pad_y: 4.0, // Vertical padding
+    },
+
+    notify: #{
+      // Window properties
+      width: 400.0,
+      pos: right, // left or right
+      opacity: 0.9,
+      timeout: 3.5,
+      buffer: 4,
+      radius: 8.0, // Notification corner radius
+
+      // === Per-kind Notification Styles ===
+      // Each supports all styling options
+      info: #{
+        bg: "#1e1e1e",
+        title_fg: "#88ccff",
+        body_fg: "#cccccc",
+        title_font_size: 14.0,
+        title_font_weight: bold,
+        body_font_size: 12.0,
+        body_font_weight: regular,
+        icon: "\uEA74",
+      },
+
+      warn: #{
+        bg: "#332200",
+        title_fg: "#ffaa00",
+        body_fg: "#ffcc66",
+        title_font_size: 14.0,
+        title_font_weight: semibold,
+        body_font_size: 12.0,
+        body_font_weight: light,
+        icon: "\uEA6C",
+      },
+
+      error: #{
+        bg: "#330000",
+        title_fg: "#ff4444",
+        body_fg: "#ff8888",
+        title_font_size: 15.0,
+        title_font_weight: extrabold,
+        body_font_size: 12.0,
+        body_font_weight: medium,
+        icon: "\uEA87",
+      },
+
+      success: #{
+        bg: "#003300",
+        title_fg: "#00ff00",
+        body_fg: "#88ff88",
+        title_font_size: 14.0,
+        title_font_weight: medium,
+        body_font_size: 12.0,
+        body_font_weight: regular,
+        icon: "\uF4B2",
+      },
+    },
+  });
+
   // Global navigation keys (active across all modes while the HUD is visible).
   if ctx.hud {
     m.bind("esc", "Back", action.pop).global().hidden();
@@ -167,11 +167,6 @@ hotki.mode(|m, ctx| {
     m.bind("u", "Unmute", action.mute(off)).stay();
     m.bind("shift+M", "Toggle Mute", action.mute(toggle)).stay();
 
-    // action.user_style: enable/disable/toggle user style overlay.
-    m.bind("t", "Toggle User UI", action.user_style(toggle)).stay();
-    m.bind("shift+T", "Disable User UI", action.user_style(off)).stay();
-    m.bind("shift+U", "Enable User UI", action.user_style(on)).stay();
-
     // === Handler ===
     m.bind("x", "Complex Action", handler(|ctx| {
       ctx.exec(action.shell("echo hello").silent());
@@ -196,9 +191,10 @@ hotki.mode(|m, ctx| {
 
     // === Mode navigation ===
     m.mode("shift+K", "Nested Mode", |sub, ctx| {
+      sub.style(#{ hud: #{ mode: mini } });
       sub.bind("b", "Back One Level", action.pop);
       sub.bind("e", "Exit All", action.exit);
-    }).style(#{ hud: #{ mode: mini } });
+    });
 
     // `.capture()` on a mode entry: capture all keys while HUD is visible.
     m.mode("shift+C", "Capture Mode", |sub, ctx| {

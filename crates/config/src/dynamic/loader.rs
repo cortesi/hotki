@@ -1,6 +1,6 @@
 use std::{
     ffi::OsStr,
-    fs,
+    fs, mem,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -13,8 +13,9 @@ use tracing::{debug, info};
 
 use super::{
     DynamicConfig, ModeCtx,
-    dsl::{DynamicConfigScriptState, ModeBuilder, ValidationError, register_dsl},
+    dsl::{DynamicConfigScriptState, ModeBuilder, register_dsl},
     util::lock_unpoisoned,
+    validation::extract_validation_error,
 };
 use crate::{Error, error::excerpt_at};
 
@@ -51,7 +52,7 @@ pub fn load_dynamic_config_from_string(
     let ast = compile(&engine, &source, path.as_deref())?;
     eval(&engine, &mut scope, &ast, &source, path.as_deref())?;
 
-    let (root, base_theme, user_style) = {
+    let (root, active_theme, themes) = {
         let mut guard = lock_unpoisoned(&state);
 
         let root = guard.root.take().ok_or_else(|| Error::Validation {
@@ -62,15 +63,18 @@ pub fn load_dynamic_config_from_string(
             excerpt: None,
         })?;
 
-        (root, guard.base_theme.take(), guard.user_style.take())
+        let active_theme = mem::take(&mut guard.active_theme);
+        let themes = mem::take(&mut guard.themes);
+
+        (root, active_theme, themes)
     };
 
     validate_root_closure(&engine, &ast, &source, path.as_deref(), &root)?;
 
     Ok(DynamicConfig {
         root,
-        base_theme,
-        user_style,
+        active_theme,
+        themes,
         engine,
         ast,
         source: Arc::from(source.into_boxed_str()),
@@ -270,7 +274,7 @@ fn eval(
 
 /// Convert a Rhai execution error into a user-facing config error with an excerpt.
 fn error_from_rhai(source: &str, err: &EvalAltResult, path: Option<&Path>) -> Error {
-    if let Some((pos, message)) = validation_error_from_rhai(err) {
+    if let Some((pos, message)) = extract_validation_error(err) {
         let (line, col, excerpt) = match pos_to_line_col(pos) {
             Some((line, col)) => (Some(line), Some(col), Some(excerpt_at(source, line, col))),
             None => (None, None, None),
@@ -291,19 +295,6 @@ fn error_from_rhai(source: &str, err: &EvalAltResult, path: Option<&Path>) -> Er
         col,
         message: err.to_string(),
         excerpt: excerpt_at(source, line, col),
-    }
-}
-
-/// Extract a structured validation error previously emitted by the DSL.
-fn validation_error_from_rhai(err: &EvalAltResult) -> Option<(Position, String)> {
-    match err {
-        EvalAltResult::ErrorRuntime(d, pos) if d.is::<ValidationError>() => {
-            let ve: ValidationError = d.clone_cast();
-            Some((*pos, ve.message))
-        }
-        EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
-        | EvalAltResult::ErrorInModule(_, inner, _) => validation_error_from_rhai(inner),
-        _ => None,
     }
 }
 

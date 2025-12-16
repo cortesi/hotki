@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FontWeight, NotifyPos, NotifyTheme, NotifyWindowStyle, defaults, parse_rgb,
-    raw::RawNotifyWindowStyle,
+    raw::{Maybe, RawNotify, RawNotifyStyle, RawNotifyWindowStyle},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,5 +110,43 @@ impl Notify {
             error: resolve_notify_style(&self.error, &d.error),
             success: resolve_notify_style(&self.success, &d.success),
         }
+    }
+
+    /// Convert this section into a raw style overlay.
+    pub(crate) fn to_raw_notify(&self) -> RawNotify {
+        RawNotify {
+            width: Maybe::Value(self.width),
+            pos: Maybe::Value(self.pos),
+            opacity: Maybe::Value(self.opacity),
+            timeout: Maybe::Value(self.timeout),
+            buffer: Maybe::Value(self.buffer),
+            radius: Maybe::Value(self.radius),
+            info: Maybe::Value(raw_notify_style_from_window(&self.info)),
+            warn: Maybe::Value(raw_notify_style_from_window(&self.warn)),
+            error: Maybe::Value(raw_notify_style_from_window(&self.error)),
+            success: Maybe::Value(raw_notify_style_from_window(&self.success)),
+        }
+    }
+}
+
+/// Convert the stored raw window style into the overlay representation used in raw configs.
+fn raw_notify_style_from_window(win: &RawNotifyWindowStyle) -> RawNotifyStyle {
+    RawNotifyStyle {
+        bg: opt_to_maybe(win.bg.as_ref()),
+        title_fg: opt_to_maybe(win.title_fg.as_ref()),
+        body_fg: opt_to_maybe(win.body_fg.as_ref()),
+        title_font_size: opt_to_maybe(win.title_font_size.as_ref()),
+        title_font_weight: opt_to_maybe(win.title_font_weight.as_ref()),
+        body_font_size: opt_to_maybe(win.body_font_size.as_ref()),
+        body_font_weight: opt_to_maybe(win.body_font_weight.as_ref()),
+        icon: opt_to_maybe(win.icon.as_ref()),
+    }
+}
+
+/// Convert an `Option<&T>` into the `Maybe<T>` wrapper type used throughout raw configs.
+fn opt_to_maybe<T: Clone>(opt: Option<&T>) -> Maybe<T> {
+    match opt {
+        Some(v) => Maybe::Value(v.clone()),
+        None => Maybe::Unit(()),
     }
 }

@@ -7,6 +7,97 @@ mod tests {
     };
 
     #[test]
+    fn raw_style_merge_empty_is_empty() {
+        let left = RawStyle::default();
+        let right = RawStyle::default();
+        assert_eq!(left.merge(&right), RawStyle::default());
+    }
+
+    #[test]
+    fn raw_style_merge_prefers_right_side_values() {
+        let left = RawStyle {
+            hud: Maybe::Value(RawHud {
+                font_size: Maybe::Value(10.0),
+                ..RawHud::default()
+            }),
+            ..RawStyle::default()
+        };
+        let right = RawStyle {
+            hud: Maybe::Value(RawHud {
+                font_size: Maybe::Value(20.0),
+                ..RawHud::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        let merged = left.merge(&right);
+        assert_eq!(
+            merged
+                .hud
+                .as_option()
+                .and_then(|h| h.font_size.as_option().copied()),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn raw_style_merge_combines_nested_sections() {
+        let left = RawStyle {
+            hud: Maybe::Value(RawHud {
+                font_size: Maybe::Value(10.0),
+                ..RawHud::default()
+            }),
+            ..RawStyle::default()
+        };
+        let right = RawStyle {
+            hud: Maybe::Value(RawHud {
+                opacity: Maybe::Value(0.5),
+                ..RawHud::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        let merged = left.merge(&right);
+        let hud = merged.hud.as_option().expect("hud section");
+        assert_eq!(hud.font_size.as_option().copied(), Some(10.0));
+        assert_eq!(hud.opacity.as_option().copied(), Some(0.5));
+    }
+
+    #[test]
+    fn raw_style_merge_merges_nested_notify_styles() {
+        let left = RawStyle {
+            notify: Maybe::Value(RawNotify {
+                timeout: Maybe::Value(2.0),
+                info: Maybe::Value(RawNotifyStyle {
+                    bg: Maybe::Value("#111111".to_string()),
+                    ..RawNotifyStyle::default()
+                }),
+                ..RawNotify::default()
+            }),
+            ..RawStyle::default()
+        };
+        let right = RawStyle {
+            notify: Maybe::Value(RawNotify {
+                timeout: Maybe::Value(3.0),
+                info: Maybe::Value(RawNotifyStyle {
+                    title_fg: Maybe::Value("white".to_string()),
+                    ..RawNotifyStyle::default()
+                }),
+                ..RawNotify::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        let merged = left.merge(&right);
+        let notify = merged.notify.as_option().expect("notify section");
+        assert_eq!(notify.timeout.as_option().copied(), Some(3.0));
+
+        let info = notify.info.as_option().expect("notify.info");
+        assert_eq!(info.bg.as_option().map(String::as_str), Some("#111111"));
+        assert_eq!(info.title_fg.as_option().map(String::as_str), Some("white"));
+    }
+
+    #[test]
     fn theme_overlay_hud_fields() {
         let base = load_theme(None);
 

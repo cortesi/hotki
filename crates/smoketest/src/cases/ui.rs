@@ -323,14 +323,16 @@ const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
 
 /// Standard HUD demo configuration (full HUD mode anchored bottom-right).
 const UI_DEMO_CONFIG: &str = r#"
-style(#{
-  hud: #{
-    mode: hud,
-    pos: se,
-  },
-});
+theme("default");
 
 hotki.mode(|m, ctx| {
+  m.style(#{
+    hud: #{
+      mode: hud,
+      pos: se,
+    },
+  });
+
   m.mode("shift+cmd+0", "activate", |m, ctx| {
     m.mode("t", "Theme tester", |sub, ctx| {
       sub.bind("h", "Theme Prev", action.theme_prev).stay();
@@ -344,14 +346,16 @@ hotki.mode(|m, ctx| {
 
 /// Mini HUD demo configuration.
 const MINI_HUD_CONFIG: &str = r#"
-style(#{
-  hud: #{
-    mode: mini,
-    pos: se,
-  },
-});
+theme("default");
 
 hotki.mode(|m, ctx| {
+  m.style(#{
+    hud: #{
+      mode: mini,
+      pos: se,
+    },
+  });
+
   m.mode("shift+cmd+0", "activate", |m, ctx| {
     m.mode("t", "Theme tester", |sub, ctx| {
       sub.bind("h", "Theme Prev", action.theme_prev).stay();

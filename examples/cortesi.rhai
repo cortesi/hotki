@@ -5,7 +5,7 @@
 // - `spotify` is available on PATH (or adjust commands)
 // - `/opt/homebrew/bin/wezterm` exists (or adjust)
 
-base_theme("default");
+theme("default");
 
 fn yabai_grid(cols, rows, x, y, w, h) {
   action.shell(`yabai -m window --grid ${rows}:${cols}:${x}:${y}:${w}:${h}`)
@@ -83,7 +83,6 @@ hotki.mode(|m, ctx| {
       sub.bind("r", "Reload Config", action.reload_config);
       sub.bind("o", "Show Root Keys", action.show_root);
       sub.bind("t", "Theme", action.theme_next).stay();
-      sub.bind("u", "User UI", action.user_style(toggle)).stay();
     });
 
     m.mode("g", "go", |sub, ctx| {

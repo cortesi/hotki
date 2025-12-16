@@ -1,6 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    error::Error as StdError,
+    collections::{HashMap, hash_map::DefaultHasher},
     fmt,
     hash::{Hash, Hasher},
     mem,
@@ -9,25 +8,43 @@ use std::{
 
 use mac_keycode::Chord;
 use rhai::{
-    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, Position,
-    serde::from_dynamic,
+    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, serde::from_dynamic,
 };
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef,
-    NavRequest, RepeatSpec, StyleOverlay, util::lock_unpoisoned,
+    NavRequest, RepeatSpec, StyleOverlay, style_api::RhaiStyle, util::lock_unpoisoned,
+    validation::boxed_validation_error,
 };
-use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw};
+use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw, themes};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 /// Script-global state captured while evaluating a dynamic config.
 pub struct DynamicConfigScriptState {
-    /// Base theme name declared via `base_theme("...")`.
-    pub(crate) base_theme: Option<String>,
-    /// User style overlay declared via `style(#{...})`.
-    pub(crate) user_style: Option<raw::RawStyle>,
+    /// Theme registry populated with builtins and script registrations.
+    pub(crate) themes: HashMap<String, raw::RawStyle>,
+    /// Active theme name selected via `theme("...")`.
+    pub(crate) active_theme: String,
     /// Root mode closure declared via `hotki.mode(...)`.
     pub(crate) root: Option<ModeRef>,
+}
+
+impl Default for DynamicConfigScriptState {
+    fn default() -> Self {
+        let themes = themes::list_themes()
+            .into_iter()
+            .map(|name| {
+                let theme = themes::load_theme(Some(name));
+                (name.to_string(), theme.to_raw())
+            })
+            .collect();
+
+        Self {
+            themes,
+            active_theme: "default".to_string(),
+            root: None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -35,8 +52,8 @@ pub struct DynamicConfigScriptState {
 struct ModeBuildState {
     /// Rendered bindings declared by the mode closure.
     bindings: Vec<Binding>,
-    /// Optional mode-level style overlay.
-    style: Option<StyleOverlay>,
+    /// Mode-level style overlays, applied left-to-right.
+    styles: Vec<raw::RawStyle>,
     /// Whether this mode requests capture-all while HUD-visible.
     capture: bool,
 }
@@ -58,8 +75,15 @@ impl ModeBuilder {
 
     /// Create a builder seeded with inherited mode style/capture state.
     pub(crate) fn new_for_render(style: Option<StyleOverlay>, capture: bool) -> Self {
+        let mut inherited = Vec::new();
+        if let Some(style) = style
+            && let Some(raw) = style.raw
+        {
+            inherited.push(raw);
+        }
+
         let state = ModeBuildState {
-            style,
+            styles: inherited,
             capture,
             ..ModeBuildState::default()
         };
@@ -72,10 +96,28 @@ impl ModeBuilder {
     pub(crate) fn finish(self) -> (Vec<Binding>, Option<StyleOverlay>, bool) {
         let mut guard = lock_unpoisoned(&self.state);
         let bindings = mem::take(&mut guard.bindings);
-        let style = guard.style.take();
+        let styles = mem::take(&mut guard.styles);
+        let style = merge_style_overlays(&styles);
         let capture = guard.capture;
         (bindings, style, capture)
     }
+}
+
+/// Merge a sequence of raw style overlays into a single overlay.
+fn merge_style_overlays(styles: &[raw::RawStyle]) -> Option<StyleOverlay> {
+    if styles.is_empty() {
+        return None;
+    }
+
+    let mut merged = raw::RawStyle::default();
+    for overlay in styles {
+        merged = merged.merge(overlay);
+    }
+
+    Some(StyleOverlay {
+        func: None,
+        raw: Some(merged),
+    })
 }
 
 #[derive(Clone)]
@@ -100,29 +142,6 @@ impl fmt::Debug for BindingRef {
 struct HotkiNamespace {
     /// Shared config script state.
     state: Arc<Mutex<DynamicConfigScriptState>>,
-}
-
-#[derive(Debug, Clone)]
-/// Validation error used to surface user-facing diagnostics with a source location.
-pub struct ValidationError {
-    /// Error message to surface.
-    pub(crate) message: String,
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl StdError for ValidationError {}
-
-/// Create a boxed Rhai runtime error tagged as a validation error.
-fn boxed_validation_error(message: String, pos: Position) -> Box<EvalAltResult> {
-    Box::new(EvalAltResult::ErrorRuntime(
-        Dynamic::from(ValidationError { message }),
-        pos,
-    ))
 }
 
 /// Parse a chord string or return a validation error.
@@ -157,7 +176,8 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
     register_global_constants(engine);
     register_hotki_namespace(engine, state.clone());
     register_action_namespace(engine);
-    register_style_globals(engine, state);
+    super::style_api::register_style_type(engine);
+    super::style_api::register_theme_api(engine, state);
     register_mode_builder(engine);
     register_handler(engine);
     register_action_fluent(engine);
@@ -240,28 +260,6 @@ fn register_hotki_namespace(engine: &mut Engine, state: Arc<Mutex<DynamicConfigS
     engine.register_global_module(module.into());
 }
 
-/// Register top-level style globals (`base_theme`, `style`).
-fn register_style_globals(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
-    {
-        let state = state.clone();
-        engine.register_fn("base_theme", move |name: &str| {
-            lock_unpoisoned(&state).base_theme = Some(name.to_string());
-        });
-    }
-
-    engine.register_fn(
-        "style",
-        move |ctx: NativeCallContext, map: Map| -> Result<(), Box<EvalAltResult>> {
-            let dyn_map = Dynamic::from_map(map);
-            let style: raw::RawStyle = from_dynamic(&dyn_map).map_err(|e| {
-                boxed_validation_error(format!("invalid style map: {}", e), ctx.call_position())
-            })?;
-            lock_unpoisoned(&state).user_style = Some(style);
-            Ok(())
-        },
-    );
-}
-
 #[derive(Debug, Clone, Copy)]
 /// Namespace object exported to Rhai scripts as `action`.
 struct ActionNamespace;
@@ -325,9 +323,6 @@ fn register_action_namespace(engine: &mut Engine) {
         },
     );
     engine.register_fn("mute", |_: ActionNamespace, t: Toggle| Action::Mute(t));
-    engine.register_fn("user_style", |_: ActionNamespace, t: Toggle| {
-        Action::UserStyle(t)
-    });
 
     engine.register_get("pop", |_: &mut ActionNamespace| Action::Pop);
     engine.register_get("exit", |_: &mut ActionNamespace| Action::Exit);
@@ -491,7 +486,6 @@ fn register_mode_builder(engine: &mut Engine) {
                 mode_id: None,
                 flags: BindingFlags::default(),
                 style: None,
-                mode_style: None,
                 mode_capture: false,
                 pos: ctx.call_position(),
             });
@@ -520,7 +514,6 @@ fn register_mode_builder(engine: &mut Engine) {
                 mode_id: None,
                 flags: BindingFlags::default(),
                 style: None,
-                mode_style: None,
                 mode_capture: false,
                 pos: ctx.call_position(),
             });
@@ -554,7 +547,6 @@ fn register_mode_builder(engine: &mut Engine) {
                 mode_id: Some(mode.id),
                 flags: BindingFlags::default(),
                 style: None,
-                mode_style: None,
                 mode_capture: false,
                 pos: ctx.call_position(),
             });
@@ -588,7 +580,6 @@ fn register_mode_builder(engine: &mut Engine) {
                 mode_id: Some(mode.id),
                 flags: BindingFlags::default(),
                 style: None,
-                mode_style: None,
                 mode_capture: false,
                 pos: ctx.call_position(),
             });
@@ -610,13 +601,14 @@ fn register_mode_builder(engine: &mut Engine) {
             let style: raw::RawStyle = from_dynamic(&dyn_map).map_err(|e| {
                 boxed_validation_error(format!("invalid style map: {}", e), ctx.call_position())
             })?;
-            lock_unpoisoned(&m.state).style = Some(StyleOverlay {
-                func: None,
-                raw: Some(style),
-            });
+            lock_unpoisoned(&m.state).styles.push(style);
             Ok(())
         },
     );
+
+    engine.register_fn("style", |m: &mut ModeBuilder, style: RhaiStyle| {
+        lock_unpoisoned(&m.state).styles.push(style.raw);
+    });
 
     engine.register_fn(
         "hidden",
@@ -807,25 +799,7 @@ fn register_mode_builder(engine: &mut Engine) {
                         ctx.call_position(),
                     )
                 })?;
-
-                match &entry.kind {
-                    BindingKind::Mode(_) => {
-                        let dyn_map = Dynamic::from_map(map);
-                        let style: raw::RawStyle = from_dynamic(&dyn_map).map_err(|e| {
-                            boxed_validation_error(
-                                format!("invalid style map: {}", e),
-                                ctx.call_position(),
-                            )
-                        })?;
-                        entry.mode_style = Some(StyleOverlay {
-                            func: None,
-                            raw: Some(style),
-                        });
-                    }
-                    _ => {
-                        binding_style_overlay(&ctx, entry, map)?;
-                    }
-                }
+                binding_style_overlay(&ctx, entry, map)?;
             }
             Ok(b)
         },

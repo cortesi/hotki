@@ -260,8 +260,6 @@ pub struct Binding {
     pub flags: BindingFlags,
     /// Optional per-binding style overlay.
     pub style: Option<StyleOverlay>,
-    /// Optional style overlay applied when entering the bound mode.
-    pub mode_style: Option<StyleOverlay>,
     /// True when entering the bound mode should enable capture-all.
     pub mode_capture: bool,
     /// Source position of the binding declaration for diagnostics.

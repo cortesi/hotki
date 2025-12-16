@@ -36,6 +36,19 @@ impl Style {
         }
         self
     }
+
+    /// Convert a fully resolved style into a raw style overlay with all fields populated.
+    pub(crate) fn to_raw(&self) -> raw::RawStyle {
+        raw::RawStyle {
+            hud: raw::Maybe::Value(self.hud.to_raw_hud()),
+            notify: raw::Maybe::Value(self.notify.to_raw_notify()),
+        }
+    }
+}
+
+/// Convert an RGB tuple into a canonical `#rrggbb` string.
+fn rgb_to_hex((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,3 +150,34 @@ impl Default for Hud {
 }
 
 // Parsed HUD colors are stored directly on Hud; palette helper removed.
+
+impl Hud {
+    /// Convert a concrete HUD style into a raw style overlay with all fields populated.
+    fn to_raw_hud(&self) -> raw::RawHud {
+        raw::RawHud {
+            mode: raw::Maybe::Value(self.mode),
+            pos: raw::Maybe::Value(self.pos),
+            offset: raw::Maybe::Value(self.offset),
+            font_size: raw::Maybe::Value(self.font_size),
+            title_font_weight: raw::Maybe::Value(self.title_font_weight),
+            key_font_size: raw::Maybe::Value(self.key_font_size),
+            key_font_weight: raw::Maybe::Value(self.key_font_weight),
+            tag_font_size: raw::Maybe::Value(self.tag_font_size),
+            tag_font_weight: raw::Maybe::Value(self.tag_font_weight),
+            title_fg: raw::Maybe::Value(rgb_to_hex(self.title_fg)),
+            bg: raw::Maybe::Value(rgb_to_hex(self.bg)),
+            key_fg: raw::Maybe::Value(rgb_to_hex(self.key_fg)),
+            key_bg: raw::Maybe::Value(rgb_to_hex(self.key_bg)),
+            mod_fg: raw::Maybe::Value(rgb_to_hex(self.mod_fg)),
+            mod_font_weight: raw::Maybe::Value(self.mod_font_weight),
+            mod_bg: raw::Maybe::Value(rgb_to_hex(self.mod_bg)),
+            tag_fg: raw::Maybe::Value(rgb_to_hex(self.tag_fg)),
+            opacity: raw::Maybe::Value(self.opacity),
+            key_radius: raw::Maybe::Value(self.key_radius),
+            key_pad_x: raw::Maybe::Value(self.key_pad_x),
+            key_pad_y: raw::Maybe::Value(self.key_pad_y),
+            radius: raw::Maybe::Value(self.radius),
+            tag_submenu: raw::Maybe::Value(self.tag_submenu.clone()),
+        }
+    }
+}

@@ -64,12 +64,11 @@ fn used_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
     let name = theme.as_ref().unwrap();
     match fs::read_to_string(&cfg_path) {
         Ok(s) => {
-            let re = regex::Regex::new("base_theme\\(\\s*\"[^\"]*\"\\s*\\)\\s*;").unwrap();
+            let re = regex::Regex::new("theme\\(\\s*\"[^\"]*\"\\s*\\)\\s*;").unwrap();
             let out = if re.is_match(&s) {
-                re.replace(&s, format!("base_theme(\"{}\");", name))
-                    .to_string()
+                re.replace(&s, format!("theme(\"{}\");", name)).to_string()
             } else {
-                format!("base_theme(\"{}\");\n{}", name, s)
+                format!("theme(\"{}\");\n{}", name, s)
             };
             let tmp = env::temp_dir().join(format!(
                 "hotki-shots-{}-{}.rhai",

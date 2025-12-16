@@ -6,7 +6,7 @@ use tracing::warn;
 
 use super::{
     Binding, BindingKind, DynamicConfig, Effect, HudRow, HudRowStyle, ModeCtx, ModeFrame,
-    RenderedState, StyleOverlay, dsl::ModeBuilder,
+    RenderedState, StyleOverlay, dsl::ModeBuilder, validation::extract_validation_error,
 };
 use crate::{
     Error, NotifyKind, Style,
@@ -392,6 +392,21 @@ fn pos_to_line_col(pos: Position) -> (Option<usize>, Option<usize>) {
 
 /// Convert a Rhai runtime error into a `config::Error` with an excerpt.
 pub fn rhai_error_to_config(cfg: &DynamicConfig, err: &EvalAltResult) -> Error {
+    if let Some((pos, message)) = extract_validation_error(err) {
+        let (line, col) = pos_to_line_col(pos);
+        let excerpt = match (line, col) {
+            (Some(l), Some(c)) => Some(excerpt_at(cfg.source.as_ref(), l, c)),
+            _ => None,
+        };
+        return Error::Validation {
+            path: cfg.path.clone(),
+            line,
+            col,
+            message,
+            excerpt,
+        };
+    }
+
     let (line, col) = pos_to_line_col(err.position());
     let excerpt = match (line, col) {
         (Some(l), Some(c)) => Some(excerpt_at(cfg.source.as_ref(), l, c)),

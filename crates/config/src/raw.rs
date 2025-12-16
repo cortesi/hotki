@@ -55,6 +55,28 @@ impl<T> Maybe<T> {
     }
 }
 
+/// Merge two `Maybe<T>` values, preferring the overlay when it is present.
+fn merge_maybe<T: Clone>(base: &Maybe<T>, overlay: &Maybe<T>) -> Maybe<T> {
+    match overlay.as_option() {
+        Some(_) => overlay.clone(),
+        None => base.clone(),
+    }
+}
+
+/// Merge two nested `Maybe<T>` values, merging inner values when both are present.
+fn merge_maybe_nested<T: Clone>(
+    base: &Maybe<T>,
+    overlay: &Maybe<T>,
+    merge: impl FnOnce(&T, &T) -> T,
+) -> Maybe<T> {
+    match (base.as_option(), overlay.as_option()) {
+        (Some(b), Some(o)) => Maybe::Value(merge(b, o)),
+        (Some(_), None) => base.clone(),
+        (None, Some(_)) => overlay.clone(),
+        (None, None) => base.clone(),
+    }
+}
+
 // ===== RAW NOTIFICATION STYLE =====
 
 /// Raw notification style with all optional fields for merging
@@ -111,6 +133,20 @@ impl RawNotifyStyle {
                 .into_option()
                 .or(defaults.body_font_weight),
             icon: self.icon.into_option().or(defaults.icon),
+        }
+    }
+
+    /// Merge another notification style on top of this one.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        Self {
+            bg: merge_maybe(&self.bg, &other.bg),
+            title_fg: merge_maybe(&self.title_fg, &other.title_fg),
+            body_fg: merge_maybe(&self.body_fg, &other.body_fg),
+            title_font_size: merge_maybe(&self.title_font_size, &other.title_font_size),
+            title_font_weight: merge_maybe(&self.title_font_weight, &other.title_font_weight),
+            body_font_size: merge_maybe(&self.body_font_size, &other.body_font_size),
+            body_font_weight: merge_maybe(&self.body_font_weight, &other.body_font_weight),
+            icon: merge_maybe(&self.icon, &other.icon),
         }
     }
 }
@@ -224,6 +260,22 @@ impl RawNotify {
     /// Convert to final Notify using the provided base as defaults
     pub fn into_notify_over(self, base: &Notify) -> Notify {
         self.apply_over(base)
+    }
+
+    /// Merge another notification overlay on top of this one.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        Self {
+            width: merge_maybe(&self.width, &other.width),
+            pos: merge_maybe(&self.pos, &other.pos),
+            opacity: merge_maybe(&self.opacity, &other.opacity),
+            timeout: merge_maybe(&self.timeout, &other.timeout),
+            buffer: merge_maybe(&self.buffer, &other.buffer),
+            radius: merge_maybe(&self.radius, &other.radius),
+            info: merge_maybe_nested(&self.info, &other.info, RawNotifyStyle::merge),
+            warn: merge_maybe_nested(&self.warn, &other.warn, RawNotifyStyle::merge),
+            error: merge_maybe_nested(&self.error, &other.error, RawNotifyStyle::merge),
+            success: merge_maybe_nested(&self.success, &other.success, RawNotifyStyle::merge),
+        }
     }
 }
 
@@ -379,6 +431,35 @@ impl RawHud {
     pub fn into_hud_over(self, base: &Hud) -> Hud {
         self.apply_over(base)
     }
+
+    /// Merge another HUD overlay on top of this one.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        Self {
+            mode: merge_maybe(&self.mode, &other.mode),
+            pos: merge_maybe(&self.pos, &other.pos),
+            offset: merge_maybe(&self.offset, &other.offset),
+            font_size: merge_maybe(&self.font_size, &other.font_size),
+            title_font_weight: merge_maybe(&self.title_font_weight, &other.title_font_weight),
+            key_font_size: merge_maybe(&self.key_font_size, &other.key_font_size),
+            key_font_weight: merge_maybe(&self.key_font_weight, &other.key_font_weight),
+            tag_font_size: merge_maybe(&self.tag_font_size, &other.tag_font_size),
+            tag_font_weight: merge_maybe(&self.tag_font_weight, &other.tag_font_weight),
+            title_fg: merge_maybe(&self.title_fg, &other.title_fg),
+            bg: merge_maybe(&self.bg, &other.bg),
+            key_fg: merge_maybe(&self.key_fg, &other.key_fg),
+            key_bg: merge_maybe(&self.key_bg, &other.key_bg),
+            mod_fg: merge_maybe(&self.mod_fg, &other.mod_fg),
+            mod_font_weight: merge_maybe(&self.mod_font_weight, &other.mod_font_weight),
+            mod_bg: merge_maybe(&self.mod_bg, &other.mod_bg),
+            tag_fg: merge_maybe(&self.tag_fg, &other.tag_fg),
+            opacity: merge_maybe(&self.opacity, &other.opacity),
+            key_radius: merge_maybe(&self.key_radius, &other.key_radius),
+            key_pad_x: merge_maybe(&self.key_pad_x, &other.key_pad_x),
+            key_pad_y: merge_maybe(&self.key_pad_y, &other.key_pad_y),
+            radius: merge_maybe(&self.radius, &other.radius),
+            tag_submenu: merge_maybe(&self.tag_submenu, &other.tag_submenu),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -391,6 +472,16 @@ pub struct RawStyle {
     /// Optional notification style overrides.
     #[serde(default)]
     pub notify: Maybe<RawNotify>,
+}
+
+impl RawStyle {
+    /// Merge another style overlay on top of this one.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        Self {
+            hud: merge_maybe_nested(&self.hud, &other.hud, RawHud::merge),
+            notify: merge_maybe_nested(&self.notify, &other.notify, RawNotify::merge),
+        }
+    }
 }
 
 #[cfg(test)]

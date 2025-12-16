@@ -43,6 +43,7 @@
 /// Test support utilities exported for the test suite.
 pub mod test_support;
 use std::{
+    cmp::Ordering,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -342,8 +343,10 @@ impl Engine {
                     });
                 }
 
-                let theme = theme_name_for_index(rt.theme_index);
-                let base_style = cfg.base_style(Some(theme), rt.user_style_enabled);
+                if !cfg.theme_exists(rt.theme_name.as_str()) {
+                    rt.theme_name = cfg.active_theme().to_string();
+                }
+                let base_style = cfg.base_style(Some(rt.theme_name.as_str()));
 
                 let mut ctx = config::dynamic::ModeCtx {
                     app: rt.focus.app.clone(),
@@ -463,7 +466,7 @@ impl Engine {
     pub async fn set_config_path(&self, path: PathBuf) -> Result<()> {
         let dyn_cfg = config::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
-        let theme_index = theme_index_for_name(dyn_cfg.base_theme().unwrap_or("default"));
+        let theme_name = dyn_cfg.active_theme().to_string();
 
         // LOCK ORDER: config (write) must be released before rebind_current_context.
         {
@@ -478,8 +481,7 @@ impl Engine {
             let (app, title, pid) = self.current_context();
             let mut rt = self.runtime.lock().await;
             rt.hud_visible = false;
-            rt.theme_index = theme_index;
-            rt.user_style_enabled = true;
+            rt.theme_name = theme_name;
             rt.focus = FocusInfo { app, title, pid };
             rt.stack = vec![config::dynamic::ModeFrame {
                 title: "root".to_string(),
@@ -495,12 +497,19 @@ impl Engine {
 
     /// Set the active theme by name and re-render the stack.
     pub async fn set_theme(&self, name: &str) -> Result<()> {
-        if !config::themes::theme_exists(name) {
+        let cfg_guard = self.config.read().await;
+        let Some(cfg) = cfg_guard.as_ref() else {
+            return Err(Error::Msg("No config loaded; cannot set theme".to_string()));
+        };
+        let exists = cfg.theme_exists(name);
+        drop(cfg_guard);
+
+        if !exists {
             return Err(Error::Msg(format!("Unknown theme: {}", name)));
         }
         {
             let mut rt = self.runtime.lock().await;
-            rt.theme_index = theme_index_for_name(name);
+            rt.theme_name = name.to_string();
         }
         self.rebind_current_context().await
     }
@@ -583,7 +592,7 @@ impl Engine {
                     closure: mode,
                     entered_via: binding.mode_id.map(|id| (binding.chord.clone(), id)),
                     rendered: Vec::new(),
-                    style: binding.mode_style.clone(),
+                    style: None,
                     capture: binding.mode_capture,
                 });
             }
@@ -767,19 +776,39 @@ impl Engine {
                 Ok(DispatchOutcome::default())
             }
             config::Action::ThemeNext => {
+                let cfg_guard = self.config.read().await;
+                let Some(cfg) = cfg_guard.as_ref() else {
+                    return Ok(DispatchOutcome::default());
+                };
+                let theme_names = cfg.theme_names();
+                drop(cfg_guard);
+
                 let mut rt = self.runtime.lock().await;
-                rt.theme_index = theme_next_index(rt.theme_index);
+                rt.theme_name = theme_next_name(&theme_names, rt.theme_name.as_str());
                 Ok(DispatchOutcome::default())
             }
             config::Action::ThemePrev => {
+                let cfg_guard = self.config.read().await;
+                let Some(cfg) = cfg_guard.as_ref() else {
+                    return Ok(DispatchOutcome::default());
+                };
+                let theme_names = cfg.theme_names();
+                drop(cfg_guard);
+
                 let mut rt = self.runtime.lock().await;
-                rt.theme_index = theme_prev_index(rt.theme_index);
+                rt.theme_name = theme_prev_name(&theme_names, rt.theme_name.as_str());
                 Ok(DispatchOutcome::default())
             }
             config::Action::ThemeSet(name) => {
-                if config::themes::theme_exists(name.as_str()) {
+                let cfg_guard = self.config.read().await;
+                let exists = cfg_guard
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.theme_exists(name.as_str()));
+                drop(cfg_guard);
+
+                if exists {
                     let mut rt = self.runtime.lock().await;
-                    rt.theme_index = theme_index_for_name(name.as_str());
+                    rt.theme_name = name.to_string();
                 } else {
                     self.notifier.send_notification(
                         config::NotifyKind::Warn,
@@ -843,11 +872,6 @@ impl Engine {
                     },
                     None,
                 );
-                Ok(DispatchOutcome::default())
-            }
-            config::Action::UserStyle(arg) => {
-                let mut rt = self.runtime.lock().await;
-                rt.user_style_enabled = apply_toggle(rt.user_style_enabled, *arg);
                 Ok(DispatchOutcome::default())
             }
         }
@@ -934,6 +958,12 @@ impl Engine {
 
         let dyn_cfg = config::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
+        let current_theme = { self.runtime.lock().await.theme_name.clone() };
+        let theme_name = if dyn_cfg.theme_exists(current_theme.as_str()) {
+            current_theme
+        } else {
+            dyn_cfg.active_theme().to_string()
+        };
 
         {
             let mut g = self.config.write().await;
@@ -941,6 +971,7 @@ impl Engine {
         }
         {
             let mut rt = self.runtime.lock().await;
+            rt.theme_name = theme_name;
             rt.stack = vec![config::dynamic::ModeFrame {
                 title: "root".to_string(),
                 closure: root,
@@ -1141,43 +1172,32 @@ fn font_weight_for_ui(weight: config::FontWeight) -> hotki_protocol::FontWeight 
     }
 }
 
-fn theme_name_for_index(index: usize) -> &'static str {
-    let themes = config::themes::list_themes();
-    if themes.is_empty() {
-        return "default";
-    }
-    themes[index % themes.len()]
+fn theme_next_name(theme_names: &[String], current: &str) -> String {
+    theme_step_name(theme_names, current, 1)
 }
 
-fn theme_index_for_name(name: &str) -> usize {
-    let themes = config::themes::list_themes();
-    if let Some(idx) = themes.iter().position(|t| *t == name) {
-        return idx;
-    }
-    themes.iter().position(|t| *t == "default").unwrap_or(0)
+fn theme_prev_name(theme_names: &[String], current: &str) -> String {
+    theme_step_name(theme_names, current, -1)
 }
 
-fn theme_next_index(index: usize) -> usize {
-    let themes = config::themes::list_themes();
-    if themes.is_empty() {
-        return 0;
+fn theme_step_name(theme_names: &[String], current: &str, step: isize) -> String {
+    if theme_names.is_empty() {
+        return "default".to_string();
     }
-    (index % themes.len() + 1) % themes.len()
-}
 
-fn theme_prev_index(index: usize) -> usize {
-    let themes = config::themes::list_themes();
-    if themes.is_empty() {
-        return 0;
-    }
-    let idx = index % themes.len();
-    if idx == 0 { themes.len() - 1 } else { idx - 1 }
-}
+    let Some(idx) = theme_names.iter().position(|n| n == current) else {
+        return theme_names
+            .first()
+            .expect("checked for non-empty list")
+            .clone();
+    };
 
-fn apply_toggle(current: bool, toggle: config::Toggle) -> bool {
-    match toggle {
-        config::Toggle::On => true,
-        config::Toggle::Off => false,
-        config::Toggle::Toggle => !current,
-    }
+    let len = theme_names.len();
+    let next = match step.cmp(&0) {
+        Ordering::Greater => (idx + 1) % len,
+        Ordering::Less => idx.checked_sub(1).unwrap_or(len - 1),
+        Ordering::Equal => idx,
+    };
+
+    theme_names[next].clone()
 }

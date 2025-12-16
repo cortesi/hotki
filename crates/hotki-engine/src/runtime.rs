@@ -15,8 +15,7 @@ pub(crate) struct RuntimeState {
     pub(crate) stack: Vec<ModeFrame>,
     pub(crate) focus: FocusInfo,
     pub(crate) rendered: RenderedState,
-    pub(crate) theme_index: usize,
-    pub(crate) user_style_enabled: bool,
+    pub(crate) theme_name: String,
 }
 
 impl RuntimeState {
@@ -31,8 +30,7 @@ impl RuntimeState {
                 style: config::Style::default(),
                 capture: false,
             },
-            theme_index: 0,
-            user_style_enabled: true,
+            theme_name: "default".to_string(),
         }
     }
 

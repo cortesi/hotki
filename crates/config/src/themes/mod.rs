@@ -479,77 +479,24 @@ mod tests {
     }
 
     #[test]
-    fn test_theme_merging_with_user_config() {
-        let cfg = load_dynamic_config_from_string(
-            r#"
-            style(#{
-              hud: #{ font_size: 20.0, title_fg: "red" },
-            });
-
-            hotki.mode(|m, _ctx| {
-              m.bind("a", "Test action", action.shell("echo test"));
-            });
-            "#
-            .to_string(),
-            None,
-        )
-        .expect("loads");
-
-        let style = cfg.base_style(None, true);
-        let hud = style.hud;
-
-        // Verify user overrides are applied.
-        assert_eq!(hud.font_size, 20.0);
-        assert_eq!(hud.title_fg, (255, 0, 0));
-
-        // Verify theme defaults are preserved for unspecified fields.
-        assert_eq!(hud.bg, (0x10, 0x10, 0x10));
-        assert_eq!(hud.opacity, 1.0);
-    }
-
-    #[test]
-    fn test_empty_user_config_uses_theme_defaults() {
+    fn test_dynamic_config_defaults_to_default_theme() {
         let cfg =
             load_dynamic_config_from_string(r#"hotki.mode(|_m, _ctx| {});"#.to_string(), None)
                 .expect("loads");
 
-        let hud = cfg.base_style(None, true).hud;
+        let expected = load_theme(None).hud;
+        let actual = cfg.base_style(None).hud;
 
-        // Verify all theme defaults are used when there is no user overlay.
-        assert_eq!(hud.font_size, 14.0);
-        assert_eq!(hud.title_fg, (0xd0, 0xd0, 0xd0));
-        assert_eq!(hud.bg, (0x10, 0x10, 0x10));
-        assert_eq!(hud.opacity, 1.0);
+        assert_eq!(actual.title_fg, expected.title_fg);
+        assert_eq!(actual.bg, expected.bg);
+        assert_eq!(actual.font_size, expected.font_size);
     }
 
     #[test]
-    fn test_theme_field_parsing() {
-        let cfg_charcoal = load_dynamic_config_from_string(
-            r#"
-            base_theme("charcoal");
-            hotki.mode(|_m, _ctx| {});
-            "#
-            .to_string(),
-            None,
-        )
-        .expect("loads");
-        let cfg_default =
-            load_dynamic_config_from_string(r#"hotki.mode(|_m, _ctx| {});"#.to_string(), None)
-                .expect("loads");
-
-        let charcoal = cfg_charcoal.base_style(None, true).hud;
-        let default = cfg_default.base_style(None, true).hud;
-
-        // Sanity check: different base themes should result in different style values.
-        assert_ne!(charcoal.title_fg, default.title_fg);
-    }
-
-    #[test]
-    fn test_different_theme_as_base() {
+    fn test_dynamic_config_theme_function_selects_builtins() {
         let cfg = load_dynamic_config_from_string(
             r#"
-            base_theme("dark-blue");
-            style(#{ hud: #{ font_size: 18.0 } });
+            theme("dark-blue");
             hotki.mode(|_m, _ctx| {});
             "#
             .to_string(),
@@ -557,48 +504,11 @@ mod tests {
         )
         .expect("loads");
 
-        let hud = cfg.base_style(None, true).hud;
+        let expected = load_theme(Some("dark-blue")).hud;
+        let actual = cfg.base_style(None).hud;
 
-        // Verify user override is applied.
-        assert_eq!(hud.font_size, 18.0);
-
-        // Verify dark-blue theme values are used.
-        assert_eq!(hud.title_fg, (0xa0, 0xc4, 0xff));
-        assert_eq!(hud.bg, (0x0a, 0x16, 0x28));
-    }
-
-    #[test]
-    fn test_theme_overlay_on_base_switch() {
-        let default_cfg = load_dynamic_config_from_string(
-            r#"
-            base_theme("default");
-            style(#{ hud: #{ font_size: 20.0 } });
-            hotki.mode(|_m, _ctx| {});
-            "#
-            .to_string(),
-            None,
-        )
-        .expect("loads");
-        let dark_cfg = load_dynamic_config_from_string(
-            r#"
-            base_theme("dark-blue");
-            style(#{ hud: #{ font_size: 20.0 } });
-            hotki.mode(|_m, _ctx| {});
-            "#
-            .to_string(),
-            None,
-        )
-        .expect("loads");
-
-        let default_hud = default_cfg.base_style(None, true).hud;
-        let dark_hud = dark_cfg.base_style(None, true).hud;
-
-        // User override is applied on both base themes.
-        assert_eq!(default_hud.font_size, 20.0);
-        assert_eq!(dark_hud.font_size, 20.0);
-
-        // Title color should come from the base theme (not overridden by user).
-        assert_eq!(default_hud.title_fg, (0xd0, 0xd0, 0xd0));
-        assert_eq!(dark_hud.title_fg, (0xa0, 0xc4, 0xff));
+        assert_eq!(actual.title_fg, expected.title_fg);
+        assert_eq!(actual.bg, expected.bg);
+        assert_eq!(actual.font_size, expected.font_size);
     }
 }

@@ -40,8 +40,6 @@ pub enum Action {
     ChangeVolume(i8),
     /// Control mute state: on/off/toggle
     Mute(Toggle),
-    /// Control user style configuration: on/off/toggle
-    UserStyle(Toggle),
 }
 
 impl Action {
