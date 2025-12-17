@@ -12,6 +12,11 @@ use rhai::{Array, Dynamic, Engine, EvalAltResult, NativeCallContext, Position};
 
 use super::{SelectorItem, dsl::DynamicConfigScriptState, util::lock_unpoisoned};
 
+/// Directory containing system utilities stored in CoreServices (e.g. Keychain Access).
+const CORE_SERVICES_APPLICATIONS: &str = "/System/Library/CoreServices/Applications";
+/// Finder application bundle (not stored under `/System/Applications`).
+const FINDER_APP_BUNDLE: &str = "/System/Library/CoreServices/Finder.app";
+
 /// Register `get_applications()` in the Rhai DSL.
 pub(super) fn register_apps_api(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptState>>) {
     engine.register_fn(
@@ -50,6 +55,8 @@ fn application_roots() -> Vec<PathBuf> {
         PathBuf::from("/Applications"),
         PathBuf::from("/System/Applications"),
         PathBuf::from("/Applications/Utilities"),
+        PathBuf::from(CORE_SERVICES_APPLICATIONS),
+        PathBuf::from(FINDER_APP_BUNDLE),
     ];
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
         roots.push(home.join("Applications"));
@@ -61,6 +68,13 @@ fn application_roots() -> Vec<PathBuf> {
 fn scan_applications_in_dirs(roots: &[PathBuf]) -> io::Result<Vec<SelectorItem>> {
     let mut bundles = Vec::new();
     for root in roots {
+        if is_app_bundle(root) {
+            if root.is_dir() {
+                bundles.push(root.to_path_buf());
+            }
+            continue;
+        }
+
         if !root.is_dir() {
             continue;
         }
@@ -146,4 +160,30 @@ fn selector_items_to_array(items: &[SelectorItem]) -> Array {
             Dynamic::from(map)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use super::{
+        CORE_SERVICES_APPLICATIONS, FINDER_APP_BUNDLE, application_roots, scan_applications_in_dirs,
+    };
+
+    #[test]
+    fn application_roots_include_system_locations() {
+        let roots = application_roots();
+        assert!(roots.contains(&PathBuf::from(CORE_SERVICES_APPLICATIONS)));
+        assert!(roots.contains(&PathBuf::from(FINDER_APP_BUNDLE)));
+    }
+
+    #[test]
+    fn scan_includes_finder_bundle() {
+        let roots = [PathBuf::from(FINDER_APP_BUNDLE)];
+        let items = scan_applications_in_dirs(&roots).expect("scan should succeed");
+        assert!(
+            items.iter().any(|item| item.label == "Finder"),
+            "expected Finder to be present"
+        );
+    }
 }

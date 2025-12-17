@@ -317,7 +317,8 @@ Selector items can be:
 - A map: `#{ label: "...", sublabel: "...", data: ... }`
 
 Built-in helpers:
-- `get_applications()` returns an array of selector item maps for standard macOS app directories.
+- `get_applications()` returns an array of selector item maps for standard macOS app directories
+  (including Finder).
 
 Example:
 
