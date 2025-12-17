@@ -2,14 +2,14 @@
 
 use egui::{
     CentralPanel, Color32, Context, Frame, Margin, Pos2, Stroke, Vec2, ViewportBuilder,
-    ViewportCommand, ViewportId, epaint::Shadow, pos2, text::LayoutJob, vec2,
+    ViewportCommand, ViewportId, epaint::Shadow, pos2, style::ScrollStyle, text::LayoutJob, vec2,
 };
 use hotki_protocol::{FontWeight, SelectorSnapshot, SelectorStyle};
 
 use crate::{
     display::DisplayMetrics,
     fonts,
-    nswindow::{apply_transparent_rounded, set_on_all_spaces},
+    nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
 };
 
 /// Fixed selector width in logical pixels.
@@ -67,6 +67,8 @@ pub struct SelectorWindow {
     last_pos: Option<Pos2>,
     /// Last applied window size.
     last_size: Option<Vec2>,
+    /// Whether NSWindow style has been applied for the current selector session.
+    window_configured: bool,
 }
 
 impl SelectorWindow {
@@ -79,6 +81,7 @@ impl SelectorWindow {
             display: DisplayMetrics::default(),
             last_pos: None,
             last_size: None,
+            window_configured: false,
         }
     }
 
@@ -104,6 +107,7 @@ impl SelectorWindow {
     pub fn set_state(&mut self, snapshot: SelectorSnapshot) {
         if self.state.is_none() {
             self.last_pos = None;
+            self.window_configured = false;
         }
         self.state = Some(snapshot);
     }
@@ -113,6 +117,7 @@ impl SelectorWindow {
         self.state = None;
         self.last_pos = None;
         self.last_size = None;
+        self.window_configured = false;
         ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
     }
 
@@ -262,6 +267,20 @@ impl SelectorWindow {
         job
     }
 
+    /// Render an optional selector item sublabel line.
+    fn render_sublabel(
+        ui: &mut egui::Ui,
+        sublabel: Option<&str>,
+        font_id: &egui::FontId,
+        fg: Color32,
+    ) {
+        let Some(sub) = sublabel else {
+            return;
+        };
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(sub).font(font_id.clone()).color(fg));
+    }
+
     /// Render and update the selector viewport.
     pub fn render(&mut self, ctx: &Context) {
         let Some(snapshot) = self.state.as_ref() else {
@@ -302,13 +321,6 @@ impl SelectorWindow {
         let sublabel_font_id = self.sublabel_font_id();
         let snapshot = snapshot.clone();
         ctx.show_viewport_immediate(self.id, builder, move |sel_ctx, _| {
-            if let Err(e) = apply_transparent_rounded("Hotki Selector", SELECTOR_RADIUS as f64) {
-                tracing::error!("{}", e);
-            }
-            if let Err(e) = set_on_all_spaces("Hotki Selector") {
-                tracing::error!("{}", e);
-            }
-
             let border = Self::rgba(style.border, BG_ALPHA);
             let bg = Self::rgba(style.bg, BG_ALPHA);
             let mut frame = Frame::new()
@@ -393,47 +405,58 @@ impl SelectorWindow {
                     return;
                 }
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        for (i, item) in snapshot.items.iter().enumerate() {
-                            let selected = i == snapshot.selected;
-                            let item_bg = if selected {
-                                style.item_selected_bg
-                            } else {
-                                style.item_bg
-                            };
-                            let fill = Self::rgba(item_bg, BG_ALPHA);
-                            let row = Frame::new()
-                                .fill(fill)
-                                .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                                .inner_margin(ITEM_MARGIN);
-                            row.show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                let label_job = Self::layout_label_with_matches(
-                                    item.label.as_str(),
-                                    &item.label_match_indices,
-                                    fg,
-                                    match_fg,
-                                    item_font_id.clone(),
-                                );
-                                ui.label(label_job);
-                                if let Some(sub) = item.sublabel.as_ref() {
-                                    ui.add_space(2.0);
-                                    ui.label(
-                                        egui::RichText::new(sub.clone())
-                                            .font(sublabel_font_id.clone())
-                                            .color(dim),
+                ui.scope(|ui| {
+                    ui.style_mut().spacing.scroll = ScrollStyle::floating();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            for (i, item) in snapshot.items.iter().enumerate() {
+                                let selected = i == snapshot.selected;
+                                let item_bg = if selected {
+                                    style.item_selected_bg
+                                } else {
+                                    style.item_bg
+                                };
+                                let fill = Self::rgba(item_bg, BG_ALPHA);
+                                let row = Frame::new()
+                                    .fill(fill)
+                                    .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
+                                    .inner_margin(ITEM_MARGIN);
+                                row.show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    let label_job = Self::layout_label_with_matches(
+                                        item.label.as_str(),
+                                        &item.label_match_indices,
+                                        fg,
+                                        match_fg,
+                                        item_font_id.clone(),
                                     );
+                                    ui.label(label_job);
+                                    Self::render_sublabel(
+                                        ui,
+                                        item.sublabel.as_deref(),
+                                        &sublabel_font_id,
+                                        dim,
+                                    );
+                                });
+                                if i + 1 != snapshot.items.len() {
+                                    ui.add_space(ITEM_GAP);
                                 }
-                            });
-                            if i + 1 != snapshot.items.len() {
-                                ui.add_space(ITEM_GAP);
                             }
-                        }
-                    });
+                        });
+                });
             });
         });
+
+        if !self.window_configured && frame_by_title("Hotki Selector").is_some() {
+            if let Err(e) = apply_transparent_rounded("Hotki Selector", SELECTOR_RADIUS as f64) {
+                tracing::error!("{}", e);
+            }
+            if let Err(e) = set_on_all_spaces("Hotki Selector") {
+                tracing::error!("{}", e);
+            }
+            self.window_configured = true;
+        }
 
         self.last_pos = Some(pos);
         self.last_size = Some(size);
