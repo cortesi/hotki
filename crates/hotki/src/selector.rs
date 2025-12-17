@@ -33,6 +33,13 @@ const ITEM_MARGIN: Margin = Margin {
     top: 8,
     bottom: 8,
 };
+/// Input field inner padding.
+const INPUT_MARGIN: Margin = Margin {
+    left: 10,
+    right: 10,
+    top: 8,
+    bottom: 8,
+};
 
 /// Background alpha applied to all selector fills.
 const BG_ALPHA: u8 = 240;
@@ -56,7 +63,7 @@ pub struct SelectorWindow {
     state: Option<SelectorSnapshot>,
     /// Cached display metrics used for positioning.
     display: DisplayMetrics,
-    /// Last computed position (for smooth movement).
+    /// Last computed position (used to keep the top edge stable).
     last_pos: Option<Pos2>,
     /// Last applied window size.
     last_size: Option<Vec2>,
@@ -182,11 +189,14 @@ impl SelectorWindow {
         vec2(content_w, total_h)
     }
 
-    /// Center the selector within the active display.
-    fn center_pos(&self, size: Vec2) -> Pos2 {
+    /// Center horizontally and keep the top edge stable while visible.
+    fn desired_pos(&self, size: Vec2) -> Pos2 {
         let frame = self.display.active_frame();
         let x = frame.x + (frame.width - size.x) / 2.0;
-        let y = self.display.active_frame_top_left_y() + (frame.height - size.y) / 2.0;
+        let y = self.last_pos.map_or_else(
+            || self.display.active_frame_top_left_y() + (frame.height - size.y) / 2.0,
+            |p| p.y,
+        );
         pos2(x, y)
     }
 
@@ -259,8 +269,12 @@ impl SelectorWindow {
             return;
         };
 
-        let size = self.desired_size(ctx, snapshot);
-        let pos = self.center_pos(size);
+        // Keep the selector window size stable while visible; resizing the viewport on every
+        // keystroke can cause perceptible flicker.
+        let size = self
+            .last_size
+            .unwrap_or_else(|| self.desired_size(ctx, snapshot));
+        let pos = self.desired_pos(size);
 
         if self.last_pos != Some(pos) {
             ctx.send_viewport_cmd_to(self.id, ViewportCommand::OuterPosition(pos));
@@ -310,7 +324,7 @@ impl SelectorWindow {
             };
 
             CentralPanel::default().frame(frame).show(sel_ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = ITEM_GAP;
+                ui.spacing_mut().item_spacing.y = 0.0;
 
                 let fg = Color32::from_rgba_unmultiplied(230, 230, 230, 255);
                 let dim = Color32::from_rgba_unmultiplied(160, 160, 160, 255);
@@ -342,14 +356,11 @@ impl SelectorWindow {
                 let input_frame = Frame::new()
                     .fill(input_bg)
                     .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                    .inner_margin(Margin {
-                        left: 10,
-                        right: 10,
-                        top: 8,
-                        bottom: 8,
-                    });
+                    .inner_margin(INPUT_MARGIN);
                 input_frame.show(ui, |ui| {
-                    ui.set_height(INPUT_HEIGHT);
+                    let inner_h = (INPUT_HEIGHT
+                        - f32::from(i16::from(INPUT_MARGIN.top) + i16::from(INPUT_MARGIN.bottom)))
+                    .max(0.0);
                     let text = if snapshot.query.is_empty() {
                         egui::RichText::new(snapshot.placeholder.clone())
                             .font(input_font_id.clone())
@@ -359,7 +370,16 @@ impl SelectorWindow {
                             .font(input_font_id.clone())
                             .color(fg)
                     };
-                    ui.label(text);
+                    let (rect, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), inner_h),
+                        egui::Sense::hover(),
+                    );
+                    let mut inner = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    inner.label(text);
                 });
 
                 ui.add_space(SECTION_GAP);
@@ -407,6 +427,9 @@ impl SelectorWindow {
                                     );
                                 }
                             });
+                            if i + 1 != snapshot.items.len() {
+                                ui.add_space(ITEM_GAP);
+                            }
                         }
                     });
             });
