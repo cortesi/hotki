@@ -12,7 +12,21 @@ When a selector action is triggered, a popup window appears with:
 - A text input field at the top (initially focused)
 - A filtered list of options below, ranked by fuzzy match score
 - Keyboard navigation to select an option
-- Enter to confirm, Escape to dismiss
+- Enter to confirm, Escape to cancel and return to previous mode
+
+**Mode Transition Behavior:**
+
+When a selector opens, it **completely replaces** the current mode's HUD:
+- The previous mode's HUD is hidden
+- The previous mode's key bindings are suspended
+- **All keyboard input is captured** and routed exclusively to the selector
+- The selector has full control until dismissed
+
+When the selector is dismissed (via Enter or Escape):
+- The selector popup closes
+- The previous mode's HUD reappears
+- The previous mode's key bindings become active again
+- Normal hotkey processing resumes
 
 Each option has:
 - **Display text**: shown in the list
@@ -76,8 +90,6 @@ pub struct SelectorConfig {
     pub on_cancel: Option<HandlerRef>,
     /// Max items to display at once (default: 10)
     pub max_visible: usize,
-    /// Enable vim-style navigation (Escape to enter nav mode, j/k to move)
-    pub vim_mode: bool,
 }
 
 pub enum SelectorItems {
@@ -128,8 +140,6 @@ pub struct SelectorState {
     pub query: String,
     /// Currently highlighted index in matched results (0-based)
     pub selected: usize,
-    /// Vim mode: true if in navigation mode (after Escape), false if typing
-    pub nav_mode: bool,
 }
 
 pub struct SelectorMatcher {
@@ -201,25 +211,18 @@ let snapshot = nucleo.snapshot();
 
 ### 6. Keyboard Handling
 
-**Normal mode (typing):**
+All keyboard input is captured while the selector is active. The previous mode's bindings are
+completely suspended.
+
 | Key | Action |
 |-----|--------|
 | Any printable | Append to query, re-filter |
 | Backspace | Delete last char, re-filter |
 | Up / Ctrl-P | Move selection up |
 | Down / Ctrl-N | Move selection down |
-| Enter | Confirm selection, invoke callback |
-| Escape | Cancel selector (or enter nav mode if vim_mode) |
+| Enter | Confirm selection, invoke `on_select` callback, close selector |
+| Escape | Cancel selector, invoke `on_cancel` callback (if set), return to previous mode |
 | Ctrl-U | Clear query |
-
-**Vim nav mode (after Escape in vim_mode):**
-| Key | Action |
-|-----|--------|
-| j / Down | Move selection down |
-| k / Up | Move selection up |
-| Enter | Confirm selection |
-| Escape (again) | Cancel selector |
-| i / a / any printable | Return to typing mode |
 
 ### 7. Callback Signature
 
@@ -265,7 +268,7 @@ pub struct SelectorSnapshot {
     pub query: String,
     pub items: Vec<SelectorItemSnapshot>,
     pub selected: usize,
-    pub nav_mode: bool,
+    pub total_matches: usize,
 }
 
 pub struct SelectorItemSnapshot {
@@ -376,29 +379,32 @@ Returns items with:
 
 1. [ ] Implement `SelectorState::new(config: SelectorConfig, notify: impl Fn()) -> Self`:
    - Creates `SelectorMatcher` with resolved items.
-   - Initializes query, selected index, nav_mode.
+   - Initializes query and selected index.
 2. [ ] Implement `SelectorState::handle_input(key: Key) -> SelectorEvent`:
    - Returns `SelectorEvent::Update` (state changed), `Select(usize)`, `Cancel`, or `None`.
    - On text input: update query, call `matcher.update_pattern()`.
 3. [ ] Implement `SelectorState::tick(&mut self) -> bool`:
    - Calls `matcher.tick()`, returns true if snapshot changed.
-4. [ ] Implement keyboard handling per specification (normal mode + vim nav mode).
+4. [ ] Implement keyboard handling per specification.
 5. [ ] Add unit tests for keyboard state machine.
 
 ### Stage 5: Engine Integration
 
 1. [ ] In key dispatch, handle `BindingKind::Selector`:
    - Resolve items (evaluate provider if needed) and create `SelectorState`.
-   - Enable capture-all while selector is active.
+   - **Hide the HUD** (set `hud_visible = false`).
+   - **Enable capture-all** so all keyboard input routes to the selector.
    - Send `MsgToUI::SelectorUpdate`.
 2. [ ] Route key events to selector when active (before normal mode handling).
 3. [ ] On `SelectorEvent::Select(idx)`:
    - Extract selected item.
    - Execute `on_select(ctx, item, query)` handler.
    - Close selector, send `MsgToUI::SelectorHide`.
+   - Re-enable normal mode key handling and restore HUD.
 4. [ ] On `SelectorEvent::Cancel`:
    - Execute `on_cancel` handler if present.
    - Close selector, send `MsgToUI::SelectorHide`.
+   - Re-enable normal mode key handling and restore HUD.
 5. [ ] On `SelectorEvent::Update`:
    - Send `MsgToUI::SelectorUpdate` with new snapshot.
 
@@ -426,7 +432,7 @@ Returns items with:
    - `action.selector(config_map)` function (returns `SelectorConfig`).
    - `selector_item(label, data)` helper.
 2. [ ] Implement config map parsing:
-   - Parse `title`, `placeholder`, `items`, `on_select`, `on_cancel`, `max_visible`, `vim_mode`.
+   - Parse `title`, `placeholder`, `items`, `on_select`, `on_cancel`, `max_visible`.
    - Accept `items` as either an array or a `|ctx| -> Array` provider.
    - Accept `on_select`/`on_cancel` as closures (wrap into `HandlerRef`).
    - Validate required fields, provide defaults.
@@ -459,7 +465,7 @@ Returns items with:
 2. [ ] Add selector testers to `examples/test.rhai` (follow our standard entry chord `shift+cmd+0`).
 3. [ ] Create `examples/selector.rhai` with app launcher example (activated via `shift+cmd+0`).
 4. [ ] Create `examples/selector-custom.rhai` showing custom item lists (activated via `shift+cmd+0`).
-5. [ ] Document keyboard shortcuts and vim mode.
+5. [ ] Document keyboard shortcuts.
 
 ### Stage 11: Validation
 
@@ -469,11 +475,16 @@ Returns items with:
 4. [ ] Run `cargo fmt --all`.
 5. [ ] Manual testing:
    - App launcher with various search queries.
-   - Keyboard navigation (arrows, vim mode).
-   - Selection callback execution.
-   - Cancel behavior.
+   - Keyboard navigation (arrows).
+   - Selection callback execution (Enter).
+   - Cancel behavior (Escape returns to previous mode).
    - Empty results handling.
    - Theme consistency.
+6. [ ] Update `hotki-shots` to capture selector screenshots:
+   - Show selector with query text entered (not empty).
+   - Display an expanded item list with multiple visible results.
+   - Demonstrate match highlighting in the filtered results.
+   - Capture a representative example that showcases selector features.
 
 ---
 
