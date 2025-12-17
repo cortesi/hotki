@@ -50,5 +50,13 @@
       title_font_weight: bold,
     },
   },
+  selector: #{
+    bg: "#202020",
+    input_bg: "#2a2a2a",
+    item_bg: "#202020",
+    item_selected_bg: "#505050",
+    match_fg: "#ffffff",
+    border: "#303030",
+    shadow: "black",
+  },
 }
-

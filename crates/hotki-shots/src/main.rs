@@ -200,6 +200,35 @@ fn capture_window_by_id(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
     false
 }
 
+fn wait_for_window_by_pid_title(pid: u32, title: &str, timeout_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if find_window_by_pid_title(pid, title).is_some() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn inject_until_window(
+    rt: &tokio::runtime::Runtime,
+    conn: &mut hotki_server::Connection,
+    pid: u32,
+    window_title: &str,
+    ident: &str,
+    timeout_ms: u64,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        inject_key(rt, conn, ident);
+        if wait_for_window_by_pid_title(pid, window_title, 600) {
+            return true;
+        }
+    }
+    false
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -298,6 +327,21 @@ fn main() {
                 failed.push(n);
             }
         }
+    }
+
+    // Selector capture: open selector demo, type a query, and screenshot.
+    if inject_until_window(&rt, conn, hotki_pid, "Hotki Selector", "p", cli.timeout) {
+        for k in ["c", "a", "l"] {
+            inject_key(&rt, conn, k);
+        }
+        thread::sleep(Duration::from_millis(250));
+        let ok = capture_window_by_id(hotki_pid, "Hotki Selector", &cli.dir, "selector");
+        if !ok {
+            failed.push("selector");
+        }
+        inject_key(&rt, conn, "esc");
+    } else {
+        failed.push("selector");
     }
 
     // Exit HUD and shutdown server

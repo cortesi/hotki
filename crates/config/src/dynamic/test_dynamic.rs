@@ -7,8 +7,8 @@ mod tests {
         Action, Error,
         dynamic::{
             Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, NavRequest,
-            RenderedState, dsl::ModeBuilder, execute_handler, load_dynamic_config_from_string,
-            render_stack,
+            RenderedState, SelectorItems, dsl::ModeBuilder, execute_handler,
+            load_dynamic_config_from_string, render_stack,
         },
     };
 
@@ -214,6 +214,119 @@ mod tests {
         }
 
         assert!(matches!(result.nav, Some(NavRequest::Pop)));
+    }
+
+    #[test]
+    fn selector_action_builds_selector_binding() {
+        let source = r#"hotki.mode(|m, ctx| {
+  m.bind("a", "Selector", action.selector(#{
+    title: "Run",
+    placeholder: "Search...",
+    items: [
+      "Safari",
+      #{ label: "Chrome", sublabel: "/Applications/Chrome.app", data: 123 },
+    ],
+    on_select: |ctx, item, query| { },
+  }));
+});"#;
+        let cfg = load_dynamic_config_from_string(source.to_string(), None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+        let ctx = base_ctx("TestApp", false, 0);
+        let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+
+        let binding = find_binding(&out.rendered, "a");
+        let BindingKind::Selector(sel) = &binding.kind else {
+            panic!("expected selector binding, got {:?}", binding.kind);
+        };
+        assert_eq!(sel.title, "Run");
+        assert_eq!(sel.placeholder, "Search...");
+        assert_eq!(sel.max_visible, 10);
+        let SelectorItems::Static(items) = &sel.items else {
+            panic!("expected static items");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "Safari");
+        assert!(items[0].sublabel.is_none());
+        let data0 = items[0]
+            .data
+            .clone()
+            .into_immutable_string()
+            .expect("string data");
+        assert_eq!(data0.as_str(), "Safari");
+        assert_eq!(items[1].label, "Chrome");
+        assert_eq!(
+            items[1].sublabel.as_deref(),
+            Some("/Applications/Chrome.app")
+        );
+        assert_eq!(items[1].data.clone().as_int().expect("int data"), 123);
+    }
+
+    #[test]
+    fn selector_items_provider_is_accepted() {
+        let source = r#"hotki.mode(|m, ctx| {
+  m.bind("a", "Selector", action.selector(#{
+    items: || ["Safari", "Chrome"],
+    on_select: |ctx, item, query| { },
+  }));
+});"#;
+        let cfg = load_dynamic_config_from_string(source.to_string(), None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+        let ctx = base_ctx("TestApp", false, 0);
+        let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+
+        let binding = find_binding(&out.rendered, "a");
+        let BindingKind::Selector(sel) = &binding.kind else {
+            panic!("expected selector binding, got {:?}", binding.kind);
+        };
+        assert!(matches!(sel.items, SelectorItems::Provider(_)));
+    }
+
+    #[test]
+    fn selector_requires_items_and_on_select() {
+        let source = r#"hotki.mode(|m, ctx| {
+  m.bind("a", "Selector", action.selector(#{ title: "oops" }));
+});"#;
+        let err = match load_dynamic_config_from_string(source.to_string(), None) {
+            Ok(_cfg) => panic!("expected selector validation error"),
+            Err(err) => err,
+        };
+        match err {
+            Error::Validation { message, .. } => {
+                assert!(
+                    message.contains("selector: missing required field 'items'")
+                        || message.contains("selector: missing required field 'on_select'"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selector_config_can_be_used_in_batch_bind() {
+        let source = r#"hotki.mode(|m, ctx| {
+  let sel = action.selector(#{
+    items: ["one", "two"],
+    on_select: |ctx, item, query| { },
+    max_visible: 5,
+  });
+  m.bind([
+    ["a", "Selector", sel],
+  ]);
+});"#;
+        let cfg = load_dynamic_config_from_string(source.to_string(), None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+        let ctx = base_ctx("TestApp", false, 0);
+        let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+
+        let binding = find_binding(&out.rendered, "a");
+        let BindingKind::Selector(sel) = &binding.kind else {
+            panic!("expected selector binding, got {:?}", binding.kind);
+        };
+        assert_eq!(sel.max_visible, 5);
     }
 
     #[test]

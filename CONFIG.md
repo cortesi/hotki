@@ -88,6 +88,8 @@ use `if` statements for conditional bindings.
 |----------|------------|-------------|
 | `theme(name)` | `String` | Set the active theme by registered name |
 | `Style(map)` | `Map` | Construct a `Style` object (validates the map) |
+| `selector_item(label, data)` | `String, Dynamic` | Build a selector item map (`#{ label, sublabel, data }`) |
+| `get_applications()` | – | Return selector items for installed applications |
 
 Themes are stored in a registry exposed as the global `themes` variable.
 
@@ -146,6 +148,7 @@ m.bind(chord, desc, target) -> BindingRef
 Where `target` is one of:
 - `action.*` (primitive action or compound action via `action.run`)
 - `|m, ctx| { ... }` (a child mode closure)
+- `action.selector(#{ ... })` (interactive selector popup)
 
 #### Batch bindings
 
@@ -154,7 +157,7 @@ m.bind(array) -> BindingsRef
 ```
 
 Pass an array of `[chord, desc, target]` tuples to create multiple bindings at once. Each `target`
-can be an action, `action.run` (compound action), or a mode closure:
+can be an action, `action.run` (compound action), a selector config, or a mode closure:
 
 ```rhai
 m.bind([
@@ -281,6 +284,53 @@ action.relay("shift+tab")
 | `action.exit` | Clear stack to root and hide HUD |
 | `action.show_root` | Clear stack to root and show HUD |
 | `action.hide_hud` | Hide HUD (keep stack position) |
+
+### Selector (interactive)
+
+`action.selector(#{ ... })` builds a selector popup binding. When triggered, Hotki:
+- Hides the current HUD
+- Suspends the current mode bindings
+- Captures all keyboard input until the selector is dismissed
+
+Keyboard shortcuts while the selector is open:
+
+| Key | Action |
+|-----|--------|
+| Printable keys | Append to query |
+| Backspace | Delete last character |
+| Up / Ctrl-P | Move selection up |
+| Down / Ctrl-N | Move selection down |
+| Enter | Confirm selection |
+| Escape | Cancel |
+| Ctrl-U | Clear query |
+
+Config map fields:
+- `title` (String, default `""`)
+- `placeholder` (String, default `"Search..."`)
+- `items` (Array or closure returning Array)
+- `on_select` (closure): `|ctx, item, query| { ... }`
+- `on_cancel` (optional closure): `|ctx| { ... }`
+- `max_visible` (Int, default `10`)
+
+Selector items can be:
+- A string (shorthand): `"Safari"` → `#{ label: "Safari", data: "Safari" }`
+- A map: `#{ label: "...", sublabel: "...", data: ... }`
+
+Built-in helpers:
+- `get_applications()` returns an array of selector item maps for standard macOS app directories.
+
+Example:
+
+```rhai
+m.bind("shift+cmd+0", "Run Application", action.selector(#{
+  title: "Run Application",
+  placeholder: "Search apps...",
+  items: || get_applications(),
+  on_select: |ctx, item, _query| {
+    ctx.exec(action.shell("open '" + item.data + "'"))
+  },
+}));
+```
 
 ### Config / UI
 

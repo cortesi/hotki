@@ -15,6 +15,10 @@ pub struct Style {
     /// Notification configuration section.
     #[serde(default)]
     pub notify: Notify,
+
+    /// Selector configuration section.
+    #[serde(default)]
+    pub selector: Selector,
 }
 
 impl Style {
@@ -25,6 +29,9 @@ impl Style {
         }
         if let Some(n) = overrides.notify.as_option() {
             self.notify = n.clone().into_notify_over(&self.notify);
+        }
+        if let Some(s) = overrides.selector.as_option() {
+            self.selector = s.clone().into_selector_over(&self.selector);
         }
         self
     }
@@ -132,6 +139,41 @@ impl Default for Hud {
             key_pad_y: defaults::KEY_PAD_Y,
             radius: defaults::HUD_RADIUS,
             tag_submenu: defaults::TAG_SUBMENU.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Selector configuration section.
+pub struct Selector {
+    /// Selector background fill color (parsed RGB).
+    pub bg: (u8, u8, u8),
+    /// Text input background fill color (parsed RGB).
+    pub input_bg: (u8, u8, u8),
+    /// Item background fill color (parsed RGB).
+    pub item_bg: (u8, u8, u8),
+    /// Selected item background fill color (parsed RGB).
+    pub item_selected_bg: (u8, u8, u8),
+    /// Foreground color for matched characters in item labels (parsed RGB).
+    pub match_fg: (u8, u8, u8),
+    /// Border color for the selector window (parsed RGB).
+    pub border: (u8, u8, u8),
+    /// Shadow color for the selector window (parsed RGB).
+    pub shadow: (u8, u8, u8),
+}
+
+impl Default for Selector {
+    fn default() -> Self {
+        let parse_or = |s: &str| parse_rgb(s).unwrap_or((255, 255, 255));
+        Self {
+            bg: parse_or(defaults::SELECTOR_BG),
+            input_bg: parse_or(defaults::SELECTOR_INPUT_BG),
+            item_bg: parse_or(defaults::SELECTOR_ITEM_BG),
+            item_selected_bg: parse_or(defaults::SELECTOR_ITEM_SELECTED_BG),
+            match_fg: parse_or(defaults::SELECTOR_MATCH_FG),
+            border: parse_or(defaults::SELECTOR_BORDER),
+            shadow: parse_or(defaults::SELECTOR_SHADOW),
         }
     }
 }

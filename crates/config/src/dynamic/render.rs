@@ -388,6 +388,7 @@ fn resolve_binding_style(
         Some(RawStyle {
             hud: Maybe::Value(hud),
             notify: Maybe::Unit(()),
+            selector: Maybe::Unit(()),
         })
     } else {
         None

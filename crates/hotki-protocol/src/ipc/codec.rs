@@ -45,7 +45,8 @@ mod tests {
     use super::*;
     use crate::{
         DisplaysSnapshot, FontWeight, HudRow, HudState, HudStyle, Mode, NotifyConfig, NotifyKind,
-        NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, Style, Toggle,
+        NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, SelectorItemSnapshot,
+        SelectorSnapshot, SelectorStyle, Style, Toggle,
     };
 
     fn sample_style() -> Style {
@@ -99,6 +100,7 @@ mod tests {
                     success: window,
                 },
             },
+            selector: SelectorStyle::default(),
         }
     }
 
@@ -124,6 +126,19 @@ mod tests {
                 hud: Box::new(hud),
                 displays: DisplaysSnapshot::default(),
             },
+            MsgToUI::SelectorUpdate(SelectorSnapshot {
+                title: "Selector".to_string(),
+                placeholder: "Search...".to_string(),
+                query: "sa".to_string(),
+                items: vec![SelectorItemSnapshot {
+                    label: "Safari".to_string(),
+                    sublabel: None,
+                    label_match_indices: vec![0, 1],
+                }],
+                selected: 0,
+                total_matches: 1,
+            }),
+            MsgToUI::SelectorHide,
             MsgToUI::Notify {
                 kind: NotifyKind::Info,
                 title: "Title".to_string(),

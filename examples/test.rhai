@@ -109,6 +109,38 @@ hotki.mode(|m, ctx| {
         ["e", "Error", action.shell("echo this is an error window && false").notify(ignore, error)],
       ]).stay();
 
+      // Selector demos.
+      sub.bind("a", "Run Application", action.selector(#{
+        title: "Run Application",
+        placeholder: "Search apps...",
+        items: || get_applications(),
+        on_select: |ctx, item, _query| {
+          ctx.exec(action.shell("open '" + item.data + "'"));
+        },
+      }));
+
+      sub.bind("p", "Selector Demo", action.selector(#{
+        title: "Selector Demo",
+        placeholder: "Search demo items...",
+        items: [
+          #{ label: "Calendar", sublabel: "demo://calendar", data: "calendar" },
+          #{ label: "Calculator", sublabel: "demo://calculator", data: "calculator" },
+          #{ label: "Calibre", sublabel: "demo://calibre", data: "calibre" },
+          #{ label: "Calico", sublabel: "demo://calico", data: "calico" },
+          #{ label: "Calypso", sublabel: "demo://calypso", data: "calypso" },
+          #{ label: "Callsheet", sublabel: "demo://callsheet", data: "callsheet" },
+          #{ label: "Callback", sublabel: "demo://callback", data: "callback" },
+          #{ label: "Local", sublabel: "demo://local", data: "local" },
+          #{ label: "Locale", sublabel: "demo://locale", data: "locale" },
+          #{ label: "Vocal", sublabel: "demo://vocal", data: "vocal" },
+          #{ label: "Scallop", sublabel: "demo://scallop", data: "scallop" },
+          #{ label: "Recalling", sublabel: "demo://recalling", data: "recalling" },
+        ],
+        on_select: |ctx, item, query| {
+          ctx.notify(info, "Selected", `${item.label} (query: ${query})`);
+        },
+      }));
+
       sub.mode("m", "Mini", |sub2, ctx| {
         sub2.style(#{ hud: #{ mode: mini } });
         sub2.bind([

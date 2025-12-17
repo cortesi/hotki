@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     FontWeight, Mode, NotifyPos, Offset, Pos,
-    raw::{Maybe, RawHud, RawNotify, RawNotifyStyle, RawStyle},
+    raw::{Maybe, RawHud, RawNotify, RawNotifyStyle, RawSelector, RawStyle},
 };
 
 #[derive(Debug, Clone)]
@@ -80,6 +80,14 @@ impl RhaiStyle {
         };
         raw_notify_to_map(notify)
     }
+
+    /// Return the `selector` section as a Rhai map.
+    fn selector_map(&self) -> Map {
+        let Some(sel) = self.raw.selector.as_option() else {
+            return Map::new();
+        };
+        raw_selector_to_map(sel)
+    }
 }
 
 /// Register the `Style` type and its constructor/methods into the Rhai engine.
@@ -97,6 +105,7 @@ pub(super) fn register_style_type(engine: &mut Engine) {
 
     engine.register_get("hud", |s: &mut RhaiStyle| s.hud_map());
     engine.register_get("notify", |s: &mut RhaiStyle| s.notify_map());
+    engine.register_get("selector", |s: &mut RhaiStyle| s.selector_map());
 
     engine.register_fn(
         "set",
@@ -352,6 +361,35 @@ fn offset_to_map(offset: Offset) -> Dynamic {
     m.insert("x".into(), Dynamic::from(offset.x as f64));
     m.insert("y".into(), Dynamic::from(offset.y as f64));
     Dynamic::from_map(m)
+}
+
+/// Convert a raw selector overlay into a Rhai map, omitting unset fields.
+fn raw_selector_to_map(sel: &RawSelector) -> Map {
+    let mut m = Map::new();
+
+    if let Some(v) = sel.bg.as_option() {
+        m.insert("bg".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.input_bg.as_option() {
+        m.insert("input_bg".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.item_bg.as_option() {
+        m.insert("item_bg".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.item_selected_bg.as_option() {
+        m.insert("item_selected_bg".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.match_fg.as_option() {
+        m.insert("match_fg".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.border.as_option() {
+        m.insert("border".into(), Dynamic::from(v.clone()));
+    }
+    if let Some(v) = sel.shadow.as_option() {
+        m.insert("shadow".into(), Dynamic::from(v.clone()));
+    }
+
+    m
 }
 
 /// Convert a raw notification overlay into a Rhai map, omitting unset fields.

@@ -989,7 +989,7 @@ mod tests {
 
     use hotki_protocol::{
         FontWeight, HudRow, HudState, HudStyle, Mode, NotifyConfig, NotifyPos, NotifyTheme,
-        NotifyWindowStyle, Offset, Pos, Style, rpc::ServerStatusLite,
+        NotifyWindowStyle, Offset, Pos, SelectorStyle, Style, rpc::ServerStatusLite,
     };
     use hotki_server::smoketest_bridge::{
         BridgeCommand, BridgeCommandId, BridgeEvent, BridgeReply, BridgeRequest, BridgeResponse,
@@ -1051,6 +1051,7 @@ mod tests {
                     success: window,
                 },
             },
+            selector: SelectorStyle::default(),
         }
     }
 

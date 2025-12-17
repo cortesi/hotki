@@ -57,6 +57,7 @@ mod notification;
 mod relay;
 mod repeater;
 mod runtime;
+mod selector;
 mod ticker;
 
 // Timing constants for warning thresholds
@@ -85,7 +86,10 @@ use repeater::ExecSpec;
 pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
 use tracing::{debug, trace, warn};
 
-use crate::runtime::{FocusInfo, RuntimeState};
+use crate::{
+    runtime::{FocusInfo, RuntimeState},
+    selector::{SelectorEvent, SelectorState},
+};
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -119,6 +123,8 @@ pub struct Engine {
     relay: RelayHandler,
     /// Notification dispatcher for UI messages.
     notifier: NotificationDispatcher,
+    /// Coalesced wakeups used to refresh selector snapshots during matching.
+    selector_notify: Arc<tokio::sync::Notify>,
     /// Unified repeater for shell commands and key relays.
     repeater: Repeater,
     /// World view for focus and display tracking.
@@ -163,6 +169,7 @@ impl Engine {
         let focus_ctx = Arc::new(Mutex::new(None));
         let relay = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx.clone());
+        let selector_notify = Arc::new(tokio::sync::Notify::new());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::RwLock::new(None));
 
@@ -177,10 +184,12 @@ impl Engine {
             display_snapshot: Arc::new(tokio::sync::Mutex::new(DisplaysSnapshot::default())),
             relay,
             notifier,
+            selector_notify,
             repeater,
             world,
         };
         eng.spawn_world_focus_subscription();
+        eng.spawn_selector_notify_task();
         eng
     }
 
@@ -242,6 +251,34 @@ impl Engine {
                 }
             }
         });
+    }
+
+    fn spawn_selector_notify_task(&self) {
+        let engine = self.clone();
+        let notify = self.selector_notify.clone();
+        tokio::spawn(async move {
+            loop {
+                notify.notified().await;
+                if let Err(err) = engine.on_selector_notify().await {
+                    warn!("Selector notify tick failed: {}", err);
+                }
+            }
+        });
+    }
+
+    async fn on_selector_notify(&self) -> Result<()> {
+        let snapshot = {
+            let mut rt = self.runtime.lock().await;
+            let Some(sel) = rt.selector.as_mut() else {
+                return Ok(());
+            };
+            if !sel.tick() {
+                return Ok(());
+            }
+            selector_snapshot_for_ui(sel)
+        };
+        self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
+        Ok(())
     }
 
     async fn apply_world_focus_context(&self, ctx: Option<(String, String, i32)>) -> Result<()> {
@@ -348,16 +385,28 @@ impl Engine {
                 }
                 let base_style = cfg.base_style(Some(rt.theme_name.as_str()));
 
-                let mut ctx = config::dynamic::ModeCtx {
-                    app: rt.focus.app.clone(),
-                    title: rt.focus.title.clone(),
-                    pid: rt.focus.pid as i64,
-                    hud: rt.hud_visible,
-                    depth: rt.depth() as i64,
-                };
+                if rt.selector.is_some() {
+                    key_pairs = crate::selector::selector_capture_chords()
+                        .into_iter()
+                        .map(|ch| (ch.to_string(), ch))
+                        .collect();
+                    capture_all = true;
+                    hud_state_for_ui_from_state(&rt)
+                } else {
+                    let mut ctx = config::dynamic::ModeCtx {
+                        app: rt.focus.app.clone(),
+                        title: rt.focus.title.clone(),
+                        pid: rt.focus.pid as i64,
+                        hud: rt.hud_visible,
+                        depth: rt.depth() as i64,
+                    };
 
-                let output =
-                    match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, &base_style) {
+                    let output = match config::dynamic::render_stack(
+                        cfg,
+                        &mut rt.stack,
+                        &ctx,
+                        &base_style,
+                    ) {
                         Ok(o) => Some(o),
                         Err(err) => {
                             self.notifier.send_error("Config", err.pretty())?;
@@ -384,19 +433,22 @@ impl Engine {
                         }
                     };
 
-                if let Some(output) = output {
-                    warnings = output.warnings;
-                    rt.rendered = output.rendered;
+                    if let Some(output) = output {
+                        warnings = output.warnings;
+                        rt.rendered = output.rendered;
 
-                    for (ch, _binding) in rt.rendered.bindings.iter() {
-                        key_pairs.push((ch.to_string(), ch.clone()));
+                        for (ch, _binding) in rt.rendered.bindings.iter() {
+                            key_pairs.push((ch.to_string(), ch.clone()));
+                        }
+                        key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        capture_all = rt.hud_visible && rt.rendered.capture;
                     }
-                    key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                    capture_all = rt.hud_visible && rt.rendered.capture;
+                    hud_state_for_ui_from_state(&rt)
                 }
             } else {
                 rt.hud_visible = false;
+                rt.selector = None;
                 rt.stack.clear();
                 rt.rendered = config::dynamic::RenderedState {
                     bindings: Vec::new(),
@@ -404,9 +456,8 @@ impl Engine {
                     style: config::Style::default(),
                     capture: false,
                 };
+                hud_state_for_ui_from_state(&rt)
             }
-
-            hud_state_for_ui_from_state(&rt)
         };
 
         for effect in warnings {
@@ -561,6 +612,127 @@ impl Engine {
             return Ok(());
         }
 
+        // If a selector is active, it takes exclusive ownership of all keyboard input.
+        let mut selector_snapshot = None;
+        let mut selector_close = None;
+        let selector_active = {
+            let mut rt = self.runtime.lock().await;
+            if rt.selector.is_none() {
+                false
+            } else {
+                let event = rt
+                    .selector
+                    .as_mut()
+                    .expect("selector must exist for input")
+                    .handle_key_down(chord);
+                match event {
+                    SelectorEvent::Update => {
+                        let sel = rt
+                            .selector
+                            .as_mut()
+                            .expect("selector must exist for update");
+                        let _changed_ignored = sel.tick();
+                        selector_snapshot = Some(selector_snapshot_for_ui(sel));
+                    }
+                    SelectorEvent::Select | SelectorEvent::Cancel => {
+                        let sel = rt.selector.take().expect("selector must exist for close");
+                        rt.hud_visible = sel.prev_hud_visible;
+                        let ctx = config::dynamic::ModeCtx {
+                            app: app_ctx.clone(),
+                            title: title_ctx.clone(),
+                            pid: pid as i64,
+                            hud: rt.hud_visible,
+                            depth: rt.depth() as i64,
+                        };
+                        selector_close = Some((event, sel, ctx));
+                    }
+                    SelectorEvent::None => {}
+                }
+                true
+            }
+        };
+
+        if selector_active {
+            if let Some(snapshot) = selector_snapshot {
+                self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
+            }
+
+            if let Some((event, mut sel, ctx)) = selector_close {
+                self.notifier.send_ui(MsgToUI::SelectorHide)?;
+
+                let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
+                    trace!("No dynamic config loaded; ignoring selector close");
+                    self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
+                    return Ok(());
+                };
+
+                let result = match event {
+                    SelectorEvent::Select => {
+                        let _changed_ignored = sel.tick();
+                        let total = sel.session.matcher.matched_count();
+                        if total == 0 {
+                            self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
+                            return Ok(());
+                        }
+                        sel.session.selected = sel.session.selected.min(total - 1);
+                        let Some(item) = sel
+                            .session
+                            .matcher
+                            .matched_candidate(sel.session.selected)
+                            .map(|c| c.item.clone())
+                        else {
+                            self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
+                            return Ok(());
+                        };
+                        let query = sel.session.query.clone();
+                        config::dynamic::execute_selector_handler(
+                            cfg,
+                            &sel.config.on_select,
+                            &ctx,
+                            &item,
+                            query.as_str(),
+                        )
+                    }
+                    SelectorEvent::Cancel => match sel.config.on_cancel.as_ref() {
+                        Some(handler) => config::dynamic::execute_handler(cfg, handler, &ctx),
+                        None => Ok(config::dynamic::HandlerResult {
+                            effects: Vec::new(),
+                            nav: None,
+                            stay: true,
+                        }),
+                    },
+                    SelectorEvent::Update | SelectorEvent::None => unreachable!("handled above"),
+                };
+
+                let result = match result {
+                    Ok(r) => r,
+                    Err(err) => {
+                        self.notifier.send_error("Selector", err.pretty())?;
+                        self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
+                        return Ok(());
+                    }
+                };
+
+                // Effects can include `action.reload_config`, which requires the config write lock.
+                cfg_guard.take();
+
+                let _stay_ignored = result.stay;
+                let outcome = self
+                    .apply_effects_and_nav(&identifier, result.effects, result.nav)
+                    .await?;
+                let _ignored = outcome;
+
+                self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
+            }
+
+            trace!(
+                "Selector key event completed in {:?}: {}",
+                start.elapsed(),
+                identifier
+            );
+            return Ok(());
+        }
+
         let (binding, ctx) = {
             let rt = self.runtime.lock().await;
             let Some(binding) = config::dynamic::resolve_binding(&rt.rendered, chord).cloned()
@@ -626,25 +798,48 @@ impl Engine {
                 cfg_guard.take();
 
                 stay = stay || result.stay;
+                let outcome = self
+                    .apply_effects_and_nav(&identifier, result.effects, result.nav)
+                    .await?;
+                nav_occurred |= outcome.is_nav;
+                entered_mode |= outcome.entered_mode;
+            }
+            config::dynamic::BindingKind::Selector(sel_cfg) => {
+                // Selector is an interactive mode: it should never trigger auto-exit on open.
+                stay = true;
 
-                for effect in result.effects {
-                    match effect {
-                        config::dynamic::Effect::Exec(action) => {
-                            let outcome = self.apply_action(&identifier, &action, None).await?;
-                            nav_occurred |= outcome.is_nav;
-                            entered_mode |= outcome.entered_mode;
-                        }
-                        config::dynamic::Effect::Notify { kind, title, body } => {
-                            self.notifier.send_notification(kind, title, body)?;
+                let items = {
+                    let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
+                        trace!("No dynamic config loaded; ignoring selector");
+                        return Ok(());
+                    };
+                    match sel_cfg.resolve_items(cfg, &ctx) {
+                        Ok(items) => items,
+                        Err(err) => {
+                            self.notifier.send_error("Selector", err.pretty())?;
+                            Vec::new()
                         }
                     }
-                }
+                };
 
-                if let Some(nav) = result.nav {
-                    let outcome = self.apply_nav_request(nav).await;
-                    nav_occurred |= outcome.is_nav;
-                    entered_mode |= outcome.entered_mode;
-                }
+                let snapshot = {
+                    let notify = self.selector_notify.clone();
+                    let notify_cb: Arc<dyn Fn() + Send + Sync> =
+                        Arc::new(move || notify.notify_one());
+                    let mut rt = self.runtime.lock().await;
+                    let prev_hud_visible = rt.hud_visible;
+                    rt.hud_visible = false;
+                    rt.selector = Some(SelectorState::new(
+                        sel_cfg,
+                        items,
+                        notify_cb,
+                        prev_hud_visible,
+                    ));
+                    let sel = rt.selector.as_mut().expect("selector just set");
+                    let _changed_ignored = sel.tick();
+                    selector_snapshot_for_ui(sel)
+                };
+                self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
             }
         }
 
@@ -689,6 +884,37 @@ impl Engine {
             }
             debug!("Repeated relay for {}", identifier);
         }
+    }
+
+    /// Apply a handler/selector output by executing effects and an optional navigation request.
+    async fn apply_effects_and_nav(
+        &self,
+        identifier: &str,
+        effects: Vec<config::dynamic::Effect>,
+        nav: Option<config::dynamic::NavRequest>,
+    ) -> Result<DispatchOutcome> {
+        let mut out = DispatchOutcome::default();
+
+        for effect in effects {
+            match effect {
+                config::dynamic::Effect::Exec(action) => {
+                    let outcome = self.apply_action(identifier, &action, None).await?;
+                    out.is_nav |= outcome.is_nav;
+                    out.entered_mode |= outcome.entered_mode;
+                }
+                config::dynamic::Effect::Notify { kind, title, body } => {
+                    self.notifier.send_notification(kind, title, body)?;
+                }
+            }
+        }
+
+        if let Some(nav) = nav {
+            let outcome = self.apply_nav_request(nav).await;
+            out.is_nav |= outcome.is_nav;
+            out.entered_mode |= outcome.entered_mode;
+        }
+
+        Ok(out)
     }
 
     async fn apply_action(
@@ -1003,6 +1229,14 @@ impl Engine {
         match kind {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
+                    if self.runtime.lock().await.selector.is_some() {
+                        // While the selector is active, treat OS repeats as normal input.
+                        if let Err(e) = self.handle_key_event(&chord, ident.clone()).await {
+                            warn!("Key handler failed: {}", e);
+                            return Err(e);
+                        }
+                        return Ok(());
+                    }
                     if self.key_tracker.is_down(&ident)
                         && self.key_tracker.is_repeat_allowed(&ident)
                     {
@@ -1070,10 +1304,82 @@ fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::HudState {
     }
 }
 
+fn selector_snapshot_for_ui(sel: &mut SelectorState) -> hotki_protocol::SelectorSnapshot {
+    let total = sel.session.matcher.matched_count();
+    let total_matches = total as usize;
+
+    if total == 0 {
+        sel.session.selected = 0;
+        return hotki_protocol::SelectorSnapshot {
+            title: sel.config.title.clone(),
+            placeholder: sel.config.placeholder.clone(),
+            query: sel.session.query.clone(),
+            items: Vec::new(),
+            selected: 0,
+            total_matches,
+        };
+    }
+
+    sel.session.selected = sel.session.selected.min(total.saturating_sub(1));
+
+    let max_visible = sel.config.max_visible.max(1);
+    let max_visible_u32 = u32::try_from(max_visible).unwrap_or(u32::MAX);
+
+    let (start, end) = if total <= max_visible_u32 {
+        (0, total)
+    } else {
+        let half = max_visible_u32 / 2;
+        let mut start = sel.session.selected.saturating_sub(half);
+        let mut end = start.saturating_add(max_visible_u32);
+        if end > total {
+            end = total;
+            start = end.saturating_sub(max_visible_u32);
+        }
+        (start, end)
+    };
+
+    let selected = (sel.session.selected.saturating_sub(start)) as usize;
+    let items = sel
+        .session
+        .matcher
+        .matched_window(start, end)
+        .into_iter()
+        .map(
+            |(item, label_match_indices)| hotki_protocol::SelectorItemSnapshot {
+                label: item.label,
+                sublabel: item.sublabel,
+                label_match_indices,
+            },
+        )
+        .collect();
+
+    hotki_protocol::SelectorSnapshot {
+        title: sel.config.title.clone(),
+        placeholder: sel.config.placeholder.clone(),
+        query: sel.session.query.clone(),
+        items,
+        selected,
+        total_matches,
+    }
+}
+
 fn style_for_ui(style: &config::Style) -> hotki_protocol::Style {
     hotki_protocol::Style {
         hud: hud_style_for_ui(&style.hud),
         notify: notify_config_for_ui(&style.notify),
+        selector: selector_style_for_ui(&style.selector),
+    }
+}
+
+fn selector_style_for_ui(sel: &config::Selector) -> hotki_protocol::SelectorStyle {
+    hotki_protocol::SelectorStyle {
+        bg: sel.bg,
+        input_bg: sel.input_bg,
+        item_bg: sel.item_bg,
+        item_selected_bg: sel.item_selected_bg,
+        match_fg: sel.match_fg,
+        border: sel.border,
+        shadow: sel.shadow,
     }
 }
 

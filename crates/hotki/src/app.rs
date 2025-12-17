@@ -3,13 +3,13 @@ use std::path::PathBuf;
 
 use eframe::{App, Frame};
 use egui::Context;
-use hotki_protocol::{DisplaysSnapshot, HudState, NotifyKind};
+use hotki_protocol::{DisplaysSnapshot, HudState, NotifyKind, SelectorSnapshot};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
 use crate::{
     details::Details, display::DisplayMetrics, hud::Hud, notification::NotificationCenter,
-    permissions::PermissionsHelp,
+    permissions::PermissionsHelp, selector::SelectorWindow,
 };
 
 /// Events sent from the background runtime to the UI thread.
@@ -31,6 +31,13 @@ pub enum AppEvent {
         /// Display geometry snapshot for HUD/notification placement.
         displays: DisplaysSnapshot,
     },
+    /// Show/update selector popup.
+    SelectorUpdate {
+        /// Fully rendered selector snapshot.
+        selector: Box<SelectorSnapshot>,
+    },
+    /// Hide selector popup.
+    SelectorHide,
     /// Show an in-app notification.
     Notify {
         /// Notification kind (info, warn, error, success).
@@ -54,6 +61,8 @@ pub struct HotkiApp {
     pub(crate) _tray: Option<TrayIcon>,
     /// Heads-up display for key hints.
     pub(crate) hud: Hud,
+    /// Interactive selector popup.
+    pub(crate) selector: SelectorWindow,
     /// In-app notifications manager.
     pub(crate) notifications: NotificationCenter,
     /// Details window state.
@@ -87,6 +96,7 @@ impl App for HotkiApp {
                     self.shutdown_in_progress = true;
                     // Hide all viewports and remove tray icon to allow a graceful exit
                     self.hud.hide(ctx);
+                    self.selector.hide(ctx);
                     // Clear notifications and hide their windows
                     self.notifications.clear_all(ctx);
                     // Hide Details and Permissions windows
@@ -122,9 +132,19 @@ impl App for HotkiApp {
                     self.hud
                         .set_state(hud.rows.clone(), hud.visible, hud.breadcrumbs.clone());
 
+                    self.selector.set_style(hud.style.selector.clone());
+
                     self.notifications.reconfigure(&hud.style.notify);
                     self.details.update_theme(hud.style.notify.theme.clone());
 
+                    ctx.request_repaint();
+                }
+                AppEvent::SelectorUpdate { selector } => {
+                    self.selector.set_state(*selector);
+                    ctx.request_repaint();
+                }
+                AppEvent::SelectorHide => {
+                    self.selector.hide(ctx);
                     ctx.request_repaint();
                 }
                 AppEvent::Notify { kind, title, text } => {
@@ -144,6 +164,7 @@ impl App for HotkiApp {
 
         // Always render HUD and notifications
         self.hud.render(ctx);
+        self.selector.render(ctx);
         self.notifications.render(ctx);
         self.details.render(ctx, self.notifications.backlog());
         self.permissions.render(ctx);
@@ -155,6 +176,7 @@ impl HotkiApp {
     fn sync_display_metrics(&mut self) {
         let metrics = self.display_metrics.clone();
         self.hud.set_display_metrics(metrics.clone());
+        self.selector.set_display_metrics(metrics.clone());
         self.notifications.set_display_metrics(metrics.clone());
         self.details.set_display_metrics(metrics);
     }

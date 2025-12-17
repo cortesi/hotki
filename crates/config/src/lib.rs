@@ -25,7 +25,7 @@ pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};
 pub use notify::Notify;
-pub use style::{Hud, Style};
+pub use style::{Hud, Selector, Style};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 /// Parse color into raw rgb tuple.

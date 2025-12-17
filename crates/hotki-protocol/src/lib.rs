@@ -307,6 +307,42 @@ pub struct Style {
     pub hud: HudStyle,
     /// Notification style settings.
     pub notify: NotifyConfig,
+    /// Selector style settings.
+    pub selector: SelectorStyle,
+}
+
+/// Effective selector style state computed on the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SelectorStyle {
+    /// Selector background fill color.
+    pub bg: (u8, u8, u8),
+    /// Text input background fill color.
+    pub input_bg: (u8, u8, u8),
+    /// Item background fill color.
+    pub item_bg: (u8, u8, u8),
+    /// Selected item background fill color.
+    pub item_selected_bg: (u8, u8, u8),
+    /// Foreground color for matched characters in item labels.
+    pub match_fg: (u8, u8, u8),
+    /// Border color for the selector window.
+    pub border: (u8, u8, u8),
+    /// Shadow color for the selector window.
+    pub shadow: (u8, u8, u8),
+}
+
+impl Default for SelectorStyle {
+    fn default() -> Self {
+        Self {
+            bg: (16, 16, 16),
+            input_bg: (26, 26, 26),
+            item_bg: (16, 16, 16),
+            item_selected_bg: (44, 52, 113),
+            match_fg: (160, 196, 255),
+            border: (48, 48, 48),
+            shadow: (0, 0, 0),
+        }
+    }
 }
 
 /// Optional per-binding HUD style overrides after resolution.
@@ -351,10 +387,40 @@ pub struct HudState {
     pub depth: usize,
     /// Mode titles from root→current (excluding the synthetic root frame).
     pub breadcrumbs: Vec<String>,
-    /// Effective computed style (HUD + notifications).
+    /// Effective computed style (HUD + notifications + selector).
     pub style: Style,
     /// True when capture-all mode is active.
     pub capture: bool,
+}
+
+/// One selector item entry produced by server-side fuzzy matching.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SelectorItemSnapshot {
+    /// Primary text displayed in the list.
+    pub label: String,
+    /// Optional secondary text displayed alongside the label.
+    pub sublabel: Option<String>,
+    /// Codepoint indices in `label` to highlight.
+    pub label_match_indices: Vec<u32>,
+}
+
+/// Selector snapshot pushed from the server to the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SelectorSnapshot {
+    /// Title shown in the selector header.
+    pub title: String,
+    /// Placeholder shown when the query is empty.
+    pub placeholder: String,
+    /// Current query text.
+    pub query: String,
+    /// Visible items for the selector.
+    pub items: Vec<SelectorItemSnapshot>,
+    /// Index of the selected item within `items`.
+    pub selected: usize,
+    /// Total matched item count.
+    pub total_matches: usize,
 }
 
 /// Three-state toggle used for boolean-like actions.
@@ -474,6 +540,12 @@ pub enum MsgToUI {
         /// Display geometry snapshot for UI placement.
         displays: DisplaysSnapshot,
     },
+
+    /// Show/update selector popup.
+    SelectorUpdate(SelectorSnapshot),
+
+    /// Hide selector popup.
+    SelectorHide,
 
     /// Notification request for the UI
     Notify {

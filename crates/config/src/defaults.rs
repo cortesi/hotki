@@ -33,6 +33,22 @@ pub const HUD_MOD_BG: &str = "#404040";
 /// Default HUD tag foreground color.
 pub const HUD_TAG_FG: &str = "#a0c4ff";
 
+// Selector defaults
+/// Default selector background color (hex RGB).
+pub const SELECTOR_BG: &str = "#101010";
+/// Default selector input background color (hex RGB).
+pub const SELECTOR_INPUT_BG: &str = "#1a1a1a";
+/// Default selector item background color (hex RGB).
+pub const SELECTOR_ITEM_BG: &str = "#101010";
+/// Default selector selected item background color (hex RGB).
+pub const SELECTOR_ITEM_SELECTED_BG: &str = "#2c3471";
+/// Default selector match highlight foreground color (hex RGB).
+pub const SELECTOR_MATCH_FG: &str = "#a0c4ff";
+/// Default selector border color (hex RGB).
+pub const SELECTOR_BORDER: &str = "#303030";
+/// Default selector shadow color (hex RGB).
+pub const SELECTOR_SHADOW: &str = "black";
+
 /// Default key corner radius (px).
 pub const KEY_RADIUS: f32 = 8.0;
 /// Default horizontal key padding (px).

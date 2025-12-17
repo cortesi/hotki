@@ -52,5 +52,13 @@
       title_font_weight: bold,
     },
   },
+  selector: #{
+    bg: "#002b36",
+    input_bg: "#073642",
+    item_bg: "#002b36",
+    item_selected_bg: "#268bd2",
+    match_fg: "#2aa198",
+    border: "#073642",
+    shadow: "black",
+  },
 }
-

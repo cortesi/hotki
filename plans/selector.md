@@ -341,35 +341,35 @@ Returns items with:
 
 ### Stage 1: Dependencies and Core Types
 
-1. [ ] Add `nucleo` dependency for fuzzy matching (not `nucleo-matcher`).
-2. [ ] Define `SelectorItem`, `SelectorItems`, `SelectorConfig` in
+1. [x] Add `nucleo` dependency for fuzzy matching (not `nucleo-matcher`).
+2. [x] Define `SelectorItem`, `SelectorItems`, `SelectorConfig` in
        `crates/config/src/dynamic/selector.rs`.
-3. [ ] Add `BindingKind::Selector(SelectorConfig)` in `crates/config/src/dynamic/types.rs`.
-4. [ ] Add selector state field to `crates/hotki-engine/src/runtime.rs` (initially `None`).
+3. [x] Add `BindingKind::Selector(SelectorConfig)` in `crates/config/src/dynamic/types.rs`.
+4. [x] Add selector state field to `crates/hotki-engine/src/runtime.rs` (initially `None`).
 
 ### Stage 2: Protocol Extension
 
-1. [ ] Define `SelectorItemSnapshot` and `SelectorSnapshot` in `crates/hotki-protocol/src/lib.rs`.
-2. [ ] Add `MsgToUI::SelectorUpdate(SelectorSnapshot)` variant.
-3. [ ] Add `MsgToUI::SelectorHide` variant.
-4. [ ] Build `SelectorSnapshot` in the engine (do not attempt a cross-crate `From` impl).
+1. [x] Define `SelectorItemSnapshot` and `SelectorSnapshot` in `crates/hotki-protocol/src/lib.rs`.
+2. [x] Add `MsgToUI::SelectorUpdate(SelectorSnapshot)` variant.
+3. [x] Add `MsgToUI::SelectorHide` variant.
+4. [x] Build `SelectorSnapshot` in the engine (do not attempt a cross-crate `From` impl).
 
 ### Stage 3: Nucleo Integration
 
-1. [ ] Create `crates/hotki-engine/src/selector.rs` module.
-2. [ ] Implement `SelectorMatcher` struct wrapping `Nucleo<SelectorCandidate>`:
+1. [x] Create `crates/hotki-engine/src/selector.rs` module.
+2. [x] Implement `SelectorMatcher` struct wrapping `Nucleo<SelectorCandidate>`:
    - Use 1 matching column; haystack is the label.
    - `notify` callback triggers egui repaint request.
-3. [ ] Implement `SelectorMatcher::new(items: Vec<SelectorItem>, notify: impl Fn())`:
+3. [x] Implement `SelectorMatcher::new(items: Vec<SelectorItem>, notify: impl Fn())`:
    - Create `Nucleo` with 1 column.
    - Assign stable `id`s and inject candidates via `Injector::push()`.
-4. [ ] Implement `SelectorMatcher::update_pattern(&mut self, query: &str)`:
+4. [x] Implement `SelectorMatcher::update_pattern(&mut self, query: &str)`:
    - Call `pattern.reparse()` for column 0, using `append` when safe.
-5. [ ] Implement `SelectorMatcher::tick(&mut self) -> Status`:
+5. [x] Implement `SelectorMatcher::tick(&mut self) -> Status`:
    - Call `nucleo.tick(10)` with 10ms timeout.
-6. [ ] Implement `SelectorMatcher::matched_items(&self, range) -> impl Iterator<Item = MatchedItem>`:
+6. [x] Implement `SelectorMatcher::matched_items(&self, range) -> impl Iterator<Item = MatchedItem>`:
    - Returns items from snapshot and computes match indices for visible items only.
-7. [ ] Add unit tests for matching behavior:
+7. [x] Add unit tests for matching behavior:
    - Empty query returns all items in original order.
    - Exact prefix match ranks highest.
    - Substring matches work.
@@ -377,110 +377,110 @@ Returns items with:
 
 ### Stage 4: Selector State Management
 
-1. [ ] Implement `SelectorState::new(config: SelectorConfig, notify: impl Fn()) -> Self`:
+1. [x] Implement `SelectorState::new(config: SelectorConfig, notify: impl Fn()) -> Self`:
    - Creates `SelectorMatcher` with resolved items.
    - Initializes query and selected index.
-2. [ ] Implement `SelectorState::handle_input(key: Key) -> SelectorEvent`:
+2. [x] Implement `SelectorState::handle_input(key: Key) -> SelectorEvent`:
    - Returns `SelectorEvent::Update` (state changed), `Select(usize)`, `Cancel`, or `None`.
    - On text input: update query, call `matcher.update_pattern()`.
-3. [ ] Implement `SelectorState::tick(&mut self) -> bool`:
+3. [x] Implement `SelectorState::tick(&mut self) -> bool`:
    - Calls `matcher.tick()`, returns true if snapshot changed.
-4. [ ] Implement keyboard handling per specification.
-5. [ ] Add unit tests for keyboard state machine.
+4. [x] Implement keyboard handling per specification.
+5. [x] Add unit tests for keyboard state machine.
 
 ### Stage 5: Engine Integration
 
-1. [ ] In key dispatch, handle `BindingKind::Selector`:
+1. [x] In key dispatch, handle `BindingKind::Selector`:
    - Resolve items (evaluate provider if needed) and create `SelectorState`.
    - **Hide the HUD** (set `hud_visible = false`).
    - **Enable capture-all** so all keyboard input routes to the selector.
    - Send `MsgToUI::SelectorUpdate`.
-2. [ ] Route key events to selector when active (before normal mode handling).
-3. [ ] On `SelectorEvent::Select(idx)`:
+2. [x] Route key events to selector when active (before normal mode handling).
+3. [x] On `SelectorEvent::Select(idx)`:
    - Extract selected item.
    - Execute `on_select(ctx, item, query)` handler.
    - Close selector, send `MsgToUI::SelectorHide`.
    - Re-enable normal mode key handling and restore HUD.
-4. [ ] On `SelectorEvent::Cancel`:
+4. [x] On `SelectorEvent::Cancel`:
    - Execute `on_cancel` handler if present.
    - Close selector, send `MsgToUI::SelectorHide`.
    - Re-enable normal mode key handling and restore HUD.
-5. [ ] On `SelectorEvent::Update`:
+5. [x] On `SelectorEvent::Update`:
    - Send `MsgToUI::SelectorUpdate` with new snapshot.
 
 ### Stage 6: UI Implementation
 
-1. [ ] Create `crates/hotki/src/selector.rs` module.
-2. [ ] Implement `SelectorWindow` struct with:
+1. [x] Create `crates/hotki/src/selector.rs` module.
+2. [x] Implement `SelectorWindow` struct with:
    - `ViewportId` for the selector viewport.
    - `state: Option<SelectorSnapshot>` mirroring engine state.
-3. [ ] Implement rendering:
+3. [x] Implement rendering:
    - Title bar with `title`.
    - Text input showing `query` with cursor.
    - Scrollable list of items with selection highlight.
    - Match character highlighting in labels.
-4. [ ] Handle viewport positioning (centered on active display).
-5. [ ] Apply HUD-style theming (transparent, blur, rounded corners).
-6. [ ] Wire into `HotkiApp`:
+4. [x] Handle viewport positioning (centered on active display).
+5. [x] Apply HUD-style theming (transparent, blur, rounded corners).
+6. [x] Wire into `HotkiApp`:
    - Handle `MsgToUI::SelectorUpdate` to show/update.
    - Handle `MsgToUI::SelectorHide` to dismiss.
    - Render query/selection from snapshots (no local input state).
 
 ### Stage 7: DSL Registration
 
-1. [ ] In `crates/config/src/dynamic/dsl.rs`, register:
+1. [x] In `crates/config/src/dynamic/dsl.rs`, register:
    - `action.selector(config_map)` function (returns `SelectorConfig`).
    - `selector_item(label, data)` helper.
-2. [ ] Implement config map parsing:
+2. [x] Implement config map parsing:
    - Parse `title`, `placeholder`, `items`, `on_select`, `on_cancel`, `max_visible`.
    - Accept `items` as either an array or a `|ctx| -> Array` provider.
    - Accept `on_select`/`on_cancel` as closures (wrap into `HandlerRef`).
    - Validate required fields, provide defaults.
-3. [ ] Implement `SelectorItem` parsing from Rhai maps and strings.
-4. [ ] Add DSL unit tests.
-5. [ ] Update `ModeBuilder.bind(...)` parsing to accept `SelectorConfig` as the third element.
+3. [x] Implement `SelectorItem` parsing from Rhai maps and strings.
+4. [x] Add DSL unit tests.
+5. [x] Update `ModeBuilder.bind(...)` parsing to accept `SelectorConfig` as the third element.
 
 ### Stage 8: Application Launcher Helper
 
-1. [ ] Create `crates/config/src/dynamic/apps.rs` module.
-2. [ ] Implement `scan_applications() -> Vec<SelectorItem>`:
+1. [x] Create `crates/config/src/dynamic/apps.rs` module.
+2. [x] Implement `scan_applications() -> Vec<SelectorItem>`:
    - Scan standard macOS application directories.
    - Extract app name from bundle.
    - Cache results (invalidate on config reload).
-3. [ ] Register `get_applications()` function in Rhai DSL.
-4. [ ] Add example configuration in `examples/selector.rhai`.
+3. [x] Register `get_applications()` function in Rhai DSL.
+4. [x] Add example configuration in `examples/selector.rhai`.
 
 ### Stage 9: Styling Integration
 
-1. [ ] Add selector-specific style fields to `RawStyle`/`Style`:
+1. [x] Add selector-specific style fields to `RawStyle`/`Style`:
    - `selector_bg`, `selector_input_bg`, `selector_item_bg`
    - `selector_item_selected_bg`, `selector_match_fg`
    - `selector_border`, `selector_shadow`
-2. [ ] Apply theme styles in selector rendering.
-3. [ ] Update built-in themes with selector colors.
+2. [x] Apply theme styles in selector rendering.
+3. [x] Update built-in themes with selector colors.
 
 ### Stage 10: Documentation and Examples
 
-1. [ ] Add selector documentation to `CONFIG.md`.
-2. [ ] Add selector testers to `examples/test.rhai` (follow our standard entry chord `shift+cmd+0`).
-3. [ ] Create `examples/selector.rhai` with app launcher example (activated via `shift+cmd+0`).
-4. [ ] Create `examples/selector-custom.rhai` showing custom item lists (activated via `shift+cmd+0`).
-5. [ ] Document keyboard shortcuts.
+1. [x] Add selector documentation to `CONFIG.md`.
+2. [x] Add selector testers to `examples/test.rhai` (follow our standard entry chord `shift+cmd+0`).
+3. [x] Create `examples/selector.rhai` with app launcher example (activated via `shift+cmd+0`).
+4. [x] Create `examples/selector-custom.rhai` showing custom item lists (activated via `shift+cmd+0`).
+5. [x] Document keyboard shortcuts.
 
 ### Stage 11: Validation
 
-1. [ ] Run `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples 2>&1`.
-2. [ ] Run `cargo test --all`.
-3. [ ] Run `cargo run --bin smoketest -- all`.
-4. [ ] Run `cargo fmt --all`.
-5. [ ] Manual testing:
+1. [x] Run `cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples 2>&1`.
+2. [x] Run `cargo test --all`.
+3. [x] Run `cargo run --bin smoketest -- all`.
+4. [x] Run `cargo fmt --all`.
+5. [x] Manual testing:
    - App launcher with various search queries.
    - Keyboard navigation (arrows).
    - Selection callback execution (Enter).
    - Cancel behavior (Escape returns to previous mode).
    - Empty results handling.
    - Theme consistency.
-6. [ ] Update `hotki-shots` to capture selector screenshots:
+6. [x] Update `hotki-shots` to capture selector screenshots:
    - Show selector with query text entered (not empty).
    - Display an expanded item list with multiple visible results.
    - Demonstrate match highlighting in the filtered results.

@@ -36,6 +36,7 @@ mod nswindow;
 mod permissions;
 /// Background UI runtime glue (server connection + event loop).
 mod runtime;
+mod selector;
 /// UI-side smoketest bridge listener and queue.
 mod smoketest_bridge;
 mod tray;
@@ -48,6 +49,7 @@ use crate::{
     display::DisplayMetrics,
     hud::Hud,
     notification::NotificationCenter,
+    selector::SelectorWindow,
 };
 
 #[derive(Parser, Debug)]
@@ -238,7 +240,9 @@ fn main() -> eframe::Result<()> {
 
             let metrics = DisplayMetrics::default();
             let mut hud = Hud::new(&initial_style.hud);
+            let mut selector = SelectorWindow::new(&initial_style.selector);
             hud.set_display_metrics(metrics.clone());
+            selector.set_display_metrics(metrics.clone());
             notifications.set_display_metrics(metrics.clone());
             details.set_display_metrics(metrics.clone());
 
@@ -246,6 +250,7 @@ fn main() -> eframe::Result<()> {
                 rx,
                 _tray: tray_icon,
                 hud,
+                selector,
                 notifications,
                 details,
                 permissions,

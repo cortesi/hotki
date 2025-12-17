@@ -14,8 +14,8 @@ use rhai::{
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef,
-    NavRequest, RepeatSpec, StyleOverlay, constants, style_api::RhaiStyle, util::lock_unpoisoned,
-    validation::boxed_validation_error,
+    NavRequest, RepeatSpec, SelectorConfig, SelectorItem, SelectorItems, StyleOverlay, constants,
+    style_api::RhaiStyle, util::lock_unpoisoned, validation::boxed_validation_error,
 };
 use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw, themes};
 
@@ -28,6 +28,8 @@ pub struct DynamicConfigScriptState {
     pub(crate) active_theme: String,
     /// Root mode closure declared via `hotki.mode(...)`.
     pub(crate) root: Option<ModeRef>,
+    /// Cached installed application list for selector helpers.
+    pub(crate) applications_cache: Option<Arc<[SelectorItem]>>,
 }
 
 impl Default for DynamicConfigScriptState {
@@ -41,6 +43,7 @@ impl Default for DynamicConfigScriptState {
             themes,
             active_theme: "default".to_string(),
             root: None,
+            applications_cache: None,
         }
     }
 }
@@ -169,6 +172,149 @@ fn parse_chord(ctx: &NativeCallContext, spec: &str) -> Result<Chord, Box<EvalAlt
     })
 }
 
+/// Parse selector items from either a static array or a lazy provider closure.
+fn selector_items_from_dynamic(
+    ctx: &NativeCallContext,
+    value: Dynamic,
+) -> Result<SelectorItems, Box<EvalAltResult>> {
+    if let Some(func) = value.clone().try_cast::<FnPtr>() {
+        return Ok(SelectorItems::Provider(func));
+    }
+
+    let arr = value.into_array().map_err(|_| {
+        boxed_validation_error(
+            "selector.items must be an array or a closure".to_string(),
+            ctx.call_position(),
+        )
+    })?;
+
+    let items = super::selector::parse_selector_items(arr)
+        .map_err(|msg| boxed_validation_error(msg, ctx.call_position()))?;
+    Ok(SelectorItems::Static(items))
+}
+
+/// Parse a selector callback handler from a Rhai closure or `action.run(...)`.
+fn selector_handler_required(
+    ctx: &NativeCallContext,
+    field: &str,
+    value: Dynamic,
+) -> Result<HandlerRef, Box<EvalAltResult>> {
+    if let Some(handler) = value.clone().try_cast::<HandlerRef>() {
+        return Ok(handler);
+    }
+    if let Some(func) = value.try_cast::<FnPtr>() {
+        return Ok(HandlerRef { func });
+    }
+    Err(boxed_validation_error(
+        format!("selector.{} must be a closure (or action.run(...))", field),
+        ctx.call_position(),
+    ))
+}
+
+/// Parse an optional selector callback handler from a Rhai value.
+fn selector_handler_optional(
+    ctx: &NativeCallContext,
+    field: &str,
+    value: Dynamic,
+) -> Result<Option<HandlerRef>, Box<EvalAltResult>> {
+    if value.is_unit() {
+        return Ok(None);
+    }
+    selector_handler_required(ctx, field, value).map(Some)
+}
+
+/// Parse a selector config map into a `SelectorConfig`, validating the schema.
+fn selector_config_from_map(
+    ctx: &NativeCallContext,
+    map: Map,
+) -> Result<SelectorConfig, Box<EvalAltResult>> {
+    let mut title = String::new();
+    let mut placeholder = String::new();
+    let mut items = None;
+    let mut on_select = None;
+    let mut on_cancel = None;
+    let mut max_visible = 10_usize;
+
+    for (k, v) in map {
+        match k.as_str() {
+            "title" => {
+                title = v
+                    .into_immutable_string()
+                    .map_err(|_| {
+                        boxed_validation_error(
+                            "selector.title must be a string".to_string(),
+                            ctx.call_position(),
+                        )
+                    })?
+                    .to_string();
+            }
+            "placeholder" => {
+                placeholder = v
+                    .into_immutable_string()
+                    .map_err(|_| {
+                        boxed_validation_error(
+                            "selector.placeholder must be a string".to_string(),
+                            ctx.call_position(),
+                        )
+                    })?
+                    .to_string();
+            }
+            "items" => {
+                items = Some(selector_items_from_dynamic(ctx, v)?);
+            }
+            "on_select" => {
+                on_select = Some(selector_handler_required(ctx, "on_select", v)?);
+            }
+            "on_cancel" => {
+                on_cancel = selector_handler_optional(ctx, "on_cancel", v)?;
+            }
+            "max_visible" => {
+                let mv: i64 = v.try_cast::<i64>().ok_or_else(|| {
+                    boxed_validation_error(
+                        "selector.max_visible must be an integer".to_string(),
+                        ctx.call_position(),
+                    )
+                })?;
+                if mv <= 0 {
+                    return Err(boxed_validation_error(
+                        "selector.max_visible must be > 0".to_string(),
+                        ctx.call_position(),
+                    ));
+                }
+                max_visible = mv as usize;
+            }
+            _ => {
+                return Err(boxed_validation_error(
+                    format!("selector: unknown field '{}'", k),
+                    ctx.call_position(),
+                ));
+            }
+        }
+    }
+
+    let items = items.ok_or_else(|| {
+        boxed_validation_error(
+            "selector: missing required field 'items'".to_string(),
+            ctx.call_position(),
+        )
+    })?;
+    let on_select = on_select.ok_or_else(|| {
+        boxed_validation_error(
+            "selector: missing required field 'on_select'".to_string(),
+            ctx.call_position(),
+        )
+    })?;
+
+    Ok(SelectorConfig {
+        title,
+        placeholder,
+        items,
+        on_select,
+        on_cancel,
+        max_visible,
+    })
+}
+
 /// Derive a stable-ish identity for a mode closure for orphan detection.
 fn mode_id_for(func: &FnPtr) -> ModeId {
     let mut hasher = DefaultHasher::new();
@@ -186,6 +332,28 @@ fn mode_id_for_static(bindings: &[Binding]) -> ModeId {
         match &b.kind {
             BindingKind::Action(action) => action.hash(&mut hasher),
             BindingKind::Handler(_) => "handler".hash(&mut hasher),
+            BindingKind::Selector(cfg) => {
+                "selector".hash(&mut hasher);
+                cfg.title.hash(&mut hasher);
+                cfg.placeholder.hash(&mut hasher);
+                cfg.max_visible.hash(&mut hasher);
+                match &cfg.items {
+                    SelectorItems::Static(items) => {
+                        for item in items {
+                            item.label.hash(&mut hasher);
+                            item.sublabel.hash(&mut hasher);
+                        }
+                    }
+                    SelectorItems::Provider(func) => {
+                        func.fn_name().hash(&mut hasher);
+                    }
+                }
+                cfg.on_select.func.fn_name().hash(&mut hasher);
+                cfg.on_cancel
+                    .as_ref()
+                    .map(|h| h.func.fn_name())
+                    .hash(&mut hasher);
+            }
             BindingKind::Mode(mode_ref) => mode_ref.id.hash(&mut hasher),
         }
     }
@@ -198,6 +366,7 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
     engine.register_type::<BindingRef>();
     engine.register_type::<BindingsRef>();
     engine.register_type::<Action>();
+    engine.register_type::<SelectorConfig>();
     engine.register_type::<Toggle>();
     engine.register_type::<NotifyKind>();
     engine.register_type::<Pos>();
@@ -210,11 +379,12 @@ pub fn register_dsl(engine: &mut Engine, state: Arc<Mutex<DynamicConfigScriptSta
     register_handler_type(engine);
     register_action_namespace(engine);
     super::style_api::register_style_type(engine);
-    super::style_api::register_theme_api(engine, state);
+    super::style_api::register_theme_api(engine, state.clone());
     register_mode_builder(engine);
     register_action_fluent(engine);
     register_context_types(engine);
     register_string_matches(engine);
+    super::apps::register_apps_api(engine, state);
 }
 
 /// Register the global `hotki` namespace used to define the root mode.
@@ -328,6 +498,24 @@ fn register_action_namespace(engine: &mut Engine) {
     engine.register_get("theme_prev", |_: &mut ActionNamespace| Action::ThemePrev);
 
     engine.register_fn("run", |_: ActionNamespace, func: FnPtr| HandlerRef { func });
+
+    engine.register_fn(
+        "selector",
+        |ctx: NativeCallContext,
+         _: ActionNamespace,
+         config: Map|
+         -> Result<SelectorConfig, Box<EvalAltResult>> {
+            selector_config_from_map(&ctx, config)
+        },
+    );
+
+    engine.register_fn("selector_item", |label: &str, data: Dynamic| -> Map {
+        let mut map = Map::new();
+        map.insert("label".into(), Dynamic::from(label.to_string()));
+        map.insert("sublabel".into(), Dynamic::UNIT);
+        map.insert("data".into(), data);
+        map
+    });
 
     let mut module = Module::new();
     module.set_var("action", ActionNamespace);
@@ -452,6 +640,7 @@ fn binding_style_overlay(
         raw: Some(raw::RawStyle {
             hud: raw::Maybe::Value(hud),
             notify: raw::Maybe::Unit(()),
+            selector: raw::Maybe::Unit(()),
         }),
     });
     Ok(())
@@ -502,6 +691,34 @@ fn register_mode_builder(engine: &mut Engine) {
                 chord,
                 desc: desc.to_string(),
                 kind: BindingKind::Handler(handler),
+                mode_id: None,
+                flags: BindingFlags::default(),
+                style: None,
+                mode_capture: false,
+                pos: ctx.call_position(),
+            });
+            Ok(BindingRef {
+                state: m.state.clone(),
+                index: idx,
+            })
+        },
+    );
+
+    engine.register_fn(
+        "bind",
+        |ctx: NativeCallContext,
+         m: &mut ModeBuilder,
+         chord: &str,
+         desc: &str,
+         selector: SelectorConfig|
+         -> Result<BindingRef, Box<EvalAltResult>> {
+            let chord = parse_chord(&ctx, chord)?;
+            let mut guard = lock_unpoisoned(&m.state);
+            let idx = guard.bindings.len();
+            guard.bindings.push(Binding {
+                chord,
+                desc: desc.to_string(),
+                kind: BindingKind::Selector(selector),
                 mode_id: None,
                 flags: BindingFlags::default(),
                 style: None,
@@ -809,9 +1026,10 @@ fn register_mode_builder(engine: &mut Engine) {
                             ctx.call_position(),
                         ));
                     }
-                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
                         return Err(boxed_validation_error(
-                            "repeat() is not valid on handlers or mode entries".to_string(),
+                            "repeat() is not valid on handlers, selectors, or mode entries"
+                                .to_string(),
                             ctx.call_position(),
                         ));
                     }
@@ -861,9 +1079,10 @@ fn register_mode_builder(engine: &mut Engine) {
                             ctx.call_position(),
                         ));
                     }
-                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
                         return Err(boxed_validation_error(
-                            "repeat_ms() is not valid on handlers or mode entries".to_string(),
+                            "repeat_ms() is not valid on handlers, selectors, or mode entries"
+                                .to_string(),
                             ctx.call_position(),
                         ));
                     }
@@ -1011,6 +1230,8 @@ fn register_mode_builder(engine: &mut Engine) {
                         (BindingKind::Action(action), None)
                     } else if let Some(handler) = third.clone().try_cast::<HandlerRef>() {
                         (BindingKind::Handler(handler), None)
+                    } else if let Some(selector) = third.clone().try_cast::<SelectorConfig>() {
+                        (BindingKind::Selector(selector), None)
                     } else if let Some(func) = third.try_cast::<FnPtr>() {
                         let mode = ModeRef {
                             id: mode_id_for(&func),
@@ -1023,7 +1244,7 @@ fn register_mode_builder(engine: &mut Engine) {
                     } else {
                         return Err(boxed_validation_error(
                             format!(
-                                "bind: element {} must have an Action, action.run, or mode closure as third item",
+                                "bind: element {} must have an Action, action.run, action.selector, or mode closure as third item",
                                 i
                             ),
                             ctx.call_position(),
@@ -1135,9 +1356,10 @@ fn register_mode_builder(engine: &mut Engine) {
                             ctx.call_position(),
                         ));
                     }
-                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
                         return Err(boxed_validation_error(
-                            "repeat() is not valid on handlers or mode entries".to_string(),
+                            "repeat() is not valid on handlers, selectors, or mode entries"
+                                .to_string(),
                             ctx.call_position(),
                         ));
                     }
@@ -1191,9 +1413,10 @@ fn register_mode_builder(engine: &mut Engine) {
                             ctx.call_position(),
                         ));
                     }
-                    BindingKind::Handler(_) | BindingKind::Mode(_) => {
+                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
                         return Err(boxed_validation_error(
-                            "repeat_ms() is not valid on handlers or mode entries".to_string(),
+                            "repeat_ms() is not valid on handlers, selectors, or mode entries"
+                                .to_string(),
                             ctx.call_position(),
                         ));
                     }

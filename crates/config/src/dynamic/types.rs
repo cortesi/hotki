@@ -6,7 +6,7 @@ use std::{
 use mac_keycode::Chord;
 use rhai::{FnPtr, Position};
 
-use super::util::lock_unpoisoned;
+use super::{SelectorConfig, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style, raw::RawStyle};
 
 /// Unique identifier for a mode closure.
@@ -243,6 +243,8 @@ pub enum BindingKind {
     Action(Action),
     /// Handler binding.
     Handler(HandlerRef),
+    /// Open an interactive selector popup.
+    Selector(SelectorConfig),
     /// Mode entry binding.
     Mode(ModeRef),
 }

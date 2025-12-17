@@ -1,5 +1,7 @@
 use config::dynamic::{ModeFrame, RenderedState};
 
+use crate::selector::SelectorState;
+
 /// Focus snapshot carried in runtime state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FocusInfo {
@@ -9,13 +11,14 @@ pub(crate) struct FocusInfo {
 }
 
 /// Stack-based runtime state for dynamic configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct RuntimeState {
     pub(crate) hud_visible: bool,
     pub(crate) stack: Vec<ModeFrame>,
     pub(crate) focus: FocusInfo,
     pub(crate) rendered: RenderedState,
     pub(crate) theme_name: String,
+    pub(crate) selector: Option<SelectorState>,
 }
 
 impl RuntimeState {
@@ -31,6 +34,7 @@ impl RuntimeState {
                 capture: false,
             },
             theme_name: "default".to_string(),
+            selector: None,
         }
     }
 

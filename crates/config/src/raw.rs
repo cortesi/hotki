@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Hud, Notify, parse_rgb,
+    Hud, Notify, Selector, parse_rgb,
     types::{FontWeight, NotifyPos, Offset, Pos},
 };
 
@@ -356,6 +356,70 @@ pub struct RawHud {
     pub tag_submenu: Maybe<String>,
 }
 
+// ===== RAW SELECTOR STYLE =====
+
+/// Raw selector style with all optional fields for merging.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RawSelector {
+    /// Background color name or hex string.
+    #[serde(default)]
+    pub bg: Maybe<String>,
+    /// Input background color name or hex string.
+    #[serde(default)]
+    pub input_bg: Maybe<String>,
+    /// Item background color name or hex string.
+    #[serde(default)]
+    pub item_bg: Maybe<String>,
+    /// Selected item background color name or hex string.
+    #[serde(default)]
+    pub item_selected_bg: Maybe<String>,
+    /// Matched character foreground color name or hex string.
+    #[serde(default)]
+    pub match_fg: Maybe<String>,
+    /// Border color name or hex string.
+    #[serde(default)]
+    pub border: Maybe<String>,
+    /// Shadow color name or hex string.
+    #[serde(default)]
+    pub shadow: Maybe<String>,
+}
+
+impl RawSelector {
+    /// Convert to final Selector using the provided base as defaults.
+    pub fn into_selector_over(self, base: &Selector) -> Selector {
+        let parse_color = |s: Option<String>, fallback: (u8, u8, u8)| {
+            s.as_deref().and_then(parse_rgb).unwrap_or(fallback)
+        };
+
+        Selector {
+            bg: parse_color(self.bg.into_option(), base.bg),
+            input_bg: parse_color(self.input_bg.into_option(), base.input_bg),
+            item_bg: parse_color(self.item_bg.into_option(), base.item_bg),
+            item_selected_bg: parse_color(
+                self.item_selected_bg.into_option(),
+                base.item_selected_bg,
+            ),
+            match_fg: parse_color(self.match_fg.into_option(), base.match_fg),
+            border: parse_color(self.border.into_option(), base.border),
+            shadow: parse_color(self.shadow.into_option(), base.shadow),
+        }
+    }
+
+    /// Merge another selector overlay on top of this one.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        Self {
+            bg: merge_maybe(&self.bg, &other.bg),
+            input_bg: merge_maybe(&self.input_bg, &other.input_bg),
+            item_bg: merge_maybe(&self.item_bg, &other.item_bg),
+            item_selected_bg: merge_maybe(&self.item_selected_bg, &other.item_selected_bg),
+            match_fg: merge_maybe(&self.match_fg, &other.match_fg),
+            border: merge_maybe(&self.border, &other.border),
+            shadow: merge_maybe(&self.shadow, &other.shadow),
+        }
+    }
+}
+
 // Shared color fallback for HUD
 /// Use `src` color if provided, otherwise fall back to `default`.
 fn color_or(src: Option<&str>, default: (u8, u8, u8)) -> (u8, u8, u8) {
@@ -472,6 +536,9 @@ pub struct RawStyle {
     /// Optional notification style overrides.
     #[serde(default)]
     pub notify: Maybe<RawNotify>,
+    /// Optional selector style overrides.
+    #[serde(default)]
+    pub selector: Maybe<RawSelector>,
 }
 
 impl RawStyle {
@@ -480,6 +547,7 @@ impl RawStyle {
         Self {
             hud: merge_maybe_nested(&self.hud, &other.hud, RawHud::merge),
             notify: merge_maybe_nested(&self.notify, &other.notify, RawNotify::merge),
+            selector: merge_maybe_nested(&self.selector, &other.selector, RawSelector::merge),
         }
     }
 }

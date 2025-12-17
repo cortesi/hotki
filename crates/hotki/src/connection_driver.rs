@@ -361,6 +361,18 @@ impl ConnectionDriver {
                 self.tx_keys.send(AppEvent::ClearNotifications).ok();
                 self.egui_ctx.request_repaint();
             }
+            hotki_protocol::MsgToUI::SelectorUpdate(snapshot) => {
+                self.tx_keys
+                    .send(AppEvent::SelectorUpdate {
+                        selector: Box::new(snapshot),
+                    })
+                    .ok();
+                self.egui_ctx.request_repaint();
+            }
+            hotki_protocol::MsgToUI::SelectorHide => {
+                self.tx_keys.send(AppEvent::SelectorHide).ok();
+                self.egui_ctx.request_repaint();
+            }
             hotki_protocol::MsgToUI::ShowDetails(arg) => {
                 match arg {
                     Toggle::On => {
