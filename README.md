@@ -150,10 +150,10 @@ throughout the UI, and which can be used in styling.
 # Installation
 
 We don't have binary releases yet. For the moment, the installation process is
-to compile the app bundle using the following script from the repo root:
+to compile the app bundle from the repo root:
 
 ```sh
-./scripts/bundle.sh
+cargo xtask bundle
 ```
 
 The bundle will be at `./target/bundle/Hotki.app`, ready to copy to your
