@@ -70,73 +70,26 @@ Every aspect of Hotki's UI is customizable. We have a few built-in
 time). To customize, copy one into your config directory's `themes/` folder
 (usually `~/.hotki/themes/`) and tweak it.
 
+### default
 
 <table>
   <tr>
-    <td> 
-        <center><b>default</b></center>
-        <img src="./assets/default/001_hud.png" width="350px">
-    </td>
-    <td> 
-        <img src="./assets/default/003_notify_info.png" width="250px">
-        <img src="./assets/default/002_notify_success.png" width="250px">
-        <img src="./assets/default/004_notify_warning.png" width="250px">
-        <img src="./assets/default/005_notify_error.png"width="250px">
-    </td>
-  </tr>
-  <tr></tr>
-  <tr>
-    <td> 
-        <center><b>solarized-dark</b></center>
-        <img src="./assets/solarized-dark/001_hud.png" width="350px">
-    </td>
-    <td> 
-        <img src="./assets/solarized-dark/003_notify_info.png" width="250px">
-        <img src="./assets/solarized-dark/002_notify_success.png" width="250px">
-        <img src="./assets/solarized-dark/004_notify_warning.png" width="250px">
-        <img src="./assets/solarized-dark/005_notify_error.png"width="250px">
-    </td>
-  </tr>
-  <tr></tr>
-  <tr>
     <td>
-        <center><b>solarized-light</b></center>
-        <img src="./assets/solarized-light/001_hud.png" width="350px">
+        <img src="./assets/default/hud.png" width="350px">
     </td>
     <td> 
-        <img src="./assets/solarized-light/003_notify_info.png" width="250px">
-        <img src="./assets/solarized-light/002_notify_success.png" width="250px">
-        <img src="./assets/solarized-light/004_notify_warning.png" width="250px">
-        <img src="./assets/solarized-light/005_notify_error.png"width="250px">
-    </td>
-  </tr>
-  <tr></tr>
-  <tr>
-    <td>
-        <center><b>dark-blue</b></center>
-        <img src="./assets/dark-blue/001_hud.png" width="350px">
-    </td>
-    <td> 
-        <img src="./assets/dark-blue/003_notify_info.png" width="250px">
-        <img src="./assets/dark-blue/002_notify_success.png" width="250px">
-        <img src="./assets/dark-blue/004_notify_warning.png" width="250px">
-        <img src="./assets/dark-blue/005_notify_error.png"width="250px">
-    </td>
-  </tr>
-  <tr></tr>
-  <tr>
-    <td>
-        <center><b>charcoal</b></center>
-        <img src="./assets/charcoal/001_hud.png" width="350px">
-    </td>
-    <td> 
-        <img src="./assets/charcoal/003_notify_info.png" width="250px">
-        <img src="./assets/charcoal/002_notify_success.png" width="250px">
-        <img src="./assets/charcoal/004_notify_warning.png" width="250px">
-        <img src="./assets/charcoal/005_notify_error.png"width="250px">
+        <img src="./assets/default/notify_success.png" width="250px">
+        <img src="./assets/default/notify_info.png" width="250px">
+        <br>
+        <img src="./assets/default/notify_warning.png" width="250px">
+        <img src="./assets/default/notify_error.png" width="250px">
+        <br>
+        <img src="./assets/default/selector.png" width="500px">
     </td>
   </tr>
 </table>
+
+See [THEMES.md](./THEMES.md) for screenshots of all built-in themes.
 
 
 ## Fonts
