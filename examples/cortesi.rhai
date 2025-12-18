@@ -57,7 +57,7 @@ hotki.mode(|m, ctx| {
   m.bind([
     ["shift+cmd+y", "y scratchpad", action.shell("yabai -m window --toggle web")],
     ["shift+cmd+u", "u scratchpad", action.shell("yabai -m window --toggle web2")],
-  ]).global();
+  ]).global().hidden();
 
   // Global navigation keys (hidden from HUD).
   if ctx.hud {
