@@ -11,6 +11,8 @@ mod cmd;
 mod error;
 /// Screenshot generation tasks.
 mod screenshots;
+/// Linting and formatting tasks.
+mod tidy;
 /// Workspace discovery and metadata helpers.
 mod workspace;
 
@@ -34,6 +36,8 @@ enum Xtask {
     BundleDev(bundle::BundleDevArgs),
     /// Generate UI screenshots for the README gallery.
     Screenshots,
+    /// Run clippy fixes and format the workspace.
+    Tidy,
 }
 
 /// Execute the `cargo xtask` CLI.
@@ -45,5 +49,6 @@ pub fn run() -> Result<()> {
         Xtask::Bundle(args) => bundle::bundle_release(&root_dir, &args),
         Xtask::BundleDev(args) => bundle::bundle_dev(&root_dir, &args),
         Xtask::Screenshots => screenshots::screenshots(&root_dir),
+        Xtask::Tidy => tidy::tidy(&root_dir),
     }
 }
