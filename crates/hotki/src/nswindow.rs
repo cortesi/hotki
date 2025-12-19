@@ -8,7 +8,7 @@
 use std::{error::Error as StdError, fmt, result::Result as StdResult};
 
 use objc2::rc::autoreleasepool;
-use objc2_app_kit::{NSApplication, NSColor, NSWindowCollectionBehavior};
+use objc2_app_kit::{NSApplication, NSColor, NSWindow, NSWindowCollectionBehavior};
 use objc2_foundation::MainThreadMarker;
 
 /// Errors that can occur while mutating NSWindow attributes.
@@ -31,6 +31,12 @@ impl StdError for Error {}
 /// Convenient result alias for NSWindow helper operations.
 pub type Result<T> = StdResult<T, Error>;
 
+/// Return true if the window title matches the provided string.
+fn window_title_matches(window: &NSWindow, title_match: &str) -> bool {
+    let title = window.title();
+    autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match })
+}
+
 /// Apply full transparency and rounded corners to the window matching `title_match`.
 pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -39,16 +45,15 @@ pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
     for w in windows.iter() {
-        let title = w.title();
-        let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
-        if is_match {
-            w.setOpaque(false);
-            w.setHasShadow(false);
+        let window = &*w;
+        if window_title_matches(window, title_match) {
+            window.setOpaque(false);
+            window.setHasShadow(false);
             // SAFETY: AppKit main thread is enforced above; `clearColor` returns a
             // shared autoreleased NSColor.
             let clear = unsafe { NSColor::clearColor() };
-            w.setBackgroundColor(Some(&clear));
-            if let Some(view) = w.contentView() {
+            window.setBackgroundColor(Some(&clear));
+            if let Some(view) = window.contentView() {
                 view.setWantsLayer(true);
                 // SAFETY: After `setWantsLayer(true)`, AppKit ensures a backing
                 // layer exists; `layer()` returns an optional retained reference.
@@ -59,10 +64,10 @@ pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
                 }
             }
             // SAFETY: Accessing window properties on AppKit main thread.
-            let current_alpha = unsafe { w.alphaValue() };
+            let current_alpha = unsafe { window.alphaValue() };
             if (current_alpha - 1.0).abs() > 0.0001 {
                 // SAFETY: AppKit main thread and valid `w`.
-                unsafe { w.setAlphaValue(1.0) };
+                unsafe { window.setAlphaValue(1.0) };
             }
         }
     }
@@ -77,14 +82,64 @@ pub fn set_on_all_spaces(title_match: &str) -> Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
     for w in windows.iter() {
-        let title = w.title();
-        let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
-        if is_match {
+        let window = &*w;
+        if window_title_matches(window, title_match) {
             // SAFETY: AppKit main thread and valid window instance.
-            unsafe { w.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces) };
+            unsafe { window.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces) };
         }
     }
     Ok(())
+}
+
+/// Disable AppKit cursor rects for the window matching `title_match`.
+///
+/// The Details window was showing rapid cursor flicker in interactive regions
+/// (tabs, scroll areas, selectable text) even when egui reported a stable
+/// I-beam and AppKit `currentCursor` also reported I-beam. That combination
+/// strongly suggests AppKit's cursor-rect system is periodically reasserting
+/// the default cursor during the display cycle, fighting with egui/winit's
+/// explicit cursor setting. Disabling cursor rects at the window level
+/// removes that competing mechanism so egui becomes the sole cursor owner.
+///
+/// Returns `Ok(true)` if a window was found and updated.
+pub fn disable_cursor_rects(title_match: &str) -> Result<bool> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Err(Error::MainThread);
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    for w in windows.iter() {
+        let window = &*w;
+        if window_title_matches(window, title_match) {
+            // SAFETY: AppKit main thread and selector has no return value.
+            unsafe { window.disableCursorRects() };
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Re-enable AppKit cursor rects for the window matching `title_match`.
+///
+/// This is the counterpart to `disable_cursor_rects`, restoring default
+/// AppKit cursor-rect behavior once the Details window is hidden.
+///
+/// Returns `Ok(true)` if a window was found and updated.
+pub fn enable_cursor_rects(title_match: &str) -> Result<bool> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Err(Error::MainThread);
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    for w in windows.iter() {
+        let window = &*w;
+        if window_title_matches(window, title_match) {
+            // SAFETY: AppKit main thread and selector has no return value.
+            unsafe { window.enableCursorRects() };
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Return the frame `(x, y, w, h)` for the window matching `title_match`.
@@ -96,10 +151,9 @@ pub fn frame_by_title(title_match: &str) -> Option<(f32, f32, f32, f32)> {
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
     for w in windows.iter() {
-        let title = w.title();
-        let is_match = autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match });
-        if is_match {
-            let fr = w.frame();
+        let window = &*w;
+        if window_title_matches(window, title_match) {
+            let fr = window.frame();
             return Some((
                 fr.origin.x as f32,
                 fr.origin.y as f32,

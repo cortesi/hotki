@@ -48,6 +48,8 @@ enum Tab {
 pub struct Details {
     /// Whether the window is currently visible.
     visible: bool,
+    /// Whether AppKit cursor rects are disabled for the window.
+    cursor_rects_disabled: bool,
     /// Stable viewport identifier for the window.
     id: ViewportId,
     /// Request an initial default size on next show.
@@ -79,6 +81,7 @@ impl Details {
     pub fn new(theme: NotifyTheme) -> Self {
         Self {
             visible: false,
+            cursor_rects_disabled: false,
             id: ViewportId::from_hash_of("hotki_details"),
             want_initial_size: false,
             restore_pending: false,
@@ -218,6 +221,7 @@ impl Details {
     /// Render the window and its active tab.
     pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry]) {
         if !self.visible {
+            self.ensure_cursor_rects_enabled();
             // Ensure window is hidden if not visible
             ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
             return;
@@ -246,6 +250,7 @@ impl Details {
                 }
                 return;
             }
+            self.ensure_cursor_rects_disabled();
             // Apply saved geometry once after opening (clamped to active screen)
             if self.restore_pending {
                 if let Some(stored) = self.last_saved {
@@ -385,6 +390,31 @@ impl Details {
                 self.last_saved = Some(cur);
             }
         });
+    }
+
+    /// Disable AppKit cursor rects once the Details window exists.
+    ///
+    /// This is intentionally tied to window visibility rather than per-hover
+    /// cursor state. The flicker was caused by AppKit's cursor-rect updates
+    /// racing egui's cursor assignments in interactive regions. By disabling
+    /// cursor rects for the entire window while it is visible, we prevent
+    /// AppKit from reasserting the default arrow during display-cycle updates.
+    fn ensure_cursor_rects_disabled(&mut self) {
+        if !self.cursor_rects_disabled
+            && let Ok(true) = nswindow::disable_cursor_rects("Details")
+        {
+            self.cursor_rects_disabled = true;
+        }
+    }
+
+    /// Re-enable AppKit cursor rects when the Details window is hidden.
+    ///
+    /// This restores normal AppKit behavior outside the Details window's
+    /// lifecycle to avoid surprising cursor behavior elsewhere.
+    fn ensure_cursor_rects_enabled(&mut self) {
+        if self.cursor_rects_disabled && nswindow::enable_cursor_rects("Details").is_ok() {
+            self.cursor_rects_disabled = false;
+        }
     }
     /// Send a reload signal to the runtime, if connected.
     fn send_reload(&self) {
