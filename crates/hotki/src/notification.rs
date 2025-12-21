@@ -136,7 +136,7 @@ impl NotificationCenter {
                 egui::FontFamily::Proportional,
             ));
             ui.label(icon_text.color(title_fg));
-            let (icon_h, title_h) = nctx.fonts(|f| {
+            let (icon_h, title_h) = nctx.fonts_mut(|f| {
                 let ih = f
                     .layout_no_wrap(
                         ic.clone(),
@@ -234,7 +234,7 @@ impl NotificationCenter {
                 style.body_font_size,
                 fonts::weight_family(style.body_font_weight),
             );
-            let text_gal = ctx.fonts(|f| {
+            let text_gal = ctx.fonts_mut(|f| {
                 f.layout(
                     item.text.clone(),
                     body_font.clone(),
@@ -242,13 +242,13 @@ impl NotificationCenter {
                     self.width - 24.0, // left+right inner margin
                 )
             });
-            let title_gal = ctx.fonts(|f| {
+            let title_gal = ctx.fonts_mut(|f| {
                 f.layout_no_wrap(item.title.clone(), title_font.clone(), Color32::WHITE)
             });
             // Account for icon height (rendered at 2x title size) when computing title line height
             let icon_h = if let Some(ic) = &style.icon {
                 if !ic.is_empty() {
-                    ctx.fonts(|f| {
+                    ctx.fonts_mut(|f| {
                         f.layout_no_wrap(
                             ic.clone(),
                             // Use proportional family to allow fallback for symbol glyphs

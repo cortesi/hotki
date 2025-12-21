@@ -21,4 +21,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "regis
 # Forward module dependencies
 hotki-protocol = { path = "../hotki-protocol" }
 tokio = { workspace = true, features = ["sync"] }
-parking_lot = "0.12.4"
+parking_lot = "0.12.5"

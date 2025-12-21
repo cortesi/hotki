@@ -11,7 +11,7 @@ test-utils = []
 [dependencies]
 tokio = { workspace = true }
 permissions = { path = "../permissions" }
-parking_lot = "0.12.4"
+parking_lot = "0.12.5"
 async-trait.workspace = true
 core-foundation = "0.10.1"
 core-graphics = "0.25.0"

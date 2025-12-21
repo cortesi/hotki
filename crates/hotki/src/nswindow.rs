@@ -49,25 +49,19 @@ pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
         if window_title_matches(window, title_match) {
             window.setOpaque(false);
             window.setHasShadow(false);
-            // SAFETY: AppKit main thread is enforced above; `clearColor` returns a
-            // shared autoreleased NSColor.
-            let clear = unsafe { NSColor::clearColor() };
+            let clear = NSColor::clearColor();
             window.setBackgroundColor(Some(&clear));
             if let Some(view) = window.contentView() {
                 view.setWantsLayer(true);
-                // SAFETY: After `setWantsLayer(true)`, AppKit ensures a backing
-                // layer exists; `layer()` returns an optional retained reference.
-                let layer_opt = unsafe { view.layer() };
+                let layer_opt = view.layer();
                 if let Some(layer) = layer_opt {
                     layer.setMasksToBounds(true);
                     layer.setCornerRadius(radius);
                 }
             }
-            // SAFETY: Accessing window properties on AppKit main thread.
-            let current_alpha = unsafe { window.alphaValue() };
+            let current_alpha = window.alphaValue();
             if (current_alpha - 1.0).abs() > 0.0001 {
-                // SAFETY: AppKit main thread and valid `w`.
-                unsafe { window.setAlphaValue(1.0) };
+                window.setAlphaValue(1.0);
             }
         }
     }
@@ -84,8 +78,7 @@ pub fn set_on_all_spaces(title_match: &str) -> Result<()> {
     for w in windows.iter() {
         let window = &*w;
         if window_title_matches(window, title_match) {
-            // SAFETY: AppKit main thread and valid window instance.
-            unsafe { window.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces) };
+            window.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces);
         }
     }
     Ok(())
@@ -111,8 +104,7 @@ pub fn disable_cursor_rects(title_match: &str) -> Result<bool> {
     for w in windows.iter() {
         let window = &*w;
         if window_title_matches(window, title_match) {
-            // SAFETY: AppKit main thread and selector has no return value.
-            unsafe { window.disableCursorRects() };
+            window.disableCursorRects();
             return Ok(true);
         }
     }
@@ -134,8 +126,7 @@ pub fn enable_cursor_rects(title_match: &str) -> Result<bool> {
     for w in windows.iter() {
         let window = &*w;
         if window_title_matches(window, title_match) {
-            // SAFETY: AppKit main thread and selector has no return value.
-            unsafe { window.enableCursorRects() };
+            window.enableCursorRects();
             return Ok(true);
         }
     }

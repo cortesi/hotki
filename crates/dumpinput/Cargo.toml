@@ -9,5 +9,5 @@ name = "dumpinput"
 path = "src/main.rs"
 
 [dependencies]
-eframe = "0.32.2"
-egui = "0.32.2"
+eframe = "0.33.3"
+egui = "0.33.3"

@@ -186,13 +186,13 @@ impl Hud {
             ui.label(&row.desc);
             if row.is_mode {
                 let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, &row.chord);
-                let desc_w = hud_ctx.fonts(|f| {
+                let desc_w = hud_ctx.fonts_mut(|f| {
                     f.layout_no_wrap(row.desc.clone(), self.title_font_id(), Color32::WHITE)
                         .size()
                         .x
                 });
                 let row_content_w = token_boxes_w + KEY_DESC_GAP + desc_w;
-                let tag_w = hud_ctx.fonts(|f| {
+                let tag_w = hud_ctx.fonts_mut(|f| {
                     f.layout_no_wrap(
                         self.cfg.tag_submenu.clone(),
                         self.tag_font_id(),
@@ -279,7 +279,7 @@ impl Hud {
     fn measure_token_boxes(&self, ctx: &Context, chord: &Chord) -> (f32, f32) {
         let tokens = self.tokens_for_chord(chord);
         let key_font = self.key_font_id();
-        let (tokens_text_w, token_text_h, plus_w) = ctx.fonts(|f| {
+        let (tokens_text_w, token_text_h, plus_w) = ctx.fonts_mut(|f| {
             let plus_w = f
                 .layout_no_wrap("+".to_owned(), key_font.clone(), Color32::WHITE)
                 .size()
@@ -311,7 +311,7 @@ impl Hud {
         let mut any_tag = false;
 
         // Pre-measure tag text once
-        let tag_col_w: f32 = ctx.fonts(|f| {
+        let tag_col_w: f32 = ctx.fonts_mut(|f| {
             f.layout_no_wrap(
                 self.cfg.tag_submenu.clone(),
                 self.tag_font_id(),
@@ -323,7 +323,7 @@ impl Hud {
         for row in &self.rows {
             let (token_boxes_w, token_boxes_h) = self.measure_token_boxes(ctx, &row.chord);
             // Description width/height
-            let (desc_w, desc_h) = ctx.fonts(|f| {
+            let (desc_w, desc_h) = ctx.fonts_mut(|f| {
                 let g = f.layout_no_wrap(row.desc.clone(), font_id_desc.clone(), Color32::WHITE);
                 (g.size().x, g.size().y)
             });
@@ -358,7 +358,7 @@ impl Hud {
         if matches!(self.cfg.mode, Mode::Mini) {
             // Compact size based only on the active breadcrumb title.
             if let Some(title) = self.breadcrumbs.last().filter(|s| !s.trim().is_empty()) {
-                let (w, h) = ctx.fonts(|f| {
+                let (w, h) = ctx.fonts_mut(|f| {
                     let g = f.layout_no_wrap(title.clone(), self.title_font_id(), Color32::WHITE);
                     (g.size().x, g.size().y)
                 });
@@ -496,7 +496,7 @@ impl Hud {
                     if let Some(title) = self.breadcrumbs.last().filter(|s| !s.trim().is_empty()) {
                         let avail = ui.available_size();
                         // compute text height to center vertically
-                        let text_h = hud_ctx.fonts(|f| {
+                        let text_h = hud_ctx.fonts_mut(|f| {
                             f.layout_no_wrap(title.clone(), self.title_font_id(), Color32::WHITE)
                                 .size()
                                 .y

@@ -151,7 +151,7 @@ impl SelectorWindow {
         let title_h = if snapshot.title.trim().is_empty() {
             0.0
         } else {
-            ctx.fonts(|f| {
+            ctx.fonts_mut(|f| {
                 f.layout_no_wrap(snapshot.title.clone(), self.title_font_id(), Color32::WHITE)
                     .size()
                     .y
@@ -160,7 +160,7 @@ impl SelectorWindow {
 
         let input_h = INPUT_HEIGHT;
 
-        let items_h = ctx.fonts(|f| {
+        let items_h = ctx.fonts_mut(|f| {
             snapshot
                 .items
                 .iter()
