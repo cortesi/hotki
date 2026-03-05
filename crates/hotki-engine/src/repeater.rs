@@ -30,6 +30,15 @@ struct ShellNotification {
     text: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ShellNotify {
+    Configured {
+        ok_notify: NotifyKind,
+        err_notify: NotifyKind,
+    },
+    Silent,
+}
+
 /// Maximum time to wait for a repeater task to acknowledge cancellation.
 /// See repeater and ticker docs for semantics.
 pub const STOP_WAIT_TIMEOUT_MS: u64 = 50;
@@ -233,6 +242,73 @@ impl Repeater {
         (Duration::from_millis(i_ms), Duration::from_millis(t_ms))
     }
 
+    fn spawn_repeat_loop(
+        &self,
+        id: String,
+        repeat: Option<RepeatSpec>,
+        tick: impl FnMut() + Send + 'static,
+    ) {
+        let (initial_delay, interval) = self.effective_timings(repeat);
+        self.ticker.start(id, initial_delay, interval, tick);
+    }
+
+    fn spawn_shell_run(
+        &self,
+        state: Arc<ShellRunState>,
+        command: String,
+        notify: ShellNotify,
+        repeat_id: Option<String>,
+    ) {
+        let notifier = self.notifier.clone();
+        let on_shell_repeat = self.on_shell_repeat.clone();
+        tokio::spawn(async move {
+            let _guard = state.gate.lock().await;
+            let notify_result = tokio::task::spawn_blocking(move || match notify {
+                ShellNotify::Configured {
+                    ok_notify,
+                    err_notify,
+                } => run_shell_blocking(&command, ok_notify, err_notify),
+                ShellNotify::Silent => {
+                    let _ = run_shell_blocking(&command, NotifyKind::Ignore, NotifyKind::Ignore);
+                    None
+                }
+            })
+            .await;
+
+            match notify_result {
+                Ok(Some(notification)) => {
+                    if let Err(err) = notifier.send_notification(
+                        notification.kind,
+                        notification.title,
+                        notification.text,
+                    ) {
+                        tracing::warn!("Failed to deliver shell notification: {}", err);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("Shell task join error: {}", err);
+                    if let Err(send_err) = notifier.send_notification(
+                        NotifyKind::Warn,
+                        "Shell command".to_string(),
+                        "Execution task failed".to_string(),
+                    ) {
+                        tracing::warn!("Failed to deliver shell notification: {}", send_err);
+                    }
+                }
+            }
+
+            if let Some(id) = repeat_id
+                && let Some(cb) = on_shell_repeat.lock().as_ref()
+            {
+                cb(&id);
+                trace!("repeater_shell_run_done" = %id);
+            }
+
+            state.running.store(false, Ordering::SeqCst);
+        });
+    }
+
     /// Optional: install a relay repeat callback for instrumentation/testing.
     pub fn set_on_relay_repeat(&self, cb: OnRelayRepeat) {
         *self.on_relay_repeat.lock() = Some(cb);
@@ -271,35 +347,18 @@ impl Repeater {
                 ok_notify,
                 err_notify,
             } => {
-                // First run with notifications via executor, serialized per id.
-                let notifier = self.notifier.clone();
-                let cmd = command.clone();
                 let state = self.shell_state(&id);
-                // Mark running to coalesce any immediate repeat tick.
                 state.running.store(true, Ordering::SeqCst);
-                tokio::spawn(async move {
-                    let _guard = state.gate.lock().await;
-                    let notify = tokio::task::spawn_blocking(move || {
-                        run_shell_blocking(&cmd, ok_notify, err_notify)
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Shell task join error: {}", e);
-                        Some(ShellNotification {
-                            kind: NotifyKind::Warn,
-                            title: "Shell command".to_string(),
-                            text: "Execution task failed".to_string(),
-                        })
-                    });
-                    if let Some(n) = notify
-                        && let Err(e) = notifier.send_notification(n.kind, n.title, n.text)
-                    {
-                        tracing::warn!("Failed to deliver shell notification: {}", e);
-                    }
-                    state.running.store(false, Ordering::SeqCst);
-                });
+                self.spawn_shell_run(
+                    state,
+                    command.clone(),
+                    ShellNotify::Configured {
+                        ok_notify,
+                        err_notify,
+                    },
+                    None,
+                );
 
-                // Schedule silent repeats if requested
                 if repeat.is_some() {
                     self.spawn_shell_repeater(id, command, repeat);
                 }
@@ -318,35 +377,20 @@ impl Repeater {
     }
 
     fn spawn_shell_repeater(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
-        let (initial_delay, interval) = self.effective_timings(repeat);
         let id_for_log = id.clone();
-        let state = self.shell_state(&id_for_log);
-
-        let on_shell_repeat = self.on_shell_repeat.clone();
-        self.ticker.start(id, initial_delay, interval, move || {
-            // Skip if a prior run is still active
+        let state = self.shell_state(&id);
+        let repeater = self.clone();
+        self.spawn_repeat_loop(id, repeat, move || {
             if state.running.swap(true, Ordering::SeqCst) {
                 trace!("repeater_shell_tick_skip_running" = %id_for_log);
                 return;
             }
-            let cmd = command.clone();
-            let id_for_trace = id_for_log.clone();
-            // Spawn async task to serialize via per-id async mutex, then run blocking
-            let on_shell_repeat2 = on_shell_repeat.clone();
-            let state2 = state.clone();
-            tokio::spawn(async move {
-                let _guard = state2.gate.lock().await;
-                let _ = tokio::task::spawn_blocking(move || {
-                    let _ = run_shell_blocking(&cmd, NotifyKind::Ignore, NotifyKind::Ignore);
-                })
-                .await;
-                // Notify shell repeat callback if set
-                if let Some(cb) = on_shell_repeat2.lock().as_ref() {
-                    cb(&id_for_trace);
-                }
-                state2.running.store(false, Ordering::SeqCst);
-                trace!("repeater_shell_run_done" = %id_for_trace);
-            });
+            repeater.spawn_shell_run(
+                state.clone(),
+                command.clone(),
+                ShellNotify::Silent,
+                Some(id_for_log.clone()),
+            );
         });
     }
 
@@ -357,7 +401,6 @@ impl Repeater {
         initial_pid: i32,
         repeat: Option<RepeatSpec>,
     ) {
-        let (initial_delay, interval) = self.effective_timings(repeat);
         let relay = self.relay.clone();
         let focus_ctx = self.focus_ctx.clone();
         let id_for_log = id.clone();
@@ -368,7 +411,7 @@ impl Repeater {
         // Coalesce relay repeats to avoid overlapping enqueueing under jitter
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
-        self.ticker.start(id, initial_delay, interval, move || {
+        self.spawn_repeat_loop(id, repeat, move || {
             let pid = focus_ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1);
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)

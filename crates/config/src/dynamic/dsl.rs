@@ -9,13 +9,15 @@ use std::{
 
 use mac_keycode::Chord;
 use rhai::{
-    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, serde::from_dynamic,
+    Dynamic, Engine, EvalAltResult, FnPtr, Map, Module, NativeCallContext, Position,
+    serde::from_dynamic,
 };
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, HandlerRef, ModeCtx, ModeId, ModeRef,
-    NavRequest, RepeatSpec, SelectorConfig, SelectorItem, SelectorItems, StyleOverlay, constants,
-    style_api::RhaiStyle, util::lock_unpoisoned, validation::boxed_validation_error,
+    NavRequest, RepeatSpec, SelectorConfig, SelectorItem, SelectorItems, StyleOverlay,
+    binding_style::parse_binding_style_map, constants, style_api::RhaiStyle, util::lock_unpoisoned,
+    validation::boxed_validation_error,
 };
 use crate::{Action, FontWeight, Mode, NotifyKind, NotifyPos, Pos, Toggle, raw, themes};
 
@@ -567,82 +569,231 @@ fn register_handler_type(engine: &mut Engine) {
     engine.register_type::<HandlerRef>();
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-/// Binding-level style overrides accepted by the DSL.
-struct RawBindingStyle {
-    #[serde(default)]
-    /// When true, hide the binding from the HUD.
-    hidden: Option<bool>,
-    #[serde(default)]
-    /// Override key foreground color.
-    key_fg: Option<String>,
-    #[serde(default)]
-    /// Override key background color.
-    key_bg: Option<String>,
-    #[serde(default)]
-    /// Override modifier foreground color.
-    mod_fg: Option<String>,
-    #[serde(default)]
-    /// Override modifier background color.
-    mod_bg: Option<String>,
-    #[serde(default)]
-    /// Override submenu tag color.
-    tag_fg: Option<String>,
-}
-
 /// Apply a binding style overlay from a Rhai map.
 fn binding_style_overlay(
     ctx: &NativeCallContext,
     binding: &mut Binding,
     map: Map,
 ) -> Result<(), Box<EvalAltResult>> {
-    let dyn_map = Dynamic::from_map(map);
-    let style: RawBindingStyle = from_dynamic(&dyn_map).map_err(|e| {
-        boxed_validation_error(
-            format!("invalid binding style map: {}", e),
-            ctx.call_position(),
-        )
-    })?;
-
-    if style.hidden.unwrap_or(false) {
+    let style = parse_binding_style_map(map, ctx.call_position())?;
+    if style.hidden {
         binding.flags.hidden = true;
     }
-
-    if style.key_fg.is_none()
-        && style.key_bg.is_none()
-        && style.mod_fg.is_none()
-        && style.mod_bg.is_none()
-        && style.tag_fg.is_none()
-    {
-        binding.style = None;
-        return Ok(());
-    }
-
-    let mut hud = raw::RawHud::default();
-    if let Some(v) = style.key_fg {
-        hud.key_fg = raw::Maybe::Value(v);
-    }
-    if let Some(v) = style.key_bg {
-        hud.key_bg = raw::Maybe::Value(v);
-    }
-    if let Some(v) = style.mod_fg {
-        hud.mod_fg = raw::Maybe::Value(v);
-    }
-    if let Some(v) = style.mod_bg {
-        hud.mod_bg = raw::Maybe::Value(v);
-    }
-    if let Some(v) = style.tag_fg {
-        hud.tag_fg = raw::Maybe::Value(v);
-    }
-    binding.style = Some(StyleOverlay {
+    binding.style = style.overlay.map(|raw| StyleOverlay {
         func: None,
-        raw: Some(raw::RawStyle {
-            hud: raw::Maybe::Value(hud),
-            notify: raw::Maybe::Unit(()),
-            selector: raw::Maybe::Unit(()),
-        }),
+        raw: Some(raw),
     });
+    Ok(())
+}
+
+/// Unified binding payload used by the DSL bind/mode constructors.
+enum BindingSpec {
+    /// A direct action binding.
+    Action(Action),
+    /// A Rhai handler binding.
+    Handler(HandlerRef),
+    /// A selector binding.
+    Selector(SelectorConfig),
+    /// A closure-backed nested mode.
+    ClosureMode(FnPtr),
+    /// A static nested mode defined by inline bindings.
+    StaticMode(Vec<Binding>),
+}
+
+/// Build a closure-backed mode reference with a stable id and default title.
+fn closure_mode(func: FnPtr, title: String) -> ModeRef {
+    ModeRef {
+        id: mode_id_for(&func),
+        func: Some(func),
+        static_bindings: None,
+        default_title: Some(title),
+    }
+}
+
+/// Build a static mode reference from inline bindings.
+fn static_mode(bindings: Vec<Binding>, title: String) -> ModeRef {
+    ModeRef {
+        id: mode_id_for_static(&bindings),
+        func: None,
+        static_bindings: Some(bindings),
+        default_title: Some(title),
+    }
+}
+
+/// Convert a parsed binding spec into the runtime binding kind plus optional mode id.
+fn binding_from_spec(desc: &str, spec: BindingSpec) -> (BindingKind, Option<ModeId>) {
+    match spec {
+        BindingSpec::Action(action) => (BindingKind::Action(action), None),
+        BindingSpec::Handler(handler) => (BindingKind::Handler(handler), None),
+        BindingSpec::Selector(selector) => (BindingKind::Selector(selector), None),
+        BindingSpec::ClosureMode(func) => {
+            let mode = closure_mode(func, desc.to_string());
+            (BindingKind::Mode(mode.clone()), Some(mode.id))
+        }
+        BindingSpec::StaticMode(bindings) => {
+            let mode = static_mode(bindings, desc.to_string());
+            (BindingKind::Mode(mode.clone()), Some(mode.id))
+        }
+    }
+}
+
+/// Append a new binding to the current mode builder and return its fluent handle.
+fn push_binding_spec(
+    state: &Arc<Mutex<ModeBuildState>>,
+    chord: Chord,
+    desc: String,
+    spec: BindingSpec,
+    pos: Position,
+) -> BindingRef {
+    let (kind, mode_id) = binding_from_spec(&desc, spec);
+    let mut guard = lock_unpoisoned(state);
+    let index = guard.bindings.len();
+    guard.bindings.push(Binding {
+        chord,
+        desc,
+        kind,
+        mode_id,
+        flags: BindingFlags::default(),
+        style: None,
+        mode_capture: false,
+        pos,
+    });
+    BindingRef {
+        state: state.clone(),
+        index,
+    }
+}
+
+/// Parse the third element of a DSL binding tuple into a normalized binding spec.
+fn parse_binding_spec(
+    value: Dynamic,
+    pos: Position,
+    label: &str,
+    allow_selector: bool,
+) -> Result<BindingSpec, Box<EvalAltResult>> {
+    if let Some(action) = value.clone().try_cast::<Action>() {
+        return Ok(BindingSpec::Action(action));
+    }
+    if let Some(handler) = value.clone().try_cast::<HandlerRef>() {
+        return Ok(BindingSpec::Handler(handler));
+    }
+    if allow_selector && let Some(selector) = value.clone().try_cast::<SelectorConfig>() {
+        return Ok(BindingSpec::Selector(selector));
+    }
+    if let Some(func) = value.try_cast::<FnPtr>() {
+        return Ok(BindingSpec::ClosureMode(func));
+    }
+
+    let expected = if allow_selector {
+        "an Action, action.run, action.selector, or mode closure"
+    } else {
+        "an Action, action.run, or mode closure"
+    };
+    Err(boxed_validation_error(
+        format!("{label} must have {expected} as third item"),
+        pos,
+    ))
+}
+
+/// Parse a `[chord, desc, action]` tuple used by array-form `bind()` and `mode()`.
+fn parse_array_binding(
+    item: Dynamic,
+    index: usize,
+    pos: Position,
+    label: &str,
+    allow_selector: bool,
+) -> Result<(Chord, String, BindingSpec), Box<EvalAltResult>> {
+    let arr = item.into_array().map_err(|_| {
+        boxed_validation_error(
+            format!("{label}: element {index} must be an array [chord, desc, action]"),
+            pos,
+        )
+    })?;
+    if arr.len() != 3 {
+        return Err(boxed_validation_error(
+            format!(
+                "{label}: element {index} must have exactly 3 items [chord, desc, action], got {}",
+                arr.len()
+            ),
+            pos,
+        ));
+    }
+
+    let chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
+        boxed_validation_error(
+            format!("{label}: element {index} chord must be a string"),
+            pos,
+        )
+    })?;
+    let desc = arr[1].clone().into_immutable_string().map_err(|_| {
+        boxed_validation_error(
+            format!("{label}: element {index} description must be a string"),
+            pos,
+        )
+    })?;
+    let chord = Chord::parse(&chord_str).ok_or_else(|| {
+        boxed_validation_error(
+            format!("{label}: element {index} has invalid chord: {}", chord_str),
+            pos,
+        )
+    })?;
+    let desc = desc.to_string();
+    let spec = parse_binding_spec(
+        arr[2].clone(),
+        pos,
+        &format!("{label}: element {index}"),
+        allow_selector,
+    )?;
+    Ok((chord, desc, spec))
+}
+
+/// Apply the same mutation closure to one or more binding handles.
+fn mutate_bindings(
+    state: &Arc<Mutex<ModeBuildState>>,
+    indices: &[usize],
+    pos: Position,
+    mut apply: impl FnMut(&mut Binding) -> Result<(), Box<EvalAltResult>>,
+) -> Result<(), Box<EvalAltResult>> {
+    let mut guard = lock_unpoisoned(state);
+    for &index in indices {
+        let binding = guard
+            .bindings
+            .get_mut(index)
+            .ok_or_else(|| boxed_validation_error("invalid binding handle".to_string(), pos))?;
+        apply(binding)?;
+    }
+    Ok(())
+}
+
+/// Validate and apply repeat settings for repeat-capable binding kinds.
+fn set_repeat(
+    binding: &mut Binding,
+    repeat: RepeatSpec,
+    pos: Position,
+    method: &str,
+) -> Result<(), Box<EvalAltResult>> {
+    match &binding.kind {
+        BindingKind::Action(Action::Shell(_))
+        | BindingKind::Action(Action::Relay(_))
+        | BindingKind::Action(Action::SetVolume(_))
+        | BindingKind::Action(Action::ChangeVolume(_)) => {}
+        BindingKind::Action(_) => {
+            return Err(boxed_validation_error(
+                format!(
+                    "{method} is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions"
+                ),
+                pos,
+            ));
+        }
+        BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
+            return Err(boxed_validation_error(
+                format!("{method} is not valid on handlers, selectors, or mode entries"),
+                pos,
+            ));
+        }
+    }
+    binding.flags.repeat = Some(repeat);
+    binding.flags.stay = true;
     Ok(())
 }
 
@@ -657,22 +808,13 @@ fn register_mode_builder(engine: &mut Engine) {
          action: Action|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: desc.to_string(),
-                kind: BindingKind::Action(action),
-                mode_id: None,
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
-                pos: ctx.call_position(),
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+                desc.to_string(),
+                BindingSpec::Action(action),
+                ctx.call_position(),
+            ))
         },
     );
 
@@ -685,22 +827,13 @@ fn register_mode_builder(engine: &mut Engine) {
          handler: HandlerRef|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: desc.to_string(),
-                kind: BindingKind::Handler(handler),
-                mode_id: None,
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
-                pos: ctx.call_position(),
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+                desc.to_string(),
+                BindingSpec::Handler(handler),
+                ctx.call_position(),
+            ))
         },
     );
 
@@ -713,22 +846,13 @@ fn register_mode_builder(engine: &mut Engine) {
          selector: SelectorConfig|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: desc.to_string(),
-                kind: BindingKind::Selector(selector),
-                mode_id: None,
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
-                pos: ctx.call_position(),
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+                desc.to_string(),
+                BindingSpec::Selector(selector),
+                ctx.call_position(),
+            ))
         },
     );
 
@@ -741,28 +865,13 @@ fn register_mode_builder(engine: &mut Engine) {
          func: FnPtr|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            let mode = ModeRef {
-                id: mode_id_for(&func),
-                func: Some(func),
-                static_bindings: None,
-                default_title: Some(desc.to_string()),
-            };
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: desc.to_string(),
-                kind: BindingKind::Mode(mode.clone()),
-                mode_id: Some(mode.id),
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
-                pos: ctx.call_position(),
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+                desc.to_string(),
+                BindingSpec::ClosureMode(func),
+                ctx.call_position(),
+            ))
         },
     );
 
@@ -775,28 +884,13 @@ fn register_mode_builder(engine: &mut Engine) {
          func: FnPtr|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            let mode = ModeRef {
-                id: mode_id_for(&func),
-                func: Some(func),
-                static_bindings: None,
-                default_title: Some(title.to_string()),
-            };
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: title.to_string(),
-                kind: BindingKind::Mode(mode.clone()),
-                mode_id: Some(mode.id),
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
-                pos: ctx.call_position(),
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+                title.to_string(),
+                BindingSpec::ClosureMode(func),
+                ctx.call_position(),
+            ))
         },
     );
 
@@ -811,84 +905,14 @@ fn register_mode_builder(engine: &mut Engine) {
          -> Result<BindingRef, Box<EvalAltResult>> {
             let chord = parse_chord(&ctx, chord)?;
             let pos = ctx.call_position();
-
-            // Parse the bindings array into Binding objects
             let mut static_bindings = Vec::with_capacity(bindings.len());
             for (i, item) in bindings.into_iter().enumerate() {
-                let arr = item.into_array().map_err(|_| {
-                    boxed_validation_error(
-                        format!(
-                            "mode bindings: element {} must be an array [chord, desc, action]",
-                            i
-                        ),
-                        pos,
-                    )
-                })?;
-
-                if arr.len() != 3 {
-                    return Err(boxed_validation_error(
-                        format!(
-                            "mode bindings: element {} must have exactly 3 items [chord, desc, action], got {}",
-                            i,
-                            arr.len()
-                        ),
-                        pos,
-                    ));
-                }
-
-                let binding_chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
-                    boxed_validation_error(
-                        format!("mode bindings: element {} chord must be a string", i),
-                        pos,
-                    )
-                })?;
-
-                let desc = arr[1].clone().into_immutable_string().map_err(|_| {
-                    boxed_validation_error(
-                        format!("mode bindings: element {} description must be a string", i),
-                        pos,
-                    )
-                })?;
-
-                let binding_chord = Chord::parse(&binding_chord_str).ok_or_else(|| {
-                    boxed_validation_error(
-                        format!(
-                            "mode bindings: element {} has invalid chord: {}",
-                            i, binding_chord_str
-                        ),
-                        pos,
-                    )
-                })?;
-
-                // Try to extract an Action, HandlerRef, or FnPtr (mode closure) from the third element
-                let third = arr[2].clone();
-                let (kind, binding_mode_id) =
-                    if let Some(action) = third.clone().try_cast::<Action>() {
-                        (BindingKind::Action(action), None)
-                    } else if let Some(handler) = third.clone().try_cast::<HandlerRef>() {
-                        (BindingKind::Handler(handler), None)
-                    } else if let Some(func) = third.try_cast::<FnPtr>() {
-                        let nested_mode = ModeRef {
-                            id: mode_id_for(&func),
-                            func: Some(func),
-                            static_bindings: None,
-                            default_title: Some(desc.to_string()),
-                        };
-                        let id = nested_mode.id;
-                        (BindingKind::Mode(nested_mode), Some(id))
-                    } else {
-                        return Err(boxed_validation_error(
-                            format!(
-                                "mode bindings: element {} must have an Action, action.run, or mode closure as third item",
-                                i
-                            ),
-                            pos,
-                        ));
-                    };
-
+                let (binding_chord, desc, spec) =
+                    parse_array_binding(item, i, pos, "mode bindings", false)?;
+                let (kind, binding_mode_id) = binding_from_spec(&desc, spec);
                 static_bindings.push(Binding {
                     chord: binding_chord,
-                    desc: desc.to_string(),
+                    desc,
                     kind,
                     mode_id: binding_mode_id,
                     flags: BindingFlags::default(),
@@ -898,32 +922,13 @@ fn register_mode_builder(engine: &mut Engine) {
                 });
             }
 
-            // Generate a stable mode id from the bindings
-            let id = mode_id_for_static(&static_bindings);
-
-            let mode = ModeRef {
-                id,
-                func: None,
-                static_bindings: Some(static_bindings),
-                default_title: Some(title.to_string()),
-            };
-
-            let mut guard = lock_unpoisoned(&m.state);
-            let idx = guard.bindings.len();
-            guard.bindings.push(Binding {
+            Ok(push_binding_spec(
+                &m.state,
                 chord,
-                desc: title.to_string(),
-                kind: BindingKind::Mode(mode.clone()),
-                mode_id: Some(mode.id),
-                flags: BindingFlags::default(),
-                style: None,
-                mode_capture: false,
+                title.to_string(),
+                BindingSpec::StaticMode(static_bindings),
                 pos,
-            });
-            Ok(BindingRef {
-                state: m.state.clone(),
-                index: idx,
-            })
+            ))
         },
     );
 
@@ -950,16 +955,10 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "hidden",
         |ctx: NativeCallContext, b: BindingRef| -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
                 entry.flags.hidden = true;
-            }
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -967,16 +966,10 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "stay",
         |ctx: NativeCallContext, b: BindingRef| -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
                 entry.flags.stay = true;
-            }
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -984,14 +977,7 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "global",
         |ctx: NativeCallContext, b: BindingRef| -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
                 if matches!(entry.kind, BindingKind::Mode(_)) {
                     return Err(boxed_validation_error(
                         "global() is not allowed on mode entries".to_string(),
@@ -999,7 +985,8 @@ fn register_mode_builder(engine: &mut Engine) {
                     ));
                 }
                 entry.flags.global = true;
-            }
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -1007,39 +994,17 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "repeat",
         |ctx: NativeCallContext, b: BindingRef| -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                match &entry.kind {
-                    BindingKind::Action(Action::Shell(_))
-                    | BindingKind::Action(Action::Relay(_))
-                    | BindingKind::Action(Action::SetVolume(_))
-                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
-                    BindingKind::Action(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat() is not valid on handlers, selectors, or mode entries"
-                                .to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                }
-                entry.flags.repeat = Some(RepeatSpec {
-                    delay_ms: None,
-                    interval_ms: None,
-                });
-                entry.flags.stay = true;
-            }
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
+                set_repeat(
+                    entry,
+                    RepeatSpec {
+                        delay_ms: None,
+                        interval_ms: None,
+                    },
+                    ctx.call_position(),
+                    "repeat()",
+                )
+            })?;
             Ok(b)
         },
     );
@@ -1052,7 +1017,10 @@ fn register_mode_builder(engine: &mut Engine) {
          interval: i64|
          -> Result<BindingRef, Box<EvalAltResult>> {
             let delay_ms: u64 = delay.try_into().map_err(|_| {
-                boxed_validation_error("repeat_ms: delay must be >= 0".to_string(), ctx.call_position())
+                boxed_validation_error(
+                    "repeat_ms: delay must be >= 0".to_string(),
+                    ctx.call_position(),
+                )
             })?;
             let interval_ms: u64 = interval.try_into().map_err(|_| {
                 boxed_validation_error(
@@ -1060,39 +1028,17 @@ fn register_mode_builder(engine: &mut Engine) {
                     ctx.call_position(),
                 )
             })?;
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                match &entry.kind {
-                    BindingKind::Action(Action::Shell(_))
-                    | BindingKind::Action(Action::Relay(_))
-                    | BindingKind::Action(Action::SetVolume(_))
-                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
-                    BindingKind::Action(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat_ms() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat_ms() is not valid on handlers, selectors, or mode entries"
-                                .to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                }
-                entry.flags.repeat = Some(RepeatSpec {
-                    delay_ms: Some(delay_ms),
-                    interval_ms: Some(interval_ms),
-                });
-                entry.flags.stay = true;
-            }
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
+                set_repeat(
+                    entry,
+                    RepeatSpec {
+                        delay_ms: Some(delay_ms),
+                        interval_ms: Some(interval_ms),
+                    },
+                    ctx.call_position(),
+                    "repeat_ms()",
+                )
+            })?;
             Ok(b)
         },
     );
@@ -1100,26 +1046,21 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "capture",
         |ctx: NativeCallContext, b: BindingRef| -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                match entry.kind {
+            mutate_bindings(
+                &b.state,
+                &[b.index],
+                ctx.call_position(),
+                |entry| match entry.kind {
                     BindingKind::Mode(_) => {
                         entry.mode_capture = true;
+                        Ok(())
                     }
-                    _ => {
-                        return Err(boxed_validation_error(
-                            "capture() is only valid on mode entries".to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                }
-            }
+                    _ => Err(boxed_validation_error(
+                        "capture() is only valid on mode entries".to_string(),
+                        ctx.call_position(),
+                    )),
+                },
+            )?;
             Ok(b)
         },
     );
@@ -1130,16 +1071,9 @@ fn register_mode_builder(engine: &mut Engine) {
          b: BindingRef,
          map: Map|
          -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                binding_style_overlay(&ctx, entry, map)?;
-            }
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
+                binding_style_overlay(&ctx, entry, map.clone())
+            })?;
             Ok(b)
         },
     );
@@ -1150,14 +1084,7 @@ fn register_mode_builder(engine: &mut Engine) {
          b: BindingRef,
          func: FnPtr|
          -> Result<BindingRef, Box<EvalAltResult>> {
-            {
-                let mut guard = lock_unpoisoned(&b.state);
-                let entry = guard.bindings.get_mut(b.index).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &[b.index], ctx.call_position(), |entry| {
                 if matches!(entry.kind, BindingKind::Mode(_)) {
                     return Err(boxed_validation_error(
                         "style(closure) is not supported on mode entries".to_string(),
@@ -1165,15 +1092,15 @@ fn register_mode_builder(engine: &mut Engine) {
                     ));
                 }
                 entry.style = Some(StyleOverlay {
-                    func: Some(func),
+                    func: Some(func.clone()),
                     raw: None,
                 });
-            }
+                Ok(())
+            })?;
             Ok(b)
         },
     );
 
-    // Register bind() overload for batch binding creation (array form)
     engine.register_fn(
         "bind",
         |ctx: NativeCallContext,
@@ -1181,91 +1108,13 @@ fn register_mode_builder(engine: &mut Engine) {
          bindings: rhai::Array|
          -> Result<BindingsRef, Box<EvalAltResult>> {
             let mut indices = Vec::with_capacity(bindings.len());
-            let mut guard = lock_unpoisoned(&m.state);
-
             for (i, item) in bindings.into_iter().enumerate() {
-                let arr = item.into_array().map_err(|_| {
-                    boxed_validation_error(
-                        format!("bind: element {} must be an array [chord, desc, action]", i),
-                        ctx.call_position(),
-                    )
-                })?;
-
-                if arr.len() != 3 {
-                    return Err(boxed_validation_error(
-                        format!(
-                            "bind: element {} must have exactly 3 items [chord, desc, action], got {}",
-                            i,
-                            arr.len()
-                        ),
-                        ctx.call_position(),
-                    ));
-                }
-
-                let chord_str = arr[0].clone().into_immutable_string().map_err(|_| {
-                    boxed_validation_error(
-                        format!("bind: element {} chord must be a string", i),
-                        ctx.call_position(),
-                    )
-                })?;
-
-                let desc = arr[1].clone().into_immutable_string().map_err(|_| {
-                    boxed_validation_error(
-                        format!("bind: element {} description must be a string", i),
-                        ctx.call_position(),
-                    )
-                })?;
-
-                let chord = Chord::parse(&chord_str).ok_or_else(|| {
-                    boxed_validation_error(
-                        format!("bind: element {} has invalid chord: {}", i, chord_str),
-                        ctx.call_position(),
-                    )
-                })?;
-
-                // Try to extract an Action, HandlerRef, or FnPtr (mode closure) from the third element
-                let third = arr[2].clone();
-                let (kind, mode_id) =
-                    if let Some(action) = third.clone().try_cast::<Action>() {
-                        (BindingKind::Action(action), None)
-                    } else if let Some(handler) = third.clone().try_cast::<HandlerRef>() {
-                        (BindingKind::Handler(handler), None)
-                    } else if let Some(selector) = third.clone().try_cast::<SelectorConfig>() {
-                        (BindingKind::Selector(selector), None)
-                    } else if let Some(func) = third.try_cast::<FnPtr>() {
-                        let mode = ModeRef {
-                            id: mode_id_for(&func),
-                            func: Some(func),
-                            static_bindings: None,
-                            default_title: Some(desc.to_string()),
-                        };
-                        let id = mode.id;
-                        (BindingKind::Mode(mode), Some(id))
-                    } else {
-                        return Err(boxed_validation_error(
-                            format!(
-                                "bind: element {} must have an Action, action.run, action.selector, or mode closure as third item",
-                                i
-                            ),
-                            ctx.call_position(),
-                        ));
-                    };
-
-                let idx = guard.bindings.len();
-                guard.bindings.push(Binding {
-                    chord,
-                    desc: desc.to_string(),
-                    kind,
-                    mode_id,
-                    flags: BindingFlags::default(),
-                    style: None,
-                    mode_capture: false,
-                    pos: ctx.call_position(),
-                });
-                indices.push(idx);
+                let (chord, desc, spec) =
+                    parse_array_binding(item, i, ctx.call_position(), "bind", true)?;
+                indices.push(
+                    push_binding_spec(&m.state, chord, desc, spec, ctx.call_position()).index,
+                );
             }
-
-            drop(guard);
             Ok(BindingsRef {
                 state: m.state.clone(),
                 indices,
@@ -1273,21 +1122,13 @@ fn register_mode_builder(engine: &mut Engine) {
         },
     );
 
-    // Register modifier methods on BindingsRef
     engine.register_fn(
         "hidden",
         |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
                 entry.flags.hidden = true;
-            }
-            drop(guard);
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -1295,17 +1136,10 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "stay",
         |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
                 entry.flags.stay = true;
-            }
-            drop(guard);
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -1313,14 +1147,7 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "global",
         |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
                 if matches!(entry.kind, BindingKind::Mode(_)) {
                     return Err(boxed_validation_error(
                         "global() is not allowed on mode entries".to_string(),
@@ -1328,8 +1155,8 @@ fn register_mode_builder(engine: &mut Engine) {
                     ));
                 }
                 entry.flags.global = true;
-            }
-            drop(guard);
+                Ok(())
+            })?;
             Ok(b)
         },
     );
@@ -1337,40 +1164,17 @@ fn register_mode_builder(engine: &mut Engine) {
     engine.register_fn(
         "repeat",
         |ctx: NativeCallContext, b: BindingsRef| -> Result<BindingsRef, Box<EvalAltResult>> {
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                match &entry.kind {
-                    BindingKind::Action(Action::Shell(_))
-                    | BindingKind::Action(Action::Relay(_))
-                    | BindingKind::Action(Action::SetVolume(_))
-                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
-                    BindingKind::Action(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat() is not valid on handlers, selectors, or mode entries"
-                                .to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                }
-                entry.flags.repeat = Some(RepeatSpec {
-                    delay_ms: None,
-                    interval_ms: None,
-                });
-                entry.flags.stay = true;
-            }
-            drop(guard);
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
+                set_repeat(
+                    entry,
+                    RepeatSpec {
+                        delay_ms: None,
+                        interval_ms: None,
+                    },
+                    ctx.call_position(),
+                    "repeat()",
+                )
+            })?;
             Ok(b)
         },
     );
@@ -1394,40 +1198,17 @@ fn register_mode_builder(engine: &mut Engine) {
                     ctx.call_position(),
                 )
             })?;
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                match &entry.kind {
-                    BindingKind::Action(Action::Shell(_))
-                    | BindingKind::Action(Action::Relay(_))
-                    | BindingKind::Action(Action::SetVolume(_))
-                    | BindingKind::Action(Action::ChangeVolume(_)) => {}
-                    BindingKind::Action(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat_ms() is only valid on shell(...), relay(...), set_volume(...), and change_volume(...) actions".to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                    BindingKind::Handler(_) | BindingKind::Selector(_) | BindingKind::Mode(_) => {
-                        return Err(boxed_validation_error(
-                            "repeat_ms() is not valid on handlers, selectors, or mode entries"
-                                .to_string(),
-                            ctx.call_position(),
-                        ));
-                    }
-                }
-                entry.flags.repeat = Some(RepeatSpec {
-                    delay_ms: Some(delay_ms),
-                    interval_ms: Some(interval_ms),
-                });
-                entry.flags.stay = true;
-            }
-            drop(guard);
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
+                set_repeat(
+                    entry,
+                    RepeatSpec {
+                        delay_ms: Some(delay_ms),
+                        interval_ms: Some(interval_ms),
+                    },
+                    ctx.call_position(),
+                    "repeat_ms()",
+                )
+            })?;
             Ok(b)
         },
     );
@@ -1438,17 +1219,9 @@ fn register_mode_builder(engine: &mut Engine) {
          b: BindingsRef,
          map: Map|
          -> Result<BindingsRef, Box<EvalAltResult>> {
-            let mut guard = lock_unpoisoned(&b.state);
-            for &idx in &b.indices {
-                let entry = guard.bindings.get_mut(idx).ok_or_else(|| {
-                    boxed_validation_error(
-                        "invalid binding handle".to_string(),
-                        ctx.call_position(),
-                    )
-                })?;
-                binding_style_overlay(&ctx, entry, map.clone())?;
-            }
-            drop(guard);
+            mutate_bindings(&b.state, &b.indices, ctx.call_position(), |entry| {
+                binding_style_overlay(&ctx, entry, map.clone())
+            })?;
             Ok(b)
         },
     );

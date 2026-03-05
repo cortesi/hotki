@@ -7,7 +7,7 @@ use egui::{
 };
 use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
-use crate::{display::DisplayMetrics, fonts, nswindow};
+use crate::{display::DisplayMetrics, fonts, nswindow, overlay};
 
 /// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
@@ -103,10 +103,7 @@ impl NotificationCenter {
 
     /// Update display metrics used for anchoring notifications.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        let previous = self.display.active_frame();
-        let next = metrics.active_frame();
-        self.display = metrics;
-        if previous != next {
+        if overlay::update_display_metrics(&mut self.display, metrics) {
             for item in &mut self.items {
                 item.snap_to_target = true;
             }
@@ -349,7 +346,7 @@ impl NotificationCenter {
             let pos_b = self.display.to_bottom_left_y(it.target_pos.y, it.size.y);
             if pos_b < sy_frame {
                 // Hide viewport if it was shown previously
-                ctx.send_viewport_cmd_to(it.id, ViewportCommand::Visible(false));
+                overlay::hide_viewport(ctx, it.id);
                 continue;
             }
 
@@ -446,7 +443,7 @@ impl NotificationCenter {
     /// Clear all current notifications immediately and hide their windows.
     pub fn clear_all(&mut self, ctx: &Context) {
         for it in &self.items {
-            ctx.send_viewport_cmd_to(it.id, ViewportCommand::Visible(false));
+            overlay::hide_viewport(ctx, it.id);
         }
         self.items.clear();
         self.backlog.clear();

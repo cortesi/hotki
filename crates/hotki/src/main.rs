@@ -32,6 +32,8 @@ mod hud;
 mod logs;
 mod notification;
 mod nswindow;
+/// Shared viewport mechanics for overlay windows.
+mod overlay;
 /// Permissions UI helpers and checks.
 mod permissions;
 /// Background UI runtime glue (server connection + event loop).

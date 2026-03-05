@@ -10,6 +10,7 @@ use crate::{
     display::DisplayMetrics,
     fonts,
     nswindow::{apply_transparent_rounded, set_on_all_spaces},
+    overlay,
 };
 
 /// Minimum HUD width in logical pixels.
@@ -237,16 +238,13 @@ impl Hud {
         self.visible = false;
         self.rows.clear();
         self.breadcrumbs.clear();
-        ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
+        overlay::hide_viewport(ctx, self.id);
     }
 
     /// Update display metrics used for positioning and clear cached placement when the
     /// active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        let previous = self.display.active_frame();
-        let next = metrics.active_frame();
-        self.display = metrics;
-        if previous != next {
+        if overlay::update_display_metrics(&mut self.display, metrics) {
             self.last_pos = None;
         }
     }
@@ -459,15 +457,15 @@ impl Hud {
             .with_inner_size(size)
             // Avoid specifying position here every frame; we set it on first create below.
             ;
-        // Ensure correct initial placement when the viewport is first created
-        if self.last_pos.is_none() {
-            builder = builder.with_position(pos);
-        }
-
-        // If size changed after previous frame, request a resize
-        if self.last_size != Some(size) {
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::InnerSize(size));
-        }
+        builder = overlay::sync_viewport_geometry(
+            ctx,
+            self.id,
+            &self.last_pos,
+            &self.last_size,
+            builder,
+            pos,
+            size,
+        );
 
         ctx.show_viewport_immediate(self.id, builder, |hud_ctx, _| {
             // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.

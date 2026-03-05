@@ -2,6 +2,8 @@
 
 /// Built-in application scanning helpers for selectors.
 mod apps;
+/// Shared binding-style parsing and overlay conversion.
+mod binding_style;
 /// Dynamic config container and style helpers.
 mod config;
 /// Global constant registration shared by the DSL and theme loader.

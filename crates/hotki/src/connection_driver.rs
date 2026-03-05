@@ -6,12 +6,12 @@ use std::{
 };
 
 use egui::Context;
-use hotki_protocol::{NotifyKind, Toggle, WorldStreamMsg, ipc::heartbeat, rpc::InjectKind};
+use hotki_protocol::{NotifyKind, Toggle, WorldStreamMsg, ipc::heartbeat};
 use hotki_server::{
     Client,
     smoketest_bridge::{
         BridgeEvent, BridgeNotifications, BridgeRequest, BridgeResponse, control_socket_path,
-        drain_bridge_events, handshake_response,
+        handshake_response,
     },
 };
 use tokio::{
@@ -55,8 +55,6 @@ pub struct ConnectionDriver {
 impl ConnectionDriver {
     /// Max number of notifications retained for smoketest snapshots.
     const MAX_BRIDGE_NOTIFICATIONS: usize = 32;
-    /// Max number of bridge events to drain on shutdown.
-    const MAX_SHUTDOWN_DRAIN_EVENTS: usize = 128;
 
     /// Send a smoketest bridge event if listeners are present.
     fn emit_bridge_event(&self, event: BridgeEvent) {
@@ -274,57 +272,26 @@ impl ConnectionDriver {
                 Ok(r) => r,
                 Err(err) => BridgeResponse::Err { message: err },
             },
-            BridgeRequest::SetConfig { path } => match conn.set_config_path(&path).await {
-                Ok(()) => {
-                    self.config_path = PathBuf::from(&path);
-                    self.tx_keys
-                        .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
-                        .ok();
-                    BridgeResponse::Ok
-                }
-                Err(err) => BridgeResponse::Err {
-                    message: err.to_string(),
-                },
-            },
-            BridgeRequest::InjectKey {
-                ident,
-                kind,
-                repeat,
-            } => {
-                let result = match (kind, repeat) {
-                    (InjectKind::Down, true) => conn.inject_key_repeat(&ident).await,
-                    (InjectKind::Down, false) => conn.inject_key_down(&ident).await,
-                    (InjectKind::Up, _) => conn.inject_key_up(&ident).await,
-                };
-                match result {
-                    Ok(()) => BridgeResponse::Ok,
+            BridgeRequest::SetConfig { path } => {
+                match (BridgeRequest::SetConfig { path: path.clone() })
+                    .execute(conn)
+                    .await
+                {
+                    Ok(BridgeResponse::Ok) => {
+                        self.config_path = PathBuf::from(&path);
+                        self.tx_keys
+                            .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                            .ok();
+                        BridgeResponse::Ok
+                    }
+                    Ok(other) => other,
                     Err(err) => BridgeResponse::Err {
                         message: err.to_string(),
                     },
                 }
             }
-            BridgeRequest::GetBindings => match conn.get_bindings().await {
-                Ok(bindings) => BridgeResponse::Bindings { bindings },
-                Err(err) => BridgeResponse::Err {
-                    message: err.to_string(),
-                },
-            },
-            BridgeRequest::GetDepth => match conn.get_depth().await {
-                Ok(depth) => BridgeResponse::Depth { depth },
-                Err(err) => BridgeResponse::Err {
-                    message: err.to_string(),
-                },
-            },
-            BridgeRequest::Shutdown => match conn.shutdown().await {
-                Ok(()) => {
-                    drain_bridge_events(
-                        conn,
-                        Self::MAX_SHUTDOWN_DRAIN_EVENTS,
-                        Duration::from_secs(1),
-                    )
-                    .await;
-                    BridgeResponse::Ok
-                }
+            other => match other.execute(conn).await {
+                Ok(response) => response,
                 Err(err) => BridgeResponse::Err {
                     message: err.to_string(),
                 },

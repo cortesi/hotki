@@ -51,7 +51,7 @@ Refactor direction: extract `event_bus`, `world_forwarder`, and `rpc_methods` mo
 
 These changes should cut the most code while also clarifying internal structure.
 
-1. [ ] Collapse the duplicated `bind`/modifier overloads in
+1. [x] Collapse the duplicated `bind`/modifier overloads in
        `crates/config/src/dynamic/dsl.rs`.
 Refs: `crates/config/src/dynamic/dsl.rs:649`, `:803`, and `:950`.
 Why: binding construction and modifier mutation are duplicated across `Action`, `HandlerRef`,
@@ -60,7 +60,7 @@ Why: binding construction and modifier mutation are duplicated across `Action`, 
 Refactor direction: introduce one internal `BindingSpec` parser plus a shared
 `mutate_bindings(indices, op)` helper.
 
-2. [ ] Unify binding-style parsing, which currently exists twice with near-identical schemas.
+2. [x] Unify binding-style parsing, which currently exists twice with near-identical schemas.
 Refs: `crates/config/src/dynamic/dsl.rs:570-646` and
 `crates/config/src/dynamic/render.rs:37-92` plus `:309-352`.
 Why: both modules define a `RawBindingStyle` shape and both rebuild `RawHud`/`RawStyle`
@@ -68,7 +68,7 @@ overlays field by field.
 Refactor direction: move this into a single `binding_style` module with
 `parse_binding_style(map)` and `to_raw_overlay(style)`.
 
-3. [ ] Break up `crates/smoketest/src/server_drive.rs`, which currently combines the public
+3. [x] Break up `crates/smoketest/src/server_drive.rs`, which currently combines the public
        driver, blocking bridge client, HUD cache, wait logic, fake bridge server helpers, and
        unit tests.
 Refs: `crates/smoketest/src/server_drive.rs:75-233`, `:360-966`, and `:978-1615`.
@@ -76,7 +76,7 @@ Why: this is the largest single LOC-reduction target in the workspace.
 Refactor direction: extract `bridge_client.rs`, `hud_wait.rs`, and `bridge_test_support.rs`,
 leaving `server_drive.rs` as a thin orchestration facade.
 
-4. [ ] Replace the duplicated smoketest command-switch layer with one transport-neutral bridge
+4. [x] Replace the duplicated smoketest command-switch layer with one transport-neutral bridge
        adapter.
 Refs: `crates/hotki-server/src/ipc/service.rs:312-420`,
 `crates/hotki/src/connection_driver.rs:266-332`, and
@@ -86,7 +86,7 @@ once as MRPC methods and again as bridge commands.
 Refactor direction: move the bridge executor into `hotki-server`, or add a typed adapter over
 `hotki_server::Connection` so the bridge becomes transport-only.
 
-5. [ ] Extract a shared overlay/window controller for HUD, selector, notification, and details.
+5. [x] Extract a shared overlay/window controller for HUD, selector, notification, and details.
 Refs: `crates/hotki/src/hud.rs:33-79`, `crates/hotki/src/selector.rs:56-123`,
 `crates/hotki/src/notification.rs:54-110`, and `crates/hotki/src/details.rs:42-100`.
 Why: each viewport reimplements the same state shape: `DisplayMetrics`, `last_pos`,
@@ -94,7 +94,7 @@ Why: each viewport reimplements the same state shape: `DisplayMetrics`, `last_po
 Refactor direction: centralize placement caching, display invalidation, viewport commands, and
 shared NSWindow setup; leave each module responsible only for size calculation and paint.
 
-6. [ ] Flatten selector runtime layering and derive capture bindings from one keymap source.
+6. [x] Flatten selector runtime layering and derive capture bindings from one keymap source.
 Refs: `crates/hotki-engine/src/selector.rs:129-259`, `:277-351`, and `:353-410`.
 Why: `SelectorState` mostly forwards to `SelectorSession`, which mostly forwards to
 `SelectorMatcher`, and the selector keyboard grammar is encoded twice.
@@ -102,7 +102,7 @@ Refactor direction: merge `SelectorSession` into `SelectorState`, store `Selecto
 directly in the matcher, and define one declarative keymap that drives both action decoding and
 capture chords.
 
-7. [ ] Unify the shell and relay repeat lifecycles in `crates/hotki-engine/src/repeater.rs`.
+7. [x] Unify the shell and relay repeat lifecycles in `crates/hotki-engine/src/repeater.rs`.
 Refs: `crates/hotki-engine/src/repeater.rs:264-318` and `:320-430`.
 Why: immediate first run, optional ticker setup, callback emission, and stop/replace behavior
 are duplicated for shell and relay jobs.

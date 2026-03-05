@@ -60,6 +60,44 @@ pub enum BridgeRequest {
     Shutdown,
 }
 
+impl BridgeRequest {
+    /// Execute a bridge request against a live server connection.
+    pub async fn execute(&self, conn: &mut Connection) -> crate::Result<BridgeResponse> {
+        match self {
+            BridgeRequest::Ping => Err(crate::Error::Ipc(
+                "bridge ping must be handled by the UI runtime".to_string(),
+            )),
+            BridgeRequest::SetConfig { path } => {
+                conn.set_config_path(path).await?;
+                Ok(BridgeResponse::Ok)
+            }
+            BridgeRequest::InjectKey {
+                ident,
+                kind,
+                repeat,
+            } => {
+                match (kind, repeat) {
+                    (InjectKind::Down, true) => conn.inject_key_repeat(ident).await?,
+                    (InjectKind::Down, false) => conn.inject_key_down(ident).await?,
+                    (InjectKind::Up, _) => conn.inject_key_up(ident).await?,
+                }
+                Ok(BridgeResponse::Ok)
+            }
+            BridgeRequest::GetBindings => Ok(BridgeResponse::Bindings {
+                bindings: conn.get_bindings().await?,
+            }),
+            BridgeRequest::GetDepth => Ok(BridgeResponse::Depth {
+                depth: conn.get_depth().await?,
+            }),
+            BridgeRequest::Shutdown => {
+                conn.shutdown().await?;
+                drain_bridge_events(conn, 128, Duration::from_secs(1)).await;
+                Ok(BridgeResponse::Ok)
+            }
+        }
+    }
+}
+
 /// Response type for the smoketest bridge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

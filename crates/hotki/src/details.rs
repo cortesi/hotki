@@ -12,7 +12,7 @@ use crate::{
     display::DisplayMetrics,
     logs::{self, Side},
     notification::BacklogEntry,
-    nswindow,
+    nswindow, overlay,
     runtime::ControlMsg,
 };
 
@@ -223,7 +223,7 @@ impl Details {
         if !self.visible {
             self.ensure_cursor_rects_enabled();
             // Ensure window is hidden if not visible
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
+            overlay::hide_viewport(ctx, self.id);
             return;
         }
 

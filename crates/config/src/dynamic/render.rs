@@ -1,18 +1,15 @@
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use rhai::{Dynamic, EvalAltResult, Map, Position, serde::from_dynamic};
+use rhai::{Dynamic, EvalAltResult, Map, Position};
 use tracing::warn;
 
 use super::{
     Binding, BindingKind, DynamicConfig, Effect, HudRow, HudRowStyle, ModeCtx, ModeFrame,
-    RenderedState, StyleOverlay, dsl::ModeBuilder, validation::extract_validation_error,
+    RenderedState, StyleOverlay, binding_style::ParsedBindingStyle, dsl::ModeBuilder,
+    validation::extract_validation_error,
 };
-use crate::{
-    Error, NotifyKind, Style,
-    error::excerpt_at,
-    raw::{Maybe, RawHud, RawStyle},
-};
+use crate::{Error, NotifyKind, Style, error::excerpt_at};
 
 /// Output of rendering a full stack, including user-visible warnings.
 #[derive(Debug, Clone)]
@@ -32,38 +29,6 @@ struct ModeView {
     style: Option<StyleOverlay>,
     /// Whether the mode requests capture-all.
     capture: bool,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-/// Deserializable subset of binding style fields returned by style closures.
-struct RawBindingStyle {
-    #[serde(default)]
-    /// Whether the binding should be hidden from the HUD.
-    hidden: Option<bool>,
-    #[serde(default)]
-    /// Foreground color for non-modifier key tokens.
-    key_fg: Option<String>,
-    #[serde(default)]
-    /// Background color for non-modifier key tokens.
-    key_bg: Option<String>,
-    #[serde(default)]
-    /// Foreground color for modifier key tokens.
-    mod_fg: Option<String>,
-    #[serde(default)]
-    /// Background color for modifier key tokens.
-    mod_bg: Option<String>,
-    #[serde(default)]
-    /// Foreground color for the mode tag token.
-    tag_fg: Option<String>,
-}
-
-/// Resolved binding style result after evaluating optional style overlays.
-struct ResolvedBindingStyle {
-    /// Whether to hide the binding from the HUD.
-    hidden: bool,
-    /// Optional raw style overlay.
-    overlay: Option<RawStyle>,
 }
 
 /// Render the full mode stack, applying empty/orphan truncation and producing HUD rows.
@@ -311,23 +276,23 @@ fn resolve_binding_style(
     cfg: &DynamicConfig,
     ctx: &ModeCtx,
     binding: &Binding,
-) -> Result<ResolvedBindingStyle, Error> {
+) -> Result<ParsedBindingStyle, Error> {
     let Some(overlay) = binding.style.as_ref() else {
-        return Ok(ResolvedBindingStyle {
+        return Ok(ParsedBindingStyle {
             hidden: false,
             overlay: None,
         });
     };
 
     if let Some(raw) = overlay.raw.as_ref() {
-        return Ok(ResolvedBindingStyle {
+        return Ok(ParsedBindingStyle {
             hidden: false,
             overlay: Some(raw.clone()),
         });
     }
 
     let Some(func) = overlay.func.as_ref() else {
-        return Ok(ResolvedBindingStyle {
+        return Ok(ParsedBindingStyle {
             hidden: false,
             overlay: None,
         });
@@ -350,51 +315,7 @@ fn resolve_binding_style(
         });
     }
 
-    let map: Map = dyn_value.cast();
-    let dyn_map = Dynamic::from_map(map);
-    let style: RawBindingStyle = from_dynamic(&dyn_map).map_err(|e| Error::Validation {
-        path: cfg.path.clone(),
-        line: None,
-        col: None,
-        message: format!("invalid binding style map: {}", e),
-        excerpt: None,
-    })?;
-
-    let hidden = style.hidden.unwrap_or(false);
-
-    let mut hud = RawHud::default();
-    if let Some(v) = style.key_fg {
-        hud.key_fg = Maybe::Value(v);
-    }
-    if let Some(v) = style.key_bg {
-        hud.key_bg = Maybe::Value(v);
-    }
-    if let Some(v) = style.mod_fg {
-        hud.mod_fg = Maybe::Value(v);
-    }
-    if let Some(v) = style.mod_bg {
-        hud.mod_bg = Maybe::Value(v);
-    }
-    if let Some(v) = style.tag_fg {
-        hud.tag_fg = Maybe::Value(v);
-    }
-
-    let overlay = if hud.key_fg.as_option().is_some()
-        || hud.key_bg.as_option().is_some()
-        || hud.mod_fg.as_option().is_some()
-        || hud.mod_bg.as_option().is_some()
-        || hud.tag_fg.as_option().is_some()
-    {
-        Some(RawStyle {
-            hud: Maybe::Value(hud),
-            notify: Maybe::Unit(()),
-            selector: Maybe::Unit(()),
-        })
-    } else {
-        None
-    };
-
-    Ok(ResolvedBindingStyle { hidden, overlay })
+    super::binding_style::parse_binding_style_value(&dyn_value, cfg.path.as_ref())
 }
 
 /// Resolve a chord against the flattened rendered bindings, returning the first match.

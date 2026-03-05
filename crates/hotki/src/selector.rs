@@ -10,6 +10,7 @@ use crate::{
     display::DisplayMetrics,
     fonts,
     nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
+    overlay,
 };
 
 /// Fixed selector width in logical pixels.
@@ -95,10 +96,7 @@ impl SelectorWindow {
     /// Update display metrics used for positioning and clear cached placement when the
     /// active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        let previous = self.display.active_frame();
-        let next = metrics.active_frame();
-        self.display = metrics;
-        if previous != next {
+        if overlay::update_display_metrics(&mut self.display, metrics) {
             self.last_pos = None;
         }
     }
@@ -118,7 +116,7 @@ impl SelectorWindow {
         self.last_pos = None;
         self.last_size = None;
         self.window_configured = false;
-        ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
+        overlay::hide_viewport(ctx, self.id);
     }
 
     /// Title font for the selector header.
@@ -307,12 +305,15 @@ impl SelectorWindow {
             .with_has_shadow(false)
             .with_visible(true)
             .with_inner_size(size);
-        if self.last_pos.is_none() {
-            builder = builder.with_position(pos);
-        }
-        if self.last_size != Some(size) {
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::InnerSize(size));
-        }
+        builder = overlay::sync_viewport_geometry(
+            ctx,
+            self.id,
+            &self.last_pos,
+            &self.last_size,
+            builder,
+            pos,
+            size,
+        );
 
         let style = self.style.clone();
         let title_font_id = self.title_font_id();

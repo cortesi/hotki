@@ -1297,28 +1297,15 @@ fn execute_selector_close(
     match close.event {
         SelectorEvent::Select => {
             let _changed_ignored = close.selector.tick();
-            let total = close.selector.session.matcher.matched_count();
-            if total == 0 {
-                return Ok(selector_noop_result());
-            }
-
-            close.selector.session.selected = close.selector.session.selected.min(total - 1);
-            let Some(item) = close
-                .selector
-                .session
-                .matcher
-                .matched_candidate(close.selector.session.selected)
-                .map(|candidate| candidate.item.clone())
-            else {
+            let Some(item) = close.selector.selected_item() else {
                 return Ok(selector_noop_result());
             };
-            let query = close.selector.session.query.clone();
             config::dynamic::execute_selector_handler(
                 cfg,
                 &close.selector.config.on_select,
                 &close.ctx,
                 &item,
-                query.as_str(),
+                close.selector.query(),
             )
         }
         SelectorEvent::Cancel => match close.selector.config.on_cancel.as_ref() {
@@ -1365,62 +1352,7 @@ fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::HudState {
 }
 
 fn selector_snapshot_for_ui(sel: &mut SelectorState) -> hotki_protocol::SelectorSnapshot {
-    let total = sel.session.matcher.matched_count();
-    let total_matches = total as usize;
-
-    if total == 0 {
-        sel.session.selected = 0;
-        return hotki_protocol::SelectorSnapshot {
-            title: sel.config.title.clone(),
-            placeholder: sel.config.placeholder.clone(),
-            query: sel.session.query.clone(),
-            items: Vec::new(),
-            selected: 0,
-            total_matches,
-        };
-    }
-
-    sel.session.selected = sel.session.selected.min(total.saturating_sub(1));
-
-    let max_visible = sel.config.max_visible.max(1);
-    let max_visible_u32 = u32::try_from(max_visible).unwrap_or(u32::MAX);
-
-    let (start, end) = if total <= max_visible_u32 {
-        (0, total)
-    } else {
-        let half = max_visible_u32 / 2;
-        let mut start = sel.session.selected.saturating_sub(half);
-        let mut end = start.saturating_add(max_visible_u32);
-        if end > total {
-            end = total;
-            start = end.saturating_sub(max_visible_u32);
-        }
-        (start, end)
-    };
-
-    let selected = (sel.session.selected.saturating_sub(start)) as usize;
-    let items = sel
-        .session
-        .matcher
-        .matched_window(start, end)
-        .into_iter()
-        .map(
-            |(item, label_match_indices)| hotki_protocol::SelectorItemSnapshot {
-                label: item.label,
-                sublabel: item.sublabel,
-                label_match_indices,
-            },
-        )
-        .collect();
-
-    hotki_protocol::SelectorSnapshot {
-        title: sel.config.title.clone(),
-        placeholder: sel.config.placeholder.clone(),
-        query: sel.session.query.clone(),
-        items,
-        selected,
-        total_matches,
-    }
+    sel.snapshot()
 }
 
 fn style_for_ui(style: &config::Style) -> hotki_protocol::Style {
