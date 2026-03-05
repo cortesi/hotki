@@ -199,7 +199,8 @@ impl Client {
         }
 
         // Unified readiness + retry logic
-        match self.try_connect_with_retries().await {
+        let spawned = spawned_server.is_some();
+        match self.try_connect_with_retries(spawned).await {
             Ok(conn) => {
                 self.connection = Some(conn);
                 if let Some(server) = spawned_server {
@@ -245,11 +246,11 @@ impl Client {
 
     /// Try to connect with retries; includes a fast startup poll if a managed
     /// server has just been spawned.
-    async fn try_connect_with_retries(&self) -> Result<Connection> {
+    async fn try_connect_with_retries(&self, spawned: bool) -> Result<Connection> {
         let mut last_error = None;
 
         // If we spawned a managed server, do a fast readiness poll window first.
-        if self.server.is_some() {
+        if spawned {
             debug!(
                 "Polling for server readiness (timeout: {:?})",
                 Duration::from_millis(STARTUP_POLL_TIMEOUT_MS)

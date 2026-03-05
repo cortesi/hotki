@@ -70,6 +70,55 @@ struct DispatchOutcome {
     entered_mode: bool,
 }
 
+#[derive(Debug, Clone)]
+struct DispatchContext {
+    app: String,
+    title: String,
+    pid: i32,
+}
+
+impl DispatchContext {
+    fn mode_ctx(&self, rt: &RuntimeState) -> config::dynamic::ModeCtx {
+        rt.focus.mode_ctx(rt.hud_visible, rt.depth())
+    }
+
+    fn into_focus(self) -> FocusInfo {
+        FocusInfo {
+            app: self.app,
+            title: self.title,
+            pid: self.pid,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RefreshPlan {
+    warnings: Vec<config::dynamic::Effect>,
+    errors: Vec<String>,
+    key_pairs: Vec<(String, Chord)>,
+    capture_all: bool,
+    hud: hotki_protocol::HudState,
+}
+
+#[derive(Debug)]
+struct SelectorClose {
+    event: SelectorEvent,
+    selector: SelectorState,
+    ctx: config::dynamic::ModeCtx,
+}
+
+enum SelectorInput {
+    Inactive,
+    Consumed,
+    Update(hotki_protocol::SelectorSnapshot),
+    Close(Box<SelectorClose>),
+}
+
+struct BindingExecution {
+    stay: bool,
+    outcome: DispatchOutcome,
+}
+
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
@@ -331,9 +380,12 @@ impl Engine {
     }
 
     async fn rebind_current_context(&self) -> Result<()> {
-        let (app, title, pid) = self.current_context();
-        debug!("Rebinding with context: app={}, title={}", app, title);
-        self.rebind_and_refresh(&app, &title, pid).await
+        let ctx = self.current_dispatch_context();
+        debug!(
+            "Rebinding with context: app={}, title={}",
+            ctx.app, ctx.title
+        );
+        self.rebind_and_refresh(ctx).await
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
@@ -353,125 +405,31 @@ impl Engine {
         self.publish_hud_with_displays(hud, snapshot).await
     }
 
-    async fn rebind_and_refresh(&self, app: &str, title: &str, pid: i32) -> Result<()> {
-        tracing::debug!("start app={} title={}", app, title);
+    async fn rebind_and_refresh(&self, ctx: DispatchContext) -> Result<()> {
+        tracing::debug!("start app={} title={}", ctx.app, ctx.title);
 
-        let mut warnings = Vec::new();
-        let mut key_pairs: Vec<(String, Chord)> = Vec::new();
-        let mut capture_all = false;
-        let hud = {
+        let plan = {
             let cfg_guard = self.config.read().await;
             let mut rt = self.runtime.lock().await;
-            rt.focus = FocusInfo {
-                app: app.to_string(),
-                title: title.to_string(),
-                pid,
-            };
-
-            if let Some(cfg) = cfg_guard.as_ref() {
-                if rt.stack.is_empty() {
-                    rt.stack.push(config::dynamic::ModeFrame {
-                        title: "root".to_string(),
-                        closure: cfg.root(),
-                        entered_via: None,
-                        rendered: Vec::new(),
-                        style: None,
-                        capture: false,
-                    });
-                }
-
-                if !cfg.theme_exists(rt.theme_name.as_str()) {
-                    rt.theme_name = cfg.active_theme().to_string();
-                }
-                let base_style = cfg.base_style(Some(rt.theme_name.as_str()));
-
-                if rt.selector.is_some() {
-                    key_pairs = crate::selector::selector_capture_chords()
-                        .into_iter()
-                        .map(|ch| (ch.to_string(), ch))
-                        .collect();
-                    capture_all = true;
-                    hud_state_for_ui_from_state(&rt)
-                } else {
-                    let mut ctx = config::dynamic::ModeCtx {
-                        app: rt.focus.app.clone(),
-                        title: rt.focus.title.clone(),
-                        pid: rt.focus.pid as i64,
-                        hud: rt.hud_visible,
-                        depth: rt.depth() as i64,
-                    };
-
-                    let output = match config::dynamic::render_stack(
-                        cfg,
-                        &mut rt.stack,
-                        &ctx,
-                        &base_style,
-                    ) {
-                        Ok(o) => Some(o),
-                        Err(err) => {
-                            self.notifier.send_error("Config", err.pretty())?;
-                            rt.stack.truncate(1);
-                            ctx.depth = 0;
-                            match config::dynamic::render_stack(
-                                cfg,
-                                &mut rt.stack,
-                                &ctx,
-                                &base_style,
-                            ) {
-                                Ok(o) => Some(o),
-                                Err(err) => {
-                                    self.notifier.send_error("Config", err.pretty())?;
-                                    rt.rendered = config::dynamic::RenderedState {
-                                        bindings: Vec::new(),
-                                        hud_rows: Vec::new(),
-                                        style: base_style,
-                                        capture: false,
-                                    };
-                                    None
-                                }
-                            }
-                        }
-                    };
-
-                    if let Some(output) = output {
-                        warnings = output.warnings;
-                        rt.rendered = output.rendered;
-
-                        for (ch, _binding) in rt.rendered.bindings.iter() {
-                            key_pairs.push((ch.to_string(), ch.clone()));
-                        }
-                        key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        capture_all = rt.hud_visible && rt.rendered.capture;
-                    }
-                    hud_state_for_ui_from_state(&rt)
-                }
-            } else {
-                rt.hud_visible = false;
-                rt.selector = None;
-                rt.stack.clear();
-                rt.rendered = config::dynamic::RenderedState {
-                    bindings: Vec::new(),
-                    hud_rows: Vec::new(),
-                    style: config::Style::default(),
-                    capture: false,
-                };
-                hud_state_for_ui_from_state(&rt)
-            }
+            build_refresh_plan(&mut rt, cfg_guard.as_ref(), ctx.into_focus())
         };
 
-        for effect in warnings {
+        for message in plan.errors {
+            self.notifier.send_error("Config", message)?;
+        }
+
+        for effect in plan.warnings {
             if let config::dynamic::Effect::Notify { kind, title, body } = effect {
                 self.notifier.send_notification(kind, title, body)?;
             }
         }
 
         let start = Instant::now();
-        let key_count = key_pairs.len();
+        let key_count = plan.key_pairs.len();
         let bindings_changed = {
             let mut manager = self.binding_manager.lock().await;
-            manager.set_capture_all(capture_all);
-            manager.update_bindings(key_pairs)?
+            manager.set_capture_all(plan.capture_all);
+            manager.update_bindings(plan.key_pairs)?
         };
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
@@ -480,7 +438,7 @@ impl Engine {
         }
 
         let displays_snapshot = self.world.displays().await;
-        self.publish_hud_with_displays(hud, displays_snapshot)
+        self.publish_hud_with_displays(plan.hud, displays_snapshot)
             .await?;
 
         let elapsed = start.elapsed();
@@ -529,19 +487,12 @@ impl Engine {
             *g = Some(path);
         }
         {
-            let (app, title, pid) = self.current_context();
+            let ctx = self.current_dispatch_context();
             let mut rt = self.runtime.lock().await;
             rt.hud_visible = false;
             rt.theme_name = theme_name;
-            rt.focus = FocusInfo { app, title, pid };
-            rt.stack = vec![config::dynamic::ModeFrame {
-                title: "root".to_string(),
-                closure: root,
-                entered_via: None,
-                rendered: Vec::new(),
-                style: None,
-                capture: false,
-            }];
+            rt.focus = ctx.into_focus();
+            rt.reset_to_root(root);
         }
         self.rebind_current_context().await
     }
@@ -599,132 +550,22 @@ impl Engine {
         if self.sync_on_dispatch {
             self.world.hint_refresh();
         }
-        let (app_ctx, title_ctx, pid) = self.current_context();
+        let dispatch_ctx = self.current_dispatch_context();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
-            identifier, app_ctx, title_ctx
+            identifier, dispatch_ctx.app, dispatch_ctx.title
         );
 
-        let mut cfg_guard = Some(self.config.read().await);
-        if cfg_guard.as_ref().is_some_and(|g| g.as_ref().is_none()) {
+        if self.config.read().await.is_none() {
             trace!("No dynamic config loaded; ignoring key");
             return Ok(());
         }
 
-        // If a selector is active, it takes exclusive ownership of all keyboard input.
-        let mut selector_snapshot = None;
-        let mut selector_close = None;
-        let selector_active = {
-            let mut rt = self.runtime.lock().await;
-            if rt.selector.is_none() {
-                false
-            } else {
-                let event = rt
-                    .selector
-                    .as_mut()
-                    .expect("selector must exist for input")
-                    .handle_key_down(chord);
-                match event {
-                    SelectorEvent::Update => {
-                        let sel = rt
-                            .selector
-                            .as_mut()
-                            .expect("selector must exist for update");
-                        let _changed_ignored = sel.tick();
-                        selector_snapshot = Some(selector_snapshot_for_ui(sel));
-                    }
-                    SelectorEvent::Select | SelectorEvent::Cancel => {
-                        let sel = rt.selector.take().expect("selector must exist for close");
-                        rt.hud_visible = sel.prev_hud_visible;
-                        let ctx = config::dynamic::ModeCtx {
-                            app: app_ctx.clone(),
-                            title: title_ctx.clone(),
-                            pid: pid as i64,
-                            hud: rt.hud_visible,
-                            depth: rt.depth() as i64,
-                        };
-                        selector_close = Some((event, sel, ctx));
-                    }
-                    SelectorEvent::None => {}
-                }
-                true
-            }
-        };
-
-        if selector_active {
-            if let Some(snapshot) = selector_snapshot {
-                self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
-            }
-
-            if let Some((event, mut sel, ctx)) = selector_close {
-                self.notifier.send_ui(MsgToUI::SelectorHide)?;
-
-                let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
-                    trace!("No dynamic config loaded; ignoring selector close");
-                    self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-                    return Ok(());
-                };
-
-                let result = match event {
-                    SelectorEvent::Select => {
-                        let _changed_ignored = sel.tick();
-                        let total = sel.session.matcher.matched_count();
-                        if total == 0 {
-                            self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-                            return Ok(());
-                        }
-                        sel.session.selected = sel.session.selected.min(total - 1);
-                        let Some(item) = sel
-                            .session
-                            .matcher
-                            .matched_candidate(sel.session.selected)
-                            .map(|c| c.item.clone())
-                        else {
-                            self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-                            return Ok(());
-                        };
-                        let query = sel.session.query.clone();
-                        config::dynamic::execute_selector_handler(
-                            cfg,
-                            &sel.config.on_select,
-                            &ctx,
-                            &item,
-                            query.as_str(),
-                        )
-                    }
-                    SelectorEvent::Cancel => match sel.config.on_cancel.as_ref() {
-                        Some(handler) => config::dynamic::execute_handler(cfg, handler, &ctx),
-                        None => Ok(config::dynamic::HandlerResult {
-                            effects: Vec::new(),
-                            nav: None,
-                            stay: true,
-                        }),
-                    },
-                    SelectorEvent::Update | SelectorEvent::None => unreachable!("handled above"),
-                };
-
-                let result = match result {
-                    Ok(r) => r,
-                    Err(err) => {
-                        self.notifier.send_error("Selector", err.pretty())?;
-                        self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-                        return Ok(());
-                    }
-                };
-
-                // Effects can include `action.reload_config`, which requires the config write lock.
-                cfg_guard.take();
-
-                let _stay_ignored = result.stay;
-                let outcome = self
-                    .apply_effects_and_nav(&identifier, result.effects, result.nav)
-                    .await?;
-                let _ignored = outcome;
-
-                self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-            }
-
+        if self
+            .handle_active_selector(chord, identifier.as_str(), &dispatch_ctx)
+            .await?
+        {
             trace!(
                 "Selector key event completed in {:?}: {}",
                 start.elapsed(),
@@ -740,78 +581,173 @@ impl Engine {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
-            let ctx = config::dynamic::ModeCtx {
-                app: app_ctx.clone(),
-                title: title_ctx.clone(),
-                pid: pid as i64,
-                hud: rt.hud_visible,
-                depth: rt.depth() as i64,
-            };
+            let ctx = dispatch_ctx.mode_ctx(&rt);
             (binding, ctx)
         };
 
+        let Some(execution) = self
+            .execute_binding(identifier.as_str(), binding, ctx)
+            .await?
+        else {
+            return Ok(());
+        };
+
+        if !execution.stay && !execution.outcome.is_nav && !execution.outcome.entered_mode {
+            self.auto_exit().await;
+        }
+
+        let processing_time = start.elapsed();
+        if processing_time > Duration::from_millis(KEY_PROC_WARN_MS) {
+            warn!(
+                "Key processing took {:?} for {}",
+                processing_time, identifier
+            );
+        }
+
+        self.rebind_and_refresh(dispatch_ctx).await?;
+        trace!(
+            "Key event completed in {:?}: {}",
+            start.elapsed(),
+            identifier
+        );
+        Ok(())
+    }
+
+    async fn handle_active_selector(
+        &self,
+        chord: &Chord,
+        identifier: &str,
+        dispatch_ctx: &DispatchContext,
+    ) -> Result<bool> {
+        match self.selector_input(chord, dispatch_ctx).await {
+            SelectorInput::Inactive => Ok(false),
+            SelectorInput::Consumed => Ok(true),
+            SelectorInput::Update(snapshot) => {
+                self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
+                Ok(true)
+            }
+            SelectorInput::Close(close) => {
+                self.complete_selector_close(identifier, dispatch_ctx, *close)
+                    .await?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn selector_input(&self, chord: &Chord, dispatch_ctx: &DispatchContext) -> SelectorInput {
+        let mut rt = self.runtime.lock().await;
+        let Some(selector) = rt.selector.as_mut() else {
+            return SelectorInput::Inactive;
+        };
+
+        let event = selector.handle_key_down(chord);
+        match event {
+            SelectorEvent::Update => {
+                let _changed_ignored = selector.tick();
+                SelectorInput::Update(selector_snapshot_for_ui(selector))
+            }
+            SelectorEvent::Select | SelectorEvent::Cancel => {
+                let selector = rt.selector.take().expect("selector must exist for close");
+                rt.hud_visible = selector.prev_hud_visible;
+                SelectorInput::Close(Box::new(SelectorClose {
+                    event,
+                    ctx: dispatch_ctx.mode_ctx(&rt),
+                    selector,
+                }))
+            }
+            SelectorEvent::None => SelectorInput::Consumed,
+        }
+    }
+
+    async fn complete_selector_close(
+        &self,
+        identifier: &str,
+        dispatch_ctx: &DispatchContext,
+        mut close: SelectorClose,
+    ) -> Result<()> {
+        self.notifier.send_ui(MsgToUI::SelectorHide)?;
+
+        let result = {
+            let cfg_guard = self.config.read().await;
+            let Some(cfg) = cfg_guard.as_ref() else {
+                trace!("No dynamic config loaded; ignoring selector close");
+                self.rebind_and_refresh(dispatch_ctx.clone()).await?;
+                return Ok(());
+            };
+            execute_selector_close(cfg, &mut close)
+        };
+
+        let result = match result {
+            Ok(result) => result,
+            Err(err) => {
+                self.notifier.send_error("Selector", err.pretty())?;
+                self.rebind_and_refresh(dispatch_ctx.clone()).await?;
+                return Ok(());
+            }
+        };
+
+        let _outcome_ignored = self
+            .apply_effects_and_nav(identifier, result.effects, result.nav)
+            .await?;
+        self.rebind_and_refresh(dispatch_ctx.clone()).await
+    }
+
+    async fn execute_binding(
+        &self,
+        identifier: &str,
+        binding: config::dynamic::Binding,
+        ctx: config::dynamic::ModeCtx,
+    ) -> Result<Option<BindingExecution>> {
         let mut stay = binding.flags.stay;
-        let mut nav_occurred = false;
-        let mut entered_mode = false;
+        let mut outcome = DispatchOutcome::default();
 
         match binding.kind.clone() {
             config::dynamic::BindingKind::Mode(mode) => {
-                entered_mode = true;
+                outcome.entered_mode = true;
                 let mut rt = self.runtime.lock().await;
                 rt.hud_visible = true;
                 rt.stack.push(config::dynamic::ModeFrame {
-                    title: binding.desc.clone(),
+                    title: binding.desc,
                     closure: mode,
-                    entered_via: binding.mode_id.map(|id| (binding.chord.clone(), id)),
+                    entered_via: binding.mode_id.map(|id| (binding.chord, id)),
                     rendered: Vec::new(),
                     style: None,
                     capture: binding.mode_capture,
                 });
             }
             config::dynamic::BindingKind::Action(action) => {
-                if matches!(action, config::Action::ReloadConfig) {
-                    // Reload needs the config write lock; drop the read guard first.
-                    cfg_guard.take();
-                }
-                let outcome = self
-                    .apply_action(&identifier, &action, binding.flags.repeat)
+                outcome = self
+                    .apply_action(identifier, &action, binding.flags.repeat)
                     .await?;
-                nav_occurred = outcome.is_nav;
-                entered_mode = outcome.entered_mode;
             }
             config::dynamic::BindingKind::Handler(handler) => {
                 let result = {
-                    let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
+                    let cfg_guard = self.config.read().await;
+                    let Some(cfg) = cfg_guard.as_ref() else {
                         trace!("No dynamic config loaded; ignoring handler");
-                        return Ok(());
+                        return Ok(None);
                     };
                     match config::dynamic::execute_handler(cfg, &handler, &ctx) {
-                        Ok(r) => r,
+                        Ok(result) => result,
                         Err(err) => {
                             self.notifier.send_error("Handler", err.pretty())?;
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                 };
 
-                // Effects can include `action.reload_config`, which requires the config write lock.
-                cfg_guard.take();
-
-                stay = stay || result.stay;
-                let outcome = self
-                    .apply_effects_and_nav(&identifier, result.effects, result.nav)
+                stay |= result.stay;
+                outcome = self
+                    .apply_effects_and_nav(identifier, result.effects, result.nav)
                     .await?;
-                nav_occurred |= outcome.is_nav;
-                entered_mode |= outcome.entered_mode;
             }
             config::dynamic::BindingKind::Selector(sel_cfg) => {
-                // Selector is an interactive mode: it should never trigger auto-exit on open.
                 stay = true;
-
                 let items = {
-                    let Some(cfg) = cfg_guard.as_ref().and_then(|g| g.as_ref()) else {
+                    let cfg_guard = self.config.read().await;
+                    let Some(cfg) = cfg_guard.as_ref() else {
                         trace!("No dynamic config loaded; ignoring selector");
-                        return Ok(());
+                        return Ok(None);
                     };
                     match sel_cfg.resolve_items(cfg, &ctx) {
                         Ok(items) => items,
@@ -835,33 +771,15 @@ impl Engine {
                         notify_cb,
                         prev_hud_visible,
                     ));
-                    let sel = rt.selector.as_mut().expect("selector just set");
-                    let _changed_ignored = sel.tick();
-                    selector_snapshot_for_ui(sel)
+                    let selector = rt.selector.as_mut().expect("selector just set");
+                    let _changed_ignored = selector.tick();
+                    selector_snapshot_for_ui(selector)
                 };
                 self.notifier.send_ui(MsgToUI::SelectorUpdate(snapshot))?;
             }
         }
 
-        if !stay && !nav_occurred && !entered_mode {
-            self.auto_exit().await;
-        }
-
-        let processing_time = start.elapsed();
-        if processing_time > Duration::from_millis(KEY_PROC_WARN_MS) {
-            warn!(
-                "Key processing took {:?} for {}",
-                processing_time, identifier
-            );
-        }
-
-        self.rebind_and_refresh(&app_ctx, &title_ctx, pid).await?;
-        trace!(
-            "Key event completed in {:?}: {}",
-            start.elapsed(),
-            identifier
-        );
-        Ok(())
+        Ok(Some(BindingExecution { stay, outcome }))
     }
 
     /// Handle a key up event
@@ -1198,14 +1116,7 @@ impl Engine {
         {
             let mut rt = self.runtime.lock().await;
             rt.theme_name = theme_name;
-            rt.stack = vec![config::dynamic::ModeFrame {
-                title: "root".to_string(),
-                closure: root,
-                entered_via: None,
-                rendered: Vec::new(),
-                style: None,
-                capture: false,
-            }];
+            rt.reset_to_root(root);
         }
 
         Ok(())
@@ -1274,6 +1185,155 @@ impl Engine {
             return (a.clone(), t.clone(), *p);
         }
         (String::new(), String::new(), -1)
+    }
+
+    fn current_dispatch_context(&self) -> DispatchContext {
+        let (app, title, pid) = self.current_context();
+        DispatchContext { app, title, pid }
+    }
+}
+
+fn build_refresh_plan(
+    rt: &mut RuntimeState,
+    cfg: Option<&config::dynamic::DynamicConfig>,
+    focus: FocusInfo,
+) -> RefreshPlan {
+    rt.focus = focus;
+
+    match cfg {
+        Some(cfg) => build_loaded_refresh_plan(rt, cfg),
+        None => {
+            rt.clear_config_state(config::Style::default());
+            RefreshPlan {
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                key_pairs: Vec::new(),
+                capture_all: false,
+                hud: hud_state_for_ui_from_state(rt),
+            }
+        }
+    }
+}
+
+fn build_loaded_refresh_plan(
+    rt: &mut RuntimeState,
+    cfg: &config::dynamic::DynamicConfig,
+) -> RefreshPlan {
+    rt.ensure_root(cfg.root());
+    if !cfg.theme_exists(rt.theme_name.as_str()) {
+        rt.theme_name = cfg.active_theme().to_string();
+    }
+    let base_style = cfg.base_style(Some(rt.theme_name.as_str()));
+
+    if rt.selector.is_some() {
+        let key_pairs = crate::selector::selector_capture_chords()
+            .into_iter()
+            .map(|chord| (chord.to_string(), chord))
+            .collect();
+        return RefreshPlan {
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            key_pairs,
+            capture_all: true,
+            hud: hud_state_for_ui_from_state(rt),
+        };
+    }
+
+    let (warnings, errors) = render_stack_with_recovery(rt, cfg, &base_style);
+    let mut key_pairs = rt
+        .rendered
+        .bindings
+        .iter()
+        .map(|(chord, _binding)| (chord.to_string(), chord.clone()))
+        .collect::<Vec<_>>();
+    key_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    RefreshPlan {
+        warnings,
+        errors,
+        key_pairs,
+        capture_all: rt.hud_visible && rt.rendered.capture,
+        hud: hud_state_for_ui_from_state(rt),
+    }
+}
+
+fn render_stack_with_recovery(
+    rt: &mut RuntimeState,
+    cfg: &config::dynamic::DynamicConfig,
+    base_style: &config::Style,
+) -> (Vec<config::dynamic::Effect>, Vec<String>) {
+    let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
+    let mut errors = Vec::new();
+
+    match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
+        Ok(output) => {
+            rt.rendered = output.rendered;
+            (output.warnings, errors)
+        }
+        Err(err) => {
+            errors.push(err.pretty());
+            rt.stack.truncate(1);
+            ctx.depth = 0;
+
+            match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
+                Ok(output) => {
+                    rt.rendered = output.rendered;
+                    (output.warnings, errors)
+                }
+                Err(err) => {
+                    errors.push(err.pretty());
+                    rt.rendered = RuntimeState::empty_rendered(base_style.clone());
+                    (Vec::new(), errors)
+                }
+            }
+        }
+    }
+}
+
+fn execute_selector_close(
+    cfg: &config::dynamic::DynamicConfig,
+    close: &mut SelectorClose,
+) -> std::result::Result<config::dynamic::HandlerResult, config::Error> {
+    match close.event {
+        SelectorEvent::Select => {
+            let _changed_ignored = close.selector.tick();
+            let total = close.selector.session.matcher.matched_count();
+            if total == 0 {
+                return Ok(selector_noop_result());
+            }
+
+            close.selector.session.selected = close.selector.session.selected.min(total - 1);
+            let Some(item) = close
+                .selector
+                .session
+                .matcher
+                .matched_candidate(close.selector.session.selected)
+                .map(|candidate| candidate.item.clone())
+            else {
+                return Ok(selector_noop_result());
+            };
+            let query = close.selector.session.query.clone();
+            config::dynamic::execute_selector_handler(
+                cfg,
+                &close.selector.config.on_select,
+                &close.ctx,
+                &item,
+                query.as_str(),
+            )
+        }
+        SelectorEvent::Cancel => match close.selector.config.on_cancel.as_ref() {
+            Some(handler) => config::dynamic::execute_handler(cfg, handler, &close.ctx),
+            None => Ok(selector_noop_result()),
+        },
+        SelectorEvent::Update | SelectorEvent::None => unreachable!("selector close is terminal"),
+    }
+}
+
+fn selector_noop_result() -> config::dynamic::HandlerResult {
+    config::dynamic::HandlerResult {
+        effects: Vec::new(),
+        nav: None,
+        stay: true,
     }
 }
 

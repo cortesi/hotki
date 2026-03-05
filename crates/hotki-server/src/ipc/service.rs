@@ -15,11 +15,13 @@
 //!   and release them before any `.await` or blocking work.
 //! - Never hold any lock across network or file I/O; clone snapshots first.
 
+mod events;
+mod rpc;
+
 use std::{
     collections::HashMap,
     path::PathBuf,
     result::Result as StdResult,
-    slice,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -27,22 +29,17 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::stream::{FuturesUnordered, StreamExt};
+use events::EventPipeline;
 use hotki_engine::Engine;
-use hotki_protocol::{
-    App, MsgToUI, WorldStreamMsg,
-    rpc::{
-        HotkeyMethod, HotkeyNotification, InjectKeyReq, InjectKind, ServerStatusLite,
-        WorldSnapshotLite,
-    },
+use hotki_protocol::rpc::{HotkeyMethod, ServerStatusLite};
+use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, Value};
+pub(crate) use rpc::dec_inject_key_param;
+use rpc::{
+    build_snapshot_payload, enc_server_status, enc_world_snapshot, enc_world_status,
+    inject_kind_to_event, string_param, typed_err,
 };
-use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, ServiceError, Value};
-use parking_lot::Mutex;
-use tokio::sync::{
-    Mutex as AsyncMutex, OnceCell,
-    mpsc::{Receiver, Sender},
-};
-use tracing::{debug, error, info, trace, warn};
+use tokio::sync::OnceCell;
+use tracing::{debug, info, trace, warn};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
 use crate::loop_wake;
@@ -54,68 +51,40 @@ pub struct HotkeyService {
     engine: Arc<OnceCell<Engine>>,
     /// Mac hotkey manager
     manager: Arc<mac_hotkey::Manager>,
-    /// Event sender for UI messages (bounded)
-    event_tx: Sender<MsgToUI>,
-    /// Event receiver (taken when starting forwarder)
-    event_rx: Arc<Mutex<Option<Receiver<MsgToUI>>>>,
-    /// Connected clients; use Tokio mutex to reduce sync/async mixing.
-    clients: Arc<AsyncMutex<Vec<RpcSender>>>,
-    /// When set to true, the outer server event loop should exit.
-    shutdown: Arc<AtomicBool>,
-    /// Ensure we only spawn one heartbeat loop across clones.
-    hb_running: Arc<AtomicBool>,
-    world_forwarder_running: Arc<AtomicBool>,
+    /// Event pipeline shared across client registration, broadcast, and forwarding tasks.
+    events: EventPipeline,
     /// Shared idle timer state for status reporting.
     idle_state: Arc<IdleTimerState>,
 }
 
 impl HotkeyService {
-    /// Construct a typed `RpcError::Service` with a stable `name` and structured fields.
-    fn typed_err(code: crate::error::RpcErrorCode, fields: &[(&str, Value)]) -> RpcError {
-        let map = fields
-            .iter()
-            .map(|(k, v)| (Value::String((*k).into()), v.clone()))
-            .collect::<Vec<_>>();
-        RpcError::Service(ServiceError {
-            name: code.to_string(),
-            value: Value::Map(map),
-        })
-    }
     pub fn new(
         manager: Arc<mac_hotkey::Manager>,
         shutdown: Arc<AtomicBool>,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
-        // Create bounded event channel
-        let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
-
         Self {
             engine: Arc::new(OnceCell::new()),
             manager,
-            event_tx,
-            event_rx: Arc::new(Mutex::new(Some(event_rx))),
-            clients: Arc::new(AsyncMutex::new(Vec::new())),
-            shutdown,
-            hb_running: Arc::new(AtomicBool::new(false)),
-            world_forwarder_running: Arc::new(AtomicBool::new(false)),
+            events: EventPipeline::new(shutdown),
             idle_state,
         }
     }
 
     /// Expose the shutdown flag for coordinated server shutdown.
     pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
-        self.shutdown.clone()
+        self.events.shutdown_flag()
     }
 
     async fn engine(&self) -> &Engine {
         self.engine
-            .get_or_init(|| async { Engine::new(self.manager.clone(), self.event_tx.clone()) })
+            .get_or_init(|| async { Engine::new(self.manager.clone(), self.events.sender()) })
             .await
     }
 
     /// Gather a lightweight server status snapshot for diagnostics.
     async fn snapshot_server_status(&self) -> ServerStatusLite {
-        let clients_connected = { self.clients.lock().await.len() };
+        let clients_connected = self.events.client_count().await;
         let IdleTimerSnapshot {
             timeout_secs,
             armed,
@@ -129,174 +98,188 @@ impl HotkeyService {
         }
     }
 
-    /// Forward events from the receiver to connected clients
-    ///
-    /// Log forwarding semantics: logs use a single global sink wired to the
-    /// event channel (`logging::forward::set_sink(tx)`). Events are broadcast to all
-    /// connected clients via `broadcast_event`; multi-client is supported, and
-    /// logs are delivered through the same event pipeline as other messages.
-    async fn forward_events(&self, mut event_rx: Receiver<MsgToUI>) {
-        while let Some(event) = event_rx.recv().await {
-            if self.shutdown.load(Ordering::SeqCst) {
-                break;
-            }
-            self.broadcast_event(event).await;
-        }
+    async fn handle_shutdown_request(&self) -> StdResult<Value, RpcError> {
+        info!("Shutdown request received");
+        self.shutdown_flag().store(true, Ordering::SeqCst);
+        let _ = loop_wake::post_user_event();
+        self.events.clear_for_shutdown().await;
+        Ok(Value::Boolean(true))
     }
 
-    /// Start forwarding world events to the UI channel as MsgToUI::World.
-    async fn start_world_forwarder(&self) {
-        if self.world_forwarder_running.swap(true, Ordering::SeqCst) {
-            return; // already running
+    async fn handle_set_config_path(&self, params: &[Value]) -> StdResult<Value, RpcError> {
+        let raw_path = string_param(
+            params,
+            HotkeyMethod::SetConfigPath.as_str(),
+            "path",
+            crate::error::RpcErrorCode::MissingParams,
+        )?;
+        let engine = self.engine().await;
+        if let Err(err) = engine.set_config_path(PathBuf::from(raw_path)).await {
+            return Err(typed_err(
+                crate::error::RpcErrorCode::EngineSetConfig,
+                &[("message", Value::String(err.to_string().into()))],
+            ));
         }
-        let shutdown = self.shutdown.clone();
-        let event_tx = self.event_tx.clone();
-        let world = self.engine().await.world();
-        tokio::spawn(async move {
-            let mut cursor = world.subscribe();
-            loop {
-                if shutdown.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-                let event = match world.next_event_until(&mut cursor, deadline).await {
-                    Some(ev) => ev,
-                    None => {
-                        if cursor.is_closed() {
-                            return;
-                        }
-                        continue;
-                    }
-                };
-
-                let hotki_world::WorldEvent::FocusChanged(change) = event else {
-                    continue;
-                };
-
-                let app = match (change.app, change.title, change.pid) {
-                    (Some(app), Some(title), Some(pid)) => Some(App { app, title, pid }),
-                    _ => world.focused_context().await.map(|(app, title, pid)| App {
-                        app,
-                        title,
-                        pid,
-                    }),
-                };
-
-                if let Err(err) =
-                    event_tx.try_send(MsgToUI::World(WorldStreamMsg::FocusChanged(app)))
-                {
-                    match err {
-                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            // Drop silently; focus updates are best-effort.
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                    }
-                }
-            }
-        });
+        Ok(Value::Boolean(true))
     }
 
-    /// Broadcast an event to all connected clients
-    async fn broadcast_event(&self, event: MsgToUI) {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return;
+    async fn handle_set_theme(&self, params: &[Value]) -> StdResult<Value, RpcError> {
+        let raw_name = string_param(
+            params,
+            HotkeyMethod::SetTheme.as_str(),
+            "theme name",
+            crate::error::RpcErrorCode::MissingParams,
+        )?;
+        let engine = self.engine().await;
+        if let Err(err) = engine.set_theme(raw_name.as_str()).await {
+            return Err(typed_err(
+                crate::error::RpcErrorCode::EngineSetConfig,
+                &[("message", Value::String(err.to_string().into()))],
+            ));
         }
-        // Clone the current client list for sending without holding the lock
-        let clients_snapshot = { self.clients.lock().await.clone() };
+        Ok(Value::Boolean(true))
+    }
 
-        // Convert event to MRPC Value (binary serde payload)
-        let value = match enc_event(&event) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to encode event for broadcast: {}", e);
-                return;
-            }
+    async fn handle_inject_key(&self, params: &[Value]) -> StdResult<Value, RpcError> {
+        if params.is_empty() {
+            return Err(typed_err(
+                crate::error::RpcErrorCode::MissingParams,
+                &[("expected", Value::String("inject request".into()))],
+            ));
+        }
+        let req = dec_inject_key_param(&params[0])?;
+        tracing::debug!(
+            target: "hotki_server::ipc::service",
+            "InjectKey: ident={} kind={:?} repeat={}",
+            req.ident,
+            req.kind,
+            req.repeat
+        );
+
+        let engine = self.engine().await;
+        let Some(id) = engine.resolve_id_for_ident(&req.ident).await else {
+            tracing::debug!(
+                target: "hotki_server::ipc::service",
+                "InjectKey: ident not bound: {}",
+                req.ident
+            );
+            return Err(typed_err(
+                crate::error::RpcErrorCode::KeyNotBound,
+                &[("ident", Value::String(req.ident.into()))],
+            ));
         };
+        tracing::debug!(
+            target: "hotki_server::ipc::service",
+            "InjectKey: resolved id={} for ident={} -> dispatch",
+            id,
+            req.ident
+        );
 
-        // Send concurrently; retain only successful clients
-        let mut survivors = Vec::with_capacity(clients_snapshot.len());
-        let mut futs = FuturesUnordered::new();
-        for client in clients_snapshot {
-            let v = value.clone();
-            futs.push(async move {
-                (
-                    client.clone(),
-                    client
-                        .send_notification(HotkeyNotification::Notify.as_str(), slice::from_ref(&v))
-                        .await,
-                )
-            });
-        }
-        while let Some((client, res)) = futs.next().await {
-            match res {
-                Ok(_) => survivors.push(client),
-                Err(e) => warn!("Dropping disconnected client (send failed): {:?}", e),
+        match engine
+            .dispatch(id, inject_kind_to_event(req.kind), req.repeat)
+            .await
+        {
+            Ok(()) => Ok(Value::Boolean(true)),
+            Err(err) => {
+                tracing::warn!(
+                    target: "hotki_server::ipc::service",
+                    "InjectKey: dispatch failed id={} ident={}: {}",
+                    id,
+                    req.ident,
+                    err
+                );
+                Err(typed_err(
+                    crate::error::RpcErrorCode::EngineDispatch,
+                    &[("message", Value::String(err.to_string().into()))],
+                ))
             }
         }
+    }
 
-        // Replace the clients list with survivors
-        *self.clients.lock().await = survivors;
+    async fn handle_get_bindings(&self) -> StdResult<Value, RpcError> {
+        let engine = self.engine().await;
+        let mut idents: Vec<String> = engine
+            .bindings_snapshot()
+            .await
+            .into_iter()
+            .map(|(ident, _)| ident)
+            .collect();
+        idents.sort();
+        Ok(Value::Array(
+            idents
+                .into_iter()
+                .map(|ident| Value::String(ident.into()))
+                .collect(),
+        ))
+    }
+
+    async fn handle_get_depth(&self) -> StdResult<Value, RpcError> {
+        let engine = self.engine().await;
+        Ok(Value::Integer((engine.get_depth().await as u64).into()))
+    }
+
+    async fn handle_get_world_status(&self) -> StdResult<Value, RpcError> {
+        let engine = self.engine().await;
+        Ok(enc_world_status(&engine.world_status().await))
+    }
+
+    async fn handle_get_world_snapshot(&self) -> StdResult<Value, RpcError> {
+        let engine = self.engine().await;
+        let world = engine.world();
+        let displays = world.displays().await;
+        let focused_app = world
+            .focused_context()
+            .await
+            .map(|(app, title, pid)| hotki_protocol::App { app, title, pid });
+        let payload = build_snapshot_payload(displays, focused_app);
+        enc_world_snapshot(&payload).map_err(|err| {
+            typed_err(
+                crate::error::RpcErrorCode::InvalidType,
+                &[("message", Value::String(err.to_string().into()))],
+            )
+        })
+    }
+
+    async fn handle_get_server_status(&self) -> StdResult<Value, RpcError> {
+        enc_server_status(&self.snapshot_server_status().await).map_err(|err| {
+            typed_err(
+                crate::error::RpcErrorCode::InvalidType,
+                &[("message", Value::String(err.to_string().into()))],
+            )
+        })
     }
 }
 
 #[async_trait]
 impl MrpcConnection for HotkeyService {
     async fn connected(&self, client: RpcSender) -> StdResult<(), RpcError> {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.shutdown_flag().load(Ordering::SeqCst) {
             // Refuse new connections during shutdown
-            return Err(Self::typed_err(
+            return Err(typed_err(
                 crate::error::RpcErrorCode::ShuttingDown,
                 &[("message", Value::String("Server is shutting down".into()))],
             ));
         }
         debug!("Client connected via MRPC");
 
-        // Add client to list for event broadcasting
-        self.clients.lock().await.push(client.clone());
+        self.events.register_client(client).await;
 
         // Start event forwarding if not already started
-        let event_rx = { self.event_rx.lock().take() };
+        let event_rx = self.events.take_event_rx();
         if let Some(event_rx) = event_rx {
-            let service_clone = self.clone();
+            let pipeline = self.events.clone();
             tokio::spawn(async move {
-                service_clone.forward_events(event_rx).await;
+                pipeline.forward_events(event_rx).await;
             });
         }
 
         // Ensure engine and begin world forwarder if not already running.
-        let _ = self.engine().await;
-        self.start_world_forwarder().await;
+        let world = self.engine().await.world();
+        self.events.ensure_world_forwarder(world).await;
 
         // Set up log forwarding to this client
-        // Bind the global log sink to the single event channel. Logs are then
-        // forwarded through the standard event pipeline and broadcast to all
-        // connected clients by `forward_events`.
-        logging::forward::set_sink(self.event_tx.clone());
-
-        // No initial status snapshot; UI derives state from HudUpdate events.
-
-        // Start a single heartbeat loop. The loop exits when shutdown is set.
-        if !self.hb_running.swap(true, Ordering::SeqCst) {
-            let svc = self.clone();
-            tokio::spawn(async move {
-                use std::time::SystemTime;
-                let interval = hotki_protocol::ipc::heartbeat::interval();
-                loop {
-                    if svc.shutdown.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let ts = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    svc.broadcast_event(hotki_protocol::MsgToUI::Heartbeat(ts))
-                        .await;
-                    tokio::time::sleep(interval).await;
-                }
-                svc.hb_running.store(false, Ordering::SeqCst);
-            });
-        }
+        self.events.bind_log_sink();
+        self.events.ensure_heartbeat().await;
 
         Ok(())
     }
@@ -310,236 +293,19 @@ impl MrpcConnection for HotkeyService {
         debug!("Handling request: {} with {} params", method, params.len());
 
         match HotkeyMethod::try_from_str(method) {
-            Some(HotkeyMethod::Shutdown) => {
-                info!("Shutdown request received");
-                // Flip shutdown flag (idempotent)
-                self.shutdown.store(true, Ordering::SeqCst);
-
-                // Wake the Tao event loop so it can observe shutdown promptly
-                let _ = loop_wake::post_user_event();
-
-                // Stop forwarding any further logs/events to clients
-                logging::forward::clear_sink();
-
-                // Drop all clients so no further notifications are attempted
-                self.clients.lock().await.clear();
-
-                // Close the UI event pipeline
-                {
-                    let mut r = self.event_rx.lock();
-                    *r = None;
-                }
-
-                Ok(Value::Boolean(true))
-            }
-
-            Some(HotkeyMethod::SetConfigPath) => {
-                if params.is_empty() {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::MissingParams,
-                        &[
-                            (
-                                "method",
-                                Value::String(HotkeyMethod::SetConfigPath.as_str().into()),
-                            ),
-                            ("expected", Value::String("path".into())),
-                        ],
-                    ));
-                }
-
-                let raw_path = match &params[0] {
-                    Value::String(s) => match s.as_str() {
-                        Some(v) => v.to_string(),
-                        None => {
-                            return Err(Self::typed_err(
-                                crate::error::RpcErrorCode::InvalidType,
-                                &[("expected", Value::String("utf8 string path".into()))],
-                            ));
-                        }
-                    },
-                    _ => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::InvalidType,
-                            &[("expected", Value::String("string path".into()))],
-                        ));
-                    }
-                };
-
-                let path = PathBuf::from(raw_path.clone());
-                let engine = self.engine().await;
-                if let Err(e) = engine.set_config_path(path).await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineSetConfig,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-
-                Ok(Value::Boolean(true))
-            }
-
-            Some(HotkeyMethod::SetTheme) => {
-                if params.is_empty() {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::MissingParams,
-                        &[
-                            (
-                                "method",
-                                Value::String(HotkeyMethod::SetTheme.as_str().into()),
-                            ),
-                            ("expected", Value::String("theme name".into())),
-                        ],
-                    ));
-                }
-
-                let raw_name = match &params[0] {
-                    Value::String(s) => match s.as_str() {
-                        Some(v) => v.to_string(),
-                        None => {
-                            return Err(Self::typed_err(
-                                crate::error::RpcErrorCode::InvalidType,
-                                &[("expected", Value::String("utf8 string theme name".into()))],
-                            ));
-                        }
-                    },
-                    _ => {
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::InvalidType,
-                            &[("expected", Value::String("string theme name".into()))],
-                        ));
-                    }
-                };
-
-                let engine = self.engine().await;
-                if let Err(e) = engine.set_theme(raw_name.as_str()).await {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::EngineSetConfig,
-                        &[("message", Value::String(e.to_string().into()))],
-                    ));
-                }
-
-                Ok(Value::Boolean(true))
-            }
-
-            Some(HotkeyMethod::InjectKey) => {
-                // Expect a single Binary param with msgpack-encoded InjectKeyReq
-                if params.is_empty() {
-                    return Err(Self::typed_err(
-                        crate::error::RpcErrorCode::MissingParams,
-                        &[("expected", Value::String("inject request".into()))],
-                    ));
-                }
-                let req = match dec_inject_key_param(&params[0]) {
-                    Ok(r) => r,
-                    Err(e) => return Err(e),
-                };
-                tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: ident={} kind={:?} repeat={}", req.ident, req.kind, req.repeat);
-
-                let eng = self.engine().await;
-
-                let maybe_id = eng.resolve_id_for_ident(&req.ident).await;
-                let id = match maybe_id {
-                    Some(i) => i,
-                    None => {
-                        tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: ident not bound: {}", req.ident);
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::KeyNotBound,
-                            &[("ident", Value::String(req.ident.into()))],
-                        ));
-                    }
-                };
-                tracing::debug!(target: "hotki_server::ipc::service", "InjectKey: resolved id={} for ident={} -> dispatch", id, req.ident);
-
-                // Dispatch directly through the engine (same path as OS events)
-                match eng
-                    .dispatch(id, inject_kind_to_event(req.kind), req.repeat)
-                    .await
-                {
-                    Ok(_) => {
-                        tracing::debug!(
-                            target: "hotki_server::ipc::service",
-                            "InjectKey: dispatch done for id={}",
-                            id
-                        );
-                        Ok(Value::Boolean(true))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "hotki_server::ipc::service",
-                            "InjectKey: dispatch failed id={} ident={}: {}",
-                            id,
-                            req.ident,
-                            e
-                        );
-                        return Err(Self::typed_err(
-                            crate::error::RpcErrorCode::EngineDispatch,
-                            &[("message", Value::String(e.to_string().into()))],
-                        ));
-                    }
-                }
-            }
-
-            Some(HotkeyMethod::GetBindings) => {
-                let eng = self.engine().await;
-                let mut idents: Vec<String> = eng
-                    .bindings_snapshot()
-                    .await
-                    .into_iter()
-                    .map(|(ident, _)| ident)
-                    .collect();
-                // Keep ordering stable for consumers/tests
-                idents.sort();
-                // Return as Value::Array of Strings to avoid extra msgpack layer
-                let arr = idents
-                    .into_iter()
-                    .map(|s| Value::String(s.into()))
-                    .collect::<Vec<_>>();
-                Ok(Value::Array(arr))
-            }
-
-            Some(HotkeyMethod::GetDepth) => {
-                let eng = self.engine().await;
-                let depth = eng.get_depth().await as u64;
-                Ok(Value::Integer(depth.into()))
-            }
-
-            Some(HotkeyMethod::GetWorldStatus) => {
-                let eng = self.engine().await;
-                let st = eng.world_status().await;
-                Ok(enc_world_status(&st))
-            }
-
-            Some(HotkeyMethod::GetWorldSnapshot) => {
-                let eng = self.engine().await;
-                let world = eng.world();
-                let displays = world.displays().await;
-                let focused_app =
-                    world
-                        .focused_context()
-                        .await
-                        .map(|(app, title, pid)| App { app, title, pid });
-
-                let payload = build_snapshot_payload(displays, focused_app);
-
-                enc_world_snapshot(&payload).map_err(|e| {
-                    Self::typed_err(
-                        crate::error::RpcErrorCode::InvalidType,
-                        &[("message", Value::String(e.to_string().into()))],
-                    )
-                })
-            }
-
-            Some(HotkeyMethod::GetServerStatus) => {
-                enc_server_status(&self.snapshot_server_status().await).map_err(|e| {
-                    Self::typed_err(
-                        crate::error::RpcErrorCode::InvalidType,
-                        &[("message", Value::String(e.to_string().into()))],
-                    )
-                })
-            }
+            Some(HotkeyMethod::Shutdown) => self.handle_shutdown_request().await,
+            Some(HotkeyMethod::SetConfigPath) => self.handle_set_config_path(&params).await,
+            Some(HotkeyMethod::SetTheme) => self.handle_set_theme(&params).await,
+            Some(HotkeyMethod::InjectKey) => self.handle_inject_key(&params).await,
+            Some(HotkeyMethod::GetBindings) => self.handle_get_bindings().await,
+            Some(HotkeyMethod::GetDepth) => self.handle_get_depth().await,
+            Some(HotkeyMethod::GetWorldStatus) => self.handle_get_world_status().await,
+            Some(HotkeyMethod::GetWorldSnapshot) => self.handle_get_world_snapshot().await,
+            Some(HotkeyMethod::GetServerStatus) => self.handle_get_server_status().await,
 
             None => {
                 warn!("Unknown method: {}", method);
-                Err(Self::typed_err(
+                Err(typed_err(
                     crate::error::RpcErrorCode::MethodNotFound,
                     &[("method", Value::String(method.into()))],
                 ))
@@ -563,8 +329,8 @@ impl HotkeyService {
     pub(crate) fn start_hotkey_dispatcher(&self) {
         let manager = self.manager.clone();
         let engine = self.engine.clone();
-        let shutdown = self.shutdown.clone();
-        let event_tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag();
+        let event_tx = self.events.sender();
 
         // Bridge: dedicated OS thread blocks on crossbeam and forwards to Tokio mpsc
         let rx_cross = manager.events();
@@ -609,7 +375,7 @@ impl HotkeyService {
                 let shutdown = shutdown.clone();
                 tokio::spawn(async move {
                     let eng = engine
-                        .get_or_init(|| async { Engine::new(manager, event_tx) })
+                        .get_or_init(|| async { Engine::new(manager, event_tx.clone()) })
                         .await;
                     while let Some(ev) = rx.recv().await {
                         if shutdown.load(Ordering::SeqCst) {
@@ -630,62 +396,5 @@ impl HotkeyService {
         });
 
         debug!("Hotkey dispatcher started with per-id ordering");
-    }
-}
-
-fn build_snapshot_payload(
-    displays: hotki_world::DisplaysSnapshot,
-    focused: Option<App>,
-) -> WorldSnapshotLite {
-    WorldSnapshotLite { focused, displays }
-}
-
-/// Encode world status into an MRPC value for transport.
-fn enc_world_status(ws: &hotki_world::WorldStatus) -> Value {
-    match rmp_serde::to_vec_named(ws) {
-        Ok(bytes) => Value::Binary(bytes),
-        Err(_) => Value::Nil,
-    }
-}
-
-/// Encode a generic UI event for notifications to clients.
-pub(crate) fn enc_event(event: &hotki_protocol::MsgToUI) -> crate::Result<Value> {
-    hotki_protocol::ipc::codec::msg_to_value(event)
-        .map_err(|e| crate::Error::Serialization(e.to_string()))
-}
-
-/// Encode a server status snapshot to msgpack binary `Value`.
-fn enc_server_status(status: &ServerStatusLite) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(status)?;
-    Ok(Value::Binary(bytes))
-}
-
-/// Encode a world snapshot to msgpack binary `Value`.
-fn enc_world_snapshot(snap: &WorldSnapshotLite) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(snap)?;
-    Ok(Value::Binary(bytes))
-}
-
-/// Decode `inject_key` param from msgpack binary.
-pub(crate) fn dec_inject_key_param(v: &Value) -> Result<InjectKeyReq, mrpc::RpcError> {
-    match v {
-        Value::Binary(bytes) => rmp_serde::from_slice::<InjectKeyReq>(bytes).map_err(|e| {
-            mrpc::RpcError::Service(mrpc::ServiceError {
-                name: crate::error::RpcErrorCode::InvalidConfig.to_string(),
-                value: Value::String(e.to_string().into()),
-            })
-        }),
-        _ => Err(mrpc::RpcError::Service(mrpc::ServiceError {
-            name: crate::error::RpcErrorCode::InvalidType.to_string(),
-            value: Value::String("expected binary msgpack".into()),
-        })),
-    }
-}
-
-/// Helper to convert protocol injection kind to internal event kind.
-fn inject_kind_to_event(kind: InjectKind) -> mac_hotkey::EventKind {
-    match kind {
-        InjectKind::Down => mac_hotkey::EventKind::KeyDown,
-        InjectKind::Up => mac_hotkey::EventKind::KeyUp,
     }
 }
