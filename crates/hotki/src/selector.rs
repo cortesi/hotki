@@ -2,7 +2,7 @@
 
 use egui::{
     CentralPanel, Color32, Context, Frame, Margin, Pos2, Stroke, Vec2, ViewportBuilder,
-    ViewportCommand, ViewportId, epaint::Shadow, pos2, style::ScrollStyle, text::LayoutJob, vec2,
+    epaint::Shadow, pos2, style::ScrollStyle, text::LayoutJob, vec2,
 };
 use hotki_protocol::{FontWeight, SelectorSnapshot, SelectorStyle};
 
@@ -10,7 +10,7 @@ use crate::{
     display::DisplayMetrics,
     fonts,
     nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
-    overlay,
+    overlay::OverlayWindow,
 };
 
 /// Fixed selector width in logical pixels.
@@ -56,18 +56,12 @@ const SUBLABEL_FONT_SIZE: f32 = 12.0;
 
 /// Selector viewport state and rendering helpers.
 pub struct SelectorWindow {
-    /// Stable viewport identifier for the selector window.
-    id: ViewportId,
+    /// Shared overlay viewport state.
+    viewport: OverlayWindow,
     /// Effective selector style (colors).
     style: SelectorStyle,
     /// Current selector snapshot, when visible.
     state: Option<SelectorSnapshot>,
-    /// Cached display metrics used for positioning.
-    display: DisplayMetrics,
-    /// Last computed position (used to keep the top edge stable).
-    last_pos: Option<Pos2>,
-    /// Last applied window size.
-    last_size: Option<Vec2>,
     /// Whether NSWindow style has been applied for the current selector session.
     window_configured: bool,
 }
@@ -76,12 +70,9 @@ impl SelectorWindow {
     /// Create a new selector window instance.
     pub fn new(style: &SelectorStyle) -> Self {
         Self {
-            id: ViewportId::from_hash_of("hotki_selector"),
+            viewport: OverlayWindow::new("hotki_selector"),
             style: style.clone(),
             state: None,
-            display: DisplayMetrics::default(),
-            last_pos: None,
-            last_size: None,
             window_configured: false,
         }
     }
@@ -96,15 +87,13 @@ impl SelectorWindow {
     /// Update display metrics used for positioning and clear cached placement when the
     /// active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        if overlay::update_display_metrics(&mut self.display, metrics) {
-            self.last_pos = None;
-        }
+        self.viewport.set_display_metrics(metrics);
     }
 
     /// Replace the selector snapshot state (shows the selector if needed).
     pub fn set_state(&mut self, snapshot: SelectorSnapshot) {
         if self.state.is_none() {
-            self.last_pos = None;
+            self.viewport.reset_geometry();
             self.window_configured = false;
         }
         self.state = Some(snapshot);
@@ -113,10 +102,9 @@ impl SelectorWindow {
     /// Hide the selector window immediately.
     pub fn hide(&mut self, ctx: &Context) {
         self.state = None;
-        self.last_pos = None;
-        self.last_size = None;
+        self.viewport.reset_geometry();
         self.window_configured = false;
-        overlay::hide_viewport(ctx, self.id);
+        self.viewport.hide(ctx);
     }
 
     /// Title font for the selector header.
@@ -194,12 +182,9 @@ impl SelectorWindow {
 
     /// Center horizontally and keep the top edge stable while visible.
     fn desired_pos(&self, size: Vec2) -> Pos2 {
-        let frame = self.display.active_frame();
+        let frame = self.viewport.display().active_frame();
         let x = frame.x + (frame.width - size.x) / 2.0;
-        let y = self.last_pos.map_or_else(
-            || self.display.active_frame_top_left_y() + (frame.height - size.y) / 2.0,
-            |p| p.y,
-        );
+        let y = self.viewport.display().active_frame_top_left_y() + (frame.height - size.y) / 2.0;
         pos2(x, y)
     }
 
@@ -282,20 +267,14 @@ impl SelectorWindow {
     /// Render and update the selector viewport.
     pub fn render(&mut self, ctx: &Context) {
         let Some(snapshot) = self.state.as_ref() else {
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
+            self.viewport.hide(ctx);
             return;
         };
 
         // Keep the selector window size stable while visible; resizing the viewport on every
         // keystroke can cause perceptible flicker.
-        let size = self
-            .last_size
-            .unwrap_or_else(|| self.desired_size(ctx, snapshot));
+        let size = self.desired_size(ctx, snapshot);
         let pos = self.desired_pos(size);
-
-        if self.last_pos != Some(pos) {
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::OuterPosition(pos));
-        }
 
         let mut builder = ViewportBuilder::default()
             .with_title("Hotki Selector")
@@ -305,15 +284,7 @@ impl SelectorWindow {
             .with_has_shadow(false)
             .with_visible(true)
             .with_inner_size(size);
-        builder = overlay::sync_viewport_geometry(
-            ctx,
-            self.id,
-            &self.last_pos,
-            &self.last_size,
-            builder,
-            pos,
-            size,
-        );
+        builder = self.viewport.sync_builder(ctx, builder, pos, size);
 
         let style = self.style.clone();
         let title_font_id = self.title_font_id();
@@ -321,7 +292,7 @@ impl SelectorWindow {
         let item_font_id = self.item_font_id();
         let sublabel_font_id = self.sublabel_font_id();
         let snapshot = snapshot.clone();
-        ctx.show_viewport_immediate(self.id, builder, move |sel_ctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, move |sel_ctx, _| {
             let border = Self::rgba(style.border, BG_ALPHA);
             let bg = Self::rgba(style.bg, BG_ALPHA);
             let mut frame = Frame::new()
@@ -459,7 +430,6 @@ impl SelectorWindow {
             self.window_configured = true;
         }
 
-        self.last_pos = Some(pos);
-        self.last_size = Some(size);
+        self.viewport.record_geometry(pos, size);
     }
 }

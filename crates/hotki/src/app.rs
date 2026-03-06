@@ -1,15 +1,24 @@
 //! App-level state and event handling for the Hotki UI.
 use std::path::PathBuf;
 
-use eframe::{App, Frame};
+use eframe::{App, CreationContext, Frame};
 use egui::Context;
-use hotki_protocol::{MsgToUI, Toggle};
+use hotki_protocol::{MsgToUI, Style, Toggle};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
 use crate::{
-    details::Details, display::DisplayMetrics, hud::Hud, notification::NotificationCenter,
-    permissions::PermissionsHelp, selector::SelectorWindow,
+    details::Details,
+    display::DisplayMetrics,
+    fonts,
+    hud::Hud,
+    notification::NotificationCenter,
+    permissions::PermissionsHelp,
+    runtime::{self, ControlMsg},
+    selector::SelectorWindow,
+    tray,
 };
 
 /// Commands local to the UI process that are not part of the protocol stream.
@@ -52,6 +61,26 @@ pub struct HotkiApp {
     pub(crate) display_metrics: DisplayMetrics,
 }
 
+/// Inputs required to bootstrap the UI application and runtime.
+pub struct AppBootstrap {
+    /// Receiver for background runtime events.
+    pub rx: tokio_mpsc::UnboundedReceiver<UiEvent>,
+    /// Sender for local UI events.
+    pub tx_ui: tokio_mpsc::UnboundedSender<UiEvent>,
+    /// Sender for runtime control messages.
+    pub tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
+    /// Receiver for runtime control messages.
+    pub rx_ctrl: tokio_mpsc::UnboundedReceiver<ControlMsg>,
+    /// Active config path to send to details and runtime.
+    pub config_path: PathBuf,
+    /// Initial style used before the first server HUD update.
+    pub initial_style: Style,
+    /// Optional log filter to propagate to an auto-spawned server.
+    pub server_log_filter: Option<String>,
+    /// Whether world snapshots should be periodically dumped to logs.
+    pub dumpworld: bool,
+}
+
 impl App for HotkiApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
@@ -81,6 +110,59 @@ impl App for HotkiApp {
 }
 
 impl HotkiApp {
+    /// Construct the full UI app, spawn the runtime thread, and wire the tray.
+    pub fn new(cc: &CreationContext<'_>, bootstrap: AppBootstrap) -> Self {
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        }
+
+        fonts::install_fonts(&cc.egui_ctx);
+
+        runtime::spawn_key_runtime(
+            bootstrap.config_path.as_path(),
+            &bootstrap.tx_ui,
+            &cc.egui_ctx,
+            &bootstrap.tx_ctrl,
+            bootstrap.rx_ctrl,
+            bootstrap.server_log_filter,
+            bootstrap.dumpworld,
+        );
+
+        let tray_icon =
+            tray::build_tray_and_listeners(&bootstrap.tx_ui, &bootstrap.tx_ctrl, &cc.egui_ctx);
+
+        let mut notifications = NotificationCenter::new(&bootstrap.initial_style.notify);
+        let mut details = Details::new(bootstrap.initial_style.notify.theme.clone());
+        details.set_config_path(Some(bootstrap.config_path.clone()));
+        details.set_control_sender(bootstrap.tx_ctrl.clone());
+
+        let mut permissions = PermissionsHelp::new();
+        permissions.set_control_sender(bootstrap.tx_ctrl.clone());
+
+        let metrics = DisplayMetrics::default();
+        let mut hud = Hud::new(&bootstrap.initial_style.hud);
+        let mut selector = SelectorWindow::new(&bootstrap.initial_style.selector);
+        hud.set_display_metrics(metrics.clone());
+        selector.set_display_metrics(metrics.clone());
+        notifications.set_display_metrics(metrics.clone());
+        details.set_display_metrics(metrics.clone());
+
+        Self {
+            rx: bootstrap.rx,
+            _tray: tray_icon,
+            hud,
+            selector,
+            notifications,
+            details,
+            permissions,
+            shutdown_in_progress: false,
+            display_metrics: metrics,
+        }
+    }
+
     /// Apply a local UI-only command emitted by the runtime or control layer.
     fn handle_command(&mut self, ctx: &Context, command: UiCommand) {
         match command {

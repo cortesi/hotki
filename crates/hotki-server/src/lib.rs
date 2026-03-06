@@ -49,6 +49,7 @@ mod client;
 mod error;
 mod ipc;
 mod loop_wake;
+mod managed_server;
 mod process;
 mod server;
 

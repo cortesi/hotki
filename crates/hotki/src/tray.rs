@@ -1,5 +1,5 @@
 //! System tray icon and event wiring for the Hotki UI.
-use std::thread;
+use std::{collections::HashMap, thread};
 
 use config::themes;
 use egui::Context;
@@ -7,7 +7,7 @@ use hotki_protocol::{MsgToUI, Toggle};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::{
     Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
-    menu::{Menu, MenuEvent, MenuItem, Submenu},
+    menu::{Menu, MenuEvent, MenuId, MenuItem, Submenu},
 };
 
 use crate::{app::UiEvent, runtime::ControlMsg};
@@ -34,51 +34,81 @@ fn tray_icon_image() -> Option<Icon> {
     }
 }
 
+#[derive(Clone)]
+/// Menu actions emitted by the tray menu.
+enum TrayAction {
+    /// Reload the current config file.
+    Reload,
+    /// Open the permissions helper window.
+    OpenPermissionsHelp,
+    /// Shut the application down.
+    Quit,
+    /// Switch to the named theme.
+    Theme(String),
+}
+
+/// Build the tray menu and an id-to-action lookup table.
+fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
+    let menu = Menu::new();
+    let reload = MenuItem::new("Reload Config", true, None);
+    let help = MenuItem::new("Permissions Help", true, None);
+    let themes_menu = Submenu::new("Themes", true);
+    let quit = MenuItem::new("Quit", true, None);
+
+    let mut actions = HashMap::new();
+    actions.insert(reload.id().clone(), TrayAction::Reload);
+    actions.insert(help.id().clone(), TrayAction::OpenPermissionsHelp);
+    actions.insert(quit.id().clone(), TrayAction::Quit);
+
+    for theme_name in themes::list_themes() {
+        let theme_item = MenuItem::new(theme_name, true, None);
+        actions.insert(
+            theme_item.id().clone(),
+            TrayAction::Theme(theme_name.to_string()),
+        );
+        if let Err(error) = themes_menu.append(&theme_item) {
+            tracing::warn!("failed to append theme item: {}", error);
+        }
+    }
+
+    for item in [&reload] {
+        if let Err(error) = menu.append(item) {
+            tracing::warn!("failed to append tray menu item: {}", error);
+        }
+    }
+    if let Err(error) = menu.append(&themes_menu) {
+        tracing::warn!("failed to append themes submenu: {}", error);
+    }
+    for item in [&help, &quit] {
+        if let Err(error) = menu.append(item) {
+            tracing::warn!("failed to append tray menu item: {}", error);
+        }
+    }
+
+    (menu, actions)
+}
+
+/// Dispatch one tray action onto the runtime control channel.
+fn dispatch_tray_action(tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>, action: TrayAction) {
+    let message = match action {
+        TrayAction::Reload => ControlMsg::Reload,
+        TrayAction::OpenPermissionsHelp => ControlMsg::OpenPermissionsHelp,
+        TrayAction::Quit => ControlMsg::Shutdown,
+        TrayAction::Theme(name) => ControlMsg::SwitchTheme(name),
+    };
+
+    if tx_ctrl.send(message).is_err() {
+        tracing::warn!("failed to send tray control message");
+    }
+}
+
 /// Build the tray icon and spawn listeners for tray and menu events.
 pub fn build_tray_and_listeners(
     tx: &tokio_mpsc::UnboundedSender<UiEvent>,
     tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
     egui_ctx: &Context,
 ) -> Option<TrayIcon> {
-    let (menu, reload_id, help_id, quit_id, theme_ids) = {
-        let menu = Menu::new();
-        let reload = MenuItem::new("Reload Config", true, None);
-        let help = MenuItem::new("Permissions Help", true, None);
-
-        // Create themes submenu
-        let themes_menu = Submenu::new("Themes", true);
-        let theme_list = themes::list_themes();
-        let mut theme_menu_ids = Vec::new();
-
-        for theme_name in &theme_list {
-            let theme_item = MenuItem::new(*theme_name, true, None);
-            theme_menu_ids.push((theme_item.id().clone(), theme_name.to_string()));
-            if let Err(e) = themes_menu.append(&theme_item) {
-                tracing::warn!("failed to append theme item: {}", e);
-            }
-        }
-
-        let quit = MenuItem::new("Quit", true, None);
-        if let Err(e) = menu.append(&reload) {
-            tracing::warn!("failed to append reload menu item: {}", e);
-        }
-        if let Err(e) = menu.append(&themes_menu) {
-            tracing::warn!("failed to append themes submenu: {}", e);
-        }
-        if let Err(e) = menu.append(&help) {
-            tracing::warn!("failed to append help menu item: {}", e);
-        }
-        if let Err(e) = menu.append(&quit) {
-            tracing::warn!("failed to append quit menu item: {}", e);
-        }
-        (
-            menu,
-            reload.id().clone(),
-            help.id().clone(),
-            quit.id().clone(),
-            theme_menu_ids,
-        )
-    };
+    let (menu, actions) = build_menu();
 
     let tray_icon_opt: Option<TrayIcon> = {
         let mut builder = TrayIconBuilder::new()
@@ -130,39 +160,9 @@ pub fn build_tray_and_listeners(
         thread::spawn(move || {
             let menu_rx = MenuEvent::receiver();
             while let Ok(ev) = menu_rx.recv() {
-                if ev.id == reload_id {
-                    if tx_ctrl.send(ControlMsg::Reload).is_err() {
-                        tracing::warn!("failed to send Reload control message");
-                    }
+                if let Some(action) = actions.get(&ev.id).cloned() {
+                    dispatch_tray_action(&tx_ctrl, action);
                     egui_ctx.request_repaint();
-                } else if ev.id == help_id {
-                    if tx_ctrl.send(ControlMsg::OpenPermissionsHelp).is_err() {
-                        tracing::warn!("failed to send OpenPermissionsHelp control message");
-                    }
-                    egui_ctx.request_repaint();
-                } else if ev.id == quit_id {
-                    // Request a graceful shutdown via the runtime control path
-                    if tx_ctrl.send(ControlMsg::Shutdown).is_err() {
-                        tracing::warn!("failed to send Shutdown control message");
-                    }
-                    egui_ctx.request_repaint();
-                } else {
-                    // Check if it's a theme selection
-                    for (theme_id, theme_name) in &theme_ids {
-                        if ev.id == *theme_id {
-                            if tx_ctrl
-                                .send(ControlMsg::SwitchTheme(theme_name.clone()))
-                                .is_err()
-                            {
-                                tracing::warn!(
-                                    "failed to send SwitchTheme control message for {}",
-                                    theme_name
-                                );
-                            }
-                            egui_ctx.request_repaint();
-                            break;
-                        }
-                    }
                 }
             }
         });

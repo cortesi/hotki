@@ -1,31 +1,28 @@
-use std::{
-    collections::VecDeque,
-    fmt::Write as _,
-    path::PathBuf,
-    process::{self},
-};
+use std::{collections::VecDeque, fmt::Write as _, path::PathBuf};
 
-use egui::Context;
-use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
+/// Smoketest bridge buffering and request execution.
+mod bridge;
+/// UI event forwarding and repaint coordination.
+mod ui_sink;
+
+use bridge::BridgeState;
+use hotki_protocol::{NotifyKind, ipc::heartbeat};
 use hotki_server::{
     Client,
-    smoketest_bridge::{
-        BridgeEvent, BridgeNotifications, BridgeRequest, BridgeResponse, control_socket_path,
-        handshake_response,
-    },
+    smoketest_bridge::{BridgeEvent, BridgeResponse},
 };
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
-use tracing::{debug, error, info};
+use tracing::{error, info};
+use ui_sink::UiSink;
 
 use crate::{
-    app::{UiCommand, UiEvent},
-    control::{ControlMsg, TestCommand},
+    app::UiEvent,
     logs,
     permissions::check_permissions,
-    smoketest_bridge::init_test_bridge,
+    runtime::{ControlMsg, TestCommand},
 };
 
 /// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
@@ -34,123 +31,45 @@ pub struct ConnectionDriver {
     config_path: PathBuf,
     /// Optional log filter for any auto-spawned server process.
     server_log_filter: Option<String>,
-    /// Sender for UI events to the app thread.
-    tx_keys: mpsc::UnboundedSender<UiEvent>,
-    /// Egui context used for repaint and viewport commands.
-    egui_ctx: Context,
+    /// Collapsed UI event forwarding and repaint handling.
+    ui: UiSink,
     /// Receiver of control messages from tray/UI.
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
     /// Sender for control messages back into the runtime.
     tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
     /// Whether to log periodic world snapshots.
     dumpworld: bool,
-    /// Pending smoketest bridge socket to initialize after connect.
-    test_bridge_path: Option<PathBuf>,
-    /// Broadcast channel for smoketest bridge events.
-    bridge_events: broadcast::Sender<BridgeEvent>,
-    /// Recent notifications buffered for smoketest snapshots.
-    bridge_notifications: BridgeNotifications,
+    /// Smoketest bridge lifecycle and event buffering.
+    bridge: BridgeState,
 }
 
 impl ConnectionDriver {
-    /// Max number of notifications retained for smoketest snapshots.
-    const MAX_BRIDGE_NOTIFICATIONS: usize = 32;
-
-    /// Send a smoketest bridge event if listeners are present.
-    fn emit_bridge_event(&self, event: BridgeEvent) {
-        self.bridge_events.send(event).ok();
-    }
-
-    /// Build a bridge handshake response from current server status and notifications.
-    async fn make_handshake_response(
-        &self,
-        conn: &mut hotki_server::Connection,
-    ) -> Result<BridgeResponse, String> {
-        let status = conn
-            .get_server_status()
-            .await
-            .map_err(|err| err.to_string())?;
-        let notifications = self.bridge_notifications.snapshot();
-        Ok(handshake_response(&status, notifications))
-    }
-
     /// Construct a new driver with channels and initial config.
     pub(crate) fn new(
         config_path: PathBuf,
         server_log_filter: Option<String>,
         tx_keys: mpsc::UnboundedSender<UiEvent>,
-        egui_ctx: Context,
+        egui_ctx: egui::Context,
         rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
         tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
         dumpworld: bool,
     ) -> Self {
-        let server_socket = hotki_server::socket_path_for_pid(process::id());
-        let test_bridge_path = Some(PathBuf::from(control_socket_path(&server_socket)));
-        let (bridge_events, _rx) = broadcast::channel(128);
-
         Self {
             config_path,
             server_log_filter,
-            tx_keys,
-            egui_ctx,
+            ui: UiSink::new(tx_keys, egui_ctx),
             rx_ctrl,
             tx_ctrl_runtime,
             dumpworld,
-            test_bridge_path,
-            bridge_events,
-            bridge_notifications: BridgeNotifications::new(Self::MAX_BRIDGE_NOTIFICATIONS),
+            bridge: BridgeState::new(),
         }
-    }
-
-    /// Ensure the smoketest bridge listener is running, retrying later on error.
-    async fn ensure_test_bridge(&mut self) {
-        if let Some(path) = self.test_bridge_path.take()
-            && let Err(err) = init_test_bridge(
-                path.clone(),
-                self.tx_ctrl_runtime.clone(),
-                self.bridge_events.clone(),
-            )
-            .await
-        {
-            tracing::warn!(?err, socket = %path.display(), "failed to initialize smoketest bridge");
-            self.test_bridge_path = Some(path);
-        }
-    }
-
-    /// Request a graceful UI shutdown, falling back to hard exit after `fallback_ms`.
-    fn trigger_graceful_shutdown(&self, fallback_ms: u64) {
-        if self
-            .tx_keys
-            .send(UiEvent::Command(UiCommand::Shutdown))
-            .is_err()
-        {
-            tracing::warn!("failed to send Shutdown to app channel");
-        }
-        self.egui_ctx
-            .send_viewport_cmd(egui::ViewportCommand::Close);
-        self.egui_ctx.request_repaint();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(fallback_ms)).await;
-            process::exit(0);
-        });
     }
 
     /// Handle control messages that do not require a connected server.
     fn handle_local_control(&mut self, msg: ControlMsg) {
         match msg {
-            ControlMsg::OpenPermissionsHelp => {
-                if self
-                    .tx_keys
-                    .send(UiEvent::Command(UiCommand::ShowPermissionsHelp))
-                    .is_err()
-                {
-                    tracing::warn!("failed to send permissions help event");
-                }
-                self.egui_ctx.request_repaint();
-            }
-            ControlMsg::Notice { kind, title, text } => {
-                self.notify(kind, &title, &text);
-            }
+            ControlMsg::OpenPermissionsHelp => self.ui.show_permissions_help(),
+            ControlMsg::Notice { kind, title, text } => self.notify(kind, &title, &text),
             _ => {}
         }
     }
@@ -163,7 +82,7 @@ impl ConnectionDriver {
     ) -> bool {
         match msg {
             ControlMsg::Shutdown => {
-                self.trigger_graceful_shutdown(750);
+                self.ui.trigger_graceful_shutdown(750);
                 conn.shutdown().await.ok();
                 true
             }
@@ -181,7 +100,10 @@ impl ConnectionDriver {
                     req,
                     respond_to,
                 } = cmd;
-                let response = self.handle_test_command(conn, req).await;
+                let response = self
+                    .bridge
+                    .handle_test_command(conn, req, &mut self.config_path, &self.ui)
+                    .await;
                 respond_to.send(response).ok();
                 false
             }
@@ -202,7 +124,7 @@ impl ConnectionDriver {
         match (conn, msg) {
             (Some(conn), msg) => self.handle_connected_control(conn, msg).await,
             (None, ControlMsg::Shutdown) => {
-                self.trigger_graceful_shutdown(750);
+                self.ui.trigger_graceful_shutdown(750);
                 true
             }
             (None, ControlMsg::Reload) => {
@@ -230,15 +152,8 @@ impl ConnectionDriver {
 
     /// Record a notification and forward it to the UI.
     fn notify(&mut self, kind: NotifyKind, title: &str, text: &str) {
-        self.bridge_notifications.record(kind, title, text);
-        self.tx_keys
-            .send(UiEvent::Message(hotki_protocol::MsgToUI::Notify {
-                kind,
-                title: title.to_string(),
-                text: text.to_string(),
-            }))
-            .ok();
-        self.egui_ctx.request_repaint();
+        self.bridge.record_notification(kind, title, text);
+        self.ui.notify(kind, title, text);
     }
 
     /// Reload the current config path on the server and notify the UI.
@@ -249,120 +164,53 @@ impl ConnectionDriver {
         {
             Ok(()) => {
                 self.notify(NotifyKind::Success, "Config", "Reloaded successfully");
-                self.tx_keys
-                    .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
-                        self.config_path.clone(),
-                    ))))
-                    .ok();
+                self.ui.set_config_path(Some(self.config_path.clone()));
             }
-            Err(e) => {
-                self.notify(NotifyKind::Error, "Config", &e.to_string());
-            }
+            Err(err) => self.notify(NotifyKind::Error, "Config", &err.to_string()),
         }
-        self.egui_ctx.request_repaint();
     }
 
     /// Switch the server-side theme by name and request an updated HUD/style.
     async fn switch_theme(&mut self, conn: &mut hotki_server::Connection, name: &str) {
-        match conn.set_theme(name).await {
-            Ok(()) => {}
-            Err(e) => self.notify(NotifyKind::Error, "Theme", &e.to_string()),
-        }
-        self.egui_ctx.request_repaint();
-    }
-
-    /// Handle a smoketest bridge request against the live server.
-    async fn handle_test_command(
-        &mut self,
-        conn: &mut hotki_server::Connection,
-        req: BridgeRequest,
-    ) -> BridgeResponse {
-        match req {
-            BridgeRequest::Ping => match self.make_handshake_response(conn).await {
-                Ok(r) => r,
-                Err(err) => BridgeResponse::Err { message: err },
-            },
-            BridgeRequest::SetConfig { path } => {
-                match (BridgeRequest::SetConfig { path: path.clone() })
-                    .execute(conn)
-                    .await
-                {
-                    Ok(BridgeResponse::Ok) => {
-                        self.config_path = PathBuf::from(&path);
-                        self.tx_keys
-                            .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
-                                self.config_path.clone(),
-                            ))))
-                            .ok();
-                        BridgeResponse::Ok
-                    }
-                    Ok(other) => other,
-                    Err(err) => BridgeResponse::Err {
-                        message: err.to_string(),
-                    },
-                }
-            }
-            other => match other.execute(conn).await {
-                Ok(response) => response,
-                Err(err) => BridgeResponse::Err {
-                    message: err.to_string(),
-                },
-            },
+        if let Err(err) = conn.set_theme(name).await {
+            self.notify(NotifyKind::Error, "Theme", &err.to_string());
+        } else {
+            self.ui.request_repaint();
         }
     }
 
     /// Process a message from the server and update the UI/bridge accordingly.
     async fn handle_server_msg(
         &mut self,
-        conn: &mut hotki_server::Connection,
+        _conn: &mut hotki_server::Connection,
         msg: hotki_protocol::MsgToUI,
     ) {
         match msg {
             hotki_protocol::MsgToUI::HudUpdate { hud, displays } => {
-                if self
-                    .tx_keys
-                    .send(UiEvent::Message(hotki_protocol::MsgToUI::HudUpdate {
-                        hud: hud.clone(),
-                        displays: displays.clone(),
-                    }))
-                    .is_err()
-                {
-                    tracing::warn!("failed to send HudUpdate");
-                }
-                self.egui_ctx.request_repaint();
-                self.emit_bridge_event(BridgeEvent::Hud { hud, displays });
+                self.ui.send_message(hotki_protocol::MsgToUI::HudUpdate {
+                    hud: hud.clone(),
+                    displays: displays.clone(),
+                });
+                self.bridge.emit_event(BridgeEvent::Hud { hud, displays });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
                 self.notify(kind, &title, &text);
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
-                self.bridge_notifications.clear();
-                self.tx_keys
-                    .send(UiEvent::Message(
-                        hotki_protocol::MsgToUI::ClearNotifications,
-                    ))
-                    .ok();
-                self.egui_ctx.request_repaint();
+                self.bridge.clear_notifications();
+                self.ui
+                    .send_message(hotki_protocol::MsgToUI::ClearNotifications);
             }
             hotki_protocol::MsgToUI::SelectorUpdate(snapshot) => {
-                self.tx_keys
-                    .send(UiEvent::Message(hotki_protocol::MsgToUI::SelectorUpdate(
-                        snapshot,
-                    )))
-                    .ok();
-                self.egui_ctx.request_repaint();
+                self.ui
+                    .send_message(hotki_protocol::MsgToUI::SelectorUpdate(snapshot));
             }
             hotki_protocol::MsgToUI::SelectorHide => {
-                self.tx_keys
-                    .send(UiEvent::Message(hotki_protocol::MsgToUI::SelectorHide))
-                    .ok();
-                self.egui_ctx.request_repaint();
+                self.ui.send_message(hotki_protocol::MsgToUI::SelectorHide);
             }
             hotki_protocol::MsgToUI::ShowDetails(arg) => {
-                self.tx_keys
-                    .send(UiEvent::Message(hotki_protocol::MsgToUI::ShowDetails(arg)))
-                    .ok();
-                self.egui_ctx.request_repaint();
+                self.ui
+                    .send_message(hotki_protocol::MsgToUI::ShowDetails(arg));
             }
             hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
             hotki_protocol::MsgToUI::Log {
@@ -371,32 +219,20 @@ impl ConnectionDriver {
                 message,
             } => {
                 logs::push_server(level, target, message);
-                self.egui_ctx.request_repaint();
+                self.ui.request_repaint();
             }
             hotki_protocol::MsgToUI::Heartbeat(_) => {}
             hotki_protocol::MsgToUI::World(msg) => {
-                self.handle_world_stream(conn, msg).await;
+                self.bridge.handle_world_stream(self.dumpworld, msg);
             }
         }
-    }
-
-    /// Forward world-stream messages to the smoketest bridge.
-    async fn handle_world_stream(&self, _conn: &mut hotki_server::Connection, msg: WorldStreamMsg) {
-        if self.dumpworld {
-            debug!("World event: {:?}", msg);
-        }
-        let WorldStreamMsg::FocusChanged(app) = msg;
-        self.emit_bridge_event(BridgeEvent::Focus { app });
     }
 
     /// Connect to the server, draining any queued control messages after connect.
     pub(crate) async fn connect(&mut self) -> Option<Client> {
         let perms = check_permissions();
         if !perms.accessibility_ok || !perms.input_ok {
-            self.tx_keys
-                .send(UiEvent::Command(UiCommand::ShowPermissionsHelp))
-                .ok();
-            self.egui_ctx.request_repaint();
+            self.ui.show_permissions_help();
         }
 
         let mut rx_conn_ready = spawn_connect(self.server_log_filter.clone());
@@ -406,7 +242,7 @@ impl ConnectionDriver {
                 biased;
                 res = &mut rx_conn_ready => {
                     match res {
-                        Ok(c) => break c,
+                        Ok(client) => break client,
                         Err(_) => {
                             error!("Connect task canceled");
                             sleep(Duration::from_millis(300)).await;
@@ -423,9 +259,9 @@ impl ConnectionDriver {
         };
 
         let conn = match client.connection() {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to get client connection: {}", e);
+            Ok(conn) => conn,
+            Err(err) => {
+                error!("Failed to get client connection: {}", err);
                 return None;
             }
         };
@@ -434,20 +270,17 @@ impl ConnectionDriver {
             .await
         {
             Ok(()) => {}
-            Err(e) => {
-                error!("Failed to set config path on server: {}", e);
+            Err(err) => {
+                error!("Failed to set config path on server: {}", err);
                 return None;
             }
         };
-        self.tx_keys
-            .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
-                self.config_path.clone(),
-            ))))
-            .ok();
-        self.egui_ctx.request_repaint();
-        debug!("Config path sent to server engine");
+        self.ui.set_config_path(Some(self.config_path.clone()));
+        info!("Config path sent to server engine");
 
-        self.ensure_test_bridge().await;
+        self.bridge
+            .ensure_listener(self.tx_ctrl_runtime.clone())
+            .await;
 
         while let Some(msg) = preconnect_queue.pop_front() {
             if self
@@ -464,9 +297,9 @@ impl ConnectionDriver {
     /// Main UI event loop once connected: handles control, server events, and heartbeat.
     pub(crate) async fn drive_events(&mut self, client: &mut Client) {
         let conn = match client.connection() {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to get client connection: {}", e);
+            Ok(conn) => conn,
+            Err(err) => {
+                error!("Failed to get client connection: {}", err);
                 return;
             }
         };
@@ -503,14 +336,12 @@ impl ConnectionDriver {
                             hb_timer.as_mut().reset(TokioInstant::now() + heartbeat::timeout());
                             self.handle_server_msg(conn, msg).await;
                         }
-                        Err(e) => {
-                            match e {
+                        Err(err) => {
+                            match err {
                                 hotki_server::Error::Ipc(ref s) if s == "Event channel closed" => {
                                     tracing::info!("Event channel closed; exiting event loop");
                                 }
-                                _ => {
-                                    error!("Connection error receiving event: {}", e);
-                                }
+                                _ => error!("Connection error receiving event: {}", err),
                             }
                             break;
                         }
@@ -523,7 +354,7 @@ impl ConnectionDriver {
             }
         }
         info!("Exiting key loop");
-        self.trigger_graceful_shutdown(750);
+        self.ui.trigger_graceful_shutdown(750);
     }
 
     /// Compute the next dump timer reset and optionally log a world snapshot.
@@ -539,14 +370,16 @@ impl ConnectionDriver {
                 let focused_ctx = snap
                     .focused
                     .as_ref()
-                    .map(|f| format!("{} (pid={}) — {}", f.app, f.pid, f.title))
+                    .map(|focused| {
+                        format!("{} (pid={}) — {}", focused.app, focused.pid, focused.title)
+                    })
                     .unwrap_or_else(|| "none".to_string());
                 let display_count = snap.displays.displays.len();
                 let active_disp = snap
                     .displays
                     .active
                     .as_ref()
-                    .map(|d| d.id.to_string())
+                    .map(|display| display.id.to_string())
                     .unwrap_or_else(|| "-".into());
                 if writeln!(
                     out,
@@ -570,21 +403,21 @@ impl ConnectionDriver {
 fn spawn_connect(log_filter: Option<String>) -> oneshot::Receiver<Client> {
     let (tx_conn_ready, rx) = oneshot::channel::<Client>();
     tokio::spawn(async move {
-        let client = if let Some(f) = log_filter.clone() {
+        let client = if let Some(filter) = log_filter {
             Client::new()
                 .with_auto_spawn_server()
-                .with_server_log_filter(f)
+                .with_server_log_filter(filter)
         } else {
             Client::new().with_auto_spawn_server()
         };
         match client.connect().await {
-            Ok(c) => {
-                if tx_conn_ready.send(c).is_err() {
+            Ok(client) => {
+                if tx_conn_ready.send(client).is_err() {
                     tracing::warn!("connect-ready channel closed before send");
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to connect to hotkey server: {}", e);
+            Err(err) => {
+                tracing::error!("Failed to connect to hotkey server: {}", err);
             }
         }
     });

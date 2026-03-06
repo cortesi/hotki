@@ -4,11 +4,47 @@
 use std::{path::Path, thread};
 
 use egui::Context;
-use tokio::sync::mpsc;
+use hotki_protocol::NotifyKind;
+use hotki_server::smoketest_bridge::{BridgeCommandId, BridgeRequest, BridgeResponse};
+use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
-pub use crate::control::ControlMsg;
 use crate::{app::UiEvent, connection_driver::ConnectionDriver};
+
+/// Control messages routed to the runtime event loop.
+#[derive(Debug)]
+pub enum ControlMsg {
+    /// Reload from disk using `config_path`.
+    Reload,
+    /// Gracefully shut down the UI and exit the process.
+    Shutdown,
+    /// Request a server-side theme switch by name.
+    SwitchTheme(String),
+    /// Open the in-app permissions help view.
+    OpenPermissionsHelp,
+    /// Forward a user-facing notice into the app UI.
+    Notice {
+        /// Notice severity kind.
+        kind: NotifyKind,
+        /// Notice title text.
+        title: String,
+        /// Notice body text.
+        text: String,
+    },
+    /// Internal test bridge command (smoketest harness).
+    Test(TestCommand),
+}
+
+/// Request/response pair used to service smoketest bridge commands.
+#[derive(Debug)]
+pub struct TestCommand {
+    /// Identifier for the command being serviced.
+    pub(crate) command_id: BridgeCommandId,
+    /// The bridge request submitted by the smoketest harness.
+    pub(crate) req: BridgeRequest,
+    /// Channel used to deliver the bridge response back to the harness.
+    pub(crate) respond_to: oneshot::Sender<BridgeResponse>,
+}
 
 /// Start background key runtime and server connection driver on a dedicated thread.
 #[allow(clippy::too_many_arguments)]

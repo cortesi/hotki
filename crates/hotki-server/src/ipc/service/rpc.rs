@@ -4,6 +4,8 @@ use hotki_protocol::{
 };
 use mrpc::{RpcError, ServiceError, Value};
 
+use crate::ipc::value;
+
 /// Construct a typed `RpcError::Service` with a stable name and structured fields.
 pub(super) fn typed_err(code: crate::error::RpcErrorCode, fields: &[(&str, Value)]) -> RpcError {
     let map = fields
@@ -63,10 +65,7 @@ pub(super) fn build_snapshot_payload(
 
 /// Encode world status into an MRPC value for transport.
 pub(super) fn enc_world_status(status: &hotki_world::WorldStatus) -> Value {
-    match rmp_serde::to_vec_named(status) {
-        Ok(bytes) => Value::Binary(bytes),
-        Err(_) => Value::Nil,
-    }
+    value::binary_param(status).unwrap_or(Value::Nil)
 }
 
 /// Encode a generic UI event for notifications to clients.
@@ -79,14 +78,12 @@ pub(super) fn enc_event(event: &MsgToUI) -> crate::Result<Value> {
 pub(super) fn enc_server_status(
     status: &hotki_protocol::rpc::ServerStatusLite,
 ) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(status)?;
-    Ok(Value::Binary(bytes))
+    value::binary_param(status)
 }
 
 /// Encode a world snapshot to a msgpack binary value.
 pub(super) fn enc_world_snapshot(snapshot: &WorldSnapshotLite) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(snapshot)?;
-    Ok(Value::Binary(bytes))
+    value::binary_param(snapshot)
 }
 
 /// Decode an `inject_key` parameter from msgpack binary.

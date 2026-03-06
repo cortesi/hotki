@@ -10,7 +10,7 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
 };
 
-use crate::control::{ControlMsg, TestCommand};
+use crate::runtime::{ControlMsg, TestCommand};
 
 /// Spawn the UI-side listener that proxies smoketest bridge requests.
 pub async fn init_test_bridge(

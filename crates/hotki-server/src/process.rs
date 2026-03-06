@@ -18,6 +18,8 @@ use crate::{Error, Result};
 const TERM_WAIT_TIMEOUT_MS: u64 = 300;
 /// Poll interval while waiting for graceful exit.
 const TERM_POLL_INTERVAL_MS: u64 = 10;
+const SERVER_FLAG: &str = "--server";
+const SOCKET_FLAG: &str = "--socket";
 
 #[inline]
 fn send_sigterm(pid: libc::pid_t) {
@@ -75,6 +77,25 @@ fn terminate_child_sync(mut child: Child) {
     let _ = child.wait();
 }
 
+fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
+    let mut new_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == SOCKET_FLAG {
+            i += 1;
+            if i < args.len() {
+                i += 1;
+            }
+        } else {
+            new_args.push(args[i].clone());
+            i += 1;
+        }
+    }
+    new_args.push(SOCKET_FLAG.to_string());
+    new_args.push(socket_path.to_string());
+    *args = new_args;
+}
+
 /// Configuration for launching a hotkey server process
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessConfig {
@@ -93,9 +114,31 @@ impl ProcessConfig {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
-            args: vec!["--server".to_string()],
+            args: vec![SERVER_FLAG.to_string()],
             env: Vec::new(),
             inherit_env: true,
+        }
+    }
+
+    /// Ensure the process args contain a single `--server` flag.
+    pub(crate) fn ensure_server_mode(&mut self) {
+        if !self.args.iter().any(|arg| arg == SERVER_FLAG) {
+            self.args.insert(0, SERVER_FLAG.to_string());
+        }
+    }
+
+    /// Replace any existing `--socket <value>` pair with the supplied socket path.
+    pub(crate) fn set_socket_path(&mut self, socket_path: &str) {
+        replace_socket_arg(&mut self.args, socket_path);
+    }
+
+    /// Insert or replace an environment variable in the launch config.
+    pub(crate) fn set_env_var(&mut self, key: &str, value: impl Into<String>) {
+        let value = value.into();
+        if let Some((_, existing)) = self.env.iter_mut().find(|(name, _)| name == key) {
+            *existing = value;
+        } else {
+            self.env.push((key.to_string(), value));
         }
     }
 }

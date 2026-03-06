@@ -1,40 +1,6 @@
-use std::{env, time::Duration};
+use tracing::{debug, info};
 
-use tokio::time::{sleep, timeout};
-use tracing::{debug, error, info, warn};
-
-use crate::{
-    Error, Result, default_socket_path,
-    ipc::Connection,
-    process::{ProcessConfig, ServerProcess},
-};
-
-// Connection timing constants (internal-only; simplified API)
-const STARTUP_POLL_TIMEOUT_MS: u64 = 1000;
-const CONNECT_TIMEOUT_SECS: u64 = 5;
-const CONNECT_MAX_ATTEMPTS: u32 = 5;
-const CONNECT_RETRY_DELAY_MS: u64 = 200;
-
-/// Replace any existing `--socket <value>` pair in `args` with a new one at the end.
-fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
-    let mut new_args: Vec<String> = Vec::with_capacity(args.len() + 2);
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--socket" {
-            // Skip option and its value if present
-            i += 1;
-            if i < args.len() {
-                i += 1;
-            }
-        } else {
-            new_args.push(args[i].clone());
-            i += 1;
-        }
-    }
-    new_args.push("--socket".to_string());
-    new_args.push(socket_path.to_string());
-    *args = new_args;
-}
+use crate::{Error, Result, ipc::Connection, managed_server::ManagedServer};
 
 /// A client for connecting to a hotkey server.
 ///
@@ -48,12 +14,8 @@ fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
 ///
 /// - [`with_auto_spawn_server()`](Self::with_auto_spawn_server) - Uses the current executable with `--server` flag
 pub struct Client {
-    /// Socket path for IPC communication
-    socket_path: String,
-    /// Optional server configuration (if None, won't spawn server)
-    server_config: Option<ProcessConfig>,
-    /// The spawned server process (if any)
-    server: Option<ServerProcess>,
+    /// Managed server launch policy and spawned process state.
+    managed_server: ManagedServer,
     /// The active IPC connection (if connected)
     connection: Option<Connection>,
 }
@@ -71,9 +33,7 @@ impl Client {
     /// via [`with_connect_only`]. This matches how the UI uses the client.
     pub fn new() -> Self {
         let base = Self {
-            socket_path: default_socket_path().to_string(),
-            server_config: None,
-            server: None,
+            managed_server: ManagedServer::new(),
             connection: None,
         };
         base.with_auto_spawn_server()
@@ -84,9 +44,7 @@ impl Client {
     /// Like [`new`], this defaults to auto-spawn. Use [`with_connect_only`] to opt out.
     pub fn new_with_socket(socket_path: impl Into<String>) -> Self {
         let base = Self {
-            socket_path: socket_path.into(),
-            server_config: None,
-            server: None,
+            managed_server: ManagedServer::new_with_socket(socket_path),
             connection: None,
         };
         base.with_auto_spawn_server()
@@ -94,10 +52,7 @@ impl Client {
 
     /// Set the socket path
     pub fn with_socket_path(mut self, socket_path: impl Into<String>) -> Self {
-        self.socket_path = socket_path.into();
-        if let Some(ref mut config) = self.server_config {
-            replace_socket_arg(&mut config.args, &self.socket_path);
-        }
+        self.managed_server.set_socket_path(socket_path);
         self
     }
 
@@ -110,31 +65,7 @@ impl Client {
     /// other args, ensures a single `--server`, and replaces any prior
     /// `--socket` pair with the current `socket_path`.
     pub fn with_auto_spawn_server(mut self) -> Self {
-        if let Ok(current_exe) = env::current_exe() {
-            // Start from existing config if present to avoid clobbering env like RUST_LOG
-            let mut config = self
-                .server_config
-                .take()
-                .unwrap_or_else(|| ProcessConfig::new(current_exe.clone()));
-            // Always set executable to current exe
-            config.executable = current_exe;
-
-            // Ensure exactly one --server flag
-            if !config.args.iter().any(|a| a == "--server") {
-                config.args.insert(0, "--server".to_string());
-            }
-            replace_socket_arg(&mut config.args, &self.socket_path);
-
-            // Propagate/refresh parent PID so server exits with the UI process
-            let ppid = std::process::id().to_string();
-            if let Some((_, v)) = config.env.iter_mut().find(|(k, _)| k == "HOTKI_PARENT_PID") {
-                *v = ppid;
-            } else {
-                config.env.push(("HOTKI_PARENT_PID".to_string(), ppid));
-            }
-
-            self.server_config = Some(config);
-        }
+        self.managed_server.enable_auto_spawn_server();
         self
     }
 
@@ -145,35 +76,14 @@ impl Client {
     /// seeds one using the current executable and the correct `--server` and
     /// `--socket` args.
     pub fn with_server_log_filter(mut self, filter: impl Into<String>) -> Self {
-        let filter = filter.into();
-        // Ensure we have a config to attach env to.
-        if self.server_config.is_none()
-            && let Ok(current_exe) = env::current_exe()
-        {
-            let mut config = ProcessConfig::new(current_exe);
-            // Ensure we pass our socket path
-            config.args = vec![
-                "--server".to_string(),
-                "--socket".to_string(),
-                self.socket_path.clone(),
-            ];
-            self.server_config = Some(config);
-        }
-        if let Some(cfg) = &mut self.server_config {
-            // Replace existing RUST_LOG if present, otherwise push
-            if let Some((_, v)) = cfg.env.iter_mut().find(|(k, _)| k == "RUST_LOG") {
-                *v = filter.clone();
-            } else {
-                cfg.env.push(("RUST_LOG".to_string(), filter));
-            }
-        }
+        self.managed_server.set_server_log_filter(filter);
         self
     }
 
     /// Opt-out of auto-spawn behavior and only attempt to connect to an
     /// already-running server.
     pub fn with_connect_only(mut self) -> Self {
-        self.server_config = None;
+        self.managed_server.disable_auto_spawn();
         self
     }
 
@@ -183,115 +93,13 @@ impl Client {
     /// short, fast readiness poll before falling back to bounded retries. On
     /// success, the returned `Client` holds an active `Connection`.
     pub async fn connect(mut self) -> Result<Self> {
-        // Check if we're already connected
         if self.connection.is_some() {
             debug!("Already connected to server");
             return Ok(self);
         }
 
-        // Spawn a managed server if configured
-        let mut spawned_server: Option<ServerProcess> = None;
-        if let Some(server_config) = &self.server_config {
-            debug!("Spawning new server at {}", self.socket_path);
-            let mut server = ServerProcess::new(server_config.clone());
-            server.start().await?;
-            spawned_server = Some(server);
-        }
-
-        // Unified readiness + retry logic
-        let spawned = spawned_server.is_some();
-        match self.try_connect_with_retries(spawned).await {
-            Ok(conn) => {
-                self.connection = Some(conn);
-                if let Some(server) = spawned_server {
-                    self.server = Some(server);
-                }
-                Ok(self)
-            }
-            Err(e) => {
-                error!("Failed to connect to server: {}", e);
-                let input_ok = permissions::input_monitoring_ok();
-                let ax_ok = permissions::accessibility_ok();
-                if !input_ok {
-                    warn!("Input Monitoring not granted (CGPreflightListenEventAccess=false)");
-                }
-                if !ax_ok {
-                    warn!("Accessibility not granted (AXIsProcessTrusted=false)");
-                }
-                if let Some(mut server) = spawned_server {
-                    // Best effort cleanup
-                    let _ = server.stop().await;
-                }
-                Err(e)
-            }
-        }
-    }
-
-    /// Try to connect to the server once
-    async fn try_connect(&self) -> Result<Connection> {
-        match timeout(
-            Duration::from_secs(CONNECT_TIMEOUT_SECS),
-            Connection::connect_unix(&self.socket_path),
-        )
-        .await
-        {
-            Ok(Ok(connection)) => Ok(connection),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(Error::Ipc(format!(
-                "Connection timeout after {:?}",
-                Duration::from_secs(CONNECT_TIMEOUT_SECS)
-            ))),
-        }
-    }
-
-    /// Try to connect with retries; includes a fast startup poll if a managed
-    /// server has just been spawned.
-    async fn try_connect_with_retries(&self, spawned: bool) -> Result<Connection> {
-        let mut last_error = None;
-
-        // If we spawned a managed server, do a fast readiness poll window first.
-        if spawned {
-            debug!(
-                "Polling for server readiness (timeout: {:?})",
-                Duration::from_millis(STARTUP_POLL_TIMEOUT_MS)
-            );
-            let start_time = tokio::time::Instant::now();
-            let mut poll_interval = Duration::from_millis(10);
-            while start_time.elapsed() < Duration::from_millis(STARTUP_POLL_TIMEOUT_MS) {
-                match self.try_connect().await {
-                    Ok(conn) => {
-                        info!("Connected to spawned server in {:?}", start_time.elapsed());
-                        return Ok(conn);
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        sleep(poll_interval).await;
-                        if poll_interval < Duration::from_millis(100) {
-                            poll_interval = poll_interval.saturating_add(Duration::from_millis(10));
-                        }
-                    }
-                }
-            }
-            debug!("Startup poll window elapsed; falling back to standard retries");
-        }
-
-        for attempt in 1..=CONNECT_MAX_ATTEMPTS {
-            debug!("Connection attempt {}/{}", attempt, CONNECT_MAX_ATTEMPTS);
-            match self.try_connect().await {
-                Ok(connection) => return Ok(connection),
-                Err(e) => {
-                    debug!("Connection attempt {} failed: {}", attempt, e);
-                    last_error = Some(e);
-                    if attempt < CONNECT_MAX_ATTEMPTS {
-                        sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS)).await;
-                    }
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| {
-            Error::Ipc("Failed to connect after all retry attempts".to_string())
-        }))
+        self.connection = Some(self.managed_server.connect().await?);
+        Ok(self)
     }
 
     /// Get a reference to the connection
@@ -315,9 +123,8 @@ impl Client {
         }
 
         // Stop the server if requested and we spawned it
-        if stop_server && let Some(mut server) = self.server.take() {
-            info!("Stopping managed server");
-            server.stop().await?;
+        if stop_server {
+            self.managed_server.stop_server().await?;
         }
 
         Ok(())
@@ -332,10 +139,7 @@ impl Client {
             conn.shutdown().await?;
         }
         // If we manage a spawned server, ensure the process is stopped
-        if let Some(mut server) = self.server.take() {
-            info!("Stopping managed server process");
-            server.stop().await?;
-        }
+        self.managed_server.stop_server().await?;
         Ok(())
     }
 }
@@ -351,7 +155,7 @@ impl Drop for Client {
         }
 
         // ServerProcess has its own drop implementation
-        if self.server.is_some() {
+        if self.managed_server.has_server() {
             debug!("ManagedClient dropped with running server");
         }
     }
@@ -368,9 +172,15 @@ mod tests {
     #[test]
     fn client_default_socket_path() {
         let client = Client::new();
-        assert_eq!(client.socket_path, default_socket_path());
+        assert_eq!(
+            client.managed_server.socket_path(),
+            crate::default_socket_path()
+        );
         // auto-spawn seeded
-        let cfg = client.server_config.as_ref().expect("server config");
+        let cfg = client
+            .managed_server
+            .server_config()
+            .expect("server config");
         assert!(cfg.args.iter().any(|a| a == "--server"));
         // expect a single --socket pair
         assert_eq!(count_flag(&cfg.args, "--socket"), 1);
@@ -379,7 +189,10 @@ mod tests {
     #[test]
     fn with_socket_path_updates_args_after_auto() {
         let client = Client::new().with_socket_path("/tmp/custom.sock");
-        let cfg = client.server_config.as_ref().expect("server config");
+        let cfg = client
+            .managed_server
+            .server_config()
+            .expect("server config");
         // exactly one socket flag and value equals the client's socket_path
         assert_eq!(count_flag(&cfg.args, "--socket"), 1);
         let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
@@ -393,7 +206,10 @@ mod tests {
             .with_connect_only()
             .with_socket_path("/tmp/early.sock")
             .with_auto_spawn_server();
-        let cfg = client.server_config.as_ref().expect("server config");
+        let cfg = client
+            .managed_server
+            .server_config()
+            .expect("server config");
         assert_eq!(count_flag(&cfg.args, "--socket"), 1);
         let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
         assert_eq!(cfg.args[idx + 1], "/tmp/early.sock");
@@ -405,7 +221,10 @@ mod tests {
         let client = Client::new()
             .with_auto_spawn_server() // already auto; call again to test idempotency
             .with_auto_spawn_server();
-        let cfg = client.server_config.as_ref().expect("server config");
+        let cfg = client
+            .managed_server
+            .server_config()
+            .expect("server config");
         // Only one --server and one --socket
         assert_eq!(count_flag(&cfg.args, "--server"), 1);
         assert_eq!(count_flag(&cfg.args, "--socket"), 1);
@@ -420,7 +239,7 @@ mod tests {
             .with_connect_only()
             .with_server_log_filter("a=info")
             .with_auto_spawn_server();
-        let cfg1 = c1.server_config.as_ref().expect("server config");
+        let cfg1 = c1.managed_server.server_config().expect("server config");
         assert_eq!(
             cfg1.env
                 .iter()
@@ -433,7 +252,7 @@ mod tests {
         let c2 = Client::new()
             .with_auto_spawn_server()
             .with_server_log_filter("b=debug");
-        let cfg2 = c2.server_config.as_ref().expect("server config");
+        let cfg2 = c2.managed_server.server_config().expect("server config");
         assert_eq!(
             cfg2.env
                 .iter()
@@ -447,7 +266,7 @@ mod tests {
             .with_auto_spawn_server()
             .with_server_log_filter("first")
             .with_server_log_filter("second");
-        let cfg3 = c3.server_config.as_ref().expect("server config");
+        let cfg3 = c3.managed_server.server_config().expect("server config");
         assert_eq!(
             cfg3.env
                 .iter()

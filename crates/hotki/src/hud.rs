@@ -1,8 +1,5 @@
 //! Heads-up display (HUD) rendering for key hints.
-use egui::{
-    CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand,
-    ViewportId, pos2, vec2,
-};
+use egui::{CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, vec2};
 use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode, Pos};
 use mac_keycode::{Chord, Modifier};
 
@@ -10,7 +7,7 @@ use crate::{
     display::DisplayMetrics,
     fonts,
     nswindow::{apply_transparent_rounded, set_on_all_spaces},
-    overlay,
+    overlay::OverlayWindow,
 };
 
 /// Minimum HUD width in logical pixels.
@@ -37,20 +34,14 @@ pub struct Hud {
     visible: bool,
     /// Full HUD configuration copied from the server-provided style.
     cfg: HudStyle,
-    /// Stable viewport identifier for the HUD window.
-    id: ViewportId,
+    /// Shared overlay viewport state.
+    viewport: OverlayWindow,
     /// Rows to display.
     rows: Vec<HudRow>,
     /// Breadcrumb titles for the current mode stack.
     breadcrumbs: Vec<String>,
-    /// Last computed position (for smooth movement).
-    last_pos: Option<Pos2>,
     /// Last applied opacity.
     last_opacity: Option<f32>,
-    /// Last applied size for the HUD.
-    last_size: Option<Vec2>,
-    /// Cached display metrics used for positioning.
-    display: DisplayMetrics,
 }
 
 impl Hud {
@@ -59,13 +50,10 @@ impl Hud {
         Self {
             visible: false,
             cfg: cfg.clone(),
-            id: ViewportId::from_hash_of("hotki_hud"),
+            viewport: OverlayWindow::new("hotki_hud"),
             rows: Vec::new(),
             breadcrumbs: Vec::new(),
-            last_pos: None,
             last_opacity: None,
-            last_size: None,
-            display: DisplayMetrics::default(),
         }
     }
 
@@ -73,9 +61,8 @@ impl Hud {
     pub fn set_style(&mut self, cfg: HudStyle) {
         if self.cfg != cfg {
             self.cfg = cfg;
-            self.last_pos = None;
+            self.viewport.reset_geometry();
             self.last_opacity = None;
-            self.last_size = None;
         }
     }
 
@@ -227,8 +214,7 @@ impl Hud {
         self.rows = rows;
         self.breadcrumbs = breadcrumbs;
         if visible && !self.visible {
-            // Force a position recompute and apply on next show
-            self.last_pos = None;
+            self.viewport.reset_geometry();
         }
         self.visible = visible;
     }
@@ -238,15 +224,13 @@ impl Hud {
         self.visible = false;
         self.rows.clear();
         self.breadcrumbs.clear();
-        overlay::hide_viewport(ctx, self.id);
+        self.viewport.hide(ctx);
     }
 
     /// Update display metrics used for positioning and clear cached placement when the
     /// active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        if overlay::update_display_metrics(&mut self.display, metrics) {
-            self.last_pos = None;
-        }
+        self.viewport.set_display_metrics(metrics);
     }
 
     /// FontId for key tokens inside key boxes.
@@ -381,7 +365,7 @@ impl Hud {
 
     /// Compute the anchored top-left position for the HUD window.
     fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
-        let (sx, sy, sw, sh, _global_top) = self.display.active_screen_frame();
+        let (sx, sy, sw, sh, _global_top) = self.viewport.display().active_screen_frame();
         let m = 12.0;
         // Guard against invalid or negative sizes; ensure a minimal positive window size.
         let size = vec2(size.x.max(1.0), size.y.max(1.0));
@@ -399,9 +383,9 @@ impl Hud {
         };
         // Convert to top-left global coordinates expected by winit/egui OuterPosition
         let mut x_top = x_b + self.cfg.offset.x;
-        let mut y_top = self.display.to_top_left_y(y_b, size.y) + self.cfg.offset.y;
+        let mut y_top = self.viewport.display().to_top_left_y(y_b, size.y) + self.cfg.offset.y;
         // Clamp within the chosen screen bounds in top-left coordinates
-        let screen_top_y = self.display.active_frame_top_left_y();
+        let screen_top_y = self.viewport.display().active_frame_top_left_y();
         let min_x = sx;
         let mut max_x = sx + sw - size.x;
         let min_y = screen_top_y;
@@ -432,8 +416,7 @@ impl Hud {
     /// Render and update the HUD viewport.
     pub fn render(&mut self, ctx: &Context) {
         if !self.visible {
-            // Ensure the viewport is hidden if we were previously visible
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
+            self.viewport.hide(ctx);
             return;
         }
 
@@ -441,12 +424,6 @@ impl Hud {
         let pos = self.anchor_pos(ctx, size);
 
         // Only update window position if it changed
-        if self.last_pos != Some(pos) {
-            ctx.send_viewport_cmd_to(self.id, ViewportCommand::OuterPosition(pos));
-            // Record the last position we commanded
-            // (we'll update after building the viewport to avoid races)
-        }
-
         let mut builder = ViewportBuilder::default()
             .with_title("Hotki HUD")
             .with_decorations(false)
@@ -457,17 +434,9 @@ impl Hud {
             .with_inner_size(size)
             // Avoid specifying position here every frame; we set it on first create below.
             ;
-        builder = overlay::sync_viewport_geometry(
-            ctx,
-            self.id,
-            &self.last_pos,
-            &self.last_size,
-            builder,
-            pos,
-            size,
-        );
+        builder = self.viewport.sync_builder(ctx, builder, pos, size);
 
-        ctx.show_viewport_immediate(self.id, builder, |hud_ctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, |hud_ctx, _| {
             // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.
             if let Err(e) = apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64) {
                 tracing::error!("{}", e);
@@ -527,9 +496,8 @@ impl Hud {
         });
 
         // Update last-known state after issuing commands
-        self.last_pos = Some(pos);
+        self.viewport.record_geometry(pos, size);
         self.last_opacity = Some(self.cfg.opacity.clamp(0.0, 1.0));
-        self.last_size = Some(size);
     }
 
     // (hide method is defined alongside state setters)

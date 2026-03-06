@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
 
-use crate::{Error, Result};
+use crate::{Error, Result, ipc::value};
 
 /// Active IPC connection.
 ///
@@ -77,16 +77,7 @@ impl Connection {
         method: HotkeyMethod,
         params: &[Value],
     ) -> Result<T> {
-        match self.request(method, params).await? {
-            Value::Binary(bytes) => {
-                rmp_serde::from_slice::<T>(&bytes).map_err(|e| Error::Serialization(e.to_string()))
-            }
-            other => Err(Error::Ipc(format!(
-                "Unexpected {} response: {:?}",
-                method.as_str(),
-                other
-            ))),
-        }
+        value::binary_response(self.request(method, params).await?, method.as_str())
     }
 
     /// Send shutdown request to server (typed convenience method).
@@ -98,15 +89,15 @@ impl Connection {
     /// Set the config file path (server loads config from disk).
     pub async fn set_config_path(&mut self, path: &str) -> Result<()> {
         debug!("Sending set_config_path request");
-        let param = Value::String(path.into());
-        self.request_ok(HotkeyMethod::SetConfigPath, &[param]).await
+        self.request_ok(HotkeyMethod::SetConfigPath, &[value::string_param(path)])
+            .await
     }
 
     /// Set the active theme by name.
     pub async fn set_theme(&mut self, name: &str) -> Result<()> {
         debug!("Sending set_theme request");
-        let param = Value::String(name.into());
-        self.request_ok(HotkeyMethod::SetTheme, &[param]).await
+        self.request_ok(HotkeyMethod::SetTheme, &[value::string_param(name)])
+            .await
     }
 
     /// Receive the next UI/log event from the server.
@@ -154,48 +145,18 @@ impl Connection {
 
     /// Get a snapshot of currently bound identifiers (sorted).
     pub async fn get_bindings(&mut self) -> Result<Vec<String>> {
-        match self.request(HotkeyMethod::GetBindings, &[]).await? {
-            Value::Array(vals) => {
-                let mut out = Vec::with_capacity(vals.len());
-                for v in vals {
-                    match v {
-                        Value::String(s) => match s.as_str() {
-                            Some(v) => out.push(v.to_string()),
-                            None => {
-                                return Err(Error::Ipc(
-                                    "Unexpected non-utf8 string in get_bindings".into(),
-                                ));
-                            }
-                        },
-                        other => {
-                            return Err(Error::Ipc(format!(
-                                "Unexpected element in get_bindings: {:?}",
-                                other
-                            )));
-                        }
-                    }
-                }
-                Ok(out)
-            }
-            other => Err(Error::Ipc(format!(
-                "Unexpected get_bindings response: {:?}",
-                other
-            ))),
-        }
+        value::string_vec_response(
+            self.request(HotkeyMethod::GetBindings, &[]).await?,
+            HotkeyMethod::GetBindings.as_str(),
+        )
     }
 
     /// Get the current depth (0 = root).
     pub async fn get_depth(&mut self) -> Result<usize> {
-        match self.request(HotkeyMethod::GetDepth, &[]).await? {
-            Value::Integer(i) => match i.as_u64() {
-                Some(u) => Ok(u as usize),
-                None => Err(Error::Ipc("Invalid depth value".into())),
-            },
-            other => Err(Error::Ipc(format!(
-                "Unexpected get_depth response: {:?}",
-                other
-            ))),
-        }
+        value::usize_response(
+            self.request(HotkeyMethod::GetDepth, &[]).await?,
+            HotkeyMethod::GetDepth.as_str(),
+        )
     }
 
     /// Get a diagnostic world status snapshot.
@@ -275,8 +236,7 @@ impl MrpcConnection for ClientHandler {
 
 /// Encode `inject_key` params as msgpack binary.
 pub(crate) fn enc_inject_key(req: &InjectKeyReq) -> crate::Result<Value> {
-    let bytes = rmp_serde::to_vec_named(req)?;
-    Ok(Value::Binary(bytes))
+    value::binary_param(req)
 }
 
 /// Decode a generic UI event from a notification param value.

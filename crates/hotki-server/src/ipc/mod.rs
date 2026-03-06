@@ -7,6 +7,7 @@ mod client;
 pub use hotki_protocol::rpc;
 mod server;
 mod service;
+mod value;
 
 pub use client::Connection;
 pub(crate) use server::IPCServer;

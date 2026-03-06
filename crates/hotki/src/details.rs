@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use egui::{
     CentralPanel, Color32, Context, Layout, RichText, ScrollArea, ViewportBuilder, ViewportCommand,
-    ViewportId, vec2,
+    vec2,
 };
 use egui_extras::{Column, TableBuilder};
 use hotki_protocol::{NotifyKind, NotifyTheme};
@@ -12,7 +12,8 @@ use crate::{
     display::DisplayMetrics,
     logs::{self, Side},
     notification::BacklogEntry,
-    nswindow, overlay,
+    nswindow,
+    overlay::OverlayWindow,
     runtime::ControlMsg,
 };
 
@@ -50,8 +51,8 @@ pub struct Details {
     visible: bool,
     /// Whether AppKit cursor rects are disabled for the window.
     cursor_rects_disabled: bool,
-    /// Stable viewport identifier for the window.
-    id: ViewportId,
+    /// Shared overlay viewport state.
+    viewport: OverlayWindow,
     /// Request an initial default size on next show.
     want_initial_size: bool,
     /// Apply previously saved geometry once after opening.
@@ -60,8 +61,6 @@ pub struct Details {
     want_focus: bool,
     /// Last known geometry for this session.
     last_saved: Option<WindowGeom>,
-    /// Display geometry used for placement/clamping.
-    display: DisplayMetrics,
     /// Currently active tab.
     active_tab: Tab,
     /// Current notification theme for colors.
@@ -82,12 +81,11 @@ impl Details {
         Self {
             visible: false,
             cursor_rects_disabled: false,
-            id: ViewportId::from_hash_of("hotki_details"),
+            viewport: OverlayWindow::new("hotki_details"),
             want_initial_size: false,
             restore_pending: false,
             want_focus: false,
             last_saved: None,
-            display: DisplayMetrics::default(),
             active_tab: Tab::Notifications,
             theme,
             config_path: None,
@@ -100,6 +98,7 @@ impl Details {
     /// Make the window visible and request initial layout and focus.
     pub fn show(&mut self) {
         self.visible = true;
+        self.viewport.reset_geometry();
         self.want_initial_size = true;
         self.restore_pending = true;
         self.want_focus = true;
@@ -117,6 +116,7 @@ impl Details {
     /// Hide the window.
     pub fn hide(&mut self) {
         self.visible = false;
+        self.viewport.reset_geometry();
     }
 
     /// Update the active theme used for colors.
@@ -126,7 +126,7 @@ impl Details {
 
     /// Update display metrics used to clamp and restore window geometry.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        self.display = metrics;
+        self.viewport.set_display_metrics(metrics);
     }
 
     /// Query the current Details window geometry converted to a top-left origin.
@@ -134,7 +134,7 @@ impl Details {
         // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
         let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
         let x_t = x_b;
-        let y_t = self.display.to_top_left_y(y_b, h);
+        let y_t = self.viewport.display().to_top_left_y(y_b, h);
         Some(WindowGeom {
             pos: (x_t, y_t),
             size: (w, h),
@@ -143,7 +143,7 @@ impl Details {
 
     /// Clamp a window geometry to the current active screen's visible frame.
     fn clamp_to_active_frame(&self, g: WindowGeom) -> WindowGeom {
-        let frame = self.display.active_frame();
+        let frame = self.viewport.display().active_frame();
         let sx_b = frame.x;
         let _sy_b = frame.y;
         let sw = frame.width;
@@ -152,7 +152,7 @@ impl Details {
         // Convert active screen rect to top-left origin
         let screen_left = sx_b;
         let screen_right = sx_b + sw;
-        let screen_top_tl = self.display.active_frame_top_left_y();
+        let screen_top_tl = self.viewport.display().active_frame_top_left_y();
         let screen_bottom_tl = screen_top_tl + sh;
 
         // Ensure minimally positive size and at most screen size
@@ -222,8 +222,7 @@ impl Details {
     pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry]) {
         if !self.visible {
             self.ensure_cursor_rects_enabled();
-            // Ensure window is hidden if not visible
-            overlay::hide_viewport(ctx, self.id);
+            self.viewport.hide(ctx);
             return;
         }
 
@@ -239,7 +238,7 @@ impl Details {
             self.want_initial_size = false;
         }
 
-        ctx.show_viewport_immediate(self.id, builder, |wctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, |wctx, _| {
             if wctx.input(|i| i.viewport().close_requested()) {
                 // Close via decorations; stop rendering next frame
                 self.visible = false;
@@ -256,11 +255,11 @@ impl Details {
                 if let Some(stored) = self.last_saved {
                     let clamped = self.clamp_to_active_frame(stored);
                     wctx.send_viewport_cmd_to(
-                        self.id,
+                        self.viewport.id(),
                         ViewportCommand::InnerSize(vec2(clamped.size.0, clamped.size.1)),
                     );
                     wctx.send_viewport_cmd_to(
-                        self.id,
+                        self.viewport.id(),
                         ViewportCommand::OuterPosition(egui::pos2(clamped.pos.0, clamped.pos.1)),
                     );
                 }
@@ -268,7 +267,7 @@ impl Details {
             }
             // Focus the window when toggled on
             if self.want_focus {
-                wctx.send_viewport_cmd_to(self.id, ViewportCommand::Focus);
+                wctx.send_viewport_cmd_to(self.viewport.id(), ViewportCommand::Focus);
                 self.want_focus = false;
             }
             CentralPanel::default().show(wctx, |ui| {
@@ -388,6 +387,10 @@ impl Details {
                     .unwrap_or(true)
             {
                 self.last_saved = Some(cur);
+                self.viewport.record_geometry(
+                    egui::pos2(cur.pos.0, cur.pos.1),
+                    vec2(cur.size.0, cur.size.1),
+                );
             }
         });
     }

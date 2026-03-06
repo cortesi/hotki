@@ -1,13 +1,14 @@
 //! Transient in-app notifications with stacking, animation, and theming.
 use std::time::{Duration, Instant};
 
-use egui::{
-    Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2,
-    text::LayoutJob,
-};
+use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob};
 use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
-use crate::{display::DisplayMetrics, fonts, nswindow, overlay};
+use crate::{
+    display::DisplayMetrics,
+    fonts, nswindow,
+    overlay::{OverlayMetrics, OverlayWindow},
+};
 
 /// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
@@ -25,8 +26,8 @@ pub struct BacklogEntry {
 
 /// Runtime state for an on-screen notification viewport.
 struct NotificationItem {
-    /// Stable viewport id for this notification window.
-    id: ViewportId,
+    /// Shared overlay viewport state for this notification window.
+    viewport: OverlayWindow,
     /// Title text.
     title: String,
     /// Body text.
@@ -74,7 +75,7 @@ pub struct NotificationCenter {
     /// Window corner radius for notifications.
     radius: f32,
     /// Display metrics used for anchoring windows.
-    display: DisplayMetrics,
+    metrics: OverlayMetrics,
 }
 
 impl NotificationCenter {
@@ -91,20 +92,21 @@ impl NotificationCenter {
             counter: 0,
             theme: cfg.theme.clone(),
             radius: cfg.radius,
-            display: DisplayMetrics::default(),
+            metrics: OverlayMetrics::default(),
         }
     }
 
     /// Generate the next unique viewport id for a notification.
-    fn next_id(&mut self) -> ViewportId {
+    fn next_viewport(&mut self) -> OverlayWindow {
         self.counter += 1;
-        ViewportId::from_hash_of(format!("hotki_notify_{}", self.counter))
+        OverlayWindow::new(format!("hotki_notify_{}", self.counter))
     }
 
     /// Update display metrics used for anchoring notifications.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
-        if overlay::update_display_metrics(&mut self.display, metrics) {
+        if self.metrics.set_display_metrics(metrics) {
             for item in &mut self.items {
+                item.viewport.reset_geometry();
                 item.snap_to_target = true;
             }
         }
@@ -186,9 +188,8 @@ impl NotificationCenter {
             self.backlog.truncate(self.max_items);
         }
 
-        let id = self.next_id();
         let item = NotificationItem {
-            id,
+            viewport: self.next_viewport(),
             title,
             text,
             kind,
@@ -208,7 +209,7 @@ impl NotificationCenter {
     fn layout(&mut self, ctx: &Context) {
         let m = 12.0; // screen margin
         let gap = 8.0; // vertical gap between notifications
-        let (sx, sy, sw, sh, _global_top) = self.display.active_screen_frame();
+        let (sx, sy, sw, sh, _global_top) = self.metrics.display().active_screen_frame();
         let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
         // Guard against invalid/negative configured width.
         let width = self.width.max(1.0);
@@ -275,7 +276,7 @@ impl NotificationCenter {
             };
             // Convert to top-left coordinates for egui
             let mut x_top = x_b;
-            let y_top = self.display.to_top_left_y(pos_b, total_h);
+            let y_top = self.metrics.display().to_top_left_y(pos_b, total_h);
             // Clamp top-left x into the screen bounds.
             let min_x = sx + m;
             let mut max_x = sx + sw - width - m;
@@ -321,7 +322,7 @@ impl NotificationCenter {
         let mut any_animating = false;
 
         let (_sx_frame, sy_frame, _sw_frame, _sh_frame, _global_top) =
-            self.display.active_screen_frame();
+            self.metrics.display().active_screen_frame();
 
         // Update animation and draw. Items that would fall below the bottom of the active
         // screen are not rendered, but remain in the backlog and ephemeral list until
@@ -343,10 +344,12 @@ impl NotificationCenter {
             }
 
             // Skip rendering windows that would be completely off-screen below the bottom.
-            let pos_b = self.display.to_bottom_left_y(it.target_pos.y, it.size.y);
+            let pos_b = self
+                .metrics
+                .display()
+                .to_bottom_left_y(it.target_pos.y, it.size.y);
             if pos_b < sy_frame {
-                // Hide viewport if it was shown previously
-                overlay::hide_viewport(ctx, it.id);
+                it.viewport.hide(ctx);
                 continue;
             }
 
@@ -357,14 +360,12 @@ impl NotificationCenter {
                 .with_transparent(true)
                 .with_has_shadow(false)
                 .with_visible(true)
-                .with_inner_size(it.size)
-                .with_position(it.current_pos);
+                .with_inner_size(it.size);
+            let builder = it
+                .viewport
+                .sync_builder(ctx, builder, it.current_pos, it.size);
 
-            // Update size/pos in case of changes
-            ctx.send_viewport_cmd_to(it.id, ViewportCommand::InnerSize(it.size));
-            ctx.send_viewport_cmd_to(it.id, ViewportCommand::OuterPosition(it.current_pos));
-
-            ctx.show_viewport_immediate(it.id, builder, |nctx, _| {
+            ctx.show_viewport_immediate(it.viewport.id(), builder, |nctx, _| {
                 if let Err(e) =
                     nswindow::apply_transparent_rounded("Hotki Notification", self.radius as f64)
                 {
@@ -417,6 +418,7 @@ impl NotificationCenter {
                     });
                 });
             });
+            it.viewport.record_geometry(it.current_pos, it.size);
         }
 
         if any_animating {
@@ -442,8 +444,8 @@ impl NotificationCenter {
 
     /// Clear all current notifications immediately and hide their windows.
     pub fn clear_all(&mut self, ctx: &Context) {
-        for it in &self.items {
-            overlay::hide_viewport(ctx, it.id);
+        for it in &mut self.items {
+            it.viewport.hide(ctx);
         }
         self.items.clear();
         self.backlog.clear();

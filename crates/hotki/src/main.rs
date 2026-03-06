@@ -9,8 +9,6 @@ use clap::{Parser, Subcommand};
 use eframe::NativeOptions;
 use hotki_server::Server;
 use logging::{self as logshared, forward};
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{debug, error};
 use tracing_subscriber::{fmt, prelude::*};
@@ -21,8 +19,6 @@ use crate::logs::client_layer;
 mod app;
 /// MRPC connection driver for the UI runtime.
 mod connection_driver;
-/// Control message types shared between UI and runtime.
-mod control;
 /// Details window (notifications/config/logs/about).
 mod details;
 /// Display geometry helpers.
@@ -45,14 +41,7 @@ mod tray;
 
 use config::{load_dynamic_config, resolve_config_path, themes};
 
-use crate::{
-    app::{HotkiApp, UiEvent},
-    details::Details,
-    display::DisplayMetrics,
-    hud::Hud,
-    notification::NotificationCenter,
-    selector::SelectorWindow,
-};
+use crate::app::{AppBootstrap, HotkiApp, UiEvent};
 
 #[derive(Parser, Debug)]
 #[command(name = "hotki", about = "A macOS hotkey application", version)]
@@ -210,55 +199,19 @@ fn main() -> eframe::Result<()> {
         "hotki",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx
-                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            if let Some(mtm) = MainThreadMarker::new() {
-                let app = NSApplication::sharedApplication(mtm);
-                app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-            }
-
-            fonts::install_fonts(&cc.egui_ctx);
-
-            runtime::spawn_key_runtime(
-                config_path.as_path(),
-                &tx,
-                &cc.egui_ctx,
-                &tx_ctrl,
-                rx_ctrl,
-                Some(server_filter.clone()),
-                cli.dumpworld,
-            );
-
-            let tray_icon = tray::build_tray_and_listeners(&tx, &tx_ctrl, &cc.egui_ctx);
-
-            let mut notifications = NotificationCenter::new(&initial_style.notify);
-
-            let mut details = Details::new(initial_style.notify.theme.clone());
-            details.set_config_path(Some(config_path.clone()));
-            details.set_control_sender(tx_ctrl.clone());
-
-            let mut permissions = permissions::PermissionsHelp::new();
-            permissions.set_control_sender(tx_ctrl.clone());
-
-            let metrics = DisplayMetrics::default();
-            let mut hud = Hud::new(&initial_style.hud);
-            let mut selector = SelectorWindow::new(&initial_style.selector);
-            hud.set_display_metrics(metrics.clone());
-            selector.set_display_metrics(metrics.clone());
-            notifications.set_display_metrics(metrics.clone());
-            details.set_display_metrics(metrics.clone());
-
-            Ok(Box::new(HotkiApp {
-                rx,
-                _tray: tray_icon,
-                hud,
-                selector,
-                notifications,
-                details,
-                permissions,
-                shutdown_in_progress: false,
-                display_metrics: metrics,
-            }))
+            Ok(Box::new(HotkiApp::new(
+                cc,
+                AppBootstrap {
+                    rx,
+                    tx_ui: tx,
+                    tx_ctrl,
+                    rx_ctrl,
+                    config_path: config_path.clone(),
+                    initial_style: initial_style.clone(),
+                    server_log_filter: Some(server_filter.clone()),
+                    dumpworld: cli.dumpworld,
+                },
+            )))
         }),
     )
 }
