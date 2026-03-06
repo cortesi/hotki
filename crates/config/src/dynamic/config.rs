@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use rhai::{AST, Engine};
 
 use super::ModeRef;
-use crate::{Style, raw};
+use crate::{Style, raw, style};
 
 /// A loaded dynamic configuration consisting of a root mode closure plus style and Rhai runtime.
 pub struct DynamicConfig {
@@ -55,6 +55,6 @@ impl DynamicConfig {
             return Style::default();
         };
 
-        Style::default().overlay_raw(raw)
+        style::overlay_raw(Style::default(), raw)
     }
 }

@@ -1,5 +1,5 @@
 use hotki_protocol::{
-    App, MsgToUI,
+    FocusSnapshot, MsgToUI,
     rpc::{InjectKeyReq, InjectKind, WorldSnapshotLite},
 };
 use mrpc::{RpcError, ServiceError, Value};
@@ -56,7 +56,7 @@ pub(super) fn string_param(
 /// Build the lightweight world snapshot payload returned over MRPC.
 pub(super) fn build_snapshot_payload(
     displays: hotki_world::DisplaysSnapshot,
-    focused: Option<App>,
+    focused: Option<FocusSnapshot>,
 ) -> WorldSnapshotLite {
     WorldSnapshotLite { focused, displays }
 }

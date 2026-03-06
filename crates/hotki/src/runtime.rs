@@ -8,13 +8,13 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 pub use crate::control::ControlMsg;
-use crate::{app::AppEvent, connection_driver::ConnectionDriver};
+use crate::{app::UiEvent, connection_driver::ConnectionDriver};
 
 /// Start background key runtime and server connection driver on a dedicated thread.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_key_runtime(
     config_path: &Path,
-    tx_keys: &mpsc::UnboundedSender<AppEvent>,
+    tx_keys: &mpsc::UnboundedSender<UiEvent>,
     egui_ctx: &Context,
     tx_ctrl_runtime: &mpsc::UnboundedSender<ControlMsg>,
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,

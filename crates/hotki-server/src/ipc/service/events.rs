@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use hotki_protocol::{App, MsgToUI, WorldStreamMsg};
+use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use hotki_world::WorldView;
 use mrpc::RpcSender;
 use parking_lot::Mutex;
@@ -127,7 +127,7 @@ impl EventPipeline {
                     continue;
                 };
 
-                let app = app_for_focus_change(world.as_ref(), change).await;
+                let app = hotki_world::focus_snapshot_for_change(world.as_ref(), &change).await;
                 if let Err(err) =
                     event_tx.try_send(MsgToUI::World(WorldStreamMsg::FocusChanged(app)))
                 {
@@ -199,18 +199,5 @@ impl EventPipeline {
             }
         }
         *self.clients.lock().await = survivors;
-    }
-}
-
-async fn app_for_focus_change(
-    world: &dyn WorldView,
-    change: hotki_world::FocusChange,
-) -> Option<App> {
-    match (change.app, change.title, change.pid) {
-        (Some(app), Some(title), Some(pid)) => Some(App { app, title, pid }),
-        _ => world
-            .focused_context()
-            .await
-            .map(|(app, title, pid)| App { app, title, pid }),
     }
 }

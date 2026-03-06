@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{App, DisplaysSnapshot};
+use crate::{DisplaysSnapshot, FocusSnapshot};
 
 /// RPC request methods supported by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +102,7 @@ pub struct ServerStatusLite {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WorldSnapshotLite {
     /// Focused context, if any.
-    pub focused: Option<App>,
+    pub focused: Option<FocusSnapshot>,
     /// Display snapshot for placement decisions.
     pub displays: DisplaysSnapshot,
 }

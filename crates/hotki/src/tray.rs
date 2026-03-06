@@ -3,13 +3,14 @@ use std::thread;
 
 use config::themes;
 use egui::Context;
+use hotki_protocol::{MsgToUI, Toggle};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::{
     Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem, Submenu},
 };
 
-use crate::{app::AppEvent, runtime::ControlMsg};
+use crate::{app::UiEvent, runtime::ControlMsg};
 
 /// Embed tray icon PNG: orange for dev builds, white for production.
 static TRAY_ICON_PNG: &[u8] = if cfg!(debug_assertions) {
@@ -35,7 +36,7 @@ fn tray_icon_image() -> Option<Icon> {
 
 /// Build the tray icon and spawn listeners for tray and menu events.
 pub fn build_tray_and_listeners(
-    tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    tx: &tokio_mpsc::UnboundedSender<UiEvent>,
     tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
     egui_ctx: &Context,
 ) -> Option<TrayIcon> {
@@ -111,7 +112,10 @@ pub fn build_tray_and_listeners(
                         ..
                     } | TrayIconEvent::DoubleClick { .. }
                 ) {
-                    if tx.send(AppEvent::ShowDetails).is_err() {
+                    if tx
+                        .send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+                        .is_err()
+                    {
                         tracing::warn!("failed to send ShowDetails event: UI channel closed");
                     }
                     egui_ctx.request_repaint();

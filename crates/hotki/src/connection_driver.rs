@@ -6,7 +6,7 @@ use std::{
 };
 
 use egui::Context;
-use hotki_protocol::{NotifyKind, Toggle, WorldStreamMsg, ipc::heartbeat};
+use hotki_protocol::{NotifyKind, WorldStreamMsg, ipc::heartbeat};
 use hotki_server::{
     Client,
     smoketest_bridge::{
@@ -21,7 +21,7 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use crate::{
-    app::AppEvent,
+    app::{UiCommand, UiEvent},
     control::{ControlMsg, TestCommand},
     logs,
     permissions::check_permissions,
@@ -35,7 +35,7 @@ pub struct ConnectionDriver {
     /// Optional log filter for any auto-spawned server process.
     server_log_filter: Option<String>,
     /// Sender for UI events to the app thread.
-    tx_keys: mpsc::UnboundedSender<AppEvent>,
+    tx_keys: mpsc::UnboundedSender<UiEvent>,
     /// Egui context used for repaint and viewport commands.
     egui_ctx: Context,
     /// Receiver of control messages from tray/UI.
@@ -78,7 +78,7 @@ impl ConnectionDriver {
     pub(crate) fn new(
         config_path: PathBuf,
         server_log_filter: Option<String>,
-        tx_keys: mpsc::UnboundedSender<AppEvent>,
+        tx_keys: mpsc::UnboundedSender<UiEvent>,
         egui_ctx: Context,
         rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
         tx_ctrl_runtime: mpsc::UnboundedSender<ControlMsg>,
@@ -119,7 +119,11 @@ impl ConnectionDriver {
 
     /// Request a graceful UI shutdown, falling back to hard exit after `fallback_ms`.
     fn trigger_graceful_shutdown(&self, fallback_ms: u64) {
-        if self.tx_keys.send(AppEvent::Shutdown).is_err() {
+        if self
+            .tx_keys
+            .send(UiEvent::Command(UiCommand::Shutdown))
+            .is_err()
+        {
             tracing::warn!("failed to send Shutdown to app channel");
         }
         self.egui_ctx
@@ -135,7 +139,11 @@ impl ConnectionDriver {
     fn handle_local_control(&mut self, msg: ControlMsg) {
         match msg {
             ControlMsg::OpenPermissionsHelp => {
-                if self.tx_keys.send(AppEvent::ShowPermissionsHelp).is_err() {
+                if self
+                    .tx_keys
+                    .send(UiEvent::Command(UiCommand::ShowPermissionsHelp))
+                    .is_err()
+                {
                     tracing::warn!("failed to send permissions help event");
                 }
                 self.egui_ctx.request_repaint();
@@ -224,11 +232,11 @@ impl ConnectionDriver {
     fn notify(&mut self, kind: NotifyKind, title: &str, text: &str) {
         self.bridge_notifications.record(kind, title, text);
         self.tx_keys
-            .send(AppEvent::Notify {
+            .send(UiEvent::Message(hotki_protocol::MsgToUI::Notify {
                 kind,
                 title: title.to_string(),
                 text: text.to_string(),
-            })
+            }))
             .ok();
         self.egui_ctx.request_repaint();
     }
@@ -242,7 +250,9 @@ impl ConnectionDriver {
             Ok(()) => {
                 self.notify(NotifyKind::Success, "Config", "Reloaded successfully");
                 self.tx_keys
-                    .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                    .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
+                        self.config_path.clone(),
+                    ))))
                     .ok();
             }
             Err(e) => {
@@ -280,7 +290,9 @@ impl ConnectionDriver {
                     Ok(BridgeResponse::Ok) => {
                         self.config_path = PathBuf::from(&path);
                         self.tx_keys
-                            .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+                            .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
+                                self.config_path.clone(),
+                            ))))
                             .ok();
                         BridgeResponse::Ok
                     }
@@ -309,10 +321,10 @@ impl ConnectionDriver {
             hotki_protocol::MsgToUI::HudUpdate { hud, displays } => {
                 if self
                     .tx_keys
-                    .send(AppEvent::HudUpdate {
+                    .send(UiEvent::Message(hotki_protocol::MsgToUI::HudUpdate {
                         hud: hud.clone(),
                         displays: displays.clone(),
-                    })
+                    }))
                     .is_err()
                 {
                     tracing::warn!("failed to send HudUpdate");
@@ -325,33 +337,31 @@ impl ConnectionDriver {
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
                 self.bridge_notifications.clear();
-                self.tx_keys.send(AppEvent::ClearNotifications).ok();
+                self.tx_keys
+                    .send(UiEvent::Message(
+                        hotki_protocol::MsgToUI::ClearNotifications,
+                    ))
+                    .ok();
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::SelectorUpdate(snapshot) => {
                 self.tx_keys
-                    .send(AppEvent::SelectorUpdate {
-                        selector: Box::new(snapshot),
-                    })
+                    .send(UiEvent::Message(hotki_protocol::MsgToUI::SelectorUpdate(
+                        snapshot,
+                    )))
                     .ok();
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::SelectorHide => {
-                self.tx_keys.send(AppEvent::SelectorHide).ok();
+                self.tx_keys
+                    .send(UiEvent::Message(hotki_protocol::MsgToUI::SelectorHide))
+                    .ok();
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::ShowDetails(arg) => {
-                match arg {
-                    Toggle::On => {
-                        self.tx_keys.send(AppEvent::ShowDetails).ok();
-                    }
-                    Toggle::Off => {
-                        self.tx_keys.send(AppEvent::HideDetails).ok();
-                    }
-                    Toggle::Toggle => {
-                        self.tx_keys.send(AppEvent::ToggleDetails).ok();
-                    }
-                }
+                self.tx_keys
+                    .send(UiEvent::Message(hotki_protocol::MsgToUI::ShowDetails(arg)))
+                    .ok();
                 self.egui_ctx.request_repaint();
             }
             hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
@@ -383,7 +393,9 @@ impl ConnectionDriver {
     pub(crate) async fn connect(&mut self) -> Option<Client> {
         let perms = check_permissions();
         if !perms.accessibility_ok || !perms.input_ok {
-            self.tx_keys.send(AppEvent::ShowPermissionsHelp).ok();
+            self.tx_keys
+                .send(UiEvent::Command(UiCommand::ShowPermissionsHelp))
+                .ok();
             self.egui_ctx.request_repaint();
         }
 
@@ -428,7 +440,9 @@ impl ConnectionDriver {
             }
         };
         self.tx_keys
-            .send(AppEvent::SetConfigPath(Some(self.config_path.clone())))
+            .send(UiEvent::Command(UiCommand::SetConfigPath(Some(
+                self.config_path.clone(),
+            ))))
             .ok();
         self.egui_ctx.request_repaint();
         debug!("Config path sent to server engine");

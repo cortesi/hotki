@@ -152,7 +152,7 @@ pub enum BridgeEvent {
     /// Focus context changed (read-only world stream).
     Focus {
         /// Optional focused app/title/pid context (None when unfocused).
-        app: Option<hotki_protocol::App>,
+        app: Option<hotki_protocol::FocusSnapshot>,
     },
 }
 

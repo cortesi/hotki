@@ -45,7 +45,7 @@ use core_graphics::{
 };
 pub use events::EventCursor;
 use events::{DEFAULT_EVENT_CAPACITY, EventHub as InternalHub};
-pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot};
+pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot, FocusSnapshot};
 use parking_lot::RwLock;
 use permissions::{accessibility_ok, screen_recording_ok};
 use serde::{Deserialize, Serialize};
@@ -89,19 +89,61 @@ impl WorldWindow {
     }
 }
 
+/// Convert a world window snapshot into the shared focus snapshot type.
+#[must_use]
+pub fn focus_snapshot(window: &WorldWindow) -> FocusSnapshot {
+    FocusSnapshot {
+        app: window.app.clone(),
+        title: window.title.clone(),
+        pid: window.pid,
+        display_id: window.display_id,
+    }
+}
+
+/// Resolve a focused snapshot from a focus change, falling back to the current world state.
+pub async fn focus_snapshot_for_change(
+    world: &dyn WorldView,
+    change: &FocusChange,
+) -> Option<FocusSnapshot> {
+    if let Some(focus) = change.focus.clone() {
+        return Some(focus);
+    }
+    let key = change.key?;
+    snapshot_for_key(world, key).await
+}
+
+/// Subscribe to world events together with the current focused snapshot, if any.
+pub async fn subscribe_with_snapshot(
+    world: &dyn WorldView,
+) -> (EventCursor, Option<FocusSnapshot>) {
+    let cursor = world.subscribe();
+    let focus = focused_snapshot(world).await;
+    (cursor, focus)
+}
+
+/// Resolve a specific window key into the shared focus snapshot type.
+pub async fn snapshot_for_key(world: &dyn WorldView, key: WindowKey) -> Option<FocusSnapshot> {
+    world
+        .snapshot()
+        .await
+        .into_iter()
+        .find(|window| window.world_id() == key)
+        .map(|window| focus_snapshot(&window))
+}
+
+/// Resolve the currently focused snapshot from the world state, if any.
+pub async fn focused_snapshot(world: &dyn WorldView) -> Option<FocusSnapshot> {
+    let key = world.focused().await?;
+    snapshot_for_key(world, key).await
+}
+
 /// Context describing the current focus selection accompanying focus events.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusChange {
     /// Window key for the focused window, when available.
     pub key: Option<WindowKey>,
-    /// Focused window's application name.
-    pub app: Option<String>,
-    /// Focused window's title.
-    pub title: Option<String>,
-    /// Focused window's process identifier.
-    pub pid: Option<i32>,
-    /// Focused window's display identifier, if known.
-    pub display_id: Option<u32>,
+    /// Shared focused window snapshot, if available.
+    pub focus: Option<FocusSnapshot>,
 }
 
 /// World events stream payloads.
@@ -180,34 +222,11 @@ pub trait WorldView: Send + Sync {
         deadline: TokioInstant,
     ) -> Option<WorldEvent>;
 
-    /// Subscribe and obtain a derived focus context `(app, title, pid)` if any.
-    async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>);
-
     /// Retrieve the latest world snapshot.
     async fn snapshot(&self) -> Vec<WorldWindow>;
 
-    /// Resolve a [`WindowKey`] to its current [`WorldWindow`], if present.
-    async fn get(&self, key: WindowKey) -> Option<WorldWindow>;
-
     /// Retrieve the currently focused window key, if any.
     async fn focused(&self) -> Option<WindowKey>;
-
-    /// Retrieve the currently focused window with full metadata, if any.
-    async fn focused_window(&self) -> Option<WorldWindow>;
-
-    /// Retrieve a lightweight `(app, title, pid)` tuple for the focused window, if any.
-    async fn focused_context(&self) -> Option<(String, String, i32)>;
-
-    /// Resolve a `WindowKey` into its context tuple if the window is still present.
-    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)>;
-
-    /// Resolve a window by process identifier and title, if still present.
-    async fn window_by_pid_title(&self, pid: i32, title: &str) -> Option<WorldWindow> {
-        self.snapshot()
-            .await
-            .into_iter()
-            .find(|w| w.pid == pid && w.title == title)
-    }
 
     /// Fetch current capability and permission information.
     async fn capabilities(&self) -> Capabilities;
@@ -243,29 +262,8 @@ impl WorldState {
         self.snapshot.read().clone()
     }
 
-    async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-        self.snapshot
-            .read()
-            .iter()
-            .find(|w| w.pid == key.pid && w.id == key.id)
-            .cloned()
-    }
-
     async fn focused(&self) -> Option<WindowKey> {
         *self.focused.read()
-    }
-
-    async fn focused_window(&self) -> Option<WorldWindow> {
-        let key = self.focused().await?;
-        self.get(key).await
-    }
-
-    async fn focused_context(&self) -> Option<(String, String, i32)> {
-        self.focused_window().await.map(|w| (w.app, w.title, w.pid))
-    }
-
-    async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-        self.get(key).await.map(|w| (w.app, w.title, w.pid))
     }
 
     async fn capabilities(&self) -> Capabilities {
@@ -384,10 +382,12 @@ impl PollingWorld {
             *focus_guard = focused_key;
             self.hub.publish(WorldEvent::FocusChanged(FocusChange {
                 key: focused_key,
-                app: platform.focused.as_ref().map(|w| w.app.clone()),
-                title: platform.focused.as_ref().map(|w| w.title.clone()),
-                pid: platform.focused.as_ref().map(|w| w.pid),
-                display_id: platform.focused.as_ref().and_then(|w| w.display_id),
+                focus: platform.focused.as_ref().map(|window| FocusSnapshot {
+                    app: window.app.clone(),
+                    title: window.title.clone(),
+                    pid: window.pid,
+                    display_id: window.display_id,
+                }),
             }));
         }
 
@@ -425,34 +425,12 @@ macro_rules! impl_world_view_common {
                 self.hub.next_event_until(cursor, deadline).await
             }
 
-            async fn subscribe_with_context(&self) -> (EventCursor, Option<(String, String, i32)>) {
-                let cursor = self.subscribe();
-                let ctx = self.focused_context().await;
-                (cursor, ctx)
-            }
-
             async fn snapshot(&self) -> Vec<WorldWindow> {
                 self.inner.snapshot().await
             }
 
-            async fn get(&self, key: WindowKey) -> Option<WorldWindow> {
-                self.inner.get(key).await
-            }
-
             async fn focused(&self) -> Option<WindowKey> {
                 self.inner.focused().await
-            }
-
-            async fn focused_window(&self) -> Option<WorldWindow> {
-                self.inner.focused_window().await
-            }
-
-            async fn focused_context(&self) -> Option<(String, String, i32)> {
-                self.inner.focused_context().await
-            }
-
-            async fn context_for_key(&self, key: WindowKey) -> Option<(String, String, i32)> {
-                self.inner.context_for_key(key).await
             }
 
             async fn capabilities(&self) -> Capabilities {
@@ -746,17 +724,11 @@ impl TestWorld {
                     .find(|w| w.world_id() == key)
                     .map(|w| FocusChange {
                         key: Some(key),
-                        app: Some(w.app.clone()),
-                        title: Some(w.title.clone()),
-                        pid: Some(w.pid),
-                        display_id: w.display_id,
+                        focus: Some(focus_snapshot(w)),
                     })
                     .unwrap_or(FocusChange {
                         key: Some(key),
-                        app: None,
-                        title: None,
-                        pid: Some(key.pid),
-                        display_id: None,
+                        focus: None,
                     })
             } else {
                 FocusChange::default()

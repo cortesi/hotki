@@ -10,6 +10,8 @@ mod config;
 pub(crate) mod constants;
 /// Rhai DSL registration and builder types.
 mod dsl;
+/// Engine-facing bridge API.
+pub mod engine;
 /// Handler execution helpers.
 mod handler;
 /// Config loading and Rhai engine setup.
@@ -35,9 +37,10 @@ pub use handler::{HandlerResult, execute_handler, execute_selector_handler};
 pub use loader::load_dynamic_config;
 #[cfg(test)]
 pub(crate) use loader::load_dynamic_config_from_string;
-pub use render::{RenderOutput, render_stack, resolve_binding};
+#[cfg(test)]
+pub(crate) use render::render_stack;
 pub use selector::{SelectorConfig, SelectorItem, SelectorItems};
-pub use types::{
+pub(crate) use types::{
     ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, HudRow, HudRowStyle,
     ModeCtx, ModeFrame, ModeId, ModeRef, NavRequest, RenderedState, RepeatSpec, StyleOverlay,
 };

@@ -31,7 +31,10 @@ async fn testworld_snapshot_and_focus() {
         if let Some(ev) = world.next_event_until(&mut cursor, deadline).await
             && matches!(
                 ev,
-                WorldEvent::FocusChanged(FocusChange { pid: Some(42), .. })
+                WorldEvent::FocusChanged(FocusChange {
+                    focus: Some(hotki_protocol::FocusSnapshot { pid: 42, .. }),
+                    ..
+                })
             )
         {
             got_focus = true;

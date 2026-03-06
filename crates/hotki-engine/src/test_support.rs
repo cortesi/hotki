@@ -113,10 +113,12 @@ pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32
     world.set_snapshot(vec![window], Some(key));
     world.push_event(WorldEvent::FocusChanged(FocusChange {
         key: Some(key),
-        app: Some(app.into()),
-        title: Some(title.into()),
-        pid: Some(pid),
-        display_id: None,
+        focus: Some(hotki_protocol::FocusSnapshot {
+            app: app.into(),
+            title: title.into(),
+            pid,
+            display_id: None,
+        }),
     }));
 
     let ready = wait_snapshot_until(world, 200, |snap| {

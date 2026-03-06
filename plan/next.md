@@ -113,7 +113,7 @@ abstraction or a small executor enum.
 
 These items reduce duplicated models and expose cleaner cross-crate boundaries.
 
-1. [ ] Consolidate shared resolved UI/style types into `hotki-protocol`.
+1. [x] Consolidate shared resolved UI/style types into `hotki-protocol`.
 Refs: `crates/config/src/types.rs:5-145`, `crates/config/src/style.rs:48-179`, and
 `crates/hotki-protocol/src/lib.rs:22-317`.
 Why: `Mode`, `FontWeight`, `Pos`, `Offset`, `NotifyPos`, and resolved HUD/notification style
@@ -122,7 +122,7 @@ types exist in both crates, then `hotki-engine` manually converts between them a
 Refactor direction: let `config` own parsing and overlay logic, but emit the canonical resolved
 types from `hotki-protocol`.
 
-2. [ ] Narrow the engine-facing surface of `config::dynamic`.
+2. [x] Narrow the engine-facing surface of `config::dynamic`.
 Refs: `crates/config/src/dynamic/mod.rs:31-41`,
 `crates/hotki-engine/src/lib.rs:373-452`, and `crates/hotki-engine/src/runtime.rs:1-46`.
 Why: `ModeFrame`, `RenderedState`, `BindingKind`, `NavRequest`, `Effect`, and renderer helpers
@@ -130,14 +130,14 @@ leak directly into the engine, tightly coupling both crates.
 Refactor direction: introduce a smaller engine bridge API in `config::dynamic` and make the
 frame/render machinery crate-private.
 
-3. [ ] Split `hotki-protocol` into focused modules instead of one root file handling style,
+3. [x] Split `hotki-protocol` into focused modules instead of one root file handling style,
        display geometry, event transport, channel helpers, heartbeat tuning, and RPC types.
 Refs: `crates/hotki-protocol/src/lib.rs:11-317` and `:465-590`.
 Why: the seams are already clear, but every change currently lands in one giant file.
 Refactor direction: create `style`, `display`, `ui`, and `ipc`/`rpc` modules and re-export
 intentionally.
 
-4. [ ] Reduce the `WorldView` trait to a smaller core and introduce one named focus snapshot
+4. [x] Reduce the `WorldView` trait to a smaller core and introduce one named focus snapshot
        type shared across world and protocol.
 Refs: `crates/hotki-world/src/lib.rs:170-223`, `:241-281`, and
 `crates/hotki-protocol/src/lib.rs:11-20`.
@@ -148,7 +148,7 @@ Refactor direction: keep `snapshot()`, `focused()`, `displays()`, `status()`, an
 `subscribe()` in the trait, and move derived helpers to free functions or extension methods
 around a shared `FocusSnapshot`.
 
-5. [ ] Remove the one-to-one duplication between `MsgToUI` and `AppEvent`.
+5. [x] Remove the one-to-one duplication between `MsgToUI` and `AppEvent`.
 Refs: `crates/hotki/src/app.rs:15-54`, `crates/hotki/src/connection_driver.rs:335-403`, and
 `crates/hotki-protocol/src/lib.rs:532-587`.
 Why: the UI transport layer is translated almost verbatim, which creates a maintenance fork

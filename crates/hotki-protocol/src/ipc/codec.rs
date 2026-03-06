@@ -152,11 +152,14 @@ mod tests {
                 message: "hello".into(),
             },
             MsgToUI::Heartbeat(123456),
-            MsgToUI::World(crate::WorldStreamMsg::FocusChanged(Some(crate::App {
-                app: "X".into(),
-                title: "Y".into(),
-                pid: 1,
-            }))),
+            MsgToUI::World(crate::WorldStreamMsg::FocusChanged(Some(
+                crate::FocusSnapshot {
+                    app: "X".into(),
+                    title: "Y".into(),
+                    pid: 1,
+                    display_id: None,
+                },
+            ))),
         ];
 
         for msg in samples {

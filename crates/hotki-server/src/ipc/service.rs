@@ -227,10 +227,7 @@ impl HotkeyService {
         let engine = self.engine().await;
         let world = engine.world();
         let displays = world.displays().await;
-        let focused_app = world
-            .focused_context()
-            .await
-            .map(|(app, title, pid)| hotki_protocol::App { app, title, pid });
+        let focused_app = hotki_world::focused_snapshot(world.as_ref()).await;
         let payload = build_snapshot_payload(displays, focused_app);
         enc_world_snapshot(&payload).map_err(|err| {
             typed_err(

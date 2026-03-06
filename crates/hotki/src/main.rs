@@ -46,7 +46,7 @@ mod tray;
 use config::{load_dynamic_config, resolve_config_path, themes};
 
 use crate::{
-    app::{AppEvent, HotkiApp},
+    app::{HotkiApp, UiEvent},
     details::Details,
     display::DisplayMetrics,
     hud::Hud,
@@ -203,7 +203,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    let (tx, rx) = tokio_mpsc::unbounded_channel::<AppEvent>();
+    let (tx, rx) = tokio_mpsc::unbounded_channel::<UiEvent>();
     let (tx_ctrl, rx_ctrl) = tokio_mpsc::unbounded_channel();
 
     eframe::run_native(

@@ -9,7 +9,7 @@ use super::{
     RenderedState, StyleOverlay, binding_style::ParsedBindingStyle, dsl::ModeBuilder,
     validation::extract_validation_error,
 };
-use crate::{Error, NotifyKind, Style, error::excerpt_at};
+use crate::{Error, NotifyKind, Style, error::excerpt_at, style};
 
 /// Output of rendering a full stack, including user-visible warnings.
 #[derive(Debug, Clone)]
@@ -202,7 +202,7 @@ fn compute_effective_style(base: &Style, stack: &[ModeFrame]) -> Style {
         overlays.push(raw.clone());
     }
 
-    base.clone().overlay_all_raw(&overlays)
+    style::overlay_all_raw(base.clone(), &overlays)
 }
 
 /// Flatten the rendered stack into an active binding list (top + parent globals).
@@ -250,7 +250,7 @@ fn build_hud_rows(
         }
 
         let style = resolved.overlay.map(|ov| {
-            let styled = base_style.clone().overlay_raw(&ov);
+            let styled = style::overlay_raw(base_style.clone(), &ov);
             HudRowStyle {
                 key_fg: styled.hud.key_fg,
                 key_bg: styled.hud.key_bg,

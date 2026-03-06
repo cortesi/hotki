@@ -3,6 +3,7 @@ mod tests {
     use crate::{
         parse_rgb,
         raw::{Maybe, RawHud, RawNotify, RawNotifyStyle, RawStyle},
+        style::overlay_raw,
         themes::load_theme,
     };
 
@@ -112,7 +113,7 @@ mod tests {
             ..RawStyle::default()
         };
 
-        let final_style = base.clone().overlay_raw(&user_overlay);
+        let final_style = overlay_raw(base.clone(), &user_overlay);
 
         assert_eq!(final_style.hud.font_size, 20.0);
         assert_eq!(final_style.hud.title_fg, parse_rgb("red").unwrap());
@@ -138,10 +139,10 @@ mod tests {
             ..RawStyle::default()
         };
 
-        let final_style = base.clone().overlay_raw(&user_overlay);
+        let final_style = overlay_raw(base.clone(), &user_overlay);
 
         assert_eq!(final_style.notify.timeout, 3.0);
-        let theme = final_style.notify.theme();
+        let theme = final_style.notify.theme.clone();
         assert_eq!(theme.info.bg, parse_rgb("#333333").unwrap());
         // Width should remain from base
         assert_eq!(final_style.notify.width, base.notify.width);

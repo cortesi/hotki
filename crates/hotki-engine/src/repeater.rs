@@ -16,6 +16,7 @@ use std::{
 };
 
 use config::NotifyKind;
+use hotki_protocol::FocusSnapshot;
 use mac_keycode::Chord;
 use parking_lot::Mutex;
 use tokio::time::Duration;
@@ -163,8 +164,8 @@ pub type OnShellRepeat = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    /// Focus context providing current (app, title, pid).
-    focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+    /// Focus snapshot providing the current target PID.
+    focus_ctx: Arc<Mutex<Option<FocusSnapshot>>>,
     relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
@@ -179,7 +180,7 @@ pub struct Repeater {
 impl Repeater {
     /// Create a repeater backed by a focus context (world-derived).
     pub fn new_with_ctx(
-        focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+        focus_ctx: Arc<Mutex<Option<FocusSnapshot>>>,
         relay: RelayHandler,
         notifier: NotificationDispatcher,
     ) -> Self {
@@ -200,7 +201,11 @@ impl Repeater {
 
     /// Get the current focused PID, or -1 if unknown.
     fn current_pid(&self) -> i32 {
-        self.focus_ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1)
+        self.focus_ctx
+            .lock()
+            .as_ref()
+            .map(|focus| focus.pid)
+            .unwrap_or(-1)
     }
 
     /* tests moved to end of module */
@@ -412,7 +417,11 @@ impl Repeater {
         let running = Arc::new(AtomicBool::new(false));
         let running_flag = running.clone();
         self.spawn_repeat_loop(id, repeat, move || {
-            let pid = focus_ctx.lock().as_ref().map(|t| t.2).unwrap_or(-1);
+            let pid = focus_ctx
+                .lock()
+                .as_ref()
+                .map(|focus| focus.pid)
+                .unwrap_or(-1);
             if pid != -1 && pid != last_pid {
                 // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);
@@ -486,7 +495,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn shell_first_run_coalesces_then_unblocks_repeats() {
-        let focus_ctx = Arc::new(Mutex::new(None::<(String, String, i32)>));
+        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
         let relay = crate::RelayHandler::new_with_enabled(false);
         let (tx, _rx) = mpsc::channel(16);
         let notifier = crate::notification::NotificationDispatcher::new(tx);

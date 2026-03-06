@@ -111,27 +111,33 @@ pub struct RawNotifyStyle {
 
 impl RawNotifyStyle {
     /// Convert to final NotifyStyle with defaults applied
-    pub fn into_notify_style(self, defaults: RawNotifyWindowStyle) -> RawNotifyWindowStyle {
-        RawNotifyWindowStyle {
-            bg: self.bg.into_option().or(defaults.bg),
-            title_fg: self.title_fg.into_option().or(defaults.title_fg),
-            body_fg: self.body_fg.into_option().or(defaults.body_fg),
+    pub fn into_notify_style(self, defaults: crate::NotifyWindowStyle) -> crate::NotifyWindowStyle {
+        crate::NotifyWindowStyle {
+            bg: color_or(self.bg.as_option().map(String::as_str), defaults.bg),
+            title_fg: color_or(
+                self.title_fg.as_option().map(String::as_str),
+                defaults.title_fg,
+            ),
+            body_fg: color_or(
+                self.body_fg.as_option().map(String::as_str),
+                defaults.body_fg,
+            ),
             title_font_size: self
                 .title_font_size
                 .into_option()
-                .or(defaults.title_font_size),
+                .unwrap_or(defaults.title_font_size),
             title_font_weight: self
                 .title_font_weight
                 .into_option()
-                .or(defaults.title_font_weight),
+                .unwrap_or(defaults.title_font_weight),
             body_font_size: self
                 .body_font_size
                 .into_option()
-                .or(defaults.body_font_size),
+                .unwrap_or(defaults.body_font_size),
             body_font_weight: self
                 .body_font_weight
                 .into_option()
-                .or(defaults.body_font_weight),
+                .unwrap_or(defaults.body_font_weight),
             icon: self.icon.into_option().or(defaults.icon),
         }
     }
@@ -149,35 +155,6 @@ impl RawNotifyStyle {
             icon: merge_maybe(&self.icon, &other.icon),
         }
     }
-}
-
-/// Raw notification window styling read from configuration (string colors, optional sizes/weights).
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct RawNotifyWindowStyle {
-    /// Background color name or hex string.
-    #[serde(default)]
-    pub bg: Option<String>,
-    /// Title foreground color name or hex string.
-    #[serde(default)]
-    pub title_fg: Option<String>,
-    /// Body foreground color name or hex string.
-    #[serde(default)]
-    pub body_fg: Option<String>,
-    /// Title font size in points.
-    #[serde(default)]
-    pub title_font_size: Option<f32>,
-    /// Title font weight.
-    #[serde(default)]
-    pub title_font_weight: Option<FontWeight>,
-    /// Body font size in points.
-    #[serde(default)]
-    pub body_font_size: Option<f32>,
-    /// Body font weight.
-    #[serde(default)]
-    pub body_font_weight: Option<FontWeight>,
-    /// Optional leading icon string.
-    #[serde(default)]
-    pub icon: Option<String>,
 }
 
 // ===== RAW NOTIFICATION CONFIG =====
@@ -234,26 +211,28 @@ impl RawNotify {
             timeout: or_field!(timeout),
             buffer: or_field!(buffer),
             radius: or_field!(radius),
-            info: self
-                .info
-                .into_option()
-                .map(|s| s.into_notify_style(defaults.info.clone()))
-                .unwrap_or(defaults.info),
-            warn: self
-                .warn
-                .into_option()
-                .map(|s| s.into_notify_style(defaults.warn.clone()))
-                .unwrap_or(defaults.warn),
-            error: self
-                .error
-                .into_option()
-                .map(|s| s.into_notify_style(defaults.error.clone()))
-                .unwrap_or(defaults.error),
-            success: self
-                .success
-                .into_option()
-                .map(|s| s.into_notify_style(defaults.success.clone()))
-                .unwrap_or(defaults.success),
+            theme: crate::NotifyTheme {
+                info: self
+                    .info
+                    .into_option()
+                    .map(|s| s.into_notify_style(defaults.theme.info.clone()))
+                    .unwrap_or(defaults.theme.info),
+                warn: self
+                    .warn
+                    .into_option()
+                    .map(|s| s.into_notify_style(defaults.theme.warn.clone()))
+                    .unwrap_or(defaults.theme.warn),
+                error: self
+                    .error
+                    .into_option()
+                    .map(|s| s.into_notify_style(defaults.theme.error.clone()))
+                    .unwrap_or(defaults.theme.error),
+                success: self
+                    .success
+                    .into_option()
+                    .map(|s| s.into_notify_style(defaults.theme.success.clone()))
+                    .unwrap_or(defaults.theme.success),
+            },
         }
     }
 

@@ -7,11 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod defaults;
 pub mod dynamic;
 mod error;
 mod mode;
-mod notify;
 mod raw;
 mod style;
 pub mod themes;
@@ -24,8 +22,7 @@ pub use dynamic::{DynamicConfig, load_dynamic_config};
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};
-pub use notify::Notify;
-pub use style::{Hud, Selector, Style};
+pub use style::{Hud, Notify, Selector, Style};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 /// Parse color into raw rgb tuple.

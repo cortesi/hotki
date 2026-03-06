@@ -4,7 +4,7 @@
 //! `RawStyle` overlays at startup (or lazily on first access).
 use std::{collections::HashMap, path::Path, sync::OnceLock};
 
-use crate::{Style, raw};
+use crate::{Style, raw, style};
 
 /// Theme error types and conversions.
 mod error;
@@ -90,7 +90,7 @@ pub fn load_theme(theme_name: Option<&str>) -> Style {
         None => themes.get("default").expect("default theme must exist"),
     };
 
-    Style::default().overlay_raw(raw)
+    style::overlay_raw(Style::default(), raw)
 }
 
 #[cfg(test)]

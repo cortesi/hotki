@@ -78,7 +78,7 @@ struct DispatchContext {
 }
 
 impl DispatchContext {
-    fn mode_ctx(&self, rt: &RuntimeState) -> config::dynamic::ModeCtx {
+    fn mode_ctx(&self, rt: &RuntimeState) -> dyn_engine::ModeCtx {
         rt.focus.mode_ctx(rt.hud_visible, rt.depth())
     }
 
@@ -93,7 +93,7 @@ impl DispatchContext {
 
 #[derive(Debug)]
 struct RefreshPlan {
-    warnings: Vec<config::dynamic::Effect>,
+    warnings: Vec<dyn_engine::Effect>,
     errors: Vec<String>,
     key_pairs: Vec<(String, Chord)>,
     capture_all: bool,
@@ -104,7 +104,7 @@ struct RefreshPlan {
 struct SelectorClose {
     event: SelectorEvent,
     selector: SelectorState,
-    ctx: config::dynamic::ModeCtx,
+    ctx: dyn_engine::ModeCtx,
 }
 
 enum SelectorInput {
@@ -119,6 +119,7 @@ struct BindingExecution {
     outcome: DispatchOutcome,
 }
 
+use config::dynamic::engine as dyn_engine;
 pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
@@ -147,7 +148,7 @@ use crate::{
 ///
 /// # Focus Context
 ///
-/// The engine caches focus context `(app, title, pid)` from World events in `focus_ctx`.
+/// The engine caches world focus snapshots in `focus_ctx`.
 /// This uses `parking_lot::Mutex` for fast, synchronous access by the Repeater's PID
 /// lookup. Do not hold this guard across `.await` points.
 #[derive(Clone)]
@@ -162,8 +163,8 @@ pub struct Engine {
     config: Arc<tokio::sync::RwLock<Option<config::dynamic::DynamicConfig>>>,
     /// Optional path used for `action.reload_config`.
     config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
-    /// Cached focus context from World events: `(app, title, pid)`.
-    focus_ctx: Arc<Mutex<Option<(String, String, i32)>>>,
+    /// Cached focus snapshot from World events.
+    focus_ctx: Arc<Mutex<Option<hotki_protocol::FocusSnapshot>>>,
     /// If true, hint world refresh on dispatch; else trust cached context.
     sync_on_dispatch: bool,
     /// Last displays snapshot sent to the UI.
@@ -252,8 +253,8 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                let (mut cursor, seed) = world.subscribe_with_context().await;
-                if let Err(err) = engine.apply_world_focus_context(seed).await {
+                let (mut cursor, seed) = hotki_world::subscribe_with_snapshot(world.as_ref()).await;
+                if let Err(err) = engine.apply_world_focus_snapshot(seed).await {
                     warn!("World focus seed apply failed: {}", err);
                 }
 
@@ -330,13 +331,16 @@ impl Engine {
         Ok(())
     }
 
-    async fn apply_world_focus_context(&self, ctx: Option<(String, String, i32)>) -> Result<()> {
+    async fn apply_world_focus_snapshot(
+        &self,
+        focus: Option<hotki_protocol::FocusSnapshot>,
+    ) -> Result<()> {
         let mut changed = false;
         // NOTE: focus_ctx uses parking_lot::Mutex. Guard must be dropped before await.
         {
             let mut guard = self.focus_ctx.lock();
-            if guard.as_ref() != ctx.as_ref() {
-                *guard = ctx.clone();
+            if guard.as_ref() != focus.as_ref() {
+                *guard = focus.clone();
                 changed = true;
             }
         }
@@ -344,8 +348,13 @@ impl Engine {
             trace!("World focus context unchanged; skipping rebind");
             return Ok(());
         }
-        if let Some((ref app, ref title, pid)) = ctx {
-            debug!(pid, app = %app, title = %title, "Engine: world focus context updated");
+        if let Some(ref focus) = focus {
+            debug!(
+                pid = focus.pid,
+                app = %focus.app,
+                title = %focus.title,
+                "Engine: world focus context updated"
+            );
         } else {
             debug!("Engine: world focus context cleared");
         }
@@ -357,21 +366,14 @@ impl Engine {
         world: Arc<dyn WorldView>,
         change: FocusChange,
     ) {
-        let ctx =
-            if let (Some(app), Some(title), Some(pid)) = (change.app, change.title, change.pid) {
-                Some((app, title, pid))
-            } else if let Some(key) = change.key {
-                world.context_for_key(key).await
-            } else {
-                None
-            };
+        let focus = hotki_world::focus_snapshot_for_change(world.as_ref(), &change).await;
 
-        if let Some(ctx) = ctx {
-            if let Err(err) = engine.apply_world_focus_context(Some(ctx)).await {
+        if let Some(focus) = focus {
+            if let Err(err) = engine.apply_world_focus_snapshot(Some(focus)).await {
                 warn!("World focus update failed: {}", err);
             }
         } else if change.key.is_none() {
-            if let Err(err) = engine.apply_world_focus_context(None).await {
+            if let Err(err) = engine.apply_world_focus_snapshot(None).await {
                 warn!("World focus clear failed: {}", err);
             }
         } else {
@@ -419,7 +421,7 @@ impl Engine {
         }
 
         for effect in plan.warnings {
-            if let config::dynamic::Effect::Notify { kind, title, body } = effect {
+            if let dyn_engine::Effect::Notify { kind, title, body } = effect {
                 self.notifier.send_notification(kind, title, body)?;
             }
         }
@@ -576,8 +578,7 @@ impl Engine {
 
         let (binding, ctx) = {
             let rt = self.runtime.lock().await;
-            let Some(binding) = config::dynamic::resolve_binding(&rt.rendered, chord).cloned()
-            else {
+            let Some(binding) = dyn_engine::resolve_binding(&rt.rendered, chord).cloned() else {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
@@ -695,18 +696,18 @@ impl Engine {
     async fn execute_binding(
         &self,
         identifier: &str,
-        binding: config::dynamic::Binding,
-        ctx: config::dynamic::ModeCtx,
+        binding: dyn_engine::Binding,
+        ctx: dyn_engine::ModeCtx,
     ) -> Result<Option<BindingExecution>> {
         let mut stay = binding.flags.stay;
         let mut outcome = DispatchOutcome::default();
 
         match binding.kind.clone() {
-            config::dynamic::BindingKind::Mode(mode) => {
+            dyn_engine::BindingKind::Mode(mode) => {
                 outcome.entered_mode = true;
                 let mut rt = self.runtime.lock().await;
                 rt.hud_visible = true;
-                rt.stack.push(config::dynamic::ModeFrame {
+                rt.stack.push(dyn_engine::ModeFrame {
                     title: binding.desc,
                     closure: mode,
                     entered_via: binding.mode_id.map(|id| (binding.chord, id)),
@@ -715,12 +716,12 @@ impl Engine {
                     capture: binding.mode_capture,
                 });
             }
-            config::dynamic::BindingKind::Action(action) => {
+            dyn_engine::BindingKind::Action(action) => {
                 outcome = self
                     .apply_action(identifier, &action, binding.flags.repeat)
                     .await?;
             }
-            config::dynamic::BindingKind::Handler(handler) => {
+            dyn_engine::BindingKind::Handler(handler) => {
                 let result = {
                     let cfg_guard = self.config.read().await;
                     let Some(cfg) = cfg_guard.as_ref() else {
@@ -741,7 +742,7 @@ impl Engine {
                     .apply_effects_and_nav(identifier, result.effects, result.nav)
                     .await?;
             }
-            config::dynamic::BindingKind::Selector(sel_cfg) => {
+            dyn_engine::BindingKind::Selector(sel_cfg) => {
                 stay = true;
                 let items = {
                     let cfg_guard = self.config.read().await;
@@ -808,19 +809,19 @@ impl Engine {
     async fn apply_effects_and_nav(
         &self,
         identifier: &str,
-        effects: Vec<config::dynamic::Effect>,
-        nav: Option<config::dynamic::NavRequest>,
+        effects: Vec<dyn_engine::Effect>,
+        nav: Option<dyn_engine::NavRequest>,
     ) -> Result<DispatchOutcome> {
         let mut out = DispatchOutcome::default();
 
         for effect in effects {
             match effect {
-                config::dynamic::Effect::Exec(action) => {
+                dyn_engine::Effect::Exec(action) => {
                     let outcome = self.apply_action(identifier, &action, None).await?;
                     out.is_nav |= outcome.is_nav;
                     out.entered_mode |= outcome.entered_mode;
                 }
-                config::dynamic::Effect::Notify { kind, title, body } => {
+                dyn_engine::Effect::Notify { kind, title, body } => {
                     self.notifier.send_notification(kind, title, body)?;
                 }
             }
@@ -839,7 +840,7 @@ impl Engine {
         &self,
         identifier: &str,
         action: &config::Action,
-        repeat: Option<config::dynamic::RepeatSpec>,
+        repeat: Option<dyn_engine::RepeatSpec>,
     ) -> Result<DispatchOutcome> {
         // Default to ignoring OS repeats for non-relay actions.
         self.key_tracker.set_repeat_allowed(identifier, false);
@@ -893,17 +894,13 @@ impl Engine {
                 let _ = self.relay.stop_relay(identifier, pid);
                 Ok(DispatchOutcome::default())
             }
-            config::Action::Pop => Ok(self
-                .apply_nav_request(config::dynamic::NavRequest::Pop)
-                .await),
-            config::Action::Exit => Ok(self
-                .apply_nav_request(config::dynamic::NavRequest::Exit)
-                .await),
+            config::Action::Pop => Ok(self.apply_nav_request(dyn_engine::NavRequest::Pop).await),
+            config::Action::Exit => Ok(self.apply_nav_request(dyn_engine::NavRequest::Exit).await),
             config::Action::ShowRoot => Ok(self
-                .apply_nav_request(config::dynamic::NavRequest::ShowRoot)
+                .apply_nav_request(dyn_engine::NavRequest::ShowRoot)
                 .await),
             config::Action::HideHud => Ok(self
-                .apply_nav_request(config::dynamic::NavRequest::HideHud)
+                .apply_nav_request(dyn_engine::NavRequest::HideHud)
                 .await),
             config::Action::ReloadConfig => {
                 if let Err(err) = self.reload_dynamic_config().await {
@@ -1021,15 +1018,15 @@ impl Engine {
         }
     }
 
-    async fn apply_nav_request(&self, nav: config::dynamic::NavRequest) -> DispatchOutcome {
+    async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchOutcome {
         let mut rt = self.runtime.lock().await;
         match nav {
-            config::dynamic::NavRequest::Push { mode, title } => {
+            dyn_engine::NavRequest::Push { mode, title } => {
                 rt.hud_visible = true;
                 let title = title
                     .or_else(|| mode.default_title().map(|t| t.to_string()))
                     .unwrap_or_else(|| "mode".to_string());
-                rt.stack.push(config::dynamic::ModeFrame {
+                rt.stack.push(dyn_engine::ModeFrame {
                     title,
                     closure: mode,
                     entered_via: None,
@@ -1042,7 +1039,7 @@ impl Engine {
                     entered_mode: true,
                 }
             }
-            config::dynamic::NavRequest::Pop => {
+            dyn_engine::NavRequest::Pop => {
                 if rt.stack.len() > 1 {
                     rt.stack.pop();
                 }
@@ -1054,7 +1051,7 @@ impl Engine {
                     entered_mode: false,
                 }
             }
-            config::dynamic::NavRequest::Exit => {
+            dyn_engine::NavRequest::Exit => {
                 if rt.stack.len() > 1 {
                     rt.stack.truncate(1);
                 }
@@ -1064,7 +1061,7 @@ impl Engine {
                     entered_mode: false,
                 }
             }
-            config::dynamic::NavRequest::ShowRoot => {
+            dyn_engine::NavRequest::ShowRoot => {
                 if rt.stack.len() > 1 {
                     rt.stack.truncate(1);
                 }
@@ -1074,7 +1071,7 @@ impl Engine {
                     entered_mode: false,
                 }
             }
-            config::dynamic::NavRequest::HideHud => {
+            dyn_engine::NavRequest::HideHud => {
                 rt.hud_visible = false;
                 DispatchOutcome {
                     is_nav: true,
@@ -1181,8 +1178,8 @@ impl Engine {
 
 impl Engine {
     fn current_context(&self) -> (String, String, i32) {
-        if let Some((a, t, p)) = &*self.focus_ctx.lock() {
-            return (a.clone(), t.clone(), *p);
+        if let Some(focus) = &*self.focus_ctx.lock() {
+            return (focus.app.clone(), focus.title.clone(), focus.pid);
         }
         (String::new(), String::new(), -1)
     }
@@ -1261,11 +1258,11 @@ fn render_stack_with_recovery(
     rt: &mut RuntimeState,
     cfg: &config::dynamic::DynamicConfig,
     base_style: &config::Style,
-) -> (Vec<config::dynamic::Effect>, Vec<String>) {
+) -> (Vec<dyn_engine::Effect>, Vec<String>) {
     let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
     let mut errors = Vec::new();
 
-    match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
+    match dyn_engine::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
         Ok(output) => {
             rt.rendered = output.rendered;
             (output.warnings, errors)
@@ -1275,7 +1272,7 @@ fn render_stack_with_recovery(
             rt.stack.truncate(1);
             ctx.depth = 0;
 
-            match config::dynamic::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
+            match dyn_engine::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
                 Ok(output) => {
                     rt.rendered = output.rendered;
                     (output.warnings, errors)
@@ -1356,118 +1353,7 @@ fn selector_snapshot_for_ui(sel: &mut SelectorState) -> hotki_protocol::Selector
 }
 
 fn style_for_ui(style: &config::Style) -> hotki_protocol::Style {
-    hotki_protocol::Style {
-        hud: hud_style_for_ui(&style.hud),
-        notify: notify_config_for_ui(&style.notify),
-        selector: selector_style_for_ui(&style.selector),
-    }
-}
-
-fn selector_style_for_ui(sel: &config::Selector) -> hotki_protocol::SelectorStyle {
-    hotki_protocol::SelectorStyle {
-        bg: sel.bg,
-        input_bg: sel.input_bg,
-        item_bg: sel.item_bg,
-        item_selected_bg: sel.item_selected_bg,
-        match_fg: sel.match_fg,
-        border: sel.border,
-        shadow: sel.shadow,
-    }
-}
-
-fn hud_style_for_ui(hud: &config::Hud) -> hotki_protocol::HudStyle {
-    hotki_protocol::HudStyle {
-        mode: match hud.mode {
-            config::Mode::Hud => hotki_protocol::Mode::Hud,
-            config::Mode::Hide => hotki_protocol::Mode::Hide,
-            config::Mode::Mini => hotki_protocol::Mode::Mini,
-        },
-        pos: match hud.pos {
-            config::Pos::Center => hotki_protocol::Pos::Center,
-            config::Pos::N => hotki_protocol::Pos::N,
-            config::Pos::NE => hotki_protocol::Pos::NE,
-            config::Pos::E => hotki_protocol::Pos::E,
-            config::Pos::SE => hotki_protocol::Pos::SE,
-            config::Pos::S => hotki_protocol::Pos::S,
-            config::Pos::SW => hotki_protocol::Pos::SW,
-            config::Pos::W => hotki_protocol::Pos::W,
-            config::Pos::NW => hotki_protocol::Pos::NW,
-        },
-        offset: hotki_protocol::Offset {
-            x: hud.offset.x,
-            y: hud.offset.y,
-        },
-        font_size: hud.font_size,
-        title_font_weight: font_weight_for_ui(hud.title_font_weight),
-        key_font_size: hud.key_font_size,
-        key_font_weight: font_weight_for_ui(hud.key_font_weight),
-        tag_font_size: hud.tag_font_size,
-        tag_font_weight: font_weight_for_ui(hud.tag_font_weight),
-        title_fg: hud.title_fg,
-        bg: hud.bg,
-        key_fg: hud.key_fg,
-        key_bg: hud.key_bg,
-        mod_fg: hud.mod_fg,
-        mod_font_weight: font_weight_for_ui(hud.mod_font_weight),
-        mod_bg: hud.mod_bg,
-        tag_fg: hud.tag_fg,
-        opacity: hud.opacity,
-        key_radius: hud.key_radius,
-        key_pad_x: hud.key_pad_x,
-        key_pad_y: hud.key_pad_y,
-        radius: hud.radius,
-        tag_submenu: hud.tag_submenu.clone(),
-    }
-}
-
-fn notify_config_for_ui(notify: &config::Notify) -> hotki_protocol::NotifyConfig {
-    let theme = notify.theme();
-    hotki_protocol::NotifyConfig {
-        width: notify.width,
-        pos: match notify.pos {
-            config::NotifyPos::Left => hotki_protocol::NotifyPos::Left,
-            config::NotifyPos::Right => hotki_protocol::NotifyPos::Right,
-        },
-        opacity: notify.opacity,
-        timeout: notify.timeout,
-        buffer: notify.buffer,
-        radius: notify.radius,
-        theme: hotki_protocol::NotifyTheme {
-            info: notify_window_style_for_ui(theme.info),
-            warn: notify_window_style_for_ui(theme.warn),
-            error: notify_window_style_for_ui(theme.error),
-            success: notify_window_style_for_ui(theme.success),
-        },
-    }
-}
-
-fn notify_window_style_for_ui(
-    style: config::NotifyWindowStyle,
-) -> hotki_protocol::NotifyWindowStyle {
-    hotki_protocol::NotifyWindowStyle {
-        bg: style.bg,
-        title_fg: style.title_fg,
-        body_fg: style.body_fg,
-        title_font_size: style.title_font_size,
-        title_font_weight: font_weight_for_ui(style.title_font_weight),
-        body_font_size: style.body_font_size,
-        body_font_weight: font_weight_for_ui(style.body_font_weight),
-        icon: style.icon,
-    }
-}
-
-fn font_weight_for_ui(weight: config::FontWeight) -> hotki_protocol::FontWeight {
-    match weight {
-        config::FontWeight::Thin => hotki_protocol::FontWeight::Thin,
-        config::FontWeight::ExtraLight => hotki_protocol::FontWeight::ExtraLight,
-        config::FontWeight::Light => hotki_protocol::FontWeight::Light,
-        config::FontWeight::Regular => hotki_protocol::FontWeight::Regular,
-        config::FontWeight::Medium => hotki_protocol::FontWeight::Medium,
-        config::FontWeight::SemiBold => hotki_protocol::FontWeight::SemiBold,
-        config::FontWeight::Bold => hotki_protocol::FontWeight::Bold,
-        config::FontWeight::ExtraBold => hotki_protocol::FontWeight::ExtraBold,
-        config::FontWeight::Black => hotki_protocol::FontWeight::Black,
-    }
+    style.clone()
 }
 
 fn theme_next_name(theme_names: &[String], current: &str) -> String {
