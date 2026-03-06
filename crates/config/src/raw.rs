@@ -82,6 +82,17 @@ fn merge_maybe_nested<T: Clone>(
     }
 }
 
+/// Apply an optional overlay section to a resolved protocol-facing style value.
+pub fn apply_optional_overlay<T, U: Clone>(
+    overlay: Option<T>,
+    base: &U,
+    apply: impl FnOnce(T, &U) -> U,
+) -> U {
+    overlay
+        .map(|overlay| apply(overlay, base))
+        .unwrap_or_else(|| base.clone())
+}
+
 /// Merge overlay structs field-by-field, with optional nested merge functions.
 macro_rules! merge_overlay {
     ($base:expr, $overlay:expr; nested[$($nested:ident => $merge:path),* $(,)?]) => {
@@ -227,26 +238,26 @@ impl RawNotify {
             buffer: maybe_or(self.buffer, defaults.buffer),
             radius: maybe_or(self.radius, defaults.radius),
             theme: crate::NotifyTheme {
-                info: self
-                    .info
-                    .into_option()
-                    .map(|s| s.into_notify_style(defaults.theme.info.clone()))
-                    .unwrap_or(defaults.theme.info),
-                warn: self
-                    .warn
-                    .into_option()
-                    .map(|s| s.into_notify_style(defaults.theme.warn.clone()))
-                    .unwrap_or(defaults.theme.warn),
-                error: self
-                    .error
-                    .into_option()
-                    .map(|s| s.into_notify_style(defaults.theme.error.clone()))
-                    .unwrap_or(defaults.theme.error),
-                success: self
-                    .success
-                    .into_option()
-                    .map(|s| s.into_notify_style(defaults.theme.success.clone()))
-                    .unwrap_or(defaults.theme.success),
+                info: apply_optional_overlay(
+                    self.info.into_option(),
+                    &defaults.theme.info,
+                    |style, base| style.into_notify_style(base.clone()),
+                ),
+                warn: apply_optional_overlay(
+                    self.warn.into_option(),
+                    &defaults.theme.warn,
+                    |style, base| style.into_notify_style(base.clone()),
+                ),
+                error: apply_optional_overlay(
+                    self.error.into_option(),
+                    &defaults.theme.error,
+                    |style, base| style.into_notify_style(base.clone()),
+                ),
+                success: apply_optional_overlay(
+                    self.success.into_option(),
+                    &defaults.theme.success,
+                    |style, base| style.into_notify_style(base.clone()),
+                ),
             },
         }
     }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use config::dynamic::{SelectorConfig, SelectorItem};
+use config::dynamic::engine::{SelectorConfig, SelectorItem};
 use hotki_protocol::{SelectorItemSnapshot, SelectorSnapshot};
 use mac_keycode::{Chord, Key, Modifier};
 use nucleo::{

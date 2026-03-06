@@ -7,7 +7,7 @@ mod tests {
         Action, Error,
         dynamic::{
             Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, NavRequest,
-            RenderedState, SelectorItems, dsl::ModeBuilder, execute_handler,
+            RenderedState, SelectorItems, dsl::ModeBuilder, handler::execute_handler,
             load_dynamic_config_from_string, render_stack,
         },
     };
@@ -202,7 +202,7 @@ mod tests {
         }
         match &result.effects[1] {
             Effect::Notify { kind, title, body } => {
-                assert_eq!(*kind, crate::NotifyKind::Info);
+                assert_eq!(kind, &crate::NotifyKind::Info);
                 assert_eq!(title, "Test");
                 assert_eq!(body, "middle");
             }

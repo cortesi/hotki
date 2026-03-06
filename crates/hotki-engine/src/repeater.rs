@@ -346,42 +346,51 @@ impl Repeater {
     pub fn start(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
         self.stop(&id); // replace if exists
 
-        match exec.clone() {
+        self.start_initial_exec(&id, &exec);
+
+        if repeat.is_some() {
+            self.spawn_exec_repeater(id, exec, repeat);
+        }
+    }
+
+    fn start_initial_exec(&self, id: &str, exec: &ExecSpec) {
+        match exec {
             ExecSpec::Shell {
                 command,
                 ok_notify,
                 err_notify,
             } => {
-                let state = self.shell_state(&id);
+                let state = self.shell_state(id);
                 state.running.store(true, Ordering::SeqCst);
                 self.spawn_shell_run(
                     state,
                     command.clone(),
                     ShellNotify::Configured {
-                        ok_notify,
-                        err_notify,
+                        ok_notify: *ok_notify,
+                        err_notify: *err_notify,
                     },
                     None,
                 );
-
-                if repeat.is_some() {
-                    self.spawn_shell_repeater(id, command, repeat);
-                }
             }
             ExecSpec::Relay { chord } => {
-                // Start relay immediately (non-repeat)
                 let pid = self.current_pid();
                 self.relay
-                    .start_relay(id.clone(), chord.clone(), pid, false);
-
-                if repeat.is_some() {
-                    self.spawn_relay_repeater(id, chord, pid, repeat);
-                }
+                    .start_relay(id.to_string(), chord.clone(), pid, false);
             }
         }
     }
 
-    fn spawn_shell_repeater(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
+    fn spawn_exec_repeater(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
+        match exec {
+            ExecSpec::Shell { command, .. } => self.spawn_shell_repeat_loop(id, command, repeat),
+            ExecSpec::Relay { chord } => {
+                let initial_pid = self.current_pid();
+                self.spawn_relay_repeat_loop(id, chord, initial_pid, repeat);
+            }
+        }
+    }
+
+    fn spawn_shell_repeat_loop(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
         let id_for_log = id.clone();
         let state = self.shell_state(&id);
         let repeater = self.clone();
@@ -399,7 +408,7 @@ impl Repeater {
         });
     }
 
-    fn spawn_relay_repeater(
+    fn spawn_relay_repeat_loop(
         &self,
         id: String,
         chord: Chord,
@@ -413,9 +422,8 @@ impl Repeater {
 
         let mut last_pid = initial_pid;
         let on_relay_repeat = self.on_relay_repeat.clone();
-        // Coalesce relay repeats to avoid overlapping enqueueing under jitter
-        let running = Arc::new(AtomicBool::new(false));
-        let running_flag = running.clone();
+        let running_flag = Arc::new(AtomicBool::new(false));
+        let repeat_running = running_flag.clone();
         self.spawn_repeat_loop(id, repeat, move || {
             let pid = focus_ctx
                 .lock()
@@ -423,24 +431,21 @@ impl Repeater {
                 .map(|focus| focus.pid)
                 .unwrap_or(-1);
             if pid != -1 && pid != last_pid {
-                // Handoff: Up old, Down new (non-repeat)
                 relay.stop_relay(&id_for_log, last_pid);
                 relay.start_relay(id_for_log.clone(), ch.clone(), pid, false);
                 last_pid = pid;
                 return;
             }
             if pid != -1 {
-                // Skip if a prior repeat is still running
-                if running_flag.swap(true, Ordering::SeqCst) {
+                if repeat_running.swap(true, Ordering::SeqCst) {
                     trace!("repeater_relay_tick_skip_running" = %id_for_log);
                     return;
                 }
                 let _ = relay.repeat_relay(&id_for_log, pid);
-                // Notify relay repeat callback if set
                 if let Some(cb) = on_relay_repeat.lock().as_ref() {
                     cb(&id_for_log);
                 }
-                running_flag.store(false, Ordering::SeqCst);
+                repeat_running.store(false, Ordering::SeqCst);
             }
         });
     }

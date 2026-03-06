@@ -5,8 +5,10 @@ use rhai::{Dynamic, EvalAltResult, Map, Position};
 use tracing::warn;
 
 use super::{
-    Binding, BindingKind, DynamicConfig, Effect, HudRow, HudRowStyle, ModeCtx, ModeFrame,
-    RenderedState, StyleOverlay, binding_style::ParsedBindingStyle, dsl::ModeBuilder,
+    Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState, StyleOverlay,
+    binding_style::ParsedBindingStyle,
+    dsl::ModeBuilder,
+    types::{HudRow, HudRowStyle},
     validation::extract_validation_error,
 };
 use crate::{Error, NotifyKind, Style, error::excerpt_at, style};

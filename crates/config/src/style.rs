@@ -16,15 +16,21 @@ pub type Selector = hotki_protocol::SelectorStyle;
 
 /// Overlay raw style overrides onto this base style using current values as defaults.
 pub fn overlay_raw(mut style: Style, overrides: &raw::RawStyle) -> Style {
-    if let Some(hud) = overrides.hud.as_option() {
-        style.hud = hud.clone().into_hud_over(&style.hud);
-    }
-    if let Some(notify) = overrides.notify.as_option() {
-        style.notify = notify.clone().into_notify_over(&style.notify);
-    }
-    if let Some(selector) = overrides.selector.as_option() {
-        style.selector = selector.clone().into_selector_over(&style.selector);
-    }
+    style.hud = raw::apply_optional_overlay(
+        overrides.hud.as_option().cloned(),
+        &style.hud,
+        |hud, base| hud.into_hud_over(base),
+    );
+    style.notify = raw::apply_optional_overlay(
+        overrides.notify.as_option().cloned(),
+        &style.notify,
+        |notify, base| notify.into_notify_over(base),
+    );
+    style.selector = raw::apply_optional_overlay(
+        overrides.selector.as_option().cloned(),
+        &style.selector,
+        |selector, base| selector.into_selector_over(base),
+    );
     style
 }
 

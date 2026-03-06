@@ -18,7 +18,7 @@ mod types;
 #[cfg(test)]
 mod test_merge;
 
-pub use dynamic::{DynamicConfig, load_dynamic_config};
+pub use dynamic::engine::{DynamicConfig, load_dynamic_config};
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};

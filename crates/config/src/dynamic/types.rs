@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub use hotki_protocol::{HudRow, HudRowStyle};
 use mac_keycode::Chord;
 use rhai::{FnPtr, Position};
 
@@ -285,34 +286,6 @@ pub struct ModeFrame {
     pub style: Option<StyleOverlay>,
     /// True when this frame requests capture-all while HUD is visible.
     pub capture: bool,
-}
-
-/// One HUD row entry produced by rendering.
-#[derive(Debug, Clone)]
-pub struct HudRow {
-    /// Key chord that triggers the binding.
-    pub chord: Chord,
-    /// Human-readable description.
-    pub desc: String,
-    /// True when the binding enters a child mode.
-    pub is_mode: bool,
-    /// Optional per-row HUD style overrides.
-    pub style: Option<HudRowStyle>,
-}
-
-/// Optional per-binding HUD style overrides after resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HudRowStyle {
-    /// Foreground color for non-modifier key tokens.
-    pub key_fg: (u8, u8, u8),
-    /// Background color for non-modifier key tokens.
-    pub key_bg: (u8, u8, u8),
-    /// Foreground color for modifier key tokens.
-    pub mod_fg: (u8, u8, u8),
-    /// Background color for modifier key tokens.
-    pub mod_bg: (u8, u8, u8),
-    /// Foreground color for the submenu tag indicator.
-    pub tag_fg: (u8, u8, u8),
 }
 
 /// Render output for the current runtime state.
