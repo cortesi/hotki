@@ -12,7 +12,7 @@ use clap::Args;
 
 use crate::{
     Error, Result,
-    cmd::{run_status_quiet, run_status_streaming},
+    cmd::{OutputMode, run_status},
     workspace::workspace_version,
 };
 
@@ -59,55 +59,160 @@ pub struct BundleDevArgs {
     icon_src: PathBuf,
 }
 
+/// Cargo profile used when building the bundle executable.
+#[derive(Clone, Copy, Debug)]
+enum BuildProfile {
+    /// Build the debug binary.
+    Debug,
+    /// Build the release binary.
+    Release,
+}
+
+impl BuildProfile {
+    /// Return the Cargo target subdirectory for this profile.
+    fn target_dir(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+}
+
+/// Flavor of Info.plist metadata to emit for the bundle.
+#[derive(Clone, Copy, Debug)]
+enum PlistKind {
+    /// Development plist with debugger-friendly defaults.
+    Dev,
+    /// Release plist for packaged app bundles.
+    Release,
+}
+
+/// Shared bundle configuration derived from either CLI entrypoint.
+#[derive(Debug)]
+struct BundleSpec {
+    /// `.app` directory name and user-visible application name.
+    app_name: String,
+    /// Executable name embedded in the bundle.
+    bin_name: String,
+    /// macOS bundle identifier.
+    bundle_id: String,
+    /// Output directory relative to the workspace root.
+    out_dir: PathBuf,
+    /// Source PNG used to generate the iconset.
+    icon_src: PathBuf,
+    /// Cargo features forwarded to `cargo build`.
+    features: Vec<String>,
+    /// Build profile for the bundle executable.
+    build_profile: BuildProfile,
+    /// Icon variant to render into the bundle resources.
+    icon_profile: IconsetProfile,
+    /// Metadata flavor for `Info.plist`.
+    plist_kind: PlistKind,
+}
+
+impl From<&BundleArgs> for BundleSpec {
+    fn from(args: &BundleArgs) -> Self {
+        Self {
+            app_name: args.app_name.clone(),
+            bin_name: args.bin_name.clone(),
+            bundle_id: args.bundle_id.clone(),
+            out_dir: args.out_dir.clone(),
+            icon_src: args.icon_src.clone(),
+            features: Vec::new(),
+            build_profile: BuildProfile::Release,
+            icon_profile: IconsetProfile::Release,
+            plist_kind: PlistKind::Release,
+        }
+    }
+}
+
+impl From<&BundleDevArgs> for BundleSpec {
+    fn from(args: &BundleDevArgs) -> Self {
+        Self {
+            app_name: args.app_name.clone(),
+            bin_name: args.bin_name.clone(),
+            bundle_id: args.bundle_id.clone(),
+            out_dir: args.out_dir.clone(),
+            icon_src: args.icon_src.clone(),
+            features: args.features.clone(),
+            build_profile: BuildProfile::Debug,
+            icon_profile: IconsetProfile::Dev,
+            plist_kind: PlistKind::Dev,
+        }
+    }
+}
+
 /// Build a release `.app` bundle.
 pub fn bundle_release(root_dir: &Path, args: &BundleArgs) -> Result<()> {
+    bundle(root_dir, &BundleSpec::from(args))
+}
+
+/// Build a debug `.app` bundle (dev identifiers + icon).
+pub fn bundle_dev(root_dir: &Path, args: &BundleDevArgs) -> Result<()> {
+    bundle(root_dir, &BundleSpec::from(args))
+}
+
+/// Build one app bundle from a normalized bundle specification.
+fn bundle(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
     let version = workspace_version(root_dir)?;
     println!(
-        "==> Building release bundle ({}, {})",
-        args.app_name, version
+        "==> Building {} bundle ({}, {})",
+        match spec.build_profile {
+            BuildProfile::Debug => "debug",
+            BuildProfile::Release => "release",
+        },
+        spec.app_name,
+        version
     );
 
-    run_status_streaming(
-        root_dir,
-        "cargo",
-        ["build", "--release", "-p", "hotki", "--bin", &args.bin_name],
-    )?;
+    build_binary(root_dir, spec)?;
 
-    let bin_path = root_dir.join("target/release").join(&args.bin_name);
+    let bin_path = root_dir
+        .join("target")
+        .join(spec.build_profile.target_dir())
+        .join(&spec.bin_name);
     if !bin_path.is_file() {
         return Err(Error::Io {
             path: bin_path,
-            source: io_not_found("release binary missing after cargo build"),
+            source: io_not_found("bundle binary missing after cargo build"),
         });
     }
 
-    let out_dir = root_dir.join(&args.out_dir);
-    let app_dir = out_dir.join(format!("{}.app", args.app_name));
+    let out_dir = root_dir.join(&spec.out_dir);
+    let app_dir = out_dir.join(format!("{}.app", spec.app_name));
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let res_dir = contents_dir.join("Resources");
     let iconset_dir = out_dir.join("icon.iconset");
-    let icns_file = res_dir.join(format!("{}.icns", args.bin_name));
-    let icon_src = root_dir.join(&args.icon_src);
+    let icns_file = res_dir.join(format!("{}.icns", spec.bin_name));
+    let icon_src = root_dir.join(&spec.icon_src);
 
     ensure_file_exists(&icon_src)?;
     prepare_bundle_dirs(&app_dir, &iconset_dir, &macos_dir, &res_dir)?;
     copy_themes(root_dir, &res_dir)?;
 
-    generate_iconset(root_dir, &icon_src, &iconset_dir, IconsetProfile::Release)?;
-    run_status_streaming(
+    generate_iconset(root_dir, &icon_src, &iconset_dir, spec.icon_profile)?;
+    run_status(
         root_dir,
         "iconutil",
         iconutil_args(&iconset_dir, &icns_file),
+        OutputMode::Streaming,
     )?;
+    remove_dir_all_if_exists(&iconset_dir)?;
 
     let plist_path = contents_dir.join("Info.plist");
     write_file(
         &plist_path,
-        release_plist(&args.app_name, &args.bin_name, &args.bundle_id, &version),
+        plist_contents(
+            spec.plist_kind,
+            &spec.app_name,
+            &spec.bin_name,
+            &spec.bundle_id,
+            &version,
+        ),
     )?;
 
-    let bundle_bin_path = macos_dir.join(&args.bin_name);
+    let bundle_bin_path = macos_dir.join(&spec.bin_name);
     fs::copy(&bin_path, &bundle_bin_path).map_err(|source| Error::Io {
         path: bundle_bin_path.clone(),
         source,
@@ -115,72 +220,30 @@ pub fn bundle_release(root_dir: &Path, args: &BundleArgs) -> Result<()> {
     chmod_executable(&bundle_bin_path)?;
 
     println!("==> Bundle ready: {}", app_dir.display());
-    println!("    Run with: open \"{}\"", app_dir.display());
+    if matches!(spec.build_profile, BuildProfile::Release) {
+        println!("    Run with: open \"{}\"", app_dir.display());
+    }
     Ok(())
 }
 
-/// Build a debug `.app` bundle (dev identifiers + icon).
-pub fn bundle_dev(root_dir: &Path, args: &BundleDevArgs) -> Result<()> {
-    let version = workspace_version(root_dir)?;
-    println!("==> Building debug bundle ({}, {})", args.app_name, version);
-
-    let mut cargo_args = vec![
-        "build".to_string(),
-        "-p".to_string(),
-        "hotki".to_string(),
-        "--bin".to_string(),
-        args.bin_name.clone(),
-    ];
-    if !args.features.is_empty() {
+/// Build the target executable that will be embedded in the app bundle.
+fn build_binary(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
+    let mut cargo_args = vec!["build".to_string(), "-p".to_string(), "hotki".to_string()];
+    if matches!(spec.build_profile, BuildProfile::Release) {
+        cargo_args.push("--release".to_string());
+    }
+    cargo_args.push("--bin".to_string());
+    cargo_args.push(spec.bin_name.clone());
+    if !spec.features.is_empty() {
         cargo_args.push("--features".to_string());
-        cargo_args.push(args.features.join(","));
+        cargo_args.push(spec.features.join(","));
     }
-    run_status_streaming(root_dir, "cargo", cargo_args.iter().map(String::as_str))?;
-
-    let bin_path = root_dir.join("target/debug").join(&args.bin_name);
-    if !bin_path.is_file() {
-        return Err(Error::Io {
-            path: bin_path,
-            source: io_not_found("debug binary missing after cargo build"),
-        });
-    }
-
-    let out_dir = root_dir.join(&args.out_dir);
-    let app_dir = out_dir.join(format!("{}.app", args.app_name));
-    let contents_dir = app_dir.join("Contents");
-    let macos_dir = contents_dir.join("MacOS");
-    let res_dir = contents_dir.join("Resources");
-    let iconset_dir = out_dir.join("icon.iconset");
-    let icns_file = res_dir.join(format!("{}.icns", args.bin_name));
-    let icon_src = root_dir.join(&args.icon_src);
-
-    ensure_file_exists(&icon_src)?;
-    prepare_bundle_dirs(&app_dir, &iconset_dir, &macos_dir, &res_dir)?;
-    copy_themes(root_dir, &res_dir)?;
-
-    generate_iconset(root_dir, &icon_src, &iconset_dir, IconsetProfile::Dev)?;
-    run_status_streaming(
+    run_status(
         root_dir,
-        "iconutil",
-        iconutil_args(&iconset_dir, &icns_file),
-    )?;
-    remove_dir_all_if_exists(&iconset_dir)?;
-
-    let plist_path = contents_dir.join("Info.plist");
-    write_file(
-        &plist_path,
-        dev_plist(&args.app_name, &args.bin_name, &args.bundle_id, &version),
-    )?;
-
-    let bundle_bin_path = macos_dir.join(&args.bin_name);
-    fs::copy(&bin_path, &bundle_bin_path).map_err(|source| Error::Io {
-        path: bundle_bin_path.clone(),
-        source,
-    })?;
-    chmod_executable(&bundle_bin_path)?;
-
-    println!("==> Dev bundle ready: {}", app_dir.display());
-    Ok(())
+        "cargo",
+        cargo_args.iter().map(String::as_str),
+        OutputMode::Streaming,
+    )
 }
 
 /// Recreate the bundle directory structure and the iconset directory.
@@ -292,6 +355,20 @@ fn write_file(path: &Path, contents: String) -> Result<()> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Render the bundle's `Info.plist` contents.
+fn plist_contents(
+    kind: PlistKind,
+    app_name: &str,
+    bin_name: &str,
+    bundle_id: &str,
+    version: &str,
+) -> String {
+    match kind {
+        PlistKind::Release => release_plist(app_name, bin_name, bundle_id, version),
+        PlistKind::Dev => dev_plist(app_name, bin_name, bundle_id, version),
+    }
 }
 
 /// Generate the `Info.plist` for the release bundle.
@@ -408,8 +485,18 @@ fn generate_iconset(
 
         let base = base.to_string();
         let two = two.to_string();
-        run_status_quiet(root_dir, "sips", sips_args(&base, icon_src, &base_out))?;
-        run_status_quiet(root_dir, "sips", sips_args(&two, icon_src, &two_out))?;
+        run_status(
+            root_dir,
+            "sips",
+            sips_args(&base, icon_src, &base_out),
+            OutputMode::Quiet,
+        )?;
+        run_status(
+            root_dir,
+            "sips",
+            sips_args(&two, icon_src, &two_out),
+            OutputMode::Quiet,
+        )?;
     }
 
     Ok(())

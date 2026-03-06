@@ -1,13 +1,10 @@
 use std::{
     any::Any,
-    collections::BTreeSet,
     fs,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::exit,
     result::Result as StdResult,
-    sync::mpsc::{self, RecvTimeoutError},
-    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -70,50 +67,34 @@ impl Budget {
     }
 }
 
-/// Documentation for helper functions that a case relies on.
-#[derive(Clone, Copy, Debug)]
-pub struct HelperDoc {
-    /// Name of the helper function.
-    pub name: &'static str,
-    /// Short description surfaced in docs.
-    pub summary: &'static str,
-}
-
 /// Registry entry describing a smoketest case.
 pub struct CaseEntry {
     /// Registry slug used for CLI dispatch and artifact naming.
     pub name: &'static str,
     /// Optional description surfaced in headings and overlay text.
     pub info: Option<&'static str>,
-    /// Whether the case body must run on the main thread.
-    pub main_thread: bool,
     /// Additional watchdog headroom appended to the base timeout.
     pub extra_timeout_ms: u64,
     /// Expected timing budget for each stage.
     pub budget: Budget,
-    /// Helper API surface consumed by the case.
-    pub helpers: &'static [HelperDoc],
     /// Function pointer invoked to execute the case.
     pub run: fn(&mut CaseCtx<'_>) -> Result<()>,
 }
 
 impl CaseEntry {
-    /// Create a main-thread case entry with the provided metadata.
-    pub const fn main(
+    /// Create a case entry with the provided metadata.
+    pub const fn new(
         name: &'static str,
         info: Option<&'static str>,
         extra_timeout_ms: u64,
         budget: Budget,
-        helpers: &'static [HelperDoc],
         run: fn(&mut CaseCtx<'_>) -> Result<()>,
     ) -> Self {
         Self {
             name,
             info,
-            main_thread: true,
             extra_timeout_ms,
             budget,
-            helpers,
             run,
         }
     }
@@ -259,19 +240,12 @@ pub struct CaseRunOutcome {
     pub elapsed: Duration,
     /// Primary execution error, if any, returned by the case body.
     pub primary_error: Option<Error>,
-    /// Quiescence check failure raised during teardown, if any.
-    pub quiescence_error: Option<Error>,
 }
 
 impl CaseRunOutcome {
     /// Returns true when the case run produced neither primary nor cleanup errors.
     fn is_success(&self) -> bool {
-        self.primary_error.is_none() && self.quiescence_error.is_none()
-    }
-
-    /// Returns true when any error surfaced during the case run.
-    fn is_failure(&self) -> bool {
-        !self.is_success()
+        self.primary_error.is_none()
     }
 }
 
@@ -297,7 +271,6 @@ fn run_case(
         entry,
         elapsed: execution.elapsed,
         primary_error: execution.primary_error,
-        quiescence_error: None,
     })
 }
 
@@ -307,7 +280,6 @@ fn run_suite<I>(config: &RunnerConfig<'_>, cases: I, announce_success: bool) -> 
 where
     I: IntoIterator<Item = (usize, &'static CaseEntry)>,
 {
-    ensure_helper_limit()?;
     let scratch_root = create_scratch_root()?;
     let overlay = if config.warn_overlay && !config.quiet {
         OverlaySession::start()
@@ -326,7 +298,7 @@ where
         }
         let outcome = run_case(entry, config, &scratch_root, idx)?;
         report_outcome(&outcome, config.quiet);
-        if outcome.is_failure() {
+        if !outcome.is_success() {
             failures.push(entry);
             if config.fail_fast {
                 break;
@@ -390,20 +362,11 @@ fn execute_case(
         .saturating_add(entry.extra_timeout_ms);
 
     let start = Instant::now();
-    let exec_result = if entry.main_thread {
-        let case_dir_clone = case_dir.clone();
-        run_on_main_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, case_dir_clone);
-            let result = (entry.run)(&mut ctx);
-            (ctx, result)
-        })
-    } else {
-        run_with_watchdog(entry.name, timeout_ms, move || {
-            let mut ctx = CaseCtx::new(entry.name, case_dir);
-            let result = (entry.run)(&mut ctx);
-            (ctx, result)
-        })
-    };
+    let exec_result = run_with_watchdog(entry.name, timeout_ms, move || {
+        let mut ctx = CaseCtx::new(entry.name, case_dir);
+        let result = (entry.run)(&mut ctx);
+        (ctx, result)
+    });
     let elapsed = start.elapsed();
 
     match exec_result {
@@ -452,21 +415,11 @@ fn report_outcome(outcome: &CaseRunOutcome, quiet: bool) {
         eprintln!("{}: {}", outcome.entry.name, err);
         print_hints(err);
     }
-    if let Some(err) = &outcome.quiescence_error {
-        eprintln!("{}: cleanup error: {}", outcome.entry.name, err);
-    }
 }
 
 /// Abort reason surfaced by watchdog wrappers around case execution.
 #[derive(Debug)]
 enum WatchdogAbort {
-    /// The watchdog deadline elapsed before the worker finished.
-    Timeout {
-        /// Identifier for the task guarded by the watchdog.
-        name: String,
-        /// Timeout budget in milliseconds assigned to the task.
-        timeout_ms: u64,
-    },
     /// The worker panicked while the watchdog was armed.
     Panic {
         /// Identifier for the task guarded by the watchdog.
@@ -477,14 +430,6 @@ enum WatchdogAbort {
 }
 
 impl WatchdogAbort {
-    /// Build a timeout abort using the provided task name and deadline.
-    fn timeout(name: &str, timeout_ms: u64) -> Self {
-        Self::Timeout {
-            name: name.to_string(),
-            timeout_ms,
-        }
-    }
-
     /// Build a panic abort from a plain string message.
     fn panic_from_message(name: &str, message: String) -> Self {
         Self::Panic {
@@ -496,9 +441,6 @@ impl WatchdogAbort {
     /// Translate the abort into the suite's error type.
     fn into_error(self) -> Error {
         match self {
-            Self::Timeout { name, timeout_ms } => {
-                Error::InvalidState(format!("watchdog timeout after {timeout_ms} ms in {name}"))
-            }
             Self::Panic { name, message } => {
                 Error::InvalidState(format!("test case {name} panicked: {message}"))
             }
@@ -517,59 +459,8 @@ fn panic_message(payload: &(dyn Any + Send + 'static)) -> String {
     }
 }
 
-/// Convenience alias for watchdog guard results.
-type WatchdogResult<T> = StdResult<T, WatchdogAbort>;
-
-/// Outcome produced by the worker thread controlled by the watchdog.
-enum WorkerOutcome<T> {
-    /// Worker completed successfully with the provided value.
-    Completed(T),
-    /// Worker panicked and yielded the formatted panic message.
-    Panicked(String),
-}
-
-/// Run `f` on a background thread and bail out if the timeout expires.
-fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> WatchdogResult<T>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let outcome = panic::catch_unwind(AssertUnwindSafe(f)).map_or_else(
-            |payload| WorkerOutcome::Panicked(panic_message(payload.as_ref())),
-            WorkerOutcome::Completed,
-        );
-        if tx.send(outcome).is_err() {
-            // Receiver was dropped; the watchdog will see the disconnect.
-        }
-    });
-
-    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        Ok(WorkerOutcome::Completed(value)) => Ok(value),
-        Ok(WorkerOutcome::Panicked(message)) => {
-            Err(WatchdogAbort::panic_from_message(name, message))
-        }
-        Err(RecvTimeoutError::Timeout) => {
-            eprintln!(
-                "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
-                timeout_ms, name
-            );
-            process::kill_all();
-            Err(WatchdogAbort::timeout(name, timeout_ms))
-        }
-        Err(RecvTimeoutError::Disconnected) => {
-            process::kill_all();
-            Err(WatchdogAbort::panic_from_message(
-                name,
-                "worker thread disconnected".to_string(),
-            ))
-        }
-    }
-}
-
 /// Run `f` on the current thread while a watchdog enforces the deadline.
-fn run_on_main_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> WatchdogResult<T>
+fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> StdResult<T, WatchdogAbort>
 where
     F: FnOnce() -> T,
 {
@@ -613,29 +504,6 @@ where
         .map_err(|payload| WatchdogAbort::panic_from_message(name, panic_message(payload.as_ref())))
 }
 
-/// Verify helper metadata and enforce the shared helper catalog limit.
-fn ensure_helper_limit() -> Result<()> {
-    let mut helpers = BTreeSet::new();
-    for case in CASES {
-        for helper in case.helpers {
-            if helper.summary.trim().is_empty() {
-                return Err(Error::InvalidState(format!(
-                    "helper {} is missing documentation",
-                    helper.name
-                )));
-            }
-            helpers.insert(helper.name);
-        }
-    }
-    if helpers.len() > 12 {
-        return Err(Error::InvalidState(format!(
-            "helper API exposes {} functions (limit 12)",
-            helpers.len()
-        )));
-    }
-    Ok(())
-}
-
 /// Create the root scratch directory for the current smoketest run.
 fn create_scratch_root() -> Result<PathBuf> {
     let ts = SystemTime::now()
@@ -657,37 +525,30 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Reset the shared world handle and surface quiescence violations with artifacts referenced.
-/// Helper sets used by smoketest cases.
-const NO_HELPERS: &[HelperDoc] = &[];
-
 /// Additional watchdog slack for cases (milliseconds).
 const EXTRA_TIMEOUT: u64 = 3_000;
 
 /// Registry of smoketest cases focused on UI/HUD validation.
 static CASES: &[CaseEntry] = &[
-    CaseEntry::main(
+    CaseEntry::new(
         "hud",
         Some("Verify full HUD appears and responds to keys."),
         EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
-        NO_HELPERS,
         cases::hud,
     ),
-    CaseEntry::main(
+    CaseEntry::new(
         "mini",
         Some("Verify mini HUD appears and responds to keys."),
         EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
-        NO_HELPERS,
         cases::mini,
     ),
-    CaseEntry::main(
+    CaseEntry::new(
         "displays",
         Some("Verify HUD placement on multi-display setups."),
         EXTRA_TIMEOUT,
         Budget::new(800, 2000, 1200),
-        NO_HELPERS,
         cases::displays,
     ),
 ];

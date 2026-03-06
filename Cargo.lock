@@ -2290,6 +2290,7 @@ dependencies = [
  "relaykey",
  "rmp-serde",
  "serde",
+ "serde_json",
  "tao",
  "thiserror 2.0.17",
  "tokio",

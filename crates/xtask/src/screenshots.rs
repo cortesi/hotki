@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use crate::{Result, cmd::run_status_streaming};
+use crate::{
+    Result,
+    cmd::{OutputMode, run_status},
+};
 
 /// Generate screenshots for all built-in themes.
 pub fn screenshots(root_dir: &Path) -> Result<()> {
@@ -16,7 +19,7 @@ pub fn screenshots(root_dir: &Path) -> Result<()> {
 
     for (theme, out_dir) in themes {
         println!("==> Capturing screenshots: {theme}");
-        run_status_streaming(
+        run_status(
             root_dir,
             "cargo",
             [
@@ -29,6 +32,7 @@ pub fn screenshots(root_dir: &Path) -> Result<()> {
                 "--dir",
                 out_dir,
             ],
+            OutputMode::Streaming,
         )?;
     }
 

@@ -28,6 +28,7 @@ async-trait = { workspace = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }
 parking_lot = "0.12.5"
+serde_json.workspace = true
 
 # relaykey used in dev-dependencies for test-utils
 [package.metadata.cargo-machete]

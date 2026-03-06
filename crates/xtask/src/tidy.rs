@@ -2,12 +2,15 @@
 
 use std::path::Path;
 
-use crate::{Result, cmd::run_status_streaming};
+use crate::{
+    Result,
+    cmd::{OutputMode, run_status},
+};
 
 /// Run workspace lint and format checks.
 pub fn tidy(root_dir: &Path) -> Result<()> {
     println!("==> cargo clippy --fix");
-    run_status_streaming(
+    run_status(
         root_dir,
         "cargo",
         [
@@ -21,11 +24,12 @@ pub fn tidy(root_dir: &Path) -> Result<()> {
             "--tests",
             "--examples",
         ],
+        OutputMode::Streaming,
     )?;
 
     println!("==> cargo fmt");
     if root_dir.join("rustfmt-nightly.toml").is_file() {
-        run_status_streaming(
+        run_status(
             root_dir,
             "cargo",
             [
@@ -36,9 +40,15 @@ pub fn tidy(root_dir: &Path) -> Result<()> {
                 "--config-path",
                 "./rustfmt-nightly.toml",
             ],
+            OutputMode::Streaming,
         )?;
     } else {
-        run_status_streaming(root_dir, "cargo", ["+nightly", "fmt", "--all"])?;
+        run_status(
+            root_dir,
+            "cargo",
+            ["+nightly", "fmt", "--all"],
+            OutputMode::Streaming,
+        )?;
     }
 
     Ok(())

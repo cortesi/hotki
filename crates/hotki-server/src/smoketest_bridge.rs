@@ -2,8 +2,10 @@
 use std::{
     collections::VecDeque,
     env,
+    io::{self, BufRead, BufReader, Write},
+    os::unix::net::UnixStream,
     sync::OnceLock,
-    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
+    time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use hotki_protocol::{DisplaysSnapshot, HudState, NotifyKind, rpc::InjectKind};
@@ -176,6 +178,282 @@ pub struct BridgeReply {
     pub timestamp_ms: BridgeTimestampMs,
     /// Response payload.
     pub response: BridgeResponse,
+}
+
+/// Errors surfaced by the blocking smoketest bridge transport.
+#[derive(Debug, thiserror::Error)]
+pub enum BridgeClientError {
+    /// Bridge reported a failure while handling a command.
+    #[error("bridge command failed: {message}")]
+    BridgeFailure {
+        /// Human-readable error message from the bridge.
+        message: String,
+    },
+    /// The bridge did not acknowledge a command fast enough.
+    #[error("bridge acknowledgement for command {command_id} timed out after {timeout_ms} ms")]
+    AckTimeout {
+        /// Command identifier we waited on.
+        command_id: BridgeCommandId,
+        /// Timeout budget that was exceeded in milliseconds.
+        timeout_ms: u64,
+    },
+    /// Bridge responses arrived out of sequence.
+    #[error("bridge sequence mismatch: expected command {expected}, got {got}")]
+    SequenceMismatch {
+        /// Command identifier we expected.
+        expected: BridgeCommandId,
+        /// Command identifier we observed.
+        got: BridgeCommandId,
+    },
+    /// Bridge failed to emit an acknowledgement before responding.
+    #[error("bridge missing ACK for command {command_id}")]
+    AckMissing {
+        /// Command identifier lacking an acknowledgement.
+        command_id: BridgeCommandId,
+    },
+    /// Bridge IO error while sending/receiving commands.
+    #[error("bridge I/O error: {source}")]
+    Io {
+        /// Underlying IO error.
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Blocking bridge transport that owns socket I/O, command ids, and ACK handling.
+pub struct BlockingBridgeClient {
+    reader: BufReader<UnixStream>,
+    writer: UnixStream,
+    socket_path: String,
+    next_command_id: BridgeCommandId,
+    ack_timeout: StdDuration,
+}
+
+impl BlockingBridgeClient {
+    /// Connect to the bridge socket using the supplied acknowledgement timeout.
+    pub fn connect(path: &str, ack_timeout: StdDuration) -> io::Result<Self> {
+        let writer = UnixStream::connect(path)?;
+        writer.set_nonblocking(false).ok();
+        let reader_stream = writer.try_clone()?;
+        Ok(Self {
+            reader: BufReader::new(reader_stream),
+            writer,
+            socket_path: path.to_string(),
+            next_command_id: 0,
+            ack_timeout,
+        })
+    }
+
+    /// Return the socket path used by this client.
+    pub fn socket_path(&self) -> &str {
+        &self.socket_path
+    }
+
+    /// Reset command sequencing after a reconnect.
+    pub fn reset_command_id(&mut self) {
+        self.next_command_id = 0;
+    }
+
+    /// Send a bridge request and wait for its final response.
+    pub fn call<F>(
+        &mut self,
+        req: &BridgeRequest,
+        mut on_event: F,
+    ) -> Result<BridgeResponse, BridgeClientError>
+    where
+        F: FnMut(BridgeReply),
+    {
+        let command_id = self.next_command_id;
+        let command = BridgeCommand {
+            command_id,
+            issued_at_ms: now_millis(),
+            request: req.clone(),
+        };
+        self.send_command(&command)?;
+        let response = self.await_ack_and_response(command_id, &mut on_event)?;
+        self.next_command_id = self.next_command_id.wrapping_add(1);
+        Ok(response)
+    }
+
+    /// Wait for the next streamed event until `deadline`.
+    pub fn wait_for_event_until<F>(
+        &mut self,
+        deadline: Instant,
+        mut on_event: F,
+    ) -> Result<bool, BridgeClientError>
+    where
+        F: FnMut(BridgeReply),
+    {
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .map_err(|source| BridgeClientError::Io { source })?;
+        let outcome = self.read_reply();
+        if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+            tracing::debug!(?err, "failed to clear bridge read timeout");
+        }
+        match outcome {
+            Ok(reply) => match reply.response {
+                BridgeResponse::Event { .. } => {
+                    on_event(reply);
+                    Ok(true)
+                }
+                other => Err(BridgeClientError::BridgeFailure {
+                    message: format!(
+                        "unexpected bridge reply while waiting for events: {:?}",
+                        other
+                    ),
+                }),
+            },
+            Err(BridgeClientError::Io { source })
+                if source.kind() == io::ErrorKind::WouldBlock
+                    || source.kind() == io::ErrorKind::TimedOut =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn send_command(&mut self, command: &BridgeCommand) -> Result<(), BridgeClientError> {
+        let encoded =
+            serde_json::to_string(command).map_err(|err| BridgeClientError::BridgeFailure {
+                message: err.to_string(),
+            })?;
+        self.writer
+            .write_all(encoded.as_bytes())
+            .map_err(|source| BridgeClientError::Io { source })?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|source| BridgeClientError::Io { source })?;
+        self.writer
+            .flush()
+            .map_err(|source| BridgeClientError::Io { source })
+    }
+
+    fn await_ack_and_response<F>(
+        &mut self,
+        command_id: BridgeCommandId,
+        on_event: &mut F,
+    ) -> Result<BridgeResponse, BridgeClientError>
+    where
+        F: FnMut(BridgeReply),
+    {
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(self.ack_timeout))
+            .map_err(|source| BridgeClientError::Io { source })?;
+        loop {
+            let ack_result = self.read_reply();
+            match ack_result {
+                Ok(reply) => {
+                    if let BridgeResponse::Event { .. } = &reply.response {
+                        on_event(reply);
+                        continue;
+                    }
+                    let outcome = self.validate_ack(command_id, &reply);
+                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+                        tracing::debug!(?err, "failed to clear bridge read timeout");
+                    }
+                    outcome?;
+                    return self.await_final_response(command_id, on_event);
+                }
+                Err(BridgeClientError::Io { source })
+                    if source.kind() == io::ErrorKind::WouldBlock
+                        || source.kind() == io::ErrorKind::TimedOut =>
+                {
+                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+                        tracing::debug!(?err, "failed to clear bridge read timeout");
+                    }
+                    return Err(BridgeClientError::AckTimeout {
+                        command_id,
+                        timeout_ms: self.ack_timeout.as_millis() as u64,
+                    });
+                }
+                Err(err) => {
+                    if let Err(clear_err) = self.reader.get_ref().set_read_timeout(None) {
+                        tracing::debug!(?clear_err, "failed to clear bridge read timeout");
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    fn validate_ack(
+        &self,
+        command_id: BridgeCommandId,
+        ack: &BridgeReply,
+    ) -> Result<(), BridgeClientError> {
+        if ack.command_id != command_id {
+            return Err(BridgeClientError::SequenceMismatch {
+                expected: command_id,
+                got: ack.command_id,
+            });
+        }
+        match &ack.response {
+            BridgeResponse::Ack { queued } => {
+                tracing::debug!(command_id, queued, "bridge_ack");
+                Ok(())
+            }
+            BridgeResponse::Err { message } => Err(BridgeClientError::BridgeFailure {
+                message: message.clone(),
+            }),
+            _ => Err(BridgeClientError::AckMissing { command_id }),
+        }
+    }
+
+    fn await_final_response<F>(
+        &mut self,
+        command_id: BridgeCommandId,
+        on_event: &mut F,
+    ) -> Result<BridgeResponse, BridgeClientError>
+    where
+        F: FnMut(BridgeReply),
+    {
+        loop {
+            let reply = self.read_reply()?;
+            if let BridgeResponse::Event { .. } = &reply.response {
+                on_event(reply);
+                continue;
+            }
+            if reply.command_id != command_id {
+                return Err(BridgeClientError::SequenceMismatch {
+                    expected: command_id,
+                    got: reply.command_id,
+                });
+            }
+            return match reply.response {
+                BridgeResponse::Ack { .. } => Err(BridgeClientError::AckMissing { command_id }),
+                BridgeResponse::Err { message } => Ok(BridgeResponse::Err { message }),
+                other => Ok(other),
+            };
+        }
+    }
+
+    fn read_reply(&mut self) -> Result<BridgeReply, BridgeClientError> {
+        let mut line = String::new();
+        let bytes = self
+            .reader
+            .read_line(&mut line)
+            .map_err(|source| BridgeClientError::Io { source })?;
+        if bytes == 0 {
+            return Err(BridgeClientError::BridgeFailure {
+                message: format!("bridge socket '{}' closed", self.socket_path),
+            });
+        }
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        serde_json::from_str(trimmed).map_err(|err| BridgeClientError::BridgeFailure {
+            message: err.to_string(),
+        })
+    }
 }
 
 impl BridgeResponse {

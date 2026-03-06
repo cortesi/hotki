@@ -7,7 +7,7 @@ use crate::{
     config,
     error::{Error, Result},
     process::{self, ManagedChild},
-    server_drive::{BridgeDriver, ControlSocketScope},
+    server_drive::{BridgeClient, ControlSocketScope},
     tmp_paths,
 };
 
@@ -55,7 +55,7 @@ pub struct HotkiSession {
     /// Bridge control socket override guard for this session.
     _control_scope: ControlSocketScope,
     /// Driver handle used to communicate with the smoketest bridge.
-    bridge: BridgeDriver,
+    bridge: BridgeClient,
     /// Whether teardown has already been performed.
     cleaned_up: bool,
 }
@@ -130,7 +130,7 @@ impl HotkiSession {
         cmd.env("HOTKI_CONTROL_SOCKET", &control_socket);
 
         let mut child = process::spawn_managed(cmd)?;
-        let mut bridge = BridgeDriver::new(socket_path_for_pid(child.pid as u32));
+        let mut bridge = BridgeClient::new(socket_path_for_pid(child.pid as u32));
         if let Err(err) = bridge.ensure_ready(config::DEFAULTS.timeout_ms) {
             if let Err(kill_err) = child.kill_and_wait() {
                 debug!(
@@ -156,7 +156,7 @@ impl HotkiSession {
     }
 
     /// Borrow the bridge driver mutably.
-    pub fn bridge_mut(&mut self) -> &mut BridgeDriver {
+    pub fn bridge_mut(&mut self) -> &mut BridgeClient {
         &mut self.bridge
     }
 
