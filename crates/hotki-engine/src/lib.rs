@@ -847,18 +847,11 @@ impl Engine {
 
         match action {
             config::Action::Shell(spec) => {
-                let repeat = repeat.map(|r| RepeatSpec {
-                    initial_delay_ms: r.delay_ms,
-                    interval_ms: r.interval_ms,
-                });
-
-                self.repeater.start(
-                    identifier.to_string(),
-                    ExecSpec::Shell {
-                        command: spec.command().to_string(),
-                        ok_notify: spec.ok_notify(),
-                        err_notify: spec.err_notify(),
-                    },
+                self.start_shell_action(
+                    identifier,
+                    spec.command().to_string(),
+                    spec.ok_notify(),
+                    spec.err_notify(),
                     repeat,
                 );
                 Ok(DispatchOutcome::default())
@@ -870,10 +863,7 @@ impl Engine {
                     return Ok(DispatchOutcome::default());
                 };
 
-                let repeat = repeat.map(|r| RepeatSpec {
-                    initial_delay_ms: r.delay_ms,
-                    interval_ms: r.interval_ms,
-                });
+                let repeat = repeat_spec(repeat);
 
                 if let Some(repeat) = repeat {
                     let allow_os_repeat =
@@ -916,106 +906,97 @@ impl Engine {
                 self.notifier.send_ui(MsgToUI::ShowDetails(*arg))?;
                 Ok(DispatchOutcome::default())
             }
-            config::Action::ThemeNext => {
-                let cfg_guard = self.config.read().await;
-                let Some(cfg) = cfg_guard.as_ref() else {
-                    return Ok(DispatchOutcome::default());
-                };
-                let theme_names = cfg.theme_names();
-                drop(cfg_guard);
-
-                let mut rt = self.runtime.lock().await;
-                rt.theme_name = theme_next_name(&theme_names, rt.theme_name.as_str());
-                Ok(DispatchOutcome::default())
-            }
-            config::Action::ThemePrev => {
-                let cfg_guard = self.config.read().await;
-                let Some(cfg) = cfg_guard.as_ref() else {
-                    return Ok(DispatchOutcome::default());
-                };
-                let theme_names = cfg.theme_names();
-                drop(cfg_guard);
-
-                let mut rt = self.runtime.lock().await;
-                rt.theme_name = theme_prev_name(&theme_names, rt.theme_name.as_str());
-                Ok(DispatchOutcome::default())
-            }
-            config::Action::ThemeSet(name) => {
-                let cfg_guard = self.config.read().await;
-                let exists = cfg_guard
-                    .as_ref()
-                    .is_some_and(|cfg| cfg.theme_exists(name.as_str()));
-                drop(cfg_guard);
-
-                if exists {
-                    let mut rt = self.runtime.lock().await;
-                    rt.theme_name = name.to_string();
-                } else {
-                    self.notifier.send_notification(
-                        config::NotifyKind::Warn,
-                        "Theme".to_string(),
-                        format!("Unknown theme: {}", name),
-                    )?;
-                }
-                Ok(DispatchOutcome::default())
-            }
+            config::Action::ThemeNext => self.cycle_theme(identifier, true).await,
+            config::Action::ThemePrev => self.cycle_theme(identifier, false).await,
+            config::Action::ThemeSet(name) => self.set_theme_by_name(identifier, name).await,
             config::Action::SetVolume(level) => {
-                let repeat = repeat.map(|r| RepeatSpec {
-                    initial_delay_ms: r.delay_ms,
-                    interval_ms: r.interval_ms,
-                });
-                let script = format!("set volume output volume {}", (*level).min(100));
-                self.repeater.start(
-                    identifier.to_string(),
-                    ExecSpec::Shell {
-                        command: format!("osascript -e '{}'", script),
-                        ok_notify: config::NotifyKind::Ignore,
-                        err_notify: config::NotifyKind::Warn,
-                    },
-                    repeat,
-                );
+                self.start_warn_apple_script(identifier, set_volume_script(*level), repeat);
                 Ok(DispatchOutcome::default())
             }
             config::Action::ChangeVolume(delta) => {
-                let repeat = repeat.map(|r| RepeatSpec {
-                    initial_delay_ms: r.delay_ms,
-                    interval_ms: r.interval_ms,
-                });
-                let script = format!(
-                    "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
-                    delta
-                );
-                self.repeater.start(
-                    identifier.to_string(),
-                    ExecSpec::Shell {
-                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-                        ok_notify: config::NotifyKind::Ignore,
-                        err_notify: config::NotifyKind::Warn,
-                    },
+                self.start_warn_apple_script(
+                    identifier,
+                    change_volume_script((*delta).into()),
                     repeat,
                 );
                 Ok(DispatchOutcome::default())
             }
             config::Action::Mute(arg) => {
-                let script = match arg {
-                    config::Toggle::On => "set volume output muted true".to_string(),
-                    config::Toggle::Off => "set volume output muted false".to_string(),
-                    config::Toggle::Toggle => {
-                        "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
-                    }
-                };
-                self.repeater.start(
-                    identifier.to_string(),
-                    ExecSpec::Shell {
-                        command: format!("osascript -e '{}'", script.replace('\n', "' -e '")),
-                        ok_notify: config::NotifyKind::Ignore,
-                        err_notify: config::NotifyKind::Warn,
-                    },
-                    None,
-                );
+                self.start_warn_apple_script(identifier, mute_script(*arg), None);
                 Ok(DispatchOutcome::default())
             }
         }
+    }
+
+    fn start_shell_action(
+        &self,
+        identifier: &str,
+        command: String,
+        ok_notify: config::NotifyKind,
+        err_notify: config::NotifyKind,
+        repeat: Option<dyn_engine::RepeatSpec>,
+    ) {
+        self.repeater.start(
+            identifier.to_string(),
+            ExecSpec::Shell {
+                command,
+                ok_notify,
+                err_notify,
+            },
+            repeat_spec(repeat),
+        );
+    }
+
+    fn start_warn_apple_script(
+        &self,
+        identifier: &str,
+        script: String,
+        repeat: Option<dyn_engine::RepeatSpec>,
+    ) {
+        self.start_shell_action(
+            identifier,
+            apple_script_command(script),
+            config::NotifyKind::Ignore,
+            config::NotifyKind::Warn,
+            repeat,
+        );
+    }
+
+    async fn cycle_theme(&self, identifier: &str, next: bool) -> Result<DispatchOutcome> {
+        self.key_tracker.set_repeat_allowed(identifier, false);
+        let cfg_guard = self.config.read().await;
+        let Some(cfg) = cfg_guard.as_ref() else {
+            return Ok(DispatchOutcome::default());
+        };
+        let theme_names = cfg.theme_names();
+        drop(cfg_guard);
+
+        let mut rt = self.runtime.lock().await;
+        rt.theme_name = if next {
+            theme_next_name(&theme_names, rt.theme_name.as_str())
+        } else {
+            theme_prev_name(&theme_names, rt.theme_name.as_str())
+        };
+        Ok(DispatchOutcome::default())
+    }
+
+    async fn set_theme_by_name(&self, identifier: &str, name: &str) -> Result<DispatchOutcome> {
+        self.key_tracker.set_repeat_allowed(identifier, false);
+        let cfg_guard = self.config.read().await;
+        let exists = cfg_guard.as_ref().is_some_and(|cfg| cfg.theme_exists(name));
+        drop(cfg_guard);
+
+        if exists {
+            let mut rt = self.runtime.lock().await;
+            rt.theme_name = name.to_string();
+        } else {
+            self.notifier.send_notification(
+                config::NotifyKind::Warn,
+                "Theme".to_string(),
+                format!("Unknown theme: {}", name),
+            )?;
+        }
+        Ok(DispatchOutcome::default())
     }
 
     async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchOutcome {
@@ -1187,6 +1168,38 @@ impl Engine {
     fn current_dispatch_context(&self) -> DispatchContext {
         let (app, title, pid) = self.current_context();
         DispatchContext { app, title, pid }
+    }
+}
+
+fn repeat_spec(repeat: Option<dyn_engine::RepeatSpec>) -> Option<RepeatSpec> {
+    repeat.map(|repeat| RepeatSpec {
+        initial_delay_ms: repeat.delay_ms,
+        interval_ms: repeat.interval_ms,
+    })
+}
+
+fn apple_script_command(script: String) -> String {
+    format!("osascript -e '{}'", script.replace('\n', "' -e '"))
+}
+
+fn set_volume_script(level: u8) -> String {
+    format!("set volume output volume {}", level.min(100))
+}
+
+fn change_volume_script(delta: i32) -> String {
+    format!(
+        "set currentVolume to output volume of (get volume settings)\nset volume output volume (currentVolume + {})",
+        delta
+    )
+}
+
+fn mute_script(toggle: config::Toggle) -> String {
+    match toggle {
+        config::Toggle::On => "set volume output muted true".to_string(),
+        config::Toggle::Off => "set volume output muted false".to_string(),
+        config::Toggle::Toggle => {
+            "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
+        }
     }
 }
 

@@ -198,7 +198,6 @@ mod tests {
         env, fs,
         io::{BufRead, BufReader, ErrorKind, Write},
         os::unix::net::{UnixListener, UnixStream},
-        process,
         sync::{Arc, OnceLock, mpsc},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -217,6 +216,7 @@ mod tests {
     use parking_lot::Mutex as ParkingMutex;
 
     use super::*;
+    use crate::tmp_paths;
 
     fn sample_style() -> Style {
         let window = NotifyWindowStyle {
@@ -274,11 +274,10 @@ mod tests {
     }
 
     fn unique_control_socket() -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        tmp_paths::unique_socket_path("smoketest-bridge-tests", "hotki-bridge-test")
             .unwrap()
-            .as_nanos();
-        format!("/tmp/hotki-bridge-test-{}-{}.sock", process::id(), nanos)
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn bridge_test_lock() -> &'static ParkingMutex<()> {
@@ -422,8 +421,11 @@ mod tests {
         unsafe {
             env::remove_var(key);
         }
-        let path = "/tmp/hotki.sock";
-        assert_eq!(control_socket_path(path), "/tmp/hotki.sock.bridge");
+        let path = tmp_paths::named_path("smoketest-bridge-tests", "hotki.sock")
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(control_socket_path(&path), format!("{path}.bridge"));
         match restore {
             Some(value) => unsafe {
                 env::set_var(key, value);

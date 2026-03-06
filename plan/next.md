@@ -160,7 +160,7 @@ for app-only commands such as `Shutdown` and `ShowPermissionsHelp`.
 
 These are smaller but still worthwhile changes once the main seams above are opened.
 
-1. [ ] Replace the manual raw-style overlay boilerplate in `crates/config/src/raw.rs` with a
+1. [x] Replace the manual raw-style overlay boilerplate in `crates/config/src/raw.rs` with a
        generated or table-driven overlay mechanism.
 Refs: `crates/config/src/raw.rs:221-277`, `:388-431`, `:438-528`, and `:544-552`.
 Why: `RawNotify`, `RawHud`, `RawSelector`, and `RawStyle` all hand-roll `merge` and
@@ -168,14 +168,14 @@ Why: `RawNotify`, `RawHud`, `RawSelector`, and `RawStyle` all hand-roll `merge` 
 Refactor direction: extract generic field-wise overlay helpers or a macro/derive for overlay
 structs.
 
-2. [ ] Simplify `KeyBindingManager`'s internal representation.
+2. [x] Simplify `KeyBindingManager`'s internal representation.
 Refs: `crates/hotki-engine/src/key_binding.rs:19-34`, `:65-154`, and `:177-191`.
 Why: one concept is spread across `id_map`, `chord_map`, `inv_map`, and `last_bound`, which
 forces extra cloning and bookkeeping.
 Refactor direction: keep one `HashMap<String, BindingRegistration>` plus a reverse
 `HashMap<u32, String>`.
 
-3. [ ] Deduplicate low-value helpers in `Engine::apply_action()`.
+3. [x] Deduplicate low-value helpers in `Engine::apply_action()`.
 Refs: `crates/hotki-engine/src/lib.rs:920-1103`.
 Why: `RepeatSpec` translation is repeated for shell, relay, and volume actions; AppleScript
 construction is repeated for volume branches; theme stepping is spread across three similar
@@ -183,13 +183,13 @@ arms.
 Refactor direction: extract helpers such as `repeat_spec(...)`, `start_shell_action(...)`, and
 `set_theme_by(...)`.
 
-4. [ ] Replace the hardcoded logging crate list with a single source of truth.
+4. [x] Replace the hardcoded logging crate list with a single source of truth.
 Refs: `crates/logging/src/lib.rs:18-34`.
 Why: `OUR_CRATES` must be updated manually as the workspace changes, which guarantees drift.
 Refactor direction: derive this list from workspace metadata at build time, or expose a small
 builder API so each binary declares its own additions explicitly.
 
-5. [ ] Bring smoketest temporary-path handling back in line with repo policy.
+5. [x] Bring smoketest temporary-path handling back in line with repo policy.
 Refs: `crates/smoketest/src/session.rs:185-194` and
 `crates/smoketest/src/suite.rs:640-657`.
 Why: bridge sockets are allocated under `env::temp_dir()` instead of `./tmp/`, which makes test

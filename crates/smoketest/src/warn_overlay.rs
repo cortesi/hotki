@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::PathBuf,
-    process::{self as std_process, Command, Stdio},
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -19,6 +19,7 @@ use crate::{
     config,
     error::Result as SmoketestResult,
     process::{self as process_utils, ManagedChild},
+    tmp_paths,
 };
 
 /// Internal flag passed to the smoketest binary to start the warn overlay helper.
@@ -42,7 +43,7 @@ pub fn write_overlay_text(label: &str, text: &str) {
 
 /// Compose the per-run overlay temp-file path for the given label.
 fn overlay_path_for_current_run(label: &str) -> PathBuf {
-    env::temp_dir().join(format!("hotki-smoketest-{label}-{}.txt", std_process::id()))
+    tmp_paths::process_file_path("smoketest-overlay", "hotki-smoketest", label, "txt")
 }
 
 /// Spawn the warn overlay helper process and return a managed child handle.

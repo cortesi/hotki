@@ -55,6 +55,11 @@ impl<T> Maybe<T> {
     }
 }
 
+/// Extract the overlay value or fall back to `default`.
+fn maybe_or<T>(value: Maybe<T>, default: T) -> T {
+    value.into_option().unwrap_or(default)
+}
+
 /// Merge two `Maybe<T>` values, preferring the overlay when it is present.
 fn merge_maybe<T: Clone>(base: &Maybe<T>, overlay: &Maybe<T>) -> Maybe<T> {
     match overlay.as_option() {
@@ -75,6 +80,29 @@ fn merge_maybe_nested<T: Clone>(
         (None, Some(_)) => overlay.clone(),
         (None, None) => base.clone(),
     }
+}
+
+/// Merge overlay structs field-by-field, with optional nested merge functions.
+macro_rules! merge_overlay {
+    ($base:expr, $overlay:expr; nested[$($nested:ident => $merge:path),* $(,)?]) => {
+        Self {
+            $(
+                $nested: merge_maybe_nested(&$base.$nested, &$overlay.$nested, $merge),
+            )*
+        }
+    };
+    ($base:expr, $overlay:expr; flat[$($field:ident),* $(,)?] $(; nested[$($nested:ident => $merge:path),* $(,)?])?) => {
+        Self {
+            $(
+                $field: merge_maybe(&$base.$field, &$overlay.$field),
+            )*
+            $(
+                $(
+                    $nested: merge_maybe_nested(&$base.$nested, &$overlay.$nested, $merge),
+                )*
+            )?
+        }
+    };
 }
 
 // ===== RAW NOTIFICATION STYLE =====
@@ -122,38 +150,30 @@ impl RawNotifyStyle {
                 self.body_fg.as_option().map(String::as_str),
                 defaults.body_fg,
             ),
-            title_font_size: self
-                .title_font_size
-                .into_option()
-                .unwrap_or(defaults.title_font_size),
-            title_font_weight: self
-                .title_font_weight
-                .into_option()
-                .unwrap_or(defaults.title_font_weight),
-            body_font_size: self
-                .body_font_size
-                .into_option()
-                .unwrap_or(defaults.body_font_size),
-            body_font_weight: self
-                .body_font_weight
-                .into_option()
-                .unwrap_or(defaults.body_font_weight),
+            title_font_size: maybe_or(self.title_font_size, defaults.title_font_size),
+            title_font_weight: maybe_or(self.title_font_weight, defaults.title_font_weight),
+            body_font_size: maybe_or(self.body_font_size, defaults.body_font_size),
+            body_font_weight: maybe_or(self.body_font_weight, defaults.body_font_weight),
             icon: self.icon.into_option().or(defaults.icon),
         }
     }
 
     /// Merge another notification style on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
-        Self {
-            bg: merge_maybe(&self.bg, &other.bg),
-            title_fg: merge_maybe(&self.title_fg, &other.title_fg),
-            body_fg: merge_maybe(&self.body_fg, &other.body_fg),
-            title_font_size: merge_maybe(&self.title_font_size, &other.title_font_size),
-            title_font_weight: merge_maybe(&self.title_font_weight, &other.title_font_weight),
-            body_font_size: merge_maybe(&self.body_font_size, &other.body_font_size),
-            body_font_weight: merge_maybe(&self.body_font_weight, &other.body_font_weight),
-            icon: merge_maybe(&self.icon, &other.icon),
-        }
+        merge_overlay!(
+            self,
+            other;
+            flat[
+                bg,
+                title_fg,
+                body_fg,
+                title_font_size,
+                title_font_weight,
+                body_font_size,
+                body_font_weight,
+                icon,
+            ]
+        )
     }
 }
 
@@ -199,18 +219,13 @@ impl RawNotify {
     /// Internal helper: apply overrides over a base Notify
     fn apply_over(self, base: &Notify) -> Notify {
         let defaults = base.clone();
-        macro_rules! or_field {
-            ($field:ident) => {
-                self.$field.into_option().unwrap_or(defaults.$field)
-            };
-        }
         Notify {
-            width: or_field!(width),
-            pos: or_field!(pos),
-            opacity: or_field!(opacity),
-            timeout: or_field!(timeout),
-            buffer: or_field!(buffer),
-            radius: or_field!(radius),
+            width: maybe_or(self.width, defaults.width),
+            pos: maybe_or(self.pos, defaults.pos),
+            opacity: maybe_or(self.opacity, defaults.opacity),
+            timeout: maybe_or(self.timeout, defaults.timeout),
+            buffer: maybe_or(self.buffer, defaults.buffer),
+            radius: maybe_or(self.radius, defaults.radius),
             theme: crate::NotifyTheme {
                 info: self
                     .info
@@ -243,18 +258,17 @@ impl RawNotify {
 
     /// Merge another notification overlay on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
-        Self {
-            width: merge_maybe(&self.width, &other.width),
-            pos: merge_maybe(&self.pos, &other.pos),
-            opacity: merge_maybe(&self.opacity, &other.opacity),
-            timeout: merge_maybe(&self.timeout, &other.timeout),
-            buffer: merge_maybe(&self.buffer, &other.buffer),
-            radius: merge_maybe(&self.radius, &other.radius),
-            info: merge_maybe_nested(&self.info, &other.info, RawNotifyStyle::merge),
-            warn: merge_maybe_nested(&self.warn, &other.warn, RawNotifyStyle::merge),
-            error: merge_maybe_nested(&self.error, &other.error, RawNotifyStyle::merge),
-            success: merge_maybe_nested(&self.success, &other.success, RawNotifyStyle::merge),
-        }
+        merge_overlay!(
+            self,
+            other;
+            flat[width, pos, opacity, timeout, buffer, radius];
+            nested[
+                info => RawNotifyStyle::merge,
+                warn => RawNotifyStyle::merge,
+                error => RawNotifyStyle::merge,
+                success => RawNotifyStyle::merge,
+            ]
+        )
     }
 }
 
@@ -387,15 +401,11 @@ impl RawSelector {
 
     /// Merge another selector overlay on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
-        Self {
-            bg: merge_maybe(&self.bg, &other.bg),
-            input_bg: merge_maybe(&self.input_bg, &other.input_bg),
-            item_bg: merge_maybe(&self.item_bg, &other.item_bg),
-            item_selected_bg: merge_maybe(&self.item_selected_bg, &other.item_selected_bg),
-            match_fg: merge_maybe(&self.match_fg, &other.match_fg),
-            border: merge_maybe(&self.border, &other.border),
-            shadow: merge_maybe(&self.shadow, &other.shadow),
-        }
+        merge_overlay!(
+            self,
+            other;
+            flat[bg, input_bg, item_bg, item_selected_bg, match_fg, border, shadow]
+        )
     }
 }
 
@@ -418,19 +428,14 @@ impl RawHud {
     /// Internal helper: apply overrides over a base Hud
     fn apply_over(self, base: &Hud) -> Hud {
         let defaults = base.clone();
-        macro_rules! or_field {
-            ($field:ident) => {
-                self.$field.into_option().unwrap_or(defaults.$field)
-            };
-        }
         macro_rules! color_field {
             ($field:ident) => {
                 color_or(self.$field.as_option().map(|s| s.as_str()), defaults.$field)
             };
         }
 
-        let mode = or_field!(mode);
-        let font_size = or_field!(font_size);
+        let mode = maybe_or(self.mode, defaults.mode);
+        let font_size = maybe_or(self.font_size, defaults.font_size);
         let title_fg = color_field!(title_fg);
         let bg = color_field!(bg);
         let key_fg = color_field!(key_fg);
@@ -441,28 +446,28 @@ impl RawHud {
 
         Hud {
             mode,
-            pos: or_field!(pos),
-            offset: or_field!(offset),
+            pos: maybe_or(self.pos, defaults.pos),
+            offset: maybe_or(self.offset, defaults.offset),
             font_size,
-            title_font_weight: or_field!(title_font_weight),
+            title_font_weight: maybe_or(self.title_font_weight, defaults.title_font_weight),
             // key_font_size and tag_font_size default to font_size if not specified
-            key_font_size: self.key_font_size.into_option().unwrap_or(font_size),
-            key_font_weight: or_field!(key_font_weight),
-            tag_font_size: self.tag_font_size.into_option().unwrap_or(font_size),
-            tag_font_weight: or_field!(tag_font_weight),
+            key_font_size: maybe_or(self.key_font_size, font_size),
+            key_font_weight: maybe_or(self.key_font_weight, defaults.key_font_weight),
+            tag_font_size: maybe_or(self.tag_font_size, font_size),
+            tag_font_weight: maybe_or(self.tag_font_weight, defaults.tag_font_weight),
             title_fg,
             bg,
             key_fg,
             key_bg,
             mod_fg,
-            mod_font_weight: or_field!(mod_font_weight),
+            mod_font_weight: maybe_or(self.mod_font_weight, defaults.mod_font_weight),
             mod_bg,
             tag_fg,
-            opacity: or_field!(opacity),
-            key_radius: or_field!(key_radius),
-            key_pad_x: or_field!(key_pad_x),
-            key_pad_y: or_field!(key_pad_y),
-            radius: or_field!(radius),
+            opacity: maybe_or(self.opacity, defaults.opacity),
+            key_radius: maybe_or(self.key_radius, defaults.key_radius),
+            key_pad_x: maybe_or(self.key_pad_x, defaults.key_pad_x),
+            key_pad_y: maybe_or(self.key_pad_y, defaults.key_pad_y),
+            radius: maybe_or(self.radius, defaults.radius),
             tag_submenu: self
                 .tag_submenu
                 .into_option()
@@ -477,31 +482,35 @@ impl RawHud {
 
     /// Merge another HUD overlay on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
-        Self {
-            mode: merge_maybe(&self.mode, &other.mode),
-            pos: merge_maybe(&self.pos, &other.pos),
-            offset: merge_maybe(&self.offset, &other.offset),
-            font_size: merge_maybe(&self.font_size, &other.font_size),
-            title_font_weight: merge_maybe(&self.title_font_weight, &other.title_font_weight),
-            key_font_size: merge_maybe(&self.key_font_size, &other.key_font_size),
-            key_font_weight: merge_maybe(&self.key_font_weight, &other.key_font_weight),
-            tag_font_size: merge_maybe(&self.tag_font_size, &other.tag_font_size),
-            tag_font_weight: merge_maybe(&self.tag_font_weight, &other.tag_font_weight),
-            title_fg: merge_maybe(&self.title_fg, &other.title_fg),
-            bg: merge_maybe(&self.bg, &other.bg),
-            key_fg: merge_maybe(&self.key_fg, &other.key_fg),
-            key_bg: merge_maybe(&self.key_bg, &other.key_bg),
-            mod_fg: merge_maybe(&self.mod_fg, &other.mod_fg),
-            mod_font_weight: merge_maybe(&self.mod_font_weight, &other.mod_font_weight),
-            mod_bg: merge_maybe(&self.mod_bg, &other.mod_bg),
-            tag_fg: merge_maybe(&self.tag_fg, &other.tag_fg),
-            opacity: merge_maybe(&self.opacity, &other.opacity),
-            key_radius: merge_maybe(&self.key_radius, &other.key_radius),
-            key_pad_x: merge_maybe(&self.key_pad_x, &other.key_pad_x),
-            key_pad_y: merge_maybe(&self.key_pad_y, &other.key_pad_y),
-            radius: merge_maybe(&self.radius, &other.radius),
-            tag_submenu: merge_maybe(&self.tag_submenu, &other.tag_submenu),
-        }
+        merge_overlay!(
+            self,
+            other;
+            flat[
+                mode,
+                pos,
+                offset,
+                font_size,
+                title_font_weight,
+                key_font_size,
+                key_font_weight,
+                tag_font_size,
+                tag_font_weight,
+                title_fg,
+                bg,
+                key_fg,
+                key_bg,
+                mod_fg,
+                mod_font_weight,
+                mod_bg,
+                tag_fg,
+                opacity,
+                key_radius,
+                key_pad_x,
+                key_pad_y,
+                radius,
+                tag_submenu,
+            ]
+        )
     }
 }
 
@@ -523,11 +532,15 @@ pub struct RawStyle {
 impl RawStyle {
     /// Merge another style overlay on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
-        Self {
-            hud: merge_maybe_nested(&self.hud, &other.hud, RawHud::merge),
-            notify: merge_maybe_nested(&self.notify, &other.notify, RawNotify::merge),
-            selector: merge_maybe_nested(&self.selector, &other.selector, RawSelector::merge),
-        }
+        merge_overlay!(
+            self,
+            other;
+            nested[
+                hud => RawHud::merge,
+                notify => RawNotify::merge,
+                selector => RawSelector::merge,
+            ]
+        )
     }
 }
 

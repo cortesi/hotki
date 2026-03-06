@@ -15,23 +15,7 @@ use tracing_subscriber::EnvFilter;
 pub mod fmt;
 pub mod forward;
 
-/// Crate targets included in default logging directives.
-const OUR_CRATES: &[&str] = &[
-    "hotki",
-    "hotki_engine",
-    "hotki_protocol",
-    "hotki_server",
-    "hotki_world",
-    "hotki_shots",
-    "smoketest",
-    "config",
-    "logging",
-    "dumpinput",
-    "permissions",
-    "relaykey",
-    "mac_hotkey",
-    "mac_keycode",
-];
+include!(concat!(env!("OUT_DIR"), "/workspace_crates.rs"));
 
 /// Logging controls for CLI apps.
 #[derive(Debug, Clone, Args)]

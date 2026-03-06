@@ -1,10 +1,4 @@
-use std::{
-    env, fs,
-    io::ErrorKind,
-    path::PathBuf,
-    process::{self as std_process, Command},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{env, fs, io::ErrorKind, path::PathBuf, process::Command};
 
 use logging as logshared;
 use tracing::debug;
@@ -14,6 +8,7 @@ use crate::{
     error::{Error, Result},
     process::{self, ManagedChild},
     server_drive::{BridgeDriver, ControlSocketScope},
+    tmp_paths,
 };
 
 /// Launch configuration for a smoketest-backed hotki session.
@@ -111,7 +106,7 @@ impl HotkiSession {
             config_path,
             with_logs,
         } = config;
-        let control_socket = unique_control_socket_path();
+        let control_socket = unique_control_socket_path()?;
         let mut cleanup_guard = ControlSocketCleanup::new(control_socket.clone());
         let control_scope = ControlSocketScope::new(control_socket.clone());
         if let Err(err) = fs::remove_file(&control_socket)
@@ -209,16 +204,12 @@ pub fn socket_path_for_pid(pid: u32) -> String {
 }
 
 /// Generate a unique control socket path under the system temporary directory.
-fn unique_control_socket_path() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let pid = std_process::id();
-    env::temp_dir()
-        .join(format!("hotki-bridge-{pid}-{ts}.sock"))
-        .to_string_lossy()
-        .into_owned()
+fn unique_control_socket_path() -> Result<String> {
+    Ok(
+        tmp_paths::unique_socket_path("smoketest-sockets", "hotki-bridge")?
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Resolve the hotki binary path from env overrides or the current executable dir.

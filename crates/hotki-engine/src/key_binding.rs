@@ -15,20 +15,19 @@ use crate::{
 /// Threshold for warning about slow binding updates that may cause key drops
 const BIND_UPDATE_WARN_MS: u64 = 10;
 
+#[derive(Debug, Clone)]
+struct BindingRegistration {
+    id: u32,
+    chord: Chord,
+}
+
 /// Manages hotkey bindings and their lifecycle
 pub struct KeyBindingManager {
     api: Arc<dyn HotkeyApi>,
-    // Registration maps
-    id_map: HashMap<u32, String>,
-    /// Map registration id → Chord. Stored alongside id → identifier so the
-    /// dispatcher can pass chords directly to the callback without doing a
-    /// string→parse roundtrip per event.
-    chord_map: HashMap<u32, Chord>,
-    /// Map identifier (e.g., "cmd+k") → registration id. Maintained during
-    /// updates to avoid rebuilding an inverse map when unregistering, which
-    /// reduces allocations and speeds up incremental rebinding.
-    inv_map: HashMap<String, u32>,
-    last_bound: HashSet<String>,
+    /// Active registrations keyed by identifier (for example, `"cmd+k"`).
+    bindings: HashMap<String, BindingRegistration>,
+    /// Reverse lookup from registration id to identifier for event dispatch.
+    idents_by_id: HashMap<u32, String>,
     /// Guard that keeps capture-all active while present
     capture_guard: Option<Box<dyn CaptureToken>>,
     /// Capture-all requested by the engine (tracked even in fake mode).
@@ -42,10 +41,8 @@ impl KeyBindingManager {
     pub fn new_with_api(api: Arc<dyn HotkeyApi>) -> Self {
         Self {
             api,
-            id_map: HashMap::new(),
-            chord_map: HashMap::new(),
-            inv_map: HashMap::new(),
-            last_bound: HashSet::new(),
+            bindings: HashMap::new(),
+            idents_by_id: HashMap::new(),
             capture_guard: None,
             capture_all_active: false,
             fake: false, // default; updated below
@@ -64,16 +61,26 @@ impl KeyBindingManager {
     /// Returns true if bindings changed
     pub fn update_bindings(&mut self, key_pairs: Vec<(String, Chord)>) -> Result<bool> {
         let start = Instant::now();
-        let desired: HashSet<String> = key_pairs.iter().map(|(s, _)| s.clone()).collect();
-
-        if self.last_bound == desired {
+        let desired: HashMap<String, Chord> = key_pairs.into_iter().collect();
+        if self.bindings_match(&desired) {
             trace!("Bindings unchanged, skipping update");
             return Ok(false);
         }
 
-        // Log what keys are being added and removed (without cloning entire sets)
-        let added_keys: Vec<String> = desired.difference(&self.last_bound).cloned().collect();
-        let removed_keys: Vec<String> = self.last_bound.difference(&desired).cloned().collect();
+        let current: HashSet<String> = self.bindings.keys().cloned().collect();
+        let desired_idents: HashSet<String> = desired.keys().cloned().collect();
+        let mut replaced_keys = Vec::new();
+        for (ident, chord) in &desired {
+            if self
+                .bindings
+                .get(ident)
+                .is_some_and(|binding| binding.chord != *chord)
+            {
+                replaced_keys.push(ident.clone());
+            }
+        }
+        let added_keys: Vec<String> = desired_idents.difference(&current).cloned().collect();
+        let removed_keys: Vec<String> = current.difference(&desired_idents).cloned().collect();
 
         if !added_keys.is_empty() {
             debug!("Adding keys: {:?}", added_keys);
@@ -81,47 +88,33 @@ impl KeyBindingManager {
         if !removed_keys.is_empty() {
             debug!("Removing keys: {:?}", removed_keys);
         }
+        if !replaced_keys.is_empty() {
+            debug!("Rebinding keys: {:?}", replaced_keys);
+        }
 
         debug!(
             "Starting binding update: {} -> {} keys",
-            self.last_bound.len(),
-            key_pairs.len()
+            self.bindings.len(),
+            desired.len()
         );
 
         // Log all keys that will be active after this update (debug-level)
-        let all_keys: Vec<String> = key_pairs.iter().map(|(k, _)| k.clone()).collect();
+        let mut all_keys: Vec<String> = desired.keys().cloned().collect();
+        all_keys.sort();
         debug!("Keys rebound ({}): {:?}", all_keys.len(), all_keys);
 
         // Incremental update to avoid any interception gap:
         // 1) Unregister removed keys
-        // 2) Register added keys
+        // 2) Register added/changed keys
         // 3) Keep existing keys as-is
 
-        // Step 1: Unregister removed keys
-        for ident in removed_keys.iter() {
-            if let Some(id) = self.inv_map.remove(ident) {
-                if !self.fake {
-                    self.api.unregister(id)?;
-                }
-                self.id_map.remove(&id);
-                self.chord_map.remove(&id);
-                trace!("Unregistered key: {} (id {})", ident, id);
-            }
+        for ident in removed_keys.iter().chain(replaced_keys.iter()) {
+            self.unregister_binding(ident)?;
         }
 
-        // Step 2: Register added keys
-        for (ident, chord) in &key_pairs {
-            if !self.last_bound.contains(ident) {
-                let id = if self.fake {
-                    self.next_id += 1;
-                    self.next_id
-                } else {
-                    self.api.intercept(chord.clone())
-                };
-                self.id_map.insert(id, ident.clone());
-                self.chord_map.insert(id, chord.clone());
-                self.inv_map.insert(ident.clone(), id);
-                trace!("Registered key: {} with id {}", ident, id);
+        for ident in added_keys.iter().chain(replaced_keys.iter()) {
+            if let Some(chord) = desired.get(ident) {
+                self.register_binding(ident, chord)?;
             }
         }
 
@@ -129,14 +122,13 @@ impl KeyBindingManager {
         debug!(
             "Binding update completed in {:?}: {} keys active",
             elapsed,
-            key_pairs.len()
+            desired.len()
         );
 
         if elapsed > Duration::from_millis(BIND_UPDATE_WARN_MS) {
             warn!("Binding update took {:?}, may cause key drops", elapsed);
         }
 
-        self.last_bound = desired;
         Ok(true)
     }
 
@@ -162,9 +154,9 @@ impl KeyBindingManager {
 
     /// Resolve a registration id to (identifier, chord) if it exists.
     pub fn resolve(&self, id: u32) -> Option<(String, Chord)> {
-        let ident = self.id_map.get(&id).cloned()?;
-        let chord = self.chord_map.get(&id).cloned()?;
-        Some((ident, chord))
+        let ident = self.idents_by_id.get(&id)?.clone();
+        let binding = self.bindings.get(&ident)?;
+        Some((ident, binding.chord.clone()))
     }
 
     pub(crate) fn capture_all_active(&self) -> bool {
@@ -175,13 +167,11 @@ impl KeyBindingManager {
 impl KeyBindingManager {
     /// Snapshot current bindings as sorted (identifier, chord) pairs.
     pub fn bindings_snapshot(&self) -> Vec<(String, Chord)> {
-        // Use inv_map as the authoritative set of active identifiers → ids
-        let mut pairs: Vec<(String, Chord)> = Vec::with_capacity(self.inv_map.len());
-        for (ident, id) in self.inv_map.iter() {
-            if let Some(ch) = self.chord_map.get(id) {
-                pairs.push((ident.clone(), ch.clone()));
-            }
-        }
+        let mut pairs: Vec<(String, Chord)> = self
+            .bindings
+            .iter()
+            .map(|(ident, binding)| (ident.clone(), binding.chord.clone()))
+            .collect();
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         pairs
     }
@@ -189,6 +179,46 @@ impl KeyBindingManager {
 
 impl KeyBindingManager {
     pub(crate) fn id_for_ident(&self, ident: &str) -> Option<u32> {
-        self.inv_map.get(ident).copied()
+        self.bindings.get(ident).map(|binding| binding.id)
+    }
+
+    fn bindings_match(&self, desired: &HashMap<String, Chord>) -> bool {
+        self.bindings.len() == desired.len()
+            && desired.iter().all(|(ident, chord)| {
+                self.bindings
+                    .get(ident)
+                    .is_some_and(|binding| binding.chord == *chord)
+            })
+    }
+
+    fn register_binding(&mut self, ident: &str, chord: &Chord) -> Result<()> {
+        let id = if self.fake {
+            self.next_id += 1;
+            self.next_id
+        } else {
+            self.api.intercept(chord.clone())
+        };
+        self.bindings.insert(
+            ident.to_string(),
+            BindingRegistration {
+                id,
+                chord: chord.clone(),
+            },
+        );
+        self.idents_by_id.insert(id, ident.to_string());
+        trace!("Registered key: {} with id {}", ident, id);
+        Ok(())
+    }
+
+    fn unregister_binding(&mut self, ident: &str) -> Result<()> {
+        let Some(binding) = self.bindings.remove(ident) else {
+            return Ok(());
+        };
+        if !self.fake {
+            self.api.unregister(binding.id)?;
+        }
+        self.idents_by_id.remove(&binding.id);
+        trace!("Unregistered key: {} (id {})", ident, binding.id);
+        Ok(())
     }
 }

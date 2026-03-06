@@ -17,6 +17,8 @@ mod server_drive;
 mod session;
 /// Smoketest case registry and runner.
 mod suite;
+/// Repo-local temp path helpers.
+mod tmp_paths;
 /// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
 
