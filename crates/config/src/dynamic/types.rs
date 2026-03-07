@@ -76,7 +76,7 @@ impl fmt::Debug for HandlerRef {
 
 /// Render-time context passed into mode closures.
 #[derive(Debug, Clone)]
-pub struct ModeCtx {
+pub struct ContextSnapshot {
     /// Focused application name.
     pub app: String,
     /// Focused window title.
@@ -88,6 +88,36 @@ pub struct ModeCtx {
     /// Current stack depth (root = 0).
     pub depth: i64,
 }
+
+impl ContextSnapshot {
+    /// Return the focused application name.
+    pub fn app(&self) -> &str {
+        &self.app
+    }
+
+    /// Return the focused window title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Return the focused process identifier.
+    pub fn pid(&self) -> i64 {
+        self.pid
+    }
+
+    /// Return whether the HUD is currently visible.
+    pub fn hud(&self) -> bool {
+        self.hud
+    }
+
+    /// Return the current stack depth.
+    pub fn depth(&self) -> i64 {
+        self.depth
+    }
+}
+
+/// Render-time context passed into mode closures.
+pub type ModeCtx = ContextSnapshot;
 
 /// Effect emitted by handlers (and render warnings) for the engine to apply.
 #[derive(Debug, Clone)]
@@ -128,16 +158,8 @@ pub enum NavRequest {
 /// Handler execution context passed into handler closures.
 #[derive(Debug, Clone)]
 pub struct ActionCtx {
-    /// Focused application name.
-    pub(crate) app: String,
-    /// Focused window title.
-    pub(crate) title: String,
-    /// Focused process id.
-    pub(crate) pid: i64,
-    /// Current HUD visibility.
-    pub(crate) hud: bool,
-    /// Current stack depth (root = 0).
-    pub(crate) depth: i64,
+    /// Shared render snapshot also exposed to action handlers.
+    snapshot: ContextSnapshot,
     /// Shared mutable handler output state.
     shared: Arc<Mutex<ActionCtxShared>>,
 }
@@ -155,15 +177,36 @@ struct ActionCtxShared {
 
 impl ActionCtx {
     /// Create a new handler context for a given focused app/window state.
-    pub(crate) fn new(app: String, title: String, pid: i64, hud: bool, depth: i64) -> Self {
+    pub(crate) fn new(snapshot: ContextSnapshot) -> Self {
         Self {
-            app,
-            title,
-            pid,
-            hud,
-            depth,
+            snapshot,
             shared: Arc::new(Mutex::new(ActionCtxShared::default())),
         }
+    }
+
+    /// Return the focused application name.
+    pub fn app(&self) -> &str {
+        self.snapshot.app()
+    }
+
+    /// Return the focused window title.
+    pub fn title(&self) -> &str {
+        self.snapshot.title()
+    }
+
+    /// Return the focused process identifier.
+    pub fn pid(&self) -> i64 {
+        self.snapshot.pid()
+    }
+
+    /// Return whether the HUD is visible.
+    pub fn hud(&self) -> bool {
+        self.snapshot.hud()
+    }
+
+    /// Return the current stack depth.
+    pub fn depth(&self) -> i64 {
+        self.snapshot.depth()
     }
 
     /// Push a new effect into the handler result queue.

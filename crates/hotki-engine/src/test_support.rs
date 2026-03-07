@@ -85,7 +85,7 @@ pub async fn create_test_engine_with_relay(
     relay_enabled: bool,
 ) -> (crate::Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
     let (tx, rx) = mpsc::channel(128);
-    let api = Arc::new(crate::MockHotkeyApi::new());
+    let api = Arc::new(crate::deps::MockHotkeyApi::new());
     let world = Arc::new(TestWorld::new());
     let engine = crate::Engine::new_with_api_and_world(api, tx, relay_enabled, world.clone());
     (engine, rx, world)

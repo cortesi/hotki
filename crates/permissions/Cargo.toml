@@ -6,4 +6,5 @@ description = "macOS permission checks for Accessibility and Input Monitoring"
 license = "MIT"
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 

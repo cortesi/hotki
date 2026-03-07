@@ -92,18 +92,17 @@ impl DispatchContext {
 }
 
 use config::dynamic::engine as dyn_engine;
-pub use deps::MockHotkeyApi;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};
-use hotki_world::WorldView;
-pub use hotki_world::{WorldEvent, WorldWindow};
+use hotki_world::{WorldView, WorldWindow};
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
-pub use notification::NotificationDispatcher;
+use notification::NotificationDispatcher;
 use parking_lot::Mutex;
-pub use relay::RelayHandler;
-pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec, Repeater};
+use relay::RelayHandler;
+use repeater::Repeater;
+pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec};
 
 use crate::runtime::{FocusInfo, RuntimeState};
 
@@ -163,7 +162,7 @@ impl Engine {
 
     /// Custom constructor for tests and advanced scenarios.
     /// Allows injecting a `HotkeyApi`, relay enable flag, and an explicit world view.
-    pub fn new_with_api_and_world(
+    pub(crate) fn new_with_api_and_world(
         api: Arc<dyn deps::HotkeyApi>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,
         relay_enabled: bool,

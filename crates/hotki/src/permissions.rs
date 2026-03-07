@@ -4,6 +4,7 @@ use egui::{
     CentralPanel, Color32, Context, RichText, ViewportBuilder, ViewportCommand, ViewportId, vec2,
 };
 use hotki_protocol::NotifyKind;
+pub use permissions::PermissionsStatus;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::runtime::ControlMsg;
@@ -67,8 +68,9 @@ impl PermissionsHelp {
                 return;
             }
 
-            let access_ok = ::permissions::accessibility_ok();
-            let input_ok = ::permissions::input_monitoring_ok();
+            let status = check_permissions();
+            let access_ok = status.accessibility_ok();
+            let input_ok = status.input_ok();
 
             let green = Color32::from_rgb(64, 201, 99);
             let red = Color32::from_rgb(220, 50, 47);
@@ -154,22 +156,9 @@ impl PermissionsHelp {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-/// Snapshot of relevant macOS permissions required by Hotki.
-pub struct PermissionsStatus {
-    /// Whether Accessibility permission is granted.
-    pub accessibility_ok: bool,
-    /// Whether Input Monitoring permission is granted.
-    pub input_ok: bool,
-}
-
-/// Query the current process permissions and convert into the UI-facing struct.
+/// Query the current process permissions.
 pub fn check_permissions() -> PermissionsStatus {
-    let st = ::permissions::check_permissions();
-    PermissionsStatus {
-        accessibility_ok: st.accessibility_ok,
-        input_ok: st.input_ok,
-    }
+    ::permissions::check_permissions()
 }
 
 /// Open macOS Accessibility settings in System Settings.

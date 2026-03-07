@@ -8,11 +8,11 @@ use super::{
 /// Register the shared getters exposed by both render and handler contexts.
 macro_rules! register_ctx_getters {
     ($engine:expr, $ty:ty) => {
-        $engine.register_get("app", |ctx: &mut $ty| ctx.app.clone());
-        $engine.register_get("title", |ctx: &mut $ty| ctx.title.clone());
-        $engine.register_get("pid", |ctx: &mut $ty| ctx.pid);
-        $engine.register_get("hud", |ctx: &mut $ty| ctx.hud);
-        $engine.register_get("depth", |ctx: &mut $ty| ctx.depth);
+        $engine.register_get("app", |ctx: &mut $ty| ctx.app().to_string());
+        $engine.register_get("title", |ctx: &mut $ty| ctx.title().to_string());
+        $engine.register_get("pid", |ctx: &mut $ty| ctx.pid());
+        $engine.register_get("hud", |ctx: &mut $ty| ctx.hud());
+        $engine.register_get("depth", |ctx: &mut $ty| ctx.depth());
     };
 }
 

@@ -2,28 +2,33 @@ use std::sync::Arc;
 
 use crate::Result;
 
-// ---- Hotkey API abstraction ----
-
-pub trait CaptureToken: Send {}
-
-impl CaptureToken for mac_hotkey::CaptureGuard {}
+/// Capture-all guard returned by the hotkey API.
+pub(crate) enum CaptureGuard {
+    /// Real OS-backed capture guard.
+    Real {
+        /// Guard retained solely for its drop behavior.
+        _guard: mac_hotkey::CaptureGuard,
+    },
+    /// No-op guard used by tests.
+    Fake,
+}
 
 /// Minimal hotkey API used by the engine's binding manager.
-pub trait HotkeyApi: Send + Sync {
+pub(crate) trait HotkeyApi: Send + Sync {
     fn intercept(&self, chord: mac_keycode::Chord) -> u32;
     fn unregister(&self, id: u32) -> Result<()>;
-    fn capture_all(&self) -> Box<dyn CaptureToken>;
+    fn capture_all(&self) -> CaptureGuard;
     fn is_fake(&self) -> bool {
         false
     }
 }
 
-pub struct RealHotkeyApi {
+pub(crate) struct RealHotkeyApi {
     inner: Arc<mac_hotkey::Manager>,
 }
 
 impl RealHotkeyApi {
-    pub fn new(inner: Arc<mac_hotkey::Manager>) -> Self {
+    pub(crate) fn new(inner: Arc<mac_hotkey::Manager>) -> Self {
         Self { inner }
     }
 }
@@ -35,20 +40,18 @@ impl HotkeyApi for RealHotkeyApi {
     fn unregister(&self, id: u32) -> Result<()> {
         Ok(self.inner.unregister(id)?)
     }
-    fn capture_all(&self) -> Box<dyn CaptureToken> {
-        Box::new(self.inner.capture_all())
+    fn capture_all(&self) -> CaptureGuard {
+        CaptureGuard::Real {
+            _guard: self.inner.capture_all(),
+        }
     }
     fn is_fake(&self) -> bool {
         false
     }
 }
 
-/// No-op capture token used by tests to satisfy the `CaptureToken` trait.
-pub struct NoopCaptureToken;
-impl CaptureToken for NoopCaptureToken {}
-
 /// Mock API for tests that avoids OS interaction.
-pub struct MockHotkeyApi {
+pub(crate) struct MockHotkeyApi {
     next_id: std::sync::atomic::AtomicU32,
 }
 
@@ -76,8 +79,8 @@ impl HotkeyApi for MockHotkeyApi {
     fn unregister(&self, _id: u32) -> Result<()> {
         Ok(())
     }
-    fn capture_all(&self) -> Box<dyn CaptureToken> {
-        Box::new(NoopCaptureToken)
+    fn capture_all(&self) -> CaptureGuard {
+        CaptureGuard::Fake
     }
     fn is_fake(&self) -> bool {
         true

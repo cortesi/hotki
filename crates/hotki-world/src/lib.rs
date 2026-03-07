@@ -47,7 +47,8 @@ pub use events::EventCursor;
 use events::{DEFAULT_EVENT_CAPACITY, EventHub as InternalHub};
 pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot, FocusSnapshot};
 use parking_lot::RwLock;
-use permissions::{accessibility_ok, screen_recording_ok};
+pub use permissions::{PermissionState, PermissionsStatus as Capabilities};
+use permissions::{accessibility_ok, input_monitoring_ok, screen_recording_ok};
 use serde::{Deserialize, Serialize};
 use tokio::time::{self, Instant as TokioInstant};
 
@@ -155,27 +156,6 @@ pub enum WorldEvent {
     DisplaysChanged,
 }
 
-/// Capability snapshot describing permissions relevant to focus/read-only operation.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Capabilities {
-    /// Accessibility permission status.
-    pub accessibility: PermissionState,
-    /// Screen recording permission status.
-    pub screen_recording: PermissionState,
-}
-
-/// Permission state for a given capability.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PermissionState {
-    /// Permission granted.
-    Granted,
-    /// Permission denied.
-    Denied,
-    /// Permission unknown/unqueried.
-    #[default]
-    Unknown,
-}
-
 /// Diagnostic snapshot of world internals.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldStatus {
@@ -243,9 +223,22 @@ pub trait WorldView: Send + Sync {
 
 /// Lightweight world implementation backed by periodic polling of focus + displays.
 struct PollingWorld {
-    inner: Arc<WorldState>,
-    hub: Arc<InternalHub>,
+    core: Arc<WorldCore>,
     poll_tuner: Arc<PollTuner>,
+}
+
+struct WorldCore {
+    state: Arc<WorldState>,
+    hub: Arc<InternalHub>,
+}
+
+impl WorldCore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Arc::new(WorldState::default()),
+            hub: Arc::new(InternalHub::new(DEFAULT_EVENT_CAPACITY)),
+        })
+    }
 }
 
 #[derive(Default)]
@@ -267,7 +260,7 @@ impl WorldState {
     }
 
     async fn capabilities(&self) -> Capabilities {
-        self.capabilities.read().clone()
+        *self.capabilities.read()
     }
 
     async fn status(&self) -> WorldStatus {
@@ -312,11 +305,9 @@ impl PollTuner {
 impl PollingWorld {
     fn spawn(cfg: WorldCfg) -> Arc<Self> {
         let poll_tuner = Arc::new(PollTuner::new(cfg.poll_ms_min, cfg.poll_ms_max));
-        let inner = Arc::new(WorldState::default());
-        let hub = Arc::new(InternalHub::new(DEFAULT_EVENT_CAPACITY));
+        let core = WorldCore::new();
         let world = Arc::new(Self {
-            inner: inner.clone(),
-            hub: hub.clone(),
+            core,
             poll_tuner: poll_tuner.clone(),
         });
 
@@ -331,7 +322,7 @@ impl PollingWorld {
             self.poll_once().await;
             let elapsed = start.elapsed().as_millis() as u64;
             {
-                let mut st = self.inner.status.write();
+                let mut st = self.core.state.status.write();
                 st.last_tick_ms = elapsed;
                 st.current_poll_ms = interval_ms;
             }
@@ -344,16 +335,16 @@ impl PollingWorld {
         let platform = capture_platform_snapshot();
         let displays = platform.displays.clone();
         {
-            let mut disp_guard = self.inner.displays.write();
+            let mut disp_guard = self.core.state.displays.write();
             if *disp_guard != displays {
                 *disp_guard = displays.clone();
-                self.hub.publish(WorldEvent::DisplaysChanged);
+                self.core.hub.publish(WorldEvent::DisplaysChanged);
             }
         }
 
-        let mut snapshot_guard = self.inner.snapshot.write();
-        let mut focus_guard = self.inner.focused.write();
-        let mut caps_guard = self.inner.capabilities.write();
+        let mut snapshot_guard = self.core.state.snapshot.write();
+        let mut focus_guard = self.core.state.focused.write();
+        let mut caps_guard = self.core.state.capabilities.write();
 
         let new_snapshot: Vec<WorldWindow> = platform
             .windows
@@ -380,7 +371,7 @@ impl PollingWorld {
         // Focus change detection
         if *focus_guard != focused_key {
             *focus_guard = focused_key;
-            self.hub.publish(WorldEvent::FocusChanged(FocusChange {
+            self.core.hub.publish(WorldEvent::FocusChanged(FocusChange {
                 key: focused_key,
                 focus: platform.focused.as_ref().map(|window| FocusSnapshot {
                     app: window.app.clone(),
@@ -397,24 +388,24 @@ impl PollingWorld {
         }
 
         {
-            let mut status = self.inner.status.write();
+            let mut status = self.core.state.status.write();
             status.windows_count = snapshot_guard.len();
             status.focused = focused_key;
-            status.capabilities = platform.capabilities.clone();
+            status.capabilities = platform.capabilities;
         }
 
         *caps_guard = platform.capabilities;
     }
 }
 
-/// Implement `WorldView` for a type with `inner: Arc<WorldState>` and `hub: Arc<InternalHub>`.
+/// Implement `WorldView` for a type with `core: Arc<WorldCore>`.
 /// The `hint_refresh` implementation must be provided separately as it differs between types.
 macro_rules! impl_world_view_common {
     ($ty:ty) => {
         #[async_trait]
         impl WorldView for $ty {
             fn subscribe(&self) -> EventCursor {
-                self.hub.subscribe()
+                self.core.hub.subscribe()
             }
 
             async fn next_event_until(
@@ -422,27 +413,27 @@ macro_rules! impl_world_view_common {
                 cursor: &mut EventCursor,
                 deadline: TokioInstant,
             ) -> Option<WorldEvent> {
-                self.hub.next_event_until(cursor, deadline).await
+                self.core.hub.next_event_until(cursor, deadline).await
             }
 
             async fn snapshot(&self) -> Vec<WorldWindow> {
-                self.inner.snapshot().await
+                self.core.state.snapshot().await
             }
 
             async fn focused(&self) -> Option<WindowKey> {
-                self.inner.focused().await
+                self.core.state.focused().await
             }
 
             async fn capabilities(&self) -> Capabilities {
-                self.inner.capabilities().await
+                self.core.state.capabilities().await
             }
 
             async fn status(&self) -> WorldStatus {
-                self.inner.status().await
+                self.core.state.status().await
             }
 
             async fn displays(&self) -> DisplaysSnapshot {
-                self.inner.displays().await
+                self.core.state.displays().await
             }
 
             fn hint_refresh(&self) {
@@ -479,16 +470,9 @@ struct PlatformSnapshot {
 
 fn capture_platform_snapshot() -> PlatformSnapshot {
     let capabilities = Capabilities {
-        accessibility: if accessibility_ok() {
-            PermissionState::Granted
-        } else {
-            PermissionState::Denied
-        },
-        screen_recording: if screen_recording_ok() {
-            PermissionState::Granted
-        } else {
-            PermissionState::Denied
-        },
+        accessibility: accessibility_ok().into(),
+        input_monitoring: input_monitoring_ok().into(),
+        screen_recording: screen_recording_ok().into(),
     };
 
     let mut displays = gather_displays();
@@ -696,23 +680,21 @@ impl World {
 
 /// Simple in-memory world used for tests and fixtures.
 pub struct TestWorld {
-    inner: Arc<WorldState>,
-    hub: Arc<InternalHub>,
+    core: Arc<WorldCore>,
 }
 
 impl TestWorld {
     /// Create an empty test world.
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(WorldState::default()),
-            hub: Arc::new(InternalHub::new(DEFAULT_EVENT_CAPACITY)),
+            core: WorldCore::new(),
         }
     }
 
     /// Replace the snapshot and focused key atomically.
     pub fn set_snapshot(&self, snapshot: Vec<WorldWindow>, focused: Option<WindowKey>) {
-        let mut snap_guard = self.inner.snapshot.write();
-        let mut foc_guard = self.inner.focused.write();
+        let mut snap_guard = self.core.state.snapshot.write();
+        let mut foc_guard = self.core.state.focused.write();
         let prev_focus = *foc_guard;
         *snap_guard = snapshot.clone();
         *foc_guard = focused;
@@ -733,19 +715,19 @@ impl TestWorld {
             } else {
                 FocusChange::default()
             };
-            self.hub.publish(WorldEvent::FocusChanged(change));
+            self.core.hub.publish(WorldEvent::FocusChanged(change));
         }
     }
 
     /// Push a synthetic event onto the stream.
     pub fn push_event(&self, event: WorldEvent) {
-        self.hub.publish(event);
+        self.core.hub.publish(event);
     }
 
     /// Replace the tracked display snapshot.
     pub fn set_displays(&self, displays: DisplaysSnapshot) {
-        *self.inner.displays.write() = displays;
-        self.hub.publish(WorldEvent::DisplaysChanged);
+        *self.core.state.displays.write() = displays;
+        self.core.hub.publish(WorldEvent::DisplaysChanged);
     }
 }
 

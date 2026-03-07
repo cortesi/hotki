@@ -231,7 +231,7 @@ impl ConnectionDriver {
     /// Connect to the server, draining any queued control messages after connect.
     pub(crate) async fn connect(&mut self) -> Option<Client> {
         let perms = check_permissions();
-        if !perms.accessibility_ok || !perms.input_ok {
+        if !perms.accessibility_ok() || !perms.input_ok() {
             self.ui.show_permissions_help();
         }
 

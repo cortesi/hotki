@@ -11,9 +11,6 @@ keywords.workspace = true
 [lints]
 workspace = true
 
-[features]
-test-utils = []
-
 [dependencies]
 mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }

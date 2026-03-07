@@ -183,14 +183,6 @@ impl RelayKey {
         Self { poster }
     }
 
-    /// Create a RelayKey with a mock poster for testing
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn new_with_mock_poster() -> Self {
-        Self {
-            poster: Arc::new(MockPoster),
-        }
-    }
-
     // No release state to manage in pass-through mode.
 
     /// Convenience for handling a key-down input.
@@ -215,20 +207,6 @@ impl RelayKey {
         if let Err(err) = self.poster.post_modifiers(pid, &chord.modifiers, false) {
             warn!(?err, "post_modifiers_failed");
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-utils"))]
-/// No-op poster used in unit tests.
-struct MockPoster;
-
-#[cfg(any(test, feature = "test-utils"))]
-impl Poster for MockPoster {
-    fn post_down(&self, _pid: pid_t, _key: &Chord, _is_repeat: bool) -> Result<()> {
-        Ok(())
-    }
-    fn post_up(&self, _pid: pid_t, _key: &Chord) -> Result<()> {
-        Ok(())
     }
 }
 

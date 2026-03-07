@@ -36,11 +36,6 @@ impl RelayHandler {
             relay_key,
         }
     }
-    /// Create a relay handler with relays enabled (production default).
-    pub fn new() -> Self {
-        Self::new_with_enabled(true)
-    }
-
     /// Start relaying a chord to a pid (posts an initial KeyDown).
     pub fn start_relay(&self, id: String, chord: Chord, pid: i32, is_repeat: bool) {
         if let Some(ref relay) = self.relay_key {

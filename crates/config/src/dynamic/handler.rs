@@ -20,13 +20,7 @@ pub fn execute_handler(
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
-    let action_ctx = ActionCtx::new(
-        ctx.app.clone(),
-        ctx.title.clone(),
-        ctx.pid,
-        ctx.hud,
-        ctx.depth,
-    );
+    let action_ctx = ActionCtx::new(ctx.clone());
 
     handler
         .func
@@ -49,13 +43,7 @@ pub fn execute_selector_handler(
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
-    let action_ctx = ActionCtx::new(
-        ctx.app.clone(),
-        ctx.title.clone(),
-        ctx.pid,
-        ctx.hud,
-        ctx.depth,
-    );
+    let action_ctx = ActionCtx::new(ctx.clone());
 
     let mut m = Map::new();
     m.insert("label".into(), Dynamic::from(item.label.clone()));

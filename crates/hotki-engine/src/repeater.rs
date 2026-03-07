@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use tokio::time::Duration;
 use tracing::trace;
 
-use crate::{RelayHandler, notification::NotificationDispatcher, ticker::Ticker};
+use crate::{notification::NotificationDispatcher, relay::RelayHandler, ticker::Ticker};
 
 #[derive(Debug, Clone)]
 struct ShellNotification {
@@ -320,26 +320,9 @@ impl Repeater {
     }
 
     /// Optional: install a shell repeat callback for instrumentation/testing.
-    pub fn set_on_shell_repeat(&self, cb: OnShellRepeat) {
+    #[cfg(test)]
+    fn set_on_shell_repeat(&self, cb: OnShellRepeat) {
         *self.on_shell_repeat.lock() = Some(cb);
-    }
-
-    /// Convenience helper for relay repeating start (testing/tools)
-    pub fn start_relay_repeat(&self, id: String, chord: Chord, repeat: Option<RepeatSpec>) {
-        self.start(id, ExecSpec::Relay { chord }, repeat);
-    }
-
-    /// Convenience helper for shell repeating start (testing/tools)
-    pub fn start_shell_repeat(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
-        self.start(
-            id,
-            ExecSpec::Shell {
-                command,
-                ok_notify: NotifyKind::Ignore,
-                err_notify: NotifyKind::Ignore,
-            },
-            repeat,
-        );
     }
 
     /// Start execution for a binding id. Runs the first action immediately and schedules repeats if provided.
@@ -475,11 +458,6 @@ impl Repeater {
     }
 
     // No public callback constructor is exposed; registration is managed by KeyBindingManager.
-
-    /// Stop all tickers and wait briefly for completion.
-    pub fn clear_sync(&self) {
-        self.ticker.clear_sync();
-    }
 
     /// Stop all tickers asynchronously and wait briefly for completion.
     pub async fn clear_async(&self) {

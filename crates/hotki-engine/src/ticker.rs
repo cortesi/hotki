@@ -138,35 +138,6 @@ impl Ticker {
         }
     }
 
-    /// Cancel and wait for all tickers to finish (blocking).
-    pub fn clear_sync(&self) {
-        let entries: Vec<TickerEntry> = {
-            let mut map = self.entries.lock();
-            map.drain().map(|(_, e)| e).collect()
-        };
-
-        // Cancel all tokens first
-        for e in &entries {
-            e.token.cancel();
-        }
-
-        // Wait for completion signals (blocking timeout), then backstop with quick handle polls.
-        let mut handles = Vec::new();
-        for e in entries {
-            let _ = e
-                .done_rx
-                .recv_timeout(Duration::from_millis(STOP_WAIT_TIMEOUT_MS));
-            handles.push(e.handle);
-        }
-        let deadline = Instant::now() + Duration::from_millis(STOP_WAIT_TIMEOUT_MS);
-        for handle in handles {
-            while !handle.is_finished() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(STOP_POLL_INTERVAL_MS));
-            }
-        }
-        trace!("ticker_clear_sync");
-    }
-
     /// Cancel and wait for all tickers to finish (async).
     pub async fn clear_async(&self) {
         let entries: Vec<TickerEntry> = {

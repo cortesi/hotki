@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::{
     Result,
-    deps::{CaptureToken, HotkeyApi},
+    deps::{CaptureGuard, HotkeyApi},
 };
 
 /// Threshold for warning about slow binding updates that may cause key drops
@@ -29,7 +29,7 @@ pub struct KeyBindingManager {
     /// Reverse lookup from registration id to identifier for event dispatch.
     idents_by_id: HashMap<u32, String>,
     /// Guard that keeps capture-all active while present
-    capture_guard: Option<Box<dyn CaptureToken>>,
+    capture_guard: Option<CaptureGuard>,
     /// Capture-all requested by the engine (tracked even in fake mode).
     capture_all_active: bool,
     /// Test mode: when true, simulate registrations without OS intercepts.
