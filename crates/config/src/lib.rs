@@ -7,10 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub mod dynamic;
+mod check;
+mod docs;
 mod error;
 mod mode;
 mod raw;
+pub mod script;
 mod style;
 pub mod themes;
 mod types;
@@ -18,10 +20,12 @@ mod types;
 #[cfg(test)]
 mod test_merge;
 
-pub use dynamic::engine::{DynamicConfig, load_dynamic_config};
+pub use check::{LuauCheckReport, check_luau_config, check_luau_theme_dir};
+pub use docs::{luau_api, luau_api_markdown, luau_api_text};
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};
+pub use script::engine::{DynamicConfig, load_dynamic_config};
 pub use style::{Hud, Notify, Selector, Style};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
@@ -30,11 +34,11 @@ pub(crate) fn parse_rgb(s: &str) -> Option<(u8, u8, u8)> {
     colornames::Color::try_from(s).ok().map(|c| c.rgb())
 }
 
-/// Determine the preferred user config path (`~/.hotki/config.rhai`).
+/// Determine the preferred user config path (`~/.hotki/config.luau`).
 pub fn default_config_path() -> PathBuf {
     let mut p = PathBuf::from(env::var_os("HOME").unwrap_or_default());
     p.push(".hotki");
-    p.push("config.rhai");
+    p.push("config.luau");
     p
 }
 
@@ -42,8 +46,8 @@ pub fn default_config_path() -> PathBuf {
 ///
 /// Policy:
 /// 1) Use `explicit` when provided.
-/// 2) Else use `~/.hotki/config.rhai` when it exists.
-/// 3) Else return a clear "no config found" error pointing to `examples/complete.rhai`.
+/// 2) Else use `~/.hotki/config.luau` when it exists.
+/// 3) Else return a clear "no config found" error pointing to `examples/complete.luau`.
 pub fn resolve_config_path(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     if let Some(path) = explicit {
         return Ok(path.to_path_buf());
@@ -57,7 +61,7 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     Err(Error::Read {
         path: Some(preferred),
         message:
-            "No config found. Create ~/.hotki/config.rhai (preferred) or copy examples/complete.rhai"
+            "No config found. Create ~/.hotki/config.luau (preferred) or copy examples/complete.luau"
                 .to_string(),
     })
 }

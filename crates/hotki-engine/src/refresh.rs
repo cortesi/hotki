@@ -1,4 +1,4 @@
-use config::dynamic::engine as dyn_engine;
+use config::script::engine as dyn_engine;
 use hotki_protocol::HudState;
 use mac_keycode::Chord;
 

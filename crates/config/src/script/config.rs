@@ -1,26 +1,31 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
-use rhai::{AST, Engine};
+use mlua::Lua;
 
-use super::ModeRef;
+use super::{ModeRef, util::lock_unpoisoned};
 use crate::{Style, raw, style};
 
-/// A loaded dynamic configuration consisting of a root mode closure plus style and Rhai runtime.
+/// Shared loaded sources used for error excerpts.
+pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
+
+/// A loaded Luau configuration consisting of a root mode plus the runtime.
 pub struct DynamicConfig {
-    /// Root mode closure registered via `hotki.mode(...)`.
+    /// Root mode renderer declared by `hotki.root(...)`.
     pub(crate) root: ModeRef,
-    /// Theme registry captured from the config script, including builtins.
+    /// Theme registry after built-in, user, and script overrides are applied.
     pub(crate) themes: HashMap<String, raw::RawStyle>,
-    /// Active theme name selected by the config script via `theme("...")`.
+    /// Active theme selected while loading the config.
     pub(crate) active_theme: String,
-    /// Rhai engine used to execute mode closures and handlers.
-    pub(crate) engine: Engine,
-    /// Compiled Rhai AST for the loaded config.
-    pub(crate) ast: AST,
-    /// Full source text of the loaded config.
-    pub(crate) source: Arc<str>,
-    /// Optional path the config was loaded from.
+    /// Backing Lua state used for later renders and handler execution.
+    pub(crate) lua: Lua,
+    /// Optional origin path for the loaded config.
     pub(crate) path: Option<PathBuf>,
+    /// Cached source text for excerpts and diagnostics.
+    pub(crate) sources: SourceMap,
 }
 
 impl DynamicConfig {
@@ -54,7 +59,11 @@ impl DynamicConfig {
         let Some(raw) = self.themes.get(name).or_else(|| self.themes.get("default")) else {
             return Style::default();
         };
-
         style::overlay_raw(Style::default(), raw)
+    }
+
+    /// Return cached source text for a known filesystem path.
+    pub(crate) fn source_for(&self, path: &PathBuf) -> Option<Arc<str>> {
+        lock_unpoisoned(&self.sources).get(path).cloned()
     }
 }

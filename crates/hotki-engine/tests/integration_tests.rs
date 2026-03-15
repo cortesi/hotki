@@ -21,11 +21,11 @@ fn focus_change_triggers_rerender() {
 
         let path = write_test_config(
             r#"
-            hotki.mode(|m, ctx| {
-              if ctx.app.matches("Safari") {
-                m.bind("a", "a", action.shell("true"));
-              }
-            });
+            hotki.root(function(menu, ctx)
+              if ctx:app_matches("Safari") then
+                menu:bind("a", "a", action.shell("true"))
+              end
+            end)
             "#,
         );
         engine
@@ -66,11 +66,11 @@ fn mode_entry_and_pop_updates_depth() {
 
         let path = write_test_config(
             r#"
-            hotki.mode(|m, ctx| {
-              m.mode("cmd+k", "menu", |m, ctx| {
-                m.bind("a", "back", action.pop);
-              });
-            });
+            hotki.root(function(menu, ctx)
+              menu:submenu("cmd+k", "menu", function(child, inner)
+                child:bind("a", "back", action.pop)
+              end)
+            end)
             "#,
         );
         engine
@@ -114,9 +114,11 @@ fn repeat_relay_ticks() {
 
         let path = write_test_config(
             r#"
-            hotki.mode(|m, ctx| {
-              m.bind("a", "repeat", action.relay("b")).repeat_ms(100, 100);
-            });
+            hotki.root(function(menu, ctx)
+              menu:bind("a", "repeat", action.relay("b"), {
+                ["repeat"] = { delay_ms = 100, interval_ms = 100 },
+              })
+            end)
             "#,
         );
         engine
@@ -169,12 +171,12 @@ fn capture_mode_sets_capture_all() {
 
         let path = write_test_config(
             r#"
-            hotki.mode(|m, ctx| {
-              m.mode("cmd+k", "cap", |m, ctx| {
-                m.capture();
-                m.bind("a", "back", action.pop);
-              });
-            });
+            hotki.root(function(menu, ctx)
+              menu:submenu("cmd+k", "cap", function(child, inner)
+                child:capture()
+                child:bind("a", "back", action.pop)
+              end)
+            end)
             "#,
         );
         engine
@@ -224,9 +226,9 @@ fn reload_config_action_does_not_deadlock() {
 
         let path = write_test_config(
             r#"
-            hotki.mode(|m, ctx| {
-              m.bind("r", "reload", action.reload_config);
-            });
+            hotki.root(function(menu, ctx)
+              menu:bind("r", "reload", action.reload_config)
+            end)
             "#,
         );
         engine

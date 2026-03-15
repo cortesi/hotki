@@ -140,7 +140,7 @@ fn workspace_tmp_dir() -> PathBuf {
 fn temp_config_path(prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    workspace_tmp_dir().join(format!("{prefix}-{}-{counter}.rhai", process::id()))
+    workspace_tmp_dir().join(format!("{prefix}-{}-{counter}.luau", process::id()))
 }
 
 /// Write a dynamic config script to a temporary file and return the path.

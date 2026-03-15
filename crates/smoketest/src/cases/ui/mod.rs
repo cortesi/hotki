@@ -26,7 +26,7 @@ pub const ACTIVATION_IDENT: &str = "shift+cmd+0";
 /// Key sequence applied once the HUD is visible to exercise the demo flow.
 const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
 
-/// Demo HUD mode applied in the generated Rhai config.
+/// Demo HUD mode applied in the generated Luau config.
 #[derive(Clone, Copy)]
 enum DemoHudMode {
     /// Full HUD mode anchored bottom-right.
@@ -36,11 +36,11 @@ enum DemoHudMode {
 }
 
 impl DemoHudMode {
-    /// Render the Rhai token used for the HUD mode.
-    fn rhai_value(self) -> &'static str {
+    /// Render the Luau token used for the HUD mode.
+    fn luau_value(self) -> &'static str {
         match self {
-            Self::Hud => "hud",
-            Self::Mini => "mini",
+            Self::Hud => "\"hud\"",
+            Self::Mini => "\"mini\"",
         }
     }
 }
@@ -49,27 +49,27 @@ impl DemoHudMode {
 fn demo_config(mode: DemoHudMode) -> String {
     format!(
         r#"
-theme("default");
+themes:use("default")
 
-hotki.mode(|m, ctx| {{
-  m.style(#{{
-    hud: #{{
-      mode: {},
-      pos: se,
+hotki.root(function(menu, ctx)
+  menu:style({{
+    hud = {{
+      mode = {},
+      pos = "se",
     }},
-  }});
+  }})
 
-  m.mode("shift+cmd+0", "activate", |m, ctx| {{
-    m.mode("t", "Theme tester", |sub, ctx| {{
-      sub.bind("h", "Theme Prev", action.theme_prev).stay();
-      sub.bind("l", "Theme Next", action.theme_next).stay();
-      sub.bind("n", "Notify", action.shell("echo notify").notify(info, warn)).stay();
-      sub.bind("esc", "Exit", action.exit).hidden();
-    }});
-  }});
-}});
+  menu:submenu("shift+cmd+0", "activate", function(activate, inner)
+    activate:submenu("t", "Theme tester", function(sub, subctx)
+      sub:bind("h", "Theme Prev", action.theme_prev, {{ stay = true }})
+      sub:bind("l", "Theme Next", action.theme_next, {{ stay = true }})
+      sub:bind("n", "Notify", action.shell("echo notify", {{ ok_notify = "info", err_notify = "warn" }}), {{ stay = true }})
+      sub:bind("esc", "Exit", action.exit, {{ hidden = true }})
+    end)
+  end)
+end)
 "#,
-        mode.rhai_value()
+        mode.luau_value()
     )
 }
 
@@ -114,14 +114,14 @@ pub fn displays(ctx: &mut CaseCtx<'_>) -> Result<()> {
 struct UiCaseSpec {
     /// Registry slug recorded in artifacts.
     slug: &'static str,
-    /// HUD mode injected into the generated Rhai configuration.
+    /// HUD mode injected into the generated Luau configuration.
     hud_mode: DemoHudMode,
     /// Whether to enable verbose logging for the child process.
     with_logs: bool,
 }
 
 impl UiCaseSpec {
-    /// Render the Rhai config used by this scenario.
+    /// Render the Luau config used by this scenario.
     fn render_config(&self) -> String {
         demo_config(self.hud_mode)
     }
@@ -133,7 +133,7 @@ struct UiCaseState {
     session: HotkiSession,
     /// Registry slug mirrored when logging diagnostics or creating scratch configs.
     slug: &'static str,
-    /// Filesystem path to the Rhai configuration applied for this demo.
+    /// Filesystem path to the Luau configuration applied for this demo.
     config_path: PathBuf,
     /// Observed time in milliseconds until the HUD became visible.
     time_to_hud_ms: Option<u64>,
@@ -156,10 +156,10 @@ where
     let mut state: Option<UiCaseState> = None;
 
     ctx.setup(|ctx| {
-        let filename = format!("{}_config.rhai", sanitize_slug(spec.slug));
+        let filename = format!("{}_config.luau", sanitize_slug(spec.slug));
         let config_path = ctx.scratch_path(filename);
-        let rhai_config = spec.render_config();
-        fs::write(&config_path, rhai_config.as_bytes())?;
+        let luau_config = spec.render_config();
+        fs::write(&config_path, luau_config.as_bytes())?;
 
         let session = HotkiSession::spawn(
             HotkiSessionConfig::from_env()?

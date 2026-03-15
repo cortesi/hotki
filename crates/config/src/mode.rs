@@ -30,6 +30,8 @@ pub enum Action {
     ThemePrev,
     /// Set a specific theme by name
     ThemeSet(String),
+    /// Open a path or URL via the system opener.
+    Open(String),
     /// Clear to root and show HUD.
     ShowRoot,
     /// Hide the HUD without changing the mode stack.

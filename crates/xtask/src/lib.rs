@@ -9,6 +9,8 @@ mod bundle;
 mod cmd;
 /// Error and result types for `xtask`.
 mod error;
+/// Luau validation tasks.
+mod luau;
 /// Screenshot generation tasks.
 mod screenshots;
 /// Linting and formatting tasks.
@@ -36,6 +38,8 @@ enum Xtask {
     BundleDev(bundle::BundleDevArgs),
     /// Generate UI screenshots for the README gallery.
     Screenshots,
+    /// Validate Luau API/docs, themes, and example configs.
+    Luau,
     /// Run clippy fixes and format the workspace.
     Tidy,
 }
@@ -49,6 +53,7 @@ pub fn run() -> Result<()> {
         Xtask::Bundle(args) => bundle::bundle_release(&root_dir, &args),
         Xtask::BundleDev(args) => bundle::bundle_dev(&root_dir, &args),
         Xtask::Screenshots => screenshots::screenshots(&root_dir),
+        Xtask::Luau => luau::luau(&root_dir),
         Xtask::Tidy => tidy::tidy(&root_dir),
     }
 }

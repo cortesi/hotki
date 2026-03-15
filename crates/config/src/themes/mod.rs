@@ -1,6 +1,6 @@
 //! Theme registry and helpers.
 //!
-//! Built-in themes are defined as Rhai source files embedded at compile time, then evaluated into
+//! Built-in themes are defined as Luau source files embedded at compile time, then evaluated into
 //! `RawStyle` overlays at startup (or lazily on first access).
 use std::{collections::HashMap, path::Path, sync::OnceLock};
 
@@ -13,7 +13,7 @@ mod loader;
 
 pub use error::ThemeError;
 
-/// Cached evaluated built-in theme overlays loaded from embedded Rhai sources.
+/// Cached evaluated built-in theme overlays loaded from embedded Luau sources.
 static BUILTIN_THEMES: OnceLock<HashMap<&'static str, raw::RawStyle>> = OnceLock::new();
 
 /// Force initialization of the embedded built-in theme registry.
@@ -33,6 +33,11 @@ pub(crate) fn builtin_raw_themes() -> &'static HashMap<&'static str, raw::RawSty
 /// Load and evaluate user theme files from a directory.
 pub(crate) fn load_user_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>, ThemeError> {
     loader::load_user_raw_themes(dir)
+}
+
+/// Validate all user theme files in `dir` and return the number of loaded themes.
+pub fn validate_theme_dir(dir: &Path) -> Result<usize, ThemeError> {
+    Ok(load_user_themes(dir)?.len())
 }
 
 /// List all available built-in theme names.
@@ -96,7 +101,7 @@ pub fn load_theme(theme_name: Option<&str>) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::load_dynamic_config_from_string;
+    use crate::script::load_dynamic_config_from_string;
 
     #[test]
     fn test_default_theme_exists() {
@@ -169,9 +174,8 @@ mod tests {
 
     #[test]
     fn test_dynamic_config_defaults_to_default_theme() {
-        let cfg =
-            load_dynamic_config_from_string(r#"hotki.mode(|_m, _ctx| {});"#.to_string(), None)
-                .expect("loads");
+        let cfg = load_dynamic_config_from_string(r#"hotki.root(function(menu, ctx) end)"#, None)
+            .expect("loads");
 
         let expected = load_theme(None).hud;
         let actual = cfg.base_style(None).hud;
@@ -185,10 +189,9 @@ mod tests {
     fn test_dynamic_config_theme_function_selects_builtins() {
         let cfg = load_dynamic_config_from_string(
             r#"
-            theme("dark-blue");
-            hotki.mode(|_m, _ctx| {});
-            "#
-            .to_string(),
+            themes:use("dark-blue")
+            hotki.root(function(menu, ctx) end)
+            "#,
             None,
         )
         .expect("loads");

@@ -1,4 +1,4 @@
-use config::dynamic::engine as dyn_engine;
+use config::script::engine as dyn_engine;
 use mac_keycode::Chord;
 
 use crate::{
@@ -112,6 +112,16 @@ impl Engine {
             config::Action::ThemeNext => self.cycle_theme(identifier, true).await,
             config::Action::ThemePrev => self.cycle_theme(identifier, false).await,
             config::Action::ThemeSet(name) => self.set_theme_by_name(identifier, name).await,
+            config::Action::Open(target) => {
+                self.start_shell_action(
+                    identifier,
+                    format!("open -- {}", shell_quote(target)),
+                    config::NotifyKind::Ignore,
+                    config::NotifyKind::Warn,
+                    repeat,
+                );
+                Ok(DispatchOutcome::default())
+            }
             config::Action::SetVolume(level) => {
                 self.start_warn_apple_script(identifier, set_volume_script(*level), repeat);
                 Ok(DispatchOutcome::default())
@@ -314,6 +324,10 @@ fn repeat_spec(repeat: Option<dyn_engine::RepeatSpec>) -> Option<RepeatSpec> {
 
 fn apple_script_command(script: String) -> String {
     format!("osascript -e '{}'", script.replace('\n', "' -e '"))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn set_volume_script(level: u8) -> String {

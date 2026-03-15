@@ -13,10 +13,12 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 colornames = "0.0.6"
 mac-keycode = { path = "../mac-keycode" }
 thiserror = { workspace = true }
 regex = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
-rhai = { version = "1.23.6", features = ["serde", "sync"] }
 tracing.workspace = true
+mlua = { version = "0.11.6", features = ["luau", "serialize", "vendored", "send"] }
+luau-analyze = { path = "../../../luau-analyze/crates/luau-analyze" }

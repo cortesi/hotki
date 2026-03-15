@@ -18,7 +18,7 @@ mod tests {
             let entry = entry.unwrap();
             let path = entry.path();
             let ext = path.extension().and_then(|s| s.to_str());
-            if ext != Some("rhai") {
+            if ext != Some("luau") {
                 continue;
             }
             found += 1;

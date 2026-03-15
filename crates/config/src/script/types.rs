@@ -1,14 +1,29 @@
 use std::{
-    fmt, mem,
+    collections::hash_map::DefaultHasher,
+    fmt,
+    hash::{Hash, Hasher},
+    mem,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 pub use hotki_protocol::{HudRow, HudRowStyle};
 use mac_keycode::Chord;
-use rhai::{FnPtr, Position};
+use mlua::Function;
 
 use super::{SelectorConfig, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style, raw::RawStyle};
+
+/// Source location attached to a binding for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePos {
+    /// Source file for the binding, when known.
+    pub path: Option<PathBuf>,
+    /// 1-based line number.
+    pub line: Option<usize>,
+    /// 1-based column number.
+    pub col: Option<usize>,
+}
 
 /// Unique identifier for a mode closure.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,7 +31,7 @@ pub struct ModeId(u64);
 
 impl ModeId {
     /// Create a new `ModeId` from a stable identifier.
-    pub(crate) fn new(id: u64) -> Self {
+    pub(crate) const fn new(id: u64) -> Self {
         Self(id)
     }
 }
@@ -27,16 +42,14 @@ impl fmt::Debug for ModeId {
     }
 }
 
-/// Opaque wrapper around a Rhai mode closure or static bindings.
+/// Opaque wrapper around a Luau mode renderer.
 #[derive(Clone)]
 pub struct ModeRef {
-    /// Stable identifier for the mode closure (used for orphan detection).
+    /// Stable identity used for orphan detection.
     pub(crate) id: ModeId,
-    /// Rhai function pointer for invoking the mode closure (None for static modes).
-    pub(crate) func: Option<FnPtr>,
-    /// Pre-built bindings for inline/static modes (None for closure modes).
-    pub(crate) static_bindings: Option<Vec<Binding>>,
-    /// Default title declared at mode creation time, if any.
+    /// Luau function implementing the renderer.
+    pub(crate) func: Function,
+    /// Optional default title.
     pub(crate) default_title: Option<String>,
 }
 
@@ -50,7 +63,24 @@ impl fmt::Debug for ModeRef {
 }
 
 impl ModeRef {
-    /// Return the stable identity of this mode closure (used for orphan detection).
+    /// Create a mode reference from a Luau function and optional title salt.
+    pub(crate) fn from_function(func: Function, title: Option<String>) -> Self {
+        let info = func.info();
+        let mut hasher = DefaultHasher::new();
+        info.source.hash(&mut hasher);
+        info.line_defined.hash(&mut hasher);
+        title.hash(&mut hasher);
+        if info.source.is_none() && info.line_defined.is_none() {
+            (func.to_pointer() as usize).hash(&mut hasher);
+        }
+        Self {
+            id: ModeId::new(hasher.finish()),
+            func,
+            default_title: title,
+        }
+    }
+
+    /// Return the stable identity of this mode closure.
     pub fn id(&self) -> ModeId {
         self.id
     }
@@ -61,11 +91,11 @@ impl ModeRef {
     }
 }
 
-/// Opaque wrapper around a Rhai handler closure.
+/// Opaque wrapper around a Luau handler closure.
 #[derive(Clone)]
 pub struct HandlerRef {
-    /// Rhai function pointer for invoking the handler closure.
-    pub(crate) func: FnPtr,
+    /// Luau function implementing the handler.
+    pub(crate) func: Function,
 }
 
 impl fmt::Debug for HandlerRef {
@@ -119,7 +149,7 @@ impl ContextSnapshot {
 /// Render-time context passed into mode closures.
 pub type ModeCtx = ContextSnapshot;
 
-/// Effect emitted by handlers (and render warnings) for the engine to apply.
+/// Effect emitted by handlers.
 #[derive(Debug, Clone)]
 pub enum Effect {
     /// Execute a primitive action.
@@ -165,13 +195,13 @@ pub struct ActionCtx {
 }
 
 #[derive(Debug, Default)]
-/// Shared mutable state for an executing handler closure.
+/// Shared mutable state collected while a handler executes.
 struct ActionCtxShared {
-    /// Queued effects to apply after handler completion.
+    /// Queued side effects.
     effects: Vec<Effect>,
-    /// Optional navigation request to apply after handler completion.
+    /// Pending navigation request.
     nav: Option<NavRequest>,
-    /// Whether the handler requested staying in the current mode.
+    /// Whether the handler requested stay-in-mode behavior.
     stay: bool,
 }
 
@@ -262,22 +292,20 @@ pub struct BindingFlags {
     pub repeat: Option<RepeatSpec>,
 }
 
-/// Opaque style overlay attached to modes and bindings.
-#[derive(Clone)]
+/// Mode-level style overlay.
+#[derive(Clone, Debug)]
 pub struct StyleOverlay {
-    /// Dynamic style closure, invoked with `(ctx)` to produce a map.
-    pub(crate) func: Option<FnPtr>,
     /// Static raw style overlay.
-    pub(crate) raw: Option<RawStyle>,
+    pub(crate) raw: RawStyle,
 }
 
-impl fmt::Debug for StyleOverlay {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StyleOverlay")
-            .field("dynamic", &self.func.is_some())
-            .field("static", &self.raw.is_some())
-            .finish()
-    }
+/// Binding-level style overlay and visibility modifiers.
+#[derive(Clone, Debug, Default)]
+pub struct BindingStyle {
+    /// Whether the binding should be hidden from the HUD.
+    pub hidden: bool,
+    /// Optional overlay to apply to HUD row colors.
+    pub overlay: Option<RawStyle>,
 }
 
 /// The kind of binding produced by a mode closure.
@@ -300,24 +328,24 @@ pub struct Binding {
     pub chord: Chord,
     /// Human-readable description shown in the HUD.
     pub desc: String,
-    /// Binding behavior (action, handler, or mode entry).
+    /// Binding behavior.
     pub kind: BindingKind,
     /// Mode identity when `kind` is [`BindingKind::Mode`].
     pub mode_id: Option<ModeId>,
     /// Execution and visibility flags.
     pub flags: BindingFlags,
     /// Optional per-binding style overlay.
-    pub style: Option<StyleOverlay>,
+    pub style: Option<BindingStyle>,
     /// True when entering the bound mode should enable capture-all.
     pub mode_capture: bool,
     /// Source position of the binding declaration for diagnostics.
-    pub(crate) pos: Position,
+    pub pos: Option<SourcePos>,
 }
 
 /// A stack frame representing an active mode.
 #[derive(Debug, Clone)]
 pub struct ModeFrame {
-    /// Current title for this frame (used in breadcrumbs).
+    /// Current title for this frame.
     pub title: String,
     /// Mode closure backing this frame.
     pub closure: ModeRef,
@@ -338,7 +366,7 @@ pub struct RenderedState {
     pub bindings: Vec<(Chord, Binding)>,
     /// HUD rows visible in the current mode.
     pub hud_rows: Vec<HudRow>,
-    /// Effective resolved style (base theme + overlays).
+    /// Effective resolved style.
     pub style: Style,
     /// True when capture-all mode is active in the current frame.
     pub capture: bool,

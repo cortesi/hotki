@@ -50,6 +50,15 @@ pub enum Error {
         status: ExitStatus,
     },
 
+    /// Luau validation failed.
+    #[error("luau validation failed at {path}: {message}")]
+    Luau {
+        /// The relevant path.
+        path: PathBuf,
+        /// Human-readable validation failure.
+        message: String,
+    },
+
     /// The workspace Cargo.toml did not contain a version.
     #[error("could not determine workspace version from {path}")]
     MissingWorkspaceVersion {

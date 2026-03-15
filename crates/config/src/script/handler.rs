@@ -1,4 +1,4 @@
-use rhai::{Dynamic, Map};
+use mlua::Value;
 
 use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem};
 use crate::Error;
@@ -6,7 +6,7 @@ use crate::Error;
 /// Result of executing a handler closure.
 #[derive(Debug)]
 pub struct HandlerResult {
-    /// Side effects queued by the handler (actions, notifications, navigation).
+    /// Side effects queued by the handler.
     pub effects: Vec<super::Effect>,
     /// Optional navigation request emitted by the handler.
     pub nav: Option<NavRequest>,
@@ -21,12 +21,13 @@ pub fn execute_handler(
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
     let action_ctx = ActionCtx::new(ctx.clone());
+    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
     handler
         .func
-        .call::<Dynamic>(&cfg.engine, &cfg.ast, (action_ctx.clone(),))
-        .map(|_| ())
-        .map_err(|err| super::render::rhai_error_to_config(cfg, &err))?;
+        .call::<()>(ctx_value)
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
     Ok(HandlerResult {
         effects: action_ctx.take_effects(),
@@ -44,28 +45,23 @@ pub fn execute_selector_handler(
     query: &str,
 ) -> Result<HandlerResult, Error> {
     let action_ctx = ActionCtx::new(ctx.clone());
+    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
-    let mut m = Map::new();
-    m.insert("label".into(), Dynamic::from(item.label.clone()));
-    m.insert(
-        "sublabel".into(),
-        item.sublabel
-            .clone()
-            .map(Dynamic::from)
-            .unwrap_or(Dynamic::UNIT),
-    );
-    m.insert("data".into(), item.data.clone());
-    let item_map = Dynamic::from_map(m);
+    let item_table = cfg
+        .lua
+        .create_table()
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+    item_table
+        .set("label", item.label.clone())
+        .and_then(|()| item_table.set("sublabel", item.sublabel.clone()))
+        .and_then(|()| item_table.set("data", item.data.clone()))
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
     handler
         .func
-        .call::<Dynamic>(
-            &cfg.engine,
-            &cfg.ast,
-            (action_ctx.clone(), item_map, query.to_string()),
-        )
-        .map(|_| ())
-        .map_err(|err| super::render::rhai_error_to_config(cfg, &err))?;
+        .call::<()>((ctx_value, Value::Table(item_table), query.to_string()))
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
     Ok(HandlerResult {
         effects: action_ctx.take_effects(),

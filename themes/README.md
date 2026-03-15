@@ -1,24 +1,22 @@
-# Themes
+# Theme Files
 
-Hotki themes are `*.rhai` files that evaluate to a single map with `hud` and/or `notify` sections.
-These maps are deserialized into Hotki's `RawStyle` overlay type.
+Hotki themes are `*.luau` files that `return` a single table with `hud`, `notify`, and/or
+`selector` sections.
 
-## Built-in themes
+Example:
 
-The built-in themes live in this directory **in the repo**, and are embedded into the binary at
-compile time.
-
-## User themes
-
-To customize a theme:
-
-1. Copy a built-in theme into your config directory's `themes/` folder (defaults to
-   `~/.hotki/themes/` when your config is `~/.hotki/config.rhai`).
-2. Edit it and select it from your `config.rhai`:
-
-```rhai
-theme("my-theme-name");
+```luau
+return {
+    hud = {
+        bg = "#101010",
+        title_fg = "#d0d0d0",
+    },
+}
 ```
 
-Theme names are derived from the filename stem, e.g. `dark-blue.rhai` → `"dark-blue"`.
+Place custom themes in `themes/` next to `config.luau`, for example `~/.hotki/themes/my-theme.luau`,
+then activate them from your config:
 
+```luau
+themes:use("my-theme")
+```

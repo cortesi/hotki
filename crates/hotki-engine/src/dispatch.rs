@@ -1,4 +1,4 @@
-use config::dynamic::engine as dyn_engine;
+use config::script::engine as dyn_engine;
 use tracing::{trace, warn};
 
 use crate::{DispatchOutcome, Engine, Result, selector_controller::SelectorController};

@@ -1,101 +1,31 @@
 # Themes
 
-This is a screenshot gallery of all built-in Hotki themes.
+Built-in theme names match `themes/*.luau` file stems:
 
-Theme names match `themes/*.rhai` file stems (e.g. `themes/solarized-dark.rhai` → `solarized-dark`).
+- `default`
+- `charcoal`
+- `dark-blue`
+- `solarized-dark`
+- `solarized-light`
 
-## default
+Theme files return a `StyleOverlay` table. The checked-in themes in [`themes/`](./themes) are also
+the format user themes should follow.
 
-<table>
-  <tr>
-    <td>
-      <img src="./assets/default/hud.png" width="350px">
-    </td>
-    <td>
-      <img src="./assets/default/notify_success.png" width="250px">
-      <img src="./assets/default/notify_info.png" width="250px">
-      <br>
-      <img src="./assets/default/notify_warning.png" width="250px">
-      <img src="./assets/default/notify_error.png" width="250px">
-      <br>
-      <img src="./assets/default/selector.png" width="500px">
-    </td>
-  </tr>
-</table>
+Select a built-in theme:
 
-## solarized-dark
+```luau
+themes:use("dark-blue")
+```
 
-<table>
-  <tr>
-    <td>
-      <img src="./assets/solarized-dark/hud.png" width="350px">
-    </td>
-    <td>
-      <img src="./assets/solarized-dark/notify_success.png" width="250px">
-      <img src="./assets/solarized-dark/notify_info.png" width="250px">
-      <br>
-      <img src="./assets/solarized-dark/notify_warning.png" width="250px">
-      <img src="./assets/solarized-dark/notify_error.png" width="250px">
-      <br>
-      <img src="./assets/solarized-dark/selector.png" width="500px">
-    </td>
-  </tr>
-</table>
+Derive a custom theme from a built-in:
 
-## solarized-light
+```luau
+local large = themes:get("default")
+large.hud = large.hud or {}
+large.hud.font_size = 18
 
-<table>
-  <tr>
-    <td>
-      <img src="./assets/solarized-light/hud.png" width="350px">
-    </td>
-    <td>
-      <img src="./assets/solarized-light/notify_success.png" width="250px">
-      <img src="./assets/solarized-light/notify_info.png" width="250px">
-      <br>
-      <img src="./assets/solarized-light/notify_warning.png" width="250px">
-      <img src="./assets/solarized-light/notify_error.png" width="250px">
-      <br>
-      <img src="./assets/solarized-light/selector.png" width="500px">
-    </td>
-  </tr>
-</table>
+themes:register("large-default", large)
+themes:use("large-default")
+```
 
-## dark-blue
-
-<table>
-  <tr>
-    <td>
-      <img src="./assets/dark-blue/hud.png" width="350px">
-    </td>
-    <td>
-      <img src="./assets/dark-blue/notify_success.png" width="250px">
-      <img src="./assets/dark-blue/notify_info.png" width="250px">
-      <br>
-      <img src="./assets/dark-blue/notify_warning.png" width="250px">
-      <img src="./assets/dark-blue/notify_error.png" width="250px">
-      <br>
-      <img src="./assets/dark-blue/selector.png" width="500px">
-    </td>
-  </tr>
-</table>
-
-## charcoal
-
-<table>
-  <tr>
-    <td>
-      <img src="./assets/charcoal/hud.png" width="350px">
-    </td>
-    <td>
-      <img src="./assets/charcoal/notify_success.png" width="250px">
-      <img src="./assets/charcoal/notify_info.png" width="250px">
-      <br>
-      <img src="./assets/charcoal/notify_warning.png" width="250px">
-      <img src="./assets/charcoal/notify_error.png" width="250px">
-      <br>
-      <img src="./assets/charcoal/selector.png" width="500px">
-    </td>
-  </tr>
-</table>
-
+Custom themes in `~/.hotki/themes/*.luau` override built-ins by name.

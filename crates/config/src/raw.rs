@@ -557,16 +557,13 @@ impl RawStyle {
 
 #[cfg(test)]
 mod tests {
-    use rhai::{Dynamic, Map, serde::from_dynamic};
+    use serde_json::json;
 
     use super::RawHud;
 
     #[test]
     fn raw_struct_accepts_bare_maybe_field_values() {
-        let mut map = Map::new();
-        map.insert("radius".into(), Dynamic::from(8.0_f64));
-        let dyn_map = Dynamic::from_map(map);
-        let hud: RawHud = from_dynamic(&dyn_map).unwrap();
+        let hud: RawHud = serde_json::from_value(json!({ "radius": 8.0 })).unwrap();
         assert_eq!(hud.radius.as_option().copied(), Some(8.0));
     }
 }

@@ -20,7 +20,7 @@ pub enum Error {
         message: String,
     },
     #[error("{message}")]
-    /// Rhai parse error with a concrete line/column location and excerpt.
+    /// Luau parse error with a concrete line/column location and excerpt.
     Parse {
         /// Optional path associated with the parse error.
         path: Option<PathBuf>,

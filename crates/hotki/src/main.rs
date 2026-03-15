@@ -39,7 +39,10 @@ mod selector;
 mod smoketest_bridge;
 mod tray;
 
-use config::{load_dynamic_config, resolve_config_path, themes};
+use config::{
+    check_luau_config, load_dynamic_config, luau_api_markdown, luau_api_text, resolve_config_path,
+    themes,
+};
 
 use crate::app::{AppBootstrap, HotkiApp, UiEvent};
 
@@ -79,9 +82,19 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 /// Top-level CLI subcommands.
 enum Command {
+    /// Print the checked-in Luau scripting API definitions.
+    Api {
+        /// Wrap the output in a markdown code fence.
+        #[arg(long)]
+        markdown: bool,
+
+        /// Restrict output to definition blocks matching this substring.
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+    },
     /// Load and validate the configuration then exit.
     Check {
-        /// Path to configuration file to check (defaults to ~/.hotki/config.rhai)
+        /// Path to configuration file to check (defaults to ~/.hotki/config.luau)
         path: Option<String>,
 
         /// Dump the parsed configuration as JSON to stdout
@@ -121,34 +134,57 @@ fn main() -> eframe::Result<()> {
     // the same level plus our extra directive to silence mrpc disconnect noise.
     let server_filter: String = final_spec;
 
-    if let Some(Command::Check { path, dump }) = &cli.command {
-        let explicit = path.as_deref().map(Path::new).or(cli.config.as_deref());
-        let resolved = match resolve_config_path(explicit) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("{}", e.pretty());
-                process::exit(1);
+    if let Some(command) = &cli.command {
+        match command {
+            Command::Api { markdown, filter } => {
+                let output = if *markdown {
+                    luau_api_markdown(filter.as_deref())
+                } else {
+                    luau_api_text(filter.as_deref())
+                };
+                print!("{output}");
+                return Ok(());
             }
-        };
-        match load_dynamic_config(&resolved) {
-            Ok(cfg) => {
+            Command::Check { path, dump } => {
+                let explicit = path.as_deref().map(Path::new).or(cli.config.as_deref());
+                let resolved = match resolve_config_path(explicit) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{}", e.pretty());
+                        process::exit(1);
+                    }
+                };
+                let report = match check_luau_config(&resolved) {
+                    Ok(report) => report,
+                    Err(e) => {
+                        eprintln!("{}", e.pretty());
+                        process::exit(1);
+                    }
+                };
                 if *dump {
-                    let style = cfg.base_style(None);
-                    match serde_json::to_string_pretty(&style) {
-                        Ok(json) => println!("{json}"),
+                    match load_dynamic_config(&resolved) {
+                        Ok(cfg) => {
+                            let style = cfg.base_style(None);
+                            match serde_json::to_string_pretty(&style) {
+                                Ok(json) => println!("{json}"),
+                                Err(e) => {
+                                    eprintln!("Failed to serialize style: {e}");
+                                    process::exit(1);
+                                }
+                            }
+                        }
                         Err(e) => {
-                            eprintln!("Failed to serialize style: {e}");
+                            eprintln!("{}", e.pretty());
                             process::exit(1);
                         }
                     }
                 } else {
-                    println!("OK");
+                    println!(
+                        "OK (validated {} imports, {} theme files)",
+                        report.imports, report.themes
+                    );
                 }
                 return Ok(());
-            }
-            Err(e) => {
-                eprintln!("{}", e.pretty());
-                process::exit(1);
             }
         }
     }

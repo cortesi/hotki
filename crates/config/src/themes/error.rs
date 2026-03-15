@@ -13,7 +13,7 @@ pub enum ThemeError {
         /// Human-readable error message.
         message: String,
     },
-    /// Rhai parse/runtime error with a concrete line/column location and excerpt.
+    /// Luau parse/runtime error with a concrete line/column location and excerpt.
     #[error("{message}")]
     Parse {
         /// Path associated with the parse error.

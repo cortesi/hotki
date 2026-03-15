@@ -91,7 +91,7 @@ impl DispatchContext {
     }
 }
 
-use config::dynamic::engine as dyn_engine;
+use config::script::engine as dyn_engine;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};

@@ -1,4 +1,4 @@
-use config::dynamic::engine::{ModeCtx, ModeFrame, ModeRef, RenderedState};
+use config::script::engine::{ModeCtx, ModeFrame, ModeRef, RenderedState};
 
 use crate::selector::SelectorState;
 

@@ -57,21 +57,22 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
 
 fn used_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.rhai");
+    let cfg_path = cwd.join("examples/test.luau");
     if theme.is_none() {
         return Ok(cfg_path);
     }
     let name = theme.as_ref().unwrap();
     match fs::read_to_string(&cfg_path) {
         Ok(s) => {
-            let re = regex::Regex::new("theme\\(\\s*\"[^\"]*\"\\s*\\)\\s*;").unwrap();
+            let re = regex::Regex::new("themes:use\\(\\s*\"[^\"]*\"\\s*\\)").unwrap();
             let out = if re.is_match(&s) {
-                re.replace(&s, format!("theme(\"{}\");", name)).to_string()
+                re.replace(&s, format!("themes:use(\"{}\")", name))
+                    .to_string()
             } else {
-                format!("theme(\"{}\");\n{}", name, s)
+                format!("themes:use(\"{}\")\n{}", name, s)
             };
             let tmp = env::temp_dir().join(format!(
-                "hotki-shots-{}-{}.rhai",
+                "hotki-shots-{}-{}.luau",
                 process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use config::dynamic::engine::{SelectorConfig, SelectorItem};
+use config::script::engine::{SelectorConfig, SelectorItem};
 use hotki_protocol::{SelectorItemSnapshot, SelectorSnapshot};
 use mac_keycode::{Chord, Key, Modifier};
 use nucleo::{
@@ -621,7 +621,7 @@ mod tests {
         SelectorItem {
             label: label.to_string(),
             sublabel: None,
-            data: label.to_string().into(),
+            data: Default::default(),
         }
     }
 

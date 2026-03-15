@@ -5,10 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rhai::{AST, Dynamic, Engine, EvalAltResult, Position, Scope, serde::from_dynamic};
+use mlua::{Lua, LuaSerdeExt, StdLib};
 
 use super::ThemeError;
-use crate::{dynamic::constants::register_style_constants, error::excerpt_at, raw};
+use crate::{error::excerpt_at, raw, script};
 
 /// Embedded built-in theme sources included at compile time.
 const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[
@@ -16,35 +16,35 @@ const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[
         "default",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../themes/default.rhai"
+            "/../../themes/default.luau"
         )),
     ),
     (
         "charcoal",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../themes/charcoal.rhai"
+            "/../../themes/charcoal.luau"
         )),
     ),
     (
         "dark-blue",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../themes/dark-blue.rhai"
+            "/../../themes/dark-blue.luau"
         )),
     ),
     (
         "solarized-dark",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../themes/solarized-dark.rhai"
+            "/../../themes/solarized-dark.luau"
         )),
     ),
     (
         "solarized-light",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../themes/solarized-light.rhai"
+            "/../../themes/solarized-light.luau"
         )),
     ),
 ];
@@ -53,9 +53,8 @@ const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[
 pub fn load_builtin_raw_themes() -> Result<HashMap<&'static str, raw::RawStyle>, ThemeError> {
     let mut themes = HashMap::new();
     for (name, source) in BUILTIN_THEME_SOURCES {
-        let path = PathBuf::from(format!("<builtin:{}>", name));
-        let raw = eval_theme_source(source, &path)?;
-        themes.insert(*name, raw);
+        let path = PathBuf::from(format!("<builtin:{name}>"));
+        themes.insert(*name, eval_theme_source(source, &path)?);
     }
 
     if !themes.contains_key("default") {
@@ -71,7 +70,7 @@ pub fn load_builtin_raw_themes() -> Result<HashMap<&'static str, raw::RawStyle>,
     Ok(themes)
 }
 
-/// Load and evaluate `*.rhai` theme files from the provided directory.
+/// Load and evaluate `*.luau` theme files from the provided directory.
 pub fn load_user_raw_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>, ThemeError> {
     if !dir.exists() {
         return Ok(HashMap::new());
@@ -84,12 +83,12 @@ pub fn load_user_raw_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>
     }
 
     let mut paths = fs::read_dir(dir)
-        .map_err(|e| ThemeError::Read {
+        .map_err(|err| ThemeError::Read {
             path: dir.to_path_buf(),
-            message: e.to_string(),
+            message: err.to_string(),
         })?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.extension() == Some(OsStr::new("rhai")))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension() == Some(OsStr::new("luau")))
         .collect::<Vec<_>>();
     paths.sort();
 
@@ -104,16 +103,14 @@ pub fn load_user_raw_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>
                 excerpt: None,
             });
         };
-
         let name = stem.to_string();
         let raw = load_theme_file(&path)?;
-
         if themes.insert(name.clone(), raw).is_some() {
             return Err(ThemeError::Validation {
                 path,
                 line: None,
                 col: None,
-                message: format!("duplicate theme name from filename: {}", name),
+                message: format!("duplicate theme name from filename: {name}"),
                 excerpt: None,
             });
         }
@@ -122,66 +119,52 @@ pub fn load_user_raw_themes(dir: &Path) -> Result<HashMap<String, raw::RawStyle>
     Ok(themes)
 }
 
-/// Read and evaluate a single theme file.
+/// Read and evaluate one filesystem-backed theme file.
 fn load_theme_file(path: &Path) -> Result<raw::RawStyle, ThemeError> {
-    let source = fs::read_to_string(path).map_err(|e| ThemeError::Read {
+    let source = fs::read_to_string(path).map_err(|err| ThemeError::Read {
         path: path.to_path_buf(),
-        message: e.to_string(),
+        message: err.to_string(),
     })?;
     eval_theme_source(&source, path)
 }
 
-/// Evaluate theme source into a raw style overlay.
+/// Evaluate one Luau theme source file into a raw style overlay.
 fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeError> {
-    let mut engine = Engine::new();
-    configure_engine(&mut engine);
-    register_style_constants(&mut engine);
-
-    let ast = compile(&engine, source, path)?;
-    let mut scope = Scope::new();
-    let result = engine
-        .eval_ast_with_scope::<Dynamic>(&mut scope, &ast)
-        .map_err(|err| error_from_rhai(source, &err, path))?;
-
-    if !result.is::<rhai::Map>() {
-        return Err(ThemeError::Validation {
+    let lua = Lua::new_with(StdLib::ALL_SAFE, mlua::LuaOptions::default()).map_err(|err| {
+        ThemeError::Validation {
             path: path.to_path_buf(),
             line: None,
             col: None,
-            message: "theme script must evaluate to a map".to_string(),
+            message: err.to_string(),
             excerpt: None,
-        });
-    }
-
-    from_dynamic(&result).map_err(|e| ThemeError::Validation {
+        }
+    })?;
+    lua.sandbox(true).map_err(|err| ThemeError::Validation {
         path: path.to_path_buf(),
         line: None,
         col: None,
-        message: format!("invalid theme map: {}", e),
+        message: err.to_string(),
+        excerpt: None,
+    })?;
+
+    let value = lua
+        .load(source)
+        .set_name(path.to_string_lossy().as_ref())
+        .eval()
+        .map_err(|err| error_from_luau(source, &err, path))?;
+
+    lua.from_value(value).map_err(|err| ThemeError::Validation {
+        path: path.to_path_buf(),
+        line: None,
+        col: None,
+        message: format!("invalid theme table: {err}"),
         excerpt: None,
     })
 }
 
-/// Configure the restricted Rhai engine used for theme evaluation.
-fn configure_engine(engine: &mut Engine) {
-    engine.on_print(|_| {});
-    engine.on_debug(|_, _, _| {});
-
-    engine.set_max_operations(50_000);
-    engine.set_max_call_levels(32);
-    engine.set_max_expr_depths(96, 48);
-}
-
-/// Compile theme source code into an AST.
-fn compile(engine: &Engine, source: &str, path: &Path) -> Result<AST, ThemeError> {
-    engine
-        .compile(source)
-        .map_err(|err| error_from_rhai(source, &err.into(), path))
-}
-
-/// Convert a Rhai error into a source-located theme parse error with an excerpt.
-fn error_from_rhai(source: &str, err: &EvalAltResult, path: &Path) -> ThemeError {
-    let (line, col) = pos_to_line_col(err.position()).unwrap_or((1, 1));
+/// Convert an `mlua` error into a source-located theme error.
+fn error_from_luau(source: &str, err: &mlua::Error, path: &Path) -> ThemeError {
+    let (line, col) = parse_error_location(err).unwrap_or((1, 1));
     ThemeError::Parse {
         path: path.to_path_buf(),
         line,
@@ -191,9 +174,8 @@ fn error_from_rhai(source: &str, err: &EvalAltResult, path: &Path) -> ThemeError
     }
 }
 
-/// Convert a Rhai position into a 1-based (line, column) pair.
-fn pos_to_line_col(pos: Position) -> Option<(usize, usize)> {
-    let line = pos.line()?;
-    let col = pos.position().unwrap_or(1);
-    Some((line.max(1), col.max(1)))
+/// Extract a `(line, column)` pair from a Luau error message.
+fn parse_error_location(err: &mlua::Error) -> Option<(usize, usize)> {
+    let (_, line, col) = script::parse_error_location(err)?;
+    Some((line.unwrap_or(1), col.unwrap_or(1)))
 }
