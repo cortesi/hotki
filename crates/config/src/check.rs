@@ -479,6 +479,7 @@ fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use std::{
+        ffi::OsStr,
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
@@ -497,6 +498,10 @@ mod tests {
         }
         fs::create_dir_all(&root).expect("create tmp dir");
         root
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
     #[test]
@@ -583,5 +588,32 @@ hotki.root(function(menu, ctx) end)
 
         let report = check_luau_config(&root.join("config.luau")).expect("check config");
         assert_eq!(report.themes, 1);
+    }
+
+    #[test]
+    fn check_validates_all_workspace_examples() {
+        let examples_dir = workspace_root().join("examples");
+        let mut example_paths = fs::read_dir(&examples_dir)
+            .expect("read examples dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension() == Some(OsStr::new("luau")))
+            .collect::<Vec<_>>();
+        example_paths.sort();
+
+        assert!(
+            !example_paths.is_empty(),
+            "no Luau examples found in {}",
+            examples_dir.display()
+        );
+
+        for path in &example_paths {
+            if let Err(err) = check_luau_config(path) {
+                panic!(
+                    "failed to validate example {}:\n{}",
+                    path.display(),
+                    err.pretty()
+                );
+            }
+        }
     }
 }
