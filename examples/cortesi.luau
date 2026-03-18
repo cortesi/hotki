@@ -10,7 +10,7 @@ themes:use("default")
 local DEFAULT_REPEAT: RepeatOptions = {}
 local GLOBAL_HIDDEN: BindingOptions = { global = true, hidden = true }
 local STAY: BindingOptions = { stay = true }
-local REPEAT: BindingOptions = { ["repeat"] = DEFAULT_REPEAT }
+local STAY_REPEAT: BindingOptions = { stay = true, ["repeat"] = DEFAULT_REPEAT }
 local CAPTURE: SubmenuOptions = { capture = true }
 
 local function yabai_grid(cols: number, rows: number, x: number, y: number, w: number, h: number): Action
@@ -81,8 +81,8 @@ hotki.root(function(menu, ctx)
     end
 
     menu:submenu("shift+cmd+m", "music", function(music, _music_ctx)
-        music:bind("k", "vol up", action.change_volume(5), REPEAT)
-        music:bind("j", "vol down", action.change_volume(-5), REPEAT)
+        music:bind("k", "vol up", action.change_volume(5), STAY_REPEAT)
+        music:bind("j", "vol down", action.change_volume(-5), STAY_REPEAT)
         music:bind("l", "next >>", action.shell("spotify next"))
         music:bind("h", "<< prev", action.shell("spotify prev"))
         music:bind("p", "play/pause", action.shell("spotify pause"))

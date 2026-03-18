@@ -400,7 +400,7 @@ pub fn load_dynamic_config_from_string(
         message: err.to_string(),
         excerpt: None,
     })?;
-    set_interrupt_limit(&lua);
+    let interrupt_steps = install_interrupt_limit(&lua);
     install_api(&lua, state.clone()).map_err(|err| Error::Validation {
         path: path.clone(),
         line: None,
@@ -409,6 +409,7 @@ pub fn load_dynamic_config_from_string(
         excerpt: None,
     })?;
 
+    reset_execution_budget(&interrupt_steps);
     lua.load(source)
         .set_name(path_display(path.as_deref()))
         .exec()
@@ -424,6 +425,7 @@ pub fn load_dynamic_config_from_string(
             message: "hotki.root() must be called exactly once".to_string(),
             excerpt: None,
         })?;
+    reset_execution_budget(&interrupt_steps);
     validate_root(&lua, &root, path.as_deref(), source)?;
 
     let state = lock_unpoisoned(&state);
@@ -434,6 +436,7 @@ pub fn load_dynamic_config_from_string(
         lua,
         path,
         sources,
+        interrupt_steps,
     })
 }
 
@@ -1048,8 +1051,9 @@ fn regex_matches(text: &str, pattern: &str) -> LuaResult<bool> {
 }
 
 /// Install a hard interrupt limit for Luau evaluation.
-fn set_interrupt_limit(lua: &Lua) {
+fn install_interrupt_limit(lua: &Lua) -> Arc<AtomicU64> {
     let steps = Arc::new(AtomicU64::new(0));
+    let interrupt_steps = steps.clone();
     lua.set_interrupt(move |_lua| {
         let next = steps.fetch_add(1, Ordering::Relaxed) + 1;
         if next > EXECUTION_LIMIT {
@@ -1059,6 +1063,12 @@ fn set_interrupt_limit(lua: &Lua) {
         }
         Ok(VmState::Continue)
     });
+    interrupt_steps
+}
+
+/// Reset the shared interrupt counter before a fresh Luau entrypoint call.
+fn reset_execution_budget(steps: &AtomicU64) {
+    steps.store(0, Ordering::Relaxed);
 }
 
 /// Convert an `mlua` error into a source-located config error.

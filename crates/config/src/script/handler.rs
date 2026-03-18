@@ -20,6 +20,7 @@ pub fn execute_handler(
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
+    cfg.reset_execution_budget();
     let action_ctx = ActionCtx::new(ctx.clone());
     let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
         .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
@@ -44,6 +45,7 @@ pub fn execute_selector_handler(
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
+    cfg.reset_execution_budget();
     let action_ctx = ActionCtx::new(ctx.clone());
     let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
         .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;

@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use mlua::Lua;
@@ -26,6 +29,8 @@ pub struct DynamicConfig {
     pub(crate) path: Option<PathBuf>,
     /// Cached source text for excerpts and diagnostics.
     pub(crate) sources: SourceMap,
+    /// Shared execution-step counter backing the Luau interrupt hook.
+    pub(crate) interrupt_steps: Arc<AtomicU64>,
 }
 
 impl DynamicConfig {
@@ -65,5 +70,10 @@ impl DynamicConfig {
     /// Return cached source text for a known filesystem path.
     pub(crate) fn source_for(&self, path: &PathBuf) -> Option<Arc<str>> {
         lock_unpoisoned(&self.sources).get(path).cloned()
+    }
+
+    /// Reset the Luau execution budget before entering a fresh runtime callback.
+    pub(crate) fn reset_execution_budget(&self) {
+        self.interrupt_steps.store(0, Ordering::Relaxed);
     }
 }

@@ -92,6 +92,7 @@ fn render_mode(
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
+    cfg.reset_execution_budget();
     let builder = super::loader::ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
     let builder_value = cfg
         .lua

@@ -293,4 +293,29 @@ end)
         let style = row.style.expect("binding style");
         assert_eq!(style.key_bg, (255, 0, 0));
     }
+
+    #[test]
+    fn execution_budget_resets_between_renders() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    local total = 0
+    for i = 1, 20000 do
+        total = total + i
+    end
+
+    if total > 0 then
+        menu:bind("a", "loop", action.shell("true"))
+    end
+end)
+"#;
+        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let ctx = base_ctx("TestApp", false, 0);
+
+        for _ in 0..32 {
+            let mut stack = vec![root_frame(&cfg)];
+            let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+            assert_eq!(find_binding(&out.rendered, "a").desc, "loop");
+        }
+    }
 }

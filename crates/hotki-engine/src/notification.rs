@@ -1,6 +1,5 @@
 use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
 use tokio::sync::mpsc::Sender;
-use tracing::info;
 
 use crate::{Error, Result};
 
@@ -32,9 +31,7 @@ impl NotificationDispatcher {
 
     /// Send a notification with the given kind, title, and text.
     pub fn send_notification(&self, kind: NotifyKind, title: String, text: String) -> Result<()> {
-        // Always log notification displays at info level, regardless of urgency.
-        // Include kind, title and full text for traceability.
-        info!(kind = ?kind, title = %title, text = %text, "notification_display");
+        log_notification(kind, &title, &text);
         self.tx
             .try_send(MsgToUI::Notify { kind, title, text })
             .map_err(|_| Error::ChannelClosed)
@@ -48,5 +45,20 @@ impl NotificationDispatcher {
     /// Convenience helper to send an error notification.
     pub fn send_error(&self, title: &str, text: String) -> Result<()> {
         self.send_notification(NotifyKind::Error, title.to_string(), text)
+    }
+}
+
+/// Emit a tracing record for a displayed notification using matching severity.
+fn log_notification(kind: NotifyKind, title: &str, text: &str) {
+    match kind {
+        NotifyKind::Error => {
+            tracing::error!(target: "hotki::notification", notification = "display", kind = ?kind, title = %title, text = %text);
+        }
+        NotifyKind::Warn => {
+            tracing::warn!(target: "hotki::notification", notification = "display", kind = ?kind, title = %title, text = %text);
+        }
+        NotifyKind::Info | NotifyKind::Ignore | NotifyKind::Success => {
+            tracing::info!(target: "hotki::notification", notification = "display", kind = ?kind, title = %title, text = %text);
+        }
     }
 }

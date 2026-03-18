@@ -121,6 +121,7 @@ impl SelectorConfig {
         match &self.items {
             SelectorItems::Static(items) => Ok(items.clone()),
             SelectorItems::Provider(provider) => {
+                cfg.reset_execution_budget();
                 let ctx_value = super::loader::mode_context_userdata(&cfg.lua, ctx.clone())
                     .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
                 let value = provider

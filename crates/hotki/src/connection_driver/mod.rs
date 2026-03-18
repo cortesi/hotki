@@ -69,7 +69,7 @@ impl ConnectionDriver {
     fn handle_local_control(&mut self, msg: ControlMsg) {
         match msg {
             ControlMsg::OpenPermissionsHelp => self.ui.show_permissions_help(),
-            ControlMsg::Notice { kind, title, text } => self.notify(kind, &title, &text),
+            ControlMsg::Notice { kind, title, text } => self.notify_local(kind, &title, &text),
             _ => {}
         }
     }
@@ -150,9 +150,16 @@ impl ConnectionDriver {
         }
     }
 
-    /// Record a notification and forward it to the UI.
-    fn notify(&mut self, kind: NotifyKind, title: &str, text: &str) {
+    /// Record and display a server-originated notification.
+    fn notify_remote(&mut self, kind: NotifyKind, title: &str, text: &str) {
         self.bridge.record_notification(kind, title, text);
+        self.ui.notify(kind, title, text);
+    }
+
+    /// Record, log, and display a client-originated notification.
+    fn notify_local(&mut self, kind: NotifyKind, title: &str, text: &str) {
+        self.bridge.record_notification(kind, title, text);
+        logs::push_client_notification(kind, title, text);
         self.ui.notify(kind, title, text);
     }
 
@@ -163,17 +170,17 @@ impl ConnectionDriver {
             .await
         {
             Ok(()) => {
-                self.notify(NotifyKind::Success, "Config", "Reloaded successfully");
+                self.notify_local(NotifyKind::Success, "Config", "Reloaded successfully");
                 self.ui.set_config_path(Some(self.config_path.clone()));
             }
-            Err(err) => self.notify(NotifyKind::Error, "Config", &err.to_string()),
+            Err(err) => self.notify_local(NotifyKind::Error, "Config", &err.to_string()),
         }
     }
 
     /// Switch the server-side theme by name and request an updated HUD/style.
     async fn switch_theme(&mut self, conn: &mut hotki_server::Connection, name: &str) {
         if let Err(err) = conn.set_theme(name).await {
-            self.notify(NotifyKind::Error, "Theme", &err.to_string());
+            self.notify_local(NotifyKind::Error, "Theme", &err.to_string());
         } else {
             self.ui.request_repaint();
         }
@@ -194,7 +201,7 @@ impl ConnectionDriver {
                 self.bridge.emit_event(BridgeEvent::Hud { hud, displays });
             }
             hotki_protocol::MsgToUI::Notify { kind, title, text } => {
-                self.notify(kind, &title, &text);
+                self.notify_remote(kind, &title, &text);
             }
             hotki_protocol::MsgToUI::ClearNotifications => {
                 self.bridge.clear_notifications();

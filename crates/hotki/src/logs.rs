@@ -2,6 +2,7 @@
 use std::{collections::VecDeque, sync::OnceLock};
 
 use egui::Color32;
+use hotki_protocol::NotifyKind;
 use logging::fmt;
 use parking_lot::Mutex;
 use tracing::{Event, Subscriber};
@@ -70,6 +71,16 @@ pub fn push_server(level: String, target: String, message: String) {
     });
 }
 
+/// Push a client-side notification as a structured log entry.
+pub fn push_client_notification(kind: NotifyKind, title: &str, text: &str) {
+    push(LogEntry {
+        side: Side::Client,
+        level: notification_level(kind).to_string(),
+        target: "hotki::notification".to_string(),
+        message: notification_message(kind, title, text),
+    });
+}
+
 /// Snapshot the current buffer contents.
 pub fn snapshot() -> Vec<LogEntry> {
     buffer().lock().iter().cloned().collect()
@@ -101,4 +112,40 @@ where
 /// Build a tracing layer that captures client logs into the in-memory buffer.
 pub fn client_layer() -> ClientLayer {
     ClientLayer
+}
+
+/// Map a notification kind to the UI log level label.
+fn notification_level(kind: NotifyKind) -> &'static str {
+    match kind {
+        NotifyKind::Error => "ERROR",
+        NotifyKind::Warn => "WARN",
+        NotifyKind::Info | NotifyKind::Success | NotifyKind::Ignore => "INFO",
+    }
+}
+
+/// Render a popup notification as a compact log-style payload.
+fn notification_message(kind: NotifyKind, title: &str, text: &str) -> String {
+    format!("notification=display kind={kind:?} title={title:?} text={text:?}")
+}
+
+#[cfg(test)]
+mod test {
+    use hotki_protocol::NotifyKind;
+
+    use super::{clear, push_client_notification, snapshot};
+
+    #[test]
+    fn client_notifications_map_kind_to_log_level() {
+        clear();
+
+        push_client_notification(NotifyKind::Warn, "Config", "Duplicate chord");
+        push_client_notification(NotifyKind::Error, "Config", "Reload failed");
+
+        let logs = snapshot();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].level, "WARN");
+        assert_eq!(logs[1].level, "ERROR");
+        assert!(logs[0].message.contains("Duplicate chord"));
+        assert!(logs[1].message.contains("Reload failed"));
+    }
 }
