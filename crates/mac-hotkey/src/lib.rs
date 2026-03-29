@@ -89,6 +89,7 @@ pub struct RegisterOptions {
 struct Registration {
     hotkey: Chord,
     intercept: bool,
+    normalized_mods: u8,
 }
 
 #[derive(Default)]
@@ -116,6 +117,7 @@ impl Inner {
             }
         };
         let reg = Registration {
+            normalized_mods: normalize_mods(&hotkey.modifiers),
             hotkey,
             intercept: opts.intercept,
         };
@@ -378,7 +380,7 @@ fn match_event(
     let mut best: Option<(u32, Registration)> = None;
     let target_mods = normalize_mods(modifiers);
     for (id, reg) in inner.regs.iter() {
-        if reg.hotkey.key == code && normalize_mods(&reg.hotkey.modifiers) == target_mods {
+        if reg.hotkey.key == code && reg.normalized_mods == target_mods {
             let candidate = (*id, reg.clone());
             match &best {
                 None => best = Some(candidate),
@@ -393,19 +395,19 @@ fn match_event(
     best
 }
 
-fn normalize_mods(m: &HashSet<Modifier>) -> HashSet<Modifier> {
-    let mut out = HashSet::new();
+fn normalize_mods(m: &HashSet<Modifier>) -> u8 {
+    let mut out = 0;
     if m.contains(&Modifier::Shift) || m.contains(&Modifier::RightShift) {
-        out.insert(Modifier::Shift);
+        out |= 1;
     }
     if m.contains(&Modifier::Control) || m.contains(&Modifier::RightControl) {
-        out.insert(Modifier::Control);
+        out |= 2;
     }
     if m.contains(&Modifier::Option) || m.contains(&Modifier::RightOption) {
-        out.insert(Modifier::Option);
+        out |= 4;
     }
     if m.contains(&Modifier::Command) || m.contains(&Modifier::RightCommand) {
-        out.insert(Modifier::Command);
+        out |= 8;
     }
     out
 }

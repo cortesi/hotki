@@ -1,4 +1,4 @@
-use crate::{EventKind, RegisterOptions};
+use crate::EventKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decision {
@@ -14,7 +14,7 @@ pub struct Decision {
 ///   Interception is controlled by registration regardless of repeat.
 pub fn classify(
     suspended: bool,
-    matched: Option<(u32, RegisterOptions)>,
+    matched_intercept: Option<bool>,
     _kind: EventKind,
     is_repeat: bool,
 ) -> Decision {
@@ -24,7 +24,7 @@ pub fn classify(
             intercept: false,
         };
     }
-    let Some((_, opts)) = matched else {
+    let Some(intercept) = matched_intercept else {
         return Decision {
             emit: false,
             intercept: false,
@@ -34,7 +34,7 @@ pub fn classify(
     let _ = is_repeat; // repeat does not affect emission policy anymore
     Decision {
         emit: true,
-        intercept: opts.intercept,
+        intercept,
     }
 }
 
@@ -42,8 +42,8 @@ pub fn classify(
 mod tests {
     use super::*;
 
-    const M: Option<(u32, RegisterOptions)> = Some((1, RegisterOptions { intercept: false }));
-    const MI: Option<(u32, RegisterOptions)> = Some((1, RegisterOptions { intercept: true }));
+    const M: Option<bool> = Some(false);
+    const MI: Option<bool> = Some(true);
 
     #[test]
     fn suspended_ignores_everything() {

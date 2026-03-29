@@ -430,7 +430,13 @@ fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
             module_name: Some(module_name.as_ref()),
             cancellation_token: None,
         },
-    );
+    ).map_err(|e| Error::Validation {
+        path: Some(path.to_path_buf()),
+        line: None,
+        col: None,
+        message: format!("Luau analysis error: {}", e),
+        excerpt: None,
+    })?;
 
     if result.timed_out() {
         return Err(Error::Validation {

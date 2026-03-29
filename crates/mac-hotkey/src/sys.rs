@@ -135,18 +135,13 @@ pub fn run_event_loop(
 
                         let intercept = {
                             let mut inner = cb_ctx_cb.inner.lock();
-                            let matched =
-                                crate::match_event(&inner, code, &mods).map(|(id, reg)| {
-                                    (
-                                        id,
-                                        super::RegisterOptions {
-                                            intercept: reg.intercept,
-                                        },
-                                    )
-                                });
+                            let matched = crate::match_event(&inner, code, &mods);
+                            let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
+
                             let suspended = inner.suspend > 0;
                             let capture = inner.capture_all > 0;
-                            let mut d = policy::classify(suspended, matched, kind, is_repeat);
+                            let mut d =
+                                policy::classify(suspended, matched_intercept, kind, is_repeat);
 
                             // Adjust for capture-all: swallow everything; emit only matched
                             if !suspended && capture {
@@ -172,16 +167,15 @@ pub fn run_event_loop(
                             }
 
                             if d.emit
-                                && let Some((id, reg)) = crate::match_event(&inner, code, &mods)
-                            {
-                                let ev = Event {
-                                    id,
-                                    hotkey: reg.hotkey.clone(),
-                                    kind,
-                                    repeat: is_repeat,
-                                };
-                                let _ = cb_ctx_cb.tx.send(ev);
-                            }
+                                && let Some((id, reg)) = matched {
+                                    let ev = Event {
+                                        id,
+                                        hotkey: reg.hotkey.clone(),
+                                        kind,
+                                        repeat: is_repeat,
+                                    };
+                                    let _ = cb_ctx_cb.tx.send(ev);
+                                }
                             d.intercept
                         };
 
@@ -197,6 +191,10 @@ pub fn run_event_loop(
                     let p = tap_port_ptr_cb.load(Ordering::SeqCst) as CFMachPortRef;
                     if !p.is_null() {
                         warn!("tap_disabled_by_os_reenabling");
+                        // SAFETY: `p` is a valid CFMachPortRef because it was created by
+                        // `CGEventTap::new` and its pointer was stored in `tap_port_ptr_cb`
+                        // before the run loop started. It remains valid for the lifetime of
+                        // the tap, which is tied to the thread running this callback.
                         unsafe { CGEventTapEnable(p, true) };
                     }
                     CallbackResult::Keep
@@ -262,7 +260,7 @@ mod tests {
     ) -> crate::policy::Decision {
         if matched {
             let _inner = crate::Inner::default();
-            let m = Some((1u32, RegisterOptions { intercept }));
+            let m = Some(intercept);
             crate::policy::classify(suspended, m, kind, is_repeat)
         } else {
             crate::policy::classify(suspended, None, kind, is_repeat)
@@ -313,14 +311,7 @@ mod tests {
         let _id = test_register(&mut inner, hk, RegisterOptions { intercept: true });
         let mut mods = std::collections::HashSet::new();
         mods.insert(mac_keycode::Modifier::Control);
-        let matched = crate::match_event(&inner, Key::H, &mods).map(|(id, reg)| {
-            (
-                id,
-                RegisterOptions {
-                    intercept: reg.intercept,
-                },
-            )
-        });
+        let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);
         let d = crate::policy::classify(false, matched, EventKind::KeyDown, false);
         assert!(d.emit);
         assert!(d.intercept);
