@@ -100,7 +100,7 @@ pub fn run_event_loop(
             }
 
             {
-                let inner = cb_ctx_cb.inner.lock();
+                let inner = cb_ctx_cb.inner.read();
                 if inner.suspend > 0 {
                     trace!("tap_suspended_skipping_event");
                     return CallbackResult::Keep;
@@ -134,7 +134,7 @@ pub fn run_event_loop(
                         );
 
                         let intercept = {
-                            let mut inner = cb_ctx_cb.inner.lock();
+                            let mut inner = cb_ctx_cb.inner.write();
                             let matched = crate::match_event(&inner, code, &mods);
                             let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
 
@@ -167,15 +167,16 @@ pub fn run_event_loop(
                             }
 
                             if d.emit
-                                && let Some((id, reg)) = matched {
-                                    let ev = Event {
-                                        id,
-                                        hotkey: reg.hotkey.clone(),
-                                        kind,
-                                        repeat: is_repeat,
-                                    };
-                                    let _ = cb_ctx_cb.tx.send(ev);
-                                }
+                                && let Some((id, reg)) = matched
+                            {
+                                let ev = Event {
+                                    id,
+                                    hotkey: reg.hotkey.clone(),
+                                    kind,
+                                    repeat: is_repeat,
+                                };
+                                let _ = cb_ctx_cb.tx.send(ev);
+                            }
                             d.intercept
                         };
 
@@ -249,7 +250,7 @@ mod tests {
     use mac_keycode::Key;
 
     use super::*;
-    use crate::{RegisterOptions, test_register};
+    use crate::test_register;
 
     fn simulate(
         suspended: bool,
@@ -308,7 +309,7 @@ mod tests {
                 s
             },
         };
-        let _id = test_register(&mut inner, hk, RegisterOptions { intercept: true });
+        let _id = test_register(&mut inner, hk, true);
         let mut mods = std::collections::HashSet::new();
         mods.insert(mac_keycode::Modifier::Control);
         let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);

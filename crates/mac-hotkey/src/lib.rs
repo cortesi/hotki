@@ -27,7 +27,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use mac_keycode::{Chord, Key as Code, Modifier};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use tracing::{debug, trace};
 mod error;
 mod policy;
@@ -66,25 +66,6 @@ pub struct Event {
     pub repeat: bool,
 }
 
-/// Options controlling hotkey registration behavior.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RegisterOptions {
-    /// Swallow the underlying system key events for this hotkey.
-    ///
-    /// When set to `true`, matching key events (both key down and key up)
-    /// are intercepted by the event tap and not delivered to
-    /// the focused application or other system consumers. In other words, the
-    /// keystroke has no effect outside of the events emitted by this crate.
-    ///
-    /// Notes:
-    /// - Interception only applies to events that match a registered hotkey.
-    /// - While [`Manager::suspend`] is active, no matching is performed and no
-    ///   interception occurs; key events flow to the system as usual.
-    /// - Some system-reserved shortcuts may not be interceptable depending on
-    ///   OS configuration and permissions.
-    pub intercept: bool,
-}
-
 #[derive(Clone, Debug)]
 struct Registration {
     hotkey: Chord,
@@ -105,7 +86,7 @@ struct Inner {
 }
 
 impl Inner {
-    fn register(&mut self, hotkey: Chord, opts: RegisterOptions) -> u32 {
+    fn register(&mut self, hotkey: Chord, intercept: bool) -> u32 {
         // Simple incrementing id; skip 0 to make it a sentinel if needed
         let id = loop {
             self.next_id = self.next_id.wrapping_add(1);
@@ -119,7 +100,7 @@ impl Inner {
         let reg = Registration {
             normalized_mods: normalize_mods(&hotkey.modifiers),
             hotkey,
-            intercept: opts.intercept,
+            intercept,
         };
         self.regs.insert(id, reg);
         id
@@ -149,13 +130,13 @@ impl Inner {
 }
 
 #[cfg(test)]
-pub(crate) fn test_register(inner: &mut Inner, hotkey: Chord, opts: RegisterOptions) -> u32 {
-    inner.register(hotkey, opts)
+pub(crate) fn test_register(inner: &mut Inner, hotkey: Chord, intercept: bool) -> u32 {
+    inner.register(hotkey, intercept)
 }
 
 #[derive(Clone)]
 struct CallbackCtx {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<RwLock<Inner>>,
     tx: Sender<Event>,
 }
 
@@ -165,7 +146,7 @@ struct CallbackCtx {
 /// exposes a channel of [`Event`]s for consumption by your application. Dropping
 /// a `Manager` gracefully stops its background thread and cleans up the event tap.
 pub struct Manager {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<RwLock<Inner>>,
     rx: Receiver<Event>,
     thread: Option<JoinHandle<()>>,
     sys_ctrl: Arc<sys::SysControl>,
@@ -177,7 +158,7 @@ impl Manager {
     /// Returns an error if the event tap cannot be created. This call blocks
     /// until the background thread reports successful initialization.
     pub fn new() -> Result<Self> {
-        let inner = Arc::new(Mutex::new(Inner::default()));
+        let inner = Arc::new(RwLock::new(Inner::default()));
         let (tx, rx) = unbounded();
         let ctx = CallbackCtx {
             inner: inner.clone(),
@@ -218,7 +199,7 @@ impl Manager {
     /// Test-only constructor: avoid starting the macOS event tap.
     #[cfg(test)]
     pub fn new_test() -> Result<Self> {
-        let inner = Arc::new(Mutex::new(Inner::default()));
+        let inner = Arc::new(RwLock::new(Inner::default()));
         let (_tx, rx) = unbounded();
         Ok(Self {
             inner,
@@ -244,10 +225,7 @@ impl Manager {
     ///
     /// Use [`Manager::intercept`] to swallow matching events instead.
     pub fn watch(&self, hotkey: Chord) -> u32 {
-        let id = self
-            .inner
-            .lock()
-            .register(hotkey.clone(), RegisterOptions { intercept: false });
+        let id = self.inner.write().register(hotkey.clone(), false);
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = false, "register_watch");
         id
     }
@@ -261,10 +239,7 @@ impl Manager {
     ///
     /// Use [`Manager::watch`] to observe events without intercepting.
     pub fn intercept(&self, hotkey: Chord) -> u32 {
-        let id = self
-            .inner
-            .lock()
-            .register(hotkey.clone(), RegisterOptions { intercept: true });
+        let id = self.inner.write().register(hotkey.clone(), true);
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = true, "register_intercept");
         id
     }
@@ -274,7 +249,7 @@ impl Manager {
     /// Returns an error if the id does not correspond to an active
     /// registration.
     pub fn unregister(&self, id: u32) -> Result<()> {
-        if self.inner.lock().unregister(id) {
+        if self.inner.write().unregister(id) {
             debug!(id, "unregister_hotkey");
             Ok(())
         } else {
@@ -286,7 +261,7 @@ impl Manager {
     ///
     /// Returns the number of registrations that were removed.
     pub fn unregister_all(&self) -> usize {
-        let n = self.inner.lock().unregister_all();
+        let n = self.inner.write().unregister_all();
         if n > 0 {
             debug!(removed = n, "unregister_all");
         }
@@ -299,7 +274,7 @@ impl Manager {
     /// by the system; only hotkey matching and event delivery are paused.
     pub fn suspend(&self) -> SuspendGuard {
         let inner = self.inner.clone();
-        let mut g = inner.lock();
+        let mut g = inner.write();
         g.suspend = g.suspend.saturating_add(1);
         trace!(count = g.suspend, "suspend");
         drop(g);
@@ -312,7 +287,7 @@ impl Manager {
     /// requests capture semantics. Nested guards are supported.
     pub fn capture_all(&self) -> CaptureGuard {
         let inner = self.inner.clone();
-        let mut g = inner.lock();
+        let mut g = inner.write();
         g.capture_all = g.capture_all.saturating_add(1);
         trace!(count = g.capture_all, "capture_all_on");
         drop(g);
@@ -322,12 +297,12 @@ impl Manager {
 
 /// A guard which resumes event delivery when dropped.
 pub struct SuspendGuard {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<RwLock<Inner>>,
 }
 
 impl Drop for SuspendGuard {
     fn drop(&mut self) {
-        let mut g = self.inner.lock();
+        let mut g = self.inner.write();
         if g.suspend > 0 {
             g.suspend -= 1;
             trace!(count = g.suspend, "resume");
@@ -337,12 +312,12 @@ impl Drop for SuspendGuard {
 
 /// A guard which disables capture-all when dropped.
 pub struct CaptureGuard {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<RwLock<Inner>>,
 }
 
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
-        let mut g = self.inner.lock();
+        let mut g = self.inner.write();
         if g.capture_all > 0 {
             g.capture_all -= 1;
             trace!(count = g.capture_all, "capture_all_off");
@@ -363,7 +338,7 @@ impl Drop for Manager {
 #[cfg(test)]
 impl Manager {
     fn suspend_count(&self) -> usize {
-        self.inner.lock().suspend
+        self.inner.write().suspend
     }
 }
 
@@ -428,7 +403,7 @@ mod tests {
                 modifiers: s,
             }
         };
-        let id = inner.register(hk, RegisterOptions::default());
+        let id = inner.register(hk, false);
         assert!(id != 0);
         // extra unrelated bits (ignored modifiers) shouldn't matter
         let mut mods = HashSet::new();
@@ -452,7 +427,7 @@ mod tests {
                 modifiers: s,
             }
         };
-        let id = inner.register(hk, RegisterOptions::default());
+        let id = inner.register(hk, false);
         assert!(inner.unregister(id));
         let mut mods = HashSet::new();
         mods.insert(Modifier::Control);
@@ -471,7 +446,7 @@ mod tests {
                 modifiers: s,
             }
         };
-        let _ = inner.register(hk, RegisterOptions::default());
+        let _ = inner.register(hk, false);
 
         // Include unrelated modifiers we ignore; matching should still work
         let mut mods = HashSet::new();
@@ -492,7 +467,7 @@ mod tests {
                 modifiers: s,
             }
         };
-        let id = inner.register(hk, RegisterOptions { intercept: true });
+        let id = inner.register(hk, true);
         let mut mods = HashSet::new();
         mods.insert(Modifier::Control);
         let m = match_event(&inner, Code::B, &mods).unwrap();
@@ -535,8 +510,8 @@ mod tests {
                 modifiers: s,
             }
         };
-        let _ = inner.register(a, RegisterOptions::default());
-        let _ = inner.register(b, RegisterOptions::default());
+        let _ = inner.register(a, false);
+        let _ = inner.register(b, false);
         let mut mods = HashSet::new();
         mods.insert(Modifier::Control);
         assert!(match_event(&inner, Code::A, &mods).is_some());

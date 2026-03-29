@@ -423,20 +423,22 @@ fn new_checker() -> Result<Checker, Error> {
 fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
     let mut checker = new_checker()?;
     let module_name = path.to_string_lossy();
-    let result = checker.check_with_options(
-        source,
-        CheckOptions {
-            timeout: Some(ANALYZE_TIMEOUT),
-            module_name: Some(module_name.as_ref()),
-            cancellation_token: None,
-        },
-    ).map_err(|e| Error::Validation {
-        path: Some(path.to_path_buf()),
-        line: None,
-        col: None,
-        message: format!("Luau analysis error: {}", e),
-        excerpt: None,
-    })?;
+    let result = checker
+        .check_with_options(
+            source,
+            CheckOptions {
+                timeout: Some(ANALYZE_TIMEOUT),
+                module_name: Some(module_name.as_ref()),
+                cancellation_token: None,
+            },
+        )
+        .map_err(|e| Error::Validation {
+            path: Some(path.to_path_buf()),
+            line: None,
+            col: None,
+            message: format!("Luau analysis error: {}", e),
+            excerpt: None,
+        })?;
 
     if result.timed_out() {
         return Err(Error::Validation {
