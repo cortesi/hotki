@@ -25,9 +25,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use arc_swap::ArcSwap;
+use crossbeam_channel::{Receiver, unbounded};
 use mac_keycode::{Chord, Key as Code, Modifier};
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use tracing::{debug, trace};
 mod error;
 mod policy;
@@ -73,14 +74,11 @@ struct Registration {
     normalized_mods: u8,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Inner {
     next_id: u32,
     regs: HashMap<u32, Registration>,
     suspend: usize,
-    // Track keys whose KeyDown was intercepted so we can also swallow
-    // subsequent repeats and the matching KeyUp even if bindings change.
-    held_intercepts: HashSet<Code>,
     // While > 0, capture all keys (swallow non-bound) while HUD is visible
     capture_all: usize,
 }
@@ -115,29 +113,11 @@ impl Inner {
         self.regs.clear();
         n
     }
-
-    fn note_intercept_down(&mut self, code: Code) {
-        self.held_intercepts.insert(code);
-    }
-
-    fn intercept_on_repeat(&self, code: Code) -> bool {
-        self.held_intercepts.contains(&code)
-    }
-
-    fn intercept_on_keyup(&mut self, code: Code) -> bool {
-        self.held_intercepts.remove(&code)
-    }
 }
 
 #[cfg(test)]
 pub(crate) fn test_register(inner: &mut Inner, hotkey: Chord, intercept: bool) -> u32 {
     inner.register(hotkey, intercept)
-}
-
-#[derive(Clone)]
-struct CallbackCtx {
-    inner: Arc<RwLock<Inner>>,
-    tx: Sender<Event>,
 }
 
 /// Global hotkey manager for macOS.
@@ -146,7 +126,8 @@ struct CallbackCtx {
 /// exposes a channel of [`Event`]s for consumption by your application. Dropping
 /// a `Manager` gracefully stops its background thread and cleans up the event tap.
 pub struct Manager {
-    inner: Arc<RwLock<Inner>>,
+    inner: Arc<ArcSwap<Inner>>,
+    write_lock: Arc<Mutex<()>>,
     rx: Receiver<Event>,
     thread: Option<JoinHandle<()>>,
     sys_ctrl: Arc<sys::SysControl>,
@@ -158,12 +139,11 @@ impl Manager {
     /// Returns an error if the event tap cannot be created. This call blocks
     /// until the background thread reports successful initialization.
     pub fn new() -> Result<Self> {
-        let inner = Arc::new(RwLock::new(Inner::default()));
+        let inner = Arc::new(ArcSwap::from_pointee(Inner::default()));
+        let write_lock = Arc::new(Mutex::new(()));
         let (tx, rx) = unbounded();
-        let ctx = CallbackCtx {
-            inner: inner.clone(),
-            tx: tx.clone(),
-        };
+
+        let inner_thread = inner.clone();
 
         // One-shot channel to learn if the event tap started successfully.
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
@@ -176,7 +156,7 @@ impl Manager {
         let handle = thread::spawn(move || {
             // Ignore further errors here; the ready channel communicates the
             // initialization outcome back to the caller.
-            let _ = sys::run_event_loop(ctx, ready_tx, sys_ctrl_thread);
+            let _ = sys::run_event_loop(inner_thread, tx, ready_tx, sys_ctrl_thread);
         });
 
         // Block until the background thread reports startup success/failure.
@@ -190,6 +170,7 @@ impl Manager {
 
         Ok(Self {
             inner,
+            write_lock,
             rx,
             thread: Some(handle),
             sys_ctrl,
@@ -199,10 +180,11 @@ impl Manager {
     /// Test-only constructor: avoid starting the macOS event tap.
     #[cfg(test)]
     pub fn new_test() -> Result<Self> {
-        let inner = Arc::new(RwLock::new(Inner::default()));
+        let inner = Arc::new(ArcSwap::from_pointee(Inner::default()));
         let (_tx, rx) = unbounded();
         Ok(Self {
             inner,
+            write_lock: Arc::new(Mutex::new(())),
             rx,
             thread: None,
             sys_ctrl: Arc::new(sys::SysControl::new()),
@@ -225,7 +207,10 @@ impl Manager {
     ///
     /// Use [`Manager::intercept`] to swallow matching events instead.
     pub fn watch(&self, hotkey: Chord) -> u32 {
-        let id = self.inner.write().register(hotkey.clone(), false);
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        let id = inner.register(hotkey.clone(), false);
+        self.inner.store(Arc::new(inner));
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = false, "register_watch");
         id
     }
@@ -239,7 +224,10 @@ impl Manager {
     ///
     /// Use [`Manager::watch`] to observe events without intercepting.
     pub fn intercept(&self, hotkey: Chord) -> u32 {
-        let id = self.inner.write().register(hotkey.clone(), true);
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        let id = inner.register(hotkey.clone(), true);
+        self.inner.store(Arc::new(inner));
         debug!(id, code = ?hotkey.key, mods = ?hotkey.modifiers, intercept = true, "register_intercept");
         id
     }
@@ -249,7 +237,10 @@ impl Manager {
     /// Returns an error if the id does not correspond to an active
     /// registration.
     pub fn unregister(&self, id: u32) -> Result<()> {
-        if self.inner.write().unregister(id) {
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        if inner.unregister(id) {
+            self.inner.store(Arc::new(inner));
             debug!(id, "unregister_hotkey");
             Ok(())
         } else {
@@ -261,8 +252,11 @@ impl Manager {
     ///
     /// Returns the number of registrations that were removed.
     pub fn unregister_all(&self) -> usize {
-        let n = self.inner.write().unregister_all();
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        let n = inner.unregister_all();
         if n > 0 {
+            self.inner.store(Arc::new(inner));
             debug!(removed = n, "unregister_all");
         }
         n
@@ -273,12 +267,18 @@ impl Manager {
     /// Nested guards are supported. While suspended, input is still processed
     /// by the system; only hotkey matching and event delivery are paused.
     pub fn suspend(&self) -> SuspendGuard {
-        let inner = self.inner.clone();
-        let mut g = inner.write();
-        g.suspend = g.suspend.saturating_add(1);
-        trace!(count = g.suspend, "suspend");
-        drop(g);
-        SuspendGuard { inner }
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        inner.suspend = inner.suspend.saturating_add(1);
+        self.inner.store(Arc::new(inner));
+
+        let suspend = self.inner.load().suspend;
+        trace!(count = suspend, "suspend");
+
+        SuspendGuard {
+            inner: self.inner.clone(),
+            write_lock: self.write_lock.clone(),
+        }
     }
 
     /// Capture all keys (swallow those not bound) until the returned guard is dropped.
@@ -286,41 +286,53 @@ impl Manager {
     /// This is intended to be used while the HUD is visible for a mode that
     /// requests capture semantics. Nested guards are supported.
     pub fn capture_all(&self) -> CaptureGuard {
-        let inner = self.inner.clone();
-        let mut g = inner.write();
-        g.capture_all = g.capture_all.saturating_add(1);
-        trace!(count = g.capture_all, "capture_all_on");
-        drop(g);
-        CaptureGuard { inner }
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        inner.capture_all = inner.capture_all.saturating_add(1);
+        self.inner.store(Arc::new(inner));
+
+        let capture_all = self.inner.load().capture_all;
+        trace!(count = capture_all, "capture_all_on");
+
+        CaptureGuard {
+            inner: self.inner.clone(),
+            write_lock: self.write_lock.clone(),
+        }
     }
 }
 
 /// A guard which resumes event delivery when dropped.
 pub struct SuspendGuard {
-    inner: Arc<RwLock<Inner>>,
+    inner: Arc<ArcSwap<Inner>>,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl Drop for SuspendGuard {
     fn drop(&mut self) {
-        let mut g = self.inner.write();
-        if g.suspend > 0 {
-            g.suspend -= 1;
-            trace!(count = g.suspend, "resume");
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        if inner.suspend > 0 {
+            inner.suspend -= 1;
+            self.inner.store(Arc::new(inner));
+            trace!(count = self.inner.load().suspend, "resume");
         }
     }
 }
 
 /// A guard which disables capture-all when dropped.
 pub struct CaptureGuard {
-    inner: Arc<RwLock<Inner>>,
+    inner: Arc<ArcSwap<Inner>>,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
-        let mut g = self.inner.write();
-        if g.capture_all > 0 {
-            g.capture_all -= 1;
-            trace!(count = g.capture_all, "capture_all_off");
+        let _g = self.write_lock.lock();
+        let mut inner = self.inner.load().as_ref().clone();
+        if inner.capture_all > 0 {
+            inner.capture_all -= 1;
+            self.inner.store(Arc::new(inner));
+            trace!(count = self.inner.load().capture_all, "capture_all_off");
         }
     }
 }
@@ -338,7 +350,7 @@ impl Drop for Manager {
 #[cfg(test)]
 impl Manager {
     fn suspend_count(&self) -> usize {
-        self.inner.write().suspend
+        self.inner.load().suspend
     }
 }
 

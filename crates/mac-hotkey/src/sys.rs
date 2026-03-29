@@ -29,7 +29,7 @@ use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 use tracing::{debug, trace, warn};
 
-use crate::{CallbackCtx, Event, EventKind, policy};
+use crate::{Event, EventKind, policy};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -68,7 +68,8 @@ impl SysControl {
 }
 
 pub fn run_event_loop(
-    cb_ctx: CallbackCtx,
+    inner_state: Arc<arc_swap::ArcSwap<crate::Inner>>,
+    tx: Sender<Event>,
     ready: Sender<crate::Result<()>>,
     ctrl: Arc<SysControl>,
 ) -> crate::Result<()> {
@@ -84,7 +85,8 @@ pub fn run_event_loop(
 
     debug!("creating_event_tap");
     let tap_port_ptr_cb = tap_port_ptr.clone();
-    let cb_ctx_cb = cb_ctx.clone();
+    let held_intercepts: std::cell::RefCell<std::collections::HashSet<mac_keycode::Key>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     let tap = match cge::CGEventTap::new(
         cge::CGEventTapLocation::HID,
         cge::CGEventTapPlacement::HeadInsertEventTap,
@@ -100,7 +102,7 @@ pub fn run_event_loop(
             }
 
             {
-                let inner = cb_ctx_cb.inner.read();
+                let inner = inner_state.load();
                 if inner.suspend > 0 {
                     trace!("tap_suspended_skipping_event");
                     return CallbackResult::Keep;
@@ -134,7 +136,7 @@ pub fn run_event_loop(
                         );
 
                         let intercept = {
-                            let mut inner = cb_ctx_cb.inner.write();
+                            let inner = inner_state.load();
                             let matched = crate::match_event(&inner, code, &mods);
                             let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
 
@@ -154,13 +156,14 @@ pub fn run_event_loop(
                             match kind {
                                 EventKind::KeyDown => {
                                     if d.intercept && !is_repeat {
-                                        inner.note_intercept_down(code);
-                                    } else if is_repeat && inner.intercept_on_repeat(code) {
+                                        held_intercepts.borrow_mut().insert(code);
+                                    } else if is_repeat && held_intercepts.borrow().contains(&code)
+                                    {
                                         d.intercept = true;
                                     }
                                 }
                                 EventKind::KeyUp => {
-                                    if inner.intercept_on_keyup(code) {
+                                    if held_intercepts.borrow_mut().remove(&code) {
                                         d.intercept = true;
                                     }
                                 }
@@ -175,7 +178,7 @@ pub fn run_event_loop(
                                     kind,
                                     repeat: is_repeat,
                                 };
-                                let _ = cb_ctx_cb.tx.send(ev);
+                                let _ = tx.send(ev);
                             }
                             d.intercept
                         };
