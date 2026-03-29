@@ -1,7 +1,7 @@
 //! App-level state and event handling for the Hotki UI.
 use std::path::PathBuf;
 
-use eframe::{App, CreationContext, Frame};
+use eframe::{App, CreationContext};
 use egui::Context;
 use hotki_protocol::{MsgToUI, Style, Toggle};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
@@ -86,7 +86,9 @@ impl App for HotkiApp {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             if !self.shutdown_in_progress {

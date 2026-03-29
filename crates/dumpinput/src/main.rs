@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use eframe::egui::{self, CentralPanel, Event, Modifiers, RichText, ScrollArea, TopBottomPanel};
+use eframe::egui::{self, Event, Modifiers, Panel, RichText, ScrollArea};
 
 fn main() {
     println!("Starting Key Input Dumper...");
@@ -22,9 +22,11 @@ struct DumpInput {
 }
 
 impl eframe::App for DumpInput {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
         // Top toolbar: title, input, modifiers, clear button
-        TopBottomPanel::top("top_bar").show(ctx, |ui| {
+        Panel::top("top_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Key Input Dumper");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -133,24 +135,22 @@ impl eframe::App for DumpInput {
         });
 
         // Main area: fills the remaining space with a scrolling log
-        CentralPanel::default().show(ctx, |ui| {
-            ui.label(RichText::new("Recent events").strong());
-            ui.add_space(4.0);
-            ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for event in &self.events {
-                        ui.monospace(event);
-                    }
-                });
+        ui.label(RichText::new("Recent events").strong());
+        ui.add_space(4.0);
+        ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for event in &self.events {
+                    ui.monospace(event);
+                }
+            });
 
-            // Keep events list bounded
-            if self.events.len() > 500 {
-                let drain = self.events.len().saturating_sub(400);
-                self.events.drain(0..drain);
-            }
-        });
+        // Keep events list bounded
+        if self.events.len() > 500 {
+            let drain = self.events.len().saturating_sub(400);
+            self.events.drain(0..drain);
+        }
     }
 }
 
