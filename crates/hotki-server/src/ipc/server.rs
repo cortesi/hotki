@@ -30,7 +30,6 @@ impl IPCServer {
         socket_path: impl Into<String>,
         manager: mac_hotkey::Manager,
         shutdown: Arc<AtomicBool>,
-        _proxy: tao::event_loop::EventLoopProxy<()>,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
         let service = HotkeyService::new(Arc::new(manager), shutdown, idle_state);

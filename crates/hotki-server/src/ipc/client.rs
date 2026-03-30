@@ -114,29 +114,23 @@ impl Connection {
 
     /// Inject a synthetic key down for a bound identifier.
     pub async fn inject_key_down(&mut self, ident: &str) -> Result<()> {
-        self.inject_key(ident, "down", false).await
+        self.inject_key(ident, InjectKind::Down, false).await
     }
 
     /// Inject a synthetic key up for a bound identifier.
     pub async fn inject_key_up(&mut self, ident: &str) -> Result<()> {
-        self.inject_key(ident, "up", false).await
+        self.inject_key(ident, InjectKind::Up, false).await
     }
 
     /// Inject a synthetic repeat key down for a bound identifier.
     pub async fn inject_key_repeat(&mut self, ident: &str) -> Result<()> {
-        self.inject_key(ident, "down", true).await
+        self.inject_key(ident, InjectKind::Down, true).await
     }
 
-    async fn inject_key(&mut self, ident: &str, kind: &str, repeat: bool) -> Result<()> {
-        // Build a typed request and encode it via serde to msgpack
-        let kind_enum = match kind {
-            "down" => InjectKind::Down,
-            "up" => InjectKind::Up,
-            other => return Err(Error::Ipc(format!("invalid kind: {}", other))),
-        };
+    async fn inject_key(&mut self, ident: &str, kind: InjectKind, repeat: bool) -> Result<()> {
         let req = InjectKeyReq {
             ident: ident.to_string(),
-            kind: kind_enum,
+            kind,
             repeat,
         };
         let param = enc_inject_key(&req)?;

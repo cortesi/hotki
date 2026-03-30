@@ -104,7 +104,6 @@ impl Server {
             &self.socket_path,
             manager,
             shutdown_requested.clone(),
-            proxy_for_ipc.clone(),
             idle_state.clone(),
         );
         let shutdown_requested_clone = shutdown_requested.clone();
@@ -145,8 +144,6 @@ impl Server {
             client_disconnected_clone.store(true, Ordering::SeqCst);
             // Wake the Tao loop so it can start/advance the idle timer immediately
             let _ = proxy_for_ipc.send_event(());
-            // Don't immediately request shutdown - let idle timeout handle it
-            // shutdown_requested_clone.store(true, Ordering::SeqCst);
         });
 
         // If a parent PID is provided (standard when auto-spawned by the UI),
@@ -291,9 +288,6 @@ impl Server {
                     // These events fire frequently, ignore them
                 }
                 Event::UserEvent(()) => {
-                    if let Err(e) = loop_wake::install_ns_workspace_observer() {
-                        error!("Failed to install NSWorkspace observer: {}", e);
-                    }
                     // User events indicate client activity - reset disconnect timer if set
                     if client_disconnected.load(Ordering::SeqCst) {
                         client_disconnected.store(false, Ordering::SeqCst);
