@@ -116,6 +116,10 @@ impl HotkiApp {
             app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         }
 
+        // Disable the default Cmd+Q quit shortcut so it doesn't intercept
+        // before hotki's own hotkey system can process the key.
+        cc.egui_ctx.options_mut(|opts| opts.quit_shortcuts = vec![]);
+
         fonts::install_fonts(&cc.egui_ctx);
 
         runtime::spawn_key_runtime(

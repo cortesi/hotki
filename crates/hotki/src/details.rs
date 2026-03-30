@@ -327,14 +327,12 @@ impl Details {
 
                                 // Show config contents in a scrollable area
                                 ui.label(RichText::new("Contents:").strong());
-                                ScrollArea::vertical()
-                                    .auto_shrink([false; 2])
-                                    .show(ui, |ui| {
-                                        // Use monospace font for config display
-                                        ui.style_mut().override_font_id =
-                                            Some(egui::FontId::monospace(12.0));
-                                        ui.label(&self.config_contents);
-                                    });
+                                ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                                    // Use monospace font for config display
+                                    ui.style_mut().override_font_id =
+                                        Some(egui::FontId::monospace(12.0));
+                                    ui.label(&self.config_contents);
+                                });
                             });
                         }
                         Tab::About => {
@@ -489,7 +487,7 @@ impl Details {
             ui.separator();
             ui.add_space(8.0);
             ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink(false)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));

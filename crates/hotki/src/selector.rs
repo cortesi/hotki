@@ -387,7 +387,7 @@ impl SelectorWindow {
                     ui.scope(|ui| {
                         ui.style_mut().spacing.scroll = ScrollStyle::floating();
                         egui::ScrollArea::vertical()
-                            .auto_shrink([false; 2])
+                            .auto_shrink(false)
                             .show(ui, |ui| {
                                 for (i, item) in snapshot.items.iter().enumerate() {
                                     let selected = i == snapshot.selected;

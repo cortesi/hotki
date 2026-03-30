@@ -138,7 +138,7 @@ impl eframe::App for DumpInput {
         ui.label(RichText::new("Recent events").strong());
         ui.add_space(4.0);
         ScrollArea::vertical()
-            .auto_shrink([false; 2])
+            .auto_shrink(false)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for event in &self.events {
