@@ -365,7 +365,8 @@ impl NotificationCenter {
                 .viewport
                 .sync_builder(ctx, builder, it.current_pos, it.size);
 
-            ctx.show_viewport_immediate(it.viewport.id(), builder, |nctx, _| {
+            ctx.show_viewport_immediate(it.viewport.id(), builder, |vp_ui, _| {
+                let nctx = vp_ui.ctx().clone();
                 if let Err(e) =
                     nswindow::apply_transparent_rounded("Hotki Notification", self.radius as f64)
                 {
@@ -387,36 +388,38 @@ impl NotificationCenter {
                         top: 12,
                         bottom: 12,
                     });
-                egui::CentralPanel::default().frame(frame).show(nctx, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
-                    ui.horizontal(|ui| {
-                        Self::render_title_row(
-                            ui,
-                            nctx,
-                            &it.title,
-                            style.icon.as_ref(),
-                            style.title_font_size,
-                            style.title_font_weight,
-                            title_fg,
-                        );
+                egui::CentralPanel::default()
+                    .frame(frame)
+                    .show_inside(vp_ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
+                        ui.horizontal(|ui| {
+                            Self::render_title_row(
+                                ui,
+                                &nctx,
+                                &it.title,
+                                style.icon.as_ref(),
+                                style.title_font_size,
+                                style.title_font_weight,
+                                title_fg,
+                            );
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            let mut text_job = LayoutJob::default();
+                            text_job.append(
+                                &it.text,
+                                0.0,
+                                egui::TextFormat {
+                                    color: body_fg,
+                                    font_id: egui::FontId::new(
+                                        style.body_font_size,
+                                        fonts::weight_family(style.body_font_weight),
+                                    ),
+                                    ..Default::default()
+                                },
+                            );
+                            ui.label(text_job);
+                        });
                     });
-                    ui.horizontal_wrapped(|ui| {
-                        let mut text_job = LayoutJob::default();
-                        text_job.append(
-                            &it.text,
-                            0.0,
-                            egui::TextFormat {
-                                color: body_fg,
-                                font_id: egui::FontId::new(
-                                    style.body_font_size,
-                                    fonts::weight_family(style.body_font_weight),
-                                ),
-                                ..Default::default()
-                            },
-                        );
-                        ui.label(text_job);
-                    });
-                });
             });
             it.viewport.record_geometry(it.current_pos, it.size);
         }

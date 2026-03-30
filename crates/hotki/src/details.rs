@@ -238,7 +238,8 @@ impl Details {
             self.want_initial_size = false;
         }
 
-        ctx.show_viewport_immediate(self.viewport.id(), builder, |wctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
+            let wctx = vp_ui.ctx().clone();
             if wctx.input(|i| i.viewport().close_requested()) {
                 // Close via decorations; stop rendering next frame
                 self.visible = false;
@@ -270,7 +271,7 @@ impl Details {
                 wctx.send_viewport_cmd_to(self.viewport.id(), ViewportCommand::Focus);
                 self.want_focus = false;
             }
-            CentralPanel::default().show(wctx, |ui| {
+            CentralPanel::default().show_inside(vp_ui, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
                     ui.add_space(DETAILS_PAD);
 

@@ -61,7 +61,8 @@ impl PermissionsHelp {
             .with_has_shadow(true)
             .with_inner_size(vec2(700.0, 520.0));
 
-        ctx.show_viewport_immediate(self.id, builder, |wctx, _| {
+        ctx.show_viewport_immediate(self.id, builder, |vp_ui, _| {
+            let wctx = vp_ui.ctx().clone();
             if wctx.input(|i| i.viewport().close_requested()) {
                 self.visible = false;
                 wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -78,7 +79,7 @@ impl PermissionsHelp {
             let icon_ok = '\u{f05d}'; // circle-check
             let icon_bad = '\u{f52f}'; // not-okay indicator
 
-            CentralPanel::default().show(wctx, |ui| {
+            CentralPanel::default().show_inside(vp_ui, |ui| {
                 ui.heading(RichText::new("Hotki Needs Permissions").strong());
                 ui.add_space(8.0);
                 ui.label("Hotki requires Accessibility and Input Monitoring permissions to register hotkeys and synthesize keystrokes.");

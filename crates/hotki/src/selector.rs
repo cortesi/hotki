@@ -292,7 +292,7 @@ impl SelectorWindow {
         let item_font_id = self.item_font_id();
         let sublabel_font_id = self.sublabel_font_id();
         let snapshot = snapshot.clone();
-        ctx.show_viewport_immediate(self.viewport.id(), builder, move |sel_ctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, move |vp_ui, _| {
             let border = Self::rgba(style.border, BG_ALPHA);
             let bg = Self::rgba(style.bg, BG_ALPHA);
             let mut frame = Frame::new()
@@ -307,117 +307,124 @@ impl SelectorWindow {
                 color: Self::rgba(style.shadow, 64),
             };
 
-            CentralPanel::default().frame(frame).show(sel_ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
+            CentralPanel::default()
+                .frame(frame)
+                .show_inside(vp_ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
 
-                let fg = Color32::from_rgba_unmultiplied(230, 230, 230, 255);
-                let dim = Color32::from_rgba_unmultiplied(160, 160, 160, 255);
-                let match_fg =
-                    Color32::from_rgb(style.match_fg.0, style.match_fg.1, style.match_fg.2);
+                    let fg = Color32::from_rgba_unmultiplied(230, 230, 230, 255);
+                    let dim = Color32::from_rgba_unmultiplied(160, 160, 160, 255);
+                    let match_fg =
+                        Color32::from_rgb(style.match_fg.0, style.match_fg.1, style.match_fg.2);
 
-                if !snapshot.title.trim().is_empty() {
-                    let title_fmt = egui::TextFormat {
-                        color: fg,
-                        font_id: title_font_id.clone(),
-                        ..Default::default()
-                    };
-                    ui.horizontal(|ui| {
-                        let mut job = LayoutJob::default();
-                        job.append(snapshot.title.as_str(), 0.0, title_fmt);
-                        ui.label(job);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{}", snapshot.total_matches))
-                                    .size(SUBLABEL_FONT_SIZE)
-                                    .color(dim),
+                    if !snapshot.title.trim().is_empty() {
+                        let title_fmt = egui::TextFormat {
+                            color: fg,
+                            font_id: title_font_id.clone(),
+                            ..Default::default()
+                        };
+                        ui.horizontal(|ui| {
+                            let mut job = LayoutJob::default();
+                            job.append(snapshot.title.as_str(), 0.0, title_fmt);
+                            ui.label(job);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", snapshot.total_matches))
+                                            .size(SUBLABEL_FONT_SIZE)
+                                            .color(dim),
+                                    );
+                                },
                             );
                         });
+                        ui.add_space(SECTION_GAP);
+                    }
+
+                    let input_bg = Self::rgba(style.input_bg, BG_ALPHA);
+                    let input_frame = Frame::new()
+                        .fill(input_bg)
+                        .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
+                        .inner_margin(INPUT_MARGIN);
+                    input_frame.show(ui, |ui| {
+                        let inner_h = (INPUT_HEIGHT
+                            - f32::from(
+                                i16::from(INPUT_MARGIN.top) + i16::from(INPUT_MARGIN.bottom),
+                            ))
+                        .max(0.0);
+                        let text = if snapshot.query.is_empty() {
+                            egui::RichText::new(snapshot.placeholder.clone())
+                                .font(input_font_id.clone())
+                                .color(dim)
+                        } else {
+                            egui::RichText::new(format!("{}▏", snapshot.query))
+                                .font(input_font_id.clone())
+                                .color(fg)
+                        };
+                        let (rect, _) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), inner_h),
+                            egui::Sense::hover(),
+                        );
+                        let mut inner = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        inner.label(text);
                     });
+
                     ui.add_space(SECTION_GAP);
-                }
 
-                let input_bg = Self::rgba(style.input_bg, BG_ALPHA);
-                let input_frame = Frame::new()
-                    .fill(input_bg)
-                    .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                    .inner_margin(INPUT_MARGIN);
-                input_frame.show(ui, |ui| {
-                    let inner_h = (INPUT_HEIGHT
-                        - f32::from(i16::from(INPUT_MARGIN.top) + i16::from(INPUT_MARGIN.bottom)))
-                    .max(0.0);
-                    let text = if snapshot.query.is_empty() {
-                        egui::RichText::new(snapshot.placeholder.clone())
-                            .font(input_font_id.clone())
-                            .color(dim)
-                    } else {
-                        egui::RichText::new(format!("{}▏", snapshot.query))
-                            .font(input_font_id.clone())
-                            .color(fg)
-                    };
-                    let (rect, _) = ui.allocate_exact_size(
-                        vec2(ui.available_width(), inner_h),
-                        egui::Sense::hover(),
-                    );
-                    let mut inner = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    );
-                    inner.label(text);
-                });
+                    if snapshot.items.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No results")
+                                .size(ITEM_FONT_SIZE)
+                                .color(dim),
+                        );
+                        return;
+                    }
 
-                ui.add_space(SECTION_GAP);
-
-                if snapshot.items.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No results")
-                            .size(ITEM_FONT_SIZE)
-                            .color(dim),
-                    );
-                    return;
-                }
-
-                ui.scope(|ui| {
-                    ui.style_mut().spacing.scroll = ScrollStyle::floating();
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| {
-                            for (i, item) in snapshot.items.iter().enumerate() {
-                                let selected = i == snapshot.selected;
-                                let item_bg = if selected {
-                                    style.item_selected_bg
-                                } else {
-                                    style.item_bg
-                                };
-                                let fill = Self::rgba(item_bg, BG_ALPHA);
-                                let row = Frame::new()
-                                    .fill(fill)
-                                    .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                                    .inner_margin(ITEM_MARGIN);
-                                row.show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    let label_job = Self::layout_label_with_matches(
-                                        item.label.as_str(),
-                                        &item.label_match_indices,
-                                        fg,
-                                        match_fg,
-                                        item_font_id.clone(),
-                                    );
-                                    ui.label(label_job);
-                                    Self::render_sublabel(
-                                        ui,
-                                        item.sublabel.as_deref(),
-                                        &sublabel_font_id,
-                                        dim,
-                                    );
-                                });
-                                if i + 1 != snapshot.items.len() {
-                                    ui.add_space(ITEM_GAP);
+                    ui.scope(|ui| {
+                        ui.style_mut().spacing.scroll = ScrollStyle::floating();
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                for (i, item) in snapshot.items.iter().enumerate() {
+                                    let selected = i == snapshot.selected;
+                                    let item_bg = if selected {
+                                        style.item_selected_bg
+                                    } else {
+                                        style.item_bg
+                                    };
+                                    let fill = Self::rgba(item_bg, BG_ALPHA);
+                                    let row = Frame::new()
+                                        .fill(fill)
+                                        .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
+                                        .inner_margin(ITEM_MARGIN);
+                                    row.show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        let label_job = Self::layout_label_with_matches(
+                                            item.label.as_str(),
+                                            &item.label_match_indices,
+                                            fg,
+                                            match_fg,
+                                            item_font_id.clone(),
+                                        );
+                                        ui.label(label_job);
+                                        Self::render_sublabel(
+                                            ui,
+                                            item.sublabel.as_deref(),
+                                            &sublabel_font_id,
+                                            dim,
+                                        );
+                                    });
+                                    if i + 1 != snapshot.items.len() {
+                                        ui.add_space(ITEM_GAP);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
                 });
-            });
         });
 
         if !self.window_configured && frame_by_title("Hotki Selector").is_some() {

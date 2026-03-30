@@ -436,7 +436,8 @@ impl Hud {
             ;
         builder = self.viewport.sync_builder(ctx, builder, pos, size);
 
-        ctx.show_viewport_immediate(self.viewport.id(), builder, |hud_ctx, _| {
+        ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
+            let hud_ctx = vp_ui.ctx().clone();
             // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.
             if let Err(e) = apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64) {
                 tracing::error!("{}", e);
@@ -451,48 +452,56 @@ impl Hud {
             let a = (self.cfg.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
             let (r, g, b) = self.cfg.bg;
             frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
-            CentralPanel::default().frame(frame).show(hud_ctx, |ui| {
-                let style = ui.style_mut();
-                style.override_font_id = Some(self.title_font_id());
-                let (fr, fg, fb) = self.cfg.title_fg;
-                style.visuals.override_text_color =
-                    Some(Color32::from_rgba_unmultiplied(fr, fg, fb, 255));
+            CentralPanel::default()
+                .frame(frame)
+                .show_inside(vp_ui, |ui| {
+                    let style = ui.style_mut();
+                    style.override_font_id = Some(self.title_font_id());
+                    let (fr, fg, fb) = self.cfg.title_fg;
+                    style.visuals.override_text_color =
+                        Some(Color32::from_rgba_unmultiplied(fr, fg, fb, 255));
 
-                if matches!(self.cfg.mode, Mode::Mini) {
-                    // Compact: center vertically; left padding; single title line
-                    if let Some(title) = self.breadcrumbs.last().filter(|s| !s.trim().is_empty()) {
-                        let avail = ui.available_size();
-                        // compute text height to center vertically
-                        let text_h = hud_ctx.fonts_mut(|f| {
-                            f.layout_no_wrap(title.clone(), self.title_font_id(), Color32::WHITE)
+                    if matches!(self.cfg.mode, Mode::Mini) {
+                        // Compact: center vertically; left padding; single title line
+                        if let Some(title) =
+                            self.breadcrumbs.last().filter(|s| !s.trim().is_empty())
+                        {
+                            let avail = ui.available_size();
+                            // compute text height to center vertically
+                            let text_h = hud_ctx.fonts_mut(|f| {
+                                f.layout_no_wrap(
+                                    title.clone(),
+                                    self.title_font_id(),
+                                    Color32::WHITE,
+                                )
                                 .size()
                                 .y
-                        });
-                        let extra_y = (avail.y - (text_h + 2.0 * HUD_PADDING_Y)).max(0.0);
-                        let left_margin = HUD_PADDING_X;
+                            });
+                            let extra_y = (avail.y - (text_h + 2.0 * HUD_PADDING_Y)).max(0.0);
+                            let left_margin = HUD_PADDING_X;
+                            let top_margin = HUD_PADDING_Y + extra_y / 2.0;
+                            ui.add_space(top_margin);
+                            ui.horizontal(|ui| {
+                                ui.add_space(left_margin);
+                                ui.label(title);
+                            });
+                        }
+                    } else {
+                        // Full HUD
+                        // Left-align content with padding, center vertically if needed
+                        let content = self.measure_content_size(&hud_ctx);
+                        let avail = ui.available_size();
+                        let extra_y = (avail.y - (content.y + 2.0 * HUD_PADDING_Y)).max(0.0);
+                        let left_margin = HUD_PADDING_X; // Always align to left with standard padding
                         let top_margin = HUD_PADDING_Y + extra_y / 2.0;
+
                         ui.add_space(top_margin);
                         ui.horizontal(|ui| {
                             ui.add_space(left_margin);
-                            ui.label(title);
+                            self.render_full_hud_rows(ui, &hud_ctx, avail);
                         });
                     }
-                } else {
-                    // Full HUD
-                    // Left-align content with padding, center vertically if needed
-                    let content = self.measure_content_size(hud_ctx);
-                    let avail = ui.available_size();
-                    let extra_y = (avail.y - (content.y + 2.0 * HUD_PADDING_Y)).max(0.0);
-                    let left_margin = HUD_PADDING_X; // Always align to left with standard padding
-                    let top_margin = HUD_PADDING_Y + extra_y / 2.0;
-
-                    ui.add_space(top_margin);
-                    ui.horizontal(|ui| {
-                        ui.add_space(left_margin);
-                        self.render_full_hud_rows(ui, hud_ctx, avail);
-                    });
-                }
-            });
+                });
         });
 
         // Update last-known state after issuing commands

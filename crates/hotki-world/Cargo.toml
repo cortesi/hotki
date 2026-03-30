@@ -17,10 +17,3 @@ core-foundation = "0.10.1"
 core-graphics = "0.25.0"
 hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
 serde = { workspace = true, features = ["derive"] }
-eframe = "0.34.1"
-egui = "0.34.1"
-egui_extras = "0.34.1"
-tao = "0.35.0"
-toml = "1.1.0"
-toml_datetime = "1.1.0"
-toml_edit = "0.25.8"

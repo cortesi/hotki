@@ -224,7 +224,8 @@ fn main() -> eframe::Result<()> {
     let options: NativeOptions = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_visible(false)
-            .with_transparent(true),
+            .with_transparent(true)
+            .with_decorations(false),
         ..Default::default()
     };
 

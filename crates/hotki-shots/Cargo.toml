@@ -8,15 +8,8 @@ publish = false
 clap = { workspace = true, features = ["derive"] }
 core-foundation = "0.10.1"
 core-graphics = "0.25.0"
-eframe = "0.34.1"
-egui = "0.34.1"
-egui_extras = "0.34.1"
 hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
 hotki-server = { path = "../hotki-server" }
 mac-keycode = { version = "0.0.2", path = "../mac-keycode" }
 regex = { workspace = true }
-tao = "0.35.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
-toml = "1.1.0"
-toml_datetime = "1.1.0"
-toml_edit = "0.25.8"

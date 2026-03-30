@@ -8,7 +8,6 @@ license = "MIT"
 
 [dependencies]
 mac-hotkey = { path = "../mac-hotkey" }
-config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 logging = { path = "../logging" }
 permissions = { path = "../permissions" }
@@ -29,12 +28,6 @@ crossbeam-channel = { workspace = true }
 futures = { workspace = true }
 parking_lot = "0.12.5"
 serde_json.workspace = true
-eframe = "0.34.1"
-egui = "0.34.1"
-egui_extras = "0.34.1"
-toml = "1.1.0"
-toml_datetime = "1.1.0"
-toml_edit = "0.25.8"
 
 [package.metadata.cargo-machete]
 ignored = []

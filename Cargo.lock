@@ -2253,7 +2253,6 @@ dependencies = [
  "egui_extras",
  "hotki-protocol",
  "hotki-server",
- "hotki-world",
  "image",
  "logging",
  "mac-keycode",
@@ -2264,11 +2263,7 @@ dependencies = [
  "parking_lot",
  "permissions",
  "serde_json",
- "tao",
  "tokio",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "tray-icon",
@@ -2279,9 +2274,6 @@ name = "hotki-engine"
 version = "0.1.0"
 dependencies = [
  "config",
- "eframe",
- "egui",
- "egui_extras",
  "hotki-protocol",
  "hotki-world",
  "mac-hotkey",
@@ -2289,13 +2281,9 @@ dependencies = [
  "nucleo",
  "parking_lot",
  "relaykey",
- "tao",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
  "tracing",
 ]
 
@@ -2303,19 +2291,12 @@ dependencies = [
 name = "hotki-protocol"
 version = "0.0.1"
 dependencies = [
- "eframe",
- "egui",
- "egui_extras",
  "mac-keycode",
  "mrpc",
  "rmp-serde",
  "serde",
- "tao",
  "thiserror 2.0.18",
  "tokio",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -2323,11 +2304,7 @@ name = "hotki-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "config",
  "crossbeam-channel",
- "eframe",
- "egui",
- "egui_extras",
  "futures",
  "hotki-engine",
  "hotki-protocol",
@@ -2345,9 +2322,6 @@ dependencies = [
  "tao",
  "thiserror 2.0.18",
  "tokio",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
  "tracing",
 ]
 
@@ -2358,18 +2332,11 @@ dependencies = [
  "clap",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
- "eframe",
- "egui",
- "egui_extras",
  "hotki-protocol",
  "hotki-server",
  "mac-keycode",
  "regex",
- "tao",
  "tokio",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -2379,18 +2346,11 @@ dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
- "eframe",
- "egui",
- "egui_extras",
  "hotki-protocol",
  "parking_lot",
  "permissions",
  "serde",
- "tao",
  "tokio",
- "toml 1.1.0+spec-1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_edit 0.25.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -4699,15 +4659,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876ac351060d4f882bb1032b6369eb0aef79ad9df1ea8bc404874d8cc3d0cd98"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4871,7 +4822,6 @@ dependencies = [
  "config",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
- "hotki-engine",
  "hotki-protocol",
  "hotki-server",
  "libc",
@@ -4885,7 +4835,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "winit",
@@ -4984,7 +4933,7 @@ dependencies = [
  "cfg-expr",
  "heck 0.5.0",
  "pkg-config",
- "toml 0.8.2",
+ "toml",
  "version-compare",
 ]
 
@@ -5213,24 +5162,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "185d8ab0dfbb35cf1399a6344d8484209c088f75f8f68230da55d48d95d43e3d"
 dependencies = [
  "serde",
- "serde_spanned 0.6.9",
+ "serde_spanned",
  "toml_datetime 0.6.3",
  "toml_edit 0.20.2",
-]
-
-[[package]]
-name = "toml"
-version = "1.1.0+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8195ca05e4eb728f4ba94f3e3291661320af739c4e43779cbdfae82ab239fcc"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned 1.1.0",
- "toml_datetime 1.1.0+spec-1.1.0",
- "toml_parser",
- "toml_writer",
- "winnow 1.0.0",
 ]
 
 [[package]]
@@ -5270,7 +5204,7 @@ checksum = "396e4d48bbb2b7554c944bde63101b5ae446cff6ec4a24227428f15eb72ef338"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned 0.6.9",
+ "serde_spanned",
  "toml_datetime 0.6.3",
  "winnow 0.5.40",
 ]
@@ -5284,7 +5218,6 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.0+spec-1.1.0",
  "toml_parser",
- "toml_writer",
  "winnow 1.0.0",
 ]
 
@@ -5296,12 +5229,6 @@ checksum = "2334f11ee363607eb04df9b8fc8a13ca1715a72ba8662a26ac285c98aabb4011"
 dependencies = [
  "winnow 1.0.0",
 ]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.0+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d282ade6016312faf3e41e57ebbba0c073e4056dab1232ab1cb624199648f8ed"
 
 [[package]]
 name = "tracing"

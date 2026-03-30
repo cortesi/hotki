@@ -86,14 +86,9 @@ impl App for HotkiApp {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
-
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            if !self.shutdown_in_progress {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            }
+    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.shutdown_in_progress {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
         while let Ok(event) = self.rx.try_recv() {
@@ -109,13 +104,13 @@ impl App for HotkiApp {
         self.details.render(ctx, self.notifications.backlog());
         self.permissions.render(ctx);
     }
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 }
 
 impl HotkiApp {
     /// Construct the full UI app, spawn the runtime thread, and wire the tray.
     pub fn new(cc: &CreationContext<'_>, bootstrap: AppBootstrap) -> Self {
-        cc.egui_ctx
-            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         if let Some(mtm) = MainThreadMarker::new() {
             let app = NSApplication::sharedApplication(mtm);
             app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
