@@ -142,8 +142,7 @@ pub fn run_event_loop(
 
                             let suspended = inner.suspend > 0;
                             let capture = inner.capture_all > 0;
-                            let mut d =
-                                policy::classify(suspended, matched_intercept, kind, is_repeat);
+                            let mut d = policy::classify(suspended, matched_intercept);
 
                             // Adjust for capture-all: swallow everything; emit only matched
                             if !suspended && capture {
@@ -252,51 +251,29 @@ pub fn run_event_loop(
 mod tests {
     use mac_keycode::Key;
 
-    use super::*;
     use crate::test_register;
 
-    fn simulate(
-        suspended: bool,
-        matched: bool,
-        intercept: bool,
-        kind: EventKind,
-        is_repeat: bool,
-    ) -> crate::policy::Decision {
-        if matched {
-            let _inner = crate::Inner::default();
-            let m = Some(intercept);
-            crate::policy::classify(suspended, m, kind, is_repeat)
-        } else {
-            crate::policy::classify(suspended, None, kind, is_repeat)
-        }
+    fn simulate(suspended: bool, matched: bool, intercept: bool) -> crate::policy::Decision {
+        let matched_intercept = if matched { Some(intercept) } else { None };
+        crate::policy::classify(suspended, matched_intercept)
     }
 
     #[test]
-    fn tap_policy_sim_repeat_intercepted_vs_forwarded() {
-        let d = simulate(false, true, true, EventKind::KeyDown, true);
+    fn tap_policy_sim_intercept_tracks_option() {
+        let d = simulate(false, true, true);
         assert!(d.emit);
         assert!(d.intercept);
-        let d = simulate(false, true, false, EventKind::KeyDown, true);
+        let d = simulate(false, true, false);
         assert!(d.emit);
         assert!(!d.intercept);
-    }
-
-    #[test]
-    fn tap_policy_sim_initial_emits_and_tracks_intercept() {
-        let d = simulate(false, true, false, EventKind::KeyDown, false);
-        assert!(d.emit);
-        assert!(!d.intercept);
-        let d = simulate(false, true, true, EventKind::KeyUp, false);
-        assert!(d.emit);
-        assert!(d.intercept);
     }
 
     #[test]
     fn tap_policy_sim_suspended_and_nomatch() {
-        let d = simulate(true, true, true, EventKind::KeyDown, false);
+        let d = simulate(true, true, true);
         assert!(!d.emit);
         assert!(!d.intercept);
-        let d = simulate(false, false, true, EventKind::KeyDown, false);
+        let d = simulate(false, false, true);
         assert!(!d.emit);
         assert!(!d.intercept);
     }
@@ -316,7 +293,7 @@ mod tests {
         let mut mods = std::collections::HashSet::new();
         mods.insert(mac_keycode::Modifier::Control);
         let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);
-        let d = crate::policy::classify(false, matched, EventKind::KeyDown, false);
+        let d = crate::policy::classify(false, matched);
         assert!(d.emit);
         assert!(d.intercept);
     }

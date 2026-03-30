@@ -1,5 +1,3 @@
-use crate::EventKind;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decision {
     pub emit: bool,
@@ -12,12 +10,7 @@ pub struct Decision {
 /// - If not matched, nothing is emitted or intercepted.
 /// - If matched, always emit to the client (including OS auto-repeat KeyDown).
 ///   Interception is controlled by registration regardless of repeat.
-pub fn classify(
-    suspended: bool,
-    matched_intercept: Option<bool>,
-    _kind: EventKind,
-    is_repeat: bool,
-) -> Decision {
+pub fn classify(suspended: bool, matched_intercept: Option<bool>) -> Decision {
     if suspended {
         return Decision {
             emit: false,
@@ -30,8 +23,6 @@ pub fn classify(
             intercept: false,
         };
     };
-    // Emit to client for both initial presses and repeats; interception unchanged.
-    let _ = is_repeat; // repeat does not affect emission policy anymore
     Decision {
         emit: true,
         intercept,
@@ -47,34 +38,24 @@ mod tests {
 
     #[test]
     fn suspended_ignores_everything() {
-        let d = classify(true, M, EventKind::KeyDown, false);
+        let d = classify(true, M);
         assert!(!d.emit);
         assert!(!d.intercept);
     }
 
     #[test]
     fn non_match_emits_nothing() {
-        let d = classify(false, None, EventKind::KeyDown, false);
+        let d = classify(false, None);
         assert!(!d.emit);
         assert!(!d.intercept);
     }
 
     #[test]
-    fn match_repeat_is_emitted_and_intercept_tracks_option() {
-        let d = classify(false, M, EventKind::KeyDown, true);
+    fn matched_emits_and_intercept_tracks_option() {
+        let d = classify(false, M);
         assert!(d.emit);
         assert!(!d.intercept);
-        let d = classify(false, MI, EventKind::KeyDown, true);
-        assert!(d.emit);
-        assert!(d.intercept);
-    }
-
-    #[test]
-    fn match_initial_emits_and_intercept_tracks_option() {
-        let d = classify(false, M, EventKind::KeyDown, false);
-        assert!(d.emit);
-        assert!(!d.intercept);
-        let d = classify(false, MI, EventKind::KeyUp, false);
+        let d = classify(false, MI);
         assert!(d.emit);
         assert!(d.intercept);
     }
