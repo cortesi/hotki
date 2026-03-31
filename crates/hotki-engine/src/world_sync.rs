@@ -184,15 +184,18 @@ impl Engine {
         Ok(())
     }
 
-    fn current_context(&self) -> (String, String, i32) {
-        if let Some(focus) = &*self.focus_ctx.lock() {
-            return (focus.app.clone(), focus.title.clone(), focus.pid);
-        }
-        (String::new(), String::new(), -1)
-    }
-
     pub(crate) fn current_dispatch_context(&self) -> DispatchContext {
-        let (app, title, pid) = self.current_context();
-        DispatchContext { app, title, pid }
+        if let Some(focus) = &*self.focus_ctx.lock() {
+            return DispatchContext {
+                app: focus.app.clone(),
+                title: focus.title.clone(),
+                pid: focus.pid,
+            };
+        }
+        DispatchContext {
+            app: String::new(),
+            title: String::new(),
+            pid: -1,
+        }
     }
 }

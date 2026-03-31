@@ -45,9 +45,6 @@ impl HotkeyApi for RealHotkeyApi {
             _guard: self.inner.capture_all(),
         }
     }
-    fn is_fake(&self) -> bool {
-        false
-    }
 }
 
 /// Mock API for tests that avoids OS interaction.

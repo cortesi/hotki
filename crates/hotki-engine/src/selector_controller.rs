@@ -65,7 +65,7 @@ impl<'a> SelectorController<'a> {
         match event {
             SelectorEvent::Update => {
                 let _changed_ignored = selector.tick();
-                SelectorInput::Update(selector_snapshot_for_ui(selector))
+                SelectorInput::Update(selector.snapshot())
             }
             SelectorEvent::Select | SelectorEvent::Cancel => {
                 let selector = rt.selector.take().expect("selector must exist for close");
@@ -149,10 +149,4 @@ fn selector_noop_result() -> dyn_engine::HandlerResult {
         nav: None,
         stay: true,
     }
-}
-
-pub(crate) fn selector_snapshot_for_ui(
-    sel: &mut SelectorState,
-) -> hotki_protocol::SelectorSnapshot {
-    sel.snapshot()
 }

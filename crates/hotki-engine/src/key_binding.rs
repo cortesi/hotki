@@ -8,12 +8,9 @@ use mac_keycode::Chord;
 use tracing::{debug, trace, warn};
 
 use crate::{
-    Result,
+    BIND_UPDATE_WARN_MS, Result,
     deps::{CaptureGuard, HotkeyApi},
 };
-
-/// Threshold for warning about slow binding updates that may cause key drops
-const BIND_UPDATE_WARN_MS: u64 = 10;
 
 #[derive(Debug, Clone)]
 struct BindingRegistration {

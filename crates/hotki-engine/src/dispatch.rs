@@ -157,7 +157,7 @@ impl Engine {
                     ));
                     let selector = rt.selector.as_mut().expect("selector just set");
                     let _changed_ignored = selector.tick();
-                    crate::selector_controller::selector_snapshot_for_ui(selector)
+                    selector.snapshot()
                 };
                 self.notifier
                     .send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;

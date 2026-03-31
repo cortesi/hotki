@@ -61,7 +61,7 @@ mod ticker;
 mod world_sync;
 
 // Timing constants for warning thresholds
-const BIND_UPDATE_WARN_MS: u64 = 10;
+pub(crate) const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, Default)]

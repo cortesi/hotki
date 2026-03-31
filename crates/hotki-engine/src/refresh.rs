@@ -201,11 +201,3 @@ pub(crate) fn theme_step_name(theme_names: &[String], current: &str, step: isize
 
     theme_names[next].clone()
 }
-
-pub(crate) fn theme_next_name(theme_names: &[String], current: &str) -> String {
-    theme_step_name(theme_names, current, 1)
-}
-
-pub(crate) fn theme_prev_name(theme_names: &[String], current: &str) -> String {
-    theme_step_name(theme_names, current, -1)
-}

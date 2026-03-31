@@ -3,7 +3,7 @@ use mac_keycode::Chord;
 
 use crate::{
     DispatchOutcome, Engine, Result,
-    refresh::{theme_next_name, theme_prev_name},
+    refresh::theme_step_name,
     repeater::{ExecSpec, RepeatSpec},
 };
 
@@ -185,11 +185,8 @@ impl Engine {
         drop(cfg_guard);
 
         let mut rt = self.runtime.lock().await;
-        rt.theme_name = if next {
-            theme_next_name(&theme_names, rt.theme_name.as_str())
-        } else {
-            theme_prev_name(&theme_names, rt.theme_name.as_str())
-        };
+        let step = if next { 1 } else { -1 };
+        rt.theme_name = theme_step_name(&theme_names, rt.theme_name.as_str(), step);
         Ok(DispatchOutcome::default())
     }
 
