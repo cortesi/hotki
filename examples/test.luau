@@ -42,14 +42,24 @@ hotki.root(function(menu, ctx)
         end)
 
         root:submenu("m", "Media", function(sub, subctx)
-            sub:bind("space", "Play/Pause", action.shell("osascript -e 'tell application \"Spotify\" to playpause'"))
+            sub:bind("p", "Play/Pause", action.shell("osascript -e 'tell application \"Spotify\" to playpause'"))
             sub:bind("n", "Next", action.shell("osascript -e 'tell application \"Spotify\" to next track'"))
             sub:bind("b", "Previous", action.shell("osascript -e 'tell application \"Spotify\" to previous track'"))
             sub:bind("1", "10%", action.set_volume(10), { stay = true })
             sub:bind("5", "50%", action.set_volume(50), { stay = true })
             sub:bind("m", "mute", action.mute("toggle"), { stay = true })
-            sub:bind("up", "Up 10", action.change_volume(10), { stay = true })
-            sub:bind("down", "Down 10", action.change_volume(-10), { stay = true })
+            sub:bind(
+                "up", "Up 10", action.change_volume(10), { 
+                    stay = true ,
+                    ["repeat"] = { delay_ms = 250, interval_ms = 350 },
+                }
+            )
+            sub:bind(
+                "down", "Down 10", action.change_volume(-10), { 
+                    stay = true,
+                    ["repeat"] = { delay_ms = 250, interval_ms = 350 },
+                }
+            )
         end)
 
         root:submenu("t", "Theme tester", function(sub, subctx)

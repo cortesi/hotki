@@ -9,7 +9,7 @@ struct BindingExecution {
 }
 
 impl Engine {
-    async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: String) -> Result<()> {
+    async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: &str) -> Result<()> {
         let start = std::time::Instant::now();
         if self.sync_on_dispatch {
             self.world.hint_refresh();
@@ -27,7 +27,7 @@ impl Engine {
         }
 
         if SelectorController::new(self)
-            .handle_input(chord, identifier.as_str(), &focus)
+            .handle_input(chord, identifier, &focus)
             .await?
         {
             trace!(
@@ -49,7 +49,7 @@ impl Engine {
         };
 
         let Some(execution) = self
-            .execute_binding(identifier.as_str(), binding, ctx)
+            .execute_binding(identifier, binding, ctx)
             .await?
         else {
             return Ok(());
@@ -85,7 +85,7 @@ impl Engine {
         let mut stay = binding.flags.stay;
         let mut outcome = DispatchOutcome::default();
 
-        match binding.kind.clone() {
+        match binding.kind {
             dyn_engine::BindingKind::Mode(mode) => {
                 outcome.entered_mode = true;
                 let mut rt = self.runtime.lock().await;
@@ -201,7 +201,7 @@ impl Engine {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
                     if self.runtime.lock().await.selector.is_some() {
-                        if let Err(error) = self.handle_key_event(&chord, ident.clone()).await {
+                        if let Err(error) = self.handle_key_event(&chord, &ident).await {
                             warn!("Key handler failed: {}", error);
                             return Err(error);
                         }
@@ -217,7 +217,7 @@ impl Engine {
 
                 self.key_tracker.on_key_down(&ident);
 
-                if let Err(error) = self.handle_key_event(&chord, ident.clone()).await {
+                if let Err(error) = self.handle_key_event(&chord, &ident).await {
                     warn!("Key handler failed: {}", error);
                     return Err(error);
                 }

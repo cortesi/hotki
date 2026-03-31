@@ -1,57 +1,53 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::Mutex;
 
 /// Tracks the state of keys to handle key up/down and repeat events properly
 #[derive(Clone)]
 pub struct KeyStateTracker {
-    held: Arc<Mutex<HashSet<String>>>,
-    repeat_ok: Arc<Mutex<HashSet<String>>>,
+    /// Maps identifier to whether repeats are allowed
+    states: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl KeyStateTracker {
     /// Create a new key state tracker.
     pub fn new() -> Self {
         Self {
-            held: Arc::new(Mutex::new(HashSet::new())),
-            repeat_ok: Arc::new(Mutex::new(HashSet::new())),
+            states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Return true if the key is currently considered down.
     pub fn is_down(&self, identifier: &str) -> bool {
-        let held = self.held.lock();
-        held.contains(identifier)
+        self.states.lock().contains_key(identifier)
     }
 
     /// Record a key down; returns true for the first down, false for repeats.
     pub fn on_key_down(&self, identifier: &str) -> bool {
-        let mut held = self.held.lock();
-        held.insert(identifier.to_string())
+        let mut states = self.states.lock();
+        if states.contains_key(identifier) {
+            false
+        } else {
+            states.insert(identifier.to_string(), false);
+            true
+        }
     }
 
     /// Record a key up.
     pub fn on_key_up(&self, identifier: &str) {
-        let mut held = self.held.lock();
-        held.remove(identifier);
-        let mut rep = self.repeat_ok.lock();
-        rep.remove(identifier);
+        self.states.lock().remove(identifier);
     }
 
     /// Set whether OS repeat events should be acted upon for this identifier.
     pub fn set_repeat_allowed(&self, identifier: &str, allowed: bool) {
-        let mut rep = self.repeat_ok.lock();
-        if allowed {
-            rep.insert(identifier.to_string());
-        } else {
-            rep.remove(identifier);
+        if let Some(repeat_ok) = self.states.lock().get_mut(identifier) {
+            *repeat_ok = allowed;
         }
     }
 
     /// Return true if repeats are allowed for this identifier.
     pub fn is_repeat_allowed(&self, identifier: &str) -> bool {
-        let rep = self.repeat_ok.lock();
-        rep.contains(identifier)
+        self.states.lock().get(identifier).copied().unwrap_or(false)
     }
 }
 
