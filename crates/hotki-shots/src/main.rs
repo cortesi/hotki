@@ -55,13 +55,12 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
         .filter(|p| p.exists())
 }
 
-fn used_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
+fn resolve_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
     let cwd = env::current_dir()?;
     let cfg_path = cwd.join("examples/test.luau");
-    if theme.is_none() {
+    let Some(name) = theme else {
         return Ok(cfg_path);
-    }
-    let name = theme.as_ref().unwrap();
+    };
     match fs::read_to_string(&cfg_path) {
         Ok(s) => {
             let re = regex::Regex::new("themes:use\\(\\s*\"[^\"]*\"\\s*\\)").unwrap();
@@ -98,8 +97,17 @@ fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
     cmd.spawn()
 }
 
-fn socket_path_for_pid(pid: u32) -> String {
-    hotki_server::socket_path_for_pid(pid)
+const KEY_PRESS_DURATION_MS: u64 = 60;
+const CONNECT_RETRY_INTERVAL_MS: u64 = 100;
+const HUD_POLL_INTERVAL_MS: u64 = 200;
+const INJECT_WINDOW_CHECK_MS: u64 = 600;
+const NOTIFICATION_SETTLE_MS: u64 = 120;
+const CHORD_GAP_MS: u64 = 160;
+const SELECTOR_SETTLE_MS: u64 = 250;
+
+fn kill_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
@@ -118,7 +126,7 @@ fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeou
                 if Instant::now() >= deadline {
                     return false;
                 }
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(CONNECT_RETRY_INTERVAL_MS));
                 continue;
             }
         }
@@ -127,7 +135,7 @@ fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeou
     if let Ok(conn) = client.connection() {
         // Send activation chord a few times while we wait
         inject_key(rt, conn, "shift+cmd+0");
-        let poll = Duration::from_millis(200);
+        let poll = Duration::from_millis(HUD_POLL_INTERVAL_MS);
         while Instant::now() < deadline {
             let left = deadline.saturating_duration_since(Instant::now());
             let chunk = cmp::min(left, poll);
@@ -154,7 +162,7 @@ fn inject_key(rt: &tokio::runtime::Runtime, conn: &mut hotki_server::Connection,
         .map(|c| c.to_string())
         .unwrap_or_else(|| ident.to_string());
     let _ = rt.block_on(async { conn.inject_key_down(&ident).await });
-    thread::sleep(Duration::from_millis(60));
+    thread::sleep(Duration::from_millis(KEY_PRESS_DURATION_MS));
     let _ = rt.block_on(async { conn.inject_key_up(&ident).await });
 }
 
@@ -223,7 +231,7 @@ fn inject_until_window(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
         inject_key(rt, conn, ident);
-        if wait_for_window_by_pid_title(pid, window_title, 600) {
+        if wait_for_window_by_pid_title(pid, window_title, INJECT_WINDOW_CHECK_MS) {
             return true;
         }
     }
@@ -243,7 +251,7 @@ fn main() {
         }
     };
 
-    let cfg_path = match used_config_path(&cli.theme) {
+    let cfg_path = match resolve_config_path(&cli.theme) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("ERROR: unable to read or write config: {}", e);
@@ -259,21 +267,19 @@ fn main() {
         }
     };
     let hotki_pid = child.id();
-    let sock = socket_path_for_pid(hotki_pid);
+    let sock = hotki_server::socket_path_for_pid(hotki_pid);
 
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("ERROR: failed to create Tokio runtime: {}", e);
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_child(&mut child);
             process::exit(2);
         }
     };
 
     if !wait_for_hud(&rt, &sock, hotki_pid, cli.timeout) {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child(&mut child);
         eprintln!("ERROR: HUD did not appear within {} ms", cli.timeout);
         process::exit(2);
     }
@@ -288,8 +294,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("ERROR: failed to connect to server: {}", e);
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_child(&mut child);
             process::exit(2);
         }
     };
@@ -297,8 +302,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("ERROR: failed to get connection: {}", e);
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_child(&mut child);
             process::exit(2);
         }
     };
@@ -311,7 +315,7 @@ fn main() {
     }
 
     // Trigger notifications via chords and capture
-    let gap = Duration::from_millis(160);
+    let gap = Duration::from_millis(CHORD_GAP_MS);
     for (k, name) in [
         ("t", None::<&str>),
         ("s", Some("notify_success")),
@@ -322,7 +326,7 @@ fn main() {
         inject_key(&rt, conn, k);
         thread::sleep(gap);
         if let Some(n) = name {
-            thread::sleep(Duration::from_millis(120));
+            thread::sleep(Duration::from_millis(NOTIFICATION_SETTLE_MS));
             let ok = capture_window_by_id(hotki_pid, "Hotki Notification", &cli.dir, n);
             if !ok {
                 failed.push(n);
@@ -335,7 +339,7 @@ fn main() {
         for k in ["c", "a", "l"] {
             inject_key(&rt, conn, k);
         }
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(SELECTOR_SETTLE_MS));
         let ok = capture_window_by_id(hotki_pid, "Hotki Selector", &cli.dir, "selector");
         if !ok {
             failed.push("selector");
@@ -348,8 +352,7 @@ fn main() {
     // Exit HUD and shutdown server
     inject_key(&rt, conn, "shift+cmd+0");
     let _ = rt.block_on(async move { client.shutdown_server().await });
-    let _ = child.kill();
-    let _ = child.wait();
+    kill_child(&mut child);
 
     if !failed.is_empty() {
         eprintln!(
@@ -385,7 +388,9 @@ fn find_window_impl(pid: Option<i32>, title: &str) -> Option<u32> {
         let dict_ptr = *raw;
         let dict: CFDictionary<CFString, CFType> =
             unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
-        let owner_pid = dict_value_i32(&dict, &key_owner_pid)?;
+        let Some(owner_pid) = dict_value_i32(&dict, &key_owner_pid) else {
+            continue;
+        };
         if let Some(pid) = pid
             && owner_pid != pid
         {
