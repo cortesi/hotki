@@ -9,7 +9,8 @@
 //! Notes
 //! - `accessibility_ok()` checks the global Accessibility permission.
 //! - `input_monitoring_ok()` checks Input Monitoring (listening to keyboard).
-//! - `check_permissions()` returns both as a simple status struct.
+//! - `screen_recording_ok()` checks Screen Recording permission.
+//! - `check_permissions()` returns all three as a simple status struct.
 //!
 //! All calls are fast and side‑effect free.
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,10 @@ unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
 }
 
+/// Check if the application has the Accessibility permission.
+///
+/// Returns `true` when the process is trusted for accessibility (AX API
+/// access), and `false` otherwise.
 pub fn accessibility_ok() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
@@ -99,11 +104,11 @@ impl PermissionsStatus {
     }
 }
 
-/// Query both Accessibility and Input Monitoring permissions.
+/// Query Accessibility, Input Monitoring, and Screen Recording permissions.
 ///
-/// This is a convenience wrapper over [`accessibility_ok`] and
-/// [`input_monitoring_ok`]. The function performs no prompting and has no
-/// side effects.
+/// This is a convenience wrapper over [`accessibility_ok`],
+/// [`input_monitoring_ok`], and [`screen_recording_ok`]. The function
+/// performs no prompting and has no side effects.
 pub fn check_permissions() -> PermissionsStatus {
     PermissionsStatus {
         accessibility: accessibility_ok().into(),
