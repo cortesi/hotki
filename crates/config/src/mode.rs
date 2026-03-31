@@ -108,7 +108,7 @@ impl ShellSpec {
     /// Get notification type for successful exit
     pub fn ok_notify(&self) -> NotifyKind {
         match self {
-            Self::Cmd(_) => NotifyKind::Ignore,
+            Self::Cmd(_) => default_ok_notify(),
             Self::WithMods(_, m) => m.ok_notify,
         }
     }
@@ -116,7 +116,7 @@ impl ShellSpec {
     /// Get notification type for error exit
     pub fn err_notify(&self) -> NotifyKind {
         match self {
-            Self::Cmd(_) => NotifyKind::Warn,
+            Self::Cmd(_) => default_err_notify(),
             Self::WithMods(_, m) => m.err_notify,
         }
     }

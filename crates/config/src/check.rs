@@ -221,6 +221,29 @@ fn visit_imports(
     Ok(())
 }
 
+/// Collect all literal import calls matched by `re` into `out`, keyed by start offset.
+fn collect_literal_imports(
+    re: &Regex,
+    source: &str,
+    out: &mut BTreeMap<usize, (ImportRole, String)>,
+) {
+    for captures in re.captures_iter(source) {
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        let Some(role_match) = captures.get(1) else {
+            continue;
+        };
+        let Some(path_match) = captures.get(2) else {
+            continue;
+        };
+        let Some(role) = ImportRole::from_name(role_match.as_str()) else {
+            continue;
+        };
+        out.insert(full.start(), (role, path_match.as_str().to_string()));
+    }
+}
+
 /// Parse literal `hotki.import_*("...")` calls from a Luau source file.
 fn parse_import_calls(
     source: &str,
@@ -238,36 +261,8 @@ fn parse_import_calls(
     .expect("valid single-quoted import matcher");
 
     let mut literal_by_start = BTreeMap::new();
-    for captures in literal_double.captures_iter(source) {
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let Some(role_match) = captures.get(1) else {
-            continue;
-        };
-        let Some(path_match) = captures.get(2) else {
-            continue;
-        };
-        let Some(role) = ImportRole::from_name(role_match.as_str()) else {
-            continue;
-        };
-        literal_by_start.insert(full.start(), (role, path_match.as_str().to_string()));
-    }
-    for captures in literal_single.captures_iter(source) {
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let Some(role_match) = captures.get(1) else {
-            continue;
-        };
-        let Some(path_match) = captures.get(2) else {
-            continue;
-        };
-        let Some(role) = ImportRole::from_name(role_match.as_str()) else {
-            continue;
-        };
-        literal_by_start.insert(full.start(), (role, path_match.as_str().to_string()));
-    }
+    collect_literal_imports(&literal_double, source, &mut literal_by_start);
+    collect_literal_imports(&literal_single, source, &mut literal_by_start);
 
     let mut imports = Vec::new();
     for import_call in any.find_iter(source) {

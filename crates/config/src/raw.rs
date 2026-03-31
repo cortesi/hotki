@@ -227,8 +227,8 @@ pub struct RawNotify {
 }
 
 impl RawNotify {
-    /// Internal helper: apply overrides over a base Notify
-    fn apply_over(self, base: &Notify) -> Notify {
+    /// Convert to final Notify using the provided base as defaults
+    pub fn into_notify_over(self, base: &Notify) -> Notify {
         let defaults = base.clone();
         Notify {
             width: maybe_or(self.width, defaults.width),
@@ -260,11 +260,6 @@ impl RawNotify {
                 ),
             },
         }
-    }
-
-    /// Convert to final Notify using the provided base as defaults
-    pub fn into_notify_over(self, base: &Notify) -> Notify {
-        self.apply_over(base)
     }
 
     /// Merge another notification overlay on top of this one.
@@ -436,8 +431,8 @@ fn color_or(src: Option<&str>, default: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 impl RawHud {
-    /// Internal helper: apply overrides over a base Hud
-    fn apply_over(self, base: &Hud) -> Hud {
+    /// Convert to final Hud using the provided base as defaults
+    pub fn into_hud_over(self, base: &Hud) -> Hud {
         let defaults = base.clone();
         macro_rules! color_field {
             ($field:ident) => {
@@ -484,11 +479,6 @@ impl RawHud {
                 .into_option()
                 .unwrap_or_else(|| defaults.tag_submenu.clone()),
         }
-    }
-
-    /// Convert to final Hud using the provided base as defaults
-    pub fn into_hud_over(self, base: &Hud) -> Hud {
-        self.apply_over(base)
     }
 
     /// Merge another HUD overlay on top of this one.

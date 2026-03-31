@@ -119,33 +119,6 @@ pub struct ContextSnapshot {
     pub depth: i64,
 }
 
-impl ContextSnapshot {
-    /// Return the focused application name.
-    pub fn app(&self) -> &str {
-        &self.app
-    }
-
-    /// Return the focused window title.
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Return the focused process identifier.
-    pub fn pid(&self) -> i64 {
-        self.pid
-    }
-
-    /// Return whether the HUD is currently visible.
-    pub fn hud(&self) -> bool {
-        self.hud
-    }
-
-    /// Return the current stack depth.
-    pub fn depth(&self) -> i64 {
-        self.depth
-    }
-}
-
 /// Render-time context passed into mode closures.
 pub type ModeCtx = ContextSnapshot;
 
@@ -216,27 +189,27 @@ impl ActionCtx {
 
     /// Return the focused application name.
     pub fn app(&self) -> &str {
-        self.snapshot.app()
+        &self.snapshot.app
     }
 
     /// Return the focused window title.
     pub fn title(&self) -> &str {
-        self.snapshot.title()
+        &self.snapshot.title
     }
 
     /// Return the focused process identifier.
     pub fn pid(&self) -> i64 {
-        self.snapshot.pid()
+        self.snapshot.pid
     }
 
     /// Return whether the HUD is visible.
     pub fn hud(&self) -> bool {
-        self.snapshot.hud()
+        self.snapshot.hud
     }
 
     /// Return the current stack depth.
     pub fn depth(&self) -> i64 {
-        self.snapshot.depth()
+        self.snapshot.depth
     }
 
     /// Push a new effect into the handler result queue.

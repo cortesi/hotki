@@ -1,4 +1,4 @@
-use mlua::Value;
+use mlua::{AnyUserData, Value};
 
 use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem};
 use crate::Error;
@@ -14,27 +14,39 @@ pub struct HandlerResult {
     pub stay: bool,
 }
 
+/// Reset the budget, build an `ActionCtx`, and create its Lua userdata value.
+fn prepare_handler_call(
+    cfg: &DynamicConfig,
+    ctx: &ModeCtx,
+) -> Result<(ActionCtx, AnyUserData), Error> {
+    cfg.reset_execution_budget();
+    let action_ctx = ActionCtx::new(ctx.clone());
+    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
+        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+    Ok((action_ctx, ctx_value))
+}
+
+/// Drain the queued outputs from a completed handler context.
+fn collect_handler_result(action_ctx: &ActionCtx) -> HandlerResult {
+    HandlerResult {
+        effects: action_ctx.take_effects(),
+        nav: action_ctx.take_nav(),
+        stay: action_ctx.stay(),
+    }
+}
+
 /// Execute a handler closure and collect its queued effects.
 pub fn execute_handler(
     cfg: &DynamicConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
-    cfg.reset_execution_budget();
-    let action_ctx = ActionCtx::new(ctx.clone());
-    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-
+    let (action_ctx, ctx_value) = prepare_handler_call(cfg, ctx)?;
     handler
         .func
         .call::<()>(ctx_value)
         .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-
-    Ok(HandlerResult {
-        effects: action_ctx.take_effects(),
-        nav: action_ctx.take_nav(),
-        stay: action_ctx.stay(),
-    })
+    Ok(collect_handler_result(&action_ctx))
 }
 
 /// Execute a selector handler closure with `(ctx, item, query)` arguments.
@@ -45,10 +57,7 @@ pub fn execute_selector_handler(
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
-    cfg.reset_execution_budget();
-    let action_ctx = ActionCtx::new(ctx.clone());
-    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+    let (action_ctx, ctx_value) = prepare_handler_call(cfg, ctx)?;
 
     let item_table = cfg
         .lua
@@ -65,9 +74,5 @@ pub fn execute_selector_handler(
         .call::<()>((ctx_value, Value::Table(item_table), query.to_string()))
         .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
 
-    Ok(HandlerResult {
-        effects: action_ctx.take_effects(),
-        nav: action_ctx.take_nav(),
-        stay: action_ctx.stay(),
-    })
+    Ok(collect_handler_result(&action_ctx))
 }
