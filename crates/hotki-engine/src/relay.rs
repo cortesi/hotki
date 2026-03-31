@@ -38,8 +38,10 @@ impl RelayHandler {
     }
     /// Start relaying a chord to a pid (posts an initial KeyDown).
     pub fn start_relay(&self, id: String, chord: Chord, pid: i32, is_repeat: bool) {
-        if let Some(ref relay) = self.relay_key {
-            relay.key_down(pid, &chord, is_repeat);
+        if let Some(ref relay) = self.relay_key
+            && let Err(e) = relay.key_down(&chord, is_repeat)
+        {
+            tracing::warn!(?e, "relay_down_failed");
         }
         self.active
             .lock()
@@ -48,10 +50,12 @@ impl RelayHandler {
     }
 
     /// Repeat relay for an active id (posts a repeat KeyDown).
-    pub fn repeat_relay(&self, id: &str, pid: i32) -> bool {
+    pub fn repeat_relay(&self, id: &str) -> bool {
         if let Some(a) = self.active.lock().get(id).cloned() {
-            if let Some(ref relay) = self.relay_key {
-                relay.key_down(pid, &a.chord, true);
+            if let Some(ref relay) = self.relay_key
+                && let Err(e) = relay.key_down(&a.chord, true)
+            {
+                tracing::warn!(?e, "relay_repeat_failed");
             }
             true
         } else {
@@ -62,12 +66,13 @@ impl RelayHandler {
     /// Stop relaying for id (posts KeyUp and clears state).
     pub fn stop_relay(&self, id: &str, pid: i32) -> bool {
         if let Some(a) = self.active.lock().remove(id) {
-            if let Some(ref relay) = self.relay_key {
-                // Use the original pid to ensure the key-up matches the key-down target.
-                let target_pid = if a.pid != -1 { a.pid } else { pid };
-                relay.key_up(target_pid, &a.chord);
+            let target_pid = if a.pid != -1 { a.pid } else { pid };
+            if let Some(ref relay) = self.relay_key
+                && let Err(e) = relay.key_up(&a.chord)
+            {
+                tracing::warn!(?e, "relay_up_failed");
             }
-            trace!(pid = a.pid, id = %id, "relay_stop");
+            trace!(pid = target_pid, id = %id, "relay_stop");
             true
         } else {
             false
@@ -79,7 +84,9 @@ impl RelayHandler {
         let mut map = self.active.lock();
         if let Some(ref relay) = self.relay_key {
             for (id, a) in map.drain() {
-                relay.key_up(a.pid, &a.chord);
+                if let Err(e) = relay.key_up(&a.chord) {
+                    tracing::warn!(?e, "relay_stop_all_up_failed");
+                }
                 trace!(pid = a.pid, id = %id, "relay_stop_all_up");
             }
         } else {
@@ -112,7 +119,7 @@ mod tests {
         handler.start_relay(id.clone(), ch.clone(), 1234, false);
         assert!(handler.active.lock().contains_key(&id));
 
-        assert!(handler.repeat_relay(&id, 1234));
+        assert!(handler.repeat_relay(&id));
         assert!(handler.active.lock().contains_key(&id));
 
         assert!(handler.stop_relay(&id, 1234));

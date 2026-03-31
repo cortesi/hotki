@@ -165,7 +165,7 @@ mod tests {
         for msg in samples {
             let val = msg_to_value(&msg).expect("encode");
             let back = value_to_msg(val).expect("decode");
-            assert_eq!(format!("{:?}", msg), format!("{:?}", back));
+            assert_eq!(msg, back);
         }
     }
 }

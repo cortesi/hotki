@@ -14,21 +14,20 @@ use core_graphics::{
     event as cge,
     event_source::{CGEventSource, CGEventSourceStateID},
 };
-use libc::pid_t;
 use mac_hotkey::HOTK_TAG;
 use mac_keycode::{Chord, Modifier};
 use tracing::{info, trace, warn};
 mod error;
-pub(crate) use error::{Error, Result};
+pub use error::{Error, Result};
 
 /// Abstraction for posting events to the system (overridable in tests).
 pub(crate) trait Poster: Send + Sync {
-    /// Post a key down for `key` to process `pid`.
-    fn post_down(&self, pid: pid_t, key: &Chord, is_repeat: bool) -> Result<()>;
-    /// Post a key up for `key` to process `pid`.
-    fn post_up(&self, pid: pid_t, key: &Chord) -> Result<()>;
-    /// Post modifier changes for `mods` to process `pid`.
-    fn post_modifiers(&self, _pid: pid_t, _mods: &HashSet<Modifier>, _down: bool) -> Result<()> {
+    /// Post a key down for `key`.
+    fn post_down(&self, key: &Chord, is_repeat: bool) -> Result<()>;
+    /// Post a key up for `key`.
+    fn post_up(&self, key: &Chord) -> Result<()>;
+    /// Post modifier changes for `mods`.
+    fn post_modifiers(&self, _mods: &HashSet<Modifier>, _down: bool) -> Result<()> {
         Ok(())
     }
 }
@@ -87,8 +86,35 @@ impl MacPoster {
     }
 }
 
+/// Pick the left or right variant of a modifier pair, preferring left unless only right is present.
+fn choose_modifier(mods: &HashSet<Modifier>, left: Modifier, right: Modifier) -> Option<Modifier> {
+    if mods.contains(&left) {
+        Some(left)
+    } else if mods.contains(&right) {
+        Some(right)
+    } else {
+        None
+    }
+}
+
+/// Map a modifier set to virtual keycodes (left-side by default).
+fn mod_keycodes(mods: &HashSet<Modifier>) -> Vec<u16> {
+    let mut v = Vec::new();
+    for (left, right) in [
+        (Modifier::Control, Modifier::RightControl),
+        (Modifier::Option, Modifier::RightOption),
+        (Modifier::Shift, Modifier::RightShift),
+        (Modifier::Command, Modifier::RightCommand),
+    ] {
+        if let Some(chosen) = choose_modifier(mods, left, right) {
+            v.push(chosen.keycode());
+        }
+    }
+    v
+}
+
 impl Poster for MacPoster {
-    fn post_down(&self, pid: pid_t, key: &Chord, is_repeat: bool) -> Result<()> {
+    fn post_down(&self, key: &Chord, is_repeat: bool) -> Result<()> {
         trace!(
             code = ?key.key,
             mods = ?key.modifiers,
@@ -98,7 +124,6 @@ impl Poster for MacPoster {
         let e = self.build_event(key, true, is_repeat)?;
         e.post(cge::CGEventTapLocation::HID);
         info!(
-            pid,
             code = ?key.key,
             mods = ?key.modifiers,
             is_repeat,
@@ -107,41 +132,15 @@ impl Poster for MacPoster {
         Ok(())
     }
 
-    fn post_up(&self, pid: pid_t, key: &Chord) -> Result<()> {
+    fn post_up(&self, key: &Chord) -> Result<()> {
         trace!(code = ?key.key, mods = ?key.modifiers, "post_up");
         let e = self.build_event(key, false, false)?;
         e.post(cge::CGEventTapLocation::HID);
-        info!(pid, code = ?key.key, mods = ?key.modifiers, "relayed_key_up");
+        info!(code = ?key.key, mods = ?key.modifiers, "relayed_key_up");
         Ok(())
     }
 
-    fn post_modifiers(&self, _pid: pid_t, mods: &HashSet<Modifier>, down: bool) -> Result<()> {
-        // Map modifiers to virtual keycodes (left-side by default)
-        fn mod_keycodes(m: &HashSet<Modifier>) -> Vec<u16> {
-            fn choose(m: &HashSet<Modifier>, left: Modifier, right: Modifier) -> Option<Modifier> {
-                if m.contains(&right) && !m.contains(&left) {
-                    Some(right)
-                } else if m.contains(&left) || m.contains(&right) {
-                    Some(left)
-                } else {
-                    None
-                }
-            }
-
-            let mut v = Vec::new();
-            for (left, right) in [
-                (Modifier::Control, Modifier::RightControl),
-                (Modifier::Option, Modifier::RightOption),
-                (Modifier::Shift, Modifier::RightShift),
-                (Modifier::Command, Modifier::RightCommand),
-            ] {
-                if let Some(chosen) = choose(m, left, right) {
-                    v.push(chosen.keycode());
-                }
-            }
-            v
-        }
-
+    fn post_modifiers(&self, mods: &HashSet<Modifier>, down: bool) -> Result<()> {
         let mut codes = mod_keycodes(mods);
         if !down {
             // Release in reverse order
@@ -186,27 +185,22 @@ impl RelayKey {
     // No release state to manage in pass-through mode.
 
     /// Convenience for handling a key-down input.
-    pub fn key_down(&self, pid: i32, key: &Chord, is_repeat: bool) {
+    pub fn key_down(&self, key: &Chord, is_repeat: bool) -> Result<()> {
         trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, "on_key_down");
-        let pid = pid as pid_t;
-        if !is_repeat && let Err(err) = self.poster.post_modifiers(pid, &key.modifiers, true) {
+        if !is_repeat && let Err(err) = self.poster.post_modifiers(&key.modifiers, true) {
             warn!(?err, "post_modifiers_failed");
         }
-        if let Err(err) = self.poster.post_down(pid, key, is_repeat) {
-            warn!(?err, "post_down_failed");
-        }
+        self.poster.post_down(key, is_repeat)
     }
 
     /// Convenience for handling a key-up input.
-    pub fn key_up(&self, pid: i32, chord: &Chord) {
+    pub fn key_up(&self, chord: &Chord) -> Result<()> {
         trace!(code = ?chord.key, mods = ?chord.modifiers, "on_key_up");
-        let pid = pid as pid_t;
-        if let Err(err) = self.poster.post_up(pid, chord) {
-            warn!(?err, "post_up_failed");
-        }
-        if let Err(err) = self.poster.post_modifiers(pid, &chord.modifiers, false) {
+        let res = self.poster.post_up(chord);
+        if let Err(err) = self.poster.post_modifiers(&chord.modifiers, false) {
             warn!(?err, "post_modifiers_failed");
         }
+        res
     }
 }
 
@@ -236,11 +230,11 @@ mod tests {
     }
 
     impl Poster for CountingPoster {
-        fn post_down(&self, _pid: pid_t, _key: &Chord, _is_repeat: bool) -> Result<()> {
+        fn post_down(&self, _key: &Chord, _is_repeat: bool) -> Result<()> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn post_up(&self, _pid: pid_t, _key: &Chord) -> Result<()> {
+        fn post_up(&self, _key: &Chord) -> Result<()> {
             self.1.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -257,9 +251,8 @@ mod tests {
     fn basic_down_up_no_repeat() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(1234, &key(Key::A), false);
-        /* removed misplaced inner doc block */
-        rk.key_up(1234, &key(Key::A));
+        rk.key_down(&key(Key::A), false).unwrap();
+        rk.key_up(&key(Key::A)).unwrap();
         assert_eq!(poster.downs(), 1);
         assert_eq!(poster.ups(), 1);
     }
@@ -268,9 +261,9 @@ mod tests {
     fn switch_keys_up_then_down() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(1234, &key(Key::A), false);
-        rk.key_down(1234, &key(Key::B), false);
-        rk.key_up(1234, &key(Key::B));
+        rk.key_down(&key(Key::A), false).unwrap();
+        rk.key_down(&key(Key::B), false).unwrap();
+        rk.key_up(&key(Key::B)).unwrap();
         // Pass-through: we post exactly what we're asked to.
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.ups(), 1);
@@ -280,7 +273,7 @@ mod tests {
     fn keyup_without_prior_down_posts_up() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_up(1234, &key(Key::A));
+        rk.key_up(&key(Key::A)).unwrap();
         assert_eq!(poster.downs(), 0);
         assert_eq!(poster.ups(), 1);
     }
@@ -309,14 +302,14 @@ mod tests {
         }
     }
     impl Poster for TrackPoster {
-        fn post_down(&self, _pid: pid_t, _key: &Chord, is_repeat: bool) -> Result<()> {
+        fn post_down(&self, _key: &Chord, is_repeat: bool) -> Result<()> {
             self.downs.fetch_add(1, Ordering::SeqCst);
             if is_repeat {
                 self.repeat_downs.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
         }
-        fn post_up(&self, _pid: pid_t, _key: &Chord) -> Result<()> {
+        fn post_up(&self, _key: &Chord) -> Result<()> {
             self.ups.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -330,9 +323,9 @@ mod tests {
             key: Key::RightArrow,
             modifiers: HashSet::new(),
         };
-        rk.key_down(1234, &k, false);
-        rk.key_down(1234, &k, true);
-        rk.key_up(1234, &k);
+        rk.key_down(&k, false).unwrap();
+        rk.key_down(&k, true).unwrap();
+        rk.key_up(&k).unwrap();
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.repeat_downs(), 1);
         assert_eq!(poster.ups(), 1);

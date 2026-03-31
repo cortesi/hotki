@@ -424,7 +424,7 @@ impl Repeater {
                     trace!("repeater_relay_tick_skip_running" = %id_for_log);
                     return;
                 }
-                let _ = relay.repeat_relay(&id_for_log, pid);
+                let _ = relay.repeat_relay(&id_for_log);
                 if let Some(cb) = on_relay_repeat.lock().as_ref() {
                     cb(&id_for_log);
                 }

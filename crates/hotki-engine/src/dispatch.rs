@@ -176,8 +176,7 @@ impl Engine {
     }
 
     fn handle_repeat(&self, identifier: &str) {
-        let pid = self.current_focus_info().pid;
-        if self.relay.repeat_relay(identifier, pid) {
+        if self.relay.repeat_relay(identifier) {
             if self.repeater.is_ticking(identifier) {
                 self.repeater.note_os_repeat(identifier);
             }

@@ -117,7 +117,7 @@ pub enum WorldStreamMsg {
 }
 
 /// Messages sent from the server to UI clients.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MsgToUI {
     /// Asynchronous event sent when a hotkey is triggered.
     HotkeyTriggered(String),
