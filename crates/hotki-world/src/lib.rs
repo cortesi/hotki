@@ -551,7 +551,6 @@ fn gather_displays() -> DisplaysSnapshot {
 fn active_window(displays: &[DisplayFrame]) -> Option<PlatformWindow> {
     let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
     let arr: CFArray = copy_window_info(options, kCGNullWindowID)?;
-    let mut best: Option<PlatformWindow> = None;
     let key_layer = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
     let key_owner_pid = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
     let key_owner_name = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerName) };
@@ -568,24 +567,25 @@ fn active_window(displays: &[DisplayFrame]) -> Option<PlatformWindow> {
         if layer != 0 {
             continue;
         }
-        let pid = dict_value_i32(&dict, &key_owner_pid)?;
+        let Some(pid) = dict_value_i32(&dict, &key_owner_pid) else {
+            continue;
+        };
         let id = dict_value_u32(&dict, &key_number).unwrap_or(0);
         let app = dict_value_string(&dict, &key_owner_name).unwrap_or_default();
         let title = dict_value_string(&dict, &key_name).unwrap_or_default();
         let display_id = dict_value_rect(&dict, &key_bounds)
             .as_ref()
             .and_then(|rect| display_for_rect(rect, displays));
-        best = Some(PlatformWindow {
+        return Some(PlatformWindow {
             app,
             title,
             pid,
             id,
             display_id,
         });
-        break;
     }
 
-    best
+    None
 }
 
 fn dict_value_string(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<String> {
