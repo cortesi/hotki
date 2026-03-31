@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    fs, mem,
+    fmt, fs, mem,
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -23,6 +23,17 @@ use super::{
     binding_style::BindingStyleSpec, selector, util::lock_unpoisoned,
 };
 use crate::{Action, Error, NotifyKind, Toggle, error::excerpt_at, raw, themes};
+
+/// Build a locationless `Error::Validation` with only a path and message.
+fn validation_error(path: Option<PathBuf>, err: impl fmt::Display) -> Error {
+    Error::Validation {
+        path,
+        line: None,
+        col: None,
+        message: err.to_string(),
+        excerpt: None,
+    }
+}
 
 /// Maximum instruction interrupts allowed while evaluating a Luau chunk.
 const EXECUTION_LIMIT: u64 = 200_000;
@@ -384,30 +395,12 @@ pub fn load_dynamic_config_from_string(
     );
 
     let state = Arc::new(Mutex::new(state));
-    let lua = Lua::new_with(StdLib::ALL_SAFE, mlua::LuaOptions::default()).map_err(|err| {
-        Error::Validation {
-            path: path.clone(),
-            line: None,
-            col: None,
-            message: err.to_string(),
-            excerpt: None,
-        }
-    })?;
-    lua.sandbox(true).map_err(|err| Error::Validation {
-        path: path.clone(),
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    })?;
+    let lua = Lua::new_with(StdLib::ALL_SAFE, mlua::LuaOptions::default())
+        .map_err(|err| validation_error(path.clone(), err))?;
+    lua.sandbox(true)
+        .map_err(|err| validation_error(path.clone(), err))?;
     let interrupt_steps = install_interrupt_limit(&lua);
-    install_api(&lua, state.clone()).map_err(|err| Error::Validation {
-        path: path.clone(),
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    })?;
+    install_api(&lua, state.clone()).map_err(|err| validation_error(path.clone(), err))?;
 
     reset_execution_budget(&interrupt_steps);
     lua.load(source)
@@ -415,16 +408,9 @@ pub fn load_dynamic_config_from_string(
         .exec()
         .map_err(|err| load_error_from_mlua(source, path.as_deref(), &err))?;
 
-    let root = lock_unpoisoned(&state)
-        .root
-        .clone()
-        .ok_or_else(|| Error::Validation {
-            path: path.clone(),
-            line: None,
-            col: None,
-            message: "hotki.root() must be called exactly once".to_string(),
-            excerpt: None,
-        })?;
+    let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
+        validation_error(path.clone(), "hotki.root() must be called exactly once")
+    })?;
     reset_execution_budget(&interrupt_steps);
     validate_root(&lua, &root, path.as_deref(), source)?;
 
@@ -459,13 +445,7 @@ fn validate_root(
 ) -> Result<(), Error> {
     let builder = lua
         .create_userdata(ModeBuilder::new_for_render(None, false))
-        .map_err(|err| Error::Validation {
-            path: path.map(Path::to_path_buf),
-            line: None,
-            col: None,
-            message: err.to_string(),
-            excerpt: None,
-        })?;
+        .map_err(|err| validation_error(path.map(Path::to_path_buf), err))?;
     let ctx = mode_context_userdata(
         lua,
         ModeCtx {
@@ -476,13 +456,7 @@ fn validate_root(
             depth: 0,
         },
     )
-    .map_err(|err| Error::Validation {
-        path: path.map(Path::to_path_buf),
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    })?;
+    .map_err(|err| validation_error(path.map(Path::to_path_buf), err))?;
 
     root.func
         .call::<()>((builder, ctx))
@@ -576,12 +550,13 @@ fn action_table(lua: &Lua) -> LuaResult<Table> {
         "shell",
         lua.create_function(|lua, (cmd, opts): (String, Value)| {
             let opts = parse_optional::<ShellOptionsSpec>(lua, opts)?;
+            let defaults = crate::ShellModifiers::default();
             let spec = match opts {
                 Some(opts) => crate::ShellSpec::WithMods(
                     cmd,
                     crate::ShellModifiers {
-                        ok_notify: opts.ok_notify.unwrap_or(NotifyKind::Ignore),
-                        err_notify: opts.err_notify.unwrap_or(NotifyKind::Warn),
+                        ok_notify: opts.ok_notify.unwrap_or(defaults.ok_notify),
+                        err_notify: opts.err_notify.unwrap_or(defaults.err_notify),
                     },
                 ),
                 None => crate::ShellSpec::Cmd(cmd),

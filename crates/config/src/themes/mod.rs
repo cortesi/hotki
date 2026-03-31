@@ -47,36 +47,24 @@ pub fn list_themes() -> Vec<&'static str> {
     names
 }
 
+/// Navigate the sorted theme list by `offset` positions from `current`, wrapping around.
+fn navigate_theme(current: &str, offset: isize) -> &'static str {
+    let theme_list = list_themes();
+    let Some(idx) = theme_list.iter().position(|&t| t == current) else {
+        return theme_list.first().copied().unwrap_or("default");
+    };
+    let next = (idx as isize + offset).rem_euclid(theme_list.len() as isize) as usize;
+    theme_list[next]
+}
+
 /// Get the next built-in theme in the sorted list.
 pub fn get_next_theme(current: &str) -> &'static str {
-    let theme_list = list_themes();
-    let current_idx = theme_list.iter().position(|&t| t == current);
-
-    match current_idx {
-        Some(idx) => {
-            let next_idx = (idx + 1) % theme_list.len();
-            theme_list[next_idx]
-        }
-        None => theme_list.first().copied().unwrap_or("default"),
-    }
+    navigate_theme(current, 1)
 }
 
 /// Get the previous built-in theme in the sorted list.
 pub fn get_prev_theme(current: &str) -> &'static str {
-    let theme_list = list_themes();
-    let current_idx = theme_list.iter().position(|&t| t == current);
-
-    match current_idx {
-        Some(idx) => {
-            let prev_idx = if idx == 0 {
-                theme_list.len() - 1
-            } else {
-                idx - 1
-            };
-            theme_list[prev_idx]
-        }
-        None => theme_list.first().copied().unwrap_or("default"),
-    }
+    navigate_theme(current, -1)
 }
 
 /// Check if a built-in theme exists.
