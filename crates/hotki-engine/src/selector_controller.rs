@@ -1,7 +1,8 @@
 use config::script::engine as dyn_engine;
 
 use crate::{
-    DispatchContext, Engine, Result,
+    Engine, Result,
+    runtime::FocusInfo,
     selector::{SelectorEvent, SelectorState},
 };
 
@@ -32,9 +33,9 @@ impl<'a> SelectorController<'a> {
         &self,
         chord: &mac_keycode::Chord,
         identifier: &str,
-        dispatch_ctx: &DispatchContext,
+        focus: &FocusInfo,
     ) -> Result<bool> {
-        match self.selector_input(chord, dispatch_ctx).await {
+        match self.selector_input(chord).await {
             SelectorInput::Inactive => Ok(false),
             SelectorInput::Consumed => Ok(true),
             SelectorInput::Update(snapshot) => {
@@ -44,18 +45,13 @@ impl<'a> SelectorController<'a> {
                 Ok(true)
             }
             SelectorInput::Close(close) => {
-                self.complete_close(identifier, dispatch_ctx, *close)
-                    .await?;
+                self.complete_close(identifier, focus, *close).await?;
                 Ok(true)
             }
         }
     }
 
-    async fn selector_input(
-        &self,
-        chord: &mac_keycode::Chord,
-        dispatch_ctx: &DispatchContext,
-    ) -> SelectorInput {
+    async fn selector_input(&self, chord: &mac_keycode::Chord) -> SelectorInput {
         let mut rt = self.engine.runtime.lock().await;
         let Some(selector) = rt.selector.as_mut() else {
             return SelectorInput::Inactive;
@@ -72,7 +68,7 @@ impl<'a> SelectorController<'a> {
                 rt.hud_visible = selector.prev_hud_visible;
                 SelectorInput::Close(Box::new(SelectorClose {
                     event,
-                    ctx: dispatch_ctx.mode_ctx(&rt),
+                    ctx: rt.focus.mode_ctx(rt.hud_visible, rt.depth()),
                     selector,
                 }))
             }
@@ -83,7 +79,7 @@ impl<'a> SelectorController<'a> {
     async fn complete_close(
         &self,
         identifier: &str,
-        dispatch_ctx: &DispatchContext,
+        focus: &FocusInfo,
         mut close: SelectorClose,
     ) -> Result<()> {
         self.engine
@@ -94,7 +90,7 @@ impl<'a> SelectorController<'a> {
             let cfg_guard = self.engine.config.read().await;
             let Some(cfg) = cfg_guard.as_ref() else {
                 tracing::trace!("No dynamic config loaded; ignoring selector close");
-                self.engine.rebind_and_refresh(dispatch_ctx.clone()).await?;
+                self.engine.rebind_and_refresh(focus.clone()).await?;
                 return Ok(());
             };
             execute_selector_close(cfg, &mut close)
@@ -104,7 +100,7 @@ impl<'a> SelectorController<'a> {
             Ok(result) => result,
             Err(err) => {
                 self.engine.notifier.send_error("Selector", err.pretty())?;
-                self.engine.rebind_and_refresh(dispatch_ctx.clone()).await?;
+                self.engine.rebind_and_refresh(focus.clone()).await?;
                 return Ok(());
             }
         };
@@ -113,7 +109,7 @@ impl<'a> SelectorController<'a> {
             .engine
             .apply_effects_and_nav(identifier, result.effects, result.nav)
             .await?;
-        self.engine.rebind_and_refresh(dispatch_ctx.clone()).await
+        self.engine.rebind_and_refresh(focus.clone()).await
     }
 }
 

@@ -96,9 +96,6 @@ pub async fn create_test_engine() -> (crate::Engine, mpsc::Receiver<MsgToUI>, Ar
     create_test_engine_with_relay(false).await
 }
 
-/// Hook to assert no platform interaction occurs during tests (currently a no-op).
-pub fn ensure_no_os_interaction() {}
-
 /// Seed the world focus to a specific window and wait for it to be observed.
 pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32) {
     let window = WorldWindow {

@@ -70,27 +70,6 @@ struct DispatchOutcome {
     entered_mode: bool,
 }
 
-#[derive(Debug, Clone)]
-struct DispatchContext {
-    app: String,
-    title: String,
-    pid: i32,
-}
-
-impl DispatchContext {
-    fn mode_ctx(&self, rt: &RuntimeState) -> dyn_engine::ModeCtx {
-        rt.focus.mode_ctx(rt.hud_visible, rt.depth())
-    }
-
-    fn into_focus(self) -> FocusInfo {
-        FocusInfo {
-            app: self.app,
-            title: self.title,
-            pid: self.pid,
-        }
-    }
-}
-
 use config::script::engine as dyn_engine;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
@@ -224,11 +203,10 @@ impl Engine {
             *g = Some(path);
         }
         {
-            let ctx = self.current_dispatch_context();
             let mut rt = self.runtime.lock().await;
             rt.hud_visible = false;
             rt.theme_name = theme_name;
-            rt.focus = ctx.into_focus();
+            rt.focus = self.current_focus_info();
             rt.reset_to_root(root);
         }
         self.rebind_current_context().await
@@ -252,8 +230,6 @@ impl Engine {
         }
         self.rebind_current_context().await
     }
-
-    // (No legacy focus snapshot hook; engine relies solely on world.)
 
     /// Get the current depth (0 = root) if state is initialized.
     pub async fn get_depth(&self) -> usize {

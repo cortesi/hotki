@@ -24,7 +24,6 @@ impl KeyStateTracker {
         held.contains(identifier)
     }
 
-    // back-compat helpers removed (not used)
     /// Record a key down; returns true for the first down, false for repeats.
     pub fn on_key_down(&self, identifier: &str) -> bool {
         let mut held = self.held.lock();

@@ -36,22 +36,16 @@ pub struct KeyBindingManager {
 
 impl KeyBindingManager {
     pub fn new_with_api(api: Arc<dyn HotkeyApi>) -> Self {
+        let fake = api.is_fake();
         Self {
             api,
             bindings: HashMap::new(),
             idents_by_id: HashMap::new(),
             capture_guard: None,
             capture_all_active: false,
-            fake: false, // default; updated below
+            fake,
             next_id: 1000,
         }
-        .with_fake_mode()
-    }
-
-    fn with_fake_mode(mut self) -> Self {
-        // Decide fake mode based on API type
-        self.fake = self.api.is_fake();
-        self
     }
 
     /// Update bindings based on the desired key pairs
@@ -159,9 +153,7 @@ impl KeyBindingManager {
     pub(crate) fn capture_all_active(&self) -> bool {
         self.capture_all_active
     }
-}
 
-impl KeyBindingManager {
     /// Snapshot current bindings as sorted (identifier, chord) pairs.
     pub fn bindings_snapshot(&self) -> Vec<(String, Chord)> {
         let mut pairs: Vec<(String, Chord)> = self
@@ -172,9 +164,7 @@ impl KeyBindingManager {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         pairs
     }
-}
 
-impl KeyBindingManager {
     pub(crate) fn id_for_ident(&self, ident: &str) -> Option<u32> {
         self.bindings.get(ident).map(|binding| binding.id)
     }

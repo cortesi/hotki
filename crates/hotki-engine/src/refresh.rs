@@ -125,13 +125,13 @@ pub(crate) fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::
 }
 
 impl Engine {
-    pub(crate) async fn rebind_and_refresh(&self, ctx: crate::DispatchContext) -> Result<()> {
-        tracing::debug!("start app={} title={}", ctx.app, ctx.title);
+    pub(crate) async fn rebind_and_refresh(&self, focus: FocusInfo) -> Result<()> {
+        tracing::debug!("start app={} title={}", focus.app, focus.title);
 
         let plan = {
             let cfg_guard = self.config.read().await;
             let mut rt = self.runtime.lock().await;
-            build_refresh_plan(&mut rt, cfg_guard.as_ref(), ctx.into_focus())
+            build_refresh_plan(&mut rt, cfg_guard.as_ref(), focus)
         };
 
         for message in plan.errors {

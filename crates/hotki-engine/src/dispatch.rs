@@ -14,11 +14,11 @@ impl Engine {
         if self.sync_on_dispatch {
             self.world.hint_refresh();
         }
-        let dispatch_ctx = self.current_dispatch_context();
+        let focus = self.current_focus_info();
 
         trace!(
             "Key event received: {} (app: {}, title: {})",
-            identifier, dispatch_ctx.app, dispatch_ctx.title
+            identifier, focus.app, focus.title
         );
 
         if self.config.read().await.is_none() {
@@ -27,7 +27,7 @@ impl Engine {
         }
 
         if SelectorController::new(self)
-            .handle_input(chord, identifier.as_str(), &dispatch_ctx)
+            .handle_input(chord, identifier.as_str(), &focus)
             .await?
         {
             trace!(
@@ -44,7 +44,7 @@ impl Engine {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
-            let ctx = dispatch_ctx.mode_ctx(&rt);
+            let ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
             (binding, ctx)
         };
 
@@ -67,7 +67,7 @@ impl Engine {
             );
         }
 
-        self.rebind_and_refresh(dispatch_ctx).await?;
+        self.rebind_and_refresh(focus).await?;
         trace!(
             "Key event completed in {:?}: {}",
             start.elapsed(),
@@ -168,7 +168,7 @@ impl Engine {
     }
 
     fn handle_key_up(&self, identifier: &str) {
-        let pid = self.current_dispatch_context().pid;
+        let pid = self.current_focus_info().pid;
         self.repeater.stop_sync(identifier);
         if self.relay.stop_relay(identifier, pid) {
             tracing::debug!("Stopped relay for {}", identifier);
@@ -176,7 +176,7 @@ impl Engine {
     }
 
     fn handle_repeat(&self, identifier: &str) {
-        let pid = self.current_dispatch_context().pid;
+        let pid = self.current_focus_info().pid;
         if self.relay.repeat_relay(identifier, pid) {
             if self.repeater.is_ticking(identifier) {
                 self.repeater.note_os_repeat(identifier);

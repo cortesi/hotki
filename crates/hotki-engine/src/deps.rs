@@ -83,5 +83,3 @@ impl HotkeyApi for MockHotkeyApi {
         true
     }
 }
-
-// (Window operations handled externally; no in-crate bindings remain.)

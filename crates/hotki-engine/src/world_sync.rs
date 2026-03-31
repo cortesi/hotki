@@ -146,22 +146,21 @@ impl Engine {
     }
 
     pub(crate) async fn rebind_current_context(&self) -> Result<()> {
-        let ctx = self.current_dispatch_context();
+        let focus = self.current_focus_info();
         debug!(
             "Rebinding with context: app={}, title={}",
-            ctx.app, ctx.title
+            focus.app, focus.title
         );
-        self.rebind_and_refresh(ctx).await
+        self.rebind_and_refresh(focus).await
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
         let snapshot = world.displays().await;
         {
-            let mut cache = self.display_snapshot.lock().await;
+            let cache = self.display_snapshot.lock().await;
             if *cache == snapshot {
                 return Ok(());
             }
-            *cache = snapshot.clone();
         }
 
         let hud = {
@@ -184,18 +183,17 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn current_dispatch_context(&self) -> DispatchContext {
+    pub(crate) fn current_focus_info(&self) -> FocusInfo {
         if let Some(focus) = &*self.focus_ctx.lock() {
-            return DispatchContext {
+            return FocusInfo {
                 app: focus.app.clone(),
                 title: focus.title.clone(),
                 pid: focus.pid,
             };
         }
-        DispatchContext {
-            app: String::new(),
-            title: String::new(),
+        FocusInfo {
             pid: -1,
+            ..FocusInfo::default()
         }
     }
 }

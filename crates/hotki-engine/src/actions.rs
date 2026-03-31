@@ -79,7 +79,7 @@ impl Engine {
                     return Ok(DispatchOutcome::default());
                 }
 
-                let pid = self.current_dispatch_context().pid;
+                let pid = self.current_focus_info().pid;
                 self.relay
                     .start_relay(identifier.to_string(), target.clone(), pid, false);
                 let _ = self.relay.stop_relay(identifier, pid);
@@ -273,11 +273,7 @@ impl Engine {
     }
 
     pub(crate) async fn auto_exit(&self) {
-        let mut rt = self.runtime.lock().await;
-        if rt.stack.len() > 1 {
-            rt.stack.truncate(1);
-        }
-        rt.hud_visible = false;
+        let _ = self.apply_nav_request(dyn_engine::NavRequest::Exit).await;
     }
 
     async fn reload_dynamic_config(&self) -> Result<()> {
