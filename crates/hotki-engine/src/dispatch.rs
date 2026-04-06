@@ -48,10 +48,7 @@ impl Engine {
             (binding, ctx)
         };
 
-        let Some(execution) = self
-            .execute_binding(identifier, binding, ctx)
-            .await?
-        else {
+        let Some(execution) = self.execute_binding(identifier, binding, ctx).await? else {
             return Ok(());
         };
 

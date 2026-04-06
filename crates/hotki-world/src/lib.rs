@@ -241,34 +241,39 @@ impl WorldCore {
     }
 }
 
+#[derive(Default, Clone)]
+struct WorldStateData {
+    snapshot: Vec<WorldWindow>,
+    focused: Option<WindowKey>,
+    displays: DisplaysSnapshot,
+    capabilities: Capabilities,
+    status: WorldStatus,
+}
+
 #[derive(Default)]
 struct WorldState {
-    snapshot: RwLock<Vec<WorldWindow>>,
-    focused: RwLock<Option<WindowKey>>,
-    displays: RwLock<DisplaysSnapshot>,
-    capabilities: RwLock<Capabilities>,
-    status: RwLock<WorldStatus>,
+    data: RwLock<WorldStateData>,
 }
 
 impl WorldState {
     async fn snapshot(&self) -> Vec<WorldWindow> {
-        self.snapshot.read().clone()
+        self.data.read().snapshot.clone()
     }
 
     async fn focused(&self) -> Option<WindowKey> {
-        *self.focused.read()
+        self.data.read().focused
     }
 
     async fn capabilities(&self) -> Capabilities {
-        *self.capabilities.read()
+        self.data.read().capabilities
     }
 
     async fn status(&self) -> WorldStatus {
-        self.status.read().clone()
+        self.data.read().status.clone()
     }
 
     async fn displays(&self) -> DisplaysSnapshot {
-        self.displays.read().clone()
+        self.data.read().displays.clone()
     }
 }
 
@@ -322,9 +327,9 @@ impl PollingWorld {
             self.poll_once().await;
             let elapsed = start.elapsed().as_millis() as u64;
             {
-                let mut st = self.core.state.status.write();
-                st.last_tick_ms = elapsed;
-                st.current_poll_ms = interval_ms;
+                let mut data = self.core.state.data.write();
+                data.status.last_tick_ms = elapsed;
+                data.status.current_poll_ms = interval_ms;
             }
             interval_ms = poll_tuner.next_interval(interval_ms);
             time::sleep(Duration::from_millis(interval_ms)).await;
@@ -333,18 +338,13 @@ impl PollingWorld {
 
     async fn poll_once(&self) {
         let platform = capture_platform_snapshot();
-        let displays = platform.displays.clone();
-        {
-            let mut disp_guard = self.core.state.displays.write();
-            if *disp_guard != displays {
-                *disp_guard = displays.clone();
-                self.core.hub.publish(WorldEvent::DisplaysChanged);
-            }
-        }
 
-        let mut snapshot_guard = self.core.state.snapshot.write();
-        let mut focus_guard = self.core.state.focused.write();
-        let mut caps_guard = self.core.state.capabilities.write();
+        let mut data = self.core.state.data.write();
+
+        if data.displays != platform.displays {
+            data.displays = platform.displays.clone();
+            self.core.hub.publish(WorldEvent::DisplaysChanged);
+        }
 
         let new_snapshot: Vec<WorldWindow> = platform
             .windows
@@ -369,8 +369,8 @@ impl PollingWorld {
         });
 
         // Focus change detection
-        if *focus_guard != focused_key {
-            *focus_guard = focused_key;
+        if data.focused != focused_key {
+            data.focused = focused_key;
             self.core.hub.publish(WorldEvent::FocusChanged(FocusChange {
                 key: focused_key,
                 focus: platform.focused.as_ref().map(|window| FocusSnapshot {
@@ -383,18 +383,15 @@ impl PollingWorld {
         }
 
         // Snapshot changes are wholesale for now.
-        if *snapshot_guard != new_snapshot {
-            *snapshot_guard = new_snapshot;
+        if data.snapshot != new_snapshot {
+            data.snapshot = new_snapshot;
         }
 
-        {
-            let mut status = self.core.state.status.write();
-            status.windows_count = snapshot_guard.len();
-            status.focused = focused_key;
-            status.capabilities = platform.capabilities;
-        }
+        data.capabilities = platform.capabilities;
 
-        *caps_guard = platform.capabilities;
+        data.status.windows_count = data.snapshot.len();
+        data.status.focused = focused_key;
+        data.status.capabilities = platform.capabilities;
     }
 }
 
@@ -693,11 +690,13 @@ impl TestWorld {
 
     /// Replace the snapshot and focused key atomically.
     pub fn set_snapshot(&self, snapshot: Vec<WorldWindow>, focused: Option<WindowKey>) {
-        let mut snap_guard = self.core.state.snapshot.write();
-        let mut foc_guard = self.core.state.focused.write();
-        let prev_focus = *foc_guard;
-        *snap_guard = snapshot.clone();
-        *foc_guard = focused;
+        let prev_focus = {
+            let mut data = self.core.state.data.write();
+            let prev = data.focused;
+            data.snapshot = snapshot.clone();
+            data.focused = focused;
+            prev
+        };
 
         if prev_focus != focused {
             let change = if let Some(key) = focused {
@@ -726,7 +725,7 @@ impl TestWorld {
 
     /// Replace the tracked display snapshot.
     pub fn set_displays(&self, displays: DisplaysSnapshot) {
-        *self.core.state.displays.write() = displays;
+        self.core.state.data.write().displays = displays;
         self.core.hub.publish(WorldEvent::DisplaysChanged);
     }
 }
