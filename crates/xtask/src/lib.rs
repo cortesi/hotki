@@ -9,6 +9,8 @@ mod bundle;
 mod cmd;
 /// Error and result types for `xtask`.
 mod error;
+/// macOS install task for Hotki.
+mod install;
 /// Luau validation tasks.
 mod luau;
 /// Screenshot generation tasks.
@@ -36,6 +38,8 @@ enum Xtask {
     Bundle(bundle::BundleArgs),
     /// Build a debug `.app` bundle for Hotki (dev icon + identifiers).
     BundleDev(bundle::BundleDevArgs),
+    /// Install Hotki to `/Applications`.
+    Install,
     /// Generate UI screenshots for the README gallery.
     Screenshots,
     /// Validate Luau API/docs, themes, and example configs.
@@ -52,6 +56,7 @@ pub fn run() -> Result<()> {
     match cli.command {
         Xtask::Bundle(args) => bundle::bundle_release(&root_dir, &args),
         Xtask::BundleDev(args) => bundle::bundle_dev(&root_dir, &args),
+        Xtask::Install => install::install(&root_dir),
         Xtask::Screenshots => screenshots::screenshots(&root_dir),
         Xtask::Luau => luau::luau(&root_dir),
         Xtask::Tidy => tidy::tidy(&root_dir),

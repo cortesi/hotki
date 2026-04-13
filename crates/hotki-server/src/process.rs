@@ -265,7 +265,11 @@ mod tests {
         config.set_parent_pid(222);
         let count = config.args.iter().filter(|a| *a == PARENT_PID_FLAG).count();
         assert_eq!(count, 1);
-        let idx = config.args.iter().position(|a| a == PARENT_PID_FLAG).unwrap();
+        let idx = config
+            .args
+            .iter()
+            .position(|a| a == PARENT_PID_FLAG)
+            .unwrap();
         assert_eq!(config.args[idx + 1], "222");
     }
 
@@ -276,7 +280,11 @@ mod tests {
         config.set_log_filter("b=debug");
         let count = config.args.iter().filter(|a| *a == LOG_FILTER_FLAG).count();
         assert_eq!(count, 1);
-        let idx = config.args.iter().position(|a| a == LOG_FILTER_FLAG).unwrap();
+        let idx = config
+            .args
+            .iter()
+            .position(|a| a == LOG_FILTER_FLAG)
+            .unwrap();
         assert_eq!(config.args[idx + 1], "b=debug");
     }
 }

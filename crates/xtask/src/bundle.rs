@@ -16,24 +16,47 @@ use crate::{
     workspace::workspace_version,
 };
 
+/// Default app name used for release bundles.
+const RELEASE_APP_NAME: &str = "Hotki";
+/// Default binary name embedded in release bundles.
+const RELEASE_BIN_NAME: &str = "hotki";
+/// Default macOS bundle identifier for release builds.
+const RELEASE_BUNDLE_ID: &str = "si.corte.hotki";
+/// Default output directory (workspace-relative) for release bundles.
+const RELEASE_OUT_DIR: &str = "target/bundle";
+/// Default source icon path (workspace-relative) for release bundles.
+const RELEASE_ICON_SRC: &str = "crates/hotki/assets/logo.png";
+
 /// Arguments for `cargo xtask bundle`.
 #[derive(Debug, Args)]
 pub struct BundleArgs {
     /// Bundle application name (also used as `.app` directory name).
-    #[arg(long, default_value = "Hotki")]
+    #[arg(long, default_value = RELEASE_APP_NAME)]
     app_name: String,
     /// Cargo binary name (also used as the bundle executable name).
-    #[arg(long, default_value = "hotki")]
+    #[arg(long, default_value = RELEASE_BIN_NAME)]
     bin_name: String,
     /// Bundle identifier.
-    #[arg(long, default_value = "si.corte.hotki")]
+    #[arg(long, default_value = RELEASE_BUNDLE_ID)]
     bundle_id: String,
     /// Output directory (relative to workspace root).
-    #[arg(long, default_value = "target/bundle")]
+    #[arg(long, default_value = RELEASE_OUT_DIR)]
     out_dir: PathBuf,
     /// Source icon PNG (relative to workspace root).
-    #[arg(long, default_value = "crates/hotki/assets/logo.png")]
+    #[arg(long, default_value = RELEASE_ICON_SRC)]
     icon_src: PathBuf,
+}
+
+impl Default for BundleArgs {
+    fn default() -> Self {
+        Self {
+            app_name: RELEASE_APP_NAME.to_string(),
+            bin_name: RELEASE_BIN_NAME.to_string(),
+            bundle_id: RELEASE_BUNDLE_ID.to_string(),
+            out_dir: PathBuf::from(RELEASE_OUT_DIR),
+            icon_src: PathBuf::from(RELEASE_ICON_SRC),
+        }
+    }
 }
 
 /// Arguments for `cargo xtask bundle-dev`.
@@ -144,16 +167,26 @@ impl From<&BundleDevArgs> for BundleSpec {
 
 /// Build a release `.app` bundle.
 pub fn bundle_release(root_dir: &Path, args: &BundleArgs) -> Result<()> {
-    bundle(root_dir, &BundleSpec::from(args))
+    let app_dir = build_bundle(root_dir, &BundleSpec::from(args))?;
+    println!("==> Bundle ready: {}", app_dir.display());
+    println!("    Run with: open \"{}\"", app_dir.display());
+    Ok(())
+}
+
+/// Build a release bundle using the default `bundle` arguments and return the app path.
+pub fn bundle_release_default(root_dir: &Path) -> Result<PathBuf> {
+    build_bundle(root_dir, &BundleSpec::from(&BundleArgs::default()))
 }
 
 /// Build a debug `.app` bundle (dev identifiers + icon).
 pub fn bundle_dev(root_dir: &Path, args: &BundleDevArgs) -> Result<()> {
-    bundle(root_dir, &BundleSpec::from(args))
+    let app_dir = build_bundle(root_dir, &BundleSpec::from(args))?;
+    println!("==> Dev bundle ready: {}", app_dir.display());
+    Ok(())
 }
 
 /// Build one app bundle from a normalized bundle specification.
-fn bundle(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
+fn build_bundle(root_dir: &Path, spec: &BundleSpec) -> Result<PathBuf> {
     let version = workspace_version(root_dir)?;
     println!(
         "==> Building {} bundle ({}, {})",
@@ -219,11 +252,7 @@ fn bundle(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
     })?;
     chmod_executable(&bundle_bin_path)?;
 
-    println!("==> Bundle ready: {}", app_dir.display());
-    if matches!(spec.build_profile, BuildProfile::Release) {
-        println!("    Run with: open \"{}\"", app_dir.display());
-    }
-    Ok(())
+    Ok(app_dir)
 }
 
 /// Build the target executable that will be embedded in the app bundle.
