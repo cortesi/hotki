@@ -14,6 +14,8 @@ use crate::runtime::ControlMsg;
 pub struct PermissionsHelp {
     /// Whether the permissions help viewport is visible.
     visible: bool,
+    /// Request focus the next time the viewport is shown.
+    want_focus: bool,
     /// Stable viewport id for the help window.
     id: ViewportId,
     /// Control channel to the runtime for opening settings.
@@ -25,6 +27,7 @@ impl PermissionsHelp {
     pub fn new() -> Self {
         Self {
             visible: false,
+            want_focus: false,
             id: ViewportId::from_hash_of("hotki_permissions"),
             tx_ctrl: None,
         }
@@ -33,11 +36,13 @@ impl PermissionsHelp {
     /// Show the permissions help window.
     pub fn show(&mut self) {
         self.visible = true;
+        self.want_focus = true;
     }
 
     /// Hide the permissions help window.
     pub fn hide(&mut self) {
         self.visible = false;
+        self.want_focus = false;
     }
 
     /// Set the runtime control sender used to trigger actions.
@@ -65,8 +70,13 @@ impl PermissionsHelp {
             let wctx = vp_ui.ctx().clone();
             if wctx.input(|i| i.viewport().close_requested()) {
                 self.visible = false;
+                self.want_focus = false;
                 wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 return;
+            }
+            if self.want_focus {
+                wctx.send_viewport_cmd_to(self.id, ViewportCommand::Focus);
+                self.want_focus = false;
             }
 
             let status = check_permissions();
