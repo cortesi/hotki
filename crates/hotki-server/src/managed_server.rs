@@ -71,12 +71,12 @@ impl ManagedServer {
             config.executable = current_exe;
             config.ensure_server_mode();
             config.set_socket_path(&self.socket_path);
-            config.set_env_var("HOTKI_PARENT_PID", std::process::id().to_string());
+            config.set_parent_pid(std::process::id());
             self.config = Some(config);
         }
     }
 
-    /// Propagate a log filter to any auto-spawned server.
+    /// Propagate a log filter to any auto-spawned server via `--log-filter`.
     pub(crate) fn set_server_log_filter(&mut self, filter: impl Into<String>) {
         if self.config.is_none()
             && let Ok(current_exe) = env::current_exe()
@@ -86,7 +86,7 @@ impl ManagedServer {
             self.config = Some(config);
         }
         if let Some(config) = &mut self.config {
-            config.set_env_var("RUST_LOG", filter.into());
+            config.set_log_filter(&filter.into());
         }
     }
 

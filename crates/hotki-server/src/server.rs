@@ -1,5 +1,4 @@
 use std::{
-    env,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -28,13 +27,14 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
 ///
 /// Notes
 /// - Default socket path is per‑UID+PID; override with `with_socket_path`.
-/// - When auto‑spawned by the UI, the server watches `HOTKI_PARENT_PID` and
-///   requests shutdown as soon as the parent exits.
+/// - When auto‑spawned by the UI, the server is handed the parent's PID via
+///   `with_parent_pid` and requests shutdown as soon as the parent exits.
 /// - After the last client disconnects, the server starts an idle timer
 ///   (configurable via `with_idle_timeout_secs`) and exits when it fires.
 pub struct Server {
     socket_path: String,
     idle_timeout_secs: u64,
+    parent_pid: Option<libc::pid_t>,
 }
 
 impl Default for Server {
@@ -49,6 +49,7 @@ impl Server {
         Self {
             socket_path: default_socket_path().to_string(),
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+            parent_pid: None,
         }
     }
 
@@ -61,6 +62,12 @@ impl Server {
     /// Override the idle timeout in seconds (after client disconnects).
     pub fn with_idle_timeout_secs(mut self, secs: u64) -> Self {
         self.idle_timeout_secs = secs;
+        self
+    }
+
+    /// Watch the given parent PID and shut down when it exits.
+    pub fn with_parent_pid(mut self, pid: libc::pid_t) -> Self {
+        self.parent_pid = Some(pid);
         self
     }
 
@@ -149,70 +156,66 @@ impl Server {
         // If a parent PID is provided (standard when auto-spawned by the UI),
         // watch it and request shutdown immediately when it exits. This makes
         // the backend die as soon as the frontend goes away for any reason.
-        if let Ok(ppid_str) = env::var("HOTKI_PARENT_PID") {
-            if let Ok(ppid) = ppid_str.parse::<libc::pid_t>() {
-                let shutdown_for_parent = shutdown_requested.clone();
-                thread::spawn(move || {
-                    // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
-                    unsafe {
-                        let kq = libc::kqueue();
-                        if kq >= 0 {
-                            let mut kev: libc::kevent = std::mem::zeroed();
-                            // Configure event: watch specific PID for exit, one-shot.
-                            kev.ident = ppid as usize;
-                            kev.filter = libc::EVFILT_PROC;
-                            kev.flags = libc::EV_ADD | libc::EV_ONESHOT;
-                            kev.fflags = libc::NOTE_EXIT;
-                            kev.data = 0;
-                            kev.udata = std::ptr::null_mut();
+        if let Some(ppid) = self.parent_pid {
+            let shutdown_for_parent = shutdown_requested.clone();
+            thread::spawn(move || {
+                // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
+                unsafe {
+                    let kq = libc::kqueue();
+                    if kq >= 0 {
+                        let mut kev: libc::kevent = std::mem::zeroed();
+                        // Configure event: watch specific PID for exit, one-shot.
+                        kev.ident = ppid as usize;
+                        kev.filter = libc::EVFILT_PROC;
+                        kev.flags = libc::EV_ADD | libc::EV_ONESHOT;
+                        kev.fflags = libc::NOTE_EXIT;
+                        kev.data = 0;
+                        kev.udata = std::ptr::null_mut();
 
-                            let res = libc::kevent(
+                        let res = libc::kevent(
+                            kq,
+                            &kev as *const libc::kevent,
+                            1,
+                            std::ptr::null_mut(),
+                            0,
+                            std::ptr::null(),
+                        );
+                        if res == 0 {
+                            // Wait for the event to fire.
+                            let mut out: libc::kevent = std::mem::zeroed();
+                            let _ = libc::kevent(
                                 kq,
-                                &kev as *const libc::kevent,
-                                1,
-                                std::ptr::null_mut(),
+                                std::ptr::null(),
                                 0,
+                                &mut out as *mut libc::kevent,
+                                1,
                                 std::ptr::null(),
                             );
-                            if res == 0 {
-                                // Wait for the event to fire.
-                                let mut out: libc::kevent = std::mem::zeroed();
-                                let _ = libc::kevent(
-                                    kq,
-                                    std::ptr::null(),
-                                    0,
-                                    &mut out as *mut libc::kevent,
-                                    1,
-                                    std::ptr::null(),
-                                );
-                                // Parent exited; request shutdown.
-                                shutdown_for_parent.store(true, Ordering::SeqCst);
-                                let _ = loop_wake::post_user_event();
-                                let _ = libc::close(kq);
-                                return;
-                            } else {
-                                // Registration failed; fall back to polling below.
-                                let _ = libc::close(kq);
-                            }
-                        }
-                    }
-
-                    // Fallback: poll with kill(ppid, 0) at short intervals.
-                    loop {
-                        // kill == 0 -> process exists; ESRCH -> doesn't exist
-                        let alive = unsafe { libc::kill(ppid, 0) } == 0
-                            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-                        if !alive {
+                            // Parent exited; request shutdown.
                             shutdown_for_parent.store(true, Ordering::SeqCst);
                             let _ = loop_wake::post_user_event();
-                            break;
+                            let _ = libc::close(kq);
+                            return;
+                        } else {
+                            // Registration failed; fall back to polling below.
+                            let _ = libc::close(kq);
                         }
-                        std::thread::sleep(Duration::from_millis(100));
                     }
-                });
-            } else {
-                tracing::warn!("HOTKI_PARENT_PID present but invalid: {:?}", ppid_str);
-            }
+                }
+
+                // Fallback: poll with kill(ppid, 0) at short intervals.
+                loop {
+                    // kill == 0 -> process exists; ESRCH -> doesn't exist
+                    let alive = unsafe { libc::kill(ppid, 0) } == 0
+                        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+                    if !alive {
+                        shutdown_for_parent.store(true, Ordering::SeqCst);
+                        let _ = loop_wake::post_user_event();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
         }
 
         // NSWorkspace observer installation is triggered post-handshake via UserEvent

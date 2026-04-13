@@ -69,7 +69,10 @@ impl Client {
         self
     }
 
-    /// Propagate a log filter to the spawned server via `RUST_LOG`.
+    /// Propagate a log filter to the spawned server via `--log-filter`.
+    ///
+    /// The filter is passed on the command line — never as an environment
+    /// variable — so it does not leak to grandchildren the server may spawn.
     ///
     /// Order independent: may be called before or after
     /// [`with_auto_spawn_server`]. If no server config exists yet, this method
@@ -216,6 +219,11 @@ mod tests {
         assert!(cfg.args.iter().any(|a| a == "--server"));
     }
 
+    fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let idx = args.iter().position(|a| a.as_str() == flag)?;
+        args.get(idx + 1).map(String::as_str)
+    }
+
     #[test]
     fn auto_spawn_idempotent_no_dup_flags() {
         let client = Client::new()
@@ -225,11 +233,14 @@ mod tests {
             .managed_server
             .server_config()
             .expect("server config");
-        // Only one --server and one --socket
+        // Only one --server, one --socket, one --parent-pid
         assert_eq!(count_flag(&cfg.args, "--server"), 1);
         assert_eq!(count_flag(&cfg.args, "--socket"), 1);
-        // HOTKI_PARENT_PID is present
-        assert!(cfg.env.iter().any(|(k, _)| k == "HOTKI_PARENT_PID"));
+        assert_eq!(count_flag(&cfg.args, "--parent-pid"), 1);
+        assert_eq!(
+            value_after(&cfg.args, "--parent-pid"),
+            Some(std::process::id().to_string().as_str())
+        );
     }
 
     #[test]
@@ -240,26 +251,16 @@ mod tests {
             .with_server_log_filter("a=info")
             .with_auto_spawn_server();
         let cfg1 = c1.managed_server.server_config().expect("server config");
-        assert_eq!(
-            cfg1.env
-                .iter()
-                .find(|(k, _)| k == "RUST_LOG")
-                .map(|(_, v)| v.as_str()),
-            Some("a=info")
-        );
+        assert_eq!(count_flag(&cfg1.args, "--log-filter"), 1);
+        assert_eq!(value_after(&cfg1.args, "--log-filter"), Some("a=info"));
 
         // filter after auto
         let c2 = Client::new()
             .with_auto_spawn_server()
             .with_server_log_filter("b=debug");
         let cfg2 = c2.managed_server.server_config().expect("server config");
-        assert_eq!(
-            cfg2.env
-                .iter()
-                .find(|(k, _)| k == "RUST_LOG")
-                .map(|(_, v)| v.as_str()),
-            Some("b=debug")
-        );
+        assert_eq!(count_flag(&cfg2.args, "--log-filter"), 1);
+        assert_eq!(value_after(&cfg2.args, "--log-filter"), Some("b=debug"));
 
         // filter override
         let c3 = Client::new()
@@ -267,12 +268,7 @@ mod tests {
             .with_server_log_filter("first")
             .with_server_log_filter("second");
         let cfg3 = c3.managed_server.server_config().expect("server config");
-        assert_eq!(
-            cfg3.env
-                .iter()
-                .find(|(k, _)| k == "RUST_LOG")
-                .map(|(_, v)| v.as_str()),
-            Some("second")
-        );
+        assert_eq!(count_flag(&cfg3.args, "--log-filter"), 1);
+        assert_eq!(value_after(&cfg3.args, "--log-filter"), Some("second"));
     }
 }

@@ -21,6 +21,9 @@ const TERM_POLL_INTERVAL_MS: u64 = 10;
 const SERVER_FLAG: &str = "--server";
 const SOCKET_FLAG: &str = "--socket";
 
+pub(crate) const PARENT_PID_FLAG: &str = "--parent-pid";
+pub(crate) const LOG_FILTER_FLAG: &str = "--log-filter";
+
 #[inline]
 fn send_sigterm(pid: libc::pid_t) {
     unsafe {
@@ -77,11 +80,11 @@ fn terminate_child_sync(mut child: Child) {
     let _ = child.wait();
 }
 
-fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
+fn replace_flag_pair(args: &mut Vec<String>, flag: &str, value: &str) {
     let mut new_args: Vec<String> = Vec::with_capacity(args.len() + 2);
     let mut i = 0;
     while i < args.len() {
-        if args[i] == SOCKET_FLAG {
+        if args[i] == flag {
             i += 1;
             if i < args.len() {
                 i += 1;
@@ -91,22 +94,23 @@ fn replace_socket_arg(args: &mut Vec<String>, socket_path: &str) {
             i += 1;
         }
     }
-    new_args.push(SOCKET_FLAG.to_string());
-    new_args.push(socket_path.to_string());
+    new_args.push(flag.to_string());
+    new_args.push(value.to_string());
     *args = new_args;
 }
 
-/// Configuration for launching a hotkey server process
+/// Configuration for launching a hotkey server process.
+///
+/// The server is spawned with the parent's unmodified environment. All
+/// server-specific state (parent PID, log filter) is passed via CLI
+/// arguments so nothing hotki wants the backend to know ever leaks into
+/// grandchild processes such as shell actions.
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessConfig {
     /// Path to the executable
     pub executable: PathBuf,
     /// Arguments to pass to the server
     pub args: Vec<String>,
-    /// Environment variables to set
-    pub env: Vec<(String, String)>,
-    /// Whether to inherit the parent's environment
-    pub inherit_env: bool,
 }
 
 impl ProcessConfig {
@@ -115,8 +119,6 @@ impl ProcessConfig {
         Self {
             executable: executable.into(),
             args: vec![SERVER_FLAG.to_string()],
-            env: Vec::new(),
-            inherit_env: true,
         }
     }
 
@@ -129,17 +131,17 @@ impl ProcessConfig {
 
     /// Replace any existing `--socket <value>` pair with the supplied socket path.
     pub(crate) fn set_socket_path(&mut self, socket_path: &str) {
-        replace_socket_arg(&mut self.args, socket_path);
+        replace_flag_pair(&mut self.args, SOCKET_FLAG, socket_path);
     }
 
-    /// Insert or replace an environment variable in the launch config.
-    pub(crate) fn set_env_var(&mut self, key: &str, value: impl Into<String>) {
-        let value = value.into();
-        if let Some((_, existing)) = self.env.iter_mut().find(|(name, _)| name == key) {
-            *existing = value;
-        } else {
-            self.env.push((key.to_string(), value));
-        }
+    /// Replace any existing `--parent-pid <value>` pair with the supplied PID.
+    pub(crate) fn set_parent_pid(&mut self, pid: u32) {
+        replace_flag_pair(&mut self.args, PARENT_PID_FLAG, &pid.to_string());
+    }
+
+    /// Replace any existing `--log-filter <value>` pair with the supplied filter spec.
+    pub(crate) fn set_log_filter(&mut self, filter: &str) {
+        replace_flag_pair(&mut self.args, LOG_FILTER_FLAG, filter);
     }
 }
 
@@ -172,22 +174,9 @@ impl ServerProcess {
         debug!("Server args: {:?}", self.config.args);
 
         let mut command = Command::new(&self.config.executable);
-
-        // Add arguments
         for arg in &self.config.args {
             command.arg(arg);
         }
-
-        // Configure environment
-        if !self.config.inherit_env {
-            command.env_clear();
-        }
-
-        for (key, value) in &self.config.env {
-            command.env(key, value);
-        }
-
-        // Spawn the process
         let child = command.spawn().map_err(Error::Io)?;
 
         let pid = child.id();
@@ -267,7 +256,27 @@ mod tests {
 
         assert_eq!(config.executable, PathBuf::from("/usr/bin/test"));
         assert_eq!(config.args, vec!["--server"]);
-        assert_eq!(config.env, Vec::<(String, String)>::new());
-        assert!(config.inherit_env);
+    }
+
+    #[test]
+    fn set_parent_pid_is_idempotent() {
+        let mut config = ProcessConfig::new("/usr/bin/test");
+        config.set_parent_pid(111);
+        config.set_parent_pid(222);
+        let count = config.args.iter().filter(|a| *a == PARENT_PID_FLAG).count();
+        assert_eq!(count, 1);
+        let idx = config.args.iter().position(|a| a == PARENT_PID_FLAG).unwrap();
+        assert_eq!(config.args[idx + 1], "222");
+    }
+
+    #[test]
+    fn set_log_filter_is_idempotent() {
+        let mut config = ProcessConfig::new("/usr/bin/test");
+        config.set_log_filter("a=info");
+        config.set_log_filter("b=debug");
+        let count = config.args.iter().filter(|a| *a == LOG_FILTER_FLAG).count();
+        assert_eq!(count, 1);
+        let idx = config.args.iter().position(|a| a == LOG_FILTER_FLAG).unwrap();
+        assert_eq!(config.args[idx + 1], "b=debug");
     }
 }

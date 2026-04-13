@@ -2891,9 +2891,10 @@ dependencies = [
 
 [[package]]
 name = "luau-analyze"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "cc",
+ "libloading 0.8.9",
 ]
 
 [[package]]

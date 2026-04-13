@@ -425,6 +425,7 @@ fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
                 timeout: Some(ANALYZE_TIMEOUT),
                 module_name: Some(module_name.as_ref()),
                 cancellation_token: None,
+                virtual_modules: &[],
             },
         )
         .map_err(|e| Error::Validation {
@@ -435,7 +436,7 @@ fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
             excerpt: None,
         })?;
 
-    if result.timed_out() {
+    if result.timed_out {
         return Err(Error::Validation {
             path: Some(path.to_path_buf()),
             line: None,

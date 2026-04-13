@@ -16,8 +16,11 @@
 //!   assume a global singleton. To coordinate between processes, pass an
 //!   explicit socket path.
 //! - Auto‑spawn: `Client` can launch the current binary in `--server` mode and
-//!   propagate `RUST_LOG`. The parent UI PID is exported via `HOTKI_PARENT_PID`
-//!   so the backend exits immediately if the UI process terminates.
+//!   propagate a log filter via `--log-filter`. The parent UI PID is passed via
+//!   `--parent-pid` so the backend exits immediately if the UI process
+//!   terminates. Nothing is communicated through the child's environment, so
+//!   grandchildren spawned by the backend (e.g. shell actions) see only the
+//!   user's unmodified environment.
 //! - Idle shutdown: After the last client disconnects, the server starts an
 //!   idle timer (configurable; defaults to a few seconds) and exits when it
 //!   fires. A new client connection cancels the timer.

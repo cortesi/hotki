@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     server_idle_timeout: Option<u64>,
 
+    /// Parent PID to watch (server mode; shut down when this process exits)
+    #[arg(long, value_name = "PID", hide = true)]
+    parent_pid: Option<i32>,
+
     /// Logging controls
     #[command(flatten)]
     log: logshared::LogArgs,
@@ -200,6 +204,10 @@ fn main() -> eframe::Result<()> {
 
         if let Some(secs) = cli.server_idle_timeout {
             server = server.with_idle_timeout_secs(secs);
+        }
+
+        if let Some(pid) = cli.parent_pid {
+            server = server.with_parent_pid(pid);
         }
 
         if let Err(e) = server.run() {
