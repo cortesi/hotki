@@ -32,14 +32,14 @@ pub(super) async fn broadcast_event(
         }
     };
 
-    let mut survivors = Vec::with_capacity(clients_snapshot.len());
     let mut sends = FuturesUnordered::new();
     for client in clients_snapshot {
         let value = value.clone();
         sends.push(async move {
             (
-                client.clone(),
+                client.id,
                 client
+                    .sender
                     .send_notification(
                         hotki_protocol::rpc::HotkeyNotification::Notify.as_str(),
                         slice::from_ref(&value),
@@ -49,11 +49,10 @@ pub(super) async fn broadcast_event(
         });
     }
 
-    while let Some((client, result)) = sends.next().await {
-        match result {
-            Ok(()) => survivors.push(client),
-            Err(err) => warn!("Dropping disconnected client (send failed): {:?}", err),
+    while let Some((client_id, result)) = sends.next().await {
+        if let Err(err) = result {
+            warn!("Dropping disconnected client (send failed): {:?}", err);
+            registry.remove(client_id).await;
         }
     }
-    registry.replace(survivors).await;
 }
