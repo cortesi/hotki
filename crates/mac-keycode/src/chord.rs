@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fmt};
+use std::{
+    collections::HashSet,
+    fmt::{Display, Formatter, Result as FmtResult},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -71,8 +74,8 @@ impl Chord {
     }
 }
 
-impl fmt::Display for Chord {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Chord {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.to_string_canonical())
     }
 }
