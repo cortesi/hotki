@@ -24,22 +24,16 @@ async fn testworld_snapshot_and_focus() {
     assert_eq!(snap.len(), 1);
     assert_eq!(focused, Some(key));
 
-    // Should observe a focus-changed event
     let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
-    let mut got_focus = false;
-    while tokio::time::Instant::now() < deadline {
-        if let Some(ev) = world.next_event_until(&mut cursor, deadline).await
-            && matches!(
-                ev,
-                WorldEvent::FocusChanged(FocusChange {
-                    focus: Some(hotki_protocol::FocusSnapshot { pid: 42, .. }),
-                    ..
-                })
-            )
-        {
-            got_focus = true;
-            break;
-        }
-    }
-    assert!(got_focus, "focus change event should be observed");
+    let event = world.next_event_until(&mut cursor, deadline).await;
+    assert!(
+        matches!(
+            event,
+            Some(WorldEvent::FocusChanged(FocusChange {
+                focus: Some(hotki_protocol::FocusSnapshot { pid: 42, .. }),
+                ..
+            }))
+        ),
+        "focus change event should be observed"
+    );
 }
