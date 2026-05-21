@@ -43,10 +43,8 @@ impl RelayHandler {
         {
             tracing::warn!(?e, "relay_down_failed");
         }
-        self.active
-            .lock()
-            .insert(id.clone(), ActiveRelay { chord, pid });
         trace!(pid, id = %id, "relay_start");
+        self.active.lock().insert(id, ActiveRelay { chord, pid });
     }
 
     /// Repeat relay for an active id (posts a repeat KeyDown).
