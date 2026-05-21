@@ -286,15 +286,10 @@ mod tests {
         let mut inner = crate::Inner::default();
         let hk = mac_keycode::Chord {
             key: Key::H,
-            modifiers: {
-                let mut s = HashSet::new();
-                s.insert(mac_keycode::Modifier::Control);
-                s
-            },
+            modifiers: HashSet::from([mac_keycode::Modifier::Control]),
         };
         let _id = test_register(&mut inner, hk, true);
-        let mut mods = HashSet::new();
-        mods.insert(mac_keycode::Modifier::Control);
+        let mods = HashSet::from([mac_keycode::Modifier::Control]);
         let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);
         let d = crate::policy::classify(false, matched);
         assert!(d.emit);
