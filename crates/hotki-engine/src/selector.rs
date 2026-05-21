@@ -1,6 +1,6 @@
 //! Runtime selector state and fuzzy matching helpers.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use config::script::engine::{SelectorConfig, SelectorItem};
 use hotki_protocol::{SelectorItemSnapshot, SelectorSnapshot};
@@ -32,8 +32,8 @@ pub(crate) struct SelectorCandidate {
     pub(crate) item: SelectorItem,
 }
 
-impl std::fmt::Debug for SelectorCandidate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SelectorCandidate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SelectorCandidate")
             .field("id", &self.id)
             .field("label", &self.item.label)
@@ -49,8 +49,8 @@ pub(crate) struct SelectorMatcher {
     indices: Vec<u32>,
 }
 
-impl std::fmt::Debug for SelectorMatcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SelectorMatcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SelectorMatcher")
             .field("last_query", &self.last_query)
             .finish_non_exhaustive()
@@ -136,8 +136,8 @@ pub(crate) struct SelectorState {
     pub(crate) prev_hud_visible: bool,
 }
 
-impl std::fmt::Debug for SelectorState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SelectorState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SelectorState")
             .field("title", &self.config.title)
             .field("query", &self.query)

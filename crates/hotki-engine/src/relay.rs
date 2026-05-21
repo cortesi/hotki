@@ -102,7 +102,6 @@ mod tests {
     use super::*;
 
     fn chord(key: Key) -> Chord {
-        use std::collections::HashSet;
         Chord {
             key,
             modifiers: HashSet::new(),

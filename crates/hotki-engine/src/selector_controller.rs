@@ -1,3 +1,5 @@
+use std::result;
+
 use config::script::engine as dyn_engine;
 
 use crate::{
@@ -116,7 +118,7 @@ impl<'a> SelectorController<'a> {
 fn execute_selector_close(
     cfg: &dyn_engine::DynamicConfig,
     close: &mut SelectorClose,
-) -> std::result::Result<dyn_engine::HandlerResult, config::Error> {
+) -> result::Result<dyn_engine::HandlerResult, config::Error> {
     match close.event {
         SelectorEvent::Select => {
             let _changed_ignored = close.selector.tick();

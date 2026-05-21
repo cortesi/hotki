@@ -467,7 +467,10 @@ impl Repeater {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        time::{Duration as StdDuration, Instant},
+    };
 
     use tokio::{
         sync::mpsc,
@@ -521,9 +524,9 @@ mod tests {
 
         drop(gate_guard);
         tokio::task::yield_now().await; // allow initial run to start
-        let real_start = std::time::Instant::now();
+        let real_start = Instant::now();
         while state.running.load(AtomicOrdering::SeqCst)
-            && real_start.elapsed() < std::time::Duration::from_secs(1)
+            && real_start.elapsed() < StdDuration::from_secs(1)
         {
             tokio::task::yield_now().await;
         }
@@ -534,9 +537,9 @@ mod tests {
 
         // Advance far enough for the next repeat ticks to execute after initial completion.
         advance(Duration::from_millis(250)).await;
-        let real_start_repeat = std::time::Instant::now();
+        let real_start_repeat = Instant::now();
         while shell_count.load(AtomicOrdering::SeqCst) == 0
-            && real_start_repeat.elapsed() < std::time::Duration::from_secs(1)
+            && real_start_repeat.elapsed() < StdDuration::from_secs(1)
         {
             tokio::task::yield_now().await;
         }

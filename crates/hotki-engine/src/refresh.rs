@@ -1,3 +1,8 @@
+use std::{
+    cmp::Ordering,
+    time::{Duration, Instant},
+};
+
 use config::script::engine as dyn_engine;
 use hotki_protocol::HudState;
 use mac_keycode::Chord;
@@ -144,7 +149,7 @@ impl Engine {
             }
         }
 
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let key_count = plan.key_pairs.len();
         let bindings_changed = {
             let mut manager = self.binding_manager.lock().await;
@@ -162,7 +167,7 @@ impl Engine {
             .await?;
 
         let elapsed = start.elapsed();
-        if elapsed > std::time::Duration::from_millis(crate::BIND_UPDATE_WARN_MS) {
+        if elapsed > Duration::from_millis(crate::BIND_UPDATE_WARN_MS) {
             tracing::warn!(
                 "Context update bind step took {:?} for {} keys",
                 elapsed,
@@ -194,9 +199,9 @@ pub(crate) fn theme_step_name(theme_names: &[String], current: &str, step: isize
 
     let len = theme_names.len();
     let next = match step.cmp(&0) {
-        std::cmp::Ordering::Greater => (idx + 1) % len,
-        std::cmp::Ordering::Less => idx.checked_sub(1).unwrap_or(len - 1),
-        std::cmp::Ordering::Equal => idx,
+        Ordering::Greater => (idx + 1) % len,
+        Ordering::Less => idx.checked_sub(1).unwrap_or(len - 1),
+        Ordering::Equal => idx,
     };
 
     theme_names[next].clone()

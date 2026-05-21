@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use crate::Result;
 
@@ -49,7 +52,7 @@ impl HotkeyApi for RealHotkeyApi {
 
 /// Mock API for tests that avoids OS interaction.
 pub(crate) struct MockHotkeyApi {
-    next_id: std::sync::atomic::AtomicU32,
+    next_id: AtomicU32,
 }
 
 impl Default for MockHotkeyApi {
@@ -62,16 +65,14 @@ impl MockHotkeyApi {
     /// Create a new mock hotkey API.
     pub fn new() -> Self {
         Self {
-            next_id: std::sync::atomic::AtomicU32::new(1000),
+            next_id: AtomicU32::new(1000),
         }
     }
 }
 
 impl HotkeyApi for MockHotkeyApi {
     fn intercept(&self, _chord: mac_keycode::Chord) -> u32 {
-        self.next_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1
+        self.next_id.fetch_add(1, Ordering::SeqCst) + 1
     }
     fn unregister(&self, _id: u32) -> Result<()> {
         Ok(())

@@ -1,3 +1,8 @@
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use config::script::engine as dyn_engine;
 use tracing::{trace, warn};
 
@@ -10,7 +15,7 @@ struct BindingExecution {
 
 impl Engine {
     async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: &str) -> Result<()> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         if self.sync_on_dispatch {
             self.world.hint_refresh();
         }
@@ -57,7 +62,7 @@ impl Engine {
         }
 
         let processing_time = start.elapsed();
-        if processing_time > std::time::Duration::from_millis(crate::KEY_PROC_WARN_MS) {
+        if processing_time > Duration::from_millis(crate::KEY_PROC_WARN_MS) {
             warn!(
                 "Key processing took {:?} for {}",
                 processing_time, identifier
@@ -141,8 +146,8 @@ impl Engine {
 
                 let snapshot = {
                     let notify = self.selector_notify.clone();
-                    let notify_cb: std::sync::Arc<dyn Fn() + Send + Sync> =
-                        std::sync::Arc::new(move || notify.notify_one());
+                    let notify_cb: Arc<dyn Fn() + Send + Sync> =
+                        Arc::new(move || notify.notify_one());
                     let mut rt = self.runtime.lock().await;
                     let prev_hud_visible = rt.hud_visible;
                     rt.hud_visible = false;
