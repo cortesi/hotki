@@ -497,16 +497,14 @@ fn wait_for_idents_tracks_hud_events() {
     ready_rx.recv().unwrap();
     let mut client = BridgeClient::new(path);
     client.ensure_ready(1_000).unwrap();
+    let client = Arc::new(ParkingMutex::new(client));
 
-    let notifier = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
-        event_tx.send(()).unwrap();
-    });
+    let waiter_client = Arc::clone(&client);
+    let waiter = thread::spawn(move || waiter_client.lock().wait_for_idents(&["cmd+b"], 1_000));
+    event_tx.send(()).unwrap();
+    waiter.join().unwrap().unwrap();
 
-    client.wait_for_idents(&["cmd+b"], 1_000).unwrap();
-    notifier.join().unwrap();
-
-    client.reset();
+    client.lock().reset();
     handle.join().unwrap();
     fs::remove_file(&control_path).ok();
 }
@@ -617,7 +615,6 @@ fn reconnect_refreshes_handshake_and_clears_cache() {
                 response: BridgeResponse::Depth { depth: 2 },
             };
             send_reply(&mut writer, &reply);
-            thread::sleep(Duration::from_millis(50));
         }
     });
 
