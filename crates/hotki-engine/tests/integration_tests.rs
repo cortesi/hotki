@@ -9,10 +9,10 @@ use std::{
 
 use hotki_engine::test_support::{
     capture_all_active, create_test_engine_with_relay, recv_until, run_engine_test,
-    set_on_relay_repeat, set_world_focus, write_test_config,
+    run_engine_test_paused, set_on_relay_repeat, set_world_focus, write_test_config,
 };
 use hotki_protocol::MsgToUI;
-use tokio::time::{sleep, timeout};
+use tokio::time::{advance, timeout};
 
 #[test]
 fn focus_change_triggers_rerender() {
@@ -109,7 +109,7 @@ fn mode_entry_and_pop_updates_depth() {
 
 #[test]
 fn repeat_relay_ticks() {
-    run_engine_test(async move {
+    run_engine_test_paused(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
 
         let path = write_test_config(
@@ -129,6 +129,9 @@ fn repeat_relay_ticks() {
         set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
         let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
         while rx.try_recv().is_ok() {}
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
 
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = count.clone();
@@ -145,10 +148,10 @@ fn repeat_relay_ticks() {
             .await
             .expect("dispatch a down");
 
-        // Wait until we observe at least one software repeat tick.
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
-        while count.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
-            sleep(Duration::from_millis(25)).await;
+        tokio::task::yield_now().await;
+        advance(Duration::from_millis(250)).await;
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
         }
         assert!(
             count.load(Ordering::SeqCst) > 0,

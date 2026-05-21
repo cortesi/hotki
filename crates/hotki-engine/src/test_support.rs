@@ -39,6 +39,14 @@ where
     hotki_world::test_support::run_async_test(fut);
 }
 
+/// Run an asynchronous engine test body with Tokio time paused.
+pub fn run_engine_test_paused<F>(fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    hotki_world::test_support::run_async_test_paused(fut);
+}
+
 /// Await until the world snapshot satisfies `pred`, up to `timeout_ms`.
 pub async fn wait_snapshot_until<F, W>(world: &W, timeout_ms: u64, mut pred: F) -> bool
 where
