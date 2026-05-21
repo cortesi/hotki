@@ -89,17 +89,18 @@ impl MacPoster {
 /// Map a modifier set to virtual keycodes.
 fn mod_keycodes(mods: &HashSet<Modifier>) -> Vec<u16> {
     let mut v = Vec::new();
-    for (left, right) in [
-        (Modifier::Control, Modifier::RightControl),
-        (Modifier::Option, Modifier::RightOption),
-        (Modifier::Shift, Modifier::RightShift),
-        (Modifier::Command, Modifier::RightCommand),
+    for m in [
+        Modifier::Control,
+        Modifier::RightControl,
+        Modifier::Option,
+        Modifier::RightOption,
+        Modifier::Shift,
+        Modifier::RightShift,
+        Modifier::Command,
+        Modifier::RightCommand,
     ] {
-        if mods.contains(&left) {
-            v.push(left.keycode());
-        }
-        if mods.contains(&right) {
-            v.push(right.keycode());
+        if mods.contains(&m) {
+            v.push(m.keycode());
         }
     }
     v
@@ -325,11 +326,12 @@ mod tests {
 
     #[test]
     fn test_mod_keycodes_preserves_both_variants() {
-        let mut mods = HashSet::new();
-        mods.insert(Modifier::Shift);
-        mods.insert(Modifier::RightShift);
-        mods.insert(Modifier::Command);
-        mods.insert(Modifier::RightCommand);
+        let mods = HashSet::from([
+            Modifier::Shift,
+            Modifier::RightShift,
+            Modifier::Command,
+            Modifier::RightCommand,
+        ]);
 
         let keycodes = mod_keycodes(&mods);
         assert_eq!(keycodes.len(), 4);
