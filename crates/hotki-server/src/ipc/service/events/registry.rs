@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use mrpc::RpcSender;
 use tokio::sync::Mutex as AsyncMutex;
@@ -11,10 +14,19 @@ pub(super) struct TrackedClient {
 }
 
 /// Connected IPC clients tracked for event fanout.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct ClientRegistry {
-    next_id: Arc<AsyncMutex<u32>>,
+    next_id: Arc<AtomicU32>,
     clients: Arc<AsyncMutex<Vec<TrackedClient>>>,
+}
+
+impl Default for ClientRegistry {
+    fn default() -> Self {
+        Self {
+            next_id: Arc::new(AtomicU32::new(0)),
+            clients: Arc::new(AsyncMutex::new(Vec::new())),
+        }
+    }
 }
 
 impl ClientRegistry {
@@ -30,9 +42,7 @@ impl ClientRegistry {
 
     /// Register a newly connected client.
     pub(super) async fn register(&self, client: RpcSender) {
-        let mut next_id_guard = self.next_id.lock().await;
-        let id = *next_id_guard;
-        *next_id_guard += 1;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.clients
             .lock()
             .await
