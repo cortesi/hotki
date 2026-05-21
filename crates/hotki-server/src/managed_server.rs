@@ -68,7 +68,7 @@ impl ManagedServer {
                 .config
                 .take()
                 .unwrap_or_else(|| ProcessConfig::new(current_exe.clone()));
-            config.executable = current_exe;
+            config.set_executable(current_exe);
             config.ensure_server_mode();
             config.set_socket_path(&self.socket_path);
             config.set_parent_pid(process::id());

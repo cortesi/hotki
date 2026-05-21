@@ -109,9 +109,9 @@ fn replace_flag_pair(args: &mut Vec<String>, flag: &str, value: &str) {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessConfig {
     /// Path to the executable
-    pub executable: PathBuf,
+    executable: PathBuf,
     /// Arguments to pass to the server
-    pub args: Vec<String>,
+    args: Vec<String>,
 }
 
 impl ProcessConfig {
@@ -121,6 +121,23 @@ impl ProcessConfig {
             executable: executable.into(),
             args: vec![SERVER_FLAG.to_string()],
         }
+    }
+
+    /// Replace the executable path used to spawn the server.
+    pub(crate) fn set_executable(&mut self, executable: impl Into<PathBuf>) {
+        self.executable = executable.into();
+    }
+
+    /// Return the executable path.
+    #[cfg(test)]
+    pub(crate) fn executable(&self) -> &PathBuf {
+        &self.executable
+    }
+
+    /// Return the configured server arguments.
+    #[cfg(test)]
+    pub(crate) fn args(&self) -> &[String] {
+        &self.args
     }
 
     /// Ensure the process args contain a single `--server` flag.
@@ -255,8 +272,8 @@ mod tests {
     fn test_process_config() {
         let config = ProcessConfig::new("/usr/bin/test");
 
-        assert_eq!(config.executable, PathBuf::from("/usr/bin/test"));
-        assert_eq!(config.args, vec!["--server"]);
+        assert_eq!(config.executable(), &PathBuf::from("/usr/bin/test"));
+        assert_eq!(config.args(), ["--server"]);
     }
 
     #[test]
@@ -264,14 +281,18 @@ mod tests {
         let mut config = ProcessConfig::new("/usr/bin/test");
         config.set_parent_pid(111);
         config.set_parent_pid(222);
-        let count = config.args.iter().filter(|a| *a == PARENT_PID_FLAG).count();
+        let count = config
+            .args()
+            .iter()
+            .filter(|a| *a == PARENT_PID_FLAG)
+            .count();
         assert_eq!(count, 1);
         let idx = config
-            .args
+            .args()
             .iter()
             .position(|a| a == PARENT_PID_FLAG)
             .unwrap();
-        assert_eq!(config.args[idx + 1], "222");
+        assert_eq!(config.args()[idx + 1], "222");
     }
 
     #[test]
@@ -279,13 +300,17 @@ mod tests {
         let mut config = ProcessConfig::new("/usr/bin/test");
         config.set_log_filter("a=info");
         config.set_log_filter("b=debug");
-        let count = config.args.iter().filter(|a| *a == LOG_FILTER_FLAG).count();
+        let count = config
+            .args()
+            .iter()
+            .filter(|a| *a == LOG_FILTER_FLAG)
+            .count();
         assert_eq!(count, 1);
         let idx = config
-            .args
+            .args()
             .iter()
             .position(|a| a == LOG_FILTER_FLAG)
             .unwrap();
-        assert_eq!(config.args[idx + 1], "b=debug");
+        assert_eq!(config.args()[idx + 1], "b=debug");
     }
 }

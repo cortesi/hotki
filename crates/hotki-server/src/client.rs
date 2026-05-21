@@ -186,9 +186,9 @@ mod tests {
             .managed_server
             .server_config()
             .expect("server config");
-        assert!(cfg.args.iter().any(|a| a == "--server"));
+        assert!(cfg.args().iter().any(|a| a == "--server"));
         // expect a single --socket pair
-        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
+        assert_eq!(count_flag(cfg.args(), "--socket"), 1);
     }
 
     #[test]
@@ -199,9 +199,9 @@ mod tests {
             .server_config()
             .expect("server config");
         // exactly one socket flag and value equals the client's socket_path
-        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
-        let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
-        assert_eq!(cfg.args[idx + 1], "/tmp/custom.sock");
+        assert_eq!(count_flag(cfg.args(), "--socket"), 1);
+        let idx = cfg.args().iter().position(|a| a == "--socket").unwrap();
+        assert_eq!(cfg.args()[idx + 1], "/tmp/custom.sock");
     }
 
     #[test]
@@ -215,10 +215,10 @@ mod tests {
             .managed_server
             .server_config()
             .expect("server config");
-        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
-        let idx = cfg.args.iter().position(|a| a == "--socket").unwrap();
-        assert_eq!(cfg.args[idx + 1], "/tmp/early.sock");
-        assert!(cfg.args.iter().any(|a| a == "--server"));
+        assert_eq!(count_flag(cfg.args(), "--socket"), 1);
+        let idx = cfg.args().iter().position(|a| a == "--socket").unwrap();
+        assert_eq!(cfg.args()[idx + 1], "/tmp/early.sock");
+        assert!(cfg.args().iter().any(|a| a == "--server"));
     }
 
     fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -236,11 +236,11 @@ mod tests {
             .server_config()
             .expect("server config");
         // Only one --server, one --socket, one --parent-pid
-        assert_eq!(count_flag(&cfg.args, "--server"), 1);
-        assert_eq!(count_flag(&cfg.args, "--socket"), 1);
-        assert_eq!(count_flag(&cfg.args, "--parent-pid"), 1);
+        assert_eq!(count_flag(cfg.args(), "--server"), 1);
+        assert_eq!(count_flag(cfg.args(), "--socket"), 1);
+        assert_eq!(count_flag(cfg.args(), "--parent-pid"), 1);
         assert_eq!(
-            value_after(&cfg.args, "--parent-pid"),
+            value_after(cfg.args(), "--parent-pid"),
             Some(process::id().to_string().as_str())
         );
     }
@@ -253,16 +253,16 @@ mod tests {
             .with_server_log_filter("a=info")
             .with_auto_spawn_server();
         let cfg1 = c1.managed_server.server_config().expect("server config");
-        assert_eq!(count_flag(&cfg1.args, "--log-filter"), 1);
-        assert_eq!(value_after(&cfg1.args, "--log-filter"), Some("a=info"));
+        assert_eq!(count_flag(cfg1.args(), "--log-filter"), 1);
+        assert_eq!(value_after(cfg1.args(), "--log-filter"), Some("a=info"));
 
         // filter after auto
         let c2 = Client::new()
             .with_auto_spawn_server()
             .with_server_log_filter("b=debug");
         let cfg2 = c2.managed_server.server_config().expect("server config");
-        assert_eq!(count_flag(&cfg2.args, "--log-filter"), 1);
-        assert_eq!(value_after(&cfg2.args, "--log-filter"), Some("b=debug"));
+        assert_eq!(count_flag(cfg2.args(), "--log-filter"), 1);
+        assert_eq!(value_after(cfg2.args(), "--log-filter"), Some("b=debug"));
 
         // filter override
         let c3 = Client::new()
@@ -270,7 +270,7 @@ mod tests {
             .with_server_log_filter("first")
             .with_server_log_filter("second");
         let cfg3 = c3.managed_server.server_config().expect("server config");
-        assert_eq!(count_flag(&cfg3.args, "--log-filter"), 1);
-        assert_eq!(value_after(&cfg3.args, "--log-filter"), Some("second"));
+        assert_eq!(count_flag(cfg3.args(), "--log-filter"), 1);
+        assert_eq!(value_after(cfg3.args(), "--log-filter"), Some("second"));
     }
 }
