@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    io::ErrorKind,
     os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
     path::Path,
     sync::{
@@ -116,7 +117,7 @@ impl Drop for IPCServer {
 /// owned by us), return an error and do not unlink.
 fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::Ipc(format!(
             "Failed to lstat existing path '{}': {}",
             path, e
@@ -150,17 +151,13 @@ fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixListener;
+    use std::{env, os::unix::net::UnixListener, path::PathBuf, process};
 
     use super::*;
 
-    fn tmpdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let unique = format!(
-            "hotki-test-{}-{}",
-            unsafe { libc::getuid() },
-            std::process::id()
-        );
+    fn tmpdir() -> PathBuf {
+        let mut p = env::temp_dir();
+        let unique = format!("hotki-test-{}-{}", unsafe { libc::getuid() }, process::id());
         p.push(unique);
         let _ = fs::create_dir_all(&p);
         p

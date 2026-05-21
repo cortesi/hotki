@@ -86,18 +86,7 @@ impl MacPoster {
     }
 }
 
-/// Pick the left or right variant of a modifier pair, preferring left unless only right is present.
-fn choose_modifier(mods: &HashSet<Modifier>, left: Modifier, right: Modifier) -> Option<Modifier> {
-    if mods.contains(&left) {
-        Some(left)
-    } else if mods.contains(&right) {
-        Some(right)
-    } else {
-        None
-    }
-}
-
-/// Map a modifier set to virtual keycodes (left-side by default).
+/// Map a modifier set to virtual keycodes.
 fn mod_keycodes(mods: &HashSet<Modifier>) -> Vec<u16> {
     let mut v = Vec::new();
     for (left, right) in [
@@ -106,8 +95,11 @@ fn mod_keycodes(mods: &HashSet<Modifier>) -> Vec<u16> {
         (Modifier::Shift, Modifier::RightShift),
         (Modifier::Command, Modifier::RightCommand),
     ] {
-        if let Some(chosen) = choose_modifier(mods, left, right) {
-            v.push(chosen.keycode());
+        if mods.contains(&left) {
+            v.push(left.keycode());
+        }
+        if mods.contains(&right) {
+            v.push(right.keycode());
         }
     }
     v
@@ -329,5 +321,21 @@ mod tests {
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.repeat_downs(), 1);
         assert_eq!(poster.ups(), 1);
+    }
+
+    #[test]
+    fn test_mod_keycodes_preserves_both_variants() {
+        let mut mods = HashSet::new();
+        mods.insert(Modifier::Shift);
+        mods.insert(Modifier::RightShift);
+        mods.insert(Modifier::Command);
+        mods.insert(Modifier::RightCommand);
+
+        let keycodes = mod_keycodes(&mods);
+        assert_eq!(keycodes.len(), 4);
+        assert!(keycodes.contains(&Modifier::Shift.keycode()));
+        assert!(keycodes.contains(&Modifier::RightShift.keycode()));
+        assert!(keycodes.contains(&Modifier::Command.keycode()));
+        assert!(keycodes.contains(&Modifier::RightCommand.keycode()));
     }
 }
