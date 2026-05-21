@@ -63,21 +63,20 @@ fn resolve_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
     };
     match fs::read_to_string(&cfg_path) {
         Ok(s) => {
-            let re = regex::Regex::new("themes:use\\(\\s*\"[^\"]*\"\\s*\\)").unwrap();
+            let re = regex::Regex::new("themes:use\\(\\s*\"[^\"]*\"\\s*\\)")
+                .map_err(io::Error::other)?;
             let out = if re.is_match(&s) {
                 re.replace(&s, format!("themes:use(\"{}\")", name))
                     .to_string()
             } else {
                 format!("themes:use(\"{}\")\n{}", name, s)
             };
-            let tmp = env::temp_dir().join(format!(
-                "hotki-shots-{}-{}.luau",
-                process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let tmp =
+                env::temp_dir().join(format!("hotki-shots-{}-{}.luau", process::id(), suffix));
             fs::write(&tmp, out)?;
             Ok(tmp)
         }

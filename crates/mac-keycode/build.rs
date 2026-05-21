@@ -220,7 +220,6 @@ fn main() -> Result<()> {
     );
 
     let out = generate_key_rs(&crate_dir)?;
-    // Format the generated file
-    let _ = rustfmt_file(&out);
+    rustfmt_file(&out)?;
     Ok(())
 }
