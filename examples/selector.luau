@@ -5,7 +5,7 @@ hotki.root(function(menu, ctx)
         title = "Run Application",
         placeholder = "Search apps...",
         items = hotki.applications,
-        on_select = function(actx: ActionContext, item: any, query: string)
+        on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
             actx:exec(action.open(item.data.path))
         end,
     }))

@@ -45,15 +45,6 @@ export type ModeContext = {
     title_matches: (self: ModeContext, pattern: string) -> boolean,
 }
 
-export type ActionContext = ModeContext & {
-    exec: (self: ActionContext, value: Action) -> (),
-    notify: (self: ActionContext, kind: NotifyKind, title: string, body: string) -> (),
-    stay: (self: ActionContext) -> (),
-    push: (self: ActionContext, render: ModeRenderer, title: string?) -> (),
-    pop: (self: ActionContext) -> (),
-    exit: (self: ActionContext) -> (),
-    show_root: (self: ActionContext) -> (),
-}
 
 export type Action = {
     __kind: "Action",
@@ -165,13 +156,13 @@ export type ModeBatchEntry =
     { chord: string, desc: string, action: Action, opts: BindingOptions? }
     | { chord: string, title: string, render: ModeRenderer, opts: SubmenuOptions? }
 
-export type ItemSource<T> = { SelectorItem<T> } | ItemsProvider<T>
+export type ItemSource<T> = { SelectorItem<T> } | { string } | ItemsProvider<T>
 
-export type SelectorSpec<T> = {
+export type SelectorSpec = {
     title: string?,
     placeholder: string?,
     items: any,
-    on_select: (ctx: ActionContext, item: any, query: string) -> (),
+    on_select: (ctx: ActionContext, item: SelectorItem<any>, query: string) -> (),
     on_cancel: ((ctx: ActionContext) -> ())?,
     max_visible: number?,
 }
@@ -197,6 +188,24 @@ export type MenuBuilder = {
 }
 
 export type ModeRenderer = (menu: MenuBuilder, ctx: ModeContext) -> ()
+
+export type ActionContext = {
+    app: string,
+    title: string,
+    pid: number,
+    hud: boolean,
+    depth: number,
+    app_matches: (self: ActionContext, pattern: string) -> boolean,
+    title_matches: (self: ActionContext, pattern: string) -> boolean,
+    exec: (self: ActionContext, value: Action) -> (),
+    notify: (self: ActionContext, kind: NotifyKind, title: string, body: string) -> (),
+    stay: (self: ActionContext) -> (),
+    push: (self: ActionContext, render: ModeRenderer, title: string?) -> (),
+    pop: (self: ActionContext) -> (),
+    exit: (self: ActionContext) -> (),
+    show_root: (self: ActionContext) -> (),
+}
+
 export type ActionHandler = (ctx: ActionContext) -> ()
 export type ModeModule = ModeRenderer
 export type HandlerModule = ActionHandler
@@ -220,7 +229,7 @@ export type ActionApi = {
     change_volume: (delta: number) -> Action,
     mute: (toggle: Toggle) -> Action,
     run: (handler: ActionHandler) -> Action,
-    selector: (spec: SelectorSpec<any>) -> Action,
+    selector: (spec: SelectorSpec) -> Action,
 }
 
 export type ThemesApi = {

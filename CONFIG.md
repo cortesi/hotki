@@ -2,6 +2,9 @@
 
 Hotki configs are Luau scripts loaded from `~/.hotki/config.luau` by default.
 
+> [!NOTE]
+> All configuration files and imported scripts are statically checked under Luau **strict mode** by default during validation. There is no need to add `--!strict` annotations to your scripts—strict mode is implicit and automatically enforced.
+
 The exact API surface is defined by [`crates/config/luau/hotki.d.luau`](./crates/config/luau/hotki.d.luau).
 Use `hotki api` when you want the checked-in contract instead of prose.
 
@@ -26,7 +29,7 @@ hotki.root(function(menu, ctx)
         root:bind("a", "Run Application", action.selector({
             title = "Run Application",
             items = hotki.applications,
-            on_select = function(actx, item, query)
+            on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
                 actx:exec(action.open(item.data.path))
             end,
         }))
@@ -119,7 +122,7 @@ menu:bind("a", "Run Application", action.selector({
     title = "Run Application",
     placeholder = "Search apps...",
     items = hotki.applications,
-    on_select = function(actx, item, query)
+    on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
         actx:exec(action.open(item.data.path))
     end,
 }))

@@ -76,7 +76,7 @@ hotki.root(function(menu, ctx)
                 title = "Run Application",
                 placeholder = "Search apps...",
                 items = hotki.applications,
-                on_select = function(actx: ActionContext, item: any, query: string)
+                on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
                     actx:exec(action.open(item.data.path))
                 end,
             }))
@@ -84,7 +84,7 @@ hotki.root(function(menu, ctx)
                 title = "Selector Demo",
                 placeholder = "Search demo items...",
                 items = demo_items,
-                on_select = function(actx: ActionContext, item: any, query: string)
+                on_select = function(actx: ActionContext, item: SelectorItem<string>, query: string)
                     actx:notify("info", "Selected", item.label .. " (query: " .. query .. ")")
                 end,
             }))

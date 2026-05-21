@@ -26,7 +26,7 @@ Examples:
 - `examples/selector-custom.luau`
 - `examples/test.luau`
 
-Validate a config:
+Validate a config (this implicitly runs static Luau **strict mode** checks on the entire configuration):
 
 ```bash
 hotki check --config ~/.hotki/config.luau
@@ -50,7 +50,7 @@ hotki.root(function(menu, ctx)
         root:bind("a", "Run Application", action.selector({
             title = "Run Application",
             items = hotki.applications,
-            on_select = function(actx, item, query)
+            on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
                 actx:exec(action.open(item.data.path))
             end,
         }))

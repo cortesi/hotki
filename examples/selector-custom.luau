@@ -14,7 +14,7 @@ hotki.root(function(menu, ctx)
         title = "Pick Item",
         placeholder = "Type to filter...",
         items = items,
-        on_select = function(actx: ActionContext, item: any, query: string)
+        on_select = function(actx: ActionContext, item: SelectorItem<string>, query: string)
             actx:notify("info", "Selected", item.label .. " (query: " .. query .. ")")
         end,
         on_cancel = function(actx: ActionContext)
