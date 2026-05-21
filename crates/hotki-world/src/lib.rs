@@ -752,7 +752,7 @@ impl_world_view_common!(TestWorld);
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_polling_world_task_shutdown_on_drop() {
         let cfg = WorldCfg {
             poll_ms_min: 10,
@@ -763,22 +763,18 @@ mod tests {
 
         // Verify the background task is running (we can upgrade)
         assert!(weak_core.upgrade().is_some());
+        tokio::task::yield_now().await;
 
         // Now drop the world
         drop(world);
 
-        // Wait a short time for the task to finish sleeping and exit
-        let mut success = false;
-        for _ in 0..20 {
+        for _ in 0..3 {
             if weak_core.upgrade().is_none() {
-                success = true;
-                break;
+                return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::advance(Duration::from_millis(50)).await;
+            tokio::task::yield_now().await;
         }
-        assert!(
-            success,
-            "WorldCore was not deallocated; loop might be leaking the strong reference!"
-        );
+        panic!("WorldCore was not deallocated; loop might be leaking the strong reference!");
     }
 }
