@@ -188,7 +188,6 @@ fn inject_key_waits_for_binding_event() {
 
     let injector_client = Arc::clone(&client);
     let injector = thread::spawn(move || injector_client.lock().inject_key("cmd+b"));
-    thread::sleep(Duration::from_millis(50));
     event_tx.send(()).unwrap();
     injector.join().unwrap().unwrap();
     client.lock().reset();
