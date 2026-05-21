@@ -116,6 +116,28 @@ impl Drop for IPCServer {
 /// exist, this is a no-op. If the path exists but is not a socket (or is not
 /// owned by us), return an error and do not unlink.
 fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
+    let p = Path::new(path);
+    if let Some(parent) = p.parent()
+        && parent.exists()
+    {
+        let parent_meta = fs::metadata(parent).map_err(|e| {
+            Error::Ipc(format!(
+                "Failed to read parent directory metadata for '{}': {}",
+                parent.display(),
+                e
+            ))
+        })?;
+        let uid = unsafe { libc::getuid() } as u32;
+        if parent_meta.uid() != uid {
+            return Err(Error::Ipc(format!(
+                "Parent directory of socket at '{}' not owned by current user (uid {} != {})",
+                path,
+                parent_meta.uid(),
+                uid
+            )));
+        }
+    }
+
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::Ipc(format!(
@@ -207,5 +229,16 @@ mod tests {
         // Path now exists and is a socket; should be removed
         validate_or_unlink_existing_socket(sock.to_str().unwrap()).unwrap();
         assert!(!sock.exists());
+    }
+
+    #[test]
+    fn guard_refuses_socket_in_non_owned_parent_directory() {
+        let root_dir_sock = "/hotki_test_non_owned.sock";
+        let res = validate_or_unlink_existing_socket(root_dir_sock);
+        if unsafe { libc::getuid() } != 0 {
+            assert!(res.is_err());
+            let err_str = format!("{:?}", res.err().unwrap());
+            assert!(err_str.contains("not owned by current user"));
+        }
     }
 }

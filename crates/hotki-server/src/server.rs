@@ -1,10 +1,10 @@
 use std::{
-    mem, ptr,
+    io, mem, ptr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -31,7 +31,7 @@ fn spawn_parent_watcher(
     ppid: libc::pid_t,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<tokio::sync::Notify>,
-) -> std::thread::JoinHandle<()> {
+) -> JoinHandle<()> {
     thread::spawn(move || {
         // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
         unsafe {
@@ -81,7 +81,7 @@ fn spawn_parent_watcher(
                             let _ = loop_wake::post_user_event();
                             break;
                         } else if res < 0 {
-                            let err = std::io::Error::last_os_error().raw_os_error();
+                            let err = io::Error::last_os_error().raw_os_error();
                             if err != Some(libc::EINTR) {
                                 fallback = true;
                                 break;
@@ -106,7 +106,7 @@ fn spawn_parent_watcher(
             }
             // kill == 0 -> process exists; ESRCH -> doesn't exist
             let alive = unsafe { libc::kill(ppid, 0) } == 0
-                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+                || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
             if !alive {
                 shutdown.store(true, Ordering::SeqCst);
                 shutdown_notify.notify_waiters();
