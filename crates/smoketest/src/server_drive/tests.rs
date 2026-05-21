@@ -418,7 +418,6 @@ fn ensure_init_retries_failed_handshake() {
             assert!(matches!(cmd.request, BridgeRequest::Ping));
             send_ack(&mut writer, cmd.command_id, 1);
             send_handshake(&mut writer, cmd.command_id, 7);
-            thread::sleep(Duration::from_millis(50));
         }
     });
 
