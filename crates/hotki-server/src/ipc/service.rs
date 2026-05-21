@@ -44,7 +44,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
-use crate::loop_wake;
+use crate::{error::RpcErrorCode, loop_wake};
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
@@ -132,12 +132,12 @@ impl HotkeyService {
             params,
             HotkeyMethod::SetConfigPath.as_str(),
             "path",
-            crate::error::RpcErrorCode::MissingParams,
+            RpcErrorCode::MissingParams,
         )?;
         let engine = self.engine().await;
         if let Err(err) = engine.set_config_path(PathBuf::from(raw_path)).await {
             return Err(typed_err(
-                crate::error::RpcErrorCode::EngineSetConfig,
+                RpcErrorCode::EngineSetConfig,
                 &[("message", Value::String(err.to_string().into()))],
             ));
         }
@@ -149,12 +149,12 @@ impl HotkeyService {
             params,
             HotkeyMethod::SetTheme.as_str(),
             "theme name",
-            crate::error::RpcErrorCode::MissingParams,
+            RpcErrorCode::MissingParams,
         )?;
         let engine = self.engine().await;
         if let Err(err) = engine.set_theme(raw_name.as_str()).await {
             return Err(typed_err(
-                crate::error::RpcErrorCode::EngineSetConfig,
+                RpcErrorCode::EngineSetConfig,
                 &[("message", Value::String(err.to_string().into()))],
             ));
         }
@@ -164,7 +164,7 @@ impl HotkeyService {
     async fn handle_inject_key(&self, params: &[Value]) -> StdResult<Value, RpcError> {
         if params.is_empty() {
             return Err(typed_err(
-                crate::error::RpcErrorCode::MissingParams,
+                RpcErrorCode::MissingParams,
                 &[("expected", Value::String("inject request".into()))],
             ));
         }
@@ -185,7 +185,7 @@ impl HotkeyService {
                 req.ident
             );
             return Err(typed_err(
-                crate::error::RpcErrorCode::KeyNotBound,
+                RpcErrorCode::KeyNotBound,
                 &[("ident", Value::String(req.ident.into()))],
             ));
         };
@@ -210,7 +210,7 @@ impl HotkeyService {
                     err
                 );
                 Err(typed_err(
-                    crate::error::RpcErrorCode::EngineDispatch,
+                    RpcErrorCode::EngineDispatch,
                     &[("message", Value::String(err.to_string().into()))],
                 ))
             }
@@ -252,7 +252,7 @@ impl HotkeyService {
         let payload = build_snapshot_payload(displays, focused_app);
         enc_world_snapshot(&payload).map_err(|err| {
             typed_err(
-                crate::error::RpcErrorCode::InvalidType,
+                RpcErrorCode::InvalidType,
                 &[("message", Value::String(err.to_string().into()))],
             )
         })
@@ -261,7 +261,7 @@ impl HotkeyService {
     async fn handle_get_server_status(&self) -> StdResult<Value, RpcError> {
         enc_server_status(&self.snapshot_server_status().await).map_err(|err| {
             typed_err(
-                crate::error::RpcErrorCode::InvalidType,
+                RpcErrorCode::InvalidType,
                 &[("message", Value::String(err.to_string().into()))],
             )
         })
@@ -274,7 +274,7 @@ impl MrpcConnection for HotkeyService {
         if self.shutdown_flag().load(Ordering::SeqCst) {
             // Refuse new connections during shutdown
             return Err(typed_err(
-                crate::error::RpcErrorCode::ShuttingDown,
+                RpcErrorCode::ShuttingDown,
                 &[("message", Value::String("Server is shutting down".into()))],
             ));
         }
@@ -324,7 +324,7 @@ impl MrpcConnection for HotkeyService {
             None => {
                 warn!("Unknown method: {}", method);
                 Err(typed_err(
-                    crate::error::RpcErrorCode::MethodNotFound,
+                    RpcErrorCode::MethodNotFound,
                     &[("method", Value::String(method.into()))],
                 ))
             }
