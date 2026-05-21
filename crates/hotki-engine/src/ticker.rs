@@ -10,8 +10,7 @@ use std::{
         Arc,
         mpsc::{Receiver, channel},
     },
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use parking_lot::Mutex;
@@ -20,9 +19,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::repeater::STOP_WAIT_TIMEOUT_MS;
-
-/// Poll interval used when waiting for ticker tasks to finish.
-pub const STOP_POLL_INTERVAL_MS: u64 = 2;
 
 struct TickerEntry {
     token: CancellationToken,
@@ -123,17 +119,8 @@ impl Ticker {
     pub fn stop_sync(&self, id: &str) {
         if let Some(entry) = self.entries.lock().remove(id) {
             entry.token.cancel();
-            // Prefer a real blocking timeout via std::sync::mpsc
             let deadline = Duration::from_millis(STOP_WAIT_TIMEOUT_MS);
             let _ = entry.done_rx.recv_timeout(deadline);
-            // As a backup, if the task has already finished but no signal received, quickly poll handle
-            let handle = entry.handle;
-            let start = Instant::now();
-            while !handle.is_finished()
-                && start.elapsed() < Duration::from_millis(STOP_WAIT_TIMEOUT_MS)
-            {
-                thread::sleep(Duration::from_millis(STOP_POLL_INTERVAL_MS));
-            }
             trace!("ticker_stop_sync" = %id);
         }
     }
