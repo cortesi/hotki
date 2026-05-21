@@ -26,6 +26,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -33,6 +34,7 @@ use events::EventPipeline;
 use hotki_engine::Engine;
 use hotki_protocol::rpc::{HotkeyMethod, ServerStatusLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, Value};
+use parking_lot::Mutex;
 pub(crate) use rpc::dec_inject_key_param;
 use rpc::{
     build_snapshot_payload, enc_server_status, enc_world_snapshot, enc_world_status,
@@ -57,6 +59,8 @@ pub struct HotkeyService {
     idle_state: Arc<IdleTimerState>,
     /// Notify handle for server shutdown.
     shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Active worker channels per hotkey ID.
+    workers: Arc<Mutex<HashMap<u32, tokio::sync::mpsc::Sender<mac_hotkey::Event>>>>,
 }
 
 impl HotkeyService {
@@ -72,6 +76,7 @@ impl HotkeyService {
             events: EventPipeline::new(shutdown),
             idle_state,
             shutdown_notify,
+            workers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,6 +88,12 @@ impl HotkeyService {
     /// Expose the shutdown notify handle.
     pub(crate) fn shutdown_notify(&self) -> Arc<tokio::sync::Notify> {
         self.shutdown_notify.clone()
+    }
+
+    /// Expose the active worker count for diagnostics and testing.
+    #[cfg(test)]
+    pub(crate) fn active_workers_count(&self) -> usize {
+        self.workers.lock().len()
     }
 
     async fn engine(&self) -> &Engine {
@@ -332,76 +343,369 @@ impl MrpcConnection for HotkeyService {
 }
 
 impl HotkeyService {
+    /// Dispatches a hotkey event to the appropriate per-ID worker task.
+    /// If no worker task exists for the given ID, one is spawned.
+    pub(crate) fn dispatch_event_to_worker(&self, ev: mac_hotkey::Event) {
+        let id = ev.id;
+        let mut workers_guard = self.workers.lock();
+
+        let tx = if let Some(tx) = workers_guard.get(&id) {
+            tx.clone()
+        } else {
+            const PER_ID_QUEUE_CAPACITY: usize = 64;
+            let (tx, mut rx) =
+                tokio::sync::mpsc::channel::<mac_hotkey::Event>(PER_ID_QUEUE_CAPACITY);
+            workers_guard.insert(id, tx.clone());
+
+            let engine = self.engine.clone();
+            let manager = self.manager.clone();
+            let event_tx = self.events.sender();
+            let shutdown = self.shutdown_flag();
+            let workers_clone = self.workers.clone();
+            let my_tx = tx.clone();
+
+            tokio::spawn(async move {
+                let eng = engine
+                    .get_or_init(|| async { Engine::new(manager, event_tx.clone()) })
+                    .await;
+
+                loop {
+                    if shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    // Keep the worker task alive for at most 5 seconds of inactivity.
+                    let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+
+                    match msg {
+                        Ok(Some(ev)) => {
+                            if let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await {
+                                trace!(
+                                    target: "hotki_server::ipc::service",
+                                    "OS dispatch failed id={} kind={:?}: {}",
+                                    ev.id,
+                                    ev.kind,
+                                    e
+                                );
+                            }
+                        }
+                        Ok(None) | Err(_) => {
+                            break;
+                        }
+                    }
+                }
+
+                // Channel closed, idle timeout expired, or server shut down -> reap this worker
+                let mut g = workers_clone.lock();
+                if let Some(current_tx) = g.get(&id)
+                    && current_tx.same_channel(&my_tx)
+                {
+                    g.remove(&id);
+                }
+            });
+
+            tx
+        };
+
+        drop(workers_guard);
+
+        match tx.try_send(ev) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                trace!(id, "per_id_queue_full_drop");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                // Task has exited or is exiting; next event will spawn a new worker
+            }
+        }
+    }
+
     /// Start the hotkey event dispatcher
     pub(crate) fn start_hotkey_dispatcher(&self) {
         let manager = self.manager.clone();
-        let engine = self.engine.clone();
         let shutdown = self.shutdown_flag();
-        let event_tx = self.events.sender();
 
         // Bridge: dedicated OS thread blocks on crossbeam and forwards to Tokio mpsc
         let rx_cross = manager.events();
         let mut rx_ev = crate::util::bridge_crossbeam_to_tokio(rx_cross);
 
-        // Async task consumes Tokio channel and dispatches events with per-id ordering
+        let this = self.clone();
         tokio::spawn(async move {
-            const PER_ID_QUEUE_CAPACITY: usize = 64;
-            let mut workers: HashMap<u32, tokio::sync::mpsc::Sender<mac_hotkey::Event>> =
-                HashMap::new();
-
             while let Some(ev) = rx_ev.recv().await {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
-
-                let id = ev.id;
-                let ev = if let Some(tx) = workers.get(&id) {
-                    match tx.try_send(ev) {
-                        Ok(()) => continue,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            trace!(id, "per_id_queue_full_drop");
-                            continue;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(ev)) => {
-                            workers.remove(&id);
-                            ev
-                        }
-                    }
-                } else {
-                    ev
-                };
-
-                let (tx, mut rx) =
-                    tokio::sync::mpsc::channel::<mac_hotkey::Event>(PER_ID_QUEUE_CAPACITY);
-                let _ = tx.try_send(ev);
-                workers.insert(id, tx.clone());
-
-                let engine = engine.clone();
-                let manager = manager.clone();
-                let event_tx = event_tx.clone();
-                let shutdown = shutdown.clone();
-                tokio::spawn(async move {
-                    let eng = engine
-                        .get_or_init(|| async { Engine::new(manager, event_tx.clone()) })
-                        .await;
-                    while let Some(ev) = rx.recv().await {
-                        if shutdown.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        if let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await {
-                            trace!(
-                                target: "hotki_server::ipc::service",
-                                "OS dispatch failed id={} kind={:?}: {}",
-                                ev.id,
-                                ev.kind,
-                                e
-                            );
-                        }
-                    }
-                });
+                this.dispatch_event_to_worker(ev);
             }
         });
 
         debug!("Hotkey dispatcher started with per-id ordering");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_dispatcher_worker_reaping() {
+        // Try creating the mac_hotkey::Manager. If accessibility/tap permissions are absent,
+        // skip this test gracefully to ensure integration robustness on CI or headless environs.
+        let manager_res = mac_hotkey::Manager::new();
+        let manager = match manager_res {
+            Ok(mgr) => Arc::new(mgr),
+            Err(e) => {
+                warn!(
+                    "Skipping test_dispatcher_worker_reaping because mac_hotkey::Manager failed to initialize: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let idle_state = Arc::new(IdleTimerState::new(30));
+
+        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
+
+        assert_eq!(service.active_workers_count(), 0);
+
+        // Dispatch an event to spawn a worker for hotkey ID 42
+        let ev = mac_hotkey::Event {
+            id: 42,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::A,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        service.dispatch_event_to_worker(ev.clone());
+
+        // Wait a brief moment for the spawned task to initialize and workers map to update
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // Sleep for slightly more than the 5-second inactivity timeout (e.g. 5.5 seconds)
+        // to verify that the worker is reaped.
+        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        assert_eq!(service.active_workers_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_worker_reactivation() {
+        let manager_res = mac_hotkey::Manager::new();
+        let manager = match manager_res {
+            Ok(mgr) => Arc::new(mgr),
+            Err(e) => {
+                warn!(
+                    "Skipping test_dispatcher_worker_reactivation because mac_hotkey::Manager failed to initialize: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let idle_state = Arc::new(IdleTimerState::new(30));
+
+        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
+
+        assert_eq!(service.active_workers_count(), 0);
+
+        let ev = mac_hotkey::Event {
+            id: 42,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::A,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        // 1. Spawn initial worker
+        service.dispatch_event_to_worker(ev.clone());
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // 2. Wait for it to reap itself (5.5s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        assert_eq!(service.active_workers_count(), 0);
+
+        // 3. Send a new event to the same ID and verify it reactivates a new worker successfully
+        service.dispatch_event_to_worker(ev.clone());
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // Clean up: wait for reactivation worker to be reaped
+        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        assert_eq!(service.active_workers_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_worker_shutdown() {
+        let manager_res = mac_hotkey::Manager::new();
+        let manager = match manager_res {
+            Ok(mgr) => Arc::new(mgr),
+            Err(e) => {
+                warn!(
+                    "Skipping test_dispatcher_worker_shutdown because mac_hotkey::Manager failed to initialize: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let idle_state = Arc::new(IdleTimerState::new(30));
+
+        let service = HotkeyService::new(manager, shutdown.clone(), shutdown_notify, idle_state);
+
+        assert_eq!(service.active_workers_count(), 0);
+
+        let ev = mac_hotkey::Event {
+            id: 42,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::A,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        // Spawn a worker
+        service.dispatch_event_to_worker(ev.clone());
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // Trigger shutdown flag
+        shutdown.store(true, Ordering::SeqCst);
+
+        // Dispatching another event triggers the loop to wake up, check shutdown, break, and reap instantly.
+        service.dispatch_event_to_worker(ev.clone());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_worker_isolation() {
+        let manager_res = mac_hotkey::Manager::new();
+        let manager = match manager_res {
+            Ok(mgr) => Arc::new(mgr),
+            Err(e) => {
+                warn!(
+                    "Skipping test_dispatcher_worker_isolation because mac_hotkey::Manager failed to initialize: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let idle_state = Arc::new(IdleTimerState::new(30));
+
+        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
+
+        assert_eq!(service.active_workers_count(), 0);
+
+        let ev1 = mac_hotkey::Event {
+            id: 101,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::A,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        let ev2 = mac_hotkey::Event {
+            id: 102,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::B,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        // Dispatch first event
+        service.dispatch_event_to_worker(ev1);
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // Dispatch second event (different ID)
+        service.dispatch_event_to_worker(ev2);
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 2);
+
+        // Let them both idle timeout and reap themselves (5.5s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        assert_eq!(service.active_workers_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_same_channel_protection() {
+        let manager_res = mac_hotkey::Manager::new();
+        let manager = match manager_res {
+            Ok(mgr) => Arc::new(mgr),
+            Err(e) => {
+                warn!(
+                    "Skipping test_dispatcher_same_channel_protection because mac_hotkey::Manager failed to initialize: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let idle_state = Arc::new(IdleTimerState::new(30));
+
+        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
+
+        assert_eq!(service.active_workers_count(), 0);
+
+        let ev = mac_hotkey::Event {
+            id: 999,
+            hotkey: mac_keycode::Chord {
+                key: mac_keycode::Key::A,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        };
+
+        // 1. Spawn Worker A
+        service.dispatch_event_to_worker(ev.clone());
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(service.active_workers_count(), 1);
+
+        // 2. Overtake the map entry with a new independent channel (simulating Worker B spawning)
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(64);
+        {
+            let mut g = service.workers.lock();
+            g.insert(999, tx_b);
+        }
+
+        // 3. Wait for Worker A to timeout (5.5s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+
+        // 4. Since the map entry was overtaken by a different channel, Worker A's timeout
+        // should NOT have removed the entry. The active workers count must still be 1!
+        assert_eq!(service.active_workers_count(), 1);
+
+        // Verify the remaining sender is indeed our mock channel
+        {
+            let g = service.workers.lock();
+            assert!(g.contains_key(&999));
+        }
     }
 }

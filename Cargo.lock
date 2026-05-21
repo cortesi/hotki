@@ -2312,6 +2312,7 @@ dependencies = [
  "libc",
  "logging",
  "mac-hotkey",
+ "mac-keycode",
  "mrpc",
  "once_cell",
  "parking_lot",

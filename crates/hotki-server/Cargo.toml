@@ -28,6 +28,7 @@ crossbeam-channel = { workspace = true }
 futures = { workspace = true }
 parking_lot = "0.12.5"
 serde_json.workspace = true
+mac-keycode = { version = "0.0.2", path = "../mac-keycode" }
 
 [package.metadata.cargo-machete]
 ignored = []
