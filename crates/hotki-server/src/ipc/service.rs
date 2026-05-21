@@ -46,6 +46,9 @@ use tracing::{debug, info, trace, warn};
 use super::{IdleTimerSnapshot, IdleTimerState};
 use crate::{error::RpcErrorCode, loop_wake};
 
+const WORKER_QUEUE_CAPACITY: usize = 64;
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
 pub struct HotkeyService {
@@ -352,9 +355,8 @@ impl HotkeyService {
         let tx = if let Some(tx) = workers_guard.get(&id) {
             tx.clone()
         } else {
-            const PER_ID_QUEUE_CAPACITY: usize = 64;
             let (tx, mut rx) =
-                tokio::sync::mpsc::channel::<mac_hotkey::Event>(PER_ID_QUEUE_CAPACITY);
+                tokio::sync::mpsc::channel::<mac_hotkey::Event>(WORKER_QUEUE_CAPACITY);
             workers_guard.insert(id, tx.clone());
 
             let engine = self.engine.clone();
@@ -374,8 +376,7 @@ impl HotkeyService {
                         break;
                     }
 
-                    // Keep the worker task alive for at most 5 seconds of inactivity.
-                    let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+                    let msg = tokio::time::timeout(WORKER_IDLE_TIMEOUT, rx.recv()).await;
 
                     match msg {
                         Ok(Some(ev)) => {
@@ -447,6 +448,9 @@ impl HotkeyService {
 mod tests {
     use std::collections::HashSet;
 
+    use mac_keycode::Key;
+    use tokio::time::advance;
+
     use super::*;
 
     fn setup_test_service() -> Option<HotkeyService> {
@@ -471,7 +475,25 @@ mod tests {
         ))
     }
 
-    #[tokio::test]
+    fn event(id: u32, key: Key) -> mac_hotkey::Event {
+        mac_hotkey::Event {
+            id,
+            hotkey: mac_keycode::Chord {
+                key,
+                modifiers: HashSet::new(),
+            },
+            kind: mac_hotkey::EventKind::KeyDown,
+            repeat: false,
+        }
+    }
+
+    async fn advance_worker_idle_timeout() {
+        tokio::task::yield_now().await;
+        advance(WORKER_IDLE_TIMEOUT).await;
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_dispatcher_worker_reaping() {
         let Some(service) = setup_test_service() else {
             return;
@@ -479,30 +501,16 @@ mod tests {
 
         assert_eq!(service.active_workers_count(), 0);
 
-        // Dispatch an event to spawn a worker for hotkey ID 42
-        let ev = mac_hotkey::Event {
-            id: 42,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::A,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
+        let ev = event(42, Key::A);
 
         service.dispatch_event_to_worker(ev.clone());
-
-        // Wait a brief moment for the spawned task to initialize and workers map to update
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         assert_eq!(service.active_workers_count(), 1);
 
-        // Sleep for slightly more than the 5-second inactivity timeout (e.g. 5.5 seconds)
-        // to verify that the worker is reaped.
-        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        advance_worker_idle_timeout().await;
         assert_eq!(service.active_workers_count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_dispatcher_worker_reactivation() {
         let Some(service) = setup_test_service() else {
             return;
@@ -510,36 +518,22 @@ mod tests {
 
         assert_eq!(service.active_workers_count(), 0);
 
-        let ev = mac_hotkey::Event {
-            id: 42,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::A,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
+        let ev = event(42, Key::A);
 
-        // 1. Spawn initial worker
         service.dispatch_event_to_worker(ev.clone());
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         assert_eq!(service.active_workers_count(), 1);
 
-        // 2. Wait for it to reap itself (5.5s)
-        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        advance_worker_idle_timeout().await;
         assert_eq!(service.active_workers_count(), 0);
 
-        // 3. Send a new event to the same ID and verify it reactivates a new worker successfully
         service.dispatch_event_to_worker(ev.clone());
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         assert_eq!(service.active_workers_count(), 1);
 
-        // Clean up: wait for reactivation worker to be reaped
-        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        advance_worker_idle_timeout().await;
         assert_eq!(service.active_workers_count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_dispatcher_worker_shutdown() {
         let Some(service) = setup_test_service() else {
             return;
@@ -547,33 +541,21 @@ mod tests {
 
         assert_eq!(service.active_workers_count(), 0);
 
-        let ev = mac_hotkey::Event {
-            id: 42,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::A,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
+        let ev = event(42, Key::A);
 
-        // Spawn a worker
         service.dispatch_event_to_worker(ev.clone());
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         assert_eq!(service.active_workers_count(), 1);
 
-        // Trigger shutdown flag
         let shutdown = service.shutdown_flag();
         shutdown.store(true, Ordering::SeqCst);
 
-        // Dispatching another event triggers the loop to wake up, check shutdown, break, and reap instantly.
         service.dispatch_event_to_worker(ev.clone());
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
         assert_eq!(service.active_workers_count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_dispatcher_worker_isolation() {
         let Some(service) = setup_test_service() else {
             return;
@@ -581,42 +563,17 @@ mod tests {
 
         assert_eq!(service.active_workers_count(), 0);
 
-        let ev1 = mac_hotkey::Event {
-            id: 101,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::A,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
-
-        let ev2 = mac_hotkey::Event {
-            id: 102,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::B,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
-
-        // Dispatch first event
-        service.dispatch_event_to_worker(ev1);
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        service.dispatch_event_to_worker(event(101, Key::A));
         assert_eq!(service.active_workers_count(), 1);
 
-        // Dispatch second event (different ID)
-        service.dispatch_event_to_worker(ev2);
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        service.dispatch_event_to_worker(event(102, Key::B));
         assert_eq!(service.active_workers_count(), 2);
 
-        // Let them both idle timeout and reap themselves (5.5s)
-        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        advance_worker_idle_timeout().await;
         assert_eq!(service.active_workers_count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn test_dispatcher_same_channel_protection() {
         let Some(service) = setup_test_service() else {
             return;
@@ -624,36 +581,20 @@ mod tests {
 
         assert_eq!(service.active_workers_count(), 0);
 
-        let ev = mac_hotkey::Event {
-            id: 999,
-            hotkey: mac_keycode::Chord {
-                key: mac_keycode::Key::A,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        };
+        let ev = event(999, Key::A);
 
-        // 1. Spawn Worker A
         service.dispatch_event_to_worker(ev.clone());
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         assert_eq!(service.active_workers_count(), 1);
 
-        // 2. Overtake the map entry with a new independent channel (simulating Worker B spawning)
-        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(64);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(WORKER_QUEUE_CAPACITY);
         {
             let mut g = service.workers.lock();
             g.insert(999, tx_b);
         }
 
-        // 3. Wait for Worker A to timeout (5.5s)
-        tokio::time::sleep(tokio::time::Duration::from_millis(5500)).await;
+        advance_worker_idle_timeout().await;
 
-        // 4. Since the map entry was overtaken by a different channel, Worker A's timeout
-        // should NOT have removed the entry. The active workers count must still be 1!
         assert_eq!(service.active_workers_count(), 1);
-
-        // Verify the remaining sender is indeed our mock channel
         {
             let g = service.workers.lock();
             assert!(g.contains_key(&999));
