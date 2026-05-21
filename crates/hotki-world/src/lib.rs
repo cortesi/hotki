@@ -20,7 +20,7 @@ pub mod test_support;
 use std::{
     cmp::Ordering,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering as AtomicOrdering},
     },
     time::{Duration, Instant},
@@ -312,38 +312,42 @@ impl PollingWorld {
         let poll_tuner = Arc::new(PollTuner::new(cfg.poll_ms_min, cfg.poll_ms_max));
         let core = WorldCore::new();
         let world = Arc::new(Self {
-            core,
+            core: core.clone(),
             poll_tuner: poll_tuner.clone(),
         });
 
-        tokio::spawn(Self::run_poll_loop(world.clone(), cfg, poll_tuner));
+        tokio::spawn(Self::run_poll_loop(Arc::downgrade(&core), cfg, poll_tuner));
         world
     }
 
-    async fn run_poll_loop(self: Arc<Self>, cfg: WorldCfg, poll_tuner: Arc<PollTuner>) {
+    async fn run_poll_loop(core: Weak<WorldCore>, cfg: WorldCfg, poll_tuner: Arc<PollTuner>) {
         let mut interval_ms = cfg.poll_ms_min.max(50);
         loop {
+            let Some(core_arc) = core.upgrade() else {
+                break;
+            };
             let start = Instant::now();
-            self.poll_once().await;
+            Self::poll_once_core(&core_arc).await;
             let elapsed = start.elapsed().as_millis() as u64;
             {
-                let mut data = self.core.state.data.write();
+                let mut data = core_arc.state.data.write();
                 data.status.last_tick_ms = elapsed;
                 data.status.current_poll_ms = interval_ms;
             }
             interval_ms = poll_tuner.next_interval(interval_ms);
+            drop(core_arc);
             time::sleep(Duration::from_millis(interval_ms)).await;
         }
     }
 
-    async fn poll_once(&self) {
+    async fn poll_once_core(core: &WorldCore) {
         let platform = capture_platform_snapshot();
 
-        let mut data = self.core.state.data.write();
+        let mut data = core.state.data.write();
 
         if data.displays != platform.displays {
             data.displays = platform.displays.clone();
-            self.core.hub.publish(WorldEvent::DisplaysChanged);
+            core.hub.publish(WorldEvent::DisplaysChanged);
         }
 
         let new_snapshot: Vec<WorldWindow> = platform
@@ -371,7 +375,7 @@ impl PollingWorld {
         // Focus change detection
         if data.focused != focused_key {
             data.focused = focused_key;
-            self.core.hub.publish(WorldEvent::FocusChanged(FocusChange {
+            core.hub.publish(WorldEvent::FocusChanged(FocusChange {
                 key: focused_key,
                 focus: platform.focused.as_ref().map(|window| FocusSnapshot {
                     app: window.app.clone(),
@@ -743,3 +747,38 @@ impl TestWorld {
 }
 
 impl_world_view_common!(TestWorld);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_polling_world_task_shutdown_on_drop() {
+        let cfg = WorldCfg {
+            poll_ms_min: 10,
+            poll_ms_max: 20,
+        };
+        let world = PollingWorld::spawn(cfg);
+        let weak_core = Arc::downgrade(&world.core);
+
+        // Verify the background task is running (we can upgrade)
+        assert!(weak_core.upgrade().is_some());
+
+        // Now drop the world
+        drop(world);
+
+        // Wait a short time for the task to finish sleeping and exit
+        let mut success = false;
+        for _ in 0..20 {
+            if weak_core.upgrade().is_none() {
+                success = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            success,
+            "WorldCore was not deallocated; loop might be leaking the strong reference!"
+        );
+    }
+}
