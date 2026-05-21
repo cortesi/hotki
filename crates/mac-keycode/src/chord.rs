@@ -22,10 +22,7 @@ impl Chord {
     /// - The key accepts the full `Key::from_spec` space (digits, punctuation, aliases, or names).
     pub fn parse(s: &str) -> Option<Self> {
         let mut buf: Vec<&str> = s.split('+').collect();
-        if buf.is_empty() {
-            return None;
-        }
-        let key_raw = buf.pop().unwrap(); // keep raw to allow literal space
+        let key_raw = buf.pop()?; // keep raw to allow literal space
         let key = if key_raw == " " {
             Key::from_spec(" ")
         } else {
