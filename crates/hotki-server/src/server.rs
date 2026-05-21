@@ -380,6 +380,8 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
+    use std::{process, sync::mpsc};
+
     use super::*;
 
     #[test]
@@ -403,7 +405,6 @@ mod tests {
 
     #[test]
     fn test_spawn_parent_watcher_shutdown_cooperation() {
-        use std::{process, sync::mpsc};
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_notify = Arc::new(tokio::sync::Notify::new());
 

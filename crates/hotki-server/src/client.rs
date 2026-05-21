@@ -166,6 +166,8 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
+    use std::process;
+
     use super::*;
 
     fn count_flag(args: &[String], flag: &str) -> usize {
@@ -239,7 +241,7 @@ mod tests {
         assert_eq!(count_flag(&cfg.args, "--parent-pid"), 1);
         assert_eq!(
             value_after(&cfg.args, "--parent-pid"),
-            Some(std::process::id().to_string().as_str())
+            Some(process::id().to_string().as_str())
         );
     }
 

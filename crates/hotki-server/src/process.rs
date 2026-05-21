@@ -6,7 +6,8 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    thread,
+    time::{self, Duration},
 };
 
 use tokio::time::{Instant, sleep};
@@ -44,12 +45,12 @@ async fn wait_exit_async(child: &mut Child, timeout_ms: u64) -> bool {
 }
 
 fn wait_exit_sync(child: &mut Child, timeout_ms: u64) -> bool {
-    let start = std::time::Instant::now();
+    let start = time::Instant::now();
     while start.elapsed() < Duration::from_millis(timeout_ms) {
         if let Ok(Some(_)) = child.try_wait() {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(TERM_POLL_INTERVAL_MS));
+        thread::sleep(Duration::from_millis(TERM_POLL_INTERVAL_MS));
     }
     false
 }

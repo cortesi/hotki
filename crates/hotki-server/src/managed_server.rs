@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::{env, process, time::Duration};
 
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
@@ -71,7 +71,7 @@ impl ManagedServer {
             config.executable = current_exe;
             config.ensure_server_mode();
             config.set_socket_path(&self.socket_path);
-            config.set_parent_pid(std::process::id());
+            config.set_parent_pid(process::id());
             self.config = Some(config);
         }
     }
