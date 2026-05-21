@@ -1,4 +1,5 @@
 use std::{
+    mem, ptr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -22,6 +23,100 @@ use crate::{
 
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
+
+/// Spawns a background thread that monitors a parent process PID.
+/// When the parent process exits, it requests server shutdown.
+/// If shutdown is requested by other means, the thread terminates gracefully.
+fn spawn_parent_watcher(
+    ppid: libc::pid_t,
+    shutdown: Arc<AtomicBool>,
+    shutdown_notify: Arc<tokio::sync::Notify>,
+) -> std::thread::JoinHandle<()> {
+    thread::spawn(move || {
+        // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
+        unsafe {
+            let kq = libc::kqueue();
+            if kq >= 0 {
+                let mut kev: libc::kevent = mem::zeroed();
+                // Configure event: watch specific PID for exit, one-shot.
+                kev.ident = ppid as usize;
+                kev.filter = libc::EVFILT_PROC;
+                kev.flags = libc::EV_ADD | libc::EV_ONESHOT;
+                kev.fflags = libc::NOTE_EXIT;
+                kev.data = 0;
+                kev.udata = ptr::null_mut();
+
+                let res = libc::kevent(
+                    kq,
+                    &kev as *const libc::kevent,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null(),
+                );
+                if res == 0 {
+                    // Wait for the event to fire in a loop with a timeout to allow cooperative shutdown.
+                    let mut fallback = false;
+                    loop {
+                        if shutdown.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let timeout = libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 200_000_000, // 200 ms timeout for responsiveness
+                        };
+                        let mut out: libc::kevent = mem::zeroed();
+                        let res = libc::kevent(
+                            kq,
+                            ptr::null(),
+                            0,
+                            &mut out as *mut libc::kevent,
+                            1,
+                            &timeout as *const libc::timespec,
+                        );
+                        if res > 0 {
+                            // Parent exited; request shutdown.
+                            shutdown.store(true, Ordering::SeqCst);
+                            shutdown_notify.notify_waiters();
+                            let _ = loop_wake::post_user_event();
+                            break;
+                        } else if res < 0 {
+                            let err = std::io::Error::last_os_error().raw_os_error();
+                            if err != Some(libc::EINTR) {
+                                fallback = true;
+                                break;
+                            }
+                        }
+                    }
+                    let _ = libc::close(kq);
+                    if !fallback {
+                        return;
+                    }
+                } else {
+                    // Registration failed; fall back to polling below.
+                    let _ = libc::close(kq);
+                }
+            }
+        }
+
+        // Fallback: poll with kill(ppid, 0) at short intervals.
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            // kill == 0 -> process exists; ESRCH -> doesn't exist
+            let alive = unsafe { libc::kill(ppid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            if !alive {
+                shutdown.store(true, Ordering::SeqCst);
+                shutdown_notify.notify_waiters();
+                let _ = loop_wake::post_user_event();
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    })
+}
 
 /// A hotkey server that manages the Tao event loop and MRPC IPC.
 ///
@@ -160,69 +255,13 @@ impl Server {
         // If a parent PID is provided (standard when auto-spawned by the UI),
         // watch it and request shutdown immediately when it exits. This makes
         // the backend die as soon as the frontend goes away for any reason.
+        let mut parent_watcher_thread = None;
         if let Some(ppid) = self.parent_pid {
-            let shutdown_for_parent = shutdown_requested.clone();
-            let shutdown_notify_for_parent = shutdown_notify.clone();
-            thread::spawn(move || {
-                // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
-                unsafe {
-                    let kq = libc::kqueue();
-                    if kq >= 0 {
-                        let mut kev: libc::kevent = std::mem::zeroed();
-                        // Configure event: watch specific PID for exit, one-shot.
-                        kev.ident = ppid as usize;
-                        kev.filter = libc::EVFILT_PROC;
-                        kev.flags = libc::EV_ADD | libc::EV_ONESHOT;
-                        kev.fflags = libc::NOTE_EXIT;
-                        kev.data = 0;
-                        kev.udata = std::ptr::null_mut();
-
-                        let res = libc::kevent(
-                            kq,
-                            &kev as *const libc::kevent,
-                            1,
-                            std::ptr::null_mut(),
-                            0,
-                            std::ptr::null(),
-                        );
-                        if res == 0 {
-                            // Wait for the event to fire.
-                            let mut out: libc::kevent = std::mem::zeroed();
-                            let _ = libc::kevent(
-                                kq,
-                                std::ptr::null(),
-                                0,
-                                &mut out as *mut libc::kevent,
-                                1,
-                                std::ptr::null(),
-                            );
-                            // Parent exited; request shutdown.
-                            shutdown_for_parent.store(true, Ordering::SeqCst);
-                            shutdown_notify_for_parent.notify_waiters();
-                            let _ = loop_wake::post_user_event();
-                            let _ = libc::close(kq);
-                            return;
-                        } else {
-                            // Registration failed; fall back to polling below.
-                            let _ = libc::close(kq);
-                        }
-                    }
-                }
-
-                // Fallback: poll with kill(ppid, 0) at short intervals.
-                loop {
-                    // kill == 0 -> process exists; ESRCH -> doesn't exist
-                    let alive = unsafe { libc::kill(ppid, 0) } == 0
-                        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-                    if !alive {
-                        shutdown_for_parent.store(true, Ordering::SeqCst);
-                        shutdown_notify_for_parent.notify_waiters();
-                        let _ = loop_wake::post_user_event();
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            });
+            parent_watcher_thread = Some(spawn_parent_watcher(
+                ppid,
+                shutdown_requested.clone(),
+                shutdown_notify.clone(),
+            ));
         }
 
         // NSWorkspace observer installation is triggered post-handshake via UserEvent
@@ -307,6 +346,12 @@ impl Server {
                     }
                 }
                 Event::LoopDestroyed => {
+                    // Join the parent watcher thread
+                    if let Some(h) = parent_watcher_thread.take()
+                        && let Err(e) = h.join()
+                    {
+                        error!("Parent watcher thread join failed: {:?}", e);
+                    }
                     // Join the IPC server thread and emit a single success line.
                     if let Some(h) = server_thread.take() {
                         if let Err(e) = h.join() {
@@ -354,5 +399,37 @@ mod tests {
     fn test_server_default() {
         let server = Server::default();
         assert_eq!(server.socket_path, default_socket_path());
+    }
+
+    #[test]
+    fn test_spawn_parent_watcher_shutdown_cooperation() {
+        use std::{process, sync::mpsc};
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+
+        // Spawn watching our own process ID (which is definitely alive)
+        let handle = spawn_parent_watcher(
+            process::id() as libc::pid_t,
+            shutdown.clone(),
+            shutdown_notify.clone(),
+        );
+
+        // Sleep briefly to let the thread start
+        thread::sleep(Duration::from_millis(50));
+
+        // Request shutdown and see if the thread exits cooperatively!
+        shutdown.store(true, Ordering::SeqCst);
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = handle.join();
+            let _ = tx.send(());
+        });
+
+        // Wait up to 1 second for the thread to join
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "Parent watcher thread failed to exit cooperatively on shutdown!"
+        );
     }
 }
