@@ -1,15 +1,17 @@
 //! Build script that derives the workspace crate target list for logging filters.
 
 use std::{
-    env, fs,
+    env,
+    error::Error,
+    fs, io,
     path::{Path, PathBuf},
 };
 
-fn main() {
-    let workspace_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+fn main() -> Result<(), Box<dyn Error>> {
+    let workspace_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?)
         .parent()
         .and_then(Path::parent)
-        .unwrap()
+        .ok_or_else(|| io::Error::other("manifest directory is not inside a workspace"))?
         .to_path_buf();
     let crates_dir = workspace_root.join("crates");
 
@@ -22,7 +24,7 @@ fn main() {
     let mut crate_names = workspace_crate_names(&crates_dir);
     crate_names.sort();
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("workspace_crates.rs");
+    let out_path = PathBuf::from(env::var("OUT_DIR")?).join("workspace_crates.rs");
     let body = format!(
         "/// Workspace crate targets included in default logging directives.\nconst OUR_CRATES: &[&str] = &[\n{}\n];\n",
         crate_names
@@ -31,7 +33,8 @@ fn main() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    fs::write(out_path, body).unwrap();
+    fs::write(out_path, body)?;
+    Ok(())
 }
 
 /// Read crate target names from workspace member manifests under `crates/`.

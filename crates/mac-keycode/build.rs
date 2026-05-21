@@ -208,7 +208,8 @@ fn rustfmt_file(path: &Path) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let crate_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
     println!(
         "cargo:rerun-if-changed={}",
         crate_dir.join("data/keycodes.txt").display()
