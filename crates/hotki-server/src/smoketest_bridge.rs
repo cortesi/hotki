@@ -291,14 +291,9 @@ impl BlockingBridgeClient {
         if remaining.is_zero() {
             return Ok(false);
         }
-        self.reader
-            .get_ref()
-            .set_read_timeout(Some(remaining))
-            .map_err(|source| BridgeClientError::Io { source })?;
+        self.set_read_timeout(remaining)?;
         let outcome = self.read_reply();
-        if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
-            tracing::debug!(?err, "failed to clear bridge read timeout");
-        }
+        self.clear_read_timeout();
         match outcome {
             Ok(reply) => match reply.response {
                 BridgeResponse::Event { .. } => {
@@ -338,6 +333,19 @@ impl BlockingBridgeClient {
             .map_err(|source| BridgeClientError::Io { source })
     }
 
+    fn set_read_timeout(&self, timeout: Duration) -> Result<(), BridgeClientError> {
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(timeout))
+            .map_err(|source| BridgeClientError::Io { source })
+    }
+
+    fn clear_read_timeout(&self) {
+        if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
+            tracing::debug!(?err, "failed to clear bridge read timeout");
+        }
+    }
+
     fn await_ack_and_response<F>(
         &mut self,
         command_id: BridgeCommandId,
@@ -346,10 +354,7 @@ impl BlockingBridgeClient {
     where
         F: FnMut(BridgeReply),
     {
-        self.reader
-            .get_ref()
-            .set_read_timeout(Some(self.ack_timeout))
-            .map_err(|source| BridgeClientError::Io { source })?;
+        self.set_read_timeout(self.ack_timeout)?;
         loop {
             let ack_result = self.read_reply();
             match ack_result {
@@ -359,9 +364,7 @@ impl BlockingBridgeClient {
                         continue;
                     }
                     let outcome = self.validate_ack(command_id, &reply);
-                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
-                        tracing::debug!(?err, "failed to clear bridge read timeout");
-                    }
+                    self.clear_read_timeout();
                     outcome?;
                     return self.await_final_response(command_id, on_event);
                 }
@@ -369,18 +372,14 @@ impl BlockingBridgeClient {
                     if source.kind() == io::ErrorKind::WouldBlock
                         || source.kind() == io::ErrorKind::TimedOut =>
                 {
-                    if let Err(err) = self.reader.get_ref().set_read_timeout(None) {
-                        tracing::debug!(?err, "failed to clear bridge read timeout");
-                    }
+                    self.clear_read_timeout();
                     return Err(BridgeClientError::AckTimeout {
                         command_id,
                         timeout_ms: self.ack_timeout.as_millis() as u64,
                     });
                 }
                 Err(err) => {
-                    if let Err(clear_err) = self.reader.get_ref().set_read_timeout(None) {
-                        tracing::debug!(?clear_err, "failed to clear bridge read timeout");
-                    }
+                    self.clear_read_timeout();
                     return Err(err);
                 }
             }
