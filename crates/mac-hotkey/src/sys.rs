@@ -11,8 +11,10 @@
 //!   foreground app.
 
 use std::{
+    cell::RefCell,
+    collections::HashSet,
     ffi::c_void,
-    process,
+    process, ptr,
     sync::{
         Arc,
         atomic::{AtomicPtr, Ordering},
@@ -81,12 +83,11 @@ pub fn run_event_loop(
     }
 
     // Capture for re-enabling the tap from inside the closure.
-    let tap_port_ptr: Arc<AtomicPtr<c_void>> = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+    let tap_port_ptr: Arc<AtomicPtr<c_void>> = Arc::new(AtomicPtr::new(ptr::null_mut()));
 
     debug!("creating_event_tap");
     let tap_port_ptr_cb = tap_port_ptr.clone();
-    let held_intercepts: std::cell::RefCell<std::collections::HashSet<mac_keycode::Key>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    let held_intercepts: RefCell<HashSet<mac_keycode::Key>> = RefCell::new(HashSet::new());
     let tap = match cge::CGEventTap::new(
         cge::CGEventTapLocation::HID,
         cge::CGEventTapPlacement::HeadInsertEventTap,
@@ -249,6 +250,8 @@ pub fn run_event_loop(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use mac_keycode::Key;
 
     use crate::test_register;
@@ -284,13 +287,13 @@ mod tests {
         let hk = mac_keycode::Chord {
             key: Key::H,
             modifiers: {
-                let mut s = std::collections::HashSet::new();
+                let mut s = HashSet::new();
                 s.insert(mac_keycode::Modifier::Control);
                 s
             },
         };
         let _id = test_register(&mut inner, hk, true);
-        let mut mods = std::collections::HashSet::new();
+        let mut mods = HashSet::new();
         mods.insert(mac_keycode::Modifier::Control);
         let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);
         let d = crate::policy::classify(false, matched);

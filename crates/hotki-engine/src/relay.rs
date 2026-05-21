@@ -97,6 +97,8 @@ impl RelayHandler {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use mac_keycode::{Chord, Key};
 
     use super::*;
