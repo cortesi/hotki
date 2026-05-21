@@ -105,15 +105,18 @@ impl Server {
 
         // Create shutdown coordination
         let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
         let idle_state = Arc::new(IdleTimerState::new(self.idle_timeout_secs));
         // Create the IPC server; pass shutdown flag so RPC can trigger exit
         let ipc_server = IPCServer::new(
             &self.socket_path,
             manager,
             shutdown_requested.clone(),
+            shutdown_notify.clone(),
             idle_state.clone(),
         );
         let shutdown_requested_clone = shutdown_requested.clone();
+        let shutdown_notify_clone = shutdown_notify.clone();
         let ipc_wakeup = proxy_for_ipc.clone();
 
         // Track when client disconnects to start idle countdown
@@ -131,6 +134,7 @@ impl Server {
                 Err(e) => {
                     error!("Failed to create tokio runtime: {}", e);
                     shutdown_requested_clone.store(true, Ordering::SeqCst);
+                    shutdown_notify_clone.notify_waiters();
                     // Wake the Tao loop to observe shutdown
                     let _ = ipc_wakeup.send_event(());
                     return;
@@ -158,6 +162,7 @@ impl Server {
         // the backend die as soon as the frontend goes away for any reason.
         if let Some(ppid) = self.parent_pid {
             let shutdown_for_parent = shutdown_requested.clone();
+            let shutdown_notify_for_parent = shutdown_notify.clone();
             thread::spawn(move || {
                 // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
                 unsafe {
@@ -193,6 +198,7 @@ impl Server {
                             );
                             // Parent exited; request shutdown.
                             shutdown_for_parent.store(true, Ordering::SeqCst);
+                            shutdown_notify_for_parent.notify_waiters();
                             let _ = loop_wake::post_user_event();
                             let _ = libc::close(kq);
                             return;
@@ -210,6 +216,7 @@ impl Server {
                         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
                     if !alive {
                         shutdown_for_parent.store(true, Ordering::SeqCst);
+                        shutdown_notify_for_parent.notify_waiters();
                         let _ = loop_wake::post_user_event();
                         break;
                     }

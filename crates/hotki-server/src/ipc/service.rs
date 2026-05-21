@@ -55,12 +55,15 @@ pub struct HotkeyService {
     events: EventPipeline,
     /// Shared idle timer state for status reporting.
     idle_state: Arc<IdleTimerState>,
+    /// Notify handle for server shutdown.
+    shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl HotkeyService {
     pub fn new(
         manager: Arc<mac_hotkey::Manager>,
         shutdown: Arc<AtomicBool>,
+        shutdown_notify: Arc<tokio::sync::Notify>,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
         Self {
@@ -68,12 +71,18 @@ impl HotkeyService {
             manager,
             events: EventPipeline::new(shutdown),
             idle_state,
+            shutdown_notify,
         }
     }
 
     /// Expose the shutdown flag for coordinated server shutdown.
     pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
         self.events.shutdown_flag()
+    }
+
+    /// Expose the shutdown notify handle.
+    pub(crate) fn shutdown_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.shutdown_notify.clone()
     }
 
     async fn engine(&self) -> &Engine {
@@ -103,6 +112,7 @@ impl HotkeyService {
         self.shutdown_flag().store(true, Ordering::SeqCst);
         let _ = loop_wake::post_user_event();
         self.events.clear_for_shutdown().await;
+        self.shutdown_notify.notify_waiters();
         Ok(Value::Boolean(true))
     }
 
