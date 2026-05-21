@@ -95,6 +95,12 @@ impl RelayHandler {
     }
 }
 
+impl Drop for RelayHandler {
+    fn drop(&mut self) {
+        self.stop_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -128,5 +134,20 @@ mod tests {
 
         // Verify stop_relay returns false for non-existent id
         assert!(!handler.stop_relay(&id, 1234));
+    }
+
+    #[test]
+    fn drop_clears_active_relays() {
+        let handler = RelayHandler::new_with_enabled(false);
+        let id = "id1".to_string();
+        let ch = chord(Key::A);
+
+        handler.start_relay(id.clone(), ch.clone(), 1234, false);
+        assert!(handler.active.lock().contains_key(&id));
+
+        // When dropped, it should execute stop_all and empty the map
+        let active_map_ref = handler.active.clone();
+        drop(handler);
+        assert!(active_map_ref.lock().is_empty());
     }
 }
