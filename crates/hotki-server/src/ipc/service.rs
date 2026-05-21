@@ -449,27 +449,33 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_dispatcher_worker_reaping() {
-        // Try creating the mac_hotkey::Manager. If accessibility/tap permissions are absent,
-        // skip this test gracefully to ensure integration robustness on CI or headless environs.
-        let manager_res = mac_hotkey::Manager::new();
-        let manager = match manager_res {
+    fn setup_test_service() -> Option<HotkeyService> {
+        let manager = match mac_hotkey::Manager::new() {
             Ok(mgr) => Arc::new(mgr),
             Err(e) => {
                 warn!(
-                    "Skipping test_dispatcher_worker_reaping because mac_hotkey::Manager failed to initialize: {:?}",
+                    "Skipping test: mac_hotkey::Manager failed to initialize: {:?}",
                     e
                 );
-                return;
+                return None;
             }
         };
-
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_notify = Arc::new(tokio::sync::Notify::new());
         let idle_state = Arc::new(IdleTimerState::new(30));
+        Some(HotkeyService::new(
+            manager,
+            shutdown,
+            shutdown_notify,
+            idle_state,
+        ))
+    }
 
-        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
+    #[tokio::test]
+    async fn test_dispatcher_worker_reaping() {
+        let Some(service) = setup_test_service() else {
+            return;
+        };
 
         assert_eq!(service.active_workers_count(), 0);
 
@@ -498,23 +504,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_worker_reactivation() {
-        let manager_res = mac_hotkey::Manager::new();
-        let manager = match manager_res {
-            Ok(mgr) => Arc::new(mgr),
-            Err(e) => {
-                warn!(
-                    "Skipping test_dispatcher_worker_reactivation because mac_hotkey::Manager failed to initialize: {:?}",
-                    e
-                );
-                return;
-            }
+        let Some(service) = setup_test_service() else {
+            return;
         };
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let idle_state = Arc::new(IdleTimerState::new(30));
-
-        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
 
         assert_eq!(service.active_workers_count(), 0);
 
@@ -549,23 +541,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_worker_shutdown() {
-        let manager_res = mac_hotkey::Manager::new();
-        let manager = match manager_res {
-            Ok(mgr) => Arc::new(mgr),
-            Err(e) => {
-                warn!(
-                    "Skipping test_dispatcher_worker_shutdown because mac_hotkey::Manager failed to initialize: {:?}",
-                    e
-                );
-                return;
-            }
+        let Some(service) = setup_test_service() else {
+            return;
         };
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let idle_state = Arc::new(IdleTimerState::new(30));
-
-        let service = HotkeyService::new(manager, shutdown.clone(), shutdown_notify, idle_state);
 
         assert_eq!(service.active_workers_count(), 0);
 
@@ -585,6 +563,7 @@ mod tests {
         assert_eq!(service.active_workers_count(), 1);
 
         // Trigger shutdown flag
+        let shutdown = service.shutdown_flag();
         shutdown.store(true, Ordering::SeqCst);
 
         // Dispatching another event triggers the loop to wake up, check shutdown, break, and reap instantly.
@@ -596,23 +575,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_worker_isolation() {
-        let manager_res = mac_hotkey::Manager::new();
-        let manager = match manager_res {
-            Ok(mgr) => Arc::new(mgr),
-            Err(e) => {
-                warn!(
-                    "Skipping test_dispatcher_worker_isolation because mac_hotkey::Manager failed to initialize: {:?}",
-                    e
-                );
-                return;
-            }
+        let Some(service) = setup_test_service() else {
+            return;
         };
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let idle_state = Arc::new(IdleTimerState::new(30));
-
-        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
 
         assert_eq!(service.active_workers_count(), 0);
 
@@ -653,23 +618,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatcher_same_channel_protection() {
-        let manager_res = mac_hotkey::Manager::new();
-        let manager = match manager_res {
-            Ok(mgr) => Arc::new(mgr),
-            Err(e) => {
-                warn!(
-                    "Skipping test_dispatcher_same_channel_protection because mac_hotkey::Manager failed to initialize: {:?}",
-                    e
-                );
-                return;
-            }
+        let Some(service) = setup_test_service() else {
+            return;
         };
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let idle_state = Arc::new(IdleTimerState::new(30));
-
-        let service = HotkeyService::new(manager, shutdown, shutdown_notify, idle_state);
 
         assert_eq!(service.active_workers_count(), 0);
 
