@@ -16,7 +16,7 @@ use tokio::select;
 use tracing::{debug, trace};
 
 use super::{IdleTimerState, service::HotkeyService};
-use crate::{Error, Result};
+use crate::{Error, Result, util};
 
 /// IPC server
 pub struct IPCServer {
@@ -127,7 +127,7 @@ fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
                 e
             ))
         })?;
-        let uid = unsafe { libc::getuid() } as u32;
+        let uid = util::current_uid();
         if parent_meta.uid() != uid {
             return Err(Error::Ipc(format!(
                 "Parent directory of socket at '{}' not owned by current user (uid {} != {})",
@@ -152,7 +152,7 @@ fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
                     path, ft
                 )));
             }
-            let uid = unsafe { libc::getuid() } as u32;
+            let uid = util::current_uid();
             if meta.uid() != uid {
                 return Err(Error::Ipc(format!(
                     "Socket at '{}' not owned by current user (uid {} != {})",
@@ -179,7 +179,7 @@ mod tests {
 
     fn tmpdir() -> PathBuf {
         let mut p = env::temp_dir();
-        let unique = format!("hotki-test-{}-{}", unsafe { libc::getuid() }, process::id());
+        let unique = format!("hotki-test-{}-{}", util::current_uid(), process::id());
         p.push(unique);
         let _ = fs::create_dir_all(&p);
         p
@@ -235,7 +235,7 @@ mod tests {
     fn guard_refuses_socket_in_non_owned_parent_directory() {
         let root_dir_sock = "/hotki_test_non_owned.sock";
         let res = validate_or_unlink_existing_socket(root_dir_sock);
-        if unsafe { libc::getuid() } != 0 {
+        if util::current_uid() != 0 {
             assert!(res.is_err());
             let err_str = format!("{:?}", res.err().unwrap());
             assert!(err_str.contains("not owned by current user"));

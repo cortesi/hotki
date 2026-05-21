@@ -31,6 +31,11 @@ pub fn bridge_crossbeam_to_tokio<T: Send + 'static>(rx: Receiver<T>) -> Unbounde
     rx_tokio
 }
 
+/// Get the current user's UID.
+pub fn current_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

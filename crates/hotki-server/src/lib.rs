@@ -87,7 +87,7 @@ fn socket_runtime_dir() -> PathBuf {
 pub(crate) fn default_socket_path() -> &'static str {
     static SOCKET_PATH: OnceLock<String> = OnceLock::new();
     SOCKET_PATH.get_or_init(|| {
-        let uid = unsafe { libc::getuid() };
+        let uid = util::current_uid();
         let pid = id();
         // Always use a unique socket path per process
         socket_runtime_dir()
@@ -101,7 +101,7 @@ pub(crate) fn default_socket_path() -> &'static str {
 /// `default_socket_path`). This avoids knowledge drift in external tools like
 /// smoketests when connecting to a managed server.
 pub fn socket_path_for_pid(pid: u32) -> String {
-    let uid = unsafe { libc::getuid() };
+    let uid = util::current_uid();
     socket_runtime_dir()
         .join(format!("hotki-server-{}-{}.sock", uid, pid))
         .to_string_lossy()
