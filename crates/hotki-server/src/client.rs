@@ -83,6 +83,12 @@ impl Client {
         self
     }
 
+    /// Configure whether an auto-spawned server starts the physical keyboard event tap.
+    pub fn with_server_event_tap_enabled(mut self, enabled: bool) -> Self {
+        self.managed_server.set_server_event_tap_enabled(enabled);
+        self
+    }
+
     /// Opt-out of auto-spawn behavior and only attempt to connect to an
     /// already-running server.
     pub fn with_connect_only(mut self) -> Self {
@@ -272,5 +278,29 @@ mod tests {
         let cfg3 = c3.managed_server.server_config().expect("server config");
         assert_eq!(count_flag(cfg3.args(), "--log-filter"), 1);
         assert_eq!(value_after(cfg3.args(), "--log-filter"), Some("second"));
+    }
+
+    #[test]
+    fn event_tap_flag_order_independent() {
+        let c1 = Client::new()
+            .with_connect_only()
+            .with_server_event_tap_enabled(false)
+            .with_auto_spawn_server();
+        let cfg1 = c1.managed_server.server_config().expect("server config");
+        assert_eq!(count_flag(cfg1.args(), "--disable-event-tap"), 1);
+
+        let c2 = Client::new()
+            .with_auto_spawn_server()
+            .with_server_event_tap_enabled(false)
+            .with_server_event_tap_enabled(false);
+        let cfg2 = c2.managed_server.server_config().expect("server config");
+        assert_eq!(count_flag(cfg2.args(), "--disable-event-tap"), 1);
+
+        let c3 = Client::new()
+            .with_auto_spawn_server()
+            .with_server_event_tap_enabled(false)
+            .with_server_event_tap_enabled(true);
+        let cfg3 = c3.managed_server.server_config().expect("server config");
+        assert_eq!(count_flag(cfg3.args(), "--disable-event-tap"), 0);
     }
 }

@@ -25,10 +25,9 @@ mod test_script;
 
 pub(crate) use config::DynamicConfig;
 pub(crate) use loader::load_dynamic_config_from_string;
-pub(crate) use render::parse_error_location;
 #[cfg(test)]
 pub(crate) use render::render_stack;
-pub(crate) use selector::{SelectorConfig, SelectorItem, SelectorItems};
+pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem, SelectorItems};
 pub(crate) use types::{
     ActionCtx, Binding, BindingFlags, BindingKind, BindingStyle, Effect, HandlerRef, ModeCtx,
     ModeFrame, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos, StyleOverlay,

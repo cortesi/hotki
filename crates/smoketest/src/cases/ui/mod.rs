@@ -5,7 +5,7 @@ mod activation;
 /// CoreGraphics window and display inspection helpers.
 mod window_inspection;
 
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{fs, thread, time::Duration};
 
 use tracing::{debug, info};
 
@@ -133,8 +133,6 @@ struct UiCaseState {
     session: HotkiSession,
     /// Registry slug mirrored when logging diagnostics or creating scratch configs.
     slug: &'static str,
-    /// Filesystem path to the Luau configuration applied for this demo.
-    config_path: PathBuf,
     /// Observed time in milliseconds until the HUD became visible.
     time_to_hud_ms: Option<u64>,
     /// Snapshot of HUD-related windows after activation.
@@ -170,7 +168,6 @@ where
         state = Some(UiCaseState {
             session,
             slug: spec.slug,
-            config_path,
             time_to_hud_ms: None,
             hud_windows: None,
             hud_activation: None,
@@ -185,34 +182,33 @@ where
             .ok_or_else(|| Error::InvalidState("ui case state missing during action".into()))?;
 
         {
-            let bridge = state_ref.session.bridge_mut();
-            bridge.ensure_ready(1_000)?;
-            bridge.set_config_from_path(&state_ref.config_path)?;
+            let driver = state_ref.session.driver_mut();
+            driver.ensure_ready(1_000)?;
         }
         let gate_ms = config::BINDING_GATES.default_ms * 2;
         let watcher = BindingWatcher::new(state_ref.session.pid() as i32);
         let ident_activate = UI_DEMO_SEQUENCE[0];
         let activation = {
-            let bridge = state_ref.session.bridge_mut();
-            watcher.activate_until_ready(bridge, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
+            let driver = state_ref.session.driver_mut();
+            watcher.activate_until_ready(driver, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
         };
         if !activation.focus_event_seen() {
             info!(
                 target: LOG_TARGET,
                 pid = state_ref.session.pid(),
-                "no focus-change bridge events observed during activation"
+                "no focus-change server events observed during activation"
             );
         }
 
         {
-            let bridge = state_ref.session.bridge_mut();
-            bridge.inject_key(ident_activate)?;
-            bridge.wait_for_idents(&["h", "l", "n"], gate_ms)?;
+            let driver = state_ref.session.driver_mut();
+            driver.inject_key(ident_activate)?;
+            driver.wait_for_idents(&["h", "l", "n"], gate_ms)?;
         }
 
         for key in &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1] {
-            let bridge = state_ref.session.bridge_mut();
-            bridge.inject_key(key)?;
+            let driver = state_ref.session.driver_mut();
+            driver.inject_key(key)?;
             thread::sleep(Duration::from_millis(config::THEME_SWITCH_DELAY_MS));
         }
 
@@ -225,7 +221,7 @@ where
         after_activation(state_ref)?;
 
         let ident_exit = UI_DEMO_SEQUENCE[UI_DEMO_SEQUENCE.len() - 1];
-        state_ref.session.bridge_mut().inject_key(ident_exit)?;
+        state_ref.session.driver_mut().inject_key(ident_exit)?;
         Ok(())
     })?;
 
@@ -268,7 +264,7 @@ where
         if let Err(err) = state_inner.session.shutdown() {
             debug!(
                 ?err,
-                "bridge shutdown returned error (expected on clean exit)"
+                "server driver shutdown returned error (expected on clean exit)"
             );
         }
         state_inner.session.kill_and_wait();
@@ -297,7 +293,7 @@ fn verify_display_alignment(state: &mut UiCaseState) -> Result<()> {
     })?;
 
     let hud_snapshot =
-        state.session.bridge_mut().latest_hud()?.ok_or_else(|| {
+        state.session.driver_mut().latest_hud()?.ok_or_else(|| {
             Error::InvalidState("no HUD snapshot observed after activation".into())
         })?;
     let hud_active = hud_snapshot

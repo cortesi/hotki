@@ -77,6 +77,8 @@ pub struct AppBootstrap {
     pub initial_style: Style,
     /// Optional log filter to propagate to an auto-spawned server.
     pub server_log_filter: Option<String>,
+    /// Whether the auto-spawned server should observe physical keyboard events.
+    pub server_event_tap_enabled: bool,
     /// Whether world snapshots should be periodically dumped to logs.
     pub dumpworld: bool,
 }
@@ -126,9 +128,9 @@ impl HotkiApp {
             bootstrap.config_path.as_path(),
             &bootstrap.tx_ui,
             &cc.egui_ctx,
-            &bootstrap.tx_ctrl,
             bootstrap.rx_ctrl,
             bootstrap.server_log_filter,
+            bootstrap.server_event_tap_enabled,
             bootstrap.dumpworld,
         );
 

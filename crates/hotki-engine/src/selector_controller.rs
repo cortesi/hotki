@@ -89,8 +89,8 @@ impl<'a> SelectorController<'a> {
             .send_ui(hotki_protocol::MsgToUI::SelectorHide)?;
 
         let result = {
-            let cfg_guard = self.engine.config.read().await;
-            let Some(cfg) = cfg_guard.as_ref() else {
+            let mut cfg_guard = self.engine.config.lock().await;
+            let Some(cfg) = cfg_guard.as_mut() else {
                 tracing::trace!("No dynamic config loaded; ignoring selector close");
                 self.engine.rebind_and_refresh(focus.clone()).await?;
                 return Ok(());
@@ -116,7 +116,7 @@ impl<'a> SelectorController<'a> {
 }
 
 fn execute_selector_close(
-    cfg: &dyn_engine::DynamicConfig,
+    cfg: &mut dyn_engine::DynamicConfig,
     close: &mut SelectorClose,
 ) -> result::Result<dyn_engine::HandlerResult, config::Error> {
     match close.event {

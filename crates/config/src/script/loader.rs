@@ -3,16 +3,20 @@ use std::{
     ffi::OsStr,
     fmt, fs, mem,
     path::{Component, Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use mac_keycode::Chord;
-use mlua::{
-    AnyUserData, Function, Lua, LuaSerdeExt, Result as LuaResult, StdLib, Table, UserData,
-    UserDataFields, UserDataMethods, Value, VmState,
+use oxau::{
+    compile::{self, CompileError, CompileOptions},
+    embed::{
+        FromLua, Function, HostType, HostTypeBuilder, IntoLuaMulti, ModuleBinding, ModuleBuilder,
+        ModuleBuilderExt, ModuleValue, MultiValue, NativeModule, RuntimeError, Scope,
+        ScopedHostFunction, ScopedValue, ScriptError, StashedClosure, Table, Userdata,
+        serde::{from_scoped_value, to_scoped_value},
+    },
+    profile::Profile,
+    session::{Ambient, ProtectedScriptError, TracebackFrame, Vm},
 };
 use regex::Regex;
 use serde::Deserialize;
@@ -24,19 +28,31 @@ use super::{
 };
 use crate::{Action, Error, NotifyKind, Toggle, error::excerpt_at, raw, themes};
 
-/// Build a locationless `Error::Validation` with only a path and message.
-fn validation_error(path: Option<PathBuf>, err: impl fmt::Display) -> Error {
-    Error::Validation {
-        path,
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    }
-}
+/// Shared mutable state captured by native host functions installed into one VM.
+type SharedRuntimeState = Arc<Mutex<RuntimeState>>;
 
-/// Maximum instruction interrupts allowed while evaluating a Luau chunk.
-const EXECUTION_LIMIT: u64 = 200_000;
+/// Checked-in Luau declaration source for the script host API.
+const HOTKI_DECLARATION: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/luau/hotki.d.luau"));
+
+/// Tag used to distinguish primitive action constants from other light userdata.
+const ACTION_TOKEN_TAG: u8 = 0x48;
+/// Primitive action token for `action.pop`.
+const ACTION_POP: u32 = 1;
+/// Primitive action token for `action.exit`.
+const ACTION_EXIT: u32 = 2;
+/// Primitive action token for `action.show_root`.
+const ACTION_SHOW_ROOT: u32 = 3;
+/// Primitive action token for `action.hide_hud`.
+const ACTION_HIDE_HUD: u32 = 4;
+/// Primitive action token for `action.reload_config`.
+const ACTION_RELOAD_CONFIG: u32 = 5;
+/// Primitive action token for `action.clear_notifications`.
+const ACTION_CLEAR_NOTIFICATIONS: u32 = 6;
+/// Primitive action token for `action.theme_next`.
+const ACTION_THEME_NEXT: u32 = 7;
+/// Primitive action token for `action.theme_prev`.
+const ACTION_THEME_PREV: u32 = 8;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,12 +138,21 @@ enum ImportRole {
 enum ImportedValue {
     /// Imported mode renderer.
     Mode(ModeRef),
-    /// Imported selector item provider.
-    Items(Function),
+    /// Imported selector item provider or static list.
+    Items(ImportedItems),
     /// Imported action handler.
     Handler(HandlerRef),
     /// Imported style overlay.
-    Style(Box<StyleOverlay>),
+    Style(Box<raw::RawStyle>),
+}
+
+#[derive(Clone, Debug)]
+/// Imported selector item values.
+enum ImportedItems {
+    /// Imported item provider closure.
+    Provider(StashedClosure),
+    /// Imported static selector item list.
+    Static(Vec<super::SelectorItem>),
 }
 
 #[derive(Clone, Debug)]
@@ -199,152 +224,6 @@ impl ModeBuilder {
     }
 }
 
-impl UserData for ModeBuilder {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut(
-            "bind",
-            |lua, this, (chord, desc, action_value, opts): (String, String, AnyUserData, Value)| {
-                let action_value = action_value.borrow::<ActionValue>()?.clone();
-                let options = parse_optional::<BindingOptionsSpec>(lua, opts)?;
-                let binding = binding_from_action(lua, &chord, desc, action_value, options)?;
-                lock_unpoisoned(&this.state).bindings.push(binding);
-                Ok(())
-            },
-        );
-
-        methods.add_method_mut("bind_many", |lua, this, entries: Table| {
-            for entry in entries.sequence_values::<Table>() {
-                let entry = entry?;
-                if let Ok(action_ud) = entry.get::<AnyUserData>("action") {
-                    let chord: String = entry.get("chord")?;
-                    let desc: String = entry.get("desc")?;
-                    let opts = entry.get::<Value>("opts").unwrap_or(Value::Nil);
-                    let action_value = action_ud.borrow::<ActionValue>()?.clone();
-                    let options = parse_optional::<BindingOptionsSpec>(lua, opts)?;
-                    let binding = binding_from_action(lua, &chord, desc, action_value, options)?;
-                    lock_unpoisoned(&this.state).bindings.push(binding);
-                    continue;
-                }
-
-                let chord: String = entry.get("chord")?;
-                let title: String = entry.get("title")?;
-                let render: Function = entry.get("render")?;
-                let opts = entry.get::<Value>("opts").unwrap_or(Value::Nil);
-                let options = parse_optional::<SubmenuOptionsSpec>(lua, opts)?;
-                let binding = binding_from_mode(lua, &chord, title, render, options)?;
-                lock_unpoisoned(&this.state).bindings.push(binding);
-            }
-            Ok(())
-        });
-
-        methods.add_method_mut(
-            "submenu",
-            |lua, this, (chord, title, render, opts): (String, String, Function, Value)| {
-                let options = parse_optional::<SubmenuOptionsSpec>(lua, opts)?;
-                let binding = binding_from_mode(lua, &chord, title, render, options)?;
-                lock_unpoisoned(&this.state).bindings.push(binding);
-                Ok(())
-            },
-        );
-
-        methods.add_method_mut("style", |lua, this, overlay: Value| {
-            let raw = parse_raw_style(lua, overlay)?;
-            lock_unpoisoned(&this.state).styles.push(raw);
-            Ok(())
-        });
-
-        methods.add_method_mut("capture", |_lua, this, ()| {
-            lock_unpoisoned(&this.state).capture = true;
-            Ok(())
-        });
-    }
-}
-
-impl UserData for ActionValue {}
-
-impl UserData for ModeContextUserData {
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("app", |_lua, this| Ok(this.0.app.clone()));
-        fields.add_field_method_get("title", |_lua, this| Ok(this.0.title.clone()));
-        fields.add_field_method_get("pid", |_lua, this| Ok(this.0.pid));
-        fields.add_field_method_get("hud", |_lua, this| Ok(this.0.hud));
-        fields.add_field_method_get("depth", |_lua, this| Ok(this.0.depth));
-    }
-
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("app_matches", |_lua, this, pattern: String| {
-            regex_matches(&this.0.app, &pattern)
-        });
-        methods.add_method("title_matches", |_lua, this, pattern: String| {
-            regex_matches(&this.0.title, &pattern)
-        });
-    }
-}
-
-impl UserData for ActionContextUserData {
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("app", |_lua, this| Ok(this.0.app().to_string()));
-        fields.add_field_method_get("title", |_lua, this| Ok(this.0.title().to_string()));
-        fields.add_field_method_get("pid", |_lua, this| Ok(this.0.pid()));
-        fields.add_field_method_get("hud", |_lua, this| Ok(this.0.hud()));
-        fields.add_field_method_get("depth", |_lua, this| Ok(this.0.depth()));
-    }
-
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("app_matches", |_lua, this, pattern: String| {
-            regex_matches(this.0.app(), &pattern)
-        });
-        methods.add_method("title_matches", |_lua, this, pattern: String| {
-            regex_matches(this.0.title(), &pattern)
-        });
-        methods.add_method(
-            "notify",
-            |lua, this, (kind, title, body): (Value, String, String)| {
-                let kind: NotifyKind = lua.from_value(kind)?;
-                this.0
-                    .push_effect(super::Effect::Notify { kind, title, body });
-                Ok(())
-            },
-        );
-        methods.add_method("stay", |_lua, this, ()| {
-            this.0.set_stay();
-            Ok(())
-        });
-        methods.add_method("exec", |_lua, this, action_ud: AnyUserData| {
-            let action = action_ud.borrow::<ActionValue>()?.clone();
-            match action.payload {
-                ActionPayload::Action(action) => {
-                    this.0.push_effect(super::Effect::Exec(action));
-                    Ok(())
-                }
-                _ => Err(mlua::Error::runtime("ctx:exec expects a primitive action")),
-            }
-        });
-        methods.add_method(
-            "push",
-            |_lua, this, (render, title): (Function, Option<String>)| {
-                this.0.set_nav(NavRequest::Push {
-                    mode: ModeRef::from_function(render, title.clone()),
-                    title,
-                });
-                Ok(())
-            },
-        );
-        methods.add_method("pop", |_lua, this, ()| {
-            this.0.set_nav(NavRequest::Pop);
-            Ok(())
-        });
-        methods.add_method("exit", |_lua, this, ()| {
-            this.0.set_nav(NavRequest::Exit);
-            Ok(())
-        });
-        methods.add_method("show_root", |_lua, this, ()| {
-            this.0.set_nav(NavRequest::ShowRoot);
-            Ok(())
-        });
-    }
-}
-
 /// Load a Luau config from a file at `path`.
 pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
     if path.extension() != Some(OsStr::new("luau")) {
@@ -368,10 +247,8 @@ pub fn load_dynamic_config_from_string(
     path: Option<PathBuf>,
 ) -> Result<DynamicConfig, Error> {
     let sources = Arc::new(Mutex::new(HashMap::new()));
-    if let Some(path) = &path {
-        lock_unpoisoned(&sources)
-            .insert(path.clone(), Arc::from(source.to_string().into_boxed_str()));
-    }
+    let source_key = path.clone().unwrap_or_else(|| PathBuf::from("<memory>"));
+    lock_unpoisoned(&sources).insert(source_key, Arc::from(source.to_string().into_boxed_str()));
 
     let mut state = RuntimeState {
         active_theme: "default".to_string(),
@@ -395,457 +272,727 @@ pub fn load_dynamic_config_from_string(
     );
 
     let state = Arc::new(Mutex::new(state));
-    let lua = Lua::new_with(StdLib::ALL_SAFE, mlua::LuaOptions::default())
+    let profile = Profile::full().with_runtime_compilation();
+    let chunk = compile::compile_for(
+        &profile,
+        source.as_bytes(),
+        &CompileOptions::for_vm_execution(),
+    )
+    .map_err(|err| compile_error_to_config(source, &err, path.as_deref()))?;
+    let mut vm = build_vm(profile, state.clone(), path.as_deref())?;
+    let chunk_name = chunk_name(path.as_deref());
+    let module = vm
+        .load_named(&chunk, chunk_name.as_bytes())
         .map_err(|err| validation_error(path.clone(), err))?;
-    lua.sandbox(true)
-        .map_err(|err| validation_error(path.clone(), err))?;
-    let interrupt_steps = install_interrupt_limit(&lua);
-    install_api(&lua, state.clone()).map_err(|err| validation_error(path.clone(), err))?;
 
-    reset_execution_budget(&interrupt_steps);
-    lua.load(source)
-        .set_name(path_display(path.as_deref()))
-        .exec()
-        .map_err(|err| load_error_from_mlua(source, path.as_deref(), &err))?;
+    match vm
+        .call_protected_with_limits(&module, DynamicConfig::entry_limits())
+        .map_err(|err| validation_error(path.clone(), format!("{err:?}")))?
+    {
+        Ok(_) => {}
+        Err(err) => {
+            return Err(protected_error_to_config(
+                source,
+                path.as_deref(),
+                &sources,
+                &err,
+            ));
+        }
+    }
 
     let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
         validation_error(path.clone(), "hotki.root() must be called exactly once")
     })?;
-    reset_execution_budget(&interrupt_steps);
-    validate_root(&lua, &root, path.as_deref(), source)?;
+    validate_root(&mut vm, &root, path.as_deref(), &sources)?;
 
-    let state = lock_unpoisoned(&state);
+    let state_guard = lock_unpoisoned(&state);
     Ok(DynamicConfig {
         root,
-        themes: state.themes.clone(),
-        active_theme: state.active_theme.clone(),
-        lua,
+        themes: state_guard.themes.clone(),
+        active_theme: state_guard.active_theme.clone(),
+        vm,
+        _root_module: module,
         path,
         sources,
-        interrupt_steps,
     })
 }
 
+/// Wrap a mode builder as Luau userdata.
+pub fn mode_builder_userdata<'s>(
+    scope: &Scope<'s>,
+    builder: ModeBuilder,
+) -> Result<Userdata<'s>, RuntimeError> {
+    scope.create_userdata(builder)
+}
+
 /// Wrap a render context snapshot as Luau userdata.
-pub fn mode_context_userdata(lua: &Lua, ctx: ModeCtx) -> LuaResult<AnyUserData> {
-    lua.create_userdata(ModeContextUserData(ctx))
+pub fn mode_context_userdata<'s>(
+    scope: &Scope<'s>,
+    ctx: ModeCtx,
+) -> Result<Userdata<'s>, RuntimeError> {
+    scope.create_userdata(ModeContextUserData(ctx))
 }
 
 /// Wrap an action context snapshot as Luau userdata.
-pub fn action_context_userdata(lua: &Lua, ctx: ActionCtx) -> LuaResult<AnyUserData> {
-    lua.create_userdata(ActionContextUserData(ctx))
+pub fn action_context_userdata<'s>(
+    scope: &Scope<'s>,
+    ctx: ActionCtx,
+) -> Result<Userdata<'s>, RuntimeError> {
+    scope.create_userdata(ActionContextUserData(ctx))
+}
+
+/// Build the sandboxed retained VM used by a dynamic config.
+fn build_vm(profile: Profile, state: SharedRuntimeState, path: Option<&Path>) -> Result<Vm, Error> {
+    Vm::builder()
+        .ambient(Ambient::deterministic(0))
+        .limits(DynamicConfig::entry_limits())
+        .profile(profile)
+        .module(Arc::new(HotkiModule {
+            state: state.clone(),
+        }))
+        .module(Arc::new(ActionModule))
+        .module(Arc::new(ThemesModule { state }))
+        .host_type(mode_builder_type())
+        .host_type(action_value_type())
+        .host_type(mode_context_type())
+        .host_type(action_context_type())
+        .build_sandboxed()
+        .map_err(|err| validation_error(path.map(Path::to_path_buf), err))
 }
 
 /// Invoke the configured root mode once to validate its output shape.
 fn validate_root(
-    lua: &Lua,
+    vm: &mut Vm,
     root: &ModeRef,
     path: Option<&Path>,
-    source: &str,
+    sources: &super::config::SourceMap,
 ) -> Result<(), Error> {
-    let builder = lua
-        .create_userdata(ModeBuilder::new_for_render(None, false))
-        .map_err(|err| validation_error(path.map(Path::to_path_buf), err))?;
-    let ctx = mode_context_userdata(
-        lua,
-        ModeCtx {
-            app: String::new(),
-            title: String::new(),
-            pid: 0,
-            hud: false,
-            depth: 0,
-        },
-    )
-    .map_err(|err| validation_error(path.map(Path::to_path_buf), err))?;
+    let builder = ModeBuilder::new_for_render(None, false);
+    let ctx = ModeCtx {
+        app: String::new(),
+        title: String::new(),
+        pid: 0,
+        hud: false,
+        depth: 0,
+    };
+    let mut script_error = None;
+    vm.step_with_limits(DynamicConfig::entry_limits(), |scope| {
+        let builder = mode_builder_userdata(scope, builder.clone())?;
+        let ctx = mode_context_userdata(scope, ctx.clone())?;
+        let root = scope.fetch_function(&root.func)?;
+        let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
+        if let Err(err) = result {
+            script_error = Some(super::render::script_error_to_config(
+                path, sources, scope, &err,
+            ));
+        }
+        Ok(())
+    })
+    .map_err(|err| validation_error(path.map(Path::to_path_buf), err.message()))?;
 
-    root.func
-        .call::<()>((builder, ctx))
-        .map_err(|err| load_error_from_mlua(source, path, &err))
-}
-
-/// Install the top-level Luau host API globals.
-fn install_api(lua: &Lua, state: Arc<Mutex<RuntimeState>>) -> LuaResult<()> {
-    let globals = lua.globals();
-    globals.set("hotki", hotki_table(lua, state.clone())?)?;
-    globals.set("action", action_table(lua)?)?;
-    globals.set("themes", themes_table(lua, state)?)?;
+    if let Some(err) = script_error {
+        return Err(err);
+    }
     Ok(())
 }
 
-/// Construct the `hotki` global table.
-fn hotki_table(lua: &Lua, state: Arc<Mutex<RuntimeState>>) -> LuaResult<Table> {
-    let hotki = lua.create_table()?;
-
-    let state_for_root = state.clone();
-    hotki.set(
-        "root",
-        lua.create_function(move |_lua, render: Function| {
-            let mut guard = lock_unpoisoned(&state_for_root);
-            if guard.root.is_some() {
-                return Err(mlua::Error::runtime(
-                    "hotki.root() must be called exactly once",
-                ));
-            }
-            guard.root = Some(ModeRef::from_function(render, None));
-            Ok(())
-        })?,
-    )?;
-
-    let state_for_apps = state.clone();
-    hotki.set(
-        "applications",
-        lua.create_function(move |lua, ()| {
-            let cached = { lock_unpoisoned(&state_for_apps).applications_cache.clone() };
-            let items = if let Some(cached) = cached {
-                cached
-            } else {
-                let apps = apps::application_items(lua)?;
-                let shared: Arc<[super::SelectorItem]> = apps.into();
-                lock_unpoisoned(&state_for_apps).applications_cache = Some(shared.clone());
-                shared
-            };
-            selector_items_table(lua, items.as_ref())
-        })?,
-    )?;
-
-    hotki.set(
-        "import_mode",
-        import_function(lua, state.clone(), ImportRole::Mode)?,
-    )?;
-    hotki.set(
-        "import_items",
-        import_function(lua, state.clone(), ImportRole::Items)?,
-    )?;
-    hotki.set(
-        "import_handler",
-        import_function(lua, state.clone(), ImportRole::Handler)?,
-    )?;
-    hotki.set(
-        "import_style",
-        import_function(lua, state, ImportRole::Style)?,
-    )?;
-
-    Ok(hotki)
+/// Native module backing the `hotki` global library.
+struct HotkiModule {
+    /// Shared loader state mutated by root, application, and import functions.
+    state: SharedRuntimeState,
 }
 
-/// Construct the `action` global table.
-fn action_table(lua: &Lua) -> LuaResult<Table> {
-    let action = lua.create_table()?;
+impl NativeModule for HotkiModule {
+    fn name(&self) -> &str {
+        "hotki"
+    }
 
-    set_action_const(lua, &action, "pop", Action::Pop)?;
-    set_action_const(lua, &action, "exit", Action::Exit)?;
-    set_action_const(lua, &action, "show_root", Action::ShowRoot)?;
-    set_action_const(lua, &action, "hide_hud", Action::HideHud)?;
-    set_action_const(lua, &action, "reload_config", Action::ReloadConfig)?;
-    set_action_const(
-        lua,
-        &action,
-        "clear_notifications",
-        Action::ClearNotifications,
-    )?;
-    set_action_const(lua, &action, "theme_next", Action::ThemeNext)?;
-    set_action_const(lua, &action, "theme_prev", Action::ThemePrev)?;
+    fn declaration(&self) -> &str {
+        HOTKI_DECLARATION
+    }
 
-    action.set(
-        "shell",
-        lua.create_function(|lua, (cmd, opts): (String, Value)| {
-            let opts = parse_optional::<ShellOptionsSpec>(lua, opts)?;
-            let defaults = crate::ShellModifiers::default();
-            let spec = match opts {
-                Some(opts) => crate::ShellSpec::WithMods(
-                    cmd,
-                    crate::ShellModifiers {
-                        ok_notify: opts.ok_notify.unwrap_or(defaults.ok_notify),
-                        err_notify: opts.err_notify.unwrap_or(defaults.err_notify),
-                    },
-                ),
-                None => crate::ShellSpec::Cmd(cmd),
-            };
-            action_userdata(lua, ActionPayload::Action(Action::Shell(spec)))
-        })?,
-    )?;
-
-    action.set(
-        "open",
-        lua.create_function(|lua, target: String| {
-            action_userdata(lua, ActionPayload::Action(Action::Open(target)))
-        })?,
-    )?;
-    action.set(
-        "relay",
-        lua.create_function(|lua, spec: String| {
-            action_userdata(lua, ActionPayload::Action(Action::Relay(spec)))
-        })?,
-    )?;
-    action.set(
-        "show_details",
-        lua.create_function(|lua, toggle: Value| {
-            let toggle: Toggle = lua.from_value(toggle)?;
-            action_userdata(lua, ActionPayload::Action(Action::ShowDetails(toggle)))
-        })?,
-    )?;
-    action.set(
-        "theme_set",
-        lua.create_function(|lua, name: String| {
-            action_userdata(lua, ActionPayload::Action(Action::ThemeSet(name)))
-        })?,
-    )?;
-    action.set(
-        "set_volume",
-        lua.create_function(|lua, level: u8| {
-            action_userdata(lua, ActionPayload::Action(Action::SetVolume(level)))
-        })?,
-    )?;
-    action.set(
-        "change_volume",
-        lua.create_function(|lua, delta: i8| {
-            action_userdata(lua, ActionPayload::Action(Action::ChangeVolume(delta)))
-        })?,
-    )?;
-    action.set(
-        "mute",
-        lua.create_function(|lua, toggle: Value| {
-            let toggle: Toggle = lua.from_value(toggle)?;
-            action_userdata(lua, ActionPayload::Action(Action::Mute(toggle)))
-        })?,
-    )?;
-    action.set(
-        "run",
-        lua.create_function(|lua, func: Function| {
-            action_userdata(lua, ActionPayload::Handler(HandlerRef { func }))
-        })?,
-    )?;
-    action.set(
-        "selector",
-        lua.create_function(|lua, spec: Value| {
-            let selector = parse_selector_config(lua, spec)?;
-            action_userdata(lua, ActionPayload::Selector(selector))
-        })?,
-    )?;
-
-    Ok(action)
+    fn build(&self, builder: &mut dyn ModuleBuilder) {
+        let binding = ModuleBinding::library("hotki");
+        builder.scoped_function(
+            "root",
+            binding.clone(),
+            Box::new(HotkiRoot {
+                state: self.state.clone(),
+            }),
+        );
+        builder.scoped_function(
+            "applications",
+            binding.clone(),
+            Box::new(HotkiApplications {
+                state: self.state.clone(),
+            }),
+        );
+        for role in [
+            ImportRole::Mode,
+            ImportRole::Items,
+            ImportRole::Handler,
+            ImportRole::Style,
+        ] {
+            builder.scoped_function(
+                role.function_name(),
+                binding.clone(),
+                Box::new(ImportFunction {
+                    state: self.state.clone(),
+                    role,
+                }),
+            );
+        }
+    }
 }
 
-/// Construct the `themes` global table.
-fn themes_table(lua: &Lua, state: Arc<Mutex<RuntimeState>>) -> LuaResult<Table> {
-    let themes_table = lua.create_table()?;
+/// Native module backing the `action` global library.
+struct ActionModule;
 
-    let state_for_use = state.clone();
-    themes_table.set(
-        "use",
-        lua.create_function(move |_lua, (_this, name): (Table, String)| {
-            let mut guard = lock_unpoisoned(&state_for_use);
-            if !guard.themes.contains_key(name.as_str()) {
-                return Err(mlua::Error::runtime(format!("unknown theme: {name}")));
-            }
-            guard.active_theme = name;
-            Ok(())
-        })?,
-    )?;
+impl NativeModule for ActionModule {
+    fn name(&self) -> &str {
+        "action"
+    }
 
-    let state_for_current = state.clone();
-    themes_table.set(
-        "current",
-        lua.create_function(move |_lua, _this: Table| {
-            Ok(lock_unpoisoned(&state_for_current).active_theme.clone())
-        })?,
-    )?;
+    fn declaration(&self) -> &str {
+        HOTKI_DECLARATION
+    }
 
-    let state_for_list = state.clone();
-    themes_table.set(
-        "list",
-        lua.create_function(move |_lua, _this: Table| {
-            let mut names = lock_unpoisoned(&state_for_list)
-                .themes
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            names.sort();
-            Ok(names)
-        })?,
-    )?;
+    fn build(&self, builder: &mut dyn ModuleBuilder) {
+        let binding = ModuleBinding::library("action");
+        builder.constant("pop", binding.clone(), action_token(ACTION_POP));
+        builder.constant("exit", binding.clone(), action_token(ACTION_EXIT));
+        builder.constant("show_root", binding.clone(), action_token(ACTION_SHOW_ROOT));
+        builder.constant("hide_hud", binding.clone(), action_token(ACTION_HIDE_HUD));
+        builder.constant(
+            "reload_config",
+            binding.clone(),
+            action_token(ACTION_RELOAD_CONFIG),
+        );
+        builder.constant(
+            "clear_notifications",
+            binding.clone(),
+            action_token(ACTION_CLEAR_NOTIFICATIONS),
+        );
+        builder.constant(
+            "theme_next",
+            binding.clone(),
+            action_token(ACTION_THEME_NEXT),
+        );
+        builder.constant(
+            "theme_prev",
+            binding.clone(),
+            action_token(ACTION_THEME_PREV),
+        );
 
-    let state_for_get = state.clone();
-    themes_table.set(
-        "get",
-        lua.create_function(move |lua, (_this, name): (Table, String)| {
-            let raw = lock_unpoisoned(&state_for_get)
-                .themes
-                .get(name.as_str())
-                .cloned()
-                .ok_or_else(|| mlua::Error::runtime(format!("unknown theme: {name}")))?;
-            lua.to_value(&raw)
-        })?,
-    )?;
-
-    let state_for_register = state.clone();
-    themes_table.set(
-        "register",
-        lua.create_function(move |lua, (_this, name, style): (Table, String, Value)| {
-            let raw = parse_raw_style(lua, style)?;
-            lock_unpoisoned(&state_for_register)
-                .themes
-                .insert(name, raw);
-            Ok(())
-        })?,
-    )?;
-
-    themes_table.set(
-        "remove",
-        lua.create_function(move |_lua, (_this, name): (Table, String)| {
-            let mut guard = lock_unpoisoned(&state);
-            if name == "default" {
-                return Err(mlua::Error::runtime(
-                    "themes.remove: cannot remove 'default'",
-                ));
-            }
-            if guard.themes.remove(name.as_str()).is_none() {
-                return Err(mlua::Error::runtime(format!(
-                    "themes.remove: unknown theme: {name}"
-                )));
-            }
-            if guard.active_theme == name {
-                guard.active_theme = "default".to_string();
-            }
-            Ok(())
-        })?,
-    )?;
-
-    Ok(themes_table)
+        for kind in [
+            ActionFunction::Shell,
+            ActionFunction::Open,
+            ActionFunction::Relay,
+            ActionFunction::ShowDetails,
+            ActionFunction::ThemeSet,
+            ActionFunction::SetVolume,
+            ActionFunction::ChangeVolume,
+            ActionFunction::Mute,
+            ActionFunction::Run,
+            ActionFunction::Selector,
+        ] {
+            builder.scoped_function(kind.name(), binding.clone(), Box::new(kind));
+        }
+    }
 }
 
-/// Build one role-specific import function for the `hotki` table.
-fn import_function(
-    lua: &Lua,
-    state: Arc<Mutex<RuntimeState>>,
+/// Native module backing the `themes` global library.
+struct ThemesModule {
+    /// Shared loader state containing the theme registry and active selection.
+    state: SharedRuntimeState,
+}
+
+impl NativeModule for ThemesModule {
+    fn name(&self) -> &str {
+        "themes"
+    }
+
+    fn declaration(&self) -> &str {
+        HOTKI_DECLARATION
+    }
+
+    fn build(&self, builder: &mut dyn ModuleBuilder) {
+        let binding = ModuleBinding::library("themes");
+        for kind in [
+            ThemesFunctionKind::Use,
+            ThemesFunctionKind::Current,
+            ThemesFunctionKind::List,
+            ThemesFunctionKind::Get,
+            ThemesFunctionKind::Register,
+            ThemesFunctionKind::Remove,
+        ] {
+            builder.scoped_function(
+                kind.name(),
+                binding.clone(),
+                Box::new(ThemesFunction {
+                    state: self.state.clone(),
+                    kind,
+                }),
+            );
+        }
+    }
+}
+
+/// Host implementation of `hotki.root`.
+struct HotkiRoot {
+    /// Shared loader state where the root renderer is recorded.
+    state: SharedRuntimeState,
+}
+
+impl ScopedHostFunction for HotkiRoot {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let mut args = args.into_vec().into_iter();
+        let render = expect_function(args.next(), "hotki.root render")?;
+        expect_no_extra(args.next(), "hotki.root")?;
+        let mode = ModeRef::from_function(scope, render, None)?;
+        let mut guard = lock_unpoisoned(&self.state);
+        if guard.root.is_some() {
+            return Err(RuntimeError::runtime(
+                "hotki.root() must be called exactly once",
+            ));
+        }
+        guard.root = Some(mode);
+        Ok(MultiValue::new())
+    }
+}
+
+/// Host implementation of `hotki.applications`.
+struct HotkiApplications {
+    /// Shared loader state containing the applications selector cache.
+    state: SharedRuntimeState,
+}
+
+impl ScopedHostFunction for HotkiApplications {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        _args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let cached = { lock_unpoisoned(&self.state).applications_cache.clone() };
+        let items = if let Some(cached) = cached {
+            cached
+        } else {
+            let apps = apps::application_items(scope)?;
+            let shared: Arc<[super::SelectorItem]> = apps.into();
+            lock_unpoisoned(&self.state).applications_cache = Some(shared.clone());
+            shared
+        };
+        let table = selector_items_table(scope, items.as_ref())?;
+        Ok(MultiValue::from_values(vec![ScopedValue::Table(table)]))
+    }
+}
+
+/// Host implementation shared by the role-specific `hotki.import_*` functions.
+struct ImportFunction {
+    /// Shared loader state containing the import cache and source map.
+    state: SharedRuntimeState,
+    /// Role expected from the imported module's return value.
     role: ImportRole,
-) -> LuaResult<Function> {
-    lua.create_function(move |lua, path: String| import_value(lua, &state, role, &path))
+}
+
+impl ScopedHostFunction for ImportFunction {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let mut args = args.into_vec().into_iter();
+        let path = expect_string(scope, args.next(), "import path")?;
+        expect_no_extra(args.next(), self.role.function_name())?;
+        import_value(scope, &self.state, self.role, &path)
+    }
 }
 
 /// Load, cache, and convert one imported Luau module value.
-fn import_value(
-    lua: &Lua,
-    state: &Arc<Mutex<RuntimeState>>,
+fn import_value<'s>(
+    scope: &Scope<'s>,
+    state: &SharedRuntimeState,
     role: ImportRole,
     path: &str,
-) -> LuaResult<Value> {
+) -> Result<MultiValue<'s>, RuntimeError> {
     let resolved = resolve_import_path(&lock_unpoisoned(state), path)?;
     let cache_key = (role, resolved.clone());
     if let Some(value) = lock_unpoisoned(state).imports.get(&cache_key).cloned() {
-        return imported_value_to_lua(lua, value);
+        return imported_value_to_lua(scope, value);
     }
 
-    let source = fs::read_to_string(&resolved).map_err(mlua::Error::external)?;
-    lock_unpoisoned(&lock_unpoisoned(state).sources)
-        .insert(resolved.clone(), Arc::from(source.clone().into_boxed_str()));
+    let source = fs::read_to_string(&resolved).map_err(RuntimeError::external)?;
+    let sources = { lock_unpoisoned(state).sources.clone() };
+    lock_unpoisoned(&sources).insert(resolved.clone(), Arc::from(source.clone().into_boxed_str()));
 
-    let value = lua
-        .load(source.as_str())
-        .set_name(resolved.to_string_lossy().as_ref())
-        .eval::<Value>()?;
-    let imported = parse_imported_value(lua, role, value)?;
+    let results = scope.eval_chunk(source.as_bytes(), chunk_name(Some(&resolved)).as_bytes())?;
+    let value = single_return(results, role.function_name())?;
+    let imported = parse_imported_value(scope, role, value)?;
     lock_unpoisoned(state)
         .imports
         .insert(cache_key, imported.clone());
-    imported_value_to_lua(lua, imported)
+    imported_value_to_lua(scope, imported)
 }
 
 /// Validate the return value of one imported module against its declared role.
-fn parse_imported_value(lua: &Lua, role: ImportRole, value: Value) -> LuaResult<ImportedValue> {
+fn parse_imported_value<'s>(
+    scope: &Scope<'s>,
+    role: ImportRole,
+    value: ScopedValue<'s>,
+) -> Result<ImportedValue, RuntimeError> {
     match role {
         ImportRole::Mode => {
-            let Value::Function(func) = value else {
-                return Err(mlua::Error::runtime("import_mode must return a function"));
-            };
-            Ok(ImportedValue::Mode(ModeRef::from_function(func, None)))
+            let func = expect_function(Some(value), "import_mode return value")?;
+            Ok(ImportedValue::Mode(ModeRef::from_function(
+                scope, func, None,
+            )?))
         }
         ImportRole::Items => match value {
-            Value::Function(func) => Ok(ImportedValue::Items(func)),
-            Value::Table(table) => {
-                let func = lua.create_function(move |_lua, ()| Ok(table.clone()))?;
-                Ok(ImportedValue::Items(func))
-            }
-            other => Err(mlua::Error::runtime(format!(
+            ScopedValue::Function(func) => Ok(ImportedValue::Items(ImportedItems::Provider(
+                scope.stash_function(func)?,
+            ))),
+            ScopedValue::Table(_) => Ok(ImportedValue::Items(ImportedItems::Static(
+                selector::parse_selector_items(scope, value)?,
+            ))),
+            other => Err(RuntimeError::runtime(format!(
                 "import_items must return a function or array table, got {}",
                 other.type_name()
             ))),
         },
         ImportRole::Handler => {
-            let Value::Function(func) = value else {
-                return Err(mlua::Error::runtime(
-                    "import_handler must return a function",
-                ));
-            };
-            Ok(ImportedValue::Handler(HandlerRef { func }))
+            let func = expect_function(Some(value), "import_handler return value")?;
+            Ok(ImportedValue::Handler(HandlerRef::from_function(
+                scope, func,
+            )?))
         }
-        ImportRole::Style => Ok(ImportedValue::Style(Box::new(StyleOverlay {
-            raw: parse_raw_style(lua, value)?,
-        }))),
+        ImportRole::Style => Ok(ImportedValue::Style(Box::new(parse_raw_style(
+            scope, value,
+        )?))),
     }
 }
 
 /// Convert a cached imported value back into a Luau value.
-fn imported_value_to_lua(lua: &Lua, imported: ImportedValue) -> LuaResult<Value> {
-    match imported {
-        ImportedValue::Mode(mode) => Ok(Value::Function(mode.func)),
-        ImportedValue::Items(func) => Ok(Value::Function(func)),
-        ImportedValue::Handler(handler) => Ok(Value::Function(handler.func)),
-        ImportedValue::Style(style) => lua.to_value(&style.raw),
+fn imported_value_to_lua<'s>(
+    scope: &Scope<'s>,
+    imported: ImportedValue,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let value = match imported {
+        ImportedValue::Mode(mode) => ScopedValue::Function(scope.fetch_function(&mode.func)?),
+        ImportedValue::Items(ImportedItems::Provider(provider)) => {
+            ScopedValue::Function(scope.fetch_function(&provider)?)
+        }
+        ImportedValue::Items(ImportedItems::Static(items)) => {
+            ScopedValue::Table(selector_items_table(scope, &items)?)
+        }
+        ImportedValue::Handler(handler) => {
+            ScopedValue::Function(scope.fetch_function(&handler.func)?)
+        }
+        ImportedValue::Style(style) => to_scoped_value(scope, &*style)?,
+    };
+    Ok(MultiValue::from_values(vec![value]))
+}
+
+/// Host functions exposed on the `action` global library.
+#[derive(Clone, Copy)]
+enum ActionFunction {
+    /// Build a shell command action.
+    Shell,
+    /// Build an open-target action.
+    Open,
+    /// Build a relaykey action.
+    Relay,
+    /// Build a show-details toggle action.
+    ShowDetails,
+    /// Build a set-theme action.
+    ThemeSet,
+    /// Build an absolute volume action.
+    SetVolume,
+    /// Build a relative volume action.
+    ChangeVolume,
+    /// Build a mute toggle action.
+    Mute,
+    /// Build an action that calls a Luau handler.
+    Run,
+    /// Build an action that opens a selector.
+    Selector,
+}
+
+impl ActionFunction {
+    /// Return the function name installed in the `action` library.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Open => "open",
+            Self::Relay => "relay",
+            Self::ShowDetails => "show_details",
+            Self::ThemeSet => "theme_set",
+            Self::SetVolume => "set_volume",
+            Self::ChangeVolume => "change_volume",
+            Self::Mute => "mute",
+            Self::Run => "run",
+            Self::Selector => "selector",
+        }
+    }
+}
+
+impl ScopedHostFunction for ActionFunction {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let mut args = args.into_vec().into_iter();
+        let payload = match self {
+            Self::Shell => {
+                let cmd = expect_string(scope, args.next(), "action.shell command")?;
+                let opts = parse_optional::<ShellOptionsSpec>(
+                    scope,
+                    args.next().unwrap_or(ScopedValue::Nil),
+                )?;
+                expect_no_extra(args.next(), "action.shell")?;
+                let defaults = crate::ShellModifiers::default();
+                let spec = match opts {
+                    Some(opts) => crate::ShellSpec::WithMods(
+                        cmd,
+                        crate::ShellModifiers {
+                            ok_notify: opts.ok_notify.unwrap_or(defaults.ok_notify),
+                            err_notify: opts.err_notify.unwrap_or(defaults.err_notify),
+                        },
+                    ),
+                    None => crate::ShellSpec::Cmd(cmd),
+                };
+                ActionPayload::Action(Action::Shell(spec))
+            }
+            Self::Open => {
+                let target = expect_string(scope, args.next(), "action.open target")?;
+                expect_no_extra(args.next(), "action.open")?;
+                ActionPayload::Action(Action::Open(target))
+            }
+            Self::Relay => {
+                let spec = expect_string(scope, args.next(), "action.relay spec")?;
+                expect_no_extra(args.next(), "action.relay")?;
+                ActionPayload::Action(Action::Relay(spec))
+            }
+            Self::ShowDetails => {
+                let toggle =
+                    expect_serde::<Toggle>(scope, args.next(), "action.show_details toggle")?;
+                expect_no_extra(args.next(), "action.show_details")?;
+                ActionPayload::Action(Action::ShowDetails(toggle))
+            }
+            Self::ThemeSet => {
+                let name = expect_string(scope, args.next(), "action.theme_set name")?;
+                expect_no_extra(args.next(), "action.theme_set")?;
+                ActionPayload::Action(Action::ThemeSet(name))
+            }
+            Self::SetVolume => {
+                let level = expect_lua::<u8>(scope, args.next(), "action.set_volume level")?;
+                expect_no_extra(args.next(), "action.set_volume")?;
+                ActionPayload::Action(Action::SetVolume(level))
+            }
+            Self::ChangeVolume => {
+                let delta = expect_lua::<i8>(scope, args.next(), "action.change_volume delta")?;
+                expect_no_extra(args.next(), "action.change_volume")?;
+                ActionPayload::Action(Action::ChangeVolume(delta))
+            }
+            Self::Mute => {
+                let toggle = expect_serde::<Toggle>(scope, args.next(), "action.mute toggle")?;
+                expect_no_extra(args.next(), "action.mute")?;
+                ActionPayload::Action(Action::Mute(toggle))
+            }
+            Self::Run => {
+                let func = expect_function(args.next(), "action.run handler")?;
+                expect_no_extra(args.next(), "action.run")?;
+                ActionPayload::Handler(HandlerRef::from_function(scope, func)?)
+            }
+            Self::Selector => {
+                let spec = args
+                    .next()
+                    .ok_or_else(|| RuntimeError::runtime("action.selector expects a table"))?;
+                expect_no_extra(args.next(), "action.selector")?;
+                ActionPayload::Selector(parse_selector_config(scope, spec)?)
+            }
+        };
+        action_userdata(scope, payload)
+    }
+}
+
+/// Host methods exposed on the `themes` global library.
+#[derive(Clone, Copy)]
+enum ThemesFunctionKind {
+    /// Select the active theme.
+    Use,
+    /// Return the active theme name.
+    Current,
+    /// List known theme names.
+    List,
+    /// Return one theme style overlay.
+    Get,
+    /// Register or replace a script-defined theme.
+    Register,
+    /// Remove a script-defined theme.
+    Remove,
+}
+
+impl ThemesFunctionKind {
+    /// Return the method name installed in the `themes` library.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Use => "use",
+            Self::Current => "current",
+            Self::List => "list",
+            Self::Get => "get",
+            Self::Register => "register",
+            Self::Remove => "remove",
+        }
+    }
+}
+
+/// Host implementation shared by the `themes` library methods.
+struct ThemesFunction {
+    /// Shared loader state containing theme data.
+    state: SharedRuntimeState,
+    /// Concrete theme operation to execute.
+    kind: ThemesFunctionKind,
+}
+
+impl ScopedHostFunction for ThemesFunction {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let mut args = skip_method_receiver(args);
+        match self.kind {
+            ThemesFunctionKind::Use => {
+                let name = expect_string(scope, args.next(), "themes:use name")?;
+                expect_no_extra(args.next(), "themes:use")?;
+                let mut guard = lock_unpoisoned(&self.state);
+                if !guard.themes.contains_key(name.as_str()) {
+                    return Err(RuntimeError::runtime(format!("unknown theme: {name}")));
+                }
+                guard.active_theme = name;
+                Ok(MultiValue::new())
+            }
+            ThemesFunctionKind::Current => {
+                expect_no_extra(args.next(), "themes:current")?;
+                lock_unpoisoned(&self.state)
+                    .active_theme
+                    .clone()
+                    .into_lua_multi(scope)
+            }
+            ThemesFunctionKind::List => {
+                expect_no_extra(args.next(), "themes:list")?;
+                let mut names = lock_unpoisoned(&self.state)
+                    .themes
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                names.sort();
+                names.into_lua_multi(scope)
+            }
+            ThemesFunctionKind::Get => {
+                let name = expect_string(scope, args.next(), "themes:get name")?;
+                expect_no_extra(args.next(), "themes:get")?;
+                let raw = lock_unpoisoned(&self.state)
+                    .themes
+                    .get(name.as_str())
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::runtime(format!("unknown theme: {name}")))?;
+                Ok(MultiValue::from_values(vec![to_scoped_value(scope, &raw)?]))
+            }
+            ThemesFunctionKind::Register => {
+                let name = expect_string(scope, args.next(), "themes:register name")?;
+                let style = args
+                    .next()
+                    .ok_or_else(|| RuntimeError::runtime("themes:register expects a style"))?;
+                expect_no_extra(args.next(), "themes:register")?;
+                let raw = parse_raw_style(scope, style)?;
+                lock_unpoisoned(&self.state).themes.insert(name, raw);
+                Ok(MultiValue::new())
+            }
+            ThemesFunctionKind::Remove => {
+                let name = expect_string(scope, args.next(), "themes:remove name")?;
+                expect_no_extra(args.next(), "themes:remove")?;
+                let mut guard = lock_unpoisoned(&self.state);
+                if name == "default" {
+                    return Err(RuntimeError::runtime(
+                        "themes.remove: cannot remove 'default'",
+                    ));
+                }
+                if guard.themes.remove(name.as_str()).is_none() {
+                    return Err(RuntimeError::runtime(format!(
+                        "themes.remove: unknown theme: {name}"
+                    )));
+                }
+                if guard.active_theme == name {
+                    guard.active_theme = "default".to_string();
+                }
+                Ok(MultiValue::new())
+            }
+        }
     }
 }
 
 /// Parse a selector configuration record from Luau.
-fn parse_selector_config(_lua: &Lua, value: Value) -> LuaResult<SelectorConfig> {
-    let Value::Table(table) = value else {
-        return Err(mlua::Error::runtime("action.selector expects a table"));
+fn parse_selector_config<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<SelectorConfig, RuntimeError> {
+    let ScopedValue::Table(table) = value else {
+        return Err(RuntimeError::runtime("action.selector expects a table"));
     };
 
-    let items_value: Value = table
-        .get("items")
-        .map_err(|_| mlua::Error::runtime("selector: missing required field 'items'"))?;
+    let items_value: ScopedValue<'_> = table
+        .get(scope, "items")
+        .map_err(|_| RuntimeError::runtime("selector: missing required field 'items'"))?;
     let items = match items_value {
-        Value::Function(func) => SelectorItems::Provider(func),
-        other => SelectorItems::Static(
-            selector::parse_selector_items(other).map_err(mlua::Error::runtime)?,
-        ),
+        ScopedValue::Function(func) => SelectorItems::Provider(scope.stash_function(func)?),
+        other => SelectorItems::Static(selector::parse_selector_items(scope, other)?),
     };
 
-    let on_select: Function = table
-        .get("on_select")
-        .map_err(|_| mlua::Error::runtime("selector: missing required field 'on_select'"))?;
+    let on_select = table
+        .get(scope, "on_select")
+        .map_err(|_| RuntimeError::runtime("selector: missing required field 'on_select'"))?;
+    let on_select = HandlerRef::from_function(scope, on_select)?;
     let on_cancel = table
-        .get::<Option<Function>>("on_cancel")?
-        .map(|func| HandlerRef { func });
+        .get::<_, Option<Function<'_>>>(scope, "on_cancel")?
+        .map(|func| HandlerRef::from_function(scope, func))
+        .transpose()?;
 
     Ok(SelectorConfig {
         title: table
-            .get::<Option<String>>("title")?
+            .get::<_, Option<String>>(scope, "title")?
             .unwrap_or_else(|| "Select".to_string()),
         placeholder: table
-            .get::<Option<String>>("placeholder")?
+            .get::<_, Option<String>>(scope, "placeholder")?
             .unwrap_or_default(),
         items,
-        on_select: HandlerRef { func: on_select },
+        on_select,
         on_cancel,
-        max_visible: table.get::<Option<usize>>("max_visible")?.unwrap_or(10),
+        max_visible: table
+            .get::<_, Option<usize>>(scope, "max_visible")?
+            .unwrap_or(10),
     })
 }
 
 /// Build one primitive-action, handler, or selector binding from Luau inputs.
-fn binding_from_action(
-    lua: &Lua,
+fn binding_from_action<'s>(
+    scope: &Scope<'s>,
     chord: &str,
     desc: String,
-    action_value: ActionValue,
+    action_value: ActionPayload,
     options: Option<BindingOptionsSpec>,
-) -> LuaResult<Binding> {
+) -> Result<Binding, RuntimeError> {
     let chord = parse_chord(chord)?;
-    let pos = current_source_pos(lua);
+    let pos = current_source_pos(scope);
     let mut binding = Binding {
         chord,
         desc,
-        kind: match action_value.payload {
+        kind: match action_value {
             ActionPayload::Action(action) => BindingKind::Action(action),
             ActionPayload::Handler(handler) => BindingKind::Handler(handler),
             ActionPayload::Selector(selector) => BindingKind::Selector(selector),
@@ -861,16 +1008,16 @@ fn binding_from_action(
 }
 
 /// Build one submenu binding from Luau inputs.
-fn binding_from_mode(
-    lua: &Lua,
+fn binding_from_mode<'s>(
+    scope: &Scope<'s>,
     chord: &str,
     title: String,
-    render: Function,
+    render: Function<'s>,
     options: Option<SubmenuOptionsSpec>,
-) -> LuaResult<Binding> {
+) -> Result<Binding, RuntimeError> {
     let chord = parse_chord(chord)?;
-    let mode = ModeRef::from_function(render, Some(title.clone()));
-    let pos = current_source_pos(lua);
+    let mode = ModeRef::from_function(scope, render, Some(title.clone()))?;
+    let pos = current_source_pos(scope);
     let mut binding = Binding {
         chord,
         desc: title,
@@ -913,70 +1060,49 @@ fn merge_style_overlays(overlays: &[raw::RawStyle]) -> Option<raw::RawStyle> {
 }
 
 /// Deserialize an optional Luau record, treating `nil` as `None`.
-fn parse_optional<T>(lua: &Lua, value: Value) -> LuaResult<Option<T>>
+fn parse_optional<'s, T>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<Option<T>, RuntimeError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    if matches!(value, Value::Nil) {
+    if matches!(value, ScopedValue::Nil) {
         return Ok(None);
     }
-    lua.from_value(value).map(Some)
+    from_scoped_value(scope, value)
+        .map(Some)
+        .map_err(|err| RuntimeError::runtime(err.message()))
 }
 
 /// Deserialize a Luau style overlay table into raw config types.
-fn parse_raw_style(lua: &Lua, value: Value) -> LuaResult<raw::RawStyle> {
-    lua.from_value(value)
+fn parse_raw_style<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<raw::RawStyle, RuntimeError> {
+    from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))
 }
 
 /// Parse a hotkey chord string into a normalized `Chord`.
-fn parse_chord(spec: &str) -> LuaResult<Chord> {
-    Chord::parse(spec).ok_or_else(|| mlua::Error::runtime(format!("invalid chord string: {spec}")))
-}
-
-/// Wrap an action payload as Luau userdata.
-fn action_userdata(lua: &Lua, payload: ActionPayload) -> LuaResult<AnyUserData> {
-    lua.create_userdata(ActionValue { payload })
-}
-
-/// Install a primitive action constant into the `action` table.
-fn set_action_const(lua: &Lua, table: &Table, key: &str, action: Action) -> LuaResult<()> {
-    table.set(key, action_userdata(lua, ActionPayload::Action(action))?)
-}
-
-/// Render a display name for an optional source path.
-fn path_display(path: Option<&Path>) -> String {
-    path.map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| "<memory>".to_string())
+fn parse_chord(spec: &str) -> Result<Chord, RuntimeError> {
+    Chord::parse(spec).ok_or_else(|| RuntimeError::runtime(format!("invalid chord string: {spec}")))
 }
 
 /// Capture the current Luau stack position for binding diagnostics.
-fn current_source_pos(lua: &Lua) -> Option<SourcePos> {
-    lua.inspect_stack(1, |debug| {
-        let source = debug.source();
-        let path = source
-            .source
-            .as_ref()
-            .map(|value| value.to_string())
-            .filter(|value| value != "<memory>")
-            .map(PathBuf::from);
-        SourcePos {
-            path,
-            line: debug.current_line(),
-            col: Some(1),
-        }
-    })
+fn current_source_pos(scope: &Scope<'_>) -> Option<SourcePos> {
+    scope.caller_location(0).map(SourcePos::from_location)
 }
 
 /// Resolve a role import path within the current config directory.
-fn resolve_import_path(state: &RuntimeState, raw_path: &str) -> LuaResult<PathBuf> {
+fn resolve_import_path(state: &RuntimeState, raw_path: &str) -> Result<PathBuf, RuntimeError> {
     let root = state
         .config_dir
         .as_ref()
-        .ok_or_else(|| mlua::Error::runtime("imports require a filesystem-backed config"))?;
+        .ok_or_else(|| RuntimeError::runtime("imports require a filesystem-backed config"))?;
 
     let path = Path::new(raw_path);
     if path.is_absolute() {
-        return Err(mlua::Error::runtime(
+        return Err(RuntimeError::runtime(
             "absolute import paths are not allowed",
         ));
     }
@@ -986,7 +1112,7 @@ fn resolve_import_path(state: &RuntimeState, raw_path: &str) -> LuaResult<PathBu
             component,
             Component::ParentDir | Component::Prefix(_) | Component::RootDir
         ) {
-            return Err(mlua::Error::runtime(
+            return Err(RuntimeError::runtime(
                 "parent traversal is not allowed in imports",
             ));
         }
@@ -998,87 +1124,572 @@ fn resolve_import_path(state: &RuntimeState, raw_path: &str) -> LuaResult<PathBu
         root.join(path).with_extension("luau")
     };
     let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
-    let canon = fs::canonicalize(&candidate).map_err(mlua::Error::external)?;
+    let canon = fs::canonicalize(&candidate).map_err(RuntimeError::external)?;
     if !canon.starts_with(&root_canon) {
-        return Err(mlua::Error::runtime("import escapes the config directory"));
+        return Err(RuntimeError::runtime("import escapes the config directory"));
     }
     Ok(canon)
 }
 
 /// Convert selector items into a Luau array table.
-fn selector_items_table(lua: &Lua, items: &[super::SelectorItem]) -> LuaResult<Table> {
-    let out = lua.create_table()?;
+fn selector_items_table<'s>(
+    scope: &Scope<'s>,
+    items: &[super::SelectorItem],
+) -> Result<Table<'s>, RuntimeError> {
+    let out = scope.create_table()?;
     for (index, item) in items.iter().enumerate() {
-        let table = lua.create_table()?;
-        table.set("label", item.label.clone())?;
-        table.set("sublabel", item.sublabel.clone())?;
-        table.set("data", item.data.clone())?;
-        out.set(index + 1, table)?;
+        let table = scope.create_table()?;
+        table.set(scope, "label", item.label.clone())?;
+        table.set(scope, "sublabel", item.sublabel.clone())?;
+        table.set(scope, "data", item.data.fetch(scope)?)?;
+        out.set(scope, (index + 1) as f64, table)?;
     }
     Ok(out)
 }
 
 /// Evaluate one regex match helper for mode and action contexts.
-fn regex_matches(text: &str, pattern: &str) -> LuaResult<bool> {
+fn regex_matches(text: &str, pattern: &str) -> Result<bool, RuntimeError> {
     Regex::new(pattern)
         .map(|regex| regex.is_match(text))
-        .map_err(|err| mlua::Error::runtime(err.to_string()))
+        .map_err(|err| RuntimeError::runtime(err.to_string()))
 }
 
-/// Install a hard interrupt limit for Luau evaluation.
-fn install_interrupt_limit(lua: &Lua) -> Arc<AtomicU64> {
-    let steps = Arc::new(AtomicU64::new(0));
-    let interrupt_steps = steps.clone();
-    lua.set_interrupt(move |_lua| {
-        let next = steps.fetch_add(1, Ordering::Relaxed) + 1;
-        if next > EXECUTION_LIMIT {
-            return Err(mlua::Error::runtime(
-                "script exceeded the execution limit during evaluation",
-            ));
+/// Render a display name for an optional source path.
+fn chunk_name(path: Option<&Path>) -> String {
+    path.map(|path| format!("@{}", path.display()))
+        .unwrap_or_else(|| "=<memory>".to_string())
+}
+
+/// Build a locationless `Error::Validation` with only a path and message.
+fn validation_error(path: Option<PathBuf>, err: impl fmt::Display) -> Error {
+    Error::Validation {
+        path,
+        line: None,
+        col: None,
+        message: err.to_string(),
+        excerpt: None,
+    }
+}
+
+/// Convert a structured oxau compile error into a config error.
+fn compile_error_to_config(source: &str, err: &CompileError, path: Option<&Path>) -> Error {
+    let Some(location) = err.location() else {
+        return validation_error(path.map(Path::to_path_buf), err.message());
+    };
+
+    let line = location.begin.line as usize + 1;
+    let col = location.begin.column as usize + 1;
+    Error::Parse {
+        path: path.map(Path::to_path_buf),
+        line,
+        col,
+        message: err.message().to_string(),
+        excerpt: excerpt_at(source, line, col),
+    }
+}
+
+/// Convert a VM-level protected script failure into a located config error.
+fn protected_error_to_config(
+    source: &str,
+    default_path: Option<&Path>,
+    sources: &super::config::SourceMap,
+    err: &ProtectedScriptError,
+) -> Error {
+    let message = err
+        .traceback()
+        .and_then(|traceback| traceback.lines().next())
+        .unwrap_or("script raised an error")
+        .to_string();
+    let (path, line, col) = err
+        .frames()
+        .iter()
+        .find_map(frame_location)
+        .map(|(path, line)| {
+            (
+                normalize_error_path(path, default_path.map(Path::to_path_buf)),
+                Some(line),
+                Some(1),
+            )
+        })
+        .unwrap_or((default_path.map(Path::to_path_buf), None, None));
+    let excerpt =
+        line.and_then(|line| error_excerpt(source, sources, path.as_ref(), line, col.unwrap_or(1)));
+
+    Error::Validation {
+        path,
+        line,
+        col,
+        message,
+        excerpt,
+    }
+}
+
+/// Extract a chunk name and line from one protected-error traceback frame.
+fn frame_location(frame: &TracebackFrame) -> Option<(String, usize)> {
+    frame
+        .line
+        .map(|line| (frame.chunk_name.clone(), line as usize))
+}
+
+/// Convert VM traceback chunk names into user-facing filesystem paths.
+fn normalize_error_path(path: String, default_path: Option<PathBuf>) -> Option<PathBuf> {
+    match path.as_str() {
+        "<memory>" => None,
+        value if value.starts_with("[string ") => default_path,
+        _ => Some(PathBuf::from(path)),
+    }
+}
+
+/// Render an excerpt from the best available source map entry.
+fn error_excerpt(
+    source: &str,
+    sources: &super::config::SourceMap,
+    path: Option<&PathBuf>,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    match path {
+        Some(path) => lock_unpoisoned(sources)
+            .get(path)
+            .map(|source| excerpt_at(source.as_ref(), line, col)),
+        None => Some(excerpt_at(source, line, col)),
+    }
+}
+
+impl ImportRole {
+    /// Return the host import function name for this role.
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::Mode => "import_mode",
+            Self::Items => "import_items",
+            Self::Handler => "import_handler",
+            Self::Style => "import_style",
         }
-        Ok(VmState::Continue)
-    });
-    interrupt_steps
+    }
 }
 
-/// Reset the shared interrupt counter before a fresh Luau entrypoint call.
-fn reset_execution_budget(steps: &AtomicU64) {
-    steps.store(0, Ordering::Relaxed);
+/// Build the host userdata type definition for mode builders.
+fn mode_builder_type() -> HostType {
+    HostTypeBuilder::<ModeBuilder>::new("ModeBuilder")
+        .method_raw("bind", mode_builder_bind)
+        .method_raw("bind_many", mode_builder_bind_many)
+        .method_raw("submenu", mode_builder_submenu)
+        .method_raw("style", mode_builder_style)
+        .method_raw("capture", mode_builder_capture)
+        .declaration("declare class ModeBuilder\nend\n")
+        .build()
 }
 
-/// Convert an `mlua` error into a source-located config error.
-fn load_error_from_mlua(source: &str, path: Option<&Path>, err: &mlua::Error) -> Error {
-    let mut path_buf = path.map(Path::to_path_buf);
-    let mut line = None;
-    let mut col = None;
+/// Build the host userdata type definition for action values.
+fn action_value_type() -> HostType {
+    HostTypeBuilder::<ActionValue>::new("ActionValue")
+        .declaration("declare class ActionValue\nend\n")
+        .build()
+}
 
-    if let Some((parsed_path, parsed_line, parsed_col)) = super::render::parse_error_location(err) {
-        if parsed_path
-            .as_deref()
-            .is_some_and(|value| value != Path::new("<memory>"))
-        {
-            path_buf = parsed_path;
+/// Build the host userdata type definition for mode render contexts.
+fn mode_context_type() -> HostType {
+    HostTypeBuilder::<ModeContextUserData>::new("ModeContext")
+        .getter("app", |_, this| Ok(this.0.app.clone()))
+        .getter("title", |_, this| Ok(this.0.title.clone()))
+        .getter("pid", |_, this| Ok(this.0.pid))
+        .getter("hud", |_, this| Ok(this.0.hud))
+        .getter("depth", |_, this| Ok(this.0.depth))
+        .method("app_matches", |_, this, pattern: String| {
+            regex_matches(&this.0.app, &pattern)
+        })
+        .method("title_matches", |_, this, pattern: String| {
+            regex_matches(&this.0.title, &pattern)
+        })
+        .declaration("declare class ModeContext\nend\n")
+        .build()
+}
+
+/// Build the host userdata type definition for action handler contexts.
+fn action_context_type() -> HostType {
+    HostTypeBuilder::<ActionContextUserData>::new("ActionContext")
+        .getter("app", |_, this| Ok(this.0.app().to_string()))
+        .getter("title", |_, this| Ok(this.0.title().to_string()))
+        .getter("pid", |_, this| Ok(this.0.pid()))
+        .getter("hud", |_, this| Ok(this.0.hud()))
+        .getter("depth", |_, this| Ok(this.0.depth()))
+        .method("app_matches", |_, this, pattern: String| {
+            regex_matches(this.0.app(), &pattern)
+        })
+        .method("title_matches", |_, this, pattern: String| {
+            regex_matches(this.0.title(), &pattern)
+        })
+        .method_raw("notify", action_context_notify)
+        .method("stay", |_, this, (): ()| {
+            this.0.set_stay();
+            Ok(())
+        })
+        .method_raw("exec", action_context_exec)
+        .method_raw("push", action_context_push)
+        .method("pop", |_, this, (): ()| {
+            this.0.set_nav(NavRequest::Pop);
+            Ok(())
+        })
+        .method("exit", |_, this, (): ()| {
+            this.0.set_nav(NavRequest::Exit);
+            Ok(())
+        })
+        .method("show_root", |_, this, (): ()| {
+            this.0.set_nav(NavRequest::ShowRoot);
+            Ok(())
+        })
+        .declaration("declare class ActionContext\nend\n")
+        .build()
+}
+
+/// Implement `menu:bind`.
+fn mode_builder_bind<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let chord = expect_string(scope, values.next(), "menu:bind chord")?;
+    let desc = expect_string(scope, values.next(), "menu:bind desc")?;
+    let action = values
+        .next()
+        .ok_or_else(|| RuntimeError::runtime("menu:bind expects an action"))?;
+    let opts = values.next().unwrap_or(ScopedValue::Nil);
+    expect_no_extra(values.next(), "menu:bind")?;
+
+    let action = action_payload_from_value(scope, action)?;
+    let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
+    let binding = binding_from_action(scope, &chord, desc, action, options)?;
+    receiver
+        .borrow_mut::<ModeBuilder>(scope)?
+        .state
+        .lock()
+        .map_err(|err| RuntimeError::runtime(err.to_string()))?
+        .bindings
+        .push(binding);
+    Ok(MultiValue::new())
+}
+
+/// Implement `menu:bind_many`.
+fn mode_builder_bind_many<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let table = expect_table(values.next(), "menu:bind_many entries")?;
+    expect_no_extra(values.next(), "menu:bind_many")?;
+
+    let len = usize::try_from(table.len(scope)?)
+        .map_err(|_| RuntimeError::runtime("menu:bind_many entries length does not fit usize"))?;
+    let mut bindings = Vec::with_capacity(len);
+    for index in 1..=len {
+        let entry: Table<'_> = table.get(scope, index as f64)?;
+        let action: ScopedValue<'_> = entry.get(scope, "action")?;
+        if !matches!(action, ScopedValue::Nil) {
+            let chord: String = entry.get(scope, "chord")?;
+            let desc: String = entry.get(scope, "desc")?;
+            let opts: ScopedValue<'_> = entry.get(scope, "opts")?;
+            let action = action_payload_from_value(scope, action)?;
+            let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
+            bindings.push(binding_from_action(scope, &chord, desc, action, options)?);
+            continue;
         }
-        line = parsed_line;
-        col = parsed_col;
+
+        let chord: String = entry.get(scope, "chord")?;
+        let title: String = entry.get(scope, "title")?;
+        let render: Function<'_> = entry.get(scope, "render")?;
+        let opts: ScopedValue<'_> = entry.get(scope, "opts")?;
+        let options = parse_optional::<SubmenuOptionsSpec>(scope, opts)?;
+        bindings.push(binding_from_mode(scope, &chord, title, render, options)?);
     }
 
-    let excerpt = line.map(|line| excerpt_at(source, line, col.unwrap_or(1)));
+    receiver
+        .borrow_mut::<ModeBuilder>(scope)?
+        .state
+        .lock()
+        .map_err(|err| RuntimeError::runtime(err.to_string()))?
+        .bindings
+        .extend(bindings);
+    Ok(MultiValue::new())
+}
 
-    match err {
-        mlua::Error::SyntaxError { message, .. } => Error::Parse {
-            path: path_buf,
-            line: line.unwrap_or(1),
-            col: col.unwrap_or(1),
-            message: message.clone(),
-            excerpt: excerpt.unwrap_or_else(|| excerpt_at(source, 1, 1)),
-        },
-        _ => Error::Validation {
-            path: path_buf,
-            line,
-            col,
-            message: err.to_string(),
-            excerpt,
-        },
+/// Implement `menu:submenu`.
+fn mode_builder_submenu<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let chord = expect_string(scope, values.next(), "menu:submenu chord")?;
+    let title = expect_string(scope, values.next(), "menu:submenu title")?;
+    let render = expect_function(values.next(), "menu:submenu render")?;
+    let opts = values.next().unwrap_or(ScopedValue::Nil);
+    expect_no_extra(values.next(), "menu:submenu")?;
+    let options = parse_optional::<SubmenuOptionsSpec>(scope, opts)?;
+    let binding = binding_from_mode(scope, &chord, title, render, options)?;
+    receiver
+        .borrow_mut::<ModeBuilder>(scope)?
+        .state
+        .lock()
+        .map_err(|err| RuntimeError::runtime(err.to_string()))?
+        .bindings
+        .push(binding);
+    Ok(MultiValue::new())
+}
+
+/// Implement `menu:style`.
+fn mode_builder_style<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let overlay = values
+        .next()
+        .ok_or_else(|| RuntimeError::runtime("menu:style expects a style overlay"))?;
+    expect_no_extra(values.next(), "menu:style")?;
+    let raw = parse_raw_style(scope, overlay)?;
+    receiver
+        .borrow_mut::<ModeBuilder>(scope)?
+        .state
+        .lock()
+        .map_err(|err| RuntimeError::runtime(err.to_string()))?
+        .styles
+        .push(raw);
+    Ok(MultiValue::new())
+}
+
+/// Implement `menu:capture`.
+fn mode_builder_capture<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    expect_no_extra(args.into_vec().into_iter().next(), "menu:capture")?;
+    receiver
+        .borrow_mut::<ModeBuilder>(scope)?
+        .state
+        .lock()
+        .map_err(|err| RuntimeError::runtime(err.to_string()))?
+        .capture = true;
+    Ok(MultiValue::new())
+}
+
+/// Implement `ctx:notify`.
+fn action_context_notify<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let kind = expect_serde::<NotifyKind>(scope, values.next(), "ctx:notify kind")?;
+    let title = expect_string(scope, values.next(), "ctx:notify title")?;
+    let body = expect_string(scope, values.next(), "ctx:notify body")?;
+    expect_no_extra(values.next(), "ctx:notify")?;
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .push_effect(super::Effect::Notify { kind, title, body });
+    Ok(MultiValue::new())
+}
+
+/// Implement `ctx:exec`.
+fn action_context_exec<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let value = values
+        .next()
+        .ok_or_else(|| RuntimeError::runtime("ctx:exec expects an action"))?;
+    expect_no_extra(values.next(), "ctx:exec")?;
+    let action = primitive_action_from_value(scope, value)?;
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .push_effect(super::Effect::Exec(action));
+    Ok(MultiValue::new())
+}
+
+/// Implement `ctx:push`.
+fn action_context_push<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut values = args.into_vec().into_iter();
+    let render = expect_function(values.next(), "ctx:push render")?;
+    let title = match values.next().unwrap_or(ScopedValue::Nil) {
+        ScopedValue::Nil => None,
+        value => Some(String::from_lua(value, scope)?),
+    };
+    expect_no_extra(values.next(), "ctx:push")?;
+    let mode = ModeRef::from_function(scope, render, title.clone())?;
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .set_nav(NavRequest::Push { mode, title });
+    Ok(MultiValue::new())
+}
+
+/// Wrap an action payload as Luau userdata.
+fn action_userdata<'s>(
+    scope: &Scope<'s>,
+    payload: ActionPayload,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let userdata = scope.create_userdata(ActionValue { payload })?;
+    Ok(MultiValue::from_values(vec![ScopedValue::Userdata(
+        userdata,
+    )]))
+}
+
+/// Decode any Luau action value into its Rust payload.
+fn action_payload_from_value<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<ActionPayload, RuntimeError> {
+    match value {
+        ScopedValue::Userdata(userdata) => {
+            Ok(userdata.borrow::<ActionValue>(scope)?.payload.clone())
+        }
+        ScopedValue::LightUserdata { handle, tag } if tag == ACTION_TOKEN_TAG => {
+            primitive_action_from_handle(handle)
+                .map(ActionPayload::Action)
+                .ok_or_else(|| RuntimeError::runtime("unknown action token"))
+        }
+        other => Err(RuntimeError::runtime(format!(
+            "expected action userdata, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Decode a primitive action token from light userdata.
+fn primitive_action_from_value<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<Action, RuntimeError> {
+    match action_payload_from_value(scope, value)? {
+        ActionPayload::Action(action) => Ok(action),
+        _ => Err(RuntimeError::runtime("ctx:exec expects a primitive action")),
+    }
+}
+
+/// Map a primitive action token handle to its engine action.
+fn primitive_action_from_handle(handle: u32) -> Option<Action> {
+    Some(match handle {
+        ACTION_POP => Action::Pop,
+        ACTION_EXIT => Action::Exit,
+        ACTION_SHOW_ROOT => Action::ShowRoot,
+        ACTION_HIDE_HUD => Action::HideHud,
+        ACTION_RELOAD_CONFIG => Action::ReloadConfig,
+        ACTION_CLEAR_NOTIFICATIONS => Action::ClearNotifications,
+        ACTION_THEME_NEXT => Action::ThemeNext,
+        ACTION_THEME_PREV => Action::ThemePrev,
+        _ => return None,
+    })
+}
+
+/// Build a light-userdata module constant for a primitive action.
+fn action_token(handle: u32) -> ModuleValue {
+    ModuleValue::LightUserdata {
+        handle,
+        tag: ACTION_TOKEN_TAG,
+    }
+}
+
+/// Drop the explicit receiver supplied to a colon-call host method.
+fn skip_method_receiver<'s>(args: MultiValue<'s>) -> impl Iterator<Item = ScopedValue<'s>> {
+    let mut values = args.into_vec().into_iter();
+    let _receiver = values.next();
+    values
+}
+
+/// Require exactly one returned Luau value.
+fn single_return<'s>(
+    values: MultiValue<'s>,
+    context: &str,
+) -> Result<ScopedValue<'s>, RuntimeError> {
+    let mut values = values.into_vec().into_iter();
+    let value = values.next().unwrap_or(ScopedValue::Nil);
+    expect_no_extra(values.next(), context)?;
+    Ok(value)
+}
+
+/// Reject unexpected trailing arguments.
+fn expect_no_extra(value: Option<ScopedValue<'_>>, context: &str) -> Result<(), RuntimeError> {
+    if value.is_some() {
+        return Err(RuntimeError::runtime(format!(
+            "{context} got too many arguments"
+        )));
+    }
+    Ok(())
+}
+
+/// Decode a required string argument.
+fn expect_string<'s>(
+    scope: &Scope<'s>,
+    value: Option<ScopedValue<'s>>,
+    context: &str,
+) -> Result<String, RuntimeError> {
+    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
+    String::from_lua(value, scope)
+}
+
+/// Decode a required argument through oxau's `FromLua` bridge.
+fn expect_lua<'s, T>(
+    scope: &Scope<'s>,
+    value: Option<ScopedValue<'s>>,
+    context: &str,
+) -> Result<T, RuntimeError>
+where
+    T: FromLua<'s>,
+{
+    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
+    T::from_lua(value, scope)
+}
+
+/// Decode a required argument through the serde bridge.
+fn expect_serde<'s, T>(
+    scope: &Scope<'s>,
+    value: Option<ScopedValue<'s>>,
+    context: &str,
+) -> Result<T, RuntimeError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
+    from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))
+}
+
+/// Decode a required function argument.
+fn expect_function<'s>(
+    value: Option<ScopedValue<'s>>,
+    context: &str,
+) -> Result<Function<'s>, RuntimeError> {
+    match value {
+        Some(ScopedValue::Function(func)) => Ok(func),
+        Some(other) => Err(RuntimeError::runtime(format!(
+            "{context} must be a function, got {}",
+            other.type_name()
+        ))),
+        None => Err(RuntimeError::runtime(format!("{context} is required"))),
+    }
+}
+
+/// Decode a required table argument.
+fn expect_table<'s>(
+    value: Option<ScopedValue<'s>>,
+    context: &str,
+) -> Result<Table<'s>, RuntimeError> {
+    match value {
+        Some(ScopedValue::Table(table)) => Ok(table),
+        Some(other) => Err(RuntimeError::runtime(format!(
+            "{context} must be a table, got {}",
+            other.type_name()
+        ))),
+        None => Err(RuntimeError::runtime(format!("{context} is required"))),
     }
 }

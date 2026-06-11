@@ -12,7 +12,7 @@ use hotki_protocol::{
 };
 use mrpc::{Client as MrpcClient, Connection as MrpcConnection, RpcError, RpcSender, Value};
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, error::TryRecvError};
 use tracing::{debug, error, info, trace};
 
 use crate::{Error, Result, ipc::value};
@@ -110,6 +110,15 @@ impl Connection {
             .recv()
             .await
             .ok_or_else(|| Error::Ipc("Event channel closed".into()))
+    }
+
+    /// Return the next queued UI/log event without waiting.
+    pub fn try_recv_event(&mut self) -> Result<Option<MsgToUI>> {
+        match self.event_rx.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(Error::Ipc("Event channel closed".into())),
+        }
     }
 
     /// Inject a synthetic key down for a bound identifier.

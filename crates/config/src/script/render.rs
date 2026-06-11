@@ -1,12 +1,17 @@
-use std::{collections::HashSet, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use mac_keycode::Chord;
-use regex::Regex;
+use oxau::embed::{RuntimeError, Scope, ScriptError, serde::from_scoped_value};
 use tracing::warn;
 
 use super::{
     Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState,
+    config::SourceMap,
     types::{HudRow, HudRowStyle, SourcePos},
+    util::lock_unpoisoned,
 };
 use crate::{Error, NotifyKind, Style, error::excerpt_at, style};
 
@@ -32,7 +37,7 @@ struct ModeView {
 
 /// Render the full mode stack, applying empty/orphan truncation and producing HUD rows.
 pub fn render_stack(
-    cfg: &DynamicConfig,
+    cfg: &mut DynamicConfig,
     stack: &mut Vec<ModeFrame>,
     ctx: &ModeCtx,
     base_style: &Style,
@@ -88,24 +93,37 @@ pub fn render_stack(
 
 /// Render one mode frame and collect duplicate-chord warnings.
 fn render_mode(
-    cfg: &DynamicConfig,
+    cfg: &mut DynamicConfig,
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
-    cfg.reset_execution_budget();
     let builder = super::loader::ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
-    let builder_value = cfg
-        .lua
-        .create_userdata(builder.clone())
-        .map_err(|err| mlua_error_to_config(cfg, &err))?;
-    let ctx_value = super::loader::mode_context_userdata(&cfg.lua, ctx.clone())
-        .map_err(|err| mlua_error_to_config(cfg, &err))?;
+    let mut script_error = None;
+    let path = cfg.path.clone();
+    let sources = cfg.sources.clone();
 
-    frame
-        .closure
-        .func
-        .call::<()>((builder_value, ctx_value))
-        .map_err(|err| mlua_error_to_config(cfg, &err))?;
+    cfg.vm
+        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+            let builder_value = super::loader::mode_builder_userdata(scope, builder.clone())?;
+            let ctx_value = super::loader::mode_context_userdata(scope, ctx.clone())?;
+            let render = scope.fetch_function(&frame.closure.func)?;
+            let result: Result<(), ScriptError<'_>> =
+                scope.call_protected(render, (builder_value, ctx_value))?;
+            if let Err(err) = result {
+                script_error = Some(script_error_to_config(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|err| runtime_error_to_config(cfg, &err))?;
+
+    if let Some(err) = script_error {
+        return Err(err);
+    }
 
     let (bindings, style, capture) = builder.finish();
     let (bindings, warnings) = dedup_mode_bindings(cfg, &bindings);
@@ -260,53 +278,100 @@ pub fn resolve_binding<'a>(state: &'a RenderedState, chord: &Chord) -> Option<&'
     })
 }
 
-/// Convert an `mlua` error into a `config::Error` with a best-effort source location.
-pub fn mlua_error_to_config(cfg: &DynamicConfig, err: &mlua::Error) -> Error {
-    let (path, line, col) =
-        parse_error_location(err).unwrap_or_else(|| (cfg.path.clone(), None, None));
-    let excerpt = match (&path, line, col) {
-        (Some(path), Some(line), Some(col)) => cfg
-            .source_for(path)
-            .map(|source| excerpt_at(source.as_ref(), line, col)),
-        _ => None,
-    };
-
-    match err {
-        mlua::Error::SyntaxError { message, .. } => Error::Parse {
-            path,
-            line: line.unwrap_or(1),
-            col: col.unwrap_or(1),
-            message: message.clone(),
-            excerpt: excerpt.unwrap_or_default(),
-        },
-        other => Error::Validation {
-            path,
-            line,
-            col,
-            message: other.to_string(),
-            excerpt,
-        },
+/// Convert an oxau runtime-surface error into a locationless config error.
+pub fn runtime_error_to_config(cfg: &DynamicConfig, err: &RuntimeError) -> Error {
+    Error::Validation {
+        path: cfg.path.clone(),
+        line: None,
+        col: None,
+        message: err.message().to_string(),
+        excerpt: None,
     }
 }
 
-/// Parse a path/line/column triplet from an `mlua` error string.
-pub fn parse_error_location(
-    err: &mlua::Error,
-) -> Option<(Option<PathBuf>, Option<usize>, Option<usize>)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let regex = RE.get_or_init(|| {
-        Regex::new(r"(?m)(?P<path>/[^:\n]+|<[^:\n]+>|\[[^:\n]+\]|[^:\n]+\.luau):(?P<line>\d+)(?::(?P<col>\d+))?")
-            .expect("valid Luau error regex")
-    });
+/// Convert a protected script failure into a config error with a best-effort location.
+pub fn script_error_to_config<'s>(
+    default_path: Option<&Path>,
+    sources: &SourceMap,
+    scope: &Scope<'s>,
+    err: &ScriptError<'s>,
+) -> Error {
+    let message = script_error_message(scope, err);
+    let (path, line, col) = traceback_location(err.traceback())
+        .map(|(path, line)| {
+            (
+                normalize_error_path(path, default_path.map(Path::to_path_buf)),
+                Some(line),
+                Some(1),
+            )
+        })
+        .unwrap_or((default_path.map(Path::to_path_buf), None, None));
+    let excerpt =
+        line.and_then(|line| excerpt_for_error(sources, path.as_ref(), line, col.unwrap_or(1)));
 
-    let text = err.to_string();
-    let caps = regex.captures(&text)?;
-    let path = caps.name("path").map(|m| PathBuf::from(m.as_str()));
-    let line = caps
-        .name("line")
-        .and_then(|m| m.as_str().parse::<usize>().ok());
-    let col = caps
-        .name("col")
-        .and_then(|m| m.as_str().parse::<usize>().ok());
-    Some((path, line, col))
+    Error::Validation {
+        path,
+        line,
+        col,
+        message,
+        excerpt,
+    }
+}
+
+/// Extract a readable message from a scoped script error value.
+fn script_error_message<'s>(scope: &Scope<'s>, err: &ScriptError<'s>) -> String {
+    from_scoped_value::<String>(scope, err.value())
+        .unwrap_or_else(|_| format!("script raised a {} value", err.value().type_name()))
+}
+
+/// Extract the first `path:line` location from an oxau traceback.
+fn traceback_location(traceback: Option<&str>) -> Option<(String, usize)> {
+    traceback?
+        .lines()
+        .find_map(|line| parse_location_prefix(line.trim()))
+}
+
+/// Parse a single traceback line of the form `path:line: ...`.
+fn parse_location_prefix(line: &str) -> Option<(String, usize)> {
+    for (index, ch) in line.char_indices() {
+        if ch != ':' {
+            continue;
+        }
+        let rest = &line[index + 1..];
+        let digits = rest
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        if digits.is_empty() {
+            continue;
+        }
+        let line_no = digits.parse::<usize>().ok()?;
+        return Some((line[..index].to_string(), line_no));
+    }
+    None
+}
+
+/// Convert display chunk names into config paths.
+fn normalize_error_path(path: String, default_path: Option<PathBuf>) -> Option<PathBuf> {
+    match path.as_str() {
+        "<memory>" => None,
+        value if value.starts_with("[string ") => default_path,
+        _ => Some(PathBuf::from(path)),
+    }
+}
+
+/// Render an excerpt for an error location using cached sources.
+fn excerpt_for_error(
+    sources: &SourceMap,
+    path: Option<&PathBuf>,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    let source = match path {
+        Some(path) => lock_unpoisoned(sources).get(path).cloned(),
+        None => lock_unpoisoned(sources)
+            .get(&PathBuf::from("<memory>"))
+            .cloned(),
+    }?;
+    Some(excerpt_at(source.as_ref(), line, col))
 }

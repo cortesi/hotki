@@ -1,51 +1,85 @@
 //! Selector binding configuration types.
 
-use mlua::{Function, String as LuaString, Table, Value};
+use oxau::embed::{RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table};
 
 use super::{DynamicConfig, HandlerRef, ModeCtx};
 
+/// Opaque selector item payload stashed in the config VM.
+#[derive(Debug, Clone, Default)]
+pub struct SelectorData {
+    /// Stashed Luau value retained by the config VM.
+    value: Option<StashedValue>,
+}
+
+impl SelectorData {
+    /// Create selector data from a stashed VM value.
+    pub(crate) fn new(value: StashedValue) -> Self {
+        Self { value: Some(value) }
+    }
+
+    /// Fetch the payload value inside the current VM scope.
+    pub(crate) fn fetch<'s>(&self, scope: &Scope<'s>) -> Result<ScopedValue<'s>, RuntimeError> {
+        let value = self
+            .value
+            .as_ref()
+            .ok_or_else(|| RuntimeError::runtime("selector item has no script data"))?;
+        scope.fetch_value(value)
+    }
+}
+
 /// Parse a selector item from a Luau string or table value.
-pub fn parse_selector_item(index: usize, value: Value) -> Result<SelectorItem, String> {
+pub fn parse_selector_item<'s>(
+    scope: &Scope<'s>,
+    index: usize,
+    value: ScopedValue<'s>,
+) -> Result<SelectorItem, RuntimeError> {
     match value {
-        Value::String(text) => {
-            let label = text.to_string_lossy();
-            let data = Value::String(text);
+        ScopedValue::String(text) => {
+            let label = String::from_utf8(scope.string_bytes(text)?)
+                .map_err(|_| RuntimeError::runtime("selector label must be UTF-8"))?;
+            let data = SelectorData::new(scope.stash_value(ScopedValue::String(text))?);
             Ok(SelectorItem {
                 label,
                 sublabel: None,
                 data,
             })
         }
-        Value::Table(table) => selector_item_from_table(index, &table),
-        other => Err(format!(
+        ScopedValue::Table(table) => selector_item_from_table(scope, index, table),
+        other => Err(RuntimeError::runtime(format!(
             "selector.items: element {} must be a string or table, got {}",
             index,
             other.type_name()
-        )),
+        ))),
     }
 }
 
 /// Parse a selector item from a Luau table value.
-fn selector_item_from_table(index: usize, table: &Table) -> Result<SelectorItem, String> {
-    let label_value: LuaString = table.get("label").map_err(|_| {
-        format!(
+fn selector_item_from_table<'s>(
+    scope: &Scope<'s>,
+    index: usize,
+    table: Table<'s>,
+) -> Result<SelectorItem, RuntimeError> {
+    let label_value = table.get(scope, "label").map_err(|_| {
+        RuntimeError::runtime(format!(
             "selector.items: element {} missing required field 'label'",
             index
-        )
+        ))
     })?;
-    let label = label_value.to_string_lossy();
+    let label = String::from_utf8(scope.string_bytes(label_value)?)
+        .map_err(|_| RuntimeError::runtime("selector label must be UTF-8"))?;
 
-    let sublabel: Option<String> = table.get("sublabel").map_err(|_| {
-        format!(
+    let sublabel: Option<String> = table.get(scope, "sublabel").map_err(|_| {
+        RuntimeError::runtime(format!(
             "selector.items: element {} field 'sublabel' must be a string",
             index
-        )
+        ))
     })?;
 
-    let data = match table.get::<Value>("data") {
-        Ok(Value::Nil) | Err(_) => Value::String(label_value),
+    let data_value = match table.get::<_, ScopedValue<'_>>(scope, "data") {
+        Ok(ScopedValue::Nil) | Err(_) => ScopedValue::String(label_value),
         Ok(value) => value,
     };
+    let data = SelectorData::new(scope.stash_value(data_value)?);
 
     Ok(SelectorItem {
         label,
@@ -55,23 +89,25 @@ fn selector_item_from_table(index: usize, table: &Table) -> Result<SelectorItem,
 }
 
 /// Parse selector items from a Luau array-like table.
-pub fn parse_selector_items(value: Value) -> Result<Vec<SelectorItem>, String> {
-    let Value::Table(table) = value else {
-        return Err(format!(
+pub fn parse_selector_items<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<Vec<SelectorItem>, RuntimeError> {
+    let ScopedValue::Table(table) = value else {
+        return Err(RuntimeError::runtime(format!(
             "selector.items must be an array or provider function, got {}",
             value.type_name()
-        ));
+        )));
     };
 
-    table
-        .sequence_values::<Value>()
-        .enumerate()
-        .map(|(index, entry)| {
-            entry
-                .map_err(|err| err.to_string())
-                .and_then(|value| parse_selector_item(index, value))
-        })
-        .collect()
+    let len = usize::try_from(table.len(scope)?)
+        .map_err(|_| RuntimeError::runtime("selector.items length does not fit usize"))?;
+    let mut items = Vec::with_capacity(len);
+    for index in 1..=len {
+        let value = table.get(scope, index as f64)?;
+        items.push(parse_selector_item(scope, index, value)?);
+    }
+    Ok(items)
 }
 
 /// A single selectable option in an interactive selector.
@@ -82,7 +118,7 @@ pub struct SelectorItem {
     /// Optional secondary text shown below the label.
     pub sublabel: Option<String>,
     /// Arbitrary auxiliary data passed to the callback on selection.
-    pub data: Value,
+    pub data: SelectorData,
 }
 
 /// Item source for a selector.
@@ -91,7 +127,7 @@ pub enum SelectorItems {
     /// Static item list.
     Static(Vec<SelectorItem>),
     /// Lazy item provider evaluated when the selector is opened.
-    Provider(Function),
+    Provider(StashedClosure),
 }
 
 /// Configuration for an interactive selector instance.
@@ -115,23 +151,44 @@ impl SelectorConfig {
     /// Resolve items for this selector, evaluating a provider function when needed.
     pub fn resolve_items(
         &self,
-        cfg: &DynamicConfig,
+        cfg: &mut DynamicConfig,
         ctx: &ModeCtx,
     ) -> Result<Vec<SelectorItem>, crate::Error> {
         match &self.items {
             SelectorItems::Static(items) => Ok(items.clone()),
             SelectorItems::Provider(provider) => {
-                cfg.reset_execution_budget();
-                let ctx_value = super::loader::mode_context_userdata(&cfg.lua, ctx.clone())
-                    .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-                let value = provider
-                    .call::<Value>(ctx_value)
-                    .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-                parse_selector_items(value).map_err(|message| crate::Error::Validation {
+                let mut items = None;
+                let mut script_error = None;
+                let path = cfg.path.clone();
+                let sources = cfg.sources.clone();
+                cfg.vm
+                    .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+                        let provider = scope.fetch_function(provider)?;
+                        let ctx_value = super::loader::mode_context_userdata(scope, ctx.clone())?;
+                        let result = scope.call_protected(provider, ctx_value)?;
+                        match result {
+                            Ok(value) => items = Some(parse_selector_items(scope, value)?),
+                            Err(err) => {
+                                script_error = Some(super::render::script_error_to_config(
+                                    path.as_deref(),
+                                    &sources,
+                                    scope,
+                                    &err,
+                                ));
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
+
+                if let Some(err) = script_error {
+                    return Err(err);
+                }
+                items.ok_or_else(|| crate::Error::Validation {
                     path: cfg.path.clone(),
                     line: None,
                     col: None,
-                    message,
+                    message: "selector provider returned no items".to_string(),
                     excerpt: None,
                 })
             }

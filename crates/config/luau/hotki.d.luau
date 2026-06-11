@@ -1,9 +1,9 @@
-export type Toggle = "on" | "off" | "toggle"
-export type NotifyKind = "ignore" | "info" | "warn" | "error" | "success"
-export type HudMode = "hud" | "mini" | "hide"
-export type HudPos = "center" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw"
-export type NotifyPos = "left" | "right"
-export type FontWeight =
+type Toggle = "on" | "off" | "toggle"
+type NotifyKind = "ignore" | "info" | "warn" | "error" | "success"
+type HudMode = "hud" | "mini" | "hide"
+type HudPos = "center" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw"
+type NotifyPos = "left" | "right"
+type FontWeight =
     "thin"
     | "extralight"
     | "light"
@@ -14,28 +14,28 @@ export type FontWeight =
     | "extrabold"
     | "black"
 
-export type Color = string
+type Color = string
 
-export type Offset = {
+type Offset = {
     x: number,
     y: number,
 }
 
-export type ApplicationInfo = {
+type ApplicationInfo = {
     name: string,
     path: string,
     bundle_id: string?,
 }
 
-export type SelectorItem<T> = {
+type SelectorItem<T> = {
     label: string,
     sublabel: string?,
     data: T,
 }
 
-export type ItemsProvider<T> = (ctx: ModeContext) -> { SelectorItem<T> }
+type ItemsProvider<T> = (ctx: ModeContext) -> { SelectorItem<T> }
 
-export type ModeContext = {
+type ModeContext = {
     app: string,
     title: string,
     pid: number,
@@ -46,16 +46,16 @@ export type ModeContext = {
 }
 
 
-export type Action = {
+type Action = {
     __kind: "Action",
 }
 
-export type ShellOptions = {
+type ShellOptions = {
     ok_notify: NotifyKind?,
     err_notify: NotifyKind?,
 }
 
-export type BindingStyle = {
+type BindingStyle = {
     hidden: boolean?,
     key_fg: Color?,
     key_bg: Color?,
@@ -64,12 +64,12 @@ export type BindingStyle = {
     tag_fg: Color?,
 }
 
-export type RepeatOptions = {
+type RepeatOptions = {
     delay_ms: number?,
     interval_ms: number?,
 }
 
-export type BindingOptions = {
+type BindingOptions = {
     hidden: boolean?,
     global: boolean?,
     stay: boolean?,
@@ -77,7 +77,7 @@ export type BindingOptions = {
     style: BindingStyle?,
 }
 
-export type SubmenuOptions = {
+type SubmenuOptions = {
     hidden: boolean?,
     global: boolean?,
     stay: boolean?,
@@ -86,7 +86,7 @@ export type SubmenuOptions = {
     capture: boolean?,
 }
 
-export type HudStyle = {
+type HudStyle = {
     mode: HudMode?,
     pos: HudPos?,
     offset: Offset?,
@@ -112,7 +112,7 @@ export type HudStyle = {
     tag_submenu: string?,
 }
 
-export type NotifyWindowStyle = {
+type NotifyWindowStyle = {
     bg: Color?,
     title_fg: Color?,
     body_fg: Color?,
@@ -123,7 +123,7 @@ export type NotifyWindowStyle = {
     icon: string?,
 }
 
-export type NotifyStyle = {
+type NotifyStyle = {
     width: number?,
     pos: NotifyPos?,
     opacity: number?,
@@ -136,7 +136,7 @@ export type NotifyStyle = {
     success: NotifyWindowStyle?,
 }
 
-export type SelectorStyle = {
+type SelectorStyle = {
     bg: Color?,
     input_bg: Color?,
     item_bg: Color?,
@@ -146,19 +146,19 @@ export type SelectorStyle = {
     shadow: Color?,
 }
 
-export type StyleOverlay = {
+type StyleOverlay = {
     hud: HudStyle?,
     notify: NotifyStyle?,
     selector: SelectorStyle?,
 }
 
-export type ModeBatchEntry =
+type ModeBatchEntry =
     { chord: string, desc: string, action: Action, opts: BindingOptions? }
     | { chord: string, title: string, render: ModeRenderer, opts: SubmenuOptions? }
 
-export type ItemSource<T> = { SelectorItem<T> } | { string } | ItemsProvider<T>
+type ItemSource<T> = { SelectorItem<T> } | { string } | ItemsProvider<T>
 
-export type SelectorSpec = {
+type SelectorSpec = {
     title: string?,
     placeholder: string?,
     items: any,
@@ -167,7 +167,7 @@ export type SelectorSpec = {
     max_visible: number?,
 }
 
-export type MenuBuilder = {
+type MenuBuilder = {
     bind: (
         self: MenuBuilder,
         chord: string,
@@ -187,9 +187,9 @@ export type MenuBuilder = {
     capture: (self: MenuBuilder) -> (),
 }
 
-export type ModeRenderer = (menu: MenuBuilder, ctx: ModeContext) -> ()
+type ModeRenderer = (menu: MenuBuilder, ctx: ModeContext) -> ()
 
-export type ActionContext = {
+type ActionContext = {
     app: string,
     title: string,
     pid: number,
@@ -206,12 +206,12 @@ export type ActionContext = {
     show_root: (self: ActionContext) -> (),
 }
 
-export type ActionHandler = (ctx: ActionContext) -> ()
-export type ModeModule = ModeRenderer
-export type HandlerModule = ActionHandler
-export type StyleModule = StyleOverlay
+type ActionHandler = (ctx: ActionContext) -> ()
+type ModeModule = ModeRenderer
+type HandlerModule = ActionHandler
+type StyleModule = StyleOverlay
 
-export type ActionApi = {
+type ActionApi = {
     pop: Action,
     exit: Action,
     show_root: Action,
@@ -232,7 +232,7 @@ export type ActionApi = {
     selector: (spec: SelectorSpec) -> Action,
 }
 
-export type ThemesApi = {
+type ThemesApi = {
     use: (self: ThemesApi, name: string) -> (),
     current: (self: ThemesApi) -> string,
     list: (self: ThemesApi) -> { string },
@@ -241,7 +241,7 @@ export type ThemesApi = {
     remove: (self: ThemesApi, name: string) -> (),
 }
 
-export type HotkiApi = {
+type HotkiApi = {
     root: (render: ModeRenderer) -> (),
     applications: ItemsProvider<ApplicationInfo>,
     import_mode: (path: string) -> ModeModule,
@@ -250,6 +250,41 @@ export type HotkiApi = {
     import_style: (path: string) -> StyleModule,
 }
 
-declare hotki: HotkiApi
-declare action: ActionApi
-declare themes: ThemesApi
+declare hotki: {
+    root: (render: ModeRenderer) -> (),
+    applications: (ctx: ModeContext) -> { SelectorItem<ApplicationInfo> },
+    import_mode: (path: string) -> ModeModule,
+    import_items: <T>(path: string) -> ItemsProvider<T>,
+    import_handler: (path: string) -> HandlerModule,
+    import_style: (path: string) -> StyleModule,
+}
+
+declare action: {
+    pop: Action,
+    exit: Action,
+    show_root: Action,
+    hide_hud: Action,
+    reload_config: Action,
+    clear_notifications: Action,
+    theme_next: Action,
+    theme_prev: Action,
+    shell: (cmd: string, opts: ShellOptions?) -> Action,
+    open: (target: string) -> Action,
+    relay: (spec: string) -> Action,
+    show_details: (toggle: Toggle) -> Action,
+    theme_set: (name: string) -> Action,
+    set_volume: (level: number) -> Action,
+    change_volume: (delta: number) -> Action,
+    mute: (toggle: Toggle) -> Action,
+    run: (handler: ActionHandler) -> Action,
+    selector: (spec: SelectorSpec) -> Action,
+}
+
+declare themes: {
+    use: (self: ThemesApi, name: string) -> (),
+    current: (self: ThemesApi) -> string,
+    list: (self: ThemesApi) -> { string },
+    get: (self: ThemesApi, name: string) -> StyleOverlay,
+    register: (self: ThemesApi, name: string, style: StyleOverlay) -> (),
+    remove: (self: ThemesApi, name: string) -> (),
+}

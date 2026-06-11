@@ -1,4 +1,4 @@
-use mlua::{AnyUserData, Value};
+use oxau::embed::ScriptError;
 
 use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem};
 use crate::Error;
@@ -14,18 +14,6 @@ pub struct HandlerResult {
     pub stay: bool,
 }
 
-/// Reset the budget, build an `ActionCtx`, and create its Lua userdata value.
-fn prepare_handler_call(
-    cfg: &DynamicConfig,
-    ctx: &ModeCtx,
-) -> Result<(ActionCtx, AnyUserData), Error> {
-    cfg.reset_execution_budget();
-    let action_ctx = ActionCtx::new(ctx.clone());
-    let ctx_value = super::loader::action_context_userdata(&cfg.lua, action_ctx.clone())
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-    Ok((action_ctx, ctx_value))
-}
-
 /// Drain the queued outputs from a completed handler context.
 fn collect_handler_result(action_ctx: &ActionCtx) -> HandlerResult {
     HandlerResult {
@@ -37,42 +25,77 @@ fn collect_handler_result(action_ctx: &ActionCtx) -> HandlerResult {
 
 /// Execute a handler closure and collect its queued effects.
 pub fn execute_handler(
-    cfg: &DynamicConfig,
+    cfg: &mut DynamicConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
-    let (action_ctx, ctx_value) = prepare_handler_call(cfg, ctx)?;
-    handler
-        .func
-        .call::<()>(ctx_value)
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+    let action_ctx = ActionCtx::new(ctx.clone());
+    let mut script_error = None;
+    let path = cfg.path.clone();
+    let sources = cfg.sources.clone();
+
+    cfg.vm
+        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+            let ctx_value = super::loader::action_context_userdata(scope, action_ctx.clone())?;
+            let handler = scope.fetch_function(&handler.func)?;
+            let result: Result<(), ScriptError<'_>> = scope.call_protected(handler, ctx_value)?;
+            if let Err(err) = result {
+                script_error = Some(super::render::script_error_to_config(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
+
+    if let Some(err) = script_error {
+        return Err(err);
+    }
     Ok(collect_handler_result(&action_ctx))
 }
 
 /// Execute a selector handler closure with `(ctx, item, query)` arguments.
 pub fn execute_selector_handler(
-    cfg: &DynamicConfig,
+    cfg: &mut DynamicConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
-    let (action_ctx, ctx_value) = prepare_handler_call(cfg, ctx)?;
+    let action_ctx = ActionCtx::new(ctx.clone());
+    let mut script_error = None;
+    let path = cfg.path.clone();
+    let sources = cfg.sources.clone();
+    let query = query.to_string();
 
-    let item_table = cfg
-        .lua
-        .create_table()
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
-    item_table
-        .set("label", item.label.clone())
-        .and_then(|()| item_table.set("sublabel", item.sublabel.clone()))
-        .and_then(|()| item_table.set("data", item.data.clone()))
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+    cfg.vm
+        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+            let ctx_value = super::loader::action_context_userdata(scope, action_ctx.clone())?;
+            let item_table = scope.create_table()?;
+            item_table.set(scope, "label", item.label.clone())?;
+            item_table.set(scope, "sublabel", item.sublabel.clone())?;
+            item_table.set(scope, "data", item.data.fetch(scope)?)?;
 
-    handler
-        .func
-        .call::<()>((ctx_value, Value::Table(item_table), query.to_string()))
-        .map_err(|err| super::render::mlua_error_to_config(cfg, &err))?;
+            let handler = scope.fetch_function(&handler.func)?;
+            let result: Result<(), ScriptError<'_>> =
+                scope.call_protected(handler, (ctx_value, item_table, query.clone()))?;
+            if let Err(err) = result {
+                script_error = Some(super::render::script_error_to_config(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
 
+    if let Some(err) = script_error {
+        return Err(err);
+    }
     Ok(collect_handler_result(&action_ctx))
 }

@@ -9,7 +9,7 @@ use std::{
 
 pub use hotki_protocol::{HudRow, HudRowStyle};
 use mac_keycode::Chord;
-use mlua::Function;
+use oxau::embed::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
 
 use super::{SelectorConfig, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style, raw::RawStyle};
@@ -47,8 +47,8 @@ impl fmt::Debug for ModeId {
 pub struct ModeRef {
     /// Stable identity used for orphan detection.
     pub(crate) id: ModeId,
-    /// Luau function implementing the renderer.
-    pub(crate) func: Function,
+    /// Stashed Luau function implementing the renderer.
+    pub(crate) func: StashedClosure,
     /// Optional default title.
     pub(crate) default_title: Option<String>,
 }
@@ -64,20 +64,25 @@ impl fmt::Debug for ModeRef {
 
 impl ModeRef {
     /// Create a mode reference from a Luau function and optional title salt.
-    pub(crate) fn from_function(func: Function, title: Option<String>) -> Self {
-        let info = func.info();
+    pub(crate) fn from_function<'s>(
+        scope: &Scope<'s>,
+        func: Function<'s>,
+        title: Option<String>,
+    ) -> Result<Self, RuntimeError> {
+        let info = func.info(scope)?;
         let mut hasher = DefaultHasher::new();
-        info.source.hash(&mut hasher);
+        info.chunk_name.hash(&mut hasher);
         info.line_defined.hash(&mut hasher);
         title.hash(&mut hasher);
-        if info.source.is_none() && info.line_defined.is_none() {
-            (func.to_pointer() as usize).hash(&mut hasher);
+        if info.chunk_name.is_none() && info.line_defined.is_none() {
+            func.id().hash(&mut hasher);
         }
-        Self {
+        let func = scope.stash_function(func)?;
+        Ok(Self {
             id: ModeId::new(hasher.finish()),
             func,
             default_title: title,
-        }
+        })
     }
 
     /// Return the stable identity of this mode closure.
@@ -94,13 +99,37 @@ impl ModeRef {
 /// Opaque wrapper around a Luau handler closure.
 #[derive(Clone)]
 pub struct HandlerRef {
-    /// Luau function implementing the handler.
-    pub(crate) func: Function,
+    /// Stashed Luau function implementing the handler.
+    pub(crate) func: StashedClosure,
 }
 
 impl fmt::Debug for HandlerRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HandlerRef").finish_non_exhaustive()
+    }
+}
+
+impl HandlerRef {
+    /// Create a handler reference from a Luau function.
+    pub(crate) fn from_function<'s>(
+        scope: &Scope<'s>,
+        func: Function<'s>,
+    ) -> Result<Self, RuntimeError> {
+        Ok(Self {
+            func: scope.stash_function(func)?,
+        })
+    }
+}
+
+impl SourcePos {
+    /// Build a source position from oxau's caller-location metadata.
+    pub(crate) fn from_location(location: SourceLocation) -> Self {
+        let path = (location.chunk_name != "<memory>").then(|| PathBuf::from(location.chunk_name));
+        Self {
+            path,
+            line: Some(location.line as usize),
+            col: Some(1),
+        }
     }
 }
 

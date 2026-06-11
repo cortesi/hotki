@@ -21,6 +21,7 @@ const TERM_WAIT_TIMEOUT_MS: u64 = 300;
 const TERM_POLL_INTERVAL_MS: u64 = 10;
 const SERVER_FLAG: &str = "--server";
 const SOCKET_FLAG: &str = "--socket";
+const DISABLE_EVENT_TAP_FLAG: &str = "--disable-event-tap";
 
 pub(crate) const PARENT_PID_FLAG: &str = "--parent-pid";
 pub(crate) const LOG_FILTER_FLAG: &str = "--log-filter";
@@ -100,6 +101,13 @@ fn replace_flag_pair(args: &mut Vec<String>, flag: &str, value: &str) {
     *args = new_args;
 }
 
+fn set_plain_flag(args: &mut Vec<String>, flag: &str, enabled: bool) {
+    args.retain(|arg| arg != flag);
+    if enabled {
+        args.push(flag.to_string());
+    }
+}
+
 /// Configuration for launching a hotkey server process.
 ///
 /// The server is spawned with the parent's unmodified environment. All
@@ -160,6 +168,11 @@ impl ProcessConfig {
     /// Replace any existing `--log-filter <value>` pair with the supplied filter spec.
     pub(crate) fn set_log_filter(&mut self, filter: &str) {
         replace_flag_pair(&mut self.args, LOG_FILTER_FLAG, filter);
+    }
+
+    /// Enable or disable the physical keyboard event tap in the server process.
+    pub(crate) fn set_event_tap_enabled(&mut self, enabled: bool) {
+        set_plain_flag(&mut self.args, DISABLE_EVENT_TAP_FLAG, !enabled);
     }
 }
 
@@ -312,5 +325,26 @@ mod tests {
             .position(|a| a == LOG_FILTER_FLAG)
             .unwrap();
         assert_eq!(config.args()[idx + 1], "b=debug");
+    }
+
+    #[test]
+    fn set_event_tap_enabled_is_idempotent() {
+        let mut config = ProcessConfig::new("/usr/bin/test");
+        config.set_event_tap_enabled(false);
+        config.set_event_tap_enabled(false);
+        let count = config
+            .args()
+            .iter()
+            .filter(|arg| *arg == DISABLE_EVENT_TAP_FLAG)
+            .count();
+        assert_eq!(count, 1);
+
+        config.set_event_tap_enabled(true);
+        assert!(
+            !config
+                .args()
+                .iter()
+                .any(|arg| arg == DISABLE_EVENT_TAP_FLAG)
+        );
     }
 }

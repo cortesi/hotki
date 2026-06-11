@@ -98,11 +98,11 @@ hotki.root(function(menu, ctx)
     menu:bind("a", "second", action.shell("true"))
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
         let ctx = base_ctx("TestApp", false, 0);
-        let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
 
         assert_eq!(out.warnings.len(), 1);
         assert!(matches!(
@@ -123,11 +123,11 @@ hotki.root(function(menu, ctx)
     end)
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
         let out = render_stack(
-            &cfg,
+            &mut cfg,
             &mut stack,
             &base_ctx("TestApp", false, 0),
             &base_style,
@@ -135,8 +135,13 @@ end)
         .expect("render root");
         let mode_entry = find_binding(&out.rendered, "a").clone();
         push_mode(&mut stack, &mode_entry);
-        let _ = render_stack(&cfg, &mut stack, &base_ctx("TestApp", true, 1), &base_style)
-            .expect("render child");
+        let _ = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", true, 1),
+            &base_style,
+        )
+        .expect("render child");
         assert_eq!(stack.len(), 1);
     }
 
@@ -155,17 +160,17 @@ hotki.root(function(menu, ctx)
     end
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
 
-        let out_a =
-            render_stack(&cfg, &mut stack, &base_ctx("A", true, 0), &base_style).expect("render A");
+        let out_a = render_stack(&mut cfg, &mut stack, &base_ctx("A", true, 0), &base_style)
+            .expect("render A");
         let entry = find_binding(&out_a.rendered, "a").clone();
         push_mode(&mut stack, &entry);
 
-        let _ =
-            render_stack(&cfg, &mut stack, &base_ctx("B", true, 1), &base_style).expect("render B");
+        let _ = render_stack(&mut cfg, &mut stack, &base_ctx("B", true, 1), &base_style)
+            .expect("render B");
         assert_eq!(stack.len(), 1);
     }
 
@@ -181,17 +186,17 @@ hotki.root(function(menu, ctx)
     end))
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
         let ctx = base_ctx("TestApp", true, 0);
-        let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
         let binding = find_binding(&out.rendered, "h");
         let BindingKind::Handler(handler) = &binding.kind else {
             panic!("expected handler binding");
         };
 
-        let result = execute_handler(&cfg, handler, &ctx).expect("execute handler");
+        let result = execute_handler(&mut cfg, handler, &ctx).expect("execute handler");
         assert_eq!(result.effects.len(), 3);
         match &result.effects[0] {
             Effect::Exec(Action::Shell(spec)) => assert_eq!(spec.command(), "echo one"),
@@ -228,11 +233,11 @@ hotki.root(function(menu, ctx)
     }))
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
         let out = render_stack(
-            &cfg,
+            &mut cfg,
             &mut stack,
             &base_ctx("TestApp", false, 0),
             &base_style,
@@ -256,6 +261,40 @@ end)
     }
 
     #[test]
+    fn submenu_flatten_options_accept_integer_number_fields() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:submenu("a", "child", function(child, inner)
+        child:bind("x", "x", action.shell("true"))
+    end, {
+        global = true,
+        capture = true,
+        ["repeat"] = {
+            delay_ms = 1,
+            interval_ms = 2,
+        },
+    })
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", false, 0),
+            &base_style,
+        )
+        .expect("render");
+        let binding = find_binding(&out.rendered, "a");
+        assert!(binding.flags.global);
+        assert!(binding.mode_capture);
+        let repeat = binding.flags.repeat.expect("repeat options");
+        assert_eq!(repeat.delay_ms, Some(1));
+        assert_eq!(repeat.interval_ms, Some(2));
+    }
+
+    #[test]
     fn style_inheritance_layers_mode_overlays_and_binding_overrides() {
         let source = r##"
 themes:use("default")
@@ -272,15 +311,25 @@ hotki.root(function(menu, ctx)
     end)
 end)
 "##;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let mut stack = vec![root_frame(&cfg)];
-        let out_root = render_stack(&cfg, &mut stack, &base_ctx("TestApp", true, 0), &base_style)
-            .expect("render root");
+        let out_root = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", true, 0),
+            &base_style,
+        )
+        .expect("render root");
         let entry = find_binding(&out_root.rendered, "a").clone();
         push_mode(&mut stack, &entry);
-        let out_child = render_stack(&cfg, &mut stack, &base_ctx("TestApp", true, 1), &base_style)
-            .expect("render child");
+        let out_child = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", true, 1),
+            &base_style,
+        )
+        .expect("render child");
 
         assert_eq!(out_child.rendered.style.hud.bg, (0, 255, 0));
         assert_eq!(out_child.rendered.style.hud.font_size, 18.0);
@@ -308,13 +357,13 @@ hotki.root(function(menu, ctx)
     end
 end)
 "#;
-        let cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style(None);
         let ctx = base_ctx("TestApp", false, 0);
 
         for _ in 0..32 {
             let mut stack = vec![root_frame(&cfg)];
-            let out = render_stack(&cfg, &mut stack, &ctx, &base_style).expect("render");
+            let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
             assert_eq!(find_binding(&out.rendered, "a").desc, "loop");
         }
     }

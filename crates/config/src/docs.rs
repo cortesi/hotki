@@ -45,21 +45,21 @@ mod tests {
 
     #[test]
     fn api_text_returns_checked_in_file() {
-        assert!(luau_api().contains("declare hotki: HotkiApi"));
+        assert!(luau_api().contains("declare hotki: {"));
     }
 
     #[test]
     fn api_filter_returns_matching_blocks() {
         let filtered = luau_api_text(Some("ThemesApi"));
-        assert!(filtered.contains("export type ThemesApi"));
-        assert!(!filtered.contains("export type ActionApi"));
+        assert!(filtered.contains("type ThemesApi"));
+        assert!(!filtered.contains("type ActionApi"));
     }
 
     #[test]
     fn markdown_wraps_filtered_content() {
         let markdown = luau_api_markdown(Some("ActionApi"));
         assert!(markdown.starts_with("```luau\n"));
-        assert!(markdown.contains("export type ActionApi"));
+        assert!(markdown.contains("type ActionApi"));
         assert!(markdown.ends_with("```"));
     }
 }

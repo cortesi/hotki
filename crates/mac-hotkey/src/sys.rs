@@ -209,6 +209,11 @@ pub fn run_event_loop(
     ) {
         Ok(t) => t,
         Err(_) => {
+            if !permissions::accessibility_ok() {
+                warn!("accessibility_permission_missing_for_event_tap");
+                let _ = ready.send(Err(crate::Error::PermissionDenied("Accessibility")));
+                return Err(crate::Error::PermissionDenied("Accessibility"));
+            }
             warn!("event_tap_create_failed");
             let _ = ready.send(Err(crate::Error::EventTapStart));
             return Err(crate::Error::EventTapStart);

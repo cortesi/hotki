@@ -181,34 +181,26 @@ impl HotkeyService {
         );
 
         let engine = self.engine().await;
-        let Some(id) = engine.resolve_id_for_ident(&req.ident).await else {
-            tracing::debug!(
-                target: "hotki_server::ipc::service",
-                "InjectKey: ident not bound: {}",
-                req.ident
-            );
-            return Err(typed_err(
-                RpcErrorCode::KeyNotBound,
-                &[("ident", Value::String(req.ident.into()))],
-            ));
-        };
-        tracing::debug!(
-            target: "hotki_server::ipc::service",
-            "InjectKey: resolved id={} for ident={} -> dispatch",
-            id,
-            req.ident
-        );
-
         match engine
-            .dispatch(id, inject_kind_to_event(req.kind), req.repeat)
+            .dispatch_ident(&req.ident, inject_kind_to_event(req.kind), req.repeat)
             .await
         {
-            Ok(()) => Ok(Value::Boolean(true)),
+            Ok(true) => Ok(Value::Boolean(true)),
+            Ok(false) => {
+                tracing::debug!(
+                    target: "hotki_server::ipc::service",
+                    "InjectKey: ident not bound: {}",
+                    req.ident
+                );
+                Err(typed_err(
+                    RpcErrorCode::KeyNotBound,
+                    &[("ident", Value::String(req.ident.into()))],
+                ))
+            }
             Err(err) => {
                 tracing::warn!(
                     target: "hotki_server::ipc::service",
-                    "InjectKey: dispatch failed id={} ident={}: {}",
-                    id,
+                    "InjectKey: dispatch failed ident={}: {}",
                     req.ident,
                     err
                 );

@@ -3,10 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mlua::{Lua, LuaSerdeExt, Result as LuaResult};
+use oxau::embed::{RuntimeError, Scope, serde::to_scoped_value};
 use serde::Serialize;
 
-use super::SelectorItem;
+use super::{SelectorData, SelectorItem};
 
 /// Standard CoreServices applications directory scanned for built-in macOS apps.
 const CORE_SERVICES_APPLICATIONS: &str = "/System/Library/CoreServices/Applications";
@@ -25,23 +25,22 @@ struct ApplicationInfo {
 }
 
 /// Build selector items for installed applications.
-pub fn application_items(lua: &Lua) -> LuaResult<Vec<SelectorItem>> {
+pub fn application_items(scope: &Scope<'_>) -> Result<Vec<SelectorItem>, RuntimeError> {
     scan_applications()
-        .map(|apps| {
-            apps.into_iter()
-                .map(|app| {
-                    let label = app.name.clone();
-                    let sublabel = Some(app.path.clone());
-                    let data = lua.to_value(&app)?;
-                    Ok(SelectorItem {
-                        label,
-                        sublabel,
-                        data,
-                    })
-                })
-                .collect()
+        .map_err(RuntimeError::external)?
+        .into_iter()
+        .map(|app| {
+            let label = app.name.clone();
+            let sublabel = Some(app.path.clone());
+            let data = to_scoped_value(scope, &app)?;
+            let data = SelectorData::new(scope.stash_value(data)?);
+            Ok(SelectorItem {
+                label,
+                sublabel,
+                data,
+            })
         })
-        .map_err(mlua::Error::external)?
+        .collect()
 }
 
 /// Scan known application roots and return deduplicated application metadata.

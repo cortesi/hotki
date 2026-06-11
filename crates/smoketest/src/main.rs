@@ -120,8 +120,6 @@ fn main() {
 
     init_tracing_from_cli(&cli);
 
-    let perms = permissions::check_permissions();
-    enforce_permissions_or_exit(perms);
     build_hotki_or_exit(&cli);
 
     dispatch_command(&cli);
@@ -144,21 +142,6 @@ fn init_tracing_from_cli(cli: &Cli) {
         .with(env_filter)
         .with(fmt::layer().without_time())
         .try_init();
-}
-
-/// Ensure required macOS permissions are granted; exit with a helpful message if not.
-fn enforce_permissions_or_exit(perms: permissions::PermissionsStatus) {
-    if !perms.accessibility_ok() || !perms.input_ok() {
-        eprintln!(
-            "ERROR: required permissions missing (accessibility={}, input_monitoring={})",
-            perms.accessibility_ok(),
-            perms.input_ok()
-        );
-        eprintln!(
-            "Grant Accessibility and Input Monitoring to your terminal under System Settings -> Privacy & Security."
-        );
-        exit(1);
-    }
 }
 
 /// Build the hotki binary once up-front to avoid stale binaries.

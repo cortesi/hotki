@@ -23,7 +23,7 @@ pub(crate) struct RefreshPlan {
 
 pub(crate) fn build_refresh_plan(
     rt: &mut RuntimeState,
-    cfg: Option<&dyn_engine::DynamicConfig>,
+    cfg: Option<&mut dyn_engine::DynamicConfig>,
     focus: FocusInfo,
 ) -> RefreshPlan {
     rt.focus = focus;
@@ -45,7 +45,7 @@ pub(crate) fn build_refresh_plan(
 
 fn build_loaded_refresh_plan(
     rt: &mut RuntimeState,
-    cfg: &dyn_engine::DynamicConfig,
+    cfg: &mut dyn_engine::DynamicConfig,
 ) -> RefreshPlan {
     rt.ensure_root(cfg.root());
     if !cfg.theme_exists(rt.theme_name.as_str()) {
@@ -87,7 +87,7 @@ fn build_loaded_refresh_plan(
 
 fn render_stack_with_recovery(
     rt: &mut RuntimeState,
-    cfg: &dyn_engine::DynamicConfig,
+    cfg: &mut dyn_engine::DynamicConfig,
     base_style: &config::Style,
 ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
     let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
@@ -134,9 +134,9 @@ impl Engine {
         tracing::debug!("start app={} title={}", focus.app, focus.title);
 
         let plan = {
-            let cfg_guard = self.config.read().await;
+            let mut cfg_guard = self.config.lock().await;
             let mut rt = self.runtime.lock().await;
-            build_refresh_plan(&mut rt, cfg_guard.as_ref(), focus)
+            build_refresh_plan(&mut rt, cfg_guard.as_mut(), focus)
         };
 
         for message in plan.errors {

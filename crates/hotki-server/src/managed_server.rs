@@ -90,6 +90,20 @@ impl ManagedServer {
         }
     }
 
+    /// Configure whether an auto-spawned server starts the physical keyboard event tap.
+    pub(crate) fn set_server_event_tap_enabled(&mut self, enabled: bool) {
+        if self.config.is_none()
+            && let Ok(current_exe) = env::current_exe()
+        {
+            let mut config = ProcessConfig::new(current_exe);
+            config.set_socket_path(&self.socket_path);
+            self.config = Some(config);
+        }
+        if let Some(config) = &mut self.config {
+            config.set_event_tap_enabled(enabled);
+        }
+    }
+
     /// Disable automatic server spawning and only connect to existing servers.
     pub(crate) fn disable_auto_spawn(&mut self) {
         self.config = None;

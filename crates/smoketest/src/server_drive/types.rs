@@ -1,32 +1,35 @@
-use std::{collections::BTreeSet, io};
+use std::collections::BTreeSet;
 
-use hotki_protocol::{DisplaysSnapshot, rpc::ServerStatusLite};
-use hotki_server::smoketest_bridge::{
-    BridgeCommandId, BridgeEvent, BridgeNotification, BridgeTimestampMs,
-};
+use hotki_protocol::{DisplaysSnapshot, MsgToUI, rpc::ServerStatusLite};
 use thiserror::Error;
 
-/// Result alias for bridge driver operations.
+/// Result alias for server driver operations.
 pub type DriverResult<T> = Result<T, DriverError>;
 
-/// Raw bridge event record captured from the UI runtime stream.
+/// Unique identifier assigned to locally observed server events.
+pub type DriverEventId = u64;
+
+/// Millisecond-precision wall-clock timestamp for event diagnostics.
+pub type DriverTimestampMs = u64;
+
+/// Raw server event record captured from the production `MsgToUI` stream.
 #[derive(Debug, Clone)]
-pub struct BridgeEventRecord {
-    /// Command identifier assigned to the streamed event.
-    pub id: BridgeCommandId,
-    /// Millisecond timestamp recorded when the UI flushed the event.
-    pub timestamp_ms: BridgeTimestampMs,
-    /// Event payload describing the state change.
-    pub payload: BridgeEvent,
+pub struct DriverEventRecord {
+    /// Locally assigned event identifier.
+    pub id: DriverEventId,
+    /// Millisecond timestamp recorded when the driver observed the event.
+    pub timestamp_ms: DriverTimestampMs,
+    /// Protocol event payload emitted by the server.
+    pub payload: MsgToUI,
 }
 
-/// Snapshot of the most recent HUD update observed on the bridge stream.
+/// Snapshot of the most recent HUD update observed on the server event stream.
 #[derive(Debug, Clone)]
 pub struct HudSnapshot {
-    /// Identifier of the bridge event associated with this snapshot.
-    pub event_id: BridgeCommandId,
+    /// Identifier of the server event associated with this snapshot.
+    pub event_id: DriverEventId,
     /// Millisecond timestamp when the snapshot was observed.
-    pub received_ms: BridgeTimestampMs,
+    pub received_ms: DriverTimestampMs,
     /// Fully rendered HUD state payload.
     pub hud: hotki_protocol::HudState,
     /// Display geometry snapshot carried with the HUD update.
@@ -35,32 +38,37 @@ pub struct HudSnapshot {
     pub idents: BTreeSet<String>,
 }
 
-/// Handshake payload returned when the smoketest bridge establishes a session.
+/// Handshake payload captured from the server after connecting the driver.
 #[derive(Debug, Clone)]
-pub struct BridgeHandshake {
-    /// Idle timer snapshot reported by the UI runtime.
-    pub idle_timer: ServerStatusLite,
-    /// Pending notifications surfaced by the UI.
-    pub notifications: Vec<BridgeNotification>,
+pub struct ServerHandshake {
+    /// Server status reported by the production RPC API.
+    pub status: ServerStatusLite,
 }
 
-/// Error variants surfaced by the smoketest bridge driver.
+/// Error variants surfaced by the smoketest server driver.
 #[derive(Debug, Error)]
 pub enum DriverError {
-    /// Connecting to the bridge socket failed.
-    #[error("failed to connect to bridge socket '{socket_path}': {source}")]
+    /// Creating the local Tokio runtime failed.
+    #[error("failed to create driver runtime: {message}")]
+    Runtime {
+        /// Human-readable runtime creation failure.
+        message: String,
+    },
+    /// Connecting to the server socket failed.
+    #[error("failed to connect to server socket '{socket_path}': {message}")]
     Connect {
         /// Socket path we attempted to reach.
         socket_path: String,
-        /// Underlying IO error.
-        #[source]
-        source: io::Error,
+        /// Underlying connection error message.
+        message: String,
     },
-    /// A bridge command was attempted before initialization.
-    #[error("bridge connection not initialized")]
+    /// A server command was attempted before initialization.
+    #[error("server driver not initialized")]
     NotInitialized,
-    /// Exhausted retries while waiting for the bridge to become ready.
-    #[error("timed out after {timeout_ms} ms initializing bridge at '{socket_path}': {last_error}")]
+    /// Exhausted retries while waiting for the server to become ready.
+    #[error(
+        "timed out after {timeout_ms} ms initializing server driver at '{socket_path}': {last_error}"
+    )]
     InitTimeout {
         /// Socket path we attempted to reach.
         socket_path: String,
@@ -69,33 +77,19 @@ pub enum DriverError {
         /// Last observed error message.
         last_error: String,
     },
-    /// Bridge reported a failure while handling a command.
-    #[error("bridge command failed: {message}")]
-    BridgeFailure {
-        /// Human-readable error message from the bridge.
-        message: String,
-    },
-    /// The bridge did not acknowledge a command fast enough.
-    #[error("bridge acknowledgement for command {command_id} timed out after {timeout_ms} ms")]
-    AckTimeout {
-        /// Command identifier we waited on.
-        command_id: BridgeCommandId,
-        /// Timeout budget that was exceeded in milliseconds.
+    /// The server accepted RPCs, but no asynchronous event arrived.
+    #[error("timed out after {timeout_ms} ms waiting for server events at '{socket_path}'")]
+    EventStreamTimeout {
+        /// Socket path we connected to.
+        socket_path: String,
+        /// Timeout duration in milliseconds.
         timeout_ms: u64,
     },
-    /// Bridge responses arrived out of sequence.
-    #[error("bridge sequence mismatch: expected command {expected}, got {got}")]
-    SequenceMismatch {
-        /// Command identifier we expected.
-        expected: BridgeCommandId,
-        /// Command identifier we observed.
-        got: BridgeCommandId,
-    },
-    /// Bridge failed to emit an acknowledgement before responding.
-    #[error("bridge missing ACK for command {command_id}")]
-    AckMissing {
-        /// Command identifier lacking an acknowledgement.
-        command_id: BridgeCommandId,
+    /// Server RPC or event-stream operation failed.
+    #[error("server command failed: {message}")]
+    ServerFailure {
+        /// Human-readable error message from the server or MRPC client.
+        message: String,
     },
     /// Waiting for a binding to appear timed out.
     #[error("timed out after {timeout_ms} ms waiting for binding '{ident}'")]
@@ -105,43 +99,23 @@ pub enum DriverError {
         /// Timeout duration in milliseconds.
         timeout_ms: u64,
     },
-    /// Bridge IO error while sending/receiving commands.
-    #[error("bridge I/O error: {source}")]
-    Io {
-        /// Underlying IO error.
-        #[source]
-        source: io::Error,
-    },
-    /// Bridge produced additional messages after shutdown was acknowledged.
-    #[error("unexpected bridge message after shutdown: {message}")]
-    PostShutdownMessage {
-        /// Raw message payload observed.
-        message: String,
-    },
 }
 
-/// Validate invariants returned by the bridge handshake before running tests.
-pub(super) fn ensure_clean_handshake(handshake: &BridgeHandshake) -> DriverResult<()> {
-    if handshake.idle_timer.idle_timer_armed {
-        return Err(DriverError::BridgeFailure {
+/// Validate invariants returned by the server before running tests.
+pub(super) fn ensure_clean_handshake(handshake: &ServerHandshake) -> DriverResult<()> {
+    if handshake.status.idle_timer_armed {
+        return Err(DriverError::ServerFailure {
             message: format!(
                 "server idle timer armed during handshake (deadline_ms={:?})",
-                handshake.idle_timer.idle_deadline_ms
+                handshake.status.idle_deadline_ms
             ),
         });
     }
-    if handshake.idle_timer.clients_connected == 0 {
-        return Err(DriverError::BridgeFailure {
-            message: "server reported zero connected clients during handshake".to_string(),
-        });
-    }
-    if let Some(sample) = handshake.notifications.first() {
-        return Err(DriverError::BridgeFailure {
+    if handshake.status.clients_connected < 2 {
+        return Err(DriverError::ServerFailure {
             message: format!(
-                "bridge reported {} pending notifications, starting with '{}': {}",
-                handshake.notifications.len(),
-                sample.title,
-                sample.text
+                "server reported {} connected client(s); expected UI plus smoketest driver",
+                handshake.status.clients_connected
             ),
         });
     }
@@ -151,9 +125,10 @@ pub(super) fn ensure_clean_handshake(handshake: &BridgeHandshake) -> DriverResul
 /// Render a concise diagnostic string for initialization failures.
 pub(super) fn describe_init_error(err: &DriverError) -> String {
     match err {
-        DriverError::Connect { source, .. } => source.to_string(),
-        DriverError::BridgeFailure { message } => message.clone(),
-        DriverError::Io { source } => source.to_string(),
+        DriverError::Connect { message, .. }
+        | DriverError::Runtime { message }
+        | DriverError::ServerFailure { message } => message.clone(),
+        DriverError::EventStreamTimeout { .. } => err.to_string(),
         other => other.to_string(),
     }
 }
@@ -165,7 +140,60 @@ pub(super) fn canonicalize_ident(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-/// Returns true when the bridge error message indicates a missing key binding.
+/// Returns true when the server error message indicates a missing key binding.
 pub(super) fn message_contains_key_not_bound(msg: &str) -> bool {
     msg.contains("KeyNotBound")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(clients_connected: usize, idle_timer_armed: bool) -> ServerStatusLite {
+        ServerStatusLite {
+            idle_timeout_secs: 5,
+            idle_timer_armed,
+            idle_deadline_ms: None,
+            clients_connected,
+        }
+    }
+
+    #[test]
+    fn handshake_requires_ui_and_driver_clients() {
+        let handshake = ServerHandshake {
+            status: status(1, false),
+        };
+
+        let err = ensure_clean_handshake(&handshake).unwrap_err();
+
+        assert!(matches!(err, DriverError::ServerFailure { .. }));
+    }
+
+    #[test]
+    fn handshake_rejects_armed_idle_timer() {
+        let handshake = ServerHandshake {
+            status: status(2, true),
+        };
+
+        let err = ensure_clean_handshake(&handshake).unwrap_err();
+
+        assert!(matches!(err, DriverError::ServerFailure { .. }));
+    }
+
+    #[test]
+    fn handshake_accepts_active_ui_and_driver() {
+        let handshake = ServerHandshake {
+            status: status(2, false),
+        };
+
+        ensure_clean_handshake(&handshake).unwrap();
+    }
+
+    #[test]
+    fn missing_binding_detection_uses_rpc_code() {
+        assert!(message_contains_key_not_bound(
+            "inject_key request failed: service error KeyNotBound"
+        ));
+        assert!(!message_contains_key_not_bound("some other error"));
+    }
 }

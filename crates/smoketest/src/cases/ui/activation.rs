@@ -3,13 +3,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use tracing::debug;
 
 use super::ACTIVATION_IDENT;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive::{BridgeClient, BridgeEvent, DriverError},
+    server_drive::{DriverError, ServerDriver},
 };
 
 /// Result payload describing an activation attempt.
@@ -69,7 +70,7 @@ impl BindingWatcher {
     /// Attempt to activate the HUD and wait until the expected submenu bindings appear.
     pub(super) fn activate_until_ready(
         &self,
-        bridge: &mut BridgeClient,
+        driver: &mut ServerDriver,
         activation_ident: &str,
         expected_nested: &[&str],
         timeout_ms: u64,
@@ -82,7 +83,7 @@ impl BindingWatcher {
         let mut last_hud_event: Option<u64> = None;
 
         self.dispatch_activation(
-            bridge,
+            driver,
             activation_ident,
             deadline,
             timeout_ms,
@@ -92,11 +93,11 @@ impl BindingWatcher {
 
         while Instant::now() < deadline {
             let mut hud_ready_via_event = false;
-            match bridge.drain_bridge_events() {
+            match driver.drain_events() {
                 Ok(events) => {
                     for event in events {
                         match event.payload {
-                            BridgeEvent::Hud { ref hud, .. } => {
+                            MsgToUI::HudUpdate { ref hud, .. } => {
                                 let parent_title = hud.breadcrumbs.last();
                                 debug!(
                                     event_id = event.id,
@@ -113,7 +114,7 @@ impl BindingWatcher {
                                 metrics.record_hud_update();
                                 metrics.record_frontmost();
                                 last_hud_event = Some(event.id);
-                                if let Ok(Some(snapshot)) = bridge.latest_hud() {
+                                if let Ok(Some(snapshot)) = driver.latest_hud() {
                                     debug!(
                                         hud_event_id = snapshot.event_id,
                                         depth = snapshot.hud.depth,
@@ -128,9 +129,10 @@ impl BindingWatcher {
                                     hud_ready_via_event = true;
                                 }
                             }
-                            BridgeEvent::Focus { .. } => {
+                            MsgToUI::World(WorldStreamMsg::FocusChanged(_)) => {
                                 metrics.focus_event_seen = true;
                             }
+                            _ => {}
                         }
                     }
                 }
@@ -142,7 +144,7 @@ impl BindingWatcher {
                 return Ok(metrics.into_outcome());
             }
 
-            if self.hud_visible(bridge)? {
+            if self.hud_visible(driver)? {
                 metrics.record_hud_update();
                 metrics.record_frontmost();
 
@@ -152,7 +154,7 @@ impl BindingWatcher {
 
                 if let Some(remaining_ms) = remaining_ms(deadline) {
                     let nested_timeout = remaining_ms.min(config::BINDING_GATES.default_ms);
-                    match bridge.wait_for_idents(expected_nested, nested_timeout) {
+                    match driver.wait_for_idents(expected_nested, nested_timeout) {
                         Ok(()) => return Ok(metrics.into_outcome()),
                         Err(DriverError::BindingTimeout { .. }) => {
                             last_attempt = None;
@@ -166,7 +168,7 @@ impl BindingWatcher {
 
             if should_retry(last_attempt) {
                 self.dispatch_activation(
-                    bridge,
+                    driver,
                     ACTIVATION_IDENT,
                     deadline,
                     timeout_ms,
@@ -184,7 +186,7 @@ impl BindingWatcher {
     /// Attempt to inject the activation chord if enough time remains before the deadline.
     fn dispatch_activation(
         &self,
-        bridge: &mut BridgeClient,
+        driver: &mut ServerDriver,
         activation_ident: &str,
         deadline: Instant,
         total_timeout_ms: u64,
@@ -194,16 +196,16 @@ impl BindingWatcher {
         let remaining = remaining_ms(deadline).ok_or(Error::HudNotVisible {
             timeout_ms: total_timeout_ms,
         })?;
-        bridge.wait_for_idents(&[activation_ident], remaining)?;
-        bridge.inject_key(activation_ident)?;
+        driver.wait_for_idents(&[activation_ident], remaining)?;
+        driver.inject_key(activation_ident)?;
         metrics.record_activation();
         *last_attempt = Some(Instant::now());
         Ok(())
     }
 
     /// Check whether the HUD window is visible on the active space.
-    fn hud_visible(&self, bridge: &BridgeClient) -> Result<bool> {
-        Ok(bridge.latest_hud()?.is_some())
+    fn hud_visible(&self, driver: &ServerDriver) -> Result<bool> {
+        Ok(driver.latest_hud()?.is_some())
     }
 }
 

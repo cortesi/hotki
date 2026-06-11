@@ -134,6 +134,24 @@ pub struct Manager {
 }
 
 impl Manager {
+    /// Create a manager without starting the macOS event tap.
+    ///
+    /// Registrations are still tracked and can be resolved by higher layers,
+    /// but no physical keyboard events are observed. This is useful for
+    /// RPC-driven harnesses that inject events directly into the engine.
+    pub fn without_event_tap() -> Self {
+        let inner = Arc::new(ArcSwap::from_pointee(Inner::default()));
+        let write_lock = Arc::new(Mutex::new(()));
+        let (_tx, rx) = unbounded();
+        Self {
+            inner,
+            write_lock,
+            rx,
+            thread: None,
+            sys_ctrl: Arc::new(sys::SysControl::new()),
+        }
+    }
+
     /// Creates a new manager and initializes the system event tap.
     ///
     /// Returns an error if the event tap cannot be created. This call blocks
@@ -180,15 +198,7 @@ impl Manager {
     /// Test-only constructor: avoid starting the macOS event tap.
     #[cfg(test)]
     pub fn new_test() -> Result<Self> {
-        let inner = Arc::new(ArcSwap::from_pointee(Inner::default()));
-        let (_tx, rx) = unbounded();
-        Ok(Self {
-            inner,
-            write_lock: Arc::new(Mutex::new(())),
-            rx,
-            thread: None,
-            sys_ctrl: Arc::new(sys::SysControl::new()),
-        })
+        Ok(Self::without_event_tap())
     }
 
     /// Returns a receiver for all matched hotkey events.

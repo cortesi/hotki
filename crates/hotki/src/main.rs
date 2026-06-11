@@ -35,8 +35,6 @@ mod permissions;
 /// Background UI runtime glue (server connection + event loop).
 mod runtime;
 mod selector;
-/// UI-side smoketest bridge listener and queue.
-mod smoketest_bridge;
 mod tray;
 
 use config::{
@@ -81,6 +79,10 @@ struct Cli {
     /// Periodically dump a formatted world snapshot to logs (every ~5s)
     #[arg(long)]
     dumpworld: bool,
+
+    /// Disable the physical keyboard event tap for RPC-driven harnesses.
+    #[arg(long, hide = true)]
+    disable_event_tap: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -210,6 +212,10 @@ fn main() -> eframe::Result<()> {
             server = server.with_parent_pid(pid);
         }
 
+        if cli.disable_event_tap {
+            server = server.without_event_tap();
+        }
+
         if let Err(e) = server.run() {
             error!("Server exited with error: {}", e);
         }
@@ -254,6 +260,7 @@ fn main() -> eframe::Result<()> {
                     config_path: config_path.clone(),
                     initial_style: initial_style.clone(),
                     server_log_filter: Some(server_filter.clone()),
+                    server_event_tap_enabled: !cli.disable_event_tap,
                     dumpworld: cli.dumpworld,
                 },
             )))

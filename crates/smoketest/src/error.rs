@@ -57,23 +57,35 @@ pub fn print_hints(err: &Error) {
             match inner {
                 DriverError::Connect { socket_path, .. } => {
                     eprintln!(
-                        "      ensure the UI bridge listener is running at '{}'.",
+                        "      ensure the UI-owned server is listening at '{}'.",
                         socket_path
                     );
                     eprintln!(
-                        "      check permissions and rebuild the smoketest harness if needed."
+                        "      check Hotki permissions and rebuild the smoketest harness if needed."
                     );
                 }
                 DriverError::InitTimeout { socket_path, .. } => {
                     eprintln!(
-                        "      bridge connection did not initialize in time (socket: '{}').",
+                        "      server driver did not initialize in time (socket: '{}').",
                         socket_path
                     );
-                    eprintln!("      verify the backend launched and the socket path is correct.");
+                    eprintln!(
+                        "      verify the UI launched, connected to its server, and loaded config."
+                    );
+                    eprintln!(
+                        "      if startup logs report Accessibility=false, grant Accessibility to the launched Hotki binary."
+                    );
+                }
+                DriverError::EventStreamTimeout { socket_path, .. } => {
+                    eprintln!(
+                        "      server accepted RPCs but sent no events on '{}'.",
+                        socket_path
+                    );
+                    eprintln!("      verify the event forwarder and heartbeat tasks started.");
                 }
                 DriverError::NotInitialized => {
                     eprintln!(
-                        "      the driver was used before calling TestContext::ensure_rpc_ready()."
+                        "      the driver was used before HotkiSession finished initialization."
                     );
                 }
                 DriverError::BindingTimeout { ident, .. } => {
@@ -82,44 +94,14 @@ pub fn print_hints(err: &Error) {
                         ident
                     );
                 }
-                DriverError::AckTimeout {
-                    command_id,
-                    timeout_ms,
-                } => {
-                    eprintln!(
-                        "      bridge did not ACK command {command_id} within {timeout_ms} ms."
-                    );
-                    eprintln!("      check UI logs for stalled bridge tasks or deadlocks.");
+                DriverError::Runtime { message } => {
+                    eprintln!("      failed to create the local async runtime: {message}");
                 }
-                DriverError::SequenceMismatch { expected, got } => {
+                DriverError::ServerFailure { message } => {
                     eprintln!(
-                        "      bridge replies arrived out of order (expected {}, got {}).",
-                        expected, got
-                    );
-                    eprintln!(
-                        "      ensure only one harness is targeting the bridge socket at a time."
-                    );
-                }
-                DriverError::AckMissing { command_id } => {
-                    eprintln!(
-                        "      bridge never acknowledged command {}; see runtime logs for queue issues.",
-                        command_id
-                    );
-                }
-                DriverError::BridgeFailure { message } => {
-                    eprintln!(
-                        "      see logs above for bridge errors returned by hotki runtime: {}",
+                        "      see logs above for server errors returned by hotki runtime: {}",
                         message
                     );
-                }
-                DriverError::PostShutdownMessage { message } => {
-                    eprintln!("      bridge emitted unexpected data after shutdown: {message}");
-                    eprintln!(
-                        "      ensure pending events are drained before acknowledging shutdown."
-                    );
-                }
-                DriverError::Io { source } => {
-                    eprintln!("      IO error talking to the bridge: {source}");
                 }
             }
         }

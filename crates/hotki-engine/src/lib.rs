@@ -26,7 +26,7 @@
 //! Concurrency and Lock Ordering
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
 //!   inversions, follow this order when multiple guards are needed:
-//!   1) `config: RwLock<Option<DynamicConfig>>` (read guard), 2) `runtime: Mutex<RuntimeState>`,
+//!   1) `config: Mutex<Option<DynamicConfig>>`, 2) `runtime: Mutex<RuntimeState>`,
 //!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
 //!      guard across any call that can block or `await`.
 //! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
@@ -104,7 +104,7 @@ pub struct Engine {
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
     /// Configuration
-    config: Arc<tokio::sync::RwLock<Option<dyn_engine::DynamicConfig>>>,
+    config: Arc<tokio::sync::Mutex<Option<dyn_engine::DynamicConfig>>>,
     /// Optional path used for `action.reload_config`.
     config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
     /// Cached focus snapshot from World events.
@@ -165,7 +165,7 @@ impl Engine {
         let notifier = NotificationDispatcher::new(event_tx.clone());
         let selector_notify = Arc::new(tokio::sync::Notify::new());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
-        let config_arc = Arc::new(tokio::sync::RwLock::new(None));
+        let config_arc = Arc::new(tokio::sync::Mutex::new(None));
 
         let eng = Self {
             runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::empty())),
@@ -195,7 +195,7 @@ impl Engine {
 
         // LOCK ORDER: config (write) must be released before rebind_current_context.
         {
-            let mut g = self.config.write().await;
+            let mut g = self.config.lock().await;
             *g = Some(dyn_cfg);
         }
         {
@@ -214,7 +214,7 @@ impl Engine {
 
     /// Set the active theme by name and re-render the stack.
     pub async fn set_theme(&self, name: &str) -> Result<()> {
-        let cfg_guard = self.config.read().await;
+        let cfg_guard = self.config.lock().await;
         let Some(cfg) = cfg_guard.as_ref() else {
             return Err(Error::Msg("No config loaded; cannot set theme".to_string()));
         };

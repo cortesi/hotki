@@ -20,5 +20,4 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
 tracing.workspace = true
-mlua = { version = "0.11.6", features = ["luau", "serialize", "vendored", "send"] }
-luau-analyze = { path = "../../../luau-analyze/crates/luau-analyze" }
+oxau = { version = "0.1.0", path = "../../../../private/oxau/crates/oxau", default-features = false, features = ["check", "serde"] }

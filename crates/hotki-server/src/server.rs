@@ -130,6 +130,7 @@ pub struct Server {
     socket_path: String,
     idle_timeout_secs: u64,
     parent_pid: Option<libc::pid_t>,
+    event_tap_enabled: bool,
 }
 
 impl Default for Server {
@@ -145,6 +146,7 @@ impl Server {
             socket_path: default_socket_path().to_string(),
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             parent_pid: None,
+            event_tap_enabled: true,
         }
     }
 
@@ -163,6 +165,12 @@ impl Server {
     /// Watch the given parent PID and shut down when it exits.
     pub fn with_parent_pid(mut self, pid: libc::pid_t) -> Self {
         self.parent_pid = Some(pid);
+        self
+    }
+
+    /// Run without observing physical keyboard events.
+    pub fn without_event_tap(mut self) -> Self {
+        self.event_tap_enabled = false;
         self
     }
 
@@ -193,9 +201,11 @@ impl Server {
 
         // Create the mac_hotkey manager
         debug!("Creating mac_hotkey::Manager");
-        let manager = mac_hotkey::Manager::new().map_err(|e| {
-            Error::HotkeyOperation(format!("Failed to create mac_hotkey::Manager: {e}"))
-        })?;
+        let manager = if self.event_tap_enabled {
+            mac_hotkey::Manager::new().map_err(Error::from)?
+        } else {
+            mac_hotkey::Manager::without_event_tap()
+        };
         debug!("mac_hotkey::Manager created successfully");
 
         // Create shutdown coordination

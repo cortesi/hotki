@@ -81,8 +81,8 @@ impl HotkeyNotification {
 
 /// Lightweight server status snapshot surfaced for smoketest diagnostics.
 ///
-/// Field names use `#[serde(rename)]` to emit shorter keys for bridge protocol
-/// compatibility while keeping descriptive Rust identifiers.
+/// Field names use `#[serde(rename)]` to emit compact diagnostics while keeping
+/// descriptive Rust identifiers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerStatusLite {
     /// Idle timeout configured on the server, in seconds.

@@ -4,17 +4,27 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-use luau_analyze::{CheckOptions, Checker};
+use oxau::{
+    compile::{self, CompileError, CompileOptions},
+    diagnostic::{DiagnosticLocation, DiagnosticSeverity, TypeDiagnostic},
+    embed::{
+        ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue, MultiValue, NativeModule,
+        RuntimeError, Scope, ScopedHostFunction,
+    },
+    profile::Profile,
+    source::AnalysisMode,
+    surface::SurfaceSpec,
+    types::CheckerConfig,
+};
 use regex::Regex;
 
 use crate::{Error, error::excerpt_at, luau_api, script::load_dynamic_config_from_string, themes};
-
-/// Timeout applied to one analyzer check invocation.
-const ANALYZE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Summary of a successful Luau validation run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -89,7 +99,7 @@ impl ImportRole {
             Self::Mode => "ModeModule",
             Self::Items => "ItemsProvider<any>",
             Self::Handler => "HandlerModule",
-            Self::Style => "StyleModule",
+            Self::Style => "any",
         };
         format!("local _module = (function(): {target}\n{module_source}\nend)()\n")
     }
@@ -157,7 +167,7 @@ pub fn check_luau_theme_dir(dir: &Path) -> Result<usize, Error> {
             path: Some(path.clone()),
             message: err.to_string(),
         })?;
-        analyze_module(path, &ImportRole::Style.analysis_source(&source))?;
+        check_module(path, &ImportRole::Style.analysis_source(&source))?;
         count += 1;
     }
 
@@ -301,7 +311,7 @@ fn validate_imports(imports: &BTreeSet<ImportSpec>, root_dir: &Path) -> Result<(
 
 /// Analyze the root config source against the checked-in Luau API definitions.
 fn analyze_root_config(path: &Path, source: &str) -> Result<(), Error> {
-    analyze_module(path, source)
+    check_module(path, source)
 }
 
 /// Analyze each imported module against its declared role alias.
@@ -311,7 +321,7 @@ fn analyze_imports(imports: &BTreeSet<ImportSpec>) -> Result<(), Error> {
             path: Some(import.path.clone()),
             message: err.to_string(),
         })?;
-        analyze_module(&import.path, &import.role.analysis_source(&source))?;
+        check_module(&import.path, &import.role.analysis_source(&source))?;
     }
     Ok(())
 }
@@ -393,91 +403,230 @@ fn line_col_at(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// Create a fresh Luau analyzer with the checked-in Hotki API definitions loaded.
-fn new_checker() -> Result<Checker, Error> {
-    let mut checker = Checker::new().map_err(|err| Error::Validation {
-        path: None,
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    })?;
-    checker
-        .add_definitions(luau_api())
+/// Build the static Hotki script surface used by the oxau checker.
+fn checker_surface() -> Result<SurfaceSpec, Error> {
+    SurfaceSpec::builder(Profile::full().with_runtime_compilation())
+        .module(Arc::new(StaticHotkiApiModule))
+        .build()
         .map_err(|err| Error::Validation {
             path: None,
             line: None,
             col: None,
             message: err.to_string(),
             excerpt: None,
-        })?;
-    Ok(checker)
+        })
 }
 
-/// Run the analyzer on one source module and convert diagnostics into `config::Error`.
-fn analyze_module(path: &Path, source: &str) -> Result<(), Error> {
-    let mut checker = new_checker()?;
-    let module_name = path.to_string_lossy();
-    let result = checker
-        .check_with_options(
-            source,
-            CheckOptions {
-                timeout: Some(ANALYZE_TIMEOUT),
-                module_name: Some(module_name.as_ref()),
-                cancellation_token: None,
-                virtual_modules: &[],
-            },
-        )
-        .map_err(|e| Error::Validation {
-            path: Some(path.to_path_buf()),
-            line: None,
-            col: None,
-            message: format!("Luau analysis error: {}", e),
-            excerpt: None,
-        })?;
+/// API type aliases prepended to checked user modules so generic aliases are user-visible.
+fn checker_type_prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| {
+        luau_api()
+            .split_once("\ndeclare hotki:")
+            .map_or_else(|| luau_api().trim_end(), |(types, _)| types.trim_end())
+            .to_string()
+    })
+}
 
-    if result.timed_out {
-        return Err(Error::Validation {
-            path: Some(path.to_path_buf()),
-            line: None,
-            col: None,
-            message: "Luau analysis timed out".to_string(),
-            excerpt: None,
-        });
+/// Run oxau's checker and bytecode compiler on one source module.
+fn check_module(path: &Path, source: &str) -> Result<(), Error> {
+    let surface = checker_surface()?;
+    let mut checker = surface.new_checker();
+    let prelude = checker_type_prelude();
+    let checked_source = format!("{prelude}\n{source}");
+    let line_offset = prelude.lines().count();
+    let checked = checker.check_source_bytes_with_config(
+        checked_source.as_bytes(),
+        CheckerConfig {
+            default_mode: AnalysisMode::Nonstrict,
+            source_mode_override: Some(AnalysisMode::Nonstrict),
+            ..CheckerConfig::default()
+        },
+    );
+    let errors = checked
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        return Err(diagnostics_to_config(path, source, &errors, line_offset));
     }
 
-    let errors = result.errors();
-    let Some(first) = errors.first() else {
-        return Ok(());
-    };
-    let line = usize::try_from(first.line).unwrap_or(0) + 1;
-    let col = usize::try_from(first.col).unwrap_or(0) + 1;
-    let message = result
-        .diagnostics
+    compile::compile_for(
+        surface.profile(),
+        source.as_bytes(),
+        &CompileOptions::for_vm_execution(),
+    )
+    .map(|_| ())
+    .map_err(|err| compile_error_to_config(path, source, &err))
+}
+
+/// Convert structured checker diagnostics into the stable config error shape.
+fn diagnostics_to_config(
+    path: &Path,
+    source: &str,
+    diagnostics: &[TypeDiagnostic],
+    line_offset: usize,
+) -> Error {
+    let (line, col, excerpt) = diagnostics
+        .first()
+        .and_then(|diagnostic| source_position(diagnostic.primary_location, line_offset))
+        .map(|(line, col)| (Some(line), Some(col), Some(excerpt_at(source, line, col))))
+        .unwrap_or((None, None, None));
+    Error::Validation {
+        path: Some(path.to_path_buf()),
+        line,
+        col,
+        message: render_diagnostics(path, diagnostics, line_offset),
+        excerpt,
+    }
+}
+
+/// Render checker diagnostics using user-source line numbers instead of prelude offsets.
+fn render_diagnostics(path: &Path, diagnostics: &[TypeDiagnostic], line_offset: usize) -> String {
+    diagnostics
         .iter()
-        .map(|diag| {
-            let severity = match diag.severity {
-                luau_analyze::Severity::Error => "error",
-                luau_analyze::Severity::Warning => "warning",
-            };
+        .map(|diagnostic| {
+            let site = source_position(diagnostic.primary_location, line_offset).map_or_else(
+                || format!("{}:?:?", path.display()),
+                |(line, col)| format!("{}:{}:{}", path.display(), line, col),
+            );
             format!(
-                "{}:{}:{}: {}: {}",
-                path.display(),
-                diag.line + 1,
-                diag.col + 1,
-                severity,
-                diag.message
+                "{} {}: {}",
+                site,
+                diagnostic.category,
+                diagnostic
+                    .context
+                    .as_deref()
+                    .unwrap_or("type checker diagnostic")
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    Err(Error::Validation {
+        .join("; ")
+}
+
+/// Convert a checker source location into 1-based line and column coordinates.
+fn source_position(location: DiagnosticLocation, line_offset: usize) -> Option<(usize, usize)> {
+    if location == DiagnosticLocation::missing() {
+        None
+    } else {
+        let line = location.begin.line as usize + 1;
+        (line > line_offset).then_some((line - line_offset, location.begin.column as usize + 1))
+    }
+}
+
+/// Convert a structured oxau compile error into a config error.
+fn compile_error_to_config(path: &Path, source: &str, err: &CompileError) -> Error {
+    let Some(location) = err.location() else {
+        return Error::Validation {
+            path: Some(path.to_path_buf()),
+            line: None,
+            col: None,
+            message: err.message().to_string(),
+            excerpt: None,
+        };
+    };
+
+    let line = location.begin.line as usize + 1;
+    let col = location.begin.column as usize + 1;
+    Error::Parse {
         path: Some(path.to_path_buf()),
-        line: Some(line),
-        col: Some(col),
-        message,
-        excerpt: Some(excerpt_at(source, line, col)),
-    })
+        line,
+        col,
+        message: err.message().to_string(),
+        excerpt: excerpt_at(source, line, col),
+    }
+}
+
+/// Checker-only native module that declares and audits the full Hotki host API surface.
+struct StaticHotkiApiModule;
+
+impl NativeModule for StaticHotkiApiModule {
+    fn name(&self) -> &str {
+        "hotki"
+    }
+
+    fn declaration(&self) -> &str {
+        luau_api()
+    }
+
+    fn build(&self, builder: &mut dyn ModuleBuilder) {
+        install_hotki_api_shape(builder);
+        install_action_api_shape(builder);
+        install_themes_api_shape(builder);
+    }
+}
+
+/// Install the `hotki` library bindings for checker surface auditing.
+fn install_hotki_api_shape(builder: &mut dyn ModuleBuilder) {
+    let binding = ModuleBinding::library("hotki");
+    for name in [
+        "root",
+        "applications",
+        "import_mode",
+        "import_items",
+        "import_handler",
+        "import_style",
+    ] {
+        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
+    }
+}
+
+/// Install the `action` library bindings for checker surface auditing.
+fn install_action_api_shape(builder: &mut dyn ModuleBuilder) {
+    let binding = ModuleBinding::library("action");
+    for name in [
+        "pop",
+        "exit",
+        "show_root",
+        "hide_hud",
+        "reload_config",
+        "clear_notifications",
+        "theme_next",
+        "theme_prev",
+    ] {
+        builder.constant(
+            name,
+            binding.clone(),
+            ModuleValue::LightUserdata { handle: 0, tag: 0 },
+        );
+    }
+    for name in [
+        "shell",
+        "open",
+        "relay",
+        "show_details",
+        "theme_set",
+        "set_volume",
+        "change_volume",
+        "mute",
+        "run",
+        "selector",
+    ] {
+        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
+    }
+}
+
+/// Install the `themes` library bindings for checker surface auditing.
+fn install_themes_api_shape(builder: &mut dyn ModuleBuilder) {
+    let binding = ModuleBinding::library("themes");
+    for name in ["use", "current", "list", "get", "register", "remove"] {
+        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
+    }
+}
+
+/// Function placeholder used only for native-module shape auditing.
+struct StaticHostFunction;
+
+impl ScopedHostFunction for StaticHostFunction {
+    fn call<'s>(
+        &self,
+        _scope: &Scope<'s>,
+        _args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        Err(RuntimeError::runtime("checker-only Hotki API surface"))
+    }
 }
 
 #[cfg(test)]

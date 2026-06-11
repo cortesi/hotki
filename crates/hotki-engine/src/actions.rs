@@ -177,7 +177,7 @@ impl Engine {
 
     async fn cycle_theme(&self, identifier: &str, next: bool) -> Result<DispatchOutcome> {
         self.key_tracker.set_repeat_allowed(identifier, false);
-        let cfg_guard = self.config.read().await;
+        let cfg_guard = self.config.lock().await;
         let Some(cfg) = cfg_guard.as_ref() else {
             return Ok(DispatchOutcome::default());
         };
@@ -192,7 +192,7 @@ impl Engine {
 
     async fn set_theme_by_name(&self, identifier: &str, name: &str) -> Result<DispatchOutcome> {
         self.key_tracker.set_repeat_allowed(identifier, false);
-        let cfg_guard = self.config.read().await;
+        let cfg_guard = self.config.lock().await;
         let exists = cfg_guard.as_ref().is_some_and(|cfg| cfg.theme_exists(name));
         drop(cfg_guard);
 
@@ -295,7 +295,7 @@ impl Engine {
         };
 
         {
-            let mut g = self.config.write().await;
+            let mut g = self.config.lock().await;
             *g = Some(dyn_cfg);
         }
         {

@@ -1,16 +1,19 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
-use mlua::Lua;
+use oxau::session::{Limits, LoadedModule, Vm};
 
 use super::{ModeRef, util::lock_unpoisoned};
 use crate::{Style, raw, style};
+
+/// Gas budget for each dynamic config entrypoint.
+pub const SCRIPT_GAS_LIMIT: u64 = 4_000_000;
+
+/// Heap budget for the retained dynamic config VM.
+pub const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Shared loaded sources used for error excerpts.
 pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
@@ -23,14 +26,14 @@ pub struct DynamicConfig {
     pub(crate) themes: HashMap<String, raw::RawStyle>,
     /// Active theme selected while loading the config.
     pub(crate) active_theme: String,
-    /// Backing Lua state used for later renders and handler execution.
-    pub(crate) lua: Lua,
+    /// Retained oxau VM used for later renders and handler execution.
+    pub(crate) vm: Vm,
+    /// Loaded root module retained for the VM lifetime.
+    pub(crate) _root_module: LoadedModule,
     /// Optional origin path for the loaded config.
     pub(crate) path: Option<PathBuf>,
     /// Cached source text for excerpts and diagnostics.
     pub(crate) sources: SourceMap,
-    /// Shared execution-step counter backing the Luau interrupt hook.
-    pub(crate) interrupt_steps: Arc<AtomicU64>,
 }
 
 impl DynamicConfig {
@@ -72,8 +75,8 @@ impl DynamicConfig {
         lock_unpoisoned(&self.sources).get(path).cloned()
     }
 
-    /// Reset the Luau execution budget before entering a fresh runtime callback.
-    pub(crate) fn reset_execution_budget(&self) {
-        self.interrupt_steps.store(0, Ordering::Relaxed);
+    /// Return the per-entrypoint execution limits.
+    pub(crate) fn entry_limits() -> Limits {
+        Limits::production(SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT)
     }
 }

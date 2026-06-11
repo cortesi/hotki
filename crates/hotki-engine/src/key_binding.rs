@@ -169,6 +169,12 @@ impl KeyBindingManager {
         self.bindings.get(ident).map(|binding| binding.id)
     }
 
+    pub(crate) fn chord_for_ident(&self, ident: &str) -> Option<Chord> {
+        self.bindings
+            .get(ident)
+            .map(|binding| binding.chord.clone())
+    }
+
     fn bindings_match(&self, desired: &HashMap<String, Chord>) -> bool {
         self.bindings.len() == desired.len()
             && desired.iter().all(|(ident, chord)| {

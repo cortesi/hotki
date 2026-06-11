@@ -4,6 +4,7 @@ use std::{
 };
 
 use config::script::engine as dyn_engine;
+use mac_keycode::Chord;
 use tracing::{trace, warn};
 
 use crate::{DispatchOutcome, Engine, Result, selector_controller::SelectorController};
@@ -26,7 +27,7 @@ impl Engine {
             identifier, focus.app, focus.title
         );
 
-        if self.config.read().await.is_none() {
+        if self.config.lock().await.is_none() {
             trace!("No dynamic config loaded; ignoring key");
             return Ok(());
         }
@@ -108,8 +109,8 @@ impl Engine {
             }
             dyn_engine::BindingKind::Handler(handler) => {
                 let result = {
-                    let cfg_guard = self.config.read().await;
-                    let Some(cfg) = cfg_guard.as_ref() else {
+                    let mut cfg_guard = self.config.lock().await;
+                    let Some(cfg) = cfg_guard.as_mut() else {
                         trace!("No dynamic config loaded; ignoring handler");
                         return Ok(None);
                     };
@@ -130,8 +131,8 @@ impl Engine {
             dyn_engine::BindingKind::Selector(sel_cfg) => {
                 stay = true;
                 let items = {
-                    let cfg_guard = self.config.read().await;
-                    let Some(cfg) = cfg_guard.as_ref() else {
+                    let mut cfg_guard = self.config.lock().await;
+                    let Some(cfg) = cfg_guard.as_mut() else {
                         trace!("No dynamic config loaded; ignoring selector");
                         return Ok(None);
                     };
@@ -197,6 +198,31 @@ impl Engine {
             }
         };
 
+        self.dispatch_resolved(ident, chord, kind, repeat).await
+    }
+
+    /// Dispatch a hotkey event by identifier, returning false when the binding is absent.
+    pub async fn dispatch_ident(
+        &self,
+        ident: &str,
+        kind: mac_hotkey::EventKind,
+        repeat: bool,
+    ) -> Result<bool> {
+        let Some(chord) = self.binding_manager.lock().await.chord_for_ident(ident) else {
+            return Ok(false);
+        };
+        self.dispatch_resolved(ident.to_string(), chord, kind, repeat)
+            .await?;
+        Ok(true)
+    }
+
+    async fn dispatch_resolved(
+        &self,
+        ident: String,
+        chord: Chord,
+        kind: mac_hotkey::EventKind,
+        repeat: bool,
+    ) -> Result<()> {
         trace!("Key event: {} {:?} (repeat: {})", ident, kind, repeat);
 
         match kind {
