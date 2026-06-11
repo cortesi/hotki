@@ -44,21 +44,44 @@ impl LogEntry {
     }
 }
 
+#[derive(Debug, Clone)]
+/// Snapshot of log entries paired with the buffer generation that produced it.
+pub struct LogSnapshot {
+    /// Monotonic generation for detecting unchanged buffers.
+    pub generation: u64,
+    /// Current log entries.
+    pub entries: Vec<LogEntry>,
+}
+
+/// Mutable log buffer state protected by one lock.
+struct LogBuffer {
+    /// Monotonic generation for detecting unchanged buffers.
+    generation: u64,
+    /// Recent log entries.
+    entries: VecDeque<LogEntry>,
+}
+
 /// Global buffer for recent log entries.
-static LOGS: OnceLock<Mutex<VecDeque<LogEntry>>> = OnceLock::new();
+static LOGS: OnceLock<Mutex<LogBuffer>> = OnceLock::new();
 
 /// Access the global buffer, initializing it on first use.
-fn buffer() -> &'static Mutex<VecDeque<LogEntry>> {
-    LOGS.get_or_init(|| Mutex::new(VecDeque::with_capacity(2048)))
+fn buffer() -> &'static Mutex<LogBuffer> {
+    LOGS.get_or_init(|| {
+        Mutex::new(LogBuffer {
+            generation: 0,
+            entries: VecDeque::with_capacity(2048),
+        })
+    })
 }
 
 /// Push a new entry into the buffer, evicting from the front if oversized.
 pub fn push(entry: LogEntry) {
     let mut buf = buffer().lock();
-    if buf.len() > 5000 {
-        buf.pop_front();
+    if buf.entries.len() > 5000 {
+        buf.entries.pop_front();
     }
-    buf.push_back(entry);
+    buf.entries.push_back(entry);
+    buf.generation = buf.generation.saturating_add(1);
 }
 
 /// Helper to push a server-side entry.
@@ -81,14 +104,30 @@ pub fn push_client_notification(kind: NotifyKind, title: &str, text: &str) {
     });
 }
 
-/// Snapshot the current buffer contents.
-pub fn snapshot() -> Vec<LogEntry> {
-    buffer().lock().iter().cloned().collect()
+/// Snapshot the current buffer contents and generation.
+#[cfg(test)]
+fn snapshot_with_generation() -> LogSnapshot {
+    let buf = buffer().lock();
+    LogSnapshot {
+        generation: buf.generation,
+        entries: buf.entries.iter().cloned().collect(),
+    }
+}
+
+/// Snapshot the buffer only when it changed after `generation`.
+pub fn snapshot_after(generation: u64) -> Option<LogSnapshot> {
+    let buf = buffer().lock();
+    (buf.generation != generation).then(|| LogSnapshot {
+        generation: buf.generation,
+        entries: buf.entries.iter().cloned().collect(),
+    })
 }
 
 /// Clear the buffer.
 pub fn clear() {
-    buffer().lock().clear();
+    let mut buf = buffer().lock();
+    buf.entries.clear();
+    buf.generation = buf.generation.saturating_add(1);
 }
 
 /// Tracing layer that records client-side logs into the buffer.
@@ -132,7 +171,7 @@ fn notification_message(kind: NotifyKind, title: &str, text: &str) -> String {
 mod test {
     use hotki_protocol::NotifyKind;
 
-    use super::{clear, push_client_notification, snapshot};
+    use super::{clear, push_client_notification, snapshot_after, snapshot_with_generation};
 
     #[test]
     fn client_notifications_map_kind_to_log_level() {
@@ -141,11 +180,25 @@ mod test {
         push_client_notification(NotifyKind::Warn, "Config", "Duplicate chord");
         push_client_notification(NotifyKind::Error, "Config", "Reload failed");
 
-        let logs = snapshot();
+        let logs = snapshot_after(u64::MAX).expect("changed snapshot").entries;
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].level, "WARN");
         assert_eq!(logs[1].level, "ERROR");
         assert!(logs[0].message.contains("Duplicate chord"));
         assert!(logs[1].message.contains("Reload failed"));
+    }
+
+    #[test]
+    fn snapshot_after_only_clones_when_generation_changes() {
+        clear();
+        let empty = snapshot_with_generation();
+        assert!(snapshot_after(empty.generation).is_none());
+
+        push_client_notification(NotifyKind::Info, "Config", "Reloaded");
+        let changed = snapshot_after(empty.generation).expect("changed snapshot");
+
+        assert_eq!(changed.entries.len(), 1);
+        assert!(changed.generation > empty.generation);
+        assert!(snapshot_after(changed.generation).is_none());
     }
 }

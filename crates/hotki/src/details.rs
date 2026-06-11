@@ -9,8 +9,8 @@ use hotki_protocol::{NotifyKind, NotifyTheme};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    display::DisplayMetrics,
-    logs::{self, Side},
+    display::{DisplayMetrics, WindowGeometry},
+    logs::{self, LogEntry, Side},
     notification::BacklogEntry,
     nswindow,
     overlay::OverlayWindow,
@@ -45,6 +45,16 @@ enum Tab {
     Logs,
 }
 
+/// Data needed to render the details Config tab.
+struct ConfigTabModel<'a> {
+    /// Display text for the active config path.
+    path_text: String,
+    /// Optional inline read error.
+    error: Option<&'a str>,
+    /// Current config contents.
+    contents: &'a str,
+}
+
 /// State and rendering for the Details window.
 pub struct Details {
     /// Whether the window is currently visible.
@@ -60,7 +70,7 @@ pub struct Details {
     /// Request focus on next frame.
     want_focus: bool,
     /// Last known geometry for this session.
-    last_saved: Option<WindowGeom>,
+    last_saved: Option<WindowGeometry>,
     /// Currently active tab.
     active_tab: Tab,
     /// Current notification theme for colors.
@@ -73,6 +83,10 @@ pub struct Details {
     config_error: Option<String>,
     /// Control channel to background runtime.
     tx_ctrl: Option<UnboundedSender<ControlMsg>>,
+    /// Generation for the cached log rows.
+    log_generation: u64,
+    /// Cached log rows for the Logs tab.
+    log_rows: Vec<LogEntry>,
 }
 
 impl Details {
@@ -92,6 +106,8 @@ impl Details {
             config_contents: String::new(),
             config_error: None,
             tx_ctrl: None,
+            log_generation: u64::MAX,
+            log_rows: Vec::new(),
         }
     }
 
@@ -130,50 +146,24 @@ impl Details {
     }
 
     /// Query the current Details window geometry converted to a top-left origin.
-    fn current_geom_top_left(&self) -> Option<WindowGeom> {
+    fn current_geom_top_left(&self) -> Option<WindowGeometry> {
         // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
         let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
-        let x_t = x_b;
-        let y_t = self.viewport.display().to_top_left_y(y_b, h);
-        Some(WindowGeom {
-            pos: (x_t, y_t),
-            size: (w, h),
-        })
+        Some(WindowGeometry::from_bottom_left_frame(
+            self.viewport.display().active_bounds(),
+            x_b,
+            y_b,
+            w,
+            h,
+        ))
     }
 
     /// Clamp a window geometry to the current active screen's visible frame.
-    fn clamp_to_active_frame(&self, g: WindowGeom) -> WindowGeom {
-        let frame = self.viewport.display().active_frame();
-        let sx_b = frame.x;
-        let _sy_b = frame.y;
-        let sw = frame.width;
-        let sh = frame.height;
-
-        // Convert active screen rect to top-left origin
-        let screen_left = sx_b;
-        let screen_right = sx_b + sw;
-        let screen_top_tl = self.viewport.display().active_frame_top_left_y();
-        let screen_bottom_tl = screen_top_tl + sh;
-
-        // Ensure minimally positive size and at most screen size
-        let min_w = 100.0_f32;
-        let min_h = 80.0_f32;
-        let clamped_w = g.size.0.max(min_w).min(sw);
-        let clamped_h = g.size.1.max(min_h).min(sh);
-
-        // Compute clamped position ranges; collapse if window is larger than screen
-        let x_min = screen_left;
-        let x_max = (screen_right - clamped_w).max(x_min);
-        let y_min = screen_top_tl;
-        let y_max = (screen_bottom_tl - clamped_h).max(y_min);
-
-        let x = g.pos.0.clamp(x_min, x_max);
-        let y = g.pos.1.clamp(y_min, y_max);
-
-        WindowGeom {
-            pos: (x, y),
-            size: (clamped_w, clamped_h),
-        }
+    fn clamp_to_active_frame(&self, geometry: WindowGeometry) -> WindowGeometry {
+        self.viewport
+            .display()
+            .active_bounds()
+            .clamp_geometry(geometry, vec2(100.0, 80.0))
     }
 
     /// Set the config file path shown in the Config tab and load.
@@ -218,6 +208,19 @@ impl Details {
         self.tx_ctrl = Some(tx);
     }
 
+    /// Build the display model for the Config tab.
+    fn config_tab_model(&self) -> ConfigTabModel<'_> {
+        ConfigTabModel {
+            path_text: self
+                .config_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "No config file loaded".to_string()),
+            error: self.config_error.as_deref(),
+            contents: &self.config_contents,
+        }
+    }
+
     /// Render the window and its active tab.
     pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry]) {
         if !self.visible {
@@ -257,11 +260,11 @@ impl Details {
                     let clamped = self.clamp_to_active_frame(stored);
                     wctx.send_viewport_cmd_to(
                         self.viewport.id(),
-                        ViewportCommand::InnerSize(vec2(clamped.size.0, clamped.size.1)),
+                        ViewportCommand::InnerSize(clamped.size),
                     );
                     wctx.send_viewport_cmd_to(
                         self.viewport.id(),
-                        ViewportCommand::OuterPosition(egui::pos2(clamped.pos.0, clamped.pos.1)),
+                        ViewportCommand::OuterPosition(clamped.pos),
                     );
                 }
                 self.restore_pending = false;
@@ -296,44 +299,12 @@ impl Details {
                             self.render_notifications(ui, backlog);
                         }
                         Tab::Config => {
-                            ui.vertical(|ui| {
-                                // Show config file path
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Config File:").strong());
-                                    let path_text = self
-                                        .config_path
-                                        .as_ref()
-                                        .map(|p| p.display().to_string())
-                                        .unwrap_or_else(|| "No config file loaded".to_string());
-                                    ui.label(path_text);
-                                });
-
-                                ui.add_space(10.0);
-
-                                if let Some(ref err) = self.config_error {
-                                    ui.colored_label(Color32::from_rgb(220, 50, 47), err);
-                                    ui.add_space(10.0);
-                                }
-
-                                // Reload button
-                                if ui.button("Reload Config").clicked() {
-                                    self.send_reload();
-                                    self.reload_config_contents();
-                                }
-
-                                ui.add_space(10.0);
-                                ui.separator();
-                                ui.add_space(10.0);
-
-                                // Show config contents in a scrollable area
-                                ui.label(RichText::new("Contents:").strong());
-                                ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                                    // Use monospace font for config display
-                                    ui.style_mut().override_font_id =
-                                        Some(egui::FontId::monospace(12.0));
-                                    ui.label(&self.config_contents);
-                                });
-                            });
+                            let reload_clicked =
+                                Self::render_config_tab(ui, &self.config_tab_model());
+                            if reload_clicked {
+                                self.send_reload();
+                                self.reload_config_contents();
+                            }
                         }
                         Tab::About => {
                             ui.vertical_centered(|ui| {
@@ -380,16 +351,10 @@ impl Details {
             });
             // Track geometry in-memory if it changed (no file persistence)
             if let Some(cur) = self.current_geom_top_left()
-                && self
-                    .last_saved
-                    .map(|g| g.pos != cur.pos || g.size != cur.size)
-                    .unwrap_or(true)
+                && self.last_saved.map(|g| g != cur).unwrap_or(true)
             {
                 self.last_saved = Some(cur);
-                self.viewport.record_geometry(
-                    egui::pos2(cur.pos.0, cur.pos.1),
-                    vec2(cur.size.0, cur.size.1),
-                );
+                self.viewport.record_geometry(cur.pos, cur.size);
             }
         });
     }
@@ -477,11 +442,49 @@ impl Details {
             });
     }
 
+    /// Render the Config tab and return whether reload was requested.
+    fn render_config_tab(ui: &mut egui::Ui, model: &ConfigTabModel<'_>) -> bool {
+        let mut reload_clicked = false;
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Config File:").strong());
+                ui.label(&model.path_text);
+            });
+
+            ui.add_space(10.0);
+
+            if let Some(err) = model.error {
+                ui.colored_label(Color32::from_rgb(220, 50, 47), err);
+                ui.add_space(10.0);
+            }
+
+            reload_clicked = ui.button("Reload Config").clicked();
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            ui.label(RichText::new("Contents:").strong());
+            ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
+                ui.label(model.contents);
+            });
+        });
+        reload_clicked
+    }
+
     /// Render the in-app logs viewer.
-    fn render_logs(&self, ui: &mut egui::Ui) {
+    fn render_logs(&mut self, ui: &mut egui::Ui) {
+        if let Some(snapshot) = logs::snapshot_after(self.log_generation) {
+            self.log_generation = snapshot.generation;
+            self.log_rows = snapshot.entries;
+        }
+
         ui.vertical(|ui| {
             if ui.button("Clear").clicked() {
                 logs::clear();
+                self.log_generation = u64::MAX;
+                self.log_rows.clear();
             }
             ui.add_space(8.0);
             ui.separator();
@@ -491,7 +494,7 @@ impl Details {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                    for ent in logs::snapshot() {
+                    for ent in &self.log_rows {
                         let prefix = if matches!(ent.side, Side::Client) {
                             "client"
                         } else {
@@ -524,11 +527,45 @@ fn kind_label(kind: NotifyKind) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-/// Simple window geometry snapshot (top-left origin).
-pub struct WindowGeom {
-    /// Top-left window position `(x, y)` in screen coordinates.
-    pub pos: (f32, f32),
-    /// Inner size `(w, h)` in logical pixels.
-    pub size: (f32, f32),
+#[cfg(test)]
+mod tests {
+    use egui::{pos2, vec2};
+    use hotki_protocol::{DisplayFrame, DisplaysSnapshot, NotifyTheme};
+
+    use super::Details;
+    use crate::display::{DisplayMetrics, WindowGeometry};
+
+    #[test]
+    fn clamp_to_active_frame_uses_shared_top_left_geometry() {
+        let mut details = Details::new(NotifyTheme::default());
+        details.set_display_metrics(DisplayMetrics::from_snapshot(&DisplaysSnapshot {
+            global_top: 900.0,
+            active: Some(DisplayFrame {
+                id: 1,
+                x: 50.0,
+                y: 100.0,
+                width: 500.0,
+                height: 300.0,
+            }),
+            displays: Vec::new(),
+        }));
+
+        let clamped =
+            details.clamp_to_active_frame(WindowGeometry::new(pos2(0.0, 0.0), vec2(900.0, 20.0)));
+
+        assert_eq!(clamped.pos, pos2(50.0, 500.0));
+        assert_eq!(clamped.size, vec2(500.0, 80.0));
+    }
+
+    #[test]
+    fn config_tab_model_names_missing_path_without_copying_contents() {
+        let mut details = Details::new(NotifyTheme::default());
+        details.config_contents = "hotki.root(function() end)".to_string();
+
+        let model = details.config_tab_model();
+
+        assert_eq!(model.path_text, "No config file loaded");
+        assert_eq!(model.contents, "hotki.root(function() end)");
+        assert!(model.error.is_none());
+    }
 }

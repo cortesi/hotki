@@ -7,6 +7,7 @@ mod window_inspection;
 
 use std::{fs, thread, time::Duration};
 
+use hotki_protocol::{MsgToUI, Toggle};
 use tracing::{debug, info};
 
 use self::{
@@ -23,8 +24,22 @@ use crate::{
 /// Canonical activation chord identifier expected from the server.
 pub const ACTIVATION_IDENT: &str = "shift+cmd+0";
 
-/// Key sequence applied once the HUD is visible to exercise the demo flow.
-const UI_DEMO_SEQUENCE: &[&str] = &["t", "l", "l", "l", "l", "l", "n", "esc"];
+/// Key that enters the demo submenu once the HUD is visible.
+const UI_DEMO_ACTIVATE: &str = "t";
+/// Theme-switching keys applied after the submenu opens.
+const UI_DEMO_THEME_KEYS: &[&str] = &["l", "l", "l", "l", "l"];
+/// Key that triggers a shell-backed notification.
+const UI_DEMO_NOTIFY: &str = "n";
+/// Key that opens the Details window.
+const UI_DEMO_DETAILS: &str = "d";
+/// Key that opens the selector demo.
+const UI_DEMO_SELECTOR: &str = "s";
+/// Query key typed into the selector demo.
+const UI_DEMO_SELECTOR_QUERY: &str = "a";
+/// Key that selects the current selector item.
+const UI_DEMO_SELECTOR_SELECT: &str = "return";
+/// Key that exits the demo submenu.
+const UI_DEMO_EXIT: &str = "esc";
 
 /// Demo HUD mode applied in the generated Luau config.
 #[derive(Clone, Copy)]
@@ -64,6 +79,18 @@ hotki.root(function(menu, ctx)
       sub:bind("h", "Theme Prev", action.theme_prev, {{ stay = true }})
       sub:bind("l", "Theme Next", action.theme_next, {{ stay = true }})
       sub:bind("n", "Notify", action.shell("echo notify", {{ ok_notify = "info", err_notify = "warn" }}), {{ stay = true }})
+      sub:bind("d", "Details", action.show_details("on"), {{ stay = true }})
+      sub:bind("s", "Selector", action.selector({{
+        title = "Pick Demo",
+        placeholder = "Search...",
+        items = {{ "Alpha", "Beta" }},
+        on_select = function(actx, item, query)
+          actx:notify("info", "Selector", item.label .. ":" .. query)
+        end,
+        on_cancel = function(actx)
+          actx:notify("warn", "Selector", "cancel")
+        end,
+      }}), {{ stay = true }})
       sub:bind("esc", "Exit", action.exit, {{ hidden = true }})
     end)
   end)
@@ -187,10 +214,9 @@ where
         }
         let gate_ms = config::BINDING_GATES.default_ms * 2;
         let watcher = BindingWatcher::new(state_ref.session.pid() as i32);
-        let ident_activate = UI_DEMO_SEQUENCE[0];
         let activation = {
             let driver = state_ref.session.driver_mut();
-            watcher.activate_until_ready(driver, ACTIVATION_IDENT, &[ident_activate], gate_ms)?
+            watcher.activate_until_ready(driver, ACTIVATION_IDENT, &[UI_DEMO_ACTIVATE], gate_ms)?
         };
         if !activation.focus_event_seen() {
             info!(
@@ -202,14 +228,54 @@ where
 
         {
             let driver = state_ref.session.driver_mut();
-            driver.inject_key(ident_activate)?;
-            driver.wait_for_idents(&["h", "l", "n"], gate_ms)?;
+            driver.inject_key(UI_DEMO_ACTIVATE)?;
+            driver.wait_for_idents(&["h", "l", "n", "d", "s"], gate_ms)?;
         }
 
-        for key in &UI_DEMO_SEQUENCE[1..UI_DEMO_SEQUENCE.len() - 1] {
+        for key in UI_DEMO_THEME_KEYS {
             let driver = state_ref.session.driver_mut();
             driver.inject_key(key)?;
             thread::sleep(Duration::from_millis(config::THEME_SWITCH_DELAY_MS));
+        }
+
+        {
+            let driver = state_ref.session.driver_mut();
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(UI_DEMO_NOTIFY)?;
+            driver.wait_for_message_since(
+                cursor,
+                gate_ms,
+                |msg| matches!(msg, MsgToUI::Notify { title, .. } if title == "Shell command"),
+            )?;
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(UI_DEMO_DETAILS)?;
+            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+                matches!(msg, MsgToUI::ShowDetails(Toggle::On))
+            })?;
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(UI_DEMO_SELECTOR)?;
+            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+                matches!(msg, MsgToUI::SelectorUpdate(snapshot) if snapshot.title == "Pick Demo")
+            })?;
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(UI_DEMO_SELECTOR_QUERY)?;
+            driver.wait_for_message_since(
+                cursor,
+                gate_ms,
+                |msg| matches!(msg, MsgToUI::SelectorUpdate(snapshot) if snapshot.query == "a"),
+            )?;
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(UI_DEMO_SELECTOR_SELECT)?;
+            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+                matches!(msg, MsgToUI::SelectorHide)
+            })?;
+            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+                matches!(
+                    msg,
+                    MsgToUI::Notify { title, text, .. }
+                        if title == "Selector" && text == "Alpha:a"
+                )
+            })?;
         }
 
         let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
@@ -220,8 +286,7 @@ where
 
         after_activation(state_ref)?;
 
-        let ident_exit = UI_DEMO_SEQUENCE[UI_DEMO_SEQUENCE.len() - 1];
-        state_ref.session.driver_mut().inject_key(ident_exit)?;
+        state_ref.session.driver_mut().inject_key(UI_DEMO_EXIT)?;
         Ok(())
     })?;
 

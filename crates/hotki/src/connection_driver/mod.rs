@@ -28,6 +28,63 @@ pub struct ConnectionDriver {
     server_event_tap_enabled: bool,
     /// Whether to log periodic world snapshots.
     dumpworld: bool,
+    /// Current server connection lifecycle.
+    state: ConnectionState,
+    /// Server-bound controls received before a connection is ready.
+    pending_controls: VecDeque<ControlMsg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Server connection lifecycle visible to control routing.
+enum ConnectionState {
+    /// No server connection has been attempted yet, or the previous one ended.
+    Disconnected,
+    /// Initial connect is in progress.
+    Connecting,
+    /// Connected and ready to send server-bound control messages.
+    Connected,
+    /// A connect attempt failed and another attempt is pending.
+    Reconnecting,
+    /// Shutdown has been requested.
+    ShuttingDown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result of processing a control message.
+enum ControlOutcome {
+    /// Continue connecting or driving events.
+    Continue,
+    /// Stop the current driver loop.
+    Stop,
+}
+
+impl ControlOutcome {
+    /// Whether the caller should stop the active loop.
+    fn should_stop(self) -> bool {
+        matches!(self, Self::Stop)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Routing class for a UI/runtime control message.
+enum ControlTarget {
+    /// Control can be handled locally without a server connection.
+    Local,
+    /// Control must be delivered to the server.
+    Server,
+    /// Control requests app/server shutdown.
+    Shutdown,
+}
+
+impl ControlTarget {
+    /// Classify a control message by the connection it needs.
+    fn for_msg(msg: &ControlMsg) -> Self {
+        match msg {
+            ControlMsg::Shutdown => Self::Shutdown,
+            ControlMsg::Reload | ControlMsg::SwitchTheme(_) => Self::Server,
+            ControlMsg::OpenPermissionsHelp | ControlMsg::Notice { .. } => Self::Local,
+        }
+    }
 }
 
 impl ConnectionDriver {
@@ -48,6 +105,16 @@ impl ConnectionDriver {
             rx_ctrl,
             server_event_tap_enabled,
             dumpworld,
+            state: ConnectionState::Disconnected,
+            pending_controls: VecDeque::new(),
+        }
+    }
+
+    /// Update connection lifecycle state when it changes.
+    fn set_state(&mut self, state: ConnectionState) {
+        if self.state != state {
+            debug!(previous = ?self.state, next = ?state, "connection state changed");
+            self.state = state;
         }
     }
 
@@ -89,30 +156,55 @@ impl ConnectionDriver {
 
     /// Route control messages to local or connected handlers, queueing as needed.
     async fn route_control_msg(
-        &self,
+        &mut self,
         conn: Option<&mut hotki_server::Connection>,
         msg: ControlMsg,
-        pending: &mut VecDeque<ControlMsg>,
-    ) -> bool {
-        match (conn, msg) {
-            (Some(conn), msg) => self.handle_connected_control(conn, msg).await,
-            (None, ControlMsg::Shutdown) => {
-                self.ui.trigger_graceful_shutdown(750);
-                true
+    ) -> ControlOutcome {
+        match ControlTarget::for_msg(&msg) {
+            ControlTarget::Local => {
+                self.handle_local_control(msg);
+                ControlOutcome::Continue
             }
-            (None, ControlMsg::Reload) => {
-                pending.push_back(ControlMsg::Reload);
-                false
+            ControlTarget::Server => {
+                if let Some(conn) = conn {
+                    if self.handle_connected_control(conn, msg).await {
+                        ControlOutcome::Stop
+                    } else {
+                        ControlOutcome::Continue
+                    }
+                } else {
+                    self.pending_controls.push_back(msg);
+                    ControlOutcome::Continue
+                }
             }
-            (None, ControlMsg::SwitchTheme(name)) => {
-                pending.push_back(ControlMsg::SwitchTheme(name));
-                false
-            }
-            (None, other) => {
-                self.handle_local_control(other);
-                false
+            ControlTarget::Shutdown => {
+                self.begin_shutdown();
+                if let Some(conn) = conn {
+                    conn.shutdown().await.ok();
+                }
+                ControlOutcome::Stop
             }
         }
+    }
+
+    /// Trigger UI shutdown and record lifecycle state.
+    fn begin_shutdown(&mut self) {
+        self.set_state(ConnectionState::ShuttingDown);
+        self.ui.trigger_graceful_shutdown(750);
+    }
+
+    /// Drain server-bound controls queued while connecting.
+    async fn drain_pending_controls(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+    ) -> ControlOutcome {
+        while let Some(msg) = self.pending_controls.pop_front() {
+            let outcome = self.route_control_msg(Some(&mut *conn), msg).await;
+            if outcome.should_stop() {
+                return outcome;
+            }
+        }
+        ControlOutcome::Continue
     }
 
     /// Record and display a server-originated notification.
@@ -205,7 +297,7 @@ impl ConnectionDriver {
             self.server_log_filter.clone(),
             self.server_event_tap_enabled,
         );
-        let mut preconnect_queue: VecDeque<ControlMsg> = VecDeque::new();
+        self.set_state(ConnectionState::Connecting);
         let mut client: Client = loop {
             tokio::select! {
                 biased;
@@ -214,6 +306,7 @@ impl ConnectionDriver {
                         Ok(client) => break client,
                         Err(_) => {
                             error!("Connect task canceled");
+                            self.set_state(ConnectionState::Reconnecting);
                             sleep(Duration::from_millis(300)).await;
                             rx_conn_ready = spawn_connect(
                                 self.server_log_filter.clone(),
@@ -223,7 +316,7 @@ impl ConnectionDriver {
                     }
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    if self.route_control_msg(None, msg, &mut preconnect_queue).await {
+                    if self.route_control_msg(None, msg).await.should_stop() {
                         return None;
                     }
                 }
@@ -234,6 +327,7 @@ impl ConnectionDriver {
             Ok(conn) => conn,
             Err(err) => {
                 error!("Failed to get client connection: {}", err);
+                self.set_state(ConnectionState::Disconnected);
                 return None;
             }
         };
@@ -244,19 +338,16 @@ impl ConnectionDriver {
             Ok(()) => {}
             Err(err) => {
                 error!("Failed to set config path on server: {}", err);
+                self.set_state(ConnectionState::Disconnected);
                 return None;
             }
         };
+        self.set_state(ConnectionState::Connected);
         self.ui.set_config_path(Some(self.config_path.clone()));
         info!("Config path sent to server engine");
 
-        while let Some(msg) = preconnect_queue.pop_front() {
-            if self
-                .route_control_msg(Some(conn), msg, &mut preconnect_queue)
-                .await
-            {
-                return None;
-            }
+        if self.drain_pending_controls(conn).await.should_stop() {
+            return None;
         }
 
         Some(client)
@@ -268,9 +359,11 @@ impl ConnectionDriver {
             Ok(conn) => conn,
             Err(err) => {
                 error!("Failed to get client connection: {}", err);
+                self.set_state(ConnectionState::Disconnected);
                 return;
             }
         };
+        self.set_state(ConnectionState::Connected);
 
         let hb_timer: Sleep = sleep(heartbeat::timeout());
         tokio::pin!(hb_timer);
@@ -284,8 +377,6 @@ impl ConnectionDriver {
         });
         tokio::pin!(dump_timer);
 
-        let mut control_sink: VecDeque<ControlMsg> = VecDeque::new();
-
         loop {
             tokio::select! {
                 biased;
@@ -294,7 +385,7 @@ impl ConnectionDriver {
                     break;
                 }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    if self.route_control_msg(Some(conn), msg, &mut control_sink).await {
+                    if self.route_control_msg(Some(&mut *conn), msg).await.should_stop() {
                         break;
                     }
                 }
@@ -322,7 +413,9 @@ impl ConnectionDriver {
             }
         }
         info!("Exiting key loop");
-        self.ui.trigger_graceful_shutdown(750);
+        if self.state != ConnectionState::ShuttingDown {
+            self.begin_shutdown();
+        }
     }
 
     /// Compute the next dump timer reset and optionally log a world snapshot.
@@ -392,4 +485,59 @@ fn spawn_connect(
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use hotki_protocol::NotifyKind;
+
+    use super::{ConnectionState, ControlOutcome, ControlTarget};
+    use crate::runtime::ControlMsg;
+
+    #[test]
+    fn control_target_separates_local_server_and_shutdown_messages() {
+        assert_eq!(
+            ControlTarget::for_msg(&ControlMsg::OpenPermissionsHelp),
+            ControlTarget::Local
+        );
+        assert_eq!(
+            ControlTarget::for_msg(&ControlMsg::Notice {
+                kind: NotifyKind::Info,
+                title: "Config".to_string(),
+                text: "Reloaded".to_string(),
+            }),
+            ControlTarget::Local
+        );
+        assert_eq!(
+            ControlTarget::for_msg(&ControlMsg::Reload),
+            ControlTarget::Server
+        );
+        assert_eq!(
+            ControlTarget::for_msg(&ControlMsg::SwitchTheme("dark".to_string())),
+            ControlTarget::Server
+        );
+        assert_eq!(
+            ControlTarget::for_msg(&ControlMsg::Shutdown),
+            ControlTarget::Shutdown
+        );
+    }
+
+    #[test]
+    fn control_outcome_names_loop_exit_decision() {
+        assert!(!ControlOutcome::Continue.should_stop());
+        assert!(ControlOutcome::Stop.should_stop());
+    }
+
+    #[test]
+    fn connection_state_covers_runtime_lifecycle() {
+        let states = [
+            ConnectionState::Disconnected,
+            ConnectionState::Connecting,
+            ConnectionState::Connected,
+            ConnectionState::Reconnecting,
+            ConnectionState::ShuttingDown,
+        ];
+
+        assert_eq!(states.len(), 5);
+    }
 }

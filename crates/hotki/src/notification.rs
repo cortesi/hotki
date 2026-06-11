@@ -5,13 +5,19 @@ use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::Lay
 use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
 use crate::{
-    display::DisplayMetrics,
+    display::{DisplayBounds, DisplayMetrics, WindowGeometry},
     fonts, nswindow,
     overlay::{OverlayMetrics, OverlayWindow},
 };
 
 /// Duration for easing-based adjustment movements (seconds).
 pub const ADJUST_MOVE_SECS: f32 = 0.25;
+/// Screen edge margin for notification stacks.
+const NOTIFICATION_MARGIN: f32 = 12.0;
+/// Vertical gap between stacked notifications.
+const NOTIFICATION_GAP: f32 = 8.0;
+/// Inner padding used by notification cards.
+const NOTIFICATION_PAD: f32 = 12.0;
 
 #[derive(Debug, Clone)]
 /// A single notification retained in the backlog list.
@@ -50,6 +56,17 @@ struct NotificationItem {
     snap_to_target: bool,
     /// Cached window size used to build the viewport.
     size: Vec2,
+    /// Whether NSWindow style has been applied for this notification viewport.
+    window_configured: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// Placement decision for one notification card.
+struct NotificationPlacement {
+    /// Top-left geometry for the notification viewport.
+    geometry: WindowGeometry,
+    /// Next bottom-left cursor position for lower cards in the stack.
+    next_cursor_bottom: f32,
 }
 
 /// Manages transient in-app notifications and their windows.
@@ -117,7 +134,7 @@ impl NotificationCenter {
         ui: &mut egui::Ui,
         nctx: &Context,
         title: &str,
-        icon: Option<&String>,
+        icon: Option<&str>,
         title_size: f32,
         title_weight: FontWeight,
         title_fg: Color32,
@@ -130,7 +147,7 @@ impl NotificationCenter {
         if let Some(ic) = icon
             && !ic.is_empty()
         {
-            let icon_text = egui::RichText::new(ic.clone()).font(egui::FontId::new(
+            let icon_text = egui::RichText::new(ic).font(egui::FontId::new(
                 title_size * 2.0,
                 egui::FontFamily::Proportional,
             ));
@@ -138,7 +155,7 @@ impl NotificationCenter {
             let (icon_h, title_h) = nctx.fonts_mut(|f| {
                 let ih = f
                     .layout_no_wrap(
-                        ic.clone(),
+                        ic.to_string(),
                         egui::FontId::new(title_size * 2.0, egui::FontFamily::Proportional),
                         title_fg,
                     )
@@ -201,25 +218,40 @@ impl NotificationCenter {
             anim_start_time: Instant::now(),
             snap_to_target: true,
             size: Vec2::ZERO,
+            window_configured: false,
         };
         self.items.insert(0, item);
     }
 
+    /// Compute a notification card position from measured size and stack cursor.
+    fn placement_for(
+        bounds: DisplayBounds,
+        side: NotifyPos,
+        width: f32,
+        height: f32,
+        y_cursor: f32,
+    ) -> NotificationPlacement {
+        let pos_bottom = y_cursor - height;
+        let geometry = WindowGeometry::new(
+            pos2(
+                bounds.notification_x(side, width, NOTIFICATION_MARGIN),
+                bounds.to_top_left_y(pos_bottom, height),
+            ),
+            Vec2::new(width, height),
+        );
+        NotificationPlacement {
+            geometry,
+            next_cursor_bottom: pos_bottom - NOTIFICATION_GAP,
+        }
+    }
+
     /// Compute layout positions for notification windows and update animations.
     fn layout(&mut self, ctx: &Context) {
-        let m = 12.0; // screen margin
-        let gap = 8.0; // vertical gap between notifications
-        let (sx, sy, sw, sh, _global_top) = self.metrics.display().active_screen_frame();
-        let mut y_cursor = sy + sh - m; // start at top (bottom-left coordinates)
-        // Guard against invalid/negative configured width.
+        let bounds = self.metrics.display().active_bounds();
+        let frame = bounds.frame();
+        let mut y_cursor = frame.y + frame.height - NOTIFICATION_MARGIN;
         let width = self.width.max(1.0);
-        let x_left = sx + m;
-        let mut x_right = sx + sw - width - m;
-        // If the width exceeds the screen width (minus margins), collapse the
-        // clamp range so both left and right placements resolve to the same safe x.
-        if x_right < x_left {
-            x_right = x_left;
-        }
+        let body_wrap_width = (width - 2.0 * NOTIFICATION_PAD).max(1.0);
 
         // Measure each notification to compute height using the same fonts and paddings as render
         for item in &mut self.items {
@@ -237,7 +269,7 @@ impl NotificationCenter {
                     item.text.clone(),
                     body_font.clone(),
                     Color32::WHITE,
-                    self.width - 24.0, // left+right inner margin
+                    body_wrap_width,
                 )
             });
             let title_gal = ctx.fonts_mut(|f| {
@@ -268,32 +300,13 @@ impl NotificationCenter {
             // Vertical spacing between title and body is 6.0 in render
             let content_h = title_gal.size().y.max(icon_h) + 6.0 + text_gal.size().y;
             // Guard for negative/degenerate heights and ensure a minimal positive size.
-            let total_h = (content_h + 2.0 * 12.0).max(1.0); // padding
-            let pos_b = y_cursor - total_h; // bottom-left y for this window
-            let x_b = match self.side {
-                NotifyPos::Left => x_left,
-                NotifyPos::Right => x_right,
-            };
-            // Convert to top-left coordinates for egui
-            let mut x_top = x_b;
-            let y_top = self.metrics.display().to_top_left_y(pos_b, total_h);
-            // Clamp top-left x into the screen bounds.
-            let min_x = sx + m;
-            let mut max_x = sx + sw - width - m;
-            if max_x < min_x {
-                max_x = min_x;
-            }
-            if x_top < min_x {
-                x_top = min_x;
-            }
-            if x_top > max_x {
-                x_top = max_x;
-            }
-            let new_target = pos2(x_top, y_top);
+            let total_h = (content_h + 2.0 * NOTIFICATION_PAD).max(1.0);
+            let placement = Self::placement_for(bounds, self.side, width, total_h, y_cursor);
+            let new_target = placement.geometry.pos;
             let old_target = item.target_pos;
             item.target_pos = new_target;
-            item.size = Vec2::new(width, total_h);
-            y_cursor = pos_b - gap; // move down for next
+            item.size = placement.geometry.size;
+            y_cursor = placement.next_cursor_bottom;
 
             // Decide whether to animate or snap to target
             if item.snap_to_target {
@@ -321,8 +334,7 @@ impl NotificationCenter {
         self.layout(ctx);
         let mut any_animating = false;
 
-        let (_sx_frame, sy_frame, _sw_frame, _sh_frame, _global_top) =
-            self.metrics.display().active_screen_frame();
+        let bounds = self.metrics.display().active_bounds();
 
         // Update animation and draw. Items that would fall below the bottom of the active
         // screen are not rendered, but remain in the backlog and ephemeral list until
@@ -344,11 +356,7 @@ impl NotificationCenter {
             }
 
             // Skip rendering windows that would be completely off-screen below the bottom.
-            let pos_b = self
-                .metrics
-                .display()
-                .to_bottom_left_y(it.target_pos.y, it.size.y);
-            if pos_b < sy_frame {
+            if !bounds.is_visible_vertically(WindowGeometry::new(it.target_pos, it.size)) {
                 it.viewport.hide(ctx);
                 continue;
             }
@@ -367,12 +375,6 @@ impl NotificationCenter {
 
             ctx.show_viewport_immediate(it.viewport.id(), builder, |vp_ui, _| {
                 let nctx = vp_ui.ctx().clone();
-                if let Err(e) =
-                    nswindow::apply_transparent_rounded("Hotki Notification", self.radius as f64)
-                {
-                    tracing::error!("{}", e);
-                }
-
                 let style = self.theme.style_for(it.kind);
                 let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
                 let title_fg =
@@ -397,7 +399,7 @@ impl NotificationCenter {
                                 ui,
                                 &nctx,
                                 &it.title,
-                                style.icon.as_ref(),
+                                style.icon.as_deref(),
                                 style.title_font_size,
                                 style.title_font_weight,
                                 title_fg,
@@ -421,6 +423,14 @@ impl NotificationCenter {
                         });
                     });
             });
+            if !it.window_configured && nswindow::frame_by_title("Hotki Notification").is_some() {
+                if let Err(e) =
+                    nswindow::apply_transparent_rounded("Hotki Notification", self.radius as f64)
+                {
+                    tracing::error!("{}", e);
+                }
+                it.window_configured = true;
+            }
             it.viewport.record_geometry(it.current_pos, it.size);
         }
 
@@ -438,7 +448,12 @@ impl NotificationCenter {
         self.opacity = cfg.opacity;
         self.timeout = Duration::from_secs_f32(cfg.timeout.max(0.1));
         self.theme = cfg.theme.clone();
-        self.radius = cfg.radius;
+        if self.radius != cfg.radius {
+            self.radius = cfg.radius;
+            for item in &mut self.items {
+                item.window_configured = false;
+            }
+        }
         // Trim backlog to the new buffer size if necessary
         if self.backlog.len() > self.max_items {
             self.backlog.truncate(self.max_items);
@@ -456,5 +471,57 @@ impl NotificationCenter {
     /// Access the current backlog entries (newest first).
     pub fn backlog(&self) -> &[BacklogEntry] {
         &self.backlog
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{pos2, vec2};
+    use hotki_protocol::{DisplayFrame, DisplaysSnapshot, NotifyPos};
+
+    use super::NotificationCenter;
+    use crate::display::{DisplayBounds, DisplayMetrics};
+
+    fn bounds() -> DisplayBounds {
+        DisplayMetrics::from_snapshot(&DisplaysSnapshot {
+            global_top: 900.0,
+            active: Some(DisplayFrame {
+                id: 1,
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 300.0,
+            }),
+            displays: Vec::new(),
+        })
+        .active_bounds()
+    }
+
+    #[test]
+    fn placement_for_stacks_from_top_right_in_top_left_coordinates() {
+        let first = NotificationCenter::placement_for(
+            bounds(),
+            NotifyPos::Right,
+            120.0,
+            40.0,
+            300.0 - 12.0,
+        );
+
+        assert_eq!(first.geometry.pos, pos2(268.0, 612.0));
+        assert_eq!(first.geometry.size, vec2(120.0, 40.0));
+        assert_eq!(first.next_cursor_bottom, 240.0);
+    }
+
+    #[test]
+    fn placement_for_collapses_oversized_width_to_left_margin() {
+        let placed = NotificationCenter::placement_for(
+            bounds(),
+            NotifyPos::Right,
+            800.0,
+            40.0,
+            300.0 - 12.0,
+        );
+
+        assert_eq!(placed.geometry.pos.x, 12.0);
     }
 }

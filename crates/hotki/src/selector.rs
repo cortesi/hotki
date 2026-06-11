@@ -1,13 +1,13 @@
 //! Interactive selector popup rendering.
 
 use egui::{
-    CentralPanel, Color32, Context, Frame, Margin, Pos2, Stroke, Vec2, ViewportBuilder,
-    epaint::Shadow, pos2, style::ScrollStyle, text::LayoutJob, vec2,
+    CentralPanel, Color32, Context, Frame, Margin, Stroke, Vec2, ViewportBuilder, epaint::Shadow,
+    style::ScrollStyle, text::LayoutJob, vec2,
 };
 use hotki_protocol::{FontWeight, SelectorSnapshot, SelectorStyle};
 
 use crate::{
-    display::DisplayMetrics,
+    display::{DisplayMetrics, WindowGeometry},
     fonts,
     nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
     overlay::OverlayWindow,
@@ -64,6 +64,14 @@ pub struct SelectorWindow {
     state: Option<SelectorSnapshot>,
     /// Whether NSWindow style has been applied for the current selector session.
     window_configured: bool,
+}
+
+/// Data needed to render one selector frame.
+struct SelectorViewModel {
+    /// Desired viewport geometry.
+    geometry: WindowGeometry,
+    /// Snapshot to paint.
+    snapshot: SelectorSnapshot,
 }
 
 impl SelectorWindow {
@@ -180,12 +188,17 @@ impl SelectorWindow {
         vec2(content_w, total_h)
     }
 
-    /// Center horizontally and keep the top edge stable while visible.
-    fn desired_pos(&self, size: Vec2) -> Pos2 {
-        let frame = self.viewport.display().active_frame();
-        let x = frame.x + (frame.width - size.x) / 2.0;
-        let y = self.viewport.display().active_frame_top_left_y() + (frame.height - size.y) / 2.0;
-        pos2(x, y)
+    /// Build the data needed for one selector render pass.
+    fn view_model(&self, ctx: &Context, snapshot: &SelectorSnapshot) -> SelectorViewModel {
+        let size = self.desired_size(ctx, snapshot);
+        SelectorViewModel {
+            geometry: self
+                .viewport
+                .display()
+                .active_bounds()
+                .centered_geometry(size),
+            snapshot: snapshot.clone(),
+        }
     }
 
     /// Convert an RGB tuple to a `Color32` with the supplied alpha.
@@ -271,10 +284,7 @@ impl SelectorWindow {
             return;
         };
 
-        // Keep the selector window size stable while visible; resizing the viewport on every
-        // keystroke can cause perceptible flicker.
-        let size = self.desired_size(ctx, snapshot);
-        let pos = self.desired_pos(size);
+        let model = self.view_model(ctx, snapshot);
 
         let mut builder = ViewportBuilder::default()
             .with_title("Hotki Selector")
@@ -283,15 +293,17 @@ impl SelectorWindow {
             .with_transparent(true)
             .with_has_shadow(false)
             .with_visible(true)
-            .with_inner_size(size);
-        builder = self.viewport.sync_builder(ctx, builder, pos, size);
+            .with_inner_size(model.geometry.size);
+        builder = self
+            .viewport
+            .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
         let style = self.style.clone();
         let title_font_id = self.title_font_id();
         let input_font_id = self.input_font_id();
         let item_font_id = self.item_font_id();
         let sublabel_font_id = self.sublabel_font_id();
-        let snapshot = snapshot.clone();
+        let snapshot = model.snapshot.clone();
         ctx.show_viewport_immediate(self.viewport.id(), builder, move |vp_ui, _| {
             let border = Self::rgba(style.border, BG_ALPHA);
             let bg = Self::rgba(style.bg, BG_ALPHA);
@@ -437,6 +449,32 @@ impl SelectorWindow {
             self.window_configured = true;
         }
 
-        self.viewport.record_geometry(pos, size);
+        self.viewport
+            .record_geometry(model.geometry.pos, model.geometry.size);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::Color32;
+
+    use super::SelectorWindow;
+
+    #[test]
+    fn layout_label_with_matches_splits_highlighted_codepoints() {
+        let job = SelectorWindow::layout_label_with_matches(
+            "abcd",
+            &[1, 2],
+            Color32::WHITE,
+            Color32::LIGHT_BLUE,
+            egui::FontId::default(),
+        );
+
+        assert_eq!(job.text, "abcd");
+        assert_eq!(job.sections.len(), 3);
+        assert_eq!(job.sections[0].byte_range, 0..1);
+        assert_eq!(job.sections[1].byte_range, 1..3);
+        assert_eq!(job.sections[2].byte_range, 3..4);
+        assert_eq!(job.sections[1].format.color, Color32::LIGHT_BLUE);
     }
 }

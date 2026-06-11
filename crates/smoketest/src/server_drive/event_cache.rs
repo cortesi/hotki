@@ -84,6 +84,26 @@ impl EventCache {
         self.latest_hud.as_ref().map(|snapshot| snapshot.event_id)
     }
 
+    /// Return the event id that will be assigned to the next observed event.
+    pub(super) fn cursor(&self) -> DriverEventId {
+        self.next_event_id
+    }
+
+    /// Find a retained event at or after `cursor` matching `predicate`.
+    pub(super) fn find_since<F>(
+        &self,
+        cursor: DriverEventId,
+        mut predicate: F,
+    ) -> Option<DriverEventRecord>
+    where
+        F: FnMut(&MsgToUI) -> bool,
+    {
+        self.buffer
+            .iter()
+            .find(|record| record.id >= cursor && predicate(&record.payload))
+            .cloned()
+    }
+
     /// Check whether the cached HUD snapshot contains every requested identifier.
     pub(super) fn hud_contains_all(&self, want: &BTreeSet<String>) -> bool {
         if want.is_empty() {

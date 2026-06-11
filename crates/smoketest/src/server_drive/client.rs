@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeSet, mem, thread};
 
-use hotki_protocol::rpc::InjectKind;
+use hotki_protocol::{MsgToUI, rpc::InjectKind};
 use hotki_server::Client;
 use tokio::runtime::{Builder, Runtime};
 use tracing::debug;
@@ -13,8 +13,8 @@ use super::{
     event_cache::EventCache,
     rpc::ServerRpc,
     types::{
-        DriverError, canonicalize_ident, describe_init_error, ensure_clean_handshake,
-        is_key_not_bound,
+        DriverError, DriverEventId, canonicalize_ident, describe_init_error,
+        ensure_clean_handshake, is_key_not_bound,
     },
 };
 use crate::config;
@@ -256,6 +256,60 @@ impl ServerDriver {
             observed.push(self.record_event(event)?);
         }
         Ok(observed)
+    }
+
+    /// Return a cursor for matching subsequently observed server events.
+    pub fn event_cursor(&self) -> DriverResult<DriverEventId> {
+        self.require_connection()?;
+        Ok(self.events.cursor())
+    }
+
+    /// Wait for a server UI event at or after `cursor` matching `predicate`.
+    pub fn wait_for_message_since<F>(
+        &mut self,
+        cursor: DriverEventId,
+        timeout_ms: u64,
+        mut predicate: F,
+    ) -> DriverResult<DriverEventRecord>
+    where
+        F: FnMut(&MsgToUI) -> bool,
+    {
+        let deadline = Deadline::from_timeout(timeout_ms);
+        loop {
+            if let Some(event) = self.events.find_since(cursor, &mut predicate) {
+                return Ok(event);
+            }
+
+            for event in self.drain_events()? {
+                if event.id >= cursor && predicate(&event.payload) {
+                    return Ok(event);
+                }
+            }
+
+            if deadline.expired() {
+                return Err(DriverError::EventStreamTimeout {
+                    socket_path: self.socket_path.clone(),
+                    timeout_ms,
+                });
+            }
+
+            let Some(remaining) = deadline.remaining() else {
+                return Err(DriverError::EventStreamTimeout {
+                    socket_path: self.socket_path.clone(),
+                    timeout_ms,
+                });
+            };
+            let event = {
+                let mut rpc = self.rpc()?;
+                rpc.recv_event_timeout(remaining)?
+            };
+            if let Some(event) = event {
+                let record = self.record_event(event)?;
+                if predicate(&record.payload) {
+                    return Ok(record);
+                }
+            }
+        }
     }
 
     /// Connect if needed, then refresh and validate the server handshake.

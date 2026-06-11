@@ -1,12 +1,12 @@
 //! Heads-up display (HUD) rendering for key hints.
-use egui::{CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, vec2};
-use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode, Pos};
+use egui::{CentralPanel, Color32, Context, Frame, Vec2, ViewportBuilder, vec2};
+use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode};
 use mac_keycode::{Chord, Modifier};
 
 use crate::{
-    display::DisplayMetrics,
+    display::{DisplayMetrics, WindowGeometry},
     fonts,
-    nswindow::{apply_transparent_rounded, set_on_all_spaces},
+    nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
     overlay::OverlayWindow,
 };
 
@@ -40,8 +40,18 @@ pub struct Hud {
     rows: Vec<HudRow>,
     /// Breadcrumb titles for the current mode stack.
     breadcrumbs: Vec<String>,
-    /// Last applied opacity.
-    last_opacity: Option<f32>,
+    /// Whether NSWindow style has been applied for the current HUD session.
+    window_configured: bool,
+}
+
+/// Data needed to render one HUD frame.
+struct HudViewModel {
+    /// Desired viewport geometry.
+    geometry: WindowGeometry,
+    /// Optional title for mini mode.
+    mini_title: Option<String>,
+    /// Measured content size for full HUD mode.
+    content_size: Vec2,
 }
 
 impl Hud {
@@ -53,7 +63,7 @@ impl Hud {
             viewport: OverlayWindow::new("hotki_hud"),
             rows: Vec::new(),
             breadcrumbs: Vec::new(),
-            last_opacity: None,
+            window_configured: false,
         }
     }
 
@@ -62,7 +72,7 @@ impl Hud {
         if self.cfg != cfg {
             self.cfg = cfg;
             self.viewport.reset_geometry();
-            self.last_opacity = None;
+            self.window_configured = false;
         }
     }
 
@@ -215,6 +225,9 @@ impl Hud {
         self.breadcrumbs = breadcrumbs;
         if visible && !self.visible {
             self.viewport.reset_geometry();
+            self.window_configured = false;
+        } else if !visible {
+            self.window_configured = false;
         }
         self.visible = visible;
     }
@@ -224,6 +237,7 @@ impl Hud {
         self.visible = false;
         self.rows.clear();
         self.breadcrumbs.clear();
+        self.window_configured = false;
         self.viewport.hide(ctx);
     }
 
@@ -363,54 +377,33 @@ impl Hud {
         vec2(w, h)
     }
 
-    /// Compute the anchored top-left position for the HUD window.
-    fn anchor_pos(&self, _ctx: &Context, size: Vec2) -> Pos2 {
-        let (sx, sy, sw, sh, _global_top) = self.viewport.display().active_screen_frame();
-        let m = 12.0;
-        // Guard against invalid or negative sizes; ensure a minimal positive window size.
-        let size = vec2(size.x.max(1.0), size.y.max(1.0));
-        // Compute bottom-left origin x_b,y_b for the window's bottom-left
-        let (x_b, y_b) = match self.cfg.pos {
-            Pos::N => (sx + (sw - size.x) / 2.0, sy + sh - size.y - m),
-            Pos::NE => (sx + sw - size.x - m, sy + sh - size.y - m),
-            Pos::E => (sx + sw - size.x - m, sy + (sh - size.y) / 2.0),
-            Pos::SE => (sx + sw - size.x - m, sy + m),
-            Pos::S => (sx + (sw - size.x) / 2.0, sy + m),
-            Pos::SW => (sx + m, sy + m),
-            Pos::W => (sx + m, sy + (sh - size.y) / 2.0),
-            Pos::NW => (sx + m, sy + sh - size.y - m),
-            Pos::Center => (sx + (sw - size.x) / 2.0, sy + (sh - size.y) / 2.0),
+    /// Build the data needed for one HUD render pass.
+    fn view_model(&self, ctx: &Context) -> HudViewModel {
+        let size = self.desired_size(ctx);
+        let geometry = self.viewport.display().active_bounds().anchored_geometry(
+            self.cfg.pos,
+            size,
+            12.0,
+            self.cfg.offset,
+        );
+        let mini_title = matches!(self.cfg.mode, Mode::Mini)
+            .then(|| {
+                self.breadcrumbs
+                    .last()
+                    .filter(|s| !s.trim().is_empty())
+                    .cloned()
+            })
+            .flatten();
+        let content_size = if matches!(self.cfg.mode, Mode::Hud) {
+            self.measure_content_size(ctx)
+        } else {
+            Vec2::ZERO
         };
-        // Convert to top-left global coordinates expected by winit/egui OuterPosition
-        let mut x_top = x_b + self.cfg.offset.x;
-        let mut y_top = self.viewport.display().to_top_left_y(y_b, size.y) + self.cfg.offset.y;
-        // Clamp within the chosen screen bounds in top-left coordinates
-        let screen_top_y = self.viewport.display().active_frame_top_left_y();
-        let min_x = sx;
-        let mut max_x = sx + sw - size.x;
-        let min_y = screen_top_y;
-        let mut max_y = screen_top_y + (sh - size.y);
-        // If the desired window is larger than the screen in any dimension, collapse
-        // the clamp range to a single point to avoid inverting the bounds.
-        if max_x < min_x {
-            max_x = min_x;
+        HudViewModel {
+            geometry,
+            mini_title,
+            content_size,
         }
-        if max_y < min_y {
-            max_y = min_y;
-        }
-        if x_top < min_x {
-            x_top = min_x;
-        }
-        if x_top > max_x {
-            x_top = max_x;
-        }
-        if y_top < min_y {
-            y_top = min_y;
-        }
-        if y_top > max_y {
-            y_top = max_y;
-        }
-        pos2(x_top, y_top)
     }
 
     /// Render and update the HUD viewport.
@@ -420,8 +413,7 @@ impl Hud {
             return;
         }
 
-        let size = self.desired_size(ctx);
-        let pos = self.anchor_pos(ctx, size);
+        let model = self.view_model(ctx);
 
         // Only update window position if it changed
         let mut builder = ViewportBuilder::default()
@@ -431,22 +423,15 @@ impl Hud {
             .with_transparent(true)
             .with_has_shadow(false)
             .with_visible(true)
-            .with_inner_size(size)
+            .with_inner_size(model.geometry.size)
             // Avoid specifying position here every frame; we set it on first create below.
             ;
-        builder = self.viewport.sync_builder(ctx, builder, pos, size);
+        builder = self
+            .viewport
+            .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
             let hud_ctx = vp_ui.ctx().clone();
-            // Ensure the NSWindow is transparent and uses full alpha for perfect edge blending.
-            if let Err(e) = apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64) {
-                tracing::error!("{}", e);
-            }
-            // Make HUD appear on all desktops/spaces
-            if let Err(e) = set_on_all_spaces("Hotki HUD") {
-                tracing::error!("{}", e);
-            }
-
             let mut frame =
                 Frame::default().corner_radius(egui::CornerRadius::same(self.cfg.radius as u8));
             let a = (self.cfg.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -463,14 +448,12 @@ impl Hud {
 
                     if matches!(self.cfg.mode, Mode::Mini) {
                         // Compact: center vertically; left padding; single title line
-                        if let Some(title) =
-                            self.breadcrumbs.last().filter(|s| !s.trim().is_empty())
-                        {
+                        if let Some(title) = model.mini_title.as_deref() {
                             let avail = ui.available_size();
                             // compute text height to center vertically
                             let text_h = hud_ctx.fonts_mut(|f| {
                                 f.layout_no_wrap(
-                                    title.clone(),
+                                    title.to_string(),
                                     self.title_font_id(),
                                     Color32::WHITE,
                                 )
@@ -489,9 +472,9 @@ impl Hud {
                     } else {
                         // Full HUD
                         // Left-align content with padding, center vertically if needed
-                        let content = self.measure_content_size(&hud_ctx);
                         let avail = ui.available_size();
-                        let extra_y = (avail.y - (content.y + 2.0 * HUD_PADDING_Y)).max(0.0);
+                        let extra_y =
+                            (avail.y - (model.content_size.y + 2.0 * HUD_PADDING_Y)).max(0.0);
                         let left_margin = HUD_PADDING_X; // Always align to left with standard padding
                         let top_margin = HUD_PADDING_Y + extra_y / 2.0;
 
@@ -504,9 +487,19 @@ impl Hud {
                 });
         });
 
+        if !self.window_configured && frame_by_title("Hotki HUD").is_some() {
+            if let Err(e) = apply_transparent_rounded("Hotki HUD", self.cfg.radius as f64) {
+                tracing::error!("{}", e);
+            }
+            if let Err(e) = set_on_all_spaces("Hotki HUD") {
+                tracing::error!("{}", e);
+            }
+            self.window_configured = true;
+        }
+
         // Update last-known state after issuing commands
-        self.viewport.record_geometry(pos, size);
-        self.last_opacity = Some(self.cfg.opacity.clamp(0.0, 1.0));
+        self.viewport
+            .record_geometry(model.geometry.pos, model.geometry.size);
     }
 
     // (hide method is defined alongside state setters)
