@@ -1,6 +1,6 @@
 use oxau::embed::ScriptError;
 
-use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem};
+use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem, diagnostics};
 use crate::Error;
 
 /// Result of executing a handler closure.
@@ -40,7 +40,7 @@ pub fn execute_handler(
             let handler = scope.fetch_function(&handler.func)?;
             let result: Result<(), ScriptError<'_>> = scope.call_protected(handler, ctx_value)?;
             if let Err(err) = result {
-                script_error = Some(super::render::script_error_to_config(
+                script_error = Some(diagnostics::config_script_error(
                     path.as_deref(),
                     &sources,
                     scope,
@@ -49,7 +49,7 @@ pub fn execute_handler(
             }
             Ok(())
         })
-        .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
+        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {
         return Err(err);
@@ -83,7 +83,7 @@ pub fn execute_selector_handler(
             let result: Result<(), ScriptError<'_>> =
                 scope.call_protected(handler, (ctx_value, item_table, query.clone()))?;
             if let Err(err) = result {
-                script_error = Some(super::render::script_error_to_config(
+                script_error = Some(diagnostics::config_script_error(
                     path.as_deref(),
                     &sources,
                     scope,
@@ -92,7 +92,7 @@ pub fn execute_selector_handler(
             }
             Ok(())
         })
-        .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
+        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {
         return Err(err);

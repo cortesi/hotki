@@ -4,7 +4,7 @@ use oxau::embed::{
     Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table,
 };
 
-use super::{DynamicConfig, HandlerRef, ModeCtx};
+use super::{DynamicConfig, HandlerRef, ModeCtx, diagnostics};
 
 /// Opaque selector item payload stashed in the config VM.
 #[derive(Debug, Clone, Default)]
@@ -213,7 +213,7 @@ impl SelectorConfig {
                         match result {
                             Ok(value) => items = Some(parse_selector_items(scope, value)?),
                             Err(err) => {
-                                script_error = Some(super::render::script_error_to_config(
+                                script_error = Some(diagnostics::config_script_error(
                                     path.as_deref(),
                                     &sources,
                                     scope,
@@ -223,7 +223,7 @@ impl SelectorConfig {
                         }
                         Ok(())
                     })
-                    .map_err(|err| super::render::runtime_error_to_config(cfg, &err))?;
+                    .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
                 if let Some(err) = script_error {
                     return Err(err);

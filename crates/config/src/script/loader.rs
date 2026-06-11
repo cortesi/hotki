@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    fmt, fs, mem,
+    fs, mem,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     vec::IntoIter,
@@ -9,7 +9,7 @@ use std::{
 
 use mac_keycode::Chord;
 use oxau::{
-    compile::{self, CompileError, CompileOptions},
+    compile::{self, CompileOptions},
     embed::{
         FromLua, Function, HostType, HostTypeBuilder, IntoLuaMulti, ModuleBinding, ModuleBuilder,
         ModuleBuilderExt, ModuleValue, MultiValue, NativeModule, RuntimeError, Scope,
@@ -17,7 +17,7 @@ use oxau::{
         serde::{from_scoped_value, to_scoped_value},
     },
     profile::Profile,
-    session::{Ambient, ProtectedScriptError, TracebackFrame, Vm},
+    session::{Ambient, Vm},
 };
 use regex::Regex;
 use serde::Deserialize;
@@ -26,18 +26,15 @@ use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, DynamicConfig, HandlerRef, ModeCtx, ModeRef,
     NavRequest, RepeatSpec, SelectorConfig, SourcePos, StyleOverlay, apps,
     binding_style::BindingStyleSpec,
+    diagnostics,
     imports::{self, ImportRole},
     selector,
     util::lock_unpoisoned,
 };
-use crate::{Action, Error, NotifyKind, Toggle, error::excerpt_at, raw, themes};
+use crate::{Action, Error, NotifyKind, Toggle, raw, themes};
 
 /// Shared mutable state captured by native host functions installed into one VM.
 type SharedRuntimeState = Arc<Mutex<RuntimeState>>;
-
-/// Checked-in Luau declaration source for the script host API.
-const HOTKI_DECLARATION: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/luau/hotki.d.luau"));
 
 /// Tag used to distinguish primitive action constants from other light userdata.
 const ACTION_TOKEN_TAG: u8 = 0x48;
@@ -340,20 +337,20 @@ pub fn load_dynamic_config_from_string(
         source.as_bytes(),
         &CompileOptions::for_vm_execution(),
     )
-    .map_err(|err| compile_error_to_config(source, &err, path.as_deref()))?;
+    .map_err(|err| diagnostics::config_compile_error(source, &err, path.as_deref()))?;
     let mut vm = build_vm(profile, state.clone(), path.as_deref())?;
     let chunk_name = chunk_name(path.as_deref());
     let module = vm
         .load_named(&chunk, chunk_name.as_bytes())
-        .map_err(|err| validation_error(path.clone(), err))?;
+        .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
 
     match vm
         .call_protected_with_limits(&module, DynamicConfig::entry_limits())
-        .map_err(|err| validation_error(path.clone(), format!("{err:?}")))?
+        .map_err(|err| diagnostics::config_validation(path.clone(), format!("{err:?}")))?
     {
         Ok(_) => {}
         Err(err) => {
-            return Err(protected_error_to_config(
+            return Err(diagnostics::config_protected_error(
                 source,
                 path.as_deref(),
                 &sources,
@@ -363,7 +360,7 @@ pub fn load_dynamic_config_from_string(
     }
 
     let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
-        validation_error(path.clone(), "hotki.root() must be called exactly once")
+        diagnostics::config_validation(path.clone(), "hotki.root() must be called exactly once")
     })?;
     validate_root(&mut vm, &root, path.as_deref(), &sources)?;
 
@@ -419,7 +416,7 @@ fn build_vm(profile: Profile, state: SharedRuntimeState, path: Option<&Path>) ->
         .host_type(mode_context_type())
         .host_type(action_context_type())
         .build_sandboxed()
-        .map_err(|err| validation_error(path.map(Path::to_path_buf), err))
+        .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))
 }
 
 /// Invoke the configured root mode once to validate its output shape.
@@ -444,13 +441,11 @@ fn validate_root(
         let root = scope.fetch_function(&root.func)?;
         let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
         if let Err(err) = result {
-            script_error = Some(super::render::script_error_to_config(
-                path, sources, scope, &err,
-            ));
+            script_error = Some(diagnostics::config_script_error(path, sources, scope, &err));
         }
         Ok(())
     })
-    .map_err(|err| validation_error(path.map(Path::to_path_buf), err.message()))?;
+    .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err.message()))?;
 
     if let Some(err) = script_error {
         return Err(err);
@@ -470,7 +465,7 @@ impl NativeModule for HotkiModule {
     }
 
     fn declaration(&self) -> &str {
-        HOTKI_DECLARATION
+        crate::luau_api()
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
@@ -511,7 +506,7 @@ impl NativeModule for ActionModule {
     }
 
     fn declaration(&self) -> &str {
-        HOTKI_DECLARATION
+        crate::luau_api()
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
@@ -549,7 +544,7 @@ impl NativeModule for ThemesModule {
     }
 
     fn declaration(&self) -> &str {
-        HOTKI_DECLARATION
+        crate::luau_api()
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
@@ -1116,102 +1111,6 @@ fn regex_matches(text: &str, pattern: &str) -> Result<bool, RuntimeError> {
 fn chunk_name(path: Option<&Path>) -> String {
     path.map(|path| format!("@{}", path.display()))
         .unwrap_or_else(|| "=<memory>".to_string())
-}
-
-/// Build a locationless `Error::Validation` with only a path and message.
-fn validation_error(path: Option<PathBuf>, err: impl fmt::Display) -> Error {
-    Error::Validation {
-        path,
-        line: None,
-        col: None,
-        message: err.to_string(),
-        excerpt: None,
-    }
-}
-
-/// Convert a structured oxau compile error into a config error.
-fn compile_error_to_config(source: &str, err: &CompileError, path: Option<&Path>) -> Error {
-    let Some(location) = err.location() else {
-        return validation_error(path.map(Path::to_path_buf), err.message());
-    };
-
-    let line = location.begin.line as usize + 1;
-    let col = location.begin.column as usize + 1;
-    Error::Parse {
-        path: path.map(Path::to_path_buf),
-        line,
-        col,
-        message: err.message().to_string(),
-        excerpt: excerpt_at(source, line, col),
-    }
-}
-
-/// Convert a VM-level protected script failure into a located config error.
-fn protected_error_to_config(
-    source: &str,
-    default_path: Option<&Path>,
-    sources: &super::config::SourceMap,
-    err: &ProtectedScriptError,
-) -> Error {
-    let message = err
-        .traceback()
-        .and_then(|traceback| traceback.lines().next())
-        .unwrap_or("script raised an error")
-        .to_string();
-    let (path, line, col) = err
-        .frames()
-        .iter()
-        .find_map(frame_location)
-        .map(|(path, line)| {
-            (
-                normalize_error_path(path, default_path.map(Path::to_path_buf)),
-                Some(line),
-                Some(1),
-            )
-        })
-        .unwrap_or((default_path.map(Path::to_path_buf), None, None));
-    let excerpt =
-        line.and_then(|line| error_excerpt(source, sources, path.as_ref(), line, col.unwrap_or(1)));
-
-    Error::Validation {
-        path,
-        line,
-        col,
-        message,
-        excerpt,
-    }
-}
-
-/// Extract a chunk name and line from one protected-error traceback frame.
-fn frame_location(frame: &TracebackFrame) -> Option<(String, usize)> {
-    frame
-        .line
-        .map(|line| (frame.chunk_name.clone(), line as usize))
-}
-
-/// Convert VM traceback chunk names into user-facing filesystem paths.
-fn normalize_error_path(path: String, default_path: Option<PathBuf>) -> Option<PathBuf> {
-    match path.as_str() {
-        "<memory>" => None,
-        value if value.starts_with("[string ") => default_path,
-        _ => Some(PathBuf::from(path)),
-    }
-}
-
-/// Render an excerpt from the best available source map entry.
-fn error_excerpt(
-    source: &str,
-    sources: &super::config::SourceMap,
-    path: Option<&PathBuf>,
-    line: usize,
-    col: usize,
-) -> Option<String> {
-    match path {
-        Some(path) => lock_unpoisoned(sources)
-            .get(path)
-            .map(|source| excerpt_at(source.as_ref(), line, col)),
-        None => Some(excerpt_at(source, line, col)),
-    }
 }
 
 /// Build the host userdata type definition for mode builders.

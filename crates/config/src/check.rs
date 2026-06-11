@@ -1,7 +1,7 @@
 //! Luau configuration validation helpers.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -11,8 +11,8 @@ use std::{
 };
 
 use oxau::{
-    compile::{self, CompileError, CompileOptions},
-    diagnostic::{DiagnosticLocation, DiagnosticSeverity, TypeDiagnostic},
+    compile::{self, CompileOptions},
+    diagnostic::DiagnosticSeverity,
     embed::{
         ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue, MultiValue, NativeModule,
         RuntimeError, Scope, ScopedHostFunction,
@@ -22,13 +22,11 @@ use oxau::{
     surface::SurfaceSpec,
     types::CheckerConfig,
 };
-use regex::Regex;
 
 use crate::{
-    Error,
-    error::excerpt_at,
-    luau_api,
+    Error, luau_api,
     script::{
+        diagnostics,
         imports::{self, ImportRole},
         load_dynamic_config_from_string,
     },
@@ -154,7 +152,7 @@ fn visit_imports(
             if err.path().is_some() {
                 err
             } else {
-                error_at(
+                diagnostics::config_error_at_offset(
                     &canonical,
                     &source,
                     offset,
@@ -171,62 +169,211 @@ fn visit_imports(
     Ok(())
 }
 
-/// Collect all literal import calls matched by `re` into `out`, keyed by start offset.
-fn collect_literal_imports(
-    re: &Regex,
-    source: &str,
-    out: &mut BTreeMap<usize, (ImportRole, String)>,
-) {
-    for captures in re.captures_iter(source) {
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let Some(role_match) = captures.get(1) else {
-            continue;
-        };
-        let Some(path_match) = captures.get(2) else {
-            continue;
-        };
-        let Some(role) = ImportRole::from_function_name(role_match.as_str()) else {
-            continue;
-        };
-        out.insert(full.start(), (role, path_match.as_str().to_string()));
-    }
-}
-
 /// Parse literal `hotki.import_*("...")` calls from a Luau source file.
 fn parse_import_calls(
     source: &str,
     path: &Path,
 ) -> Result<Vec<(ImportRole, String, usize)>, Error> {
-    let any = Regex::new(r#"hotki\.(import_mode|import_items|import_handler|import_style)\s*\("#)
-        .expect("valid import matcher");
-    let literal_double = Regex::new(
-        r#"(?s)hotki\.(import_mode|import_items|import_handler|import_style)\s*\(\s*"([^"\\\r\n]+)"\s*\)"#,
-    )
-    .expect("valid double-quoted import matcher");
-    let literal_single = Regex::new(
-        r#"(?s)hotki\.(import_mode|import_items|import_handler|import_style)\s*\(\s*'([^'\\\r\n]+)'\s*\)"#,
-    )
-    .expect("valid single-quoted import matcher");
-
-    let mut literal_by_start = BTreeMap::new();
-    collect_literal_imports(&literal_double, source, &mut literal_by_start);
-    collect_literal_imports(&literal_single, source, &mut literal_by_start);
-
+    let mut cursor = 0;
     let mut imports = Vec::new();
-    for import_call in any.find_iter(source) {
-        let Some((role, import_path)) = literal_by_start.get(&import_call.start()).cloned() else {
-            return Err(error_at(
-                path,
-                source,
-                import_call.start(),
-                "hotki imports must use literal relative path strings".to_string(),
-            ));
+
+    while cursor < source.len() {
+        if let Some(next) = skip_ignored_luau(source, cursor) {
+            cursor = next;
+            continue;
+        }
+
+        let Some((role, after_name)) = import_role_at(source, cursor) else {
+            cursor = next_char_boundary(source, cursor);
+            continue;
         };
-        imports.push((role, import_path, import_call.start()));
+        let Some(open_paren) = skip_whitespace(source, after_name).and_then(|next| {
+            source[next..]
+                .starts_with('(')
+                .then_some(next + '('.len_utf8())
+        }) else {
+            cursor = next_char_boundary(source, cursor);
+            continue;
+        };
+        let Some((import_path, after_literal)) = parse_import_literal(
+            source,
+            skip_whitespace(source, open_paren).unwrap_or(open_paren),
+        ) else {
+            return Err(import_literal_error(path, source, cursor));
+        };
+        let Some(after_args) = skip_whitespace(source, after_literal) else {
+            return Err(import_literal_error(path, source, cursor));
+        };
+        if !source[after_args..].starts_with(')') {
+            return Err(import_literal_error(path, source, cursor));
+        }
+        imports.push((role, import_path, cursor));
+        cursor = after_args + ')'.len_utf8();
     }
+
     Ok(imports)
+}
+
+/// Build the checker error used when an import call is not a single literal string.
+fn import_literal_error(path: &Path, source: &str, offset: usize) -> Error {
+    diagnostics::config_error_at_offset(
+        path,
+        source,
+        offset,
+        "hotki imports must use literal relative path strings".to_string(),
+    )
+}
+
+/// Return the import role and the offset after its function name at `offset`.
+fn import_role_at(source: &str, offset: usize) -> Option<(ImportRole, usize)> {
+    let after_prefix = source[offset..].strip_prefix("hotki.")?;
+    let name_offset = offset + "hotki.".len();
+    for role in ImportRole::ALL {
+        let name = role.function_name();
+        if !after_prefix.starts_with(name) {
+            continue;
+        }
+        let after_name = name_offset + name.len();
+        if source[after_name..]
+            .chars()
+            .next()
+            .is_some_and(is_identifier_continue)
+        {
+            continue;
+        }
+        return Some((role, after_name));
+    }
+    None
+}
+
+/// Parse one short quoted import literal without escapes or newlines.
+fn parse_import_literal(source: &str, offset: usize) -> Option<(String, usize)> {
+    let quote = match source[offset..].chars().next()? {
+        '"' => '"',
+        '\'' => '\'',
+        _ => return None,
+    };
+    let mut cursor = offset + quote.len_utf8();
+    let mut value = String::new();
+
+    while cursor < source.len() {
+        let ch = source[cursor..].chars().next()?;
+        if ch == quote {
+            return (!value.is_empty()).then_some((value, cursor + ch.len_utf8()));
+        }
+        if matches!(ch, '\\' | '\r' | '\n') {
+            return None;
+        }
+        value.push(ch);
+        cursor += ch.len_utf8();
+    }
+
+    None
+}
+
+/// Skip whitespace from `offset`, returning `None` when already at end of source.
+fn skip_whitespace(source: &str, mut offset: usize) -> Option<usize> {
+    while offset < source.len() {
+        let ch = source[offset..].chars().next()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        offset += ch.len_utf8();
+    }
+    (offset < source.len()).then_some(offset)
+}
+
+/// Skip comments and strings that should not be scanned for import calls.
+fn skip_ignored_luau(source: &str, offset: usize) -> Option<usize> {
+    if source[offset..].starts_with("--") {
+        if let Some(end) = long_bracket_end(source, offset + "--".len()) {
+            return Some(end);
+        }
+        return Some(skip_line_comment(source, offset + "--".len()));
+    }
+
+    match source[offset..].chars().next()? {
+        '"' => Some(skip_short_string(source, offset, '"')),
+        '\'' => Some(skip_short_string(source, offset, '\'')),
+        '`' => Some(skip_short_string(source, offset, '`')),
+        '[' => long_bracket_end(source, offset),
+        _ => None,
+    }
+}
+
+/// Skip a line comment, stopping at the newline or end of source.
+fn skip_line_comment(source: &str, mut offset: usize) -> usize {
+    while offset < source.len() {
+        let ch = source[offset..]
+            .chars()
+            .next()
+            .expect("offset is in bounds");
+        offset += ch.len_utf8();
+        if ch == '\n' {
+            break;
+        }
+    }
+    offset
+}
+
+/// Skip a short quoted string, including escapes, until its terminator or line end.
+fn skip_short_string(source: &str, offset: usize, quote: char) -> usize {
+    let mut cursor = offset + quote.len_utf8();
+    while cursor < source.len() {
+        let ch = source[cursor..]
+            .chars()
+            .next()
+            .expect("cursor is in bounds");
+        cursor += ch.len_utf8();
+        if ch == quote || matches!(ch, '\r' | '\n') {
+            break;
+        }
+        if ch == '\\' && cursor < source.len() {
+            let escaped = source[cursor..]
+                .chars()
+                .next()
+                .expect("cursor is in bounds");
+            cursor += escaped.len_utf8();
+        }
+    }
+    cursor
+}
+
+/// Return the end offset of a Luau long bracket string/comment at `offset`.
+fn long_bracket_end(source: &str, offset: usize) -> Option<usize> {
+    if !source[offset..].starts_with('[') {
+        return None;
+    }
+
+    let mut cursor = offset + '['.len_utf8();
+    while source[cursor..].starts_with('=') {
+        cursor += '='.len_utf8();
+    }
+    if !source[cursor..].starts_with('[') {
+        return None;
+    }
+
+    let close = format!("]{}]", "=".repeat(cursor - offset - '['.len_utf8()));
+    let body_start = cursor + '['.len_utf8();
+    Some(
+        source[body_start..]
+            .find(&close)
+            .map_or(source.len(), |relative| body_start + relative + close.len()),
+    )
+}
+
+/// Move to the next UTF-8 character boundary after `offset`.
+fn next_char_boundary(source: &str, offset: usize) -> usize {
+    let ch = source[offset..]
+        .chars()
+        .next()
+        .expect("offset is in bounds");
+    offset + ch.len_utf8()
+}
+
+/// Return true for Luau identifier continuation characters used in host names.
+fn is_identifier_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 /// Validate each imported file by wrapping it in a synthetic root config.
@@ -272,31 +419,6 @@ fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let suffix = role.synthetic_suffix();
     root_dir.join(format!("__hotki_check_{suffix}_{id}.luau"))
-}
-
-/// Attach a source location and excerpt to a validation error at `offset`.
-fn error_at(path: &Path, source: &str, offset: usize, message: String) -> Error {
-    let (line, col) = line_col_at(source, offset);
-    Error::Validation {
-        path: Some(path.to_path_buf()),
-        line: Some(line),
-        col: Some(col),
-        message,
-        excerpt: Some(excerpt_at(source, line, col)),
-    }
-}
-
-/// Convert a byte offset into 1-based line and column coordinates.
-fn line_col_at(source: &str, offset: usize) -> (usize, usize) {
-    let clamped = offset.min(source.len());
-    let prefix = &source[..clamped];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let col = prefix
-        .rsplit_once('\n')
-        .map_or(prefix.chars().count() + 1, |(_, tail)| {
-            tail.chars().count() + 1
-        });
-    (line, col)
 }
 
 /// Build the static Hotki script surface used by the oxau checker.
@@ -346,7 +468,12 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
         .cloned()
         .collect::<Vec<_>>();
     if !errors.is_empty() {
-        return Err(diagnostics_to_config(path, source, &errors, line_offset));
+        return Err(diagnostics::config_type_error(
+            path,
+            source,
+            &errors,
+            line_offset,
+        ));
     }
 
     compile::compile_for(
@@ -355,84 +482,7 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
         &CompileOptions::for_vm_execution(),
     )
     .map(|_| ())
-    .map_err(|err| compile_error_to_config(path, source, &err))
-}
-
-/// Convert structured checker diagnostics into the stable config error shape.
-fn diagnostics_to_config(
-    path: &Path,
-    source: &str,
-    diagnostics: &[TypeDiagnostic],
-    line_offset: usize,
-) -> Error {
-    let (line, col, excerpt) = diagnostics
-        .first()
-        .and_then(|diagnostic| source_position(diagnostic.primary_location, line_offset))
-        .map(|(line, col)| (Some(line), Some(col), Some(excerpt_at(source, line, col))))
-        .unwrap_or((None, None, None));
-    Error::Validation {
-        path: Some(path.to_path_buf()),
-        line,
-        col,
-        message: render_diagnostics(path, diagnostics, line_offset),
-        excerpt,
-    }
-}
-
-/// Render checker diagnostics using user-source line numbers instead of prelude offsets.
-fn render_diagnostics(path: &Path, diagnostics: &[TypeDiagnostic], line_offset: usize) -> String {
-    diagnostics
-        .iter()
-        .map(|diagnostic| {
-            let site = source_position(diagnostic.primary_location, line_offset).map_or_else(
-                || format!("{}:?:?", path.display()),
-                |(line, col)| format!("{}:{}:{}", path.display(), line, col),
-            );
-            format!(
-                "{} {}: {}",
-                site,
-                diagnostic.category,
-                diagnostic
-                    .context
-                    .as_deref()
-                    .unwrap_or("type checker diagnostic")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-/// Convert a checker source location into 1-based line and column coordinates.
-fn source_position(location: DiagnosticLocation, line_offset: usize) -> Option<(usize, usize)> {
-    if location == DiagnosticLocation::missing() {
-        None
-    } else {
-        let line = location.begin.line as usize + 1;
-        (line > line_offset).then_some((line - line_offset, location.begin.column as usize + 1))
-    }
-}
-
-/// Convert a structured oxau compile error into a config error.
-fn compile_error_to_config(path: &Path, source: &str, err: &CompileError) -> Error {
-    let Some(location) = err.location() else {
-        return Error::Validation {
-            path: Some(path.to_path_buf()),
-            line: None,
-            col: None,
-            message: err.message().to_string(),
-            excerpt: None,
-        };
-    };
-
-    let line = location.begin.line as usize + 1;
-    let col = location.begin.column as usize + 1;
-    Error::Parse {
-        path: Some(path.to_path_buf()),
-        line,
-        col,
-        message: err.message().to_string(),
-        excerpt: excerpt_at(source, line, col),
-    }
+    .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
 }
 
 /// Checker-only native module that declares and audits the full Hotki host API surface.
@@ -616,6 +666,30 @@ end)
         let pretty = err.pretty();
         assert!(pretty.contains("literal relative path strings"));
         assert!(pretty.contains("config.luau"));
+    }
+
+    #[test]
+    fn check_ignores_import_text_in_comments_and_strings() {
+        let root = test_dir("inert-import-text");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local one = "hotki.import_mode('missing-mode')"
+local two = [[hotki.import_handler("missing-handler")]]
+-- hotki.import_items("missing-items")
+--[=[
+hotki.import_style("missing-block-style")
+]=]
+
+hotki.root(function(menu, ctx)
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert_eq!(report.imports, 0);
+        assert_eq!(report.themes, 0);
     }
 
     #[test]

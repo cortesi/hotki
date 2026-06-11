@@ -6,6 +6,8 @@ mod apps;
 mod binding_style;
 /// Loaded config state and source tracking.
 mod config;
+/// Shared Luau diagnostic conversion helpers.
+pub(crate) mod diagnostics;
 pub mod engine;
 /// Handler execution bridge.
 mod handler;

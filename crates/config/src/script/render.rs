@@ -1,17 +1,12 @@
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use oxau::embed::{RuntimeError, Scope, ScriptError, serde::from_scoped_value};
+use oxau::embed::ScriptError;
 use tracing::warn;
 
 use super::{
-    Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState,
-    config::SourceMap,
+    Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState, diagnostics,
     types::{HudRow, HudRowStyle, SourcePos},
-    util::lock_unpoisoned,
 };
 use crate::{Error, NotifyKind, Style, error::excerpt_at, style};
 
@@ -110,7 +105,7 @@ fn render_mode(
             let result: Result<(), ScriptError<'_>> =
                 scope.call_protected(render, (builder_value, ctx_value))?;
             if let Err(err) = result {
-                script_error = Some(script_error_to_config(
+                script_error = Some(diagnostics::config_script_error(
                     path.as_deref(),
                     &sources,
                     scope,
@@ -119,7 +114,7 @@ fn render_mode(
             }
             Ok(())
         })
-        .map_err(|err| runtime_error_to_config(cfg, &err))?;
+        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {
         return Err(err);
@@ -276,102 +271,4 @@ pub fn resolve_binding<'a>(state: &'a RenderedState, chord: &Chord) -> Option<&'
             None
         }
     })
-}
-
-/// Convert an oxau runtime-surface error into a locationless config error.
-pub fn runtime_error_to_config(cfg: &DynamicConfig, err: &RuntimeError) -> Error {
-    Error::Validation {
-        path: cfg.path.clone(),
-        line: None,
-        col: None,
-        message: err.message().to_string(),
-        excerpt: None,
-    }
-}
-
-/// Convert a protected script failure into a config error with a best-effort location.
-pub fn script_error_to_config<'s>(
-    default_path: Option<&Path>,
-    sources: &SourceMap,
-    scope: &Scope<'s>,
-    err: &ScriptError<'s>,
-) -> Error {
-    let message = script_error_message(scope, err);
-    let (path, line, col) = traceback_location(err.traceback())
-        .map(|(path, line)| {
-            (
-                normalize_error_path(path, default_path.map(Path::to_path_buf)),
-                Some(line),
-                Some(1),
-            )
-        })
-        .unwrap_or((default_path.map(Path::to_path_buf), None, None));
-    let excerpt =
-        line.and_then(|line| excerpt_for_error(sources, path.as_ref(), line, col.unwrap_or(1)));
-
-    Error::Validation {
-        path,
-        line,
-        col,
-        message,
-        excerpt,
-    }
-}
-
-/// Extract a readable message from a scoped script error value.
-fn script_error_message<'s>(scope: &Scope<'s>, err: &ScriptError<'s>) -> String {
-    from_scoped_value::<String>(scope, err.value())
-        .unwrap_or_else(|_| format!("script raised a {} value", err.value().type_name()))
-}
-
-/// Extract the first `path:line` location from an oxau traceback.
-fn traceback_location(traceback: Option<&str>) -> Option<(String, usize)> {
-    traceback?
-        .lines()
-        .find_map(|line| parse_location_prefix(line.trim()))
-}
-
-/// Parse a single traceback line of the form `path:line: ...`.
-fn parse_location_prefix(line: &str) -> Option<(String, usize)> {
-    for (index, ch) in line.char_indices() {
-        if ch != ':' {
-            continue;
-        }
-        let rest = &line[index + 1..];
-        let digits = rest
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>();
-        if digits.is_empty() {
-            continue;
-        }
-        let line_no = digits.parse::<usize>().ok()?;
-        return Some((line[..index].to_string(), line_no));
-    }
-    None
-}
-
-/// Convert display chunk names into config paths.
-fn normalize_error_path(path: String, default_path: Option<PathBuf>) -> Option<PathBuf> {
-    match path.as_str() {
-        "<memory>" => None,
-        value if value.starts_with("[string ") => default_path,
-        _ => Some(PathBuf::from(path)),
-    }
-}
-
-/// Render an excerpt for an error location using cached sources.
-fn excerpt_for_error(
-    sources: &SourceMap,
-    path: Option<&PathBuf>,
-    line: usize,
-    col: usize,
-) -> Option<String> {
-    let source = match path {
-        Some(path) => lock_unpoisoned(sources).get(path).cloned(),
-        None => lock_unpoisoned(sources)
-            .get(&PathBuf::from("<memory>"))
-            .cloned(),
-    }?;
-    Some(excerpt_at(source.as_ref(), line, col))
 }

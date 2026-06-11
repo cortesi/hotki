@@ -36,13 +36,6 @@ impl ImportRole {
         }
     }
 
-    /// Convert a Luau import function name into its role.
-    pub(crate) fn from_function_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|role| role.function_name() == name)
-    }
-
     /// Build a synthetic root config that validates one imported module in isolation.
     pub(crate) fn wrapper_source(self, rel_path: &Path) -> String {
         let rel_path = rel_path.to_string_lossy().replace('\\', "/");
