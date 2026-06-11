@@ -208,7 +208,8 @@ impl SelectorConfig {
                 cfg.vm
                     .step_with_limits(DynamicConfig::entry_limits(), |scope| {
                         let provider = scope.fetch_function(provider)?;
-                        let ctx_value = super::loader::mode_context_userdata(scope, ctx.clone())?;
+                        let ctx_value =
+                            super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
                         let result = scope.call_protected(provider, ctx_value)?;
                         match result {
                             Ok(value) => items = Some(parse_selector_items(scope, value)?),

@@ -53,6 +53,10 @@ pub fn config_protected_error(
     sources: &SourceMap,
     err: &ProtectedScriptError,
 ) -> Error {
+    if let Some(error) = err.payload_ref::<Error>() {
+        return error.clone();
+    }
+
     let message = protected_error_message(err);
     let (path, line, col) = err
         .frames()
@@ -86,6 +90,10 @@ pub fn config_script_error<'s>(
     scope: &Scope<'s>,
     err: &ScriptError<'s>,
 ) -> Error {
+    if let Some(error) = err.payload_ref::<Error>() {
+        return error.clone();
+    }
+
     let message = script_error_message(scope, err, "script");
     let (path, line, col) = first_traceback_location(err.traceback())
         .map(|(path, line)| {
@@ -119,6 +127,11 @@ pub fn config_error_at_offset(path: &Path, source: &str, offset: usize, message:
         message,
         excerpt: Some(excerpt_at(source, line, col)),
     }
+}
+
+/// Raise an already-shaped config error through Luau without losing its structure.
+pub fn config_error_payload(error: Error) -> RuntimeError {
+    RuntimeError::runtime(error.to_string()).with_payload(error)
 }
 
 /// Convert structured checker diagnostics into the stable config error shape.

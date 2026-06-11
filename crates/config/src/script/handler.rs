@@ -36,7 +36,8 @@ pub fn execute_handler(
 
     cfg.vm
         .step_with_limits(DynamicConfig::entry_limits(), |scope| {
-            let ctx_value = super::loader::action_context_userdata(scope, action_ctx.clone())?;
+            let ctx_value =
+                super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
             let handler = scope.fetch_function(&handler.func)?;
             let result: Result<(), ScriptError<'_>> = scope.call_protected(handler, ctx_value)?;
             if let Err(err) = result {
@@ -73,7 +74,8 @@ pub fn execute_selector_handler(
 
     cfg.vm
         .step_with_limits(DynamicConfig::entry_limits(), |scope| {
-            let ctx_value = super::loader::action_context_userdata(scope, action_ctx.clone())?;
+            let ctx_value =
+                super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
             let item_table = scope.create_table()?;
             item_table.set(scope, "label", item.label.clone())?;
             item_table.set(scope, "sublabel", item.sublabel.clone())?;

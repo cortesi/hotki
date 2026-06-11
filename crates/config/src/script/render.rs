@@ -1,3 +1,5 @@
+//! Mode-stack rendering.
+
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
@@ -92,15 +94,17 @@ fn render_mode(
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
-    let builder = super::loader::ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
+    let builder =
+        super::host_userdata::ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
     let mut script_error = None;
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
 
     cfg.vm
         .step_with_limits(DynamicConfig::entry_limits(), |scope| {
-            let builder_value = super::loader::mode_builder_userdata(scope, builder.clone())?;
-            let ctx_value = super::loader::mode_context_userdata(scope, ctx.clone())?;
+            let builder_value =
+                super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
+            let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
             let render = scope.fetch_function(&frame.closure.func)?;
             let result: Result<(), ScriptError<'_>> =
                 scope.call_protected(render, (builder_value, ctx_value))?;

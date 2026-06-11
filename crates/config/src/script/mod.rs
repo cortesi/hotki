@@ -6,16 +6,20 @@ mod apps;
 mod binding_style;
 /// Loaded config state and source tracking.
 mod config;
-/// Shared Luau diagnostic conversion helpers.
 pub(crate) mod diagnostics;
 pub mod engine;
 /// Handler execution bridge.
 mod handler;
+mod host_action;
+mod host_args;
+mod host_hotki;
+mod host_parse;
+mod host_runtime;
+mod host_themes;
+pub(crate) mod host_userdata;
 /// Shared Luau import roles and filesystem policy.
 pub(crate) mod imports;
-/// Luau loader and host API installation.
 mod loader;
-/// Mode-stack rendering and error mapping.
 mod render;
 /// Selector parsing and runtime types.
 mod selector;
