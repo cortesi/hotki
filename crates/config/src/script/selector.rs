@@ -1,6 +1,8 @@
 //! Selector binding configuration types.
 
-use oxau::embed::{RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table};
+use oxau::embed::{
+    Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table,
+};
 
 use super::{DynamicConfig, HandlerRef, ModeCtx};
 
@@ -108,6 +110,48 @@ pub fn parse_selector_items<'s>(
         items.push(parse_selector_item(scope, index, value)?);
     }
     Ok(items)
+}
+
+/// Parse a selector configuration record from Luau.
+pub fn parse_selector_config<'s>(
+    scope: &Scope<'s>,
+    value: ScopedValue<'s>,
+) -> Result<SelectorConfig, RuntimeError> {
+    let ScopedValue::Table(table) = value else {
+        return Err(RuntimeError::runtime("action.selector expects a table"));
+    };
+
+    let items_value: ScopedValue<'_> = table
+        .get(scope, "items")
+        .map_err(|_| RuntimeError::runtime("selector: missing required field 'items'"))?;
+    let items = match items_value {
+        ScopedValue::Function(func) => SelectorItems::Provider(scope.stash_function(func)?),
+        other => SelectorItems::Static(parse_selector_items(scope, other)?),
+    };
+
+    let on_select = table
+        .get(scope, "on_select")
+        .map_err(|_| RuntimeError::runtime("selector: missing required field 'on_select'"))?;
+    let on_select = HandlerRef::from_function(scope, on_select)?;
+    let on_cancel = table
+        .get::<_, Option<Function<'_>>>(scope, "on_cancel")?
+        .map(|func| HandlerRef::from_function(scope, func))
+        .transpose()?;
+
+    Ok(SelectorConfig {
+        title: table
+            .get::<_, Option<String>>(scope, "title")?
+            .unwrap_or_else(|| "Select".to_string()),
+        placeholder: table
+            .get::<_, Option<String>>(scope, "placeholder")?
+            .unwrap_or_default(),
+        items,
+        on_select,
+        on_cancel,
+        max_visible: table
+            .get::<_, Option<usize>>(scope, "max_visible")?
+            .unwrap_or(10),
+    })
 }
 
 /// A single selectable option in an interactive selector.

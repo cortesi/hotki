@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -24,7 +24,16 @@ use oxau::{
 };
 use regex::Regex;
 
-use crate::{Error, error::excerpt_at, luau_api, script::load_dynamic_config_from_string, themes};
+use crate::{
+    Error,
+    error::excerpt_at,
+    luau_api,
+    script::{
+        imports::{self, ImportRole},
+        load_dynamic_config_from_string,
+    },
+    themes,
+};
 
 /// Summary of a successful Luau validation run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -33,76 +42,6 @@ pub struct LuauCheckReport {
     pub imports: usize,
     /// Number of user theme files validated from the sibling `themes/` directory.
     pub themes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// Role-specific import kinds supported by the Luau host API.
-enum ImportRole {
-    /// Imported mode renderer.
-    Mode,
-    /// Imported selector item provider or static item array.
-    Items,
-    /// Imported action handler closure.
-    Handler,
-    /// Imported style overlay module.
-    Style,
-}
-
-impl ImportRole {
-    /// Convert a Luau import function name into its role.
-    fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "import_mode" => Some(Self::Mode),
-            "import_items" => Some(Self::Items),
-            "import_handler" => Some(Self::Handler),
-            "import_style" => Some(Self::Style),
-            _ => None,
-        }
-    }
-
-    /// Build a synthetic root config that validates one imported module in isolation.
-    fn wrapper_source(self, rel_path: &Path) -> String {
-        let rel_path = rel_path.to_string_lossy().replace('\\', "/");
-        match self {
-            Self::Mode => format!(
-                "local imported = hotki.import_mode(\"{rel_path}\")\n\
-                 hotki.root(imported)\n"
-            ),
-            Self::Items => format!(
-                "local imported = hotki.import_items(\"{rel_path}\")\n\
-                 hotki.root(function(menu, ctx)\n\
-                 \tmenu:bind(\"a\", \"Select\", action.selector({{\n\
-                 \t\titems = imported,\n\
-                 \t\ton_select = function(actx, item, query)\n\
-                 \t\tend,\n\
-                 \t}}))\n\
-                 end)\n"
-            ),
-            Self::Handler => format!(
-                "local imported = hotki.import_handler(\"{rel_path}\")\n\
-                 hotki.root(function(menu, ctx)\n\
-                 \tmenu:bind(\"a\", \"Run\", action.run(imported))\n\
-                 end)\n"
-            ),
-            Self::Style => format!(
-                "local imported = hotki.import_style(\"{rel_path}\")\n\
-                 hotki.root(function(menu, ctx)\n\
-                 \tmenu:style(imported)\n\
-                 end)\n"
-            ),
-        }
-    }
-
-    /// Build an analyzer harness that type-checks one imported module in isolation.
-    fn analysis_source(self, module_source: &str) -> String {
-        let target = match self {
-            Self::Mode => "ModeModule",
-            Self::Items => "ItemsProvider<any>",
-            Self::Handler => "HandlerModule",
-            Self::Style => "any",
-        };
-        format!("local _module = (function(): {target}\n{module_source}\nend)()\n")
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -204,7 +143,8 @@ fn visit_imports(
     })?;
 
     for (role, import_text, offset) in parse_import_calls(&source, &canonical)? {
-        let resolved = resolve_import_path(root_dir, import_text.as_str())?;
+        let resolved = imports::resolve_path(root_dir, import_text.as_str())
+            .map_err(|err| err.into_config_error(root_dir))?;
         let spec = ImportSpec {
             role,
             path: resolved.clone(),
@@ -247,7 +187,7 @@ fn collect_literal_imports(
         let Some(path_match) = captures.get(2) else {
             continue;
         };
-        let Some(role) = ImportRole::from_name(role_match.as_str()) else {
+        let Some(role) = ImportRole::from_function_name(role_match.as_str()) else {
             continue;
         };
         out.insert(full.start(), (role, path_match.as_str().to_string()));
@@ -330,52 +270,8 @@ fn analyze_imports(imports: &BTreeSet<ImportSpec>) -> Result<(), Error> {
 fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let suffix = match role {
-        ImportRole::Mode => "mode",
-        ImportRole::Items => "items",
-        ImportRole::Handler => "handler",
-        ImportRole::Style => "style",
-    };
+    let suffix = role.synthetic_suffix();
     root_dir.join(format!("__hotki_check_{suffix}_{id}.luau"))
-}
-
-/// Resolve a relative import path using the same filesystem rules as the runtime loader.
-fn resolve_import_path(root_dir: &Path, raw_path: &str) -> Result<PathBuf, Error> {
-    let path = Path::new(raw_path);
-    if path.is_absolute() {
-        return Err(Error::Validation {
-            path: Some(root_dir.to_path_buf()),
-            line: None,
-            col: None,
-            message: "absolute import paths are not allowed".to_string(),
-            excerpt: None,
-        });
-    }
-
-    for component in path.components() {
-        if matches!(
-            component,
-            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-        ) {
-            return Err(Error::Validation {
-                path: Some(root_dir.to_path_buf()),
-                line: None,
-                col: None,
-                message: "parent traversal is not allowed in imports".to_string(),
-                excerpt: None,
-            });
-        }
-    }
-
-    let candidate = if path.extension().is_some() {
-        root_dir.join(path)
-    } else {
-        root_dir.join(path).with_extension("luau")
-    };
-    fs::canonicalize(&candidate).map_err(|err| Error::Read {
-        path: Some(candidate),
-        message: err.to_string(),
-    })
 }
 
 /// Attach a source location and excerpt to a validation error at `offset`.
@@ -634,6 +530,7 @@ mod tests {
     use std::{
         ffi::OsStr,
         fs,
+        os::unix::fs as unix_fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -719,6 +616,31 @@ end)
         let pretty = err.pretty();
         assert!(pretty.contains("literal relative path strings"));
         assert!(pretty.contains("config.luau"));
+    }
+
+    #[test]
+    fn check_rejects_imports_that_escape_root_via_symlink() {
+        let root = test_dir("escaped-import");
+        let outside = test_dir("escaped-import-target");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local child = hotki.import_mode("alias")
+
+hotki.root(child)
+"#,
+        )
+        .expect("write root config");
+        fs::write(
+            outside.join("child.luau"),
+            "return function(menu, ctx)\nend\n",
+        )
+        .expect("write external child import");
+        unix_fs::symlink(outside.join("child.luau"), root.join("alias.luau"))
+            .expect("symlink external child import");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        assert!(err.pretty().contains("import escapes the config directory"));
     }
 
     #[test]

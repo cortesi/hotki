@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fmt, fs, mem,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -23,8 +23,11 @@ use serde::Deserialize;
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, DynamicConfig, HandlerRef, ModeCtx, ModeRef,
-    NavRequest, RepeatSpec, SelectorConfig, SelectorItems, SourcePos, StyleOverlay, apps,
-    binding_style::BindingStyleSpec, selector, util::lock_unpoisoned,
+    NavRequest, RepeatSpec, SelectorConfig, SourcePos, StyleOverlay, apps,
+    binding_style::BindingStyleSpec,
+    imports::{self, ImportRole},
+    selector,
+    util::lock_unpoisoned,
 };
 use crate::{Action, Error, NotifyKind, Toggle, error::excerpt_at, raw, themes};
 
@@ -37,22 +40,93 @@ const HOTKI_DECLARATION: &str =
 
 /// Tag used to distinguish primitive action constants from other light userdata.
 const ACTION_TOKEN_TAG: u8 = 0x48;
-/// Primitive action token for `action.pop`.
-const ACTION_POP: u32 = 1;
-/// Primitive action token for `action.exit`.
-const ACTION_EXIT: u32 = 2;
-/// Primitive action token for `action.show_root`.
-const ACTION_SHOW_ROOT: u32 = 3;
-/// Primitive action token for `action.hide_hud`.
-const ACTION_HIDE_HUD: u32 = 4;
-/// Primitive action token for `action.reload_config`.
-const ACTION_RELOAD_CONFIG: u32 = 5;
-/// Primitive action token for `action.clear_notifications`.
-const ACTION_CLEAR_NOTIFICATIONS: u32 = 6;
-/// Primitive action token for `action.theme_next`.
-const ACTION_THEME_NEXT: u32 = 7;
-/// Primitive action token for `action.theme_prev`.
-const ACTION_THEME_PREV: u32 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+/// Primitive `action.*` constants exposed as light userdata.
+enum PrimitiveAction {
+    /// Pop the current mode.
+    Pop = 1,
+    /// Exit the current stack.
+    Exit = 2,
+    /// Show the root HUD.
+    ShowRoot = 3,
+    /// Hide the HUD.
+    HideHud = 4,
+    /// Reload the active config.
+    ReloadConfig = 5,
+    /// Clear in-app notifications.
+    ClearNotifications = 6,
+    /// Select the next theme.
+    ThemeNext = 7,
+    /// Select the previous theme.
+    ThemePrev = 8,
+}
+
+impl PrimitiveAction {
+    /// All primitive action constants installed in the `action` module.
+    const ALL: [Self; 8] = [
+        Self::Pop,
+        Self::Exit,
+        Self::ShowRoot,
+        Self::HideHud,
+        Self::ReloadConfig,
+        Self::ClearNotifications,
+        Self::ThemeNext,
+        Self::ThemePrev,
+    ];
+
+    /// Name installed in the Luau `action` module.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pop => "pop",
+            Self::Exit => "exit",
+            Self::ShowRoot => "show_root",
+            Self::HideHud => "hide_hud",
+            Self::ReloadConfig => "reload_config",
+            Self::ClearNotifications => "clear_notifications",
+            Self::ThemeNext => "theme_next",
+            Self::ThemePrev => "theme_prev",
+        }
+    }
+
+    /// Decode a light-userdata handle into a primitive action.
+    fn from_handle(handle: u32) -> Option<Self> {
+        Some(match handle {
+            1 => Self::Pop,
+            2 => Self::Exit,
+            3 => Self::ShowRoot,
+            4 => Self::HideHud,
+            5 => Self::ReloadConfig,
+            6 => Self::ClearNotifications,
+            7 => Self::ThemeNext,
+            8 => Self::ThemePrev,
+            _ => return None,
+        })
+    }
+
+    /// Convert to the engine action represented by this token.
+    fn to_action(self) -> Action {
+        match self {
+            Self::Pop => Action::Pop,
+            Self::Exit => Action::Exit,
+            Self::ShowRoot => Action::ShowRoot,
+            Self::HideHud => Action::HideHud,
+            Self::ReloadConfig => Action::ReloadConfig,
+            Self::ClearNotifications => Action::ClearNotifications,
+            Self::ThemeNext => Action::ThemeNext,
+            Self::ThemePrev => Action::ThemePrev,
+        }
+    }
+
+    /// Build a light-userdata module constant for this primitive action.
+    fn token(self) -> ModuleValue {
+        ModuleValue::LightUserdata {
+            handle: self as u32,
+            tag: ACTION_TOKEN_TAG,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,19 +192,6 @@ struct RuntimeState {
     sources: super::config::SourceMap,
     /// Imported role modules keyed by `(role, canonical_path)`.
     imports: HashMap<(ImportRole, PathBuf), ImportedValue>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Role-specific import kinds accepted by the Luau host API.
-enum ImportRole {
-    /// Imported mode renderer.
-    Mode,
-    /// Imported selector items provider or static list.
-    Items,
-    /// Imported action handler.
-    Handler,
-    /// Imported style overlay.
-    Style,
 }
 
 #[derive(Clone, Debug)]
@@ -427,12 +488,7 @@ impl NativeModule for HotkiModule {
                 state: self.state.clone(),
             }),
         );
-        for role in [
-            ImportRole::Mode,
-            ImportRole::Items,
-            ImportRole::Handler,
-            ImportRole::Style,
-        ] {
+        for role in ImportRole::ALL {
             builder.scoped_function(
                 role.function_name(),
                 binding.clone(),
@@ -459,30 +515,9 @@ impl NativeModule for ActionModule {
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
         let binding = ModuleBinding::library("action");
-        builder.constant("pop", binding.clone(), action_token(ACTION_POP));
-        builder.constant("exit", binding.clone(), action_token(ACTION_EXIT));
-        builder.constant("show_root", binding.clone(), action_token(ACTION_SHOW_ROOT));
-        builder.constant("hide_hud", binding.clone(), action_token(ACTION_HIDE_HUD));
-        builder.constant(
-            "reload_config",
-            binding.clone(),
-            action_token(ACTION_RELOAD_CONFIG),
-        );
-        builder.constant(
-            "clear_notifications",
-            binding.clone(),
-            action_token(ACTION_CLEAR_NOTIFICATIONS),
-        );
-        builder.constant(
-            "theme_next",
-            binding.clone(),
-            action_token(ACTION_THEME_NEXT),
-        );
-        builder.constant(
-            "theme_prev",
-            binding.clone(),
-            action_token(ACTION_THEME_PREV),
-        );
+        for action in PrimitiveAction::ALL {
+            builder.constant(action.name(), binding.clone(), action.token());
+        }
 
         for kind in [
             ActionFunction::Shell,
@@ -813,7 +848,7 @@ impl ScopedHostFunction for ActionFunction {
                     .next()
                     .ok_or_else(|| RuntimeError::runtime("action.selector expects a table"))?;
                 expect_no_extra(args.next(), "action.selector")?;
-                ActionPayload::Selector(parse_selector_config(scope, spec)?)
+                ActionPayload::Selector(selector::parse_selector_config(scope, spec)?)
             }
         };
         action_userdata(scope, payload)
@@ -937,48 +972,6 @@ impl ScopedHostFunction for ThemesFunction {
     }
 }
 
-/// Parse a selector configuration record from Luau.
-fn parse_selector_config<'s>(
-    scope: &Scope<'s>,
-    value: ScopedValue<'s>,
-) -> Result<SelectorConfig, RuntimeError> {
-    let ScopedValue::Table(table) = value else {
-        return Err(RuntimeError::runtime("action.selector expects a table"));
-    };
-
-    let items_value: ScopedValue<'_> = table
-        .get(scope, "items")
-        .map_err(|_| RuntimeError::runtime("selector: missing required field 'items'"))?;
-    let items = match items_value {
-        ScopedValue::Function(func) => SelectorItems::Provider(scope.stash_function(func)?),
-        other => SelectorItems::Static(selector::parse_selector_items(scope, other)?),
-    };
-
-    let on_select = table
-        .get(scope, "on_select")
-        .map_err(|_| RuntimeError::runtime("selector: missing required field 'on_select'"))?;
-    let on_select = HandlerRef::from_function(scope, on_select)?;
-    let on_cancel = table
-        .get::<_, Option<Function<'_>>>(scope, "on_cancel")?
-        .map(|func| HandlerRef::from_function(scope, func))
-        .transpose()?;
-
-    Ok(SelectorConfig {
-        title: table
-            .get::<_, Option<String>>(scope, "title")?
-            .unwrap_or_else(|| "Select".to_string()),
-        placeholder: table
-            .get::<_, Option<String>>(scope, "placeholder")?
-            .unwrap_or_default(),
-        items,
-        on_select,
-        on_cancel,
-        max_visible: table
-            .get::<_, Option<usize>>(scope, "max_visible")?
-            .unwrap_or(10),
-    })
-}
-
 /// Build one primitive-action, handler, or selector binding from Luau inputs.
 fn binding_from_action<'s>(
     scope: &Scope<'s>,
@@ -1100,35 +1093,7 @@ fn resolve_import_path(state: &RuntimeState, raw_path: &str) -> Result<PathBuf, 
         .as_ref()
         .ok_or_else(|| RuntimeError::runtime("imports require a filesystem-backed config"))?;
 
-    let path = Path::new(raw_path);
-    if path.is_absolute() {
-        return Err(RuntimeError::runtime(
-            "absolute import paths are not allowed",
-        ));
-    }
-
-    for component in path.components() {
-        if matches!(
-            component,
-            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-        ) {
-            return Err(RuntimeError::runtime(
-                "parent traversal is not allowed in imports",
-            ));
-        }
-    }
-
-    let candidate = if path.extension().is_some() {
-        root.join(path)
-    } else {
-        root.join(path).with_extension("luau")
-    };
-    let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
-    let canon = fs::canonicalize(&candidate).map_err(RuntimeError::external)?;
-    if !canon.starts_with(&root_canon) {
-        return Err(RuntimeError::runtime("import escapes the config directory"));
-    }
-    Ok(canon)
+    imports::resolve_path(root, raw_path).map_err(|err| err.into_runtime_error())
 }
 
 /// Convert selector items into a Luau array table.
@@ -1253,18 +1218,6 @@ fn error_excerpt(
             .get(path)
             .map(|source| excerpt_at(source.as_ref(), line, col)),
         None => Some(excerpt_at(source, line, col)),
-    }
-}
-
-impl ImportRole {
-    /// Return the host import function name for this role.
-    fn function_name(self) -> &'static str {
-        match self {
-            Self::Mode => "import_mode",
-            Self::Items => "import_items",
-            Self::Handler => "import_handler",
-            Self::Style => "import_style",
-        }
     }
 }
 
@@ -1555,8 +1508,8 @@ fn action_payload_from_value<'s>(
             Ok(userdata.borrow::<ActionValue>(scope)?.payload.clone())
         }
         ScopedValue::LightUserdata { handle, tag } if tag == ACTION_TOKEN_TAG => {
-            primitive_action_from_handle(handle)
-                .map(ActionPayload::Action)
+            PrimitiveAction::from_handle(handle)
+                .map(|action| ActionPayload::Action(action.to_action()))
                 .ok_or_else(|| RuntimeError::runtime("unknown action token"))
         }
         other => Err(RuntimeError::runtime(format!(
@@ -1574,29 +1527,6 @@ fn primitive_action_from_value<'s>(
     match action_payload_from_value(scope, value)? {
         ActionPayload::Action(action) => Ok(action),
         _ => Err(RuntimeError::runtime("ctx:exec expects a primitive action")),
-    }
-}
-
-/// Map a primitive action token handle to its engine action.
-fn primitive_action_from_handle(handle: u32) -> Option<Action> {
-    Some(match handle {
-        ACTION_POP => Action::Pop,
-        ACTION_EXIT => Action::Exit,
-        ACTION_SHOW_ROOT => Action::ShowRoot,
-        ACTION_HIDE_HUD => Action::HideHud,
-        ACTION_RELOAD_CONFIG => Action::ReloadConfig,
-        ACTION_CLEAR_NOTIFICATIONS => Action::ClearNotifications,
-        ACTION_THEME_NEXT => Action::ThemeNext,
-        ACTION_THEME_PREV => Action::ThemePrev,
-        _ => return None,
-    })
-}
-
-/// Build a light-userdata module constant for a primitive action.
-fn action_token(handle: u32) -> ModuleValue {
-    ModuleValue::LightUserdata {
-        handle,
-        tag: ACTION_TOKEN_TAG,
     }
 }
 

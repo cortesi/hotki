@@ -9,6 +9,8 @@ mod config;
 pub mod engine;
 /// Handler execution bridge.
 mod handler;
+/// Shared Luau import roles and filesystem policy.
+pub(crate) mod imports;
 /// Luau loader and host API installation.
 mod loader;
 /// Mode-stack rendering and error mapping.
@@ -27,7 +29,9 @@ pub(crate) use config::DynamicConfig;
 pub(crate) use loader::load_dynamic_config_from_string;
 #[cfg(test)]
 pub(crate) use render::render_stack;
-pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem, SelectorItems};
+#[cfg(test)]
+pub(crate) use selector::SelectorItems;
+pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem};
 pub(crate) use types::{
     ActionCtx, Binding, BindingFlags, BindingKind, BindingStyle, Effect, HandlerRef, ModeCtx,
     ModeFrame, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos, StyleOverlay,
