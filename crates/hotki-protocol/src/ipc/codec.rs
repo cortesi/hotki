@@ -1,4 +1,5 @@
 use mrpc::Value;
+use rmp_serde::{decode::Error as DecodeError, encode::Error as EncodeError};
 use thiserror::Error;
 
 use crate::MsgToUI;
@@ -11,10 +12,10 @@ pub enum Error {
     InvalidValueType(Value),
     /// Deserialization via rmp_serde failed.
     #[error(transparent)]
-    Decode(#[from] rmp_serde::decode::Error),
+    Decode(#[from] DecodeError),
     /// Serialization via rmp_serde failed.
     #[error(transparent)]
-    Encode(#[from] rmp_serde::encode::Error),
+    Encode(#[from] EncodeError),
 }
 
 /// Encode a `MsgToUI` message into an `mrpc::Value` as a binary payload.

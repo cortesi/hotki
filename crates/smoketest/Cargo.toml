@@ -16,16 +16,16 @@ hotki-server = { path = "../hotki-server" }
 hotki-protocol = { path = "../hotki-protocol" }
 mac-keycode = { path = "../mac-keycode" }
 winit = "0.30"
-objc2-app-kit = { version = "0.3.2", features = ["NSScreen", "NSTextField", "NSFont", "libc"] }
-objc2-foundation = "0.3.2"
-objc2 = "0.6.3"
+objc2-app-kit = { workspace = true, features = ["NSScreen", "NSTextField", "NSFont", "libc"] }
+objc2-foundation = { workspace = true }
+objc2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-config = { version = "0.0.1", path = "../config" }
+config = { path = "../config" }
 thiserror = { workspace = true }
 libc = { workspace = true }
-parking_lot = "0.12.5"
+parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-core-graphics = "0.25.0"
-core-foundation = "0.10.1"
+core-graphics = { workspace = true }
+core-foundation = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }

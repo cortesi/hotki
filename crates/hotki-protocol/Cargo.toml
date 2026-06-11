@@ -8,10 +8,13 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["sync"] }
-mrpc = "0.0.6"
-rmp-serde = "1"
+mrpc = { workspace = true }
+rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 mac-keycode = { path = "../mac-keycode" }

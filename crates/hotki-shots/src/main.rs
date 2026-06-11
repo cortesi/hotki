@@ -1,3 +1,5 @@
+//! Capture Hotki HUD and notification screenshots from a running app instance.
+
 use std::{
     cmp, env,
     ffi::{OsStr, OsString},

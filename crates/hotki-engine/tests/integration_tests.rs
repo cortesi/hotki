@@ -1,3 +1,5 @@
+//! Integration coverage for engine dispatch, mode, and selector flows.
+
 use std::{
     fs,
     sync::{

@@ -1,3 +1,5 @@
+//! Inspect raw egui input events for Hotki input debugging.
+
 use std::fmt::Write;
 
 use eframe::egui::{self, Event, Modifiers, Panel, RichText, ScrollArea};

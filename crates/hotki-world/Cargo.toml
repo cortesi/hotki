@@ -9,11 +9,11 @@ license = "MIT"
 test-utils = []
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }
 permissions = { path = "../permissions" }
-parking_lot = "0.12.5"
+parking_lot = { workspace = true }
 async-trait.workspace = true
-core-foundation = "0.10.1"
-core-graphics = "0.25.0"
-hotki-protocol = { version = "0.0.1", path = "../hotki-protocol" }
+core-foundation = { workspace = true }
+core-graphics = { workspace = true }
+hotki-protocol = { path = "../hotki-protocol" }
 serde = { workspace = true, features = ["derive"] }

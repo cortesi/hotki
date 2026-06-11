@@ -5,9 +5,13 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+/// Display geometry payloads.
 mod display;
+/// Focus snapshot payloads.
 mod focus;
+/// Shared UI style payloads.
 mod style;
+/// Server-to-UI message payloads.
 mod ui;
 
 pub use display::{DisplayFrame, DisplaysSnapshot};
@@ -23,6 +27,8 @@ pub use ui::{
 
 /// IPC-related helpers: channel aliases and message codec.
 pub mod ipc {
+    use tokio::sync::mpsc::{self, Receiver, Sender};
+
     use super::MsgToUI;
 
     /// Default capacity for the bounded UI event pipeline.
@@ -30,13 +36,13 @@ pub mod ipc {
     pub const DEFAULT_UI_CHANNEL_CAPACITY: usize = 10_000;
 
     /// Tokio bounded sender for UI messages.
-    pub type UiTx = tokio::sync::mpsc::Sender<MsgToUI>;
+    pub type UiTx = Sender<MsgToUI>;
     /// Tokio bounded receiver for UI messages.
-    pub type UiRx = tokio::sync::mpsc::Receiver<MsgToUI>;
+    pub type UiRx = Receiver<MsgToUI>;
 
     /// Create the standard bounded UI channel (sender, receiver).
     pub fn ui_channel() -> (UiTx, UiRx) {
-        tokio::sync::mpsc::channel::<MsgToUI>(DEFAULT_UI_CHANNEL_CAPACITY)
+        mpsc::channel::<MsgToUI>(DEFAULT_UI_CHANNEL_CAPACITY)
     }
 
     /// Codec for encoding/decoding UI messages used by the IPC layer.

@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Simple, macOS-only permission checks for Hotki.
 //!
 //! This crate exposes a minimal, stable API to query whether the process has

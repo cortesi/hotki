@@ -1,3 +1,5 @@
+//! Generate static key-code lookup tables from the checked-in source data.
+
 use std::{
     collections::BTreeMap,
     env, fs,

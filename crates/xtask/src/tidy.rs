@@ -1,6 +1,6 @@
 //! Linting and formatting tasks.
 
-use std::path::Path;
+use std::{iter::empty, path::Path};
 
 use crate::{
     Result,
@@ -9,6 +9,14 @@ use crate::{
 
 /// Run workspace lint and format checks.
 pub fn tidy(root_dir: &Path) -> Result<()> {
+    println!("==> cargo machete");
+    run_status(
+        root_dir,
+        "cargo-machete",
+        empty::<&str>(),
+        OutputMode::Streaming,
+    )?;
+
     println!("==> cargo clippy --fix");
     run_status(
         root_dir,

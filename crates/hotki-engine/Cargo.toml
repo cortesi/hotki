@@ -12,10 +12,10 @@ mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
 hotki-world = { path = "../hotki-world" }
 
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
 tracing = { workspace = true }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
-relaykey = { version = "0.0.1", path = "../relaykey" }
-parking_lot = "0.12.5"
+relaykey = { path = "../relaykey" }
+parking_lot = { workspace = true }
 nucleo = "0.5.0"

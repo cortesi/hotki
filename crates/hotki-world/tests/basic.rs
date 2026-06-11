@@ -1,3 +1,5 @@
+//! Integration coverage for test-world event delivery.
+
 use std::time::Duration;
 
 use hotki_world::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow};

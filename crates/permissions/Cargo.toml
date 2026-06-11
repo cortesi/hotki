@@ -5,6 +5,8 @@ edition = "2024"
 description = "macOS permission checks for Accessibility and Input Monitoring"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-

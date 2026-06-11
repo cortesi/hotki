@@ -34,30 +34,30 @@ impl HotkeyMethod {
     /// Stable string name for the method when talking to MRPC.
     pub fn as_str(&self) -> &'static str {
         match self {
-            HotkeyMethod::Shutdown => "shutdown",
-            HotkeyMethod::SetConfigPath => "set_config_path",
-            HotkeyMethod::SetTheme => "set_theme",
-            HotkeyMethod::InjectKey => "inject_key",
-            HotkeyMethod::GetBindings => "get_bindings",
-            HotkeyMethod::GetDepth => "get_depth",
-            HotkeyMethod::GetWorldStatus => "get_world_status",
-            HotkeyMethod::GetServerStatus => "get_server_status",
-            HotkeyMethod::GetWorldSnapshot => "get_world_snapshot",
+            Self::Shutdown => "shutdown",
+            Self::SetConfigPath => "set_config_path",
+            Self::SetTheme => "set_theme",
+            Self::InjectKey => "inject_key",
+            Self::GetBindings => "get_bindings",
+            Self::GetDepth => "get_depth",
+            Self::GetWorldStatus => "get_world_status",
+            Self::GetServerStatus => "get_server_status",
+            Self::GetWorldSnapshot => "get_world_snapshot",
         }
     }
 
     /// Parse a method name received over MRPC.
     pub fn try_from_str(s: &str) -> Option<Self> {
         match s {
-            "shutdown" => Some(HotkeyMethod::Shutdown),
-            "set_config_path" => Some(HotkeyMethod::SetConfigPath),
-            "set_theme" => Some(HotkeyMethod::SetTheme),
-            "inject_key" => Some(HotkeyMethod::InjectKey),
-            "get_bindings" => Some(HotkeyMethod::GetBindings),
-            "get_depth" => Some(HotkeyMethod::GetDepth),
-            "get_world_status" => Some(HotkeyMethod::GetWorldStatus),
-            "get_server_status" => Some(HotkeyMethod::GetServerStatus),
-            "get_world_snapshot" => Some(HotkeyMethod::GetWorldSnapshot),
+            "shutdown" => Some(Self::Shutdown),
+            "set_config_path" => Some(Self::SetConfigPath),
+            "set_theme" => Some(Self::SetTheme),
+            "inject_key" => Some(Self::InjectKey),
+            "get_bindings" => Some(Self::GetBindings),
+            "get_depth" => Some(Self::GetDepth),
+            "get_world_status" => Some(Self::GetWorldStatus),
+            "get_server_status" => Some(Self::GetServerStatus),
+            "get_world_snapshot" => Some(Self::GetWorldSnapshot),
             _ => None,
         }
     }
@@ -74,7 +74,7 @@ impl HotkeyNotification {
     /// Stable string name for the notification channel.
     pub fn as_str(&self) -> &'static str {
         match self {
-            HotkeyNotification::Notify => "notify",
+            Self::Notify => "notify",
         }
     }
 }
