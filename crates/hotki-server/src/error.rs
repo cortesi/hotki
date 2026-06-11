@@ -13,6 +13,15 @@ pub enum Error {
     #[error("IPC error: {0}")]
     Ipc(String),
 
+    /// Spawned server process exited before the client could connect.
+    #[error("Server process exited before connection was ready on {socket_path}: {status}")]
+    ServerExitedBeforeConnect {
+        /// Socket path the client was trying to connect to.
+        socket_path: String,
+        /// Process exit status as reported by the operating system.
+        status: String,
+    },
+
     /// Typed error returned by an RPC service method.
     #[error("{method} request failed: service error {code}: {message}")]
     Rpc {

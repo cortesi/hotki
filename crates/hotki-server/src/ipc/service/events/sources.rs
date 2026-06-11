@@ -10,13 +10,17 @@ use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use hotki_world::WorldView;
 use tokio::sync::mpsc::Sender;
 
+use super::LifecycleRun;
+
 /// Spawn the shared focus-change forwarder.
 pub(super) fn spawn_world_forwarder(
     shutdown: Arc<AtomicBool>,
     event_tx: Sender<MsgToUI>,
     world: Arc<dyn WorldView>,
+    run: LifecycleRun,
 ) {
     tokio::spawn(async move {
+        let _run = run;
         let mut cursor = world.subscribe();
         loop {
             if shutdown.load(Ordering::SeqCst) {
@@ -53,9 +57,10 @@ pub(super) fn spawn_world_forwarder(
 pub(super) fn spawn_heartbeat(
     shutdown: Arc<AtomicBool>,
     event_tx: Sender<MsgToUI>,
-    hb_running: Arc<AtomicBool>,
+    run: LifecycleRun,
 ) {
     tokio::spawn(async move {
+        let _run = run;
         let interval = hotki_protocol::ipc::heartbeat::interval();
         loop {
             if shutdown.load(Ordering::SeqCst) {
@@ -73,6 +78,5 @@ pub(super) fn spawn_heartbeat(
             }
             tokio::time::sleep(interval).await;
         }
-        hb_running.store(false, Ordering::SeqCst);
     });
 }

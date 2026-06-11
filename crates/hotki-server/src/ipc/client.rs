@@ -275,3 +275,62 @@ pub(crate) fn dec_event(v: Value) -> crate::Result<hotki_protocol::MsgToUI> {
     hotki_protocol::ipc::codec::value_to_msg(v)
         .map_err(|e| crate::Error::Serialization(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        env, fs,
+        io::Write,
+        os::unix::net::UnixListener,
+        path::PathBuf,
+        process, thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use mrpc::{Message, Response};
+
+    use super::*;
+
+    fn tmp_socket_path() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "hotki-shutdown-{process_id}-{unique}.sock",
+            process_id = process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn shutdown_succeeds_when_peer_closes_after_ack() {
+        let socket_path = tmp_socket_path();
+        let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept shutdown client");
+            let Message::Request(request) =
+                Message::decode(&mut stream).expect("decode shutdown request")
+            else {
+                panic!("expected shutdown request");
+            };
+            assert_eq!(request.method, HotkeyMethod::Shutdown.as_str());
+
+            Message::Response(Response {
+                id: request.id,
+                result: Ok(Value::Boolean(true)),
+            })
+            .encode(&mut stream)
+            .expect("encode shutdown response");
+            stream.flush().expect("flush shutdown response");
+        });
+
+        let mut connection = Connection::connect_unix(socket_path.to_str().expect("utf8 socket"))
+            .await
+            .expect("connect to test socket");
+
+        connection.shutdown().await.expect("shutdown ack");
+        server.join().expect("server thread");
+        let _ = fs::remove_file(socket_path);
+    }
+}

@@ -14,6 +14,38 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use self::{broadcaster::broadcast_event, registry::ClientRegistry, sources::*};
 
+#[derive(Clone)]
+struct LifecycleLatch {
+    running: Arc<AtomicBool>,
+}
+
+impl LifecycleLatch {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn begin(&self) -> Option<LifecycleRun> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(LifecycleRun {
+            latch: self.clone(),
+        })
+    }
+}
+
+struct LifecycleRun {
+    latch: LifecycleLatch,
+}
+
+impl Drop for LifecycleRun {
+    fn drop(&mut self) {
+        self.latch.running.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Shared event pipeline for broadcasting UI events to connected clients.
 #[derive(Clone)]
 pub(super) struct EventPipeline {
@@ -26,9 +58,9 @@ pub(super) struct EventPipeline {
     /// Global shutdown flag shared with the Tao loop.
     shutdown: Arc<AtomicBool>,
     /// Ensure only one heartbeat loop is active.
-    hb_running: Arc<AtomicBool>,
+    heartbeat_lifecycle: LifecycleLatch,
     /// Ensure only one world forwarder loop is active.
-    world_forwarder_running: Arc<AtomicBool>,
+    world_forwarder_lifecycle: LifecycleLatch,
 }
 
 impl EventPipeline {
@@ -40,8 +72,8 @@ impl EventPipeline {
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
             registry: ClientRegistry::new(),
             shutdown,
-            hb_running: Arc::new(AtomicBool::new(false)),
-            world_forwarder_running: Arc::new(AtomicBool::new(false)),
+            heartbeat_lifecycle: LifecycleLatch::new(),
+            world_forwarder_lifecycle: LifecycleLatch::new(),
         }
     }
 
@@ -94,21 +126,17 @@ impl EventPipeline {
 
     /// Ensure the focus-change forwarder is running.
     pub(super) async fn ensure_world_forwarder(&self, world: Arc<dyn WorldView>) {
-        if self.world_forwarder_running.swap(true, Ordering::SeqCst) {
+        let Some(run) = self.world_forwarder_lifecycle.begin() else {
             return;
-        }
-        spawn_world_forwarder(self.shutdown.clone(), self.event_tx.clone(), world);
+        };
+        spawn_world_forwarder(self.shutdown.clone(), self.event_tx.clone(), world, run);
     }
 
     /// Start the single shared heartbeat loop if it is not already running.
     pub(super) async fn ensure_heartbeat(&self) {
-        if self.hb_running.swap(true, Ordering::SeqCst) {
+        let Some(run) = self.heartbeat_lifecycle.begin() else {
             return;
-        }
-        spawn_heartbeat(
-            self.shutdown.clone(),
-            self.event_tx.clone(),
-            self.hb_running.clone(),
-        );
+        };
+        spawn_heartbeat(self.shutdown.clone(), self.event_tx.clone(), run);
     }
 }

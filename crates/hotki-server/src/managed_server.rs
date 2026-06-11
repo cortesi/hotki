@@ -1,4 +1,8 @@
-use std::{env, process, time::Duration};
+use std::{
+    env,
+    process::{self, ExitStatus},
+    time::Duration,
+};
 
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
@@ -9,16 +13,47 @@ use crate::{
     process::{ProcessConfig, ServerProcess},
 };
 
-const STARTUP_POLL_TIMEOUT_MS: u64 = 1000;
-const CONNECT_TIMEOUT_SECS: u64 = 5;
-const CONNECT_MAX_ATTEMPTS: u32 = 5;
-const CONNECT_RETRY_DELAY_MS: u64 = 200;
+const DEFAULT_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    startup_poll_timeout: Duration::from_millis(1000),
+    startup_initial_delay: Duration::from_millis(10),
+    startup_max_delay: Duration::from_millis(100),
+    startup_delay_step: Duration::from_millis(10),
+    connect_timeout: Duration::from_secs(5),
+    connect_attempts: 5,
+    connect_retry_delay: Duration::from_millis(200),
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RetryPolicy {
+    startup_poll_timeout: Duration,
+    startup_initial_delay: Duration,
+    startup_max_delay: Duration,
+    startup_delay_step: Duration,
+    connect_timeout: Duration,
+    connect_attempts: u32,
+    connect_retry_delay: Duration,
+}
+
+impl RetryPolicy {
+    fn next_startup_delay(self, current: Duration) -> Duration {
+        current
+            .saturating_add(self.startup_delay_step)
+            .min(self.startup_max_delay)
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        DEFAULT_RETRY_POLICY
+    }
+}
 
 /// Auto-spawn policy and managed server process lifecycle for a client.
 pub(crate) struct ManagedServer {
     socket_path: String,
     config: Option<ProcessConfig>,
     server: Option<ServerProcess>,
+    retry_policy: RetryPolicy,
 }
 
 impl ManagedServer {
@@ -33,6 +68,7 @@ impl ManagedServer {
             socket_path: socket_path.into(),
             config: None,
             server: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -46,6 +82,11 @@ impl ManagedServer {
     #[cfg(test)]
     pub(crate) fn server_config(&self) -> Option<&ProcessConfig> {
         self.config.as_ref()
+    }
+
+    #[cfg(test)]
+    fn retry_policy(&self) -> RetryPolicy {
+        self.retry_policy
     }
 
     /// Return true when a managed process is still tracked.
@@ -119,8 +160,7 @@ impl ManagedServer {
             spawned_server = Some(server);
         }
 
-        let spawned = spawned_server.is_some();
-        match self.try_connect_with_retries(spawned).await {
+        match self.try_connect_with_retries(spawned_server.as_mut()).await {
             Ok(connection) => {
                 self.server = spawned_server;
                 Ok(connection)
@@ -154,7 +194,7 @@ impl ManagedServer {
 
     async fn try_connect(&self) -> Result<Connection> {
         match timeout(
-            Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            self.retry_policy.connect_timeout,
             Connection::connect_unix(&self.socket_path),
         )
         .await
@@ -163,22 +203,26 @@ impl ManagedServer {
             Ok(Err(err)) => Err(err),
             Err(_) => Err(Error::Ipc(format!(
                 "Connection timeout after {:?}",
-                Duration::from_secs(CONNECT_TIMEOUT_SECS)
+                self.retry_policy.connect_timeout
             ))),
         }
     }
 
-    async fn try_connect_with_retries(&self, spawned: bool) -> Result<Connection> {
+    async fn try_connect_with_retries(
+        &self,
+        mut spawned_server: Option<&mut ServerProcess>,
+    ) -> Result<Connection> {
         let mut last_error = None;
 
-        if spawned {
+        if spawned_server.is_some() {
             debug!(
                 "Polling for server readiness (timeout: {:?})",
-                Duration::from_millis(STARTUP_POLL_TIMEOUT_MS)
+                self.retry_policy.startup_poll_timeout
             );
             let start_time = tokio::time::Instant::now();
-            let mut poll_interval = Duration::from_millis(10);
-            while start_time.elapsed() < Duration::from_millis(STARTUP_POLL_TIMEOUT_MS) {
+            let mut poll_interval = self.retry_policy.startup_initial_delay;
+            while start_time.elapsed() < self.retry_policy.startup_poll_timeout {
+                self.check_spawned_server(spawned_server.as_deref_mut())?;
                 match self.try_connect().await {
                     Ok(connection) => {
                         info!("Connected to spawned server in {:?}", start_time.elapsed());
@@ -186,25 +230,29 @@ impl ManagedServer {
                     }
                     Err(err) => {
                         last_error = Some(err);
+                        self.check_spawned_server(spawned_server.as_deref_mut())?;
                         sleep(poll_interval).await;
-                        if poll_interval < Duration::from_millis(100) {
-                            poll_interval = poll_interval.saturating_add(Duration::from_millis(10));
-                        }
+                        poll_interval = self.retry_policy.next_startup_delay(poll_interval);
                     }
                 }
             }
             debug!("Startup poll window elapsed; falling back to standard retries");
         }
 
-        for attempt in 1..=CONNECT_MAX_ATTEMPTS {
-            debug!("Connection attempt {}/{}", attempt, CONNECT_MAX_ATTEMPTS);
+        for attempt in 1..=self.retry_policy.connect_attempts {
+            self.check_spawned_server(spawned_server.as_deref_mut())?;
+            debug!(
+                "Connection attempt {}/{}",
+                attempt, self.retry_policy.connect_attempts
+            );
             match self.try_connect().await {
                 Ok(connection) => return Ok(connection),
                 Err(err) => {
                     debug!("Connection attempt {} failed: {}", attempt, err);
                     last_error = Some(err);
-                    if attempt < CONNECT_MAX_ATTEMPTS {
-                        sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS)).await;
+                    self.check_spawned_server(spawned_server.as_deref_mut())?;
+                    if attempt < self.retry_policy.connect_attempts {
+                        sleep(self.retry_policy.connect_retry_delay).await;
                     }
                 }
             }
@@ -213,5 +261,72 @@ impl ManagedServer {
         Err(last_error.unwrap_or_else(|| {
             Error::Ipc("Failed to connect after all retry attempts".to_string())
         }))
+    }
+
+    fn check_spawned_server(&self, server: Option<&mut ServerProcess>) -> Result<()> {
+        let Some(server) = server else {
+            return Ok(());
+        };
+        match server.try_wait()? {
+            Some(status) => Err(self.server_exited_before_connect(status)),
+            None => Ok(()),
+        }
+    }
+
+    fn server_exited_before_connect(&self, status: ExitStatus) -> Error {
+        Error::ServerExitedBeforeConnect {
+            socket_path: self.socket_path.clone(),
+            status: status.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::*;
+
+    #[test]
+    fn default_retry_policy_preserves_existing_timing_contract() {
+        let policy = ManagedServer::new_with_socket("/tmp/hotki.sock").retry_policy();
+
+        assert_eq!(policy.startup_poll_timeout, Duration::from_millis(1000));
+        assert_eq!(policy.startup_initial_delay, Duration::from_millis(10));
+        assert_eq!(policy.startup_max_delay, Duration::from_millis(100));
+        assert_eq!(policy.startup_delay_step, Duration::from_millis(10));
+        assert_eq!(policy.connect_timeout, Duration::from_secs(5));
+        assert_eq!(policy.connect_attempts, 5);
+        assert_eq!(policy.connect_retry_delay, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn startup_poll_delay_caps_at_policy_maximum() {
+        let policy = RetryPolicy::default();
+
+        assert_eq!(
+            policy.next_startup_delay(Duration::from_millis(10)),
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            policy.next_startup_delay(Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn server_exit_before_connect_error_is_typed() {
+        let server = ManagedServer::new_with_socket("/tmp/hotki.sock");
+
+        let Error::ServerExitedBeforeConnect {
+            socket_path,
+            status,
+        } = server.server_exited_before_connect(ExitStatus::from_raw(7 << 8))
+        else {
+            panic!("expected typed early-exit error");
+        };
+
+        assert_eq!(socket_path, "/tmp/hotki.sock");
+        assert!(status.contains('7'));
     }
 }

@@ -17,16 +17,15 @@
 
 mod events;
 mod rpc;
+mod workers;
 
 use std::{
-    collections::HashMap,
     path::PathBuf,
     result::Result as StdResult,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -34,7 +33,6 @@ use events::EventPipeline;
 use hotki_engine::Engine;
 use hotki_protocol::rpc::{HotkeyMethod, ServerStatusLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, Value};
-use parking_lot::Mutex;
 pub(crate) use rpc::dec_inject_key_param;
 use rpc::{
     build_snapshot_payload, enc_server_status, enc_world_snapshot, enc_world_status,
@@ -42,12 +40,10 @@ use rpc::{
 };
 use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
+use workers::{WorkerPool, WorkerRuntime};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
 use crate::{error::RpcErrorCode, loop_wake};
-
-const WORKER_QUEUE_CAPACITY: usize = 64;
-const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// IPC service that handles hotkey manager operations
 #[derive(Clone)]
@@ -62,8 +58,8 @@ pub struct HotkeyService {
     idle_state: Arc<IdleTimerState>,
     /// Notify handle for server shutdown.
     shutdown_notify: Arc<tokio::sync::Notify>,
-    /// Active worker channels per hotkey ID.
-    workers: Arc<Mutex<HashMap<u32, tokio::sync::mpsc::Sender<mac_hotkey::Event>>>>,
+    /// Active per-hotkey worker pool.
+    workers: WorkerPool,
 }
 
 impl HotkeyService {
@@ -79,7 +75,7 @@ impl HotkeyService {
             events: EventPipeline::new(shutdown),
             idle_state,
             shutdown_notify,
-            workers: Arc::new(Mutex::new(HashMap::new())),
+            workers: WorkerPool::new(),
         }
     }
 
@@ -91,12 +87,6 @@ impl HotkeyService {
     /// Expose the shutdown notify handle.
     pub(crate) fn shutdown_notify(&self) -> Arc<tokio::sync::Notify> {
         self.shutdown_notify.clone()
-    }
-
-    /// Expose the active worker count for diagnostics and testing.
-    #[cfg(test)]
-    pub(crate) fn active_workers_count(&self) -> usize {
-        self.workers.lock().len()
     }
 
     async fn engine(&self) -> &Engine {
@@ -261,6 +251,32 @@ impl HotkeyService {
             )
         })
     }
+
+    async fn route_request(
+        &self,
+        method: HotkeyMethod,
+        params: &[Value],
+    ) -> StdResult<Value, RpcError> {
+        match method {
+            HotkeyMethod::Shutdown => self.handle_shutdown_request().await,
+            HotkeyMethod::SetConfigPath => self.handle_set_config_path(params).await,
+            HotkeyMethod::SetTheme => self.handle_set_theme(params).await,
+            HotkeyMethod::InjectKey => self.handle_inject_key(params).await,
+            HotkeyMethod::GetBindings => self.handle_get_bindings().await,
+            HotkeyMethod::GetDepth => self.handle_get_depth().await,
+            HotkeyMethod::GetWorldStatus => self.handle_get_world_status().await,
+            HotkeyMethod::GetWorldSnapshot => self.handle_get_world_snapshot().await,
+            HotkeyMethod::GetServerStatus => self.handle_get_server_status().await,
+        }
+    }
+}
+
+fn unknown_method(method: &str) -> RpcError {
+    warn!("Unknown method: {}", method);
+    typed_err(
+        RpcErrorCode::MethodNotFound,
+        &[("method", Value::String(method.into()))],
+    )
 }
 
 #[async_trait]
@@ -306,23 +322,8 @@ impl MrpcConnection for HotkeyService {
         debug!("Handling request: {} with {} params", method, params.len());
 
         match HotkeyMethod::try_from_str(method) {
-            Some(HotkeyMethod::Shutdown) => self.handle_shutdown_request().await,
-            Some(HotkeyMethod::SetConfigPath) => self.handle_set_config_path(&params).await,
-            Some(HotkeyMethod::SetTheme) => self.handle_set_theme(&params).await,
-            Some(HotkeyMethod::InjectKey) => self.handle_inject_key(&params).await,
-            Some(HotkeyMethod::GetBindings) => self.handle_get_bindings().await,
-            Some(HotkeyMethod::GetDepth) => self.handle_get_depth().await,
-            Some(HotkeyMethod::GetWorldStatus) => self.handle_get_world_status().await,
-            Some(HotkeyMethod::GetWorldSnapshot) => self.handle_get_world_snapshot().await,
-            Some(HotkeyMethod::GetServerStatus) => self.handle_get_server_status().await,
-
-            None => {
-                warn!("Unknown method: {}", method);
-                Err(typed_err(
-                    RpcErrorCode::MethodNotFound,
-                    &[("method", Value::String(method.into()))],
-                ))
-            }
+            Some(method) => self.route_request(method, &params).await,
+            None => Err(unknown_method(method)),
         }
     }
 
@@ -341,76 +342,13 @@ impl HotkeyService {
     /// Dispatches a hotkey event to the appropriate per-ID worker task.
     /// If no worker task exists for the given ID, one is spawned.
     pub(crate) fn dispatch_event_to_worker(&self, ev: mac_hotkey::Event) {
-        let id = ev.id;
-        let mut workers_guard = self.workers.lock();
-
-        let tx = if let Some(tx) = workers_guard.get(&id) {
-            tx.clone()
-        } else {
-            let (tx, mut rx) =
-                tokio::sync::mpsc::channel::<mac_hotkey::Event>(WORKER_QUEUE_CAPACITY);
-            workers_guard.insert(id, tx.clone());
-
-            let engine = self.engine.clone();
-            let manager = self.manager.clone();
-            let event_tx = self.events.sender();
-            let shutdown = self.shutdown_flag();
-            let workers_clone = self.workers.clone();
-            let my_tx = tx.clone();
-
-            tokio::spawn(async move {
-                let eng = engine
-                    .get_or_init(|| async { Engine::new(manager, event_tx.clone()) })
-                    .await;
-
-                loop {
-                    if shutdown.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    let msg = tokio::time::timeout(WORKER_IDLE_TIMEOUT, rx.recv()).await;
-
-                    match msg {
-                        Ok(Some(ev)) => {
-                            if let Err(e) = eng.dispatch(ev.id, ev.kind, ev.repeat).await {
-                                trace!(
-                                    target: "hotki_server::ipc::service",
-                                    "OS dispatch failed id={} kind={:?}: {}",
-                                    ev.id,
-                                    ev.kind,
-                                    e
-                                );
-                            }
-                        }
-                        Ok(None) | Err(_) => {
-                            break;
-                        }
-                    }
-                }
-
-                // Channel closed, idle timeout expired, or server shut down -> reap this worker
-                let mut g = workers_clone.lock();
-                if let Some(current_tx) = g.get(&id)
-                    && current_tx.same_channel(&my_tx)
-                {
-                    g.remove(&id);
-                }
-            });
-
-            tx
-        };
-
-        drop(workers_guard);
-
-        match tx.try_send(ev) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                trace!(id, "per_id_queue_full_drop");
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                // Task has exited or is exiting; next event will spawn a new worker
-            }
-        }
+        let engine = self.engine.clone();
+        let manager = self.manager.clone();
+        let event_tx = self.events.sender();
+        let shutdown = self.shutdown_flag();
+        self.workers.dispatch(ev, || {
+            WorkerRuntime::new(engine, manager, event_tx, shutdown)
+        });
     }
 
     /// Start the hotkey event dispatcher
@@ -438,158 +376,13 @@ impl HotkeyService {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
-    use mac_keycode::Key;
-    use tokio::time::advance;
-
     use super::*;
 
-    fn setup_test_service() -> Option<HotkeyService> {
-        let manager = match mac_hotkey::Manager::new() {
-            Ok(mgr) => Arc::new(mgr),
-            Err(e) => {
-                warn!(
-                    "Skipping test: mac_hotkey::Manager failed to initialize: {:?}",
-                    e
-                );
-                return None;
-            }
+    #[test]
+    fn unknown_method_returns_typed_service_error() {
+        let RpcError::Service(service) = unknown_method("bogus") else {
+            panic!("expected service error");
         };
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let idle_state = Arc::new(IdleTimerState::new(30));
-        Some(HotkeyService::new(
-            manager,
-            shutdown,
-            shutdown_notify,
-            idle_state,
-        ))
-    }
-
-    fn event(id: u32, key: Key) -> mac_hotkey::Event {
-        mac_hotkey::Event {
-            id,
-            hotkey: mac_keycode::Chord {
-                key,
-                modifiers: HashSet::new(),
-            },
-            kind: mac_hotkey::EventKind::KeyDown,
-            repeat: false,
-        }
-    }
-
-    async fn advance_worker_idle_timeout() {
-        tokio::task::yield_now().await;
-        advance(WORKER_IDLE_TIMEOUT).await;
-        tokio::task::yield_now().await;
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn test_dispatcher_worker_reaping() {
-        let Some(service) = setup_test_service() else {
-            return;
-        };
-
-        assert_eq!(service.active_workers_count(), 0);
-
-        let ev = event(42, Key::A);
-
-        service.dispatch_event_to_worker(ev.clone());
-        assert_eq!(service.active_workers_count(), 1);
-
-        advance_worker_idle_timeout().await;
-        assert_eq!(service.active_workers_count(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn test_dispatcher_worker_reactivation() {
-        let Some(service) = setup_test_service() else {
-            return;
-        };
-
-        assert_eq!(service.active_workers_count(), 0);
-
-        let ev = event(42, Key::A);
-
-        service.dispatch_event_to_worker(ev.clone());
-        assert_eq!(service.active_workers_count(), 1);
-
-        advance_worker_idle_timeout().await;
-        assert_eq!(service.active_workers_count(), 0);
-
-        service.dispatch_event_to_worker(ev.clone());
-        assert_eq!(service.active_workers_count(), 1);
-
-        advance_worker_idle_timeout().await;
-        assert_eq!(service.active_workers_count(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn test_dispatcher_worker_shutdown() {
-        let Some(service) = setup_test_service() else {
-            return;
-        };
-
-        assert_eq!(service.active_workers_count(), 0);
-
-        let ev = event(42, Key::A);
-
-        service.dispatch_event_to_worker(ev.clone());
-        assert_eq!(service.active_workers_count(), 1);
-
-        let shutdown = service.shutdown_flag();
-        shutdown.store(true, Ordering::SeqCst);
-
-        service.dispatch_event_to_worker(ev.clone());
-
-        tokio::task::yield_now().await;
-        assert_eq!(service.active_workers_count(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn test_dispatcher_worker_isolation() {
-        let Some(service) = setup_test_service() else {
-            return;
-        };
-
-        assert_eq!(service.active_workers_count(), 0);
-
-        service.dispatch_event_to_worker(event(101, Key::A));
-        assert_eq!(service.active_workers_count(), 1);
-
-        service.dispatch_event_to_worker(event(102, Key::B));
-        assert_eq!(service.active_workers_count(), 2);
-
-        advance_worker_idle_timeout().await;
-        assert_eq!(service.active_workers_count(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn test_dispatcher_same_channel_protection() {
-        let Some(service) = setup_test_service() else {
-            return;
-        };
-
-        assert_eq!(service.active_workers_count(), 0);
-
-        let ev = event(999, Key::A);
-
-        service.dispatch_event_to_worker(ev.clone());
-        assert_eq!(service.active_workers_count(), 1);
-
-        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(WORKER_QUEUE_CAPACITY);
-        {
-            let mut g = service.workers.lock();
-            g.insert(999, tx_b);
-        }
-
-        advance_worker_idle_timeout().await;
-
-        assert_eq!(service.active_workers_count(), 1);
-        {
-            let g = service.workers.lock();
-            assert!(g.contains_key(&999));
-        }
+        assert_eq!(service.name, RpcErrorCode::MethodNotFound.to_string());
     }
 }

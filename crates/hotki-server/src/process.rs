@@ -1,7 +1,7 @@
 use std::{
     io::Error as IoError,
     path::PathBuf,
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -234,11 +234,31 @@ impl ServerProcess {
     pub(crate) async fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
             info!("Stopping server process");
+            if let Some(status) = child.try_wait().map_err(Error::Io)? {
+                info!("Server process already exited: {:?}", status);
+                self.is_running.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
             terminate_child_async(&mut child).await?;
             self.is_running.store(false, Ordering::SeqCst);
         }
 
         Ok(())
+    }
+
+    /// Poll for process exit without blocking and update the tracked running state.
+    pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        let Some(child) = self.child.as_mut() else {
+            self.is_running.store(false, Ordering::SeqCst);
+            return Ok(None);
+        };
+        match child.try_wait().map_err(Error::Io)? {
+            Some(status) => {
+                self.is_running.store(false, Ordering::SeqCst);
+                Ok(Some(status))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Check if the server process is running
