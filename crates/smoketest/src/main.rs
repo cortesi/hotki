@@ -11,7 +11,6 @@ mod config;
 /// Error definitions and hint helpers used by smoketest.
 mod error;
 mod process;
-/// RPC driving helpers against the running server.
 mod server_drive;
 /// Session management for launching and controlling hotki.
 mod session;

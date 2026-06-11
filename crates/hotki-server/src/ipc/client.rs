@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, error::TryRecvError};
 use tracing::{debug, error, info, trace};
 
-use crate::{Error, Result, ipc::value};
+use crate::{Error, Result, error::RpcErrorCode, ipc::value};
 
 /// Active IPC connection.
 ///
@@ -58,7 +58,7 @@ impl Connection {
         self.client
             .send_request(method.as_str(), params)
             .await
-            .map_err(|e| Error::Ipc(format!("{} request failed: {}", method.as_str(), e)))
+            .map_err(|err| request_error(method, err))
     }
 
     async fn request_ok(&mut self, method: HotkeyMethod, params: &[Value]) -> Result<()> {
@@ -178,6 +178,34 @@ impl Connection {
         self.request_binary(HotkeyMethod::GetWorldSnapshot, &[])
             .await
     }
+}
+
+/// Convert an MRPC request failure into the server crate's error shape.
+fn request_error(method: HotkeyMethod, err: RpcError) -> Error {
+    match err {
+        RpcError::Service(service) => match RpcErrorCode::from_service_name(&service.name) {
+            Some(code) => Error::Rpc {
+                method: method.as_str().to_string(),
+                code,
+                message: service_value_message(&service.value),
+            },
+            None => Error::Ipc(format!(
+                "{} request failed: service error {}: {}",
+                method.as_str(),
+                service.name,
+                service_value_message(&service.value)
+            )),
+        },
+        other => Error::Ipc(format!("{} request failed: {}", method.as_str(), other)),
+    }
+}
+
+/// Render the service error payload without exposing MessagePack debug noise for strings.
+fn service_value_message(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 /// Client-side connection handler for receiving events

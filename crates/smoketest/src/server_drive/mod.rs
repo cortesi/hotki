@@ -1,8 +1,9 @@
 //! RPC driving helpers against the running server.
 
-/// Synchronous server driver over the production MRPC client.
 mod client;
-/// Shared driver state, snapshots, and error types.
+mod deadline;
+mod event_cache;
+mod rpc;
 mod types;
 
 pub use client::ServerDriver;

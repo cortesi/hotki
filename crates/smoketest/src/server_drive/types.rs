@@ -1,6 +1,9 @@
+//! Shared event, handshake, and error types for the server driver.
+
 use std::collections::BTreeSet;
 
 use hotki_protocol::{DisplaysSnapshot, MsgToUI, rpc::ServerStatusLite};
+use hotki_server::RpcErrorCode;
 use thiserror::Error;
 
 /// Result alias for server driver operations.
@@ -91,6 +94,14 @@ pub enum DriverError {
         /// Human-readable error message from the server or MRPC client.
         message: String,
     },
+    /// Server RPC returned a stable typed service error code.
+    #[error("server command failed with {code}: {message}")]
+    ServerRpcFailure {
+        /// Stable server-side RPC error code.
+        code: RpcErrorCode,
+        /// Human-readable error message from the service payload.
+        message: String,
+    },
     /// Waiting for a binding to appear timed out.
     #[error("timed out after {timeout_ms} ms waiting for binding '{ident}'")]
     BindingTimeout {
@@ -127,7 +138,8 @@ pub(super) fn describe_init_error(err: &DriverError) -> String {
     match err {
         DriverError::Connect { message, .. }
         | DriverError::Runtime { message }
-        | DriverError::ServerFailure { message } => message.clone(),
+        | DriverError::ServerFailure { message }
+        | DriverError::ServerRpcFailure { message, .. } => message.clone(),
         DriverError::EventStreamTimeout { .. } => err.to_string(),
         other => other.to_string(),
     }
@@ -140,9 +152,15 @@ pub(super) fn canonicalize_ident(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-/// Returns true when the server error message indicates a missing key binding.
-pub(super) fn message_contains_key_not_bound(msg: &str) -> bool {
-    msg.contains("KeyNotBound")
+/// Returns true when a driver error is the typed missing-binding RPC code.
+pub(super) fn is_key_not_bound(err: &DriverError) -> bool {
+    matches!(
+        err,
+        DriverError::ServerRpcFailure {
+            code: RpcErrorCode::KeyNotBound,
+            ..
+        }
+    )
 }
 
 #[cfg(test)]
@@ -191,9 +209,13 @@ mod tests {
 
     #[test]
     fn missing_binding_detection_uses_rpc_code() {
-        assert!(message_contains_key_not_bound(
-            "inject_key request failed: service error KeyNotBound"
-        ));
-        assert!(!message_contains_key_not_bound("some other error"));
+        let err = DriverError::ServerRpcFailure {
+            code: RpcErrorCode::KeyNotBound,
+            message: "missing".to_string(),
+        };
+        assert!(is_key_not_bound(&err));
+        assert!(!is_key_not_bound(&DriverError::ServerFailure {
+            message: "service error KeyNotBound".to_string(),
+        }));
     }
 }
