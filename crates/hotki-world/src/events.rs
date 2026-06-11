@@ -77,3 +77,34 @@ impl EventHub {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::time::{Duration, Instant};
+
+    use super::*;
+    use crate::{FocusChange, WorldEvent};
+
+    #[tokio::test]
+    async fn lagged_cursor_records_lost_events_and_keeps_receiving() {
+        let hub = EventHub::new(8);
+        let mut cursor = hub.subscribe();
+
+        for index in 0..20 {
+            hub.publish(WorldEvent::FocusChanged(FocusChange {
+                key: None,
+                focus: None,
+            }));
+            if index % 2 == 0 {
+                hub.publish(WorldEvent::DisplaysChanged);
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let event = hub.next_event_until(&mut cursor, deadline).await;
+
+        assert!(event.is_some());
+        assert!(cursor.lost_count > 0);
+        assert!(!cursor.is_closed());
+    }
+}

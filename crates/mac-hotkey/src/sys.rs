@@ -28,6 +28,7 @@ use core_foundation::{
 };
 use core_graphics::event::{self as cge, CallbackResult};
 use crossbeam_channel::Sender;
+use mac_keycode::{Key, Modifier};
 use parking_lot::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -43,6 +44,63 @@ const FIELD_EVENT_SOURCE_UNIX_PROCESS_ID: u32 = 41;
 const FIELD_EVENT_SOURCE_USER_DATA: u32 = 42;
 const FIELD_KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 const FIELD_KEYBOARD_EVENT_KEYCODE: u32 = 9;
+
+#[derive(Debug)]
+struct TapAction {
+    event: Option<Event>,
+    intercept: bool,
+}
+
+fn classify_tap_event(
+    inner: &crate::Inner,
+    code: Key,
+    mods: &HashSet<Modifier>,
+    kind: EventKind,
+    is_repeat: bool,
+    held_intercepts: &mut HashSet<Key>,
+) -> TapAction {
+    let matched = crate::match_event(inner, code, mods);
+    let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
+    let suspended = inner.suspend > 0;
+    let capture = inner.capture_all > 0;
+    let mut decision = policy::classify(suspended, matched_intercept);
+
+    if !suspended && capture {
+        decision.intercept = true;
+        decision.emit = matched.is_some();
+    }
+
+    match kind {
+        EventKind::KeyDown => {
+            if decision.intercept && !is_repeat {
+                held_intercepts.insert(code);
+            } else if is_repeat && held_intercepts.contains(&code) {
+                decision.intercept = true;
+            }
+        }
+        EventKind::KeyUp => {
+            if held_intercepts.remove(&code) {
+                decision.intercept = true;
+            }
+        }
+    }
+
+    let event = if decision.emit {
+        matched.map(|(id, reg)| Event {
+            id,
+            hotkey: reg.hotkey,
+            kind,
+            repeat: is_repeat,
+        })
+    } else {
+        None
+    };
+
+    TapAction {
+        event,
+        intercept: decision.intercept,
+    }
+}
 
 // Shared control handle to stop the run loop from other threads.
 pub(crate) struct SysControl {
@@ -87,7 +145,7 @@ pub fn run_event_loop(
 
     debug!("creating_event_tap");
     let tap_port_ptr_cb = tap_port_ptr.clone();
-    let held_intercepts: RefCell<HashSet<mac_keycode::Key>> = RefCell::new(HashSet::new());
+    let held_intercepts: RefCell<HashSet<Key>> = RefCell::new(HashSet::new());
     let tap = match cge::CGEventTap::new(
         cge::CGEventTapLocation::HID,
         cge::CGEventTapPlacement::HeadInsertEventTap,
@@ -114,7 +172,7 @@ pub fn run_event_loop(
                 cge::CGEventType::KeyDown | cge::CGEventType::KeyUp => {
                     let keycode =
                         event.get_integer_value_field(FIELD_KEYBOARD_EVENT_KEYCODE) as u16;
-                    if let Some(code) = mac_keycode::Key::from_scancode(keycode) {
+                    if let Some(code) = Key::from_scancode(keycode) {
                         let flags = event.get_flags().bits();
                         let mods = mac_keycode::modifiers_from_cg_flags(flags);
                         let kind = if matches!(etype, cge::CGEventType::KeyDown) {
@@ -136,54 +194,24 @@ pub fn run_event_loop(
                             "tap_event"
                         );
 
-                        let intercept = {
+                        let action = {
                             let inner = inner_state.load();
-                            let matched = crate::match_event(&inner, code, &mods);
-                            let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
-
-                            let suspended = inner.suspend > 0;
-                            let capture = inner.capture_all > 0;
-                            let mut d = policy::classify(suspended, matched_intercept);
-
-                            // Adjust for capture-all: swallow everything; emit only matched
-                            if !suspended && capture {
-                                // Force interception regardless of registration
-                                d.intercept = true;
-                                // Only emit when key matched a binding
-                                d.emit = matched.is_some();
-                            }
-
-                            match kind {
-                                EventKind::KeyDown => {
-                                    if d.intercept && !is_repeat {
-                                        held_intercepts.borrow_mut().insert(code);
-                                    } else if is_repeat && held_intercepts.borrow().contains(&code)
-                                    {
-                                        d.intercept = true;
-                                    }
-                                }
-                                EventKind::KeyUp => {
-                                    if held_intercepts.borrow_mut().remove(&code) {
-                                        d.intercept = true;
-                                    }
-                                }
-                            }
-
-                            if d.emit
-                                && let Some((id, reg)) = matched
-                            {
-                                let ev = Event {
-                                    id,
-                                    hotkey: reg.hotkey.clone(),
-                                    kind,
-                                    repeat: is_repeat,
-                                };
-                                let _ = tx.send(ev);
-                            }
-                            d.intercept
+                            let mut held = held_intercepts.borrow_mut();
+                            classify_tap_event(
+                                inner.as_ref(),
+                                code,
+                                &mods,
+                                kind,
+                                is_repeat,
+                                &mut held,
+                            )
                         };
 
-                        if intercept {
+                        if let Some(event) = action.event {
+                            let _ = tx.send(event);
+                        }
+
+                        if action.intercept {
                             trace!("intercepting_event");
                             return CallbackResult::Drop;
                         }
@@ -238,6 +266,8 @@ pub fn run_event_loop(
 
     let rl = CFRunLoop::get_current();
     ctrl.set_rl(rl.clone());
+    // SAFETY: `kCFRunLoopCommonModes` is a process-lifetime CoreFoundation mode
+    // constant. We borrow it only long enough to register this source.
     let mode = unsafe { kCFRunLoopCommonModes };
     rl.add_source(&source, mode);
 
@@ -257,9 +287,10 @@ pub fn run_event_loop(
 mod tests {
     use std::collections::HashSet;
 
-    use mac_keycode::Key;
+    use mac_keycode::{Key, Modifier};
 
-    use crate::test_register;
+    use super::classify_tap_event;
+    use crate::{EventKind, test_register};
 
     fn simulate(suspended: bool, matched: bool, intercept: bool) -> crate::policy::Decision {
         let matched_intercept = if matched { Some(intercept) } else { None };
@@ -286,18 +317,55 @@ mod tests {
         assert!(!d.intercept);
     }
 
+    fn registered_inner(intercept: bool) -> (crate::Inner, HashSet<Modifier>, u32) {
+        let mut inner = crate::Inner::default();
+        let modifiers = HashSet::from([Modifier::Control]);
+        let hotkey = mac_keycode::Chord {
+            key: Key::H,
+            modifiers: modifiers.clone(),
+        };
+        let id = test_register(&mut inner, hotkey, intercept);
+        (inner, modifiers, id)
+    }
+
     #[test]
     fn end_to_end_match_then_emit_shape() {
-        let mut inner = crate::Inner::default();
-        let hk = mac_keycode::Chord {
-            key: Key::H,
-            modifiers: HashSet::from([mac_keycode::Modifier::Control]),
-        };
-        let _id = test_register(&mut inner, hk, true);
-        let mods = HashSet::from([mac_keycode::Modifier::Control]);
+        let (inner, mods, _id) = registered_inner(true);
         let matched = crate::match_event(&inner, Key::H, &mods).map(|(_, reg)| reg.intercept);
         let d = crate::policy::classify(false, matched);
         assert!(d.emit);
         assert!(d.intercept);
+    }
+
+    #[test]
+    fn tap_decision_tracks_intercepted_repeat_and_keyup() {
+        let (inner, mods, id) = registered_inner(true);
+        let mut held = HashSet::new();
+
+        let down = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyDown, false, &mut held);
+        assert!(down.intercept);
+        assert_eq!(down.event.as_ref().map(|event| event.id), Some(id));
+        assert!(held.contains(&Key::H));
+
+        let repeat = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyDown, true, &mut held);
+        assert!(repeat.intercept);
+        assert_eq!(repeat.event.as_ref().map(|event| event.repeat), Some(true));
+
+        let up = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyUp, false, &mut held);
+        assert!(up.intercept);
+        assert!(!held.contains(&Key::H));
+    }
+
+    #[test]
+    fn tap_decision_capture_intercepts_unmatched_without_emit() {
+        let (mut inner, mods, _id) = registered_inner(false);
+        inner.capture_all = 1;
+        let mut held = HashSet::new();
+
+        let action =
+            classify_tap_event(&inner, Key::J, &mods, EventKind::KeyDown, false, &mut held);
+
+        assert!(action.intercept);
+        assert!(action.event.is_none());
     }
 }
