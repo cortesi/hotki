@@ -4,6 +4,7 @@ use std::{
     fmt, fs, mem,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    vec::IntoIter,
 };
 
 use mac_keycode::Chord;
@@ -585,9 +586,9 @@ impl ScopedHostFunction for HotkiRoot {
         scope: &Scope<'s>,
         args: MultiValue<'s>,
     ) -> Result<MultiValue<'s>, RuntimeError> {
-        let mut args = args.into_vec().into_iter();
-        let render = expect_function(args.next(), "hotki.root render")?;
-        expect_no_extra(args.next(), "hotki.root")?;
+        let mut args = HostArgs::new(args);
+        let render = args.function("hotki.root render")?;
+        args.finish("hotki.root")?;
         let mode = ModeRef::from_function(scope, render, None)?;
         let mut guard = lock_unpoisoned(&self.state);
         if guard.root.is_some() {
@@ -640,9 +641,9 @@ impl ScopedHostFunction for ImportFunction {
         scope: &Scope<'s>,
         args: MultiValue<'s>,
     ) -> Result<MultiValue<'s>, RuntimeError> {
-        let mut args = args.into_vec().into_iter();
-        let path = expect_string(scope, args.next(), "import path")?;
-        expect_no_extra(args.next(), self.role.function_name())?;
+        let mut args = HostArgs::new(args);
+        let path = args.string(scope, "import path")?;
+        args.finish(self.role.function_name())?;
         import_value(scope, &self.state, self.role, &path)
     }
 }
@@ -681,7 +682,7 @@ fn parse_imported_value<'s>(
 ) -> Result<ImportedValue, RuntimeError> {
     match role {
         ImportRole::Mode => {
-            let func = expect_function(Some(value), "import_mode return value")?;
+            let func = expect_function_value(value, "import_mode return value")?;
             Ok(ImportedValue::Mode(ModeRef::from_function(
                 scope, func, None,
             )?))
@@ -699,7 +700,7 @@ fn parse_imported_value<'s>(
             ))),
         },
         ImportRole::Handler => {
-            let func = expect_function(Some(value), "import_handler return value")?;
+            let func = expect_function_value(value, "import_handler return value")?;
             Ok(ImportedValue::Handler(HandlerRef::from_function(
                 scope, func,
             )?))
@@ -780,15 +781,12 @@ impl ScopedHostFunction for ActionFunction {
         scope: &Scope<'s>,
         args: MultiValue<'s>,
     ) -> Result<MultiValue<'s>, RuntimeError> {
-        let mut args = args.into_vec().into_iter();
+        let mut args = HostArgs::new(args);
         let payload = match self {
             Self::Shell => {
-                let cmd = expect_string(scope, args.next(), "action.shell command")?;
-                let opts = parse_optional::<ShellOptionsSpec>(
-                    scope,
-                    args.next().unwrap_or(ScopedValue::Nil),
-                )?;
-                expect_no_extra(args.next(), "action.shell")?;
+                let cmd = args.string(scope, "action.shell command")?;
+                let opts = parse_optional::<ShellOptionsSpec>(scope, args.optional())?;
+                args.finish("action.shell")?;
                 let defaults = crate::ShellModifiers::default();
                 let spec = match opts {
                     Some(opts) => crate::ShellSpec::WithMods(
@@ -803,51 +801,48 @@ impl ScopedHostFunction for ActionFunction {
                 ActionPayload::Action(Action::Shell(spec))
             }
             Self::Open => {
-                let target = expect_string(scope, args.next(), "action.open target")?;
-                expect_no_extra(args.next(), "action.open")?;
+                let target = args.string(scope, "action.open target")?;
+                args.finish("action.open")?;
                 ActionPayload::Action(Action::Open(target))
             }
             Self::Relay => {
-                let spec = expect_string(scope, args.next(), "action.relay spec")?;
-                expect_no_extra(args.next(), "action.relay")?;
+                let spec = args.string(scope, "action.relay spec")?;
+                args.finish("action.relay")?;
                 ActionPayload::Action(Action::Relay(spec))
             }
             Self::ShowDetails => {
-                let toggle =
-                    expect_serde::<Toggle>(scope, args.next(), "action.show_details toggle")?;
-                expect_no_extra(args.next(), "action.show_details")?;
+                let toggle = args.serde::<Toggle>(scope, "action.show_details toggle")?;
+                args.finish("action.show_details")?;
                 ActionPayload::Action(Action::ShowDetails(toggle))
             }
             Self::ThemeSet => {
-                let name = expect_string(scope, args.next(), "action.theme_set name")?;
-                expect_no_extra(args.next(), "action.theme_set")?;
+                let name = args.string(scope, "action.theme_set name")?;
+                args.finish("action.theme_set")?;
                 ActionPayload::Action(Action::ThemeSet(name))
             }
             Self::SetVolume => {
-                let level = expect_lua::<u8>(scope, args.next(), "action.set_volume level")?;
-                expect_no_extra(args.next(), "action.set_volume")?;
+                let level = args.lua::<u8>(scope, "action.set_volume level")?;
+                args.finish("action.set_volume")?;
                 ActionPayload::Action(Action::SetVolume(level))
             }
             Self::ChangeVolume => {
-                let delta = expect_lua::<i8>(scope, args.next(), "action.change_volume delta")?;
-                expect_no_extra(args.next(), "action.change_volume")?;
+                let delta = args.lua::<i8>(scope, "action.change_volume delta")?;
+                args.finish("action.change_volume")?;
                 ActionPayload::Action(Action::ChangeVolume(delta))
             }
             Self::Mute => {
-                let toggle = expect_serde::<Toggle>(scope, args.next(), "action.mute toggle")?;
-                expect_no_extra(args.next(), "action.mute")?;
+                let toggle = args.serde::<Toggle>(scope, "action.mute toggle")?;
+                args.finish("action.mute")?;
                 ActionPayload::Action(Action::Mute(toggle))
             }
             Self::Run => {
-                let func = expect_function(args.next(), "action.run handler")?;
-                expect_no_extra(args.next(), "action.run")?;
+                let func = args.function("action.run handler")?;
+                args.finish("action.run")?;
                 ActionPayload::Handler(HandlerRef::from_function(scope, func)?)
             }
             Self::Selector => {
-                let spec = args
-                    .next()
-                    .ok_or_else(|| RuntimeError::runtime("action.selector expects a table"))?;
-                expect_no_extra(args.next(), "action.selector")?;
+                let spec = args.required_with_message("action.selector expects a table")?;
+                args.finish("action.selector")?;
                 ActionPayload::Selector(selector::parse_selector_config(scope, spec)?)
             }
         };
@@ -900,11 +895,11 @@ impl ScopedHostFunction for ThemesFunction {
         scope: &Scope<'s>,
         args: MultiValue<'s>,
     ) -> Result<MultiValue<'s>, RuntimeError> {
-        let mut args = skip_method_receiver(args);
+        let mut args = HostArgs::method(args);
         match self.kind {
             ThemesFunctionKind::Use => {
-                let name = expect_string(scope, args.next(), "themes:use name")?;
-                expect_no_extra(args.next(), "themes:use")?;
+                let name = args.string(scope, "themes:use name")?;
+                args.finish("themes:use")?;
                 let mut guard = lock_unpoisoned(&self.state);
                 if !guard.themes.contains_key(name.as_str()) {
                     return Err(RuntimeError::runtime(format!("unknown theme: {name}")));
@@ -913,14 +908,14 @@ impl ScopedHostFunction for ThemesFunction {
                 Ok(MultiValue::new())
             }
             ThemesFunctionKind::Current => {
-                expect_no_extra(args.next(), "themes:current")?;
+                args.finish("themes:current")?;
                 lock_unpoisoned(&self.state)
                     .active_theme
                     .clone()
                     .into_lua_multi(scope)
             }
             ThemesFunctionKind::List => {
-                expect_no_extra(args.next(), "themes:list")?;
+                args.finish("themes:list")?;
                 let mut names = lock_unpoisoned(&self.state)
                     .themes
                     .keys()
@@ -930,8 +925,8 @@ impl ScopedHostFunction for ThemesFunction {
                 names.into_lua_multi(scope)
             }
             ThemesFunctionKind::Get => {
-                let name = expect_string(scope, args.next(), "themes:get name")?;
-                expect_no_extra(args.next(), "themes:get")?;
+                let name = args.string(scope, "themes:get name")?;
+                args.finish("themes:get")?;
                 let raw = lock_unpoisoned(&self.state)
                     .themes
                     .get(name.as_str())
@@ -940,18 +935,16 @@ impl ScopedHostFunction for ThemesFunction {
                 Ok(MultiValue::from_values(vec![to_scoped_value(scope, &raw)?]))
             }
             ThemesFunctionKind::Register => {
-                let name = expect_string(scope, args.next(), "themes:register name")?;
-                let style = args
-                    .next()
-                    .ok_or_else(|| RuntimeError::runtime("themes:register expects a style"))?;
-                expect_no_extra(args.next(), "themes:register")?;
+                let name = args.string(scope, "themes:register name")?;
+                let style = args.required_with_message("themes:register expects a style")?;
+                args.finish("themes:register")?;
                 let raw = parse_raw_style(scope, style)?;
                 lock_unpoisoned(&self.state).themes.insert(name, raw);
                 Ok(MultiValue::new())
             }
             ThemesFunctionKind::Remove => {
-                let name = expect_string(scope, args.next(), "themes:remove name")?;
-                expect_no_extra(args.next(), "themes:remove")?;
+                let name = args.string(scope, "themes:remove name")?;
+                args.finish("themes:remove")?;
                 let mut guard = lock_unpoisoned(&self.state);
                 if name == "default" {
                     return Err(RuntimeError::runtime(
@@ -1301,14 +1294,12 @@ fn mode_builder_bind<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let chord = expect_string(scope, values.next(), "menu:bind chord")?;
-    let desc = expect_string(scope, values.next(), "menu:bind desc")?;
-    let action = values
-        .next()
-        .ok_or_else(|| RuntimeError::runtime("menu:bind expects an action"))?;
-    let opts = values.next().unwrap_or(ScopedValue::Nil);
-    expect_no_extra(values.next(), "menu:bind")?;
+    let mut args = HostArgs::new(args);
+    let chord = args.string(scope, "menu:bind chord")?;
+    let desc = args.string(scope, "menu:bind desc")?;
+    let action = args.required_with_message("menu:bind expects an action")?;
+    let opts = args.optional();
+    args.finish("menu:bind")?;
 
     let action = action_payload_from_value(scope, action)?;
     let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
@@ -1329,9 +1320,9 @@ fn mode_builder_bind_many<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let table = expect_table(values.next(), "menu:bind_many entries")?;
-    expect_no_extra(values.next(), "menu:bind_many")?;
+    let mut args = HostArgs::new(args);
+    let table = args.table("menu:bind_many entries")?;
+    args.finish("menu:bind_many")?;
 
     let len = usize::try_from(table.len(scope)?)
         .map_err(|_| RuntimeError::runtime("menu:bind_many entries length does not fit usize"))?;
@@ -1373,12 +1364,12 @@ fn mode_builder_submenu<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let chord = expect_string(scope, values.next(), "menu:submenu chord")?;
-    let title = expect_string(scope, values.next(), "menu:submenu title")?;
-    let render = expect_function(values.next(), "menu:submenu render")?;
-    let opts = values.next().unwrap_or(ScopedValue::Nil);
-    expect_no_extra(values.next(), "menu:submenu")?;
+    let mut args = HostArgs::new(args);
+    let chord = args.string(scope, "menu:submenu chord")?;
+    let title = args.string(scope, "menu:submenu title")?;
+    let render = args.function("menu:submenu render")?;
+    let opts = args.optional();
+    args.finish("menu:submenu")?;
     let options = parse_optional::<SubmenuOptionsSpec>(scope, opts)?;
     let binding = binding_from_mode(scope, &chord, title, render, options)?;
     receiver
@@ -1397,11 +1388,9 @@ fn mode_builder_style<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let overlay = values
-        .next()
-        .ok_or_else(|| RuntimeError::runtime("menu:style expects a style overlay"))?;
-    expect_no_extra(values.next(), "menu:style")?;
+    let mut args = HostArgs::new(args);
+    let overlay = args.required_with_message("menu:style expects a style overlay")?;
+    args.finish("menu:style")?;
     let raw = parse_raw_style(scope, overlay)?;
     receiver
         .borrow_mut::<ModeBuilder>(scope)?
@@ -1419,7 +1408,7 @@ fn mode_builder_capture<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    expect_no_extra(args.into_vec().into_iter().next(), "menu:capture")?;
+    HostArgs::new(args).finish("menu:capture")?;
     receiver
         .borrow_mut::<ModeBuilder>(scope)?
         .state
@@ -1435,11 +1424,11 @@ fn action_context_notify<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let kind = expect_serde::<NotifyKind>(scope, values.next(), "ctx:notify kind")?;
-    let title = expect_string(scope, values.next(), "ctx:notify title")?;
-    let body = expect_string(scope, values.next(), "ctx:notify body")?;
-    expect_no_extra(values.next(), "ctx:notify")?;
+    let mut args = HostArgs::new(args);
+    let kind = args.serde::<NotifyKind>(scope, "ctx:notify kind")?;
+    let title = args.string(scope, "ctx:notify title")?;
+    let body = args.string(scope, "ctx:notify body")?;
+    args.finish("ctx:notify")?;
     receiver
         .borrow::<ActionContextUserData>(scope)?
         .0
@@ -1453,11 +1442,9 @@ fn action_context_exec<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let value = values
-        .next()
-        .ok_or_else(|| RuntimeError::runtime("ctx:exec expects an action"))?;
-    expect_no_extra(values.next(), "ctx:exec")?;
+    let mut args = HostArgs::new(args);
+    let value = args.required_with_message("ctx:exec expects an action")?;
+    args.finish("ctx:exec")?;
     let action = primitive_action_from_value(scope, value)?;
     receiver
         .borrow::<ActionContextUserData>(scope)?
@@ -1472,13 +1459,13 @@ fn action_context_push<'s>(
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut values = args.into_vec().into_iter();
-    let render = expect_function(values.next(), "ctx:push render")?;
-    let title = match values.next().unwrap_or(ScopedValue::Nil) {
+    let mut args = HostArgs::new(args);
+    let render = args.function("ctx:push render")?;
+    let title = match args.optional() {
         ScopedValue::Nil => None,
         value => Some(String::from_lua(value, scope)?),
     };
-    expect_no_extra(values.next(), "ctx:push")?;
+    args.finish("ctx:push")?;
     let mode = ModeRef::from_function(scope, render, title.clone())?;
     receiver
         .borrow::<ActionContextUserData>(scope)?
@@ -1530,96 +1517,116 @@ fn primitive_action_from_value<'s>(
     }
 }
 
-/// Drop the explicit receiver supplied to a colon-call host method.
-fn skip_method_receiver<'s>(args: MultiValue<'s>) -> impl Iterator<Item = ScopedValue<'s>> {
-    let mut values = args.into_vec().into_iter();
-    let _receiver = values.next();
-    values
-}
-
 /// Require exactly one returned Luau value.
 fn single_return<'s>(
     values: MultiValue<'s>,
     context: &str,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    let mut values = values.into_vec().into_iter();
-    let value = values.next().unwrap_or(ScopedValue::Nil);
-    expect_no_extra(values.next(), context)?;
+    let mut values = HostArgs::new(values);
+    let value = values.optional();
+    values.finish(context)?;
     Ok(value)
 }
 
-/// Reject unexpected trailing arguments.
-fn expect_no_extra(value: Option<ScopedValue<'_>>, context: &str) -> Result<(), RuntimeError> {
-    if value.is_some() {
-        return Err(RuntimeError::runtime(format!(
-            "{context} got too many arguments"
-        )));
+/// Decode one host call's Luau argument list.
+struct HostArgs<'s> {
+    /// Remaining argument values.
+    values: IntoIter<ScopedValue<'s>>,
+}
+
+impl<'s> HostArgs<'s> {
+    /// Start decoding a plain function call.
+    fn new(args: MultiValue<'s>) -> Self {
+        Self {
+            values: args.into_vec().into_iter(),
+        }
     }
-    Ok(())
+
+    /// Start decoding a method call, dropping Luau's explicit receiver value.
+    fn method(args: MultiValue<'s>) -> Self {
+        let mut args = Self::new(args);
+        let _receiver = args.values.next();
+        args
+    }
+
+    /// Decode a required value with the standard "`context` is required" error.
+    fn required(&mut self, context: &str) -> Result<ScopedValue<'s>, RuntimeError> {
+        self.values
+            .next()
+            .ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))
+    }
+
+    /// Decode a required value with a custom missing-argument error.
+    fn required_with_message(&mut self, message: &str) -> Result<ScopedValue<'s>, RuntimeError> {
+        self.values
+            .next()
+            .ok_or_else(|| RuntimeError::runtime(message.to_owned()))
+    }
+
+    /// Decode an optional value, treating absence as nil.
+    fn optional(&mut self) -> ScopedValue<'s> {
+        self.values.next().unwrap_or(ScopedValue::Nil)
+    }
+
+    /// Reject unexpected trailing arguments.
+    fn finish(&mut self, context: &str) -> Result<(), RuntimeError> {
+        if self.values.next().is_some() {
+            return Err(RuntimeError::runtime(format!(
+                "{context} got too many arguments"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Decode a required string argument.
+    fn string(&mut self, scope: &Scope<'s>, context: &str) -> Result<String, RuntimeError> {
+        String::from_lua(self.required(context)?, scope)
+    }
+
+    /// Decode a required argument through oxau's `FromLua` bridge.
+    fn lua<T>(&mut self, scope: &Scope<'s>, context: &str) -> Result<T, RuntimeError>
+    where
+        T: FromLua<'s>,
+    {
+        T::from_lua(self.required(context)?, scope)
+    }
+
+    /// Decode a required argument through the serde bridge.
+    fn serde<T>(&mut self, scope: &Scope<'s>, context: &str) -> Result<T, RuntimeError>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        from_scoped_value(scope, self.required(context)?)
+            .map_err(|err| RuntimeError::runtime(err.message()))
+    }
+
+    /// Decode a required function argument.
+    fn function(&mut self, context: &str) -> Result<Function<'s>, RuntimeError> {
+        expect_function_value(self.required(context)?, context)
+    }
+
+    /// Decode a required table argument.
+    fn table(&mut self, context: &str) -> Result<Table<'s>, RuntimeError> {
+        match self.required(context)? {
+            ScopedValue::Table(table) => Ok(table),
+            other => Err(RuntimeError::runtime(format!(
+                "{context} must be a table, got {}",
+                other.type_name()
+            ))),
+        }
+    }
 }
 
-/// Decode a required string argument.
-fn expect_string<'s>(
-    scope: &Scope<'s>,
-    value: Option<ScopedValue<'s>>,
-    context: &str,
-) -> Result<String, RuntimeError> {
-    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
-    String::from_lua(value, scope)
-}
-
-/// Decode a required argument through oxau's `FromLua` bridge.
-fn expect_lua<'s, T>(
-    scope: &Scope<'s>,
-    value: Option<ScopedValue<'s>>,
-    context: &str,
-) -> Result<T, RuntimeError>
-where
-    T: FromLua<'s>,
-{
-    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
-    T::from_lua(value, scope)
-}
-
-/// Decode a required argument through the serde bridge.
-fn expect_serde<'s, T>(
-    scope: &Scope<'s>,
-    value: Option<ScopedValue<'s>>,
-    context: &str,
-) -> Result<T, RuntimeError>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let value = value.ok_or_else(|| RuntimeError::runtime(format!("{context} is required")))?;
-    from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))
-}
-
-/// Decode a required function argument.
-fn expect_function<'s>(
-    value: Option<ScopedValue<'s>>,
+/// Decode a scoped value that must be a function.
+fn expect_function_value<'s>(
+    value: ScopedValue<'s>,
     context: &str,
 ) -> Result<Function<'s>, RuntimeError> {
     match value {
-        Some(ScopedValue::Function(func)) => Ok(func),
-        Some(other) => Err(RuntimeError::runtime(format!(
+        ScopedValue::Function(func) => Ok(func),
+        other => Err(RuntimeError::runtime(format!(
             "{context} must be a function, got {}",
             other.type_name()
         ))),
-        None => Err(RuntimeError::runtime(format!("{context} is required"))),
-    }
-}
-
-/// Decode a required table argument.
-fn expect_table<'s>(
-    value: Option<ScopedValue<'s>>,
-    context: &str,
-) -> Result<Table<'s>, RuntimeError> {
-    match value {
-        Some(ScopedValue::Table(table)) => Ok(table),
-        Some(other) => Err(RuntimeError::runtime(format!(
-            "{context} must be a table, got {}",
-            other.type_name()
-        ))),
-        None => Err(RuntimeError::runtime(format!("{context} is required"))),
     }
 }
