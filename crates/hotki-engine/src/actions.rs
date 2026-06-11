@@ -2,7 +2,7 @@ use config::script::engine as dyn_engine;
 use mac_keycode::Chord;
 
 use crate::{
-    DispatchOutcome, Engine, Result,
+    DispatchResult, Engine, Result,
     refresh::theme_step_name,
     repeater::{ExecSpec, RepeatSpec},
 };
@@ -13,15 +13,14 @@ impl Engine {
         identifier: &str,
         effects: Vec<dyn_engine::Effect>,
         nav: Option<dyn_engine::NavRequest>,
-    ) -> Result<DispatchOutcome> {
-        let mut out = DispatchOutcome::default();
+    ) -> Result<DispatchResult> {
+        let mut result = DispatchResult::AutoExit;
 
         for effect in effects {
             match effect {
                 dyn_engine::Effect::Exec(action) => {
                     let outcome = self.apply_action(identifier, &action, None).await?;
-                    out.is_nav |= outcome.is_nav;
-                    out.entered_mode |= outcome.entered_mode;
+                    result = result.combine(outcome);
                 }
                 dyn_engine::Effect::Notify { kind, title, body } => {
                     self.notifier.send_notification(kind, title, body)?;
@@ -31,11 +30,10 @@ impl Engine {
 
         if let Some(nav) = nav {
             let outcome = self.apply_nav_request(nav).await;
-            out.is_nav |= outcome.is_nav;
-            out.entered_mode |= outcome.entered_mode;
+            result = result.combine(outcome);
         }
 
-        Ok(out)
+        Ok(result)
     }
 
     pub(crate) async fn apply_action(
@@ -43,7 +41,7 @@ impl Engine {
         identifier: &str,
         action: &config::Action,
         repeat: Option<dyn_engine::RepeatSpec>,
-    ) -> Result<DispatchOutcome> {
+    ) -> Result<DispatchResult> {
         self.key_tracker.set_repeat_allowed(identifier, false);
 
         match action {
@@ -55,13 +53,13 @@ impl Engine {
                     spec.err_notify(),
                     repeat,
                 );
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::Relay(spec) => {
                 let Some(target) = Chord::parse(spec) else {
                     self.notifier
                         .send_error("Relay", format!("Invalid relay chord string: {}", spec))?;
-                    return Ok(DispatchOutcome::default());
+                    return Ok(DispatchResult::AutoExit);
                 };
 
                 let repeat = repeat_spec(repeat);
@@ -76,14 +74,14 @@ impl Engine {
                         ExecSpec::Relay { chord: target },
                         Some(repeat),
                     );
-                    return Ok(DispatchOutcome::default());
+                    return Ok(DispatchResult::AutoExit);
                 }
 
                 let pid = self.current_focus_info().pid;
                 self.relay
                     .start_relay(identifier.to_string(), target.clone(), pid, false);
                 let _ = self.relay.stop_relay(identifier, pid);
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::Pop => Ok(self.apply_nav_request(dyn_engine::NavRequest::Pop).await),
             config::Action::Exit => Ok(self.apply_nav_request(dyn_engine::NavRequest::Exit).await),
@@ -97,17 +95,17 @@ impl Engine {
                 if let Err(err) = self.reload_dynamic_config().await {
                     self.notifier.send_error("Config", err.to_string())?;
                 }
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::ClearNotifications => {
                 self.notifier
                     .send_ui(hotki_protocol::MsgToUI::ClearNotifications)?;
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::ShowDetails(arg) => {
                 self.notifier
                     .send_ui(hotki_protocol::MsgToUI::ShowDetails(*arg))?;
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::ThemeNext => self.cycle_theme(identifier, true).await,
             config::Action::ThemePrev => self.cycle_theme(identifier, false).await,
@@ -120,11 +118,11 @@ impl Engine {
                     config::NotifyKind::Warn,
                     repeat,
                 );
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::SetVolume(level) => {
                 self.start_warn_apple_script(identifier, set_volume_script(*level), repeat);
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::ChangeVolume(delta) => {
                 self.start_warn_apple_script(
@@ -132,11 +130,11 @@ impl Engine {
                     change_volume_script((*delta).into()),
                     repeat,
                 );
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
             config::Action::Mute(arg) => {
                 self.start_warn_apple_script(identifier, mute_script(*arg), None);
-                Ok(DispatchOutcome::default())
+                Ok(DispatchResult::AutoExit)
             }
         }
     }
@@ -175,11 +173,11 @@ impl Engine {
         );
     }
 
-    async fn cycle_theme(&self, identifier: &str, next: bool) -> Result<DispatchOutcome> {
+    async fn cycle_theme(&self, identifier: &str, next: bool) -> Result<DispatchResult> {
         self.key_tracker.set_repeat_allowed(identifier, false);
         let cfg_guard = self.config.lock().await;
         let Some(cfg) = cfg_guard.as_ref() else {
-            return Ok(DispatchOutcome::default());
+            return Ok(DispatchResult::AutoExit);
         };
         let theme_names = cfg.theme_names();
         drop(cfg_guard);
@@ -187,10 +185,10 @@ impl Engine {
         let mut rt = self.runtime.lock().await;
         let step = if next { 1 } else { -1 };
         rt.theme_name = theme_step_name(&theme_names, rt.theme_name.as_str(), step);
-        Ok(DispatchOutcome::default())
+        Ok(DispatchResult::AutoExit)
     }
 
-    async fn set_theme_by_name(&self, identifier: &str, name: &str) -> Result<DispatchOutcome> {
+    async fn set_theme_by_name(&self, identifier: &str, name: &str) -> Result<DispatchResult> {
         self.key_tracker.set_repeat_allowed(identifier, false);
         let cfg_guard = self.config.lock().await;
         let exists = cfg_guard.as_ref().is_some_and(|cfg| cfg.theme_exists(name));
@@ -206,10 +204,10 @@ impl Engine {
                 format!("Unknown theme: {}", name),
             )?;
         }
-        Ok(DispatchOutcome::default())
+        Ok(DispatchResult::AutoExit)
     }
 
-    pub(crate) async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchOutcome {
+    pub(crate) async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchResult {
         let mut rt = self.runtime.lock().await;
         match nav {
             dyn_engine::NavRequest::Push { mode, title } => {
@@ -225,10 +223,7 @@ impl Engine {
                     style: None,
                     capture: false,
                 });
-                DispatchOutcome {
-                    is_nav: true,
-                    entered_mode: true,
-                }
+                DispatchResult::EnteredMode
             }
             dyn_engine::NavRequest::Pop => {
                 if rt.stack.len() > 1 {
@@ -237,37 +232,25 @@ impl Engine {
                 if rt.stack.len() <= 1 {
                     rt.hud_visible = false;
                 }
-                DispatchOutcome {
-                    is_nav: true,
-                    entered_mode: false,
-                }
+                DispatchResult::Navigation
             }
             dyn_engine::NavRequest::Exit => {
                 if rt.stack.len() > 1 {
                     rt.stack.truncate(1);
                 }
                 rt.hud_visible = false;
-                DispatchOutcome {
-                    is_nav: true,
-                    entered_mode: false,
-                }
+                DispatchResult::Navigation
             }
             dyn_engine::NavRequest::ShowRoot => {
                 if rt.stack.len() > 1 {
                     rt.stack.truncate(1);
                 }
                 rt.hud_visible = true;
-                DispatchOutcome {
-                    is_nav: true,
-                    entered_mode: false,
-                }
+                DispatchResult::Navigation
             }
             dyn_engine::NavRequest::HideHud => {
                 rt.hud_visible = false;
-                DispatchOutcome {
-                    is_nav: true,
-                    entered_mode: false,
-                }
+                DispatchResult::Navigation
             }
         }
     }

@@ -11,16 +11,25 @@ use nucleo::{
 };
 
 /// Event emitted by the selector state machine when handling input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum SelectorEvent {
     /// State changed; the UI should be updated.
     Update,
-    /// Confirm the current selection.
-    Select,
+    /// Confirm a selected item.
+    Select(SelectorSelection),
     /// Cancel the selector.
     Cancel,
     /// No-op input (ignored).
     None,
+}
+
+/// Data captured when the selector confirms a selected item.
+#[derive(Debug, Clone)]
+pub(crate) struct SelectorSelection {
+    /// Item selected by the user.
+    pub(crate) item: SelectorItem,
+    /// Query text used when the item was selected.
+    pub(crate) query: String,
 }
 
 /// A single match candidate stored in the matcher.
@@ -172,16 +181,21 @@ impl SelectorState {
 
     /// Handle a key-down event routed to the selector.
     pub(crate) fn handle_key_down(&mut self, chord: &Chord) -> SelectorEvent {
-        dispatch_selector_action(
+        match dispatch_selector_action(
             selector_action_for_chord(chord),
             &mut self.matcher,
             &mut self.query,
             &mut self.selected,
-        )
+        ) {
+            SelectorActionEvent::Update => SelectorEvent::Update,
+            SelectorActionEvent::Select => self.select_current(),
+            SelectorActionEvent::Cancel => SelectorEvent::Cancel,
+            SelectorActionEvent::None => SelectorEvent::None,
+        }
     }
 
     /// Return the currently selected matched item, if any.
-    pub(crate) fn selected_item(&mut self) -> Option<SelectorItem> {
+    fn selected_item(&mut self) -> Option<SelectorItem> {
         let total = self.matcher.matched_count();
         if total == 0 {
             self.selected = 0;
@@ -194,9 +208,15 @@ impl SelectorState {
             .map(|candidate| candidate.item.clone())
     }
 
-    /// Borrow the current query text.
-    pub(crate) fn query(&self) -> &str {
-        &self.query
+    /// Build a data-bearing select event for the current selection.
+    fn select_current(&mut self) -> SelectorEvent {
+        let _changed_ignored = self.tick();
+        self.selected_item().map_or(SelectorEvent::None, |item| {
+            SelectorEvent::Select(SelectorSelection {
+                item,
+                query: self.query.clone(),
+            })
+        })
     }
 
     /// Build the UI snapshot for the current selector state.
@@ -329,47 +349,56 @@ enum SelectorAction {
     Append(char),
 }
 
+/// Selector state transition requested by an input action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectorActionEvent {
+    None,
+    Update,
+    Select,
+    Cancel,
+}
+
 /// Apply a selector action to the given matcher/query/selected state.
 fn dispatch_selector_action(
     action: SelectorAction,
     matcher: &mut SelectorMatcher,
     query: &mut String,
     selected: &mut u32,
-) -> SelectorEvent {
+) -> SelectorActionEvent {
     match action {
-        SelectorAction::None => SelectorEvent::None,
-        SelectorAction::Cancel => SelectorEvent::Cancel,
+        SelectorAction::None => SelectorActionEvent::None,
+        SelectorAction::Cancel => SelectorActionEvent::Cancel,
         SelectorAction::Select => {
             if matcher.matched_count() == 0 {
-                SelectorEvent::None
+                SelectorActionEvent::None
             } else {
-                SelectorEvent::Select
+                SelectorActionEvent::Select
             }
         }
         SelectorAction::MoveUp => {
             if *selected > 0 {
                 *selected -= 1;
-                SelectorEvent::Update
+                SelectorActionEvent::Update
             } else {
-                SelectorEvent::None
+                SelectorActionEvent::None
             }
         }
         SelectorAction::MoveDown => {
             let max = matcher.matched_count().saturating_sub(1);
             if *selected < max {
                 *selected += 1;
-                SelectorEvent::Update
+                SelectorActionEvent::Update
             } else {
-                SelectorEvent::None
+                SelectorActionEvent::None
             }
         }
         SelectorAction::Backspace => {
             if query.pop().is_some() {
                 *selected = 0;
                 matcher.update_pattern(query);
-                SelectorEvent::Update
+                SelectorActionEvent::Update
             } else {
-                SelectorEvent::None
+                SelectorActionEvent::None
             }
         }
         SelectorAction::Clear => {
@@ -377,16 +406,16 @@ fn dispatch_selector_action(
                 query.clear();
                 *selected = 0;
                 matcher.update_pattern(query);
-                SelectorEvent::Update
+                SelectorActionEvent::Update
             } else {
-                SelectorEvent::None
+                SelectorActionEvent::None
             }
         }
         SelectorAction::Append(ch) => {
             query.push(ch);
             *selected = 0;
             matcher.update_pattern(query);
-            SelectorEvent::Update
+            SelectorActionEvent::Update
         }
     }
 }
@@ -568,7 +597,7 @@ mod tests {
             }
         }
 
-        fn handle_key_down(&mut self, chord: &Chord) -> SelectorEvent {
+        fn handle_key_down(&mut self, chord: &Chord) -> SelectorActionEvent {
             dispatch_selector_action(
                 selector_action_for_chord(chord),
                 &mut self.matcher,
@@ -679,7 +708,7 @@ mod tests {
         s.matcher.update_pattern(&s.query);
         tick_until_settled(&mut s.matcher);
         let ev = s.handle_key_down(&Chord::parse("ctrl+u").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.query, "");
     }
 
@@ -690,10 +719,10 @@ mod tests {
         tick_until_settled(&mut s.matcher);
         assert_eq!(s.selected, 0);
         let ev = s.handle_key_down(&Chord::parse("down").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.selected, 1);
         let ev = s.handle_key_down(&Chord::parse("down").unwrap());
-        assert_eq!(ev, SelectorEvent::None);
+        assert!(matches!(ev, SelectorActionEvent::None));
         assert_eq!(s.selected, 1);
     }
 
@@ -703,10 +732,10 @@ mod tests {
         let mut s = TestSelector::new(vec![mk_item("Safari"), mk_item("Chrome")], notify);
         tick_until_settled(&mut s.matcher);
         let ev = s.handle_key_down(&Chord::parse("ctrl+n").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.selected, 1);
         let ev = s.handle_key_down(&Chord::parse("ctrl+p").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.selected, 0);
     }
 
@@ -723,7 +752,7 @@ mod tests {
         tick_until_settled(&mut s.matcher);
 
         let ev = s.handle_key_down(&Chord::parse("backspace").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.query, "a");
         assert_eq!(s.selected, 0);
     }
@@ -734,7 +763,7 @@ mod tests {
         let mut s = TestSelector::new(vec![mk_item("!")], notify);
         tick_until_settled(&mut s.matcher);
         let ev = s.handle_key_down(&Chord::parse("shift+1").unwrap());
-        assert_eq!(ev, SelectorEvent::Update);
+        assert!(matches!(ev, SelectorActionEvent::Update));
         assert_eq!(s.query, "!");
     }
 
@@ -745,7 +774,7 @@ mod tests {
         s.matcher.update_pattern("");
         tick_until_settled(&mut s.matcher);
         let ev = s.handle_key_down(&Chord::parse("enter").unwrap());
-        assert_eq!(ev, SelectorEvent::Select);
+        assert!(matches!(ev, SelectorActionEvent::Select));
     }
 
     #[test]
@@ -753,6 +782,6 @@ mod tests {
         let notify = Arc::new(|| {});
         let mut s = TestSelector::new(vec![mk_item("Safari")], notify);
         let ev = s.handle_key_down(&Chord::parse("esc").unwrap());
-        assert_eq!(ev, SelectorEvent::Cancel);
+        assert!(matches!(ev, SelectorActionEvent::Cancel));
     }
 }

@@ -192,7 +192,7 @@ impl Repeater {
             focus_ctx,
             relay,
             notifier,
-            ticker: Ticker::new(),
+            ticker: Ticker::default(),
             on_relay_repeat: Arc::new(Mutex::new(None)),
             on_shell_repeat: Arc::new(Mutex::new(None)),
             shell_states: Arc::new(Mutex::new(HashMap::new())),

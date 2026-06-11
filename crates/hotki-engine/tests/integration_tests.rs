@@ -260,3 +260,214 @@ fn reload_config_action_does_not_deadlock() {
         let _ignored = fs::remove_file(&path);
     });
 }
+
+#[test]
+fn selector_select_runs_handler_with_item_and_query() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            hotki.root(function(menu, ctx)
+              menu:bind("cmd+k", "pick", action.selector({
+                title = "Pick",
+                placeholder = "Filter",
+                items = { "Alpha", "Beta" },
+                on_select = function(actx, item, query)
+                  actx:notify("info", "Selected", item.label .. ":" .. query)
+                end,
+                on_cancel = function(actx)
+                  actx:notify("info", "Canceled", "cancel")
+                end,
+              }))
+            end)
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+
+        dispatch_ident(&engine, "cmd+k").await;
+        let opened = recv_selector_update(&mut rx, 500)
+            .await
+            .expect("selector should open");
+        assert_eq!(opened.title, "Pick");
+        assert_eq!(opened.items.len(), 2);
+
+        dispatch_ident(&engine, "a").await;
+        let filtered = recv_selector_update(&mut rx, 500)
+            .await
+            .expect("selector should update query");
+        assert_eq!(filtered.query, "a");
+
+        dispatch_ident(&engine, "return").await;
+        assert!(
+            recv_until(&mut rx, 500, |m| matches!(m, MsgToUI::SelectorHide)).await,
+            "selector should hide after selection"
+        );
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Selected").await.as_deref(),
+            Some("Alpha:a")
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn selector_cancel_runs_cancel_handler() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            hotki.root(function(menu, ctx)
+              menu:bind("cmd+k", "pick", action.selector({
+                items = { "Alpha" },
+                on_select = function(actx, item, query)
+                  actx:notify("info", "Selected", item.label)
+                end,
+                on_cancel = function(actx)
+                  actx:notify("info", "Canceled", "cancel")
+                end,
+              }))
+            end)
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+
+        dispatch_ident(&engine, "cmd+k").await;
+        let _ = recv_selector_update(&mut rx, 500)
+            .await
+            .expect("selector should open");
+
+        dispatch_ident(&engine, "escape").await;
+        assert!(
+            recv_until(&mut rx, 500, |m| matches!(m, MsgToUI::SelectorHide)).await,
+            "selector should hide after cancel"
+        );
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Canceled").await.as_deref(),
+            Some("cancel")
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn render_recovery_truncates_bad_child_mode_to_root() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            hotki.root(function(menu, ctx)
+              menu:submenu("cmd+k", "bad", function(child, inner)
+                error("child render failed")
+              end)
+              menu:bind("x", "ok", action.shell("true"))
+            end)
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+
+        dispatch_ident(&engine, "cmd+k").await;
+
+        assert_eq!(engine.get_depth().await, 0);
+        assert!(
+            recv_until(&mut rx, 500, |m| matches!(
+                m,
+                MsgToUI::Notify { title, .. } if title == "Config"
+            ))
+            .await,
+            "render recovery should report the child render error"
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn unbound_key_up_is_noop() {
+    run_engine_test(async move {
+        let (engine, mut rx, _world) = create_test_engine_with_relay(false).await;
+
+        engine
+            .dispatch(999_999, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("unbound key-up should be ignored");
+        assert!(rx.try_recv().is_err());
+    });
+}
+
+async fn dispatch_ident(engine: &hotki_engine::Engine, ident: &str) {
+    let id = engine
+        .resolve_id_for_ident(ident)
+        .await
+        .unwrap_or_else(|| panic!("id for {ident}"));
+    engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .unwrap_or_else(|err| panic!("dispatch {ident}: {err}"));
+}
+
+fn drain_ui(rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>) {
+    while rx.try_recv().is_ok() {}
+}
+
+async fn recv_selector_update(
+    rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>,
+    timeout_ms: u64,
+) -> Option<hotki_protocol::SelectorSnapshot> {
+    timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(msg) = rx.recv().await {
+            if let MsgToUI::SelectorUpdate(snapshot) = msg {
+                return Some(snapshot);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn recv_notify_text(
+    rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>,
+    timeout_ms: u64,
+    expected_title: &str,
+) -> Option<String> {
+    timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(msg) = rx.recv().await {
+            if let MsgToUI::Notify { title, text, .. } = msg
+                && title == expected_title
+            {
+                return Some(text);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}

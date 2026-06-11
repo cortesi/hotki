@@ -37,6 +37,8 @@
 //!   compute, drop guards, then perform async work.
 //! - `set_config_path` acquires a write guard, replaces the config, drops the guard,
 //!   then triggers a rebind. Do not re-enter config while a write guard is held.
+//! - Selector opening resolves items under `config`, drops that guard, installs selector
+//!   state under `runtime`, then publishes UI after guards are released.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -64,10 +66,56 @@ mod world_sync;
 pub(crate) const BIND_UPDATE_WARN_MS: u64 = 10;
 const KEY_PROC_WARN_MS: u64 = 5;
 
-#[derive(Debug, Clone, Copy, Default)]
-struct DispatchOutcome {
-    is_nav: bool,
-    entered_mode: bool,
+/// Post-dispatch behavior requested by a binding or action.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum DispatchResult {
+    /// No suppressing behavior occurred; exit the current transient mode.
+    #[default]
+    AutoExit,
+    /// Stay in the current mode without navigation.
+    Stay,
+    /// Navigation changed HUD visibility or stack state without entering a child mode.
+    Navigation,
+    /// Dispatch entered a child mode.
+    EnteredMode,
+    /// Dispatch opened the selector UI.
+    SelectorOpened,
+}
+
+impl DispatchResult {
+    /// Return true when dispatch should auto-exit after executing the binding.
+    pub(crate) fn should_auto_exit(self) -> bool {
+        matches!(self, Self::AutoExit)
+    }
+
+    /// Apply an explicit stay request without masking stronger navigation outcomes.
+    pub(crate) fn with_stay(self, stay: bool) -> Self {
+        if stay && self.should_auto_exit() {
+            Self::Stay
+        } else {
+            self
+        }
+    }
+
+    /// Merge two outcomes, preserving the strongest post-dispatch behavior.
+    pub(crate) fn combine(self, other: Self) -> Self {
+        if other.priority() > self.priority() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// Ordering used when several effects request different post-dispatch behavior.
+    fn priority(self) -> u8 {
+        match self {
+            Self::AutoExit => 0,
+            Self::Stay => 1,
+            Self::Navigation => 2,
+            Self::EnteredMode => 3,
+            Self::SelectorOpened => 4,
+        }
+    }
 }
 
 use config::script::engine as dyn_engine;

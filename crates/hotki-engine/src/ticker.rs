@@ -28,24 +28,12 @@ struct TickerEntry {
 
 /// Minimal ticker core: schedules a closure after an initial delay and then on each interval tick.
 /// Supports cancellation and a short stop_sync wait for completion.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Ticker {
     entries: Arc<Mutex<HashMap<String, TickerEntry>>>,
 }
 
-impl Default for Ticker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Ticker {
-    pub fn new() -> Self {
-        Self {
-            entries: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
     /// Check if a ticker is active for the given id.
     pub fn is_active(&self, id: &str) -> bool {
         self.entries.lock().contains_key(id)

@@ -1,18 +1,10 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use config::script::engine as dyn_engine;
 use mac_keycode::Chord;
 use tracing::{trace, warn};
 
-use crate::{DispatchOutcome, Engine, Result, selector_controller::SelectorController};
-
-struct BindingExecution {
-    stay: bool,
-    outcome: DispatchOutcome,
-}
+use crate::{DispatchResult, Engine, Result, selector_controller::SelectorController};
 
 impl Engine {
     async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: &str) -> Result<()> {
@@ -54,11 +46,11 @@ impl Engine {
             (binding, ctx)
         };
 
-        let Some(execution) = self.execute_binding(identifier, binding, ctx).await? else {
+        let Some(result) = self.execute_binding(identifier, binding, ctx).await? else {
             return Ok(());
         };
 
-        if !execution.stay && !execution.outcome.is_nav && !execution.outcome.entered_mode {
+        if result.should_auto_exit() {
             self.auto_exit().await;
         }
 
@@ -84,13 +76,9 @@ impl Engine {
         identifier: &str,
         binding: dyn_engine::Binding,
         ctx: dyn_engine::ModeCtx,
-    ) -> Result<Option<BindingExecution>> {
-        let mut stay = binding.flags.stay;
-        let mut outcome = DispatchOutcome::default();
-
-        match binding.kind {
+    ) -> Result<Option<DispatchResult>> {
+        let result = match binding.kind {
             dyn_engine::BindingKind::Mode(mode) => {
-                outcome.entered_mode = true;
                 let mut rt = self.runtime.lock().await;
                 rt.hud_visible = true;
                 rt.stack.push(dyn_engine::ModeFrame {
@@ -101,11 +89,11 @@ impl Engine {
                     style: None,
                     capture: binding.mode_capture,
                 });
+                DispatchResult::EnteredMode
             }
             dyn_engine::BindingKind::Action(action) => {
-                outcome = self
-                    .apply_action(identifier, &action, binding.flags.repeat)
-                    .await?;
+                self.apply_action(identifier, &action, binding.flags.repeat)
+                    .await?
             }
             dyn_engine::BindingKind::Handler(handler) => {
                 let result = {
@@ -123,51 +111,19 @@ impl Engine {
                     }
                 };
 
-                stay |= result.stay;
-                outcome = self
-                    .apply_effects_and_nav(identifier, result.effects, result.nav)
-                    .await?;
+                self.apply_effects_and_nav(identifier, result.effects, result.nav)
+                    .await?
+                    .with_stay(result.stay)
             }
             dyn_engine::BindingKind::Selector(sel_cfg) => {
-                stay = true;
-                let items = {
-                    let mut cfg_guard = self.config.lock().await;
-                    let Some(cfg) = cfg_guard.as_mut() else {
-                        trace!("No dynamic config loaded; ignoring selector");
-                        return Ok(None);
-                    };
-                    match sel_cfg.resolve_items(cfg, &ctx) {
-                        Ok(items) => items,
-                        Err(err) => {
-                            self.notifier.send_error("Selector", err.pretty())?;
-                            Vec::new()
-                        }
-                    }
-                };
-
-                let snapshot = {
-                    let notify = self.selector_notify.clone();
-                    let notify_cb: Arc<dyn Fn() + Send + Sync> =
-                        Arc::new(move || notify.notify_one());
-                    let mut rt = self.runtime.lock().await;
-                    let prev_hud_visible = rt.hud_visible;
-                    rt.hud_visible = false;
-                    rt.selector = Some(crate::selector::SelectorState::new(
-                        sel_cfg,
-                        items,
-                        notify_cb,
-                        prev_hud_visible,
-                    ));
-                    let selector = rt.selector.as_mut().expect("selector just set");
-                    let _changed_ignored = selector.tick();
-                    selector.snapshot()
-                };
-                self.notifier
-                    .send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
+                if !SelectorController::new(self).open(sel_cfg, ctx).await? {
+                    return Ok(None);
+                }
+                DispatchResult::SelectorOpened
             }
-        }
+        };
 
-        Ok(Some(BindingExecution { stay, outcome }))
+        Ok(Some(result.with_stay(binding.flags.stay)))
     }
 
     fn handle_key_up(&self, identifier: &str) {

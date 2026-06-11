@@ -90,29 +90,55 @@ fn render_stack_with_recovery(
     cfg: &mut dyn_engine::DynamicConfig,
     base_style: &config::Style,
 ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
-    let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
-    let mut errors = Vec::new();
+    RenderRecovery::default().render(rt, cfg, base_style)
+}
 
-    match dyn_engine::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
-        Ok(output) => {
-            rt.rendered = output.rendered;
-            (output.warnings, errors)
+/// Render stack recovery policy used after render failures.
+#[derive(Debug, Default)]
+struct RenderRecovery {
+    /// Human-readable render errors collected while recovering.
+    errors: Vec<String>,
+}
+
+impl RenderRecovery {
+    /// Render the current stack, falling back to root and then to empty state.
+    fn render(
+        mut self,
+        rt: &mut RuntimeState,
+        cfg: &mut dyn_engine::DynamicConfig,
+        base_style: &config::Style,
+    ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
+        let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
+        if let Some(warnings) = self.try_render(rt, cfg, &ctx, base_style) {
+            return (warnings, self.errors);
         }
-        Err(err) => {
-            errors.push(err.pretty());
-            rt.stack.truncate(1);
-            ctx.depth = 0;
 
-            match dyn_engine::render_stack(cfg, &mut rt.stack, &ctx, base_style) {
-                Ok(output) => {
-                    rt.rendered = output.rendered;
-                    (output.warnings, errors)
-                }
-                Err(err) => {
-                    errors.push(err.pretty());
-                    rt.rendered = RuntimeState::empty_rendered(base_style.clone());
-                    (Vec::new(), errors)
-                }
+        rt.stack.truncate(1);
+        ctx.depth = 0;
+        if let Some(warnings) = self.try_render(rt, cfg, &ctx, base_style) {
+            return (warnings, self.errors);
+        }
+
+        rt.rendered = RuntimeState::empty_rendered(base_style.clone());
+        (Vec::new(), self.errors)
+    }
+
+    /// Attempt one render pass, updating runtime state on success.
+    fn try_render(
+        &mut self,
+        rt: &mut RuntimeState,
+        cfg: &mut dyn_engine::DynamicConfig,
+        ctx: &dyn_engine::ModeCtx,
+        base_style: &config::Style,
+    ) -> Option<Vec<dyn_engine::Effect>> {
+        match dyn_engine::render_stack(cfg, &mut rt.stack, ctx, base_style) {
+            Ok(output) => {
+                rt.rendered = output.rendered;
+                Some(output.warnings)
+            }
+            Err(err) => {
+                self.errors.push(err.pretty());
+                None
             }
         }
     }
@@ -191,10 +217,7 @@ pub(crate) fn theme_step_name(theme_names: &[String], current: &str, step: isize
     }
 
     let Some(idx) = theme_names.iter().position(|n| n == current) else {
-        return theme_names
-            .first()
-            .expect("checked for non-empty list")
-            .clone();
+        return theme_names[0].clone();
     };
 
     let len = theme_names.len();
@@ -205,4 +228,16 @@ pub(crate) fn theme_step_name(theme_names: &[String], current: &str, step: isize
     };
 
     theme_names[next].clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_step_name_uses_first_theme_when_current_is_missing() {
+        let themes = vec!["light".to_string(), "dark".to_string()];
+
+        assert_eq!(theme_step_name(&themes, "missing", 1), "light");
+    }
 }
