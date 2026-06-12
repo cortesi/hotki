@@ -4,7 +4,7 @@ use std::{collections::VecDeque, fmt::Write as _, path::PathBuf};
 mod ui_sink;
 
 use hotki_protocol::{NotifyKind, ipc::heartbeat};
-use hotki_server::Client;
+use hotki_server::{Client, Result as ServerResult};
 use tokio::{
     sync::{mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
@@ -43,8 +43,6 @@ enum ConnectionState {
     Connecting,
     /// Connected and ready to send server-bound control messages.
     Connected,
-    /// A connect attempt failed and another attempt is pending.
-    Reconnecting,
     /// Shutdown has been requested.
     ShuttingDown,
 }
@@ -218,6 +216,26 @@ impl ConnectionDriver {
         self.ui.notify(kind, title, text);
     }
 
+    /// Show permission guidance and keep the server from being spawned without required grants.
+    fn event_tap_permissions_missing(&self) -> bool {
+        if !self.server_event_tap_enabled {
+            return false;
+        }
+
+        let perms = check_permissions();
+        if perms.accessibility_ok() && perms.input_ok() {
+            return false;
+        }
+
+        self.ui.show_permissions_help();
+        self.notify_local(
+            NotifyKind::Error,
+            "Permissions",
+            "Grant Accessibility and Input Monitoring to Hotki, then restart Hotki.",
+        );
+        true
+    }
+
     /// Reload the current config path on the server and notify the UI.
     async fn reload_config(&self, conn: &mut hotki_server::Connection) {
         match conn
@@ -286,11 +304,9 @@ impl ConnectionDriver {
 
     /// Connect to the server, draining any queued control messages after connect.
     pub(crate) async fn connect(&mut self) -> Option<Client> {
-        if self.server_event_tap_enabled {
-            let perms = check_permissions();
-            if !perms.accessibility_ok() || !perms.input_ok() {
-                self.ui.show_permissions_help();
-            }
+        if self.event_tap_permissions_missing() {
+            self.set_state(ConnectionState::Disconnected);
+            return None;
         }
 
         let mut rx_conn_ready = spawn_connect(
@@ -303,15 +319,21 @@ impl ConnectionDriver {
                 biased;
                 res = &mut rx_conn_ready => {
                     match res {
-                        Ok(client) => break client,
-                        Err(_) => {
-                            error!("Connect task canceled");
-                            self.set_state(ConnectionState::Reconnecting);
-                            sleep(Duration::from_millis(300)).await;
-                            rx_conn_ready = spawn_connect(
-                                self.server_log_filter.clone(),
-                                self.server_event_tap_enabled,
+                        Ok(Ok(client)) => break client,
+                        Ok(Err(err)) => {
+                            error!("Failed to connect to hotkey server: {}", err);
+                            self.notify_local(
+                                NotifyKind::Error,
+                                "Connection",
+                                &format!("Failed to start hotkey server: {err}"),
                             );
+                            self.set_state(ConnectionState::Disconnected);
+                            return None;
+                        }
+                        Err(_) => {
+                            error!("Connect task canceled before reporting a result");
+                            self.set_state(ConnectionState::Disconnected);
+                            return None;
                         }
                     }
                 }
@@ -464,8 +486,8 @@ impl ConnectionDriver {
 fn spawn_connect(
     log_filter: Option<String>,
     server_event_tap_enabled: bool,
-) -> oneshot::Receiver<Client> {
-    let (tx_conn_ready, rx) = oneshot::channel::<Client>();
+) -> oneshot::Receiver<ServerResult<Client>> {
+    let (tx_conn_ready, rx) = oneshot::channel::<ServerResult<Client>>();
     tokio::spawn(async move {
         let mut client = Client::new()
             .with_auto_spawn_server()
@@ -473,15 +495,9 @@ fn spawn_connect(
         if let Some(filter) = log_filter {
             client = client.with_server_log_filter(filter);
         }
-        match client.connect().await {
-            Ok(client) => {
-                if tx_conn_ready.send(client).is_err() {
-                    tracing::warn!("connect-ready channel closed before send");
-                }
-            }
-            Err(err) => {
-                tracing::error!("Failed to connect to hotkey server: {}", err);
-            }
+        let result = client.connect().await;
+        if tx_conn_ready.send(result).is_err() {
+            tracing::warn!("connect-ready channel closed before send");
         }
     });
     rx
@@ -534,10 +550,9 @@ mod tests {
             ConnectionState::Disconnected,
             ConnectionState::Connecting,
             ConnectionState::Connected,
-            ConnectionState::Reconnecting,
             ConnectionState::ShuttingDown,
         ];
 
-        assert_eq!(states.len(), 5);
+        assert_eq!(states.len(), 4);
     }
 }

@@ -218,6 +218,7 @@ fn main() -> eframe::Result<()> {
 
         if let Err(e) = server.run() {
             error!("Server exited with error: {}", e);
+            process::exit(1);
         }
         return Ok(());
     }

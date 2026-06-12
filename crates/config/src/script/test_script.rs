@@ -366,6 +366,51 @@ end)
     }
 
     #[test]
+    fn submenu_volume_actions_accept_integer_number_literals() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:submenu("m", "music", function(music, inner)
+        music:bind("k", "vol up", action.change_volume(5))
+        music:bind("j", "vol down", action.change_volume(-5))
+        music:bind("1", "set volume", action.set_volume(50))
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+        let root = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", false, 0),
+            &base_style,
+        )
+        .expect("render root");
+        let binding = find_binding(&root.rendered, "m").clone();
+        push_mode(&mut stack, &binding);
+
+        let child = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", true, 1),
+            &base_style,
+        )
+        .expect("render child");
+        assert!(matches!(
+            find_binding(&child.rendered, "k").kind,
+            BindingKind::Action(Action::ChangeVolume(5))
+        ));
+        assert!(matches!(
+            find_binding(&child.rendered, "j").kind,
+            BindingKind::Action(Action::ChangeVolume(-5))
+        ));
+        assert!(matches!(
+            find_binding(&child.rendered, "1").kind,
+            BindingKind::Action(Action::SetVolume(50))
+        ));
+    }
+
+    #[test]
     fn style_inheritance_layers_mode_overlays_and_binding_overrides() {
         let source = r##"
 themes:use("default")
