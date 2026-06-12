@@ -101,7 +101,7 @@ fn render_mode(
     let sources = cfg.sources.clone();
 
     cfg.vm
-        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+        .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
             let builder_value =
                 super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
             let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;

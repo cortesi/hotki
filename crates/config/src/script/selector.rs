@@ -206,7 +206,7 @@ impl SelectorConfig {
                 let path = cfg.path.clone();
                 let sources = cfg.sources.clone();
                 cfg.vm
-                    .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+                    .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
                         let provider = scope.fetch_function(provider)?;
                         let ctx_value =
                             super::host_userdata::mode_context_userdata(scope, ctx.clone())?;

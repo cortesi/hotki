@@ -35,7 +35,7 @@ pub fn execute_handler(
     let sources = cfg.sources.clone();
 
     cfg.vm
-        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+        .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
             let ctx_value =
                 super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
             let handler = scope.fetch_function(&handler.func)?;
@@ -73,7 +73,7 @@ pub fn execute_selector_handler(
     let query = query.to_string();
 
     cfg.vm
-        .step_with_limits(DynamicConfig::entry_limits(), |scope| {
+        .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
             let ctx_value =
                 super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
             let item_table = scope.create_table()?;
