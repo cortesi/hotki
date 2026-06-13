@@ -30,8 +30,8 @@ impl NativeModule for HotkiModule {
         "hotki"
     }
 
-    fn declaration(&self) -> &str {
-        crate::luau_api()
+    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
+        oxau::decl::DeclSource::Text(crate::luau_api())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

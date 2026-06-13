@@ -493,8 +493,8 @@ impl NativeModule for StaticHotkiApiModule {
         "hotki"
     }
 
-    fn declaration(&self) -> &str {
-        luau_api()
+    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
+        oxau::decl::DeclSource::Text(luau_api())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

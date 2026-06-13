@@ -3718,10 +3718,10 @@ dependencies = [
  "oxau-ast",
  "oxau-bytecode",
  "oxau-decl",
- "oxau-pretty",
  "oxau-source",
  "oxau-typecheck",
  "oxau-vm",
+ "oxau-vm-api",
  "serde",
  "serde_json",
  "tokio",
@@ -3760,18 +3760,7 @@ name = "oxau-decl"
 version = "0.1.0"
 
 [[package]]
-name = "oxau-pretty"
-version = "0.1.0"
-dependencies = [
- "oxau-ast",
-]
-
-[[package]]
 name = "oxau-source"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-stdlib"
 version = "0.1.0"
 
 [[package]]
@@ -3780,7 +3769,7 @@ version = "0.1.0"
 dependencies = [
  "oxau-analysis",
  "oxau-ast",
- "oxau-stdlib",
+ "oxau-source",
  "serde",
  "serde_json",
 ]
