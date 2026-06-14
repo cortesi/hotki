@@ -1,8 +1,11 @@
 //! Native Luau `themes` library implementation.
 
-use oxau::embed::{
-    IntoLuaMulti, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,
-    RuntimeError, Scope, ScopedHostFunction, serde::to_scoped_value,
+use oxau::{
+    decl::DeclSource,
+    embed::{
+        IntoLuaMulti, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,
+        RuntimeError, Scope, ScopedHostFunction, serde::to_scoped_value,
+    },
 };
 
 use super::{
@@ -21,8 +24,8 @@ impl NativeModule for ThemesModule {
         "themes"
     }
 
-    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
-        oxau::decl::DeclSource::Text(crate::luau_api())
+    fn declaration(&self) -> DeclSource<'_> {
+        DeclSource::Text(crate::luau_api())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

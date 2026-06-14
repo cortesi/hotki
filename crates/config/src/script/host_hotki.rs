@@ -2,9 +2,12 @@
 
 use std::{fs, path::PathBuf, sync::Arc};
 
-use oxau::embed::{
-    ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule, RuntimeError, Scope,
-    ScopedHostFunction, ScopedValue, Table, serde::to_scoped_value,
+use oxau::{
+    decl::DeclSource,
+    embed::{
+        ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule, RuntimeError,
+        Scope, ScopedHostFunction, ScopedValue, Table, serde::to_scoped_value,
+    },
 };
 
 use super::{
@@ -30,8 +33,8 @@ impl NativeModule for HotkiModule {
         "hotki"
     }
 
-    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
-        oxau::decl::DeclSource::Text(crate::luau_api())
+    fn declaration(&self) -> DeclSource<'_> {
+        DeclSource::Text(crate::luau_api())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

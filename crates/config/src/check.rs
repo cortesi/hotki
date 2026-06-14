@@ -12,6 +12,7 @@ use std::{
 
 use oxau::{
     compile::{self, CompileOptions},
+    decl::DeclSource,
     diagnostic::DiagnosticSeverity,
     embed::{
         ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue, MultiValue, NativeModule,
@@ -493,8 +494,8 @@ impl NativeModule for StaticHotkiApiModule {
         "hotki"
     }
 
-    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
-        oxau::decl::DeclSource::Text(luau_api())
+    fn declaration(&self) -> DeclSource<'_> {
+        DeclSource::Text(luau_api())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

@@ -1,7 +1,8 @@
 //! Selector binding configuration types.
 
-use oxau::embed::{
-    Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table,
+use oxau::{
+    embed::{Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table},
+    session::CallOptions,
 };
 
 use super::{DynamicConfig, HandlerRef, ModeCtx, diagnostics};
@@ -206,24 +207,27 @@ impl SelectorConfig {
                 let path = cfg.path.clone();
                 let sources = cfg.sources.clone();
                 cfg.vm
-                    .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
-                        let provider = scope.fetch_function(provider)?;
-                        let ctx_value =
-                            super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
-                        let result = scope.call_protected(provider, ctx_value)?;
-                        match result {
-                            Ok(value) => items = Some(parse_selector_items(scope, value)?),
-                            Err(err) => {
-                                script_error = Some(diagnostics::config_script_error(
-                                    path.as_deref(),
-                                    &sources,
-                                    scope,
-                                    &err,
-                                ));
+                    .step_with(
+                        CallOptions::new().limits(DynamicConfig::entry_limits()),
+                        |scope| {
+                            let provider = scope.fetch_function(provider)?;
+                            let ctx_value =
+                                super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
+                            let result = scope.call_protected(provider, ctx_value)?;
+                            match result {
+                                Ok(value) => items = Some(parse_selector_items(scope, value)?),
+                                Err(err) => {
+                                    script_error = Some(diagnostics::config_script_error(
+                                        path.as_deref(),
+                                        &sources,
+                                        scope,
+                                        &err,
+                                    ));
+                                }
                             }
-                        }
-                        Ok(())
-                    })
+                            Ok(())
+                        },
+                    )
                     .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
                 if let Some(err) = script_error {

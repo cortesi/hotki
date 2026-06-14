@@ -12,7 +12,7 @@ use oxau::{
     compile::{self, CompileOptions},
     embed::ScriptError,
     profile::Profile,
-    session::{Ambient, Vm},
+    session::{Ambient, CallOptions, Vm},
 };
 
 use super::{
@@ -93,7 +93,10 @@ pub fn load_dynamic_config_from_string(
         .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
 
     match vm
-        .call_protected(&module, oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()))
+        .call_protected(
+            &module,
+            CallOptions::new().limits(DynamicConfig::entry_limits()),
+        )
         .map_err(|err| diagnostics::config_validation(path.clone(), format!("{err:?}")))?
     {
         Ok(_) => {}
@@ -159,16 +162,19 @@ fn validate_root(
         depth: 0,
     };
     let mut script_error = None;
-    vm.step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
-        let builder = mode_builder_userdata(scope, builder.clone())?;
-        let ctx = mode_context_userdata(scope, ctx.clone())?;
-        let root = scope.fetch_function(&root.func)?;
-        let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
-        if let Err(err) = result {
-            script_error = Some(diagnostics::config_script_error(path, sources, scope, &err));
-        }
-        Ok(())
-    })
+    vm.step_with(
+        CallOptions::new().limits(DynamicConfig::entry_limits()),
+        |scope| {
+            let builder = mode_builder_userdata(scope, builder.clone())?;
+            let ctx = mode_context_userdata(scope, ctx.clone())?;
+            let root = scope.fetch_function(&root.func)?;
+            let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
+            if let Err(err) = result {
+                script_error = Some(diagnostics::config_script_error(path, sources, scope, &err));
+            }
+            Ok(())
+        },
+    )
     .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err.message()))?;
 
     if let Some(err) = script_error {

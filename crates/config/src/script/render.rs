@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use oxau::embed::ScriptError;
+use oxau::{embed::ScriptError, session::CallOptions};
 use tracing::warn;
 
 use super::{
@@ -101,23 +101,26 @@ fn render_mode(
     let sources = cfg.sources.clone();
 
     cfg.vm
-        .step_with(oxau::session::CallOptions::new().limits(DynamicConfig::entry_limits()), |scope| {
-            let builder_value =
-                super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
-            let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
-            let render = scope.fetch_function(&frame.closure.func)?;
-            let result: Result<(), ScriptError<'_>> =
-                scope.call_protected(render, (builder_value, ctx_value))?;
-            if let Err(err) = result {
-                script_error = Some(diagnostics::config_script_error(
-                    path.as_deref(),
-                    &sources,
-                    scope,
-                    &err,
-                ));
-            }
-            Ok(())
-        })
+        .step_with(
+            CallOptions::new().limits(DynamicConfig::entry_limits()),
+            |scope| {
+                let builder_value =
+                    super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
+                let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
+                let render = scope.fetch_function(&frame.closure.func)?;
+                let result: Result<(), ScriptError<'_>> =
+                    scope.call_protected(render, (builder_value, ctx_value))?;
+                if let Err(err) = result {
+                    script_error = Some(diagnostics::config_script_error(
+                        path.as_deref(),
+                        &sources,
+                        scope,
+                        &err,
+                    ));
+                }
+                Ok(())
+            },
+        )
         .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {

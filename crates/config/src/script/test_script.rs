@@ -246,6 +246,34 @@ end)
     }
 
     #[test]
+    fn path_backed_conditional_submenu_branch_renders() {
+        let root = test_dir("conditional-submenu-branch");
+        let root_path = root.join("hotki.luau");
+        let source = r#"
+hotki.root(function(menu, ctx)
+    if ctx:app_matches("A") then
+        menu:submenu("a", "child-a", function(child, inner)
+            child:bind("x", "x", action.shell("true"))
+        end)
+    elseif ctx:app_matches("B") then
+        menu:submenu("b", "child-b", function(child, inner)
+            child:bind("y", "y", action.shell("true"))
+        end)
+    end
+end)
+"#;
+        fs::write(&root_path, source).expect("write root config");
+        let mut cfg = load_dynamic_config_from_string(source, Some(root_path)).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let mut stack = vec![root_frame(&cfg)];
+
+        let out = render_stack(&mut cfg, &mut stack, &base_ctx("A", true, 0), &base_style)
+            .expect("render A");
+
+        assert_eq!(find_binding(&out.rendered, "a").desc, "child-a");
+    }
+
+    #[test]
     fn handler_effects_preserve_enqueue_order() {
         let source = r#"
 hotki.root(function(menu, ctx)
