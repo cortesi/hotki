@@ -1,9 +1,11 @@
 //! Heads-up display (HUD) rendering for key hints.
 use egui::{CentralPanel, Color32, Context, Frame, Vec2, ViewportBuilder, vec2};
+use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
 use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode};
 use mac_keycode::{Chord, Modifier};
 
 use crate::{
+    devtools,
     display::{DisplayMetrics, WindowGeometry},
     fonts,
     nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
@@ -108,7 +110,13 @@ impl Hud {
     }
 
     /// Render rounded key token boxes for a chord, applying optional per-row style overrides.
-    fn render_key_tokens(&self, ui: &mut egui::Ui, chord: &Chord, row_style: Option<&HudRowStyle>) {
+    fn render_key_tokens(
+        &self,
+        ui: &mut egui::Ui,
+        chord: &Chord,
+        row_index: usize,
+        row_style: Option<&HudRowStyle>,
+    ) {
         let tokens = self.tokens_for_chord(chord);
         let rounding = egui::CornerRadius::same(self.cfg.key_radius as u8);
         let visuals = ui.visuals().clone();
@@ -153,7 +161,7 @@ impl Hud {
                     Some(egui::FontId::new(self.cfg.key_font_size, fam));
                 let style = ui.style_mut();
                 style.visuals.override_text_color = Some(Color32::from_rgb(fg.0, fg.1, fg.2));
-                ui.label(tok.as_str());
+                ui.dev_label(format!("hud.row.{row_index}.token.{i}"), tok.as_str());
                 ui.style_mut().override_font_id = prev;
             });
         }
@@ -163,8 +171,10 @@ impl Hud {
     fn render_full_hud_rows(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, avail: Vec2) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = KEY_ROW_GAP;
-            for row in &self.rows {
-                self.render_key_row(ui, hud_ctx, avail, row);
+            for (index, row) in self.rows.iter().enumerate() {
+                container(ui, format!("hud.row.{index}"), |ui| {
+                    self.render_key_row(ui, hud_ctx, avail, index, row);
+                });
             }
         });
     }
@@ -175,13 +185,24 @@ impl Hud {
         ui: &mut egui::Ui,
         hud_ctx: &egui::Context,
         avail: Vec2,
+        row_index: usize,
         row: &HudRow,
     ) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            self.render_key_tokens(ui, &row.chord, row.style.as_ref());
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.chord"),
+                WidgetValue::Text(row.chord.to_string()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.is_mode"),
+                WidgetValue::Bool(row.is_mode),
+            );
+            self.render_key_tokens(ui, &row.chord, row_index, row.style.as_ref());
             ui.add_space(KEY_DESC_GAP);
-            ui.label(&row.desc);
+            ui.dev_label(format!("hud.row.{row_index}.desc"), &row.desc);
             if row.is_mode {
                 let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, &row.chord);
                 let desc_w = hud_ctx.fonts_mut(|f| {
@@ -212,7 +233,10 @@ impl Hud {
                 let (tag_r, tag_g, tag_b) = row.style.map(|s| s.tag_fg).unwrap_or(self.cfg.tag_fg);
                 ui.style_mut().visuals.override_text_color =
                     Some(Color32::from_rgb(tag_r, tag_g, tag_b));
-                ui.label(self.cfg.tag_submenu.as_str());
+                ui.dev_label(
+                    format!("hud.row.{row_index}.tag"),
+                    self.cfg.tag_submenu.as_str(),
+                );
                 ui.style_mut().override_font_id = prev_font;
                 ui.style_mut().visuals.override_text_color = prev_color;
             }
@@ -407,7 +431,7 @@ impl Hud {
     }
 
     /// Render and update the HUD viewport.
-    pub fn render(&mut self, ctx: &Context) {
+    pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) {
         if !self.visible {
             self.viewport.hide(ctx);
             return;
@@ -430,61 +454,25 @@ impl Hud {
             .viewport
             .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
+        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
-            let hud_ctx = vp_ui.ctx().clone();
-            let mut frame =
-                Frame::default().corner_radius(egui::CornerRadius::same(self.cfg.radius as u8));
-            let a = (self.cfg.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let (r, g, b) = self.cfg.bg;
-            frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
-            CentralPanel::default()
-                .frame(frame)
-                .show_inside(vp_ui, |ui| {
-                    let style = ui.style_mut();
-                    style.override_font_id = Some(self.title_font_id());
-                    let (fr, fg, fb) = self.cfg.title_fg;
-                    style.visuals.override_text_color =
-                        Some(Color32::from_rgba_unmultiplied(fr, fg, fb, 255));
-
-                    if matches!(self.cfg.mode, Mode::Mini) {
-                        // Compact: center vertically; left padding; single title line
-                        if let Some(title) = model.mini_title.as_deref() {
-                            let avail = ui.available_size();
-                            // compute text height to center vertically
-                            let text_h = hud_ctx.fonts_mut(|f| {
-                                f.layout_no_wrap(
-                                    title.to_string(),
-                                    self.title_font_id(),
-                                    Color32::WHITE,
-                                )
-                                .size()
-                                .y
+            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+                let hud_ctx = vp_ui.ctx().clone();
+                let mut frame =
+                    Frame::default().corner_radius(egui::CornerRadius::same(self.cfg.radius as u8));
+                let a = (self.cfg.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let (r, g, b) = self.cfg.bg;
+                frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
+                CentralPanel::default()
+                    .frame(frame)
+                    .show_inside(vp_ui, |ui| {
+                        container(ui, "hud.root", |ui| {
+                            container(ui, "hud.panel", |ui| {
+                                self.render_panel(ui, &hud_ctx, &model);
                             });
-                            let extra_y = (avail.y - (text_h + 2.0 * HUD_PADDING_Y)).max(0.0);
-                            let left_margin = HUD_PADDING_X;
-                            let top_margin = HUD_PADDING_Y + extra_y / 2.0;
-                            ui.add_space(top_margin);
-                            ui.horizontal(|ui| {
-                                ui.add_space(left_margin);
-                                ui.label(title);
-                            });
-                        }
-                    } else {
-                        // Full HUD
-                        // Left-align content with padding, center vertically if needed
-                        let avail = ui.available_size();
-                        let extra_y =
-                            (avail.y - (model.content_size.y + 2.0 * HUD_PADDING_Y)).max(0.0);
-                        let left_margin = HUD_PADDING_X; // Always align to left with standard padding
-                        let top_margin = HUD_PADDING_Y + extra_y / 2.0;
-
-                        ui.add_space(top_margin);
-                        ui.horizontal(|ui| {
-                            ui.add_space(left_margin);
-                            self.render_full_hud_rows(ui, &hud_ctx, avail);
                         });
-                    }
-                });
+                    });
+            });
         });
 
         if !self.window_configured && frame_by_title("Hotki HUD").is_some() {
@@ -502,5 +490,93 @@ impl Hud {
             .record_geometry(model.geometry.pos, model.geometry.size);
     }
 
+    /// Render either full or mini HUD content inside the HUD panel.
+    fn render_panel(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, model: &HudViewModel) {
+        self.render_metadata(ui, model);
+        let style = ui.style_mut();
+        style.override_font_id = Some(self.title_font_id());
+        let (fr, fg, fb) = self.cfg.title_fg;
+        style.visuals.override_text_color = Some(Color32::from_rgba_unmultiplied(fr, fg, fb, 255));
+
+        if matches!(self.cfg.mode, Mode::Mini) {
+            self.render_mini_hud(ui, hud_ctx, model.mini_title.as_deref());
+        } else {
+            self.render_full_hud(ui, hud_ctx, model);
+        }
+    }
+
+    /// Record script-visible HUD state that is not otherwise represented by text widgets.
+    fn render_metadata(&self, ui: &mut egui::Ui, model: &HudViewModel) {
+        devtools::value_anchor(
+            ui,
+            "hud.mode",
+            WidgetValue::Text(hud_mode_label(self.cfg.mode)),
+        );
+        devtools::value_anchor(ui, "hud.visible", WidgetValue::Bool(self.visible));
+        devtools::value_anchor(
+            ui,
+            "hud.geometry.x",
+            WidgetValue::Float(f64::from(model.geometry.pos.x)),
+        );
+        devtools::value_anchor(
+            ui,
+            "hud.geometry.y",
+            WidgetValue::Float(f64::from(model.geometry.pos.y)),
+        );
+        devtools::value_anchor(
+            ui,
+            "hud.geometry.width",
+            WidgetValue::Float(f64::from(model.geometry.size.x)),
+        );
+        devtools::value_anchor(
+            ui,
+            "hud.geometry.height",
+            WidgetValue::Float(f64::from(model.geometry.size.y)),
+        );
+    }
+
+    /// Render compact HUD mode.
+    fn render_mini_hud(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, title: Option<&str>) {
+        let Some(title) = title else {
+            return;
+        };
+        let avail = ui.available_size();
+        let text_h = hud_ctx.fonts_mut(|f| {
+            f.layout_no_wrap(title.to_string(), self.title_font_id(), Color32::WHITE)
+                .size()
+                .y
+        });
+        let extra_y = (avail.y - (text_h + 2.0 * HUD_PADDING_Y)).max(0.0);
+        let top_margin = HUD_PADDING_Y + extra_y / 2.0;
+        ui.add_space(top_margin);
+        ui.horizontal(|ui| {
+            ui.add_space(HUD_PADDING_X);
+            ui.dev_label("hud.mini.title", title);
+        });
+    }
+
+    /// Render full HUD mode.
+    fn render_full_hud(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, model: &HudViewModel) {
+        let avail = ui.available_size();
+        let extra_y = (avail.y - (model.content_size.y + 2.0 * HUD_PADDING_Y)).max(0.0);
+        let top_margin = HUD_PADDING_Y + extra_y / 2.0;
+
+        ui.add_space(top_margin);
+        ui.horizontal(|ui| {
+            ui.add_space(HUD_PADDING_X);
+            self.render_full_hud_rows(ui, hud_ctx, avail);
+        });
+    }
+
     // (hide method is defined alongside state setters)
+}
+
+/// Stable script-visible label for the HUD mode.
+fn hud_mode_label(mode: Mode) -> String {
+    match mode {
+        Mode::Hud => "hud",
+        Mode::Hide => "hide",
+        Mode::Mini => "mini",
+    }
+    .to_string()
 }

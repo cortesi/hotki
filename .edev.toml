@@ -1,0 +1,24 @@
+[app]
+command = [
+  "cargo",
+  "run",
+  "-p",
+  "hotki",
+  "--features",
+  "devtools",
+  "--bin",
+  "hotki",
+  "--",
+  "--dev-mcp",
+  "--disable-event-tap",
+  "--config",
+  "examples/eguidev-demo.luau",
+]
+
+[mcp]
+idle_shutdown_after_secs = 1200
+
+[smoke]
+suite_dir = "smoketest/eguidev"
+suite_timeout_secs = 600
+script_timeout_secs = 60

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use eframe::{App, CreationContext};
 use egui::Context;
+use eguidev::DevMcp;
 use hotki_protocol::{MsgToUI, Style, Toggle};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
@@ -11,11 +12,12 @@ use tray_icon::TrayIcon;
 
 use crate::{
     details::Details,
+    devtools::{FixtureRuntime, render_app_anchors},
     display::DisplayMetrics,
     fonts,
     hud::Hud,
     notification::NotificationCenter,
-    permissions::PermissionsHelp,
+    permissions::{PermissionsHelp, PermissionsStatus},
     runtime::{self, ControlMsg},
     selector::SelectorWindow,
     tray,
@@ -29,6 +31,12 @@ pub enum UiCommand {
     SetConfigPath(Option<PathBuf>),
     /// Show the permissions helper window.
     ShowPermissionsHelp,
+    /// Update whether the server/runtime lane is connected.
+    SetServerConnected(bool),
+    /// Update the server binding identifiers visible to devtools.
+    SetServerBindings(Vec<String>),
+    /// Override permission status for deterministic devtools fixtures.
+    SetPermissionStatusOverride(Option<PermissionsStatus>),
 }
 
 /// Events sent from the background runtime to the UI thread.
@@ -59,6 +67,12 @@ pub struct HotkiApp {
     pub(crate) shutdown_in_progress: bool,
     /// Cached display metrics for HUD/notification placement.
     pub(crate) display_metrics: DisplayMetrics,
+    /// Developer automation instrumentation handle.
+    pub(crate) devmcp: DevMcp,
+    /// Whether the server/runtime lane is connected.
+    pub(crate) server_connected: bool,
+    /// Sorted server binding identifiers, when the runtime has reported them.
+    pub(crate) server_bindings: Vec<String>,
 }
 
 /// Inputs required to bootstrap the UI application and runtime.
@@ -81,6 +95,10 @@ pub struct AppBootstrap {
     pub server_event_tap_enabled: bool,
     /// Whether world snapshots should be periodically dumped to logs.
     pub dumpworld: bool,
+    /// Developer automation instrumentation handle.
+    pub devmcp: DevMcp,
+    /// Fixture runtime state shared with the early MCP handler.
+    pub fixture_runtime: FixtureRuntime,
 }
 
 impl App for HotkiApp {
@@ -100,14 +118,27 @@ impl App for HotkiApp {
             }
         }
 
-        self.hud.render(ctx);
-        self.selector.render(ctx);
-        self.notifications.render(ctx);
-        self.details.render(ctx, self.notifications.backlog());
-        self.permissions.render(ctx);
+        let notification_stack = self.notifications.stack_aliases();
+        render_app_anchors(
+            &self.devmcp,
+            ctx,
+            self.server_connected,
+            &self.server_bindings,
+            &notification_stack,
+        );
+        self.hud.render(ctx, &self.devmcp);
+        self.selector.render(ctx, &self.devmcp);
+        self.notifications.render(ctx, &self.devmcp);
+        self.details
+            .render(ctx, self.notifications.backlog(), &self.devmcp);
+        self.permissions.render(ctx, &self.devmcp);
     }
 
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
+    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
+        eguidev::raw_input_hook(&self.devmcp, ctx, raw_input);
+    }
 }
 
 impl HotkiApp {
@@ -123,6 +154,8 @@ impl HotkiApp {
         cc.egui_ctx.options_mut(|opts| opts.quit_shortcuts = vec![]);
 
         fonts::install_fonts(&cc.egui_ctx);
+
+        bootstrap.fixture_runtime.set_context(cc.egui_ctx.clone());
 
         runtime::spawn_key_runtime(
             bootstrap.config_path.as_path(),
@@ -163,6 +196,9 @@ impl HotkiApp {
             permissions,
             shutdown_in_progress: false,
             display_metrics: metrics,
+            devmcp: bootstrap.devmcp,
+            server_connected: false,
+            server_bindings: Vec::new(),
         }
     }
 
@@ -173,7 +209,7 @@ impl HotkiApp {
                 self.shutdown_in_progress = true;
                 self.hud.hide(ctx);
                 self.selector.hide(ctx);
-                self.notifications.clear_all(ctx);
+                self.notifications.clear_all(ctx, &self.devmcp);
                 self.details.hide();
                 self.permissions.hide();
                 self._tray = None;
@@ -184,6 +220,15 @@ impl HotkiApp {
             }
             UiCommand::ShowPermissionsHelp => {
                 self.permissions.show();
+            }
+            UiCommand::SetServerConnected(connected) => {
+                self.server_connected = connected;
+            }
+            UiCommand::SetServerBindings(bindings) => {
+                self.server_bindings = bindings;
+            }
+            UiCommand::SetPermissionStatusOverride(status) => {
+                self.permissions.set_status_override(status);
             }
         }
         ctx.request_repaint();
@@ -215,7 +260,7 @@ impl HotkiApp {
                 self.notifications.push(kind, title, text);
             }
             MsgToUI::ClearNotifications => {
-                self.notifications.clear_all(ctx);
+                self.notifications.clear_all(ctx, &self.devmcp);
             }
             MsgToUI::ShowDetails(toggle) => match toggle {
                 Toggle::On => self.details.show(),

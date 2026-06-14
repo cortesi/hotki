@@ -169,12 +169,17 @@ fn notification_message(kind: NotifyKind, title: &str, text: &str) -> String {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Mutex;
+
     use hotki_protocol::NotifyKind;
 
     use super::{clear, push_client_notification, snapshot_after, snapshot_with_generation};
 
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn client_notifications_map_kind_to_log_level() {
+        let _guard = TEST_LOCK.lock().expect("log test lock");
         clear();
 
         push_client_notification(NotifyKind::Warn, "Config", "Duplicate chord");
@@ -190,6 +195,7 @@ mod test {
 
     #[test]
     fn snapshot_after_only_clones_when_generation_changes() {
+        let _guard = TEST_LOCK.lock().expect("log test lock");
         clear();
         let empty = snapshot_with_generation();
         assert!(snapshot_after(empty.generation).is_none());

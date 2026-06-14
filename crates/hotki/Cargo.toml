@@ -7,6 +7,9 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+devtools = ["dep:eguidev_runtime"]
+
 # objc2-quartz-core used via unsafe FFI (setCornerRadius)
 [package.metadata.cargo-machete]
 ignored = ["objc2-quartz-core"]
@@ -18,8 +21,10 @@ config = { path = "../config" }
 hotki-protocol = { path = "../hotki-protocol" }
 logging = { path = "../logging" }
 
-eframe = { workspace = true }
+eframe = { workspace = true, features = ["glow"] }
 egui = { workspace = true }
+eguidev = { path = "../../../eguidev/crates/eguidev" }
+eguidev_runtime = { path = "../../../eguidev/crates/eguidev_runtime", optional = true }
 image = "0.25.9"
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true }

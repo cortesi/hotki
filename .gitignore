@@ -1,5 +1,6 @@
 /target
 tmp
+.edev-instances/
 .idea
 crates/*/Cargo.lock
 .postgres

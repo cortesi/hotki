@@ -56,10 +56,30 @@ fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
     let quit = MenuItem::new("Quit", true, None);
 
     let mut actions = HashMap::new();
+    register_base_actions(&mut actions, &reload, &help, &quit);
+    append_theme_items(&themes_menu, &mut actions);
+    append_menu_item(&menu, &reload);
+    append_themes_menu(&menu, &themes_menu);
+    append_menu_item(&menu, &help);
+    append_menu_item(&menu, &quit);
+
+    (menu, actions)
+}
+
+/// Register fixed tray menu actions.
+fn register_base_actions(
+    actions: &mut HashMap<MenuId, TrayAction>,
+    reload: &MenuItem,
+    help: &MenuItem,
+    quit: &MenuItem,
+) {
     actions.insert(reload.id().clone(), TrayAction::Reload);
     actions.insert(help.id().clone(), TrayAction::OpenPermissionsHelp);
     actions.insert(quit.id().clone(), TrayAction::Quit);
+}
 
+/// Add all configured themes to the themes submenu.
+fn append_theme_items(themes_menu: &Submenu, actions: &mut HashMap<MenuId, TrayAction>) {
     for theme_name in themes::list_themes() {
         let theme_item = MenuItem::new(theme_name, true, None);
         actions.insert(
@@ -70,22 +90,20 @@ fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
             tracing::warn!("failed to append theme item: {}", error);
         }
     }
+}
 
-    for item in [&reload] {
-        if let Err(error) = menu.append(item) {
-            tracing::warn!("failed to append tray menu item: {}", error);
-        }
+/// Append one menu item and log failures.
+fn append_menu_item(menu: &Menu, item: &MenuItem) {
+    if let Err(error) = menu.append(item) {
+        tracing::warn!("failed to append tray menu item: {}", error);
     }
-    if let Err(error) = menu.append(&themes_menu) {
+}
+
+/// Append the themes submenu and log failures.
+fn append_themes_menu(menu: &Menu, themes_menu: &Submenu) {
+    if let Err(error) = menu.append(themes_menu) {
         tracing::warn!("failed to append themes submenu: {}", error);
     }
-    for item in [&help, &quit] {
-        if let Err(error) = menu.append(item) {
-            tracing::warn!("failed to append tray menu item: {}", error);
-        }
-    }
-
-    (menu, actions)
 }
 
 /// Dispatch one tray action onto the runtime control channel.

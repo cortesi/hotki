@@ -5,10 +5,14 @@ use egui::{
     vec2,
 };
 use egui_extras::{Column, TableBuilder};
+use eguidev::{
+    DevMcp, DevUiExt, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full,
+};
 use hotki_protocol::{NotifyKind, NotifyTheme};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
+    devtools,
     display::{DisplayMetrics, WindowGeometry},
     logs::{self, LogEntry, Side},
     notification::BacklogEntry,
@@ -222,7 +226,7 @@ impl Details {
     }
 
     /// Render the window and its active tab.
-    pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry]) {
+    pub fn render(&mut self, ctx: &Context, backlog: &[BacklogEntry], devmcp: &DevMcp) {
         if !self.visible {
             self.ensure_cursor_rects_enabled();
             self.viewport.hide(ctx);
@@ -241,121 +245,156 @@ impl Details {
             self.want_initial_size = false;
         }
 
+        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
-            let wctx = vp_ui.ctx().clone();
-            if wctx.input(|i| i.viewport().close_requested()) {
-                // Close via decorations; stop rendering next frame
-                self.visible = false;
-                wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                // Remember final geometry for this session only
-                if let Some(cur) = self.current_geom_top_left() {
-                    self.last_saved = Some(cur);
-                }
-                return;
-            }
-            self.ensure_cursor_rects_disabled();
-            // Apply saved geometry once after opening (clamped to active screen)
-            if self.restore_pending {
-                if let Some(stored) = self.last_saved {
-                    let clamped = self.clamp_to_active_frame(stored);
-                    wctx.send_viewport_cmd_to(
-                        self.viewport.id(),
-                        ViewportCommand::InnerSize(clamped.size),
-                    );
-                    wctx.send_viewport_cmd_to(
-                        self.viewport.id(),
-                        ViewportCommand::OuterPosition(clamped.pos),
-                    );
-                }
-                self.restore_pending = false;
-            }
-            // Focus the window when toggled on
-            if self.want_focus {
-                wctx.send_viewport_cmd_to(self.viewport.id(), ViewportCommand::Focus);
-                self.want_focus = false;
-            }
-            CentralPanel::default().show_inside(vp_ui, |ui| {
-                ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
-                    ui.add_space(DETAILS_PAD);
-
-                    // Tab bar
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(
-                            &mut self.active_tab,
-                            Tab::Notifications,
-                            "Notifications",
-                        );
-                        ui.selectable_value(&mut self.active_tab, Tab::Config, "Config");
-                        ui.selectable_value(&mut self.active_tab, Tab::Logs, "Logs");
-                        ui.selectable_value(&mut self.active_tab, Tab::About, "About");
-                    });
-
-                    ui.separator();
-                    ui.add_space(DETAILS_PAD);
-
-                    // Tab content
-                    match self.active_tab {
-                        Tab::Notifications => {
-                            self.render_notifications(ui, backlog);
-                        }
-                        Tab::Config => {
-                            let reload_clicked =
-                                Self::render_config_tab(ui, &self.config_tab_model());
-                            if reload_clicked {
-                                self.send_reload();
-                                self.reload_config_contents();
-                            }
-                        }
-                        Tab::About => {
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(40.0);
-
-                                // Large, bright title
-                                ui.label(
-                                    RichText::new("Hotki")
-                                        .size(32.0)
-                                        .color(Color32::from_rgb(255, 255, 255))
-                                        .strong(),
-                                );
-
-                                ui.add_space(15.0);
-                                ui.label("A powerful hotkey management system for macOS");
-
-                                ui.add_space(30.0);
-                                ui.separator();
-                                ui.add_space(30.0);
-
-                                ui.label(
-                                    RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                                        .color(Color32::from_rgb(200, 200, 200)),
-                                );
-
-                                ui.add_space(30.0);
-
-                                ui.hyperlink_to(
-                                    RichText::new("github.com/cortesi/hotki")
-                                        .color(Color32::from_rgb(100, 149, 237)),
-                                    "https://github.com/cortesi/hotki",
-                                );
-
-                                ui.add_space(40.0);
-                            });
-                        }
-                        Tab::Logs => {
-                            self.render_logs(ui);
-                        }
+            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+                let wctx = vp_ui.ctx().clone();
+                if wctx.input(|i| i.viewport().close_requested()) {
+                    // Close via decorations; stop rendering next frame
+                    self.visible = false;
+                    wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    // Remember final geometry for this session only
+                    if let Some(cur) = self.current_geom_top_left() {
+                        self.last_saved = Some(cur);
                     }
-
-                    ui.add_space(DETAILS_PAD);
+                    return;
+                }
+                self.ensure_cursor_rects_disabled();
+                // Apply saved geometry once after opening (clamped to active screen)
+                if self.restore_pending {
+                    if let Some(stored) = self.last_saved {
+                        let clamped = self.clamp_to_active_frame(stored);
+                        wctx.send_viewport_cmd_to(
+                            self.viewport.id(),
+                            ViewportCommand::InnerSize(clamped.size),
+                        );
+                        wctx.send_viewport_cmd_to(
+                            self.viewport.id(),
+                            ViewportCommand::OuterPosition(clamped.pos),
+                        );
+                    }
+                    self.restore_pending = false;
+                }
+                // Focus the window when toggled on
+                if self.want_focus {
+                    wctx.send_viewport_cmd_to(self.viewport.id(), ViewportCommand::Focus);
+                    self.want_focus = false;
+                }
+                CentralPanel::default().show_inside(vp_ui, |ui| {
+                    container(ui, "details.root", |ui| {
+                        self.render_contents(ui, backlog);
+                    });
                 });
+                // Track geometry in-memory if it changed (no file persistence)
+                if let Some(cur) = self.current_geom_top_left()
+                    && self.last_saved.map(|g| g != cur).unwrap_or(true)
+                {
+                    self.last_saved = Some(cur);
+                    self.viewport.record_geometry(cur.pos, cur.size);
+                }
             });
-            // Track geometry in-memory if it changed (no file persistence)
-            if let Some(cur) = self.current_geom_top_left()
-                && self.last_saved.map(|g| g != cur).unwrap_or(true)
-            {
-                self.last_saved = Some(cur);
-                self.viewport.record_geometry(cur.pos, cur.size);
-            }
+        });
+    }
+
+    /// Render the Details window contents inside the already-created viewport.
+    fn render_contents(&mut self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
+        ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
+            ui.add_space(DETAILS_PAD);
+            self.render_tab_bar(ui);
+            devtools::value_anchor(
+                ui,
+                "details.active_tab",
+                WidgetValue::Text(self.active_tab.label().to_string()),
+            );
+            ui.dev_separator("details.separator.tabs");
+            ui.add_space(DETAILS_PAD);
+            self.render_active_tab(ui, backlog);
+            ui.add_space(DETAILS_PAD);
+        });
+    }
+
+    /// Render the Details tab selector row.
+    fn render_tab_bar(&mut self, ui: &mut egui::Ui) {
+        container(ui, "details.tabs", |ui| {
+            ui.horizontal(|ui| {
+                ui.dev_selectable_value(
+                    "details.tab.notifications",
+                    &mut self.active_tab,
+                    Tab::Notifications,
+                    "Notifications",
+                );
+                ui.dev_selectable_value(
+                    "details.tab.config",
+                    &mut self.active_tab,
+                    Tab::Config,
+                    "Config",
+                );
+                ui.dev_selectable_value(
+                    "details.tab.logs",
+                    &mut self.active_tab,
+                    Tab::Logs,
+                    "Logs",
+                );
+                ui.dev_selectable_value(
+                    "details.tab.about",
+                    &mut self.active_tab,
+                    Tab::About,
+                    "About",
+                );
+            });
+        });
+    }
+
+    /// Render the currently selected Details tab.
+    fn render_active_tab(&mut self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
+        match self.active_tab {
+            Tab::Notifications => self.render_notifications(ui, backlog),
+            Tab::Config => self.render_config_tab_with_reload(ui),
+            Tab::About => Self::render_about_tab(ui),
+            Tab::Logs => self.render_logs(ui),
+        }
+    }
+
+    /// Render the Config tab and apply reload side effects.
+    fn render_config_tab_with_reload(&mut self, ui: &mut egui::Ui) {
+        let reload_clicked = Self::render_config_tab(ui, &self.config_tab_model());
+        if reload_clicked {
+            self.send_reload();
+            self.reload_config_contents();
+        }
+    }
+
+    /// Render the About tab.
+    fn render_about_tab(ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(40.0);
+            ui.dev_label(
+                "details.about.name",
+                RichText::new("Hotki")
+                    .size(32.0)
+                    .color(Color32::from_rgb(255, 255, 255))
+                    .strong(),
+            );
+            ui.add_space(15.0);
+            ui.dev_label(
+                "details.about.description",
+                "A powerful hotkey management system for macOS",
+            );
+            ui.add_space(30.0);
+            ui.dev_separator("details.about.separator");
+            ui.add_space(30.0);
+            ui.dev_label(
+                "details.about.version",
+                RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                    .color(Color32::from_rgb(200, 200, 200)),
+            );
+            ui.add_space(30.0);
+            ui.dev_hyperlink_to(
+                "details.about.repository",
+                RichText::new("github.com/cortesi/hotki").color(Color32::from_rgb(100, 149, 237)),
+                "https://github.com/cortesi/hotki",
+            );
+            ui.add_space(40.0);
         });
     }
 
@@ -395,10 +434,17 @@ impl Details {
     /// Render the notifications table.
     fn render_notifications(&self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
         if backlog.is_empty() {
-            ui.weak("No notifications yet");
+            ui.dev_label(
+                "details.notifications.empty",
+                RichText::new("No notifications yet").weak(),
+            );
             return;
         }
 
+        ui.dev_label(
+            "details.notification.count",
+            format!("{} notifications", backlog.len()),
+        );
         TableBuilder::new(ui)
             .column(
                 Column::initial(COL_KIND_INIT)
@@ -423,20 +469,44 @@ impl Details {
                 });
             })
             .body(|mut body| {
-                for ent in backlog {
+                for (index, ent) in backlog.iter().enumerate() {
                     let fg = kind_color(&self.theme, ent.kind);
                     body.row(ROW_HEIGHT_MIN, |mut row| {
                         row.col(|ui| {
-                            ui.colored_label(fg, kind_label(ent.kind));
+                            ui.dev_label(
+                                format!("details.notification.{index}.kind"),
+                                RichText::new(kind_label(ent.kind)).color(fg),
+                            );
                         });
                         row.col(|ui| {
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                            ui.colored_label(fg, &ent.title);
+                            ui.dev_label(
+                                format!("details.notification.{index}.title"),
+                                RichText::new(&ent.title).color(fg),
+                            );
                         });
                         row.col(|ui| {
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                            ui.colored_label(fg, &ent.text);
+                            ui.dev_label(
+                                format!("details.notification.{index}.text"),
+                                RichText::new(&ent.text).color(fg),
+                            );
                         });
+                        let response = row.response();
+                        track_response_full(
+                            format!("details.notification.{index}.row"),
+                            &response,
+                            WidgetMeta {
+                                role: WidgetRole::Unknown,
+                                label: Some(format!(
+                                    "{} notification: {}",
+                                    kind_label(ent.kind),
+                                    ent.title
+                                )),
+                                visible: true,
+                                ..Default::default()
+                            },
+                        );
                     });
                 }
             });
@@ -447,27 +517,38 @@ impl Details {
         let mut reload_clicked = false;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Config File:").strong());
-                ui.label(&model.path_text);
+                ui.dev_label(
+                    "details.config.path.label",
+                    RichText::new("Config File:").strong(),
+                );
+                ui.dev_label("details.config.path", &model.path_text);
             });
 
             ui.add_space(10.0);
 
             if let Some(err) = model.error {
-                ui.colored_label(Color32::from_rgb(220, 50, 47), err);
+                ui.dev_label(
+                    "details.config.error",
+                    RichText::new(err).color(Color32::from_rgb(220, 50, 47)),
+                );
                 ui.add_space(10.0);
             }
 
-            reload_clicked = ui.button("Reload Config").clicked();
+            reload_clicked = ui
+                .dev_button("details.config.reload", "Reload Config")
+                .clicked();
 
             ui.add_space(10.0);
-            ui.separator();
+            ui.dev_separator("details.config.separator");
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Contents:").strong());
+            ui.dev_label(
+                "details.config.contents.label",
+                RichText::new("Contents:").strong(),
+            );
             ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                ui.label(model.contents);
+                ui.dev_label("details.config.contents", model.contents);
             });
         });
         reload_clicked
@@ -481,20 +562,24 @@ impl Details {
         }
 
         ui.vertical(|ui| {
-            if ui.button("Clear").clicked() {
+            if ui.dev_button("details.logs.clear", "Clear").clicked() {
                 logs::clear();
                 self.log_generation = u64::MAX;
                 self.log_rows.clear();
             }
+            ui.dev_label(
+                "details.logs.count",
+                format!("{} log rows", self.log_rows.len()),
+            );
             ui.add_space(8.0);
-            ui.separator();
+            ui.dev_separator("details.logs.separator");
             ui.add_space(8.0);
             ScrollArea::vertical()
                 .auto_shrink(false)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                    for ent in &self.log_rows {
+                    for (index, ent) in self.log_rows.iter().enumerate() {
                         let prefix = if matches!(ent.side, Side::Client) {
                             "client"
                         } else {
@@ -504,10 +589,27 @@ impl Details {
                             "[{:<6}] {:<5} {:<} - {}",
                             prefix, ent.level, ent.target, ent.message
                         );
-                        ui.colored_label(ent.color(), text);
+                        container(ui, format!("details.log.{index}.row"), |ui| {
+                            ui.dev_label(
+                                format!("details.log.{index}.message"),
+                                RichText::new(text).color(ent.color()),
+                            );
+                        });
                     }
                 });
         });
+    }
+}
+
+impl Tab {
+    /// Stable script-visible label for this tab.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Notifications => "notifications",
+            Self::Config => "config",
+            Self::About => "about",
+            Self::Logs => "logs",
+        }
     }
 }
 

@@ -4,7 +4,7 @@
 use std::{path::Path, thread};
 
 use egui::Context;
-use hotki_protocol::NotifyKind;
+use hotki_protocol::{NotifyKind, rpc::InjectKind};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -19,6 +19,17 @@ pub enum ControlMsg {
     Shutdown,
     /// Request a server-side theme switch by name.
     SwitchTheme(String),
+    /// Inject a synthetic key event through the connected server.
+    InjectKey {
+        /// Key chord identifier, for example `shift+cmd+0`.
+        ident: String,
+        /// Key event kind.
+        kind: InjectKind,
+        /// Whether this down event is a repeat.
+        repeat: bool,
+        /// Whether failed injection should be surfaced to the user.
+        report_errors: bool,
+    },
     /// Open the in-app permissions help view.
     OpenPermissionsHelp,
     /// Forward a user-facing notice into the app UI.

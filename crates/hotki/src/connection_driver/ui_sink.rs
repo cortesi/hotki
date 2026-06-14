@@ -52,6 +52,16 @@ impl UiSink {
         self.send_command(UiCommand::ShowPermissionsHelp);
     }
 
+    /// Update the UI-visible server connection readiness state.
+    pub(super) fn set_server_connected(&self, connected: bool) {
+        self.send_command(UiCommand::SetServerConnected(connected));
+    }
+
+    /// Update the UI-visible server binding list.
+    pub(super) fn set_server_bindings(&self, bindings: Vec<String>) {
+        self.send_command(UiCommand::SetServerBindings(bindings));
+    }
+
     /// Ask the UI to shut down and close the root viewport.
     pub(super) fn trigger_graceful_shutdown(&self, fallback_ms: u64) {
         self.send_command(UiCommand::Shutdown);

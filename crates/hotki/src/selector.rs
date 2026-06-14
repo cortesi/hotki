@@ -4,9 +4,11 @@ use egui::{
     CentralPanel, Color32, Context, Frame, Margin, Stroke, Vec2, ViewportBuilder, epaint::Shadow,
     style::ScrollStyle, text::LayoutJob, vec2,
 };
-use hotki_protocol::{FontWeight, SelectorSnapshot, SelectorStyle};
+use eguidev::{DevMcp, DevScrollAreaExt, DevUiExt, WidgetValue, container};
+use hotki_protocol::{FontWeight, SelectorItemSnapshot, SelectorSnapshot, SelectorStyle};
 
 use crate::{
+    devtools,
     display::{DisplayMetrics, WindowGeometry},
     fonts,
     nswindow::{apply_transparent_rounded, frame_by_title, set_on_all_spaces},
@@ -72,6 +74,27 @@ struct SelectorViewModel {
     geometry: WindowGeometry,
     /// Snapshot to paint.
     snapshot: SelectorSnapshot,
+}
+
+/// Values derived once per selector frame and shared by render helpers.
+#[derive(Clone)]
+struct SelectorRenderAssets {
+    /// Effective selector style.
+    style: SelectorStyle,
+    /// Header font.
+    title_font_id: egui::FontId,
+    /// Query font.
+    input_font_id: egui::FontId,
+    /// Item label font.
+    item_font_id: egui::FontId,
+    /// Item sublabel font.
+    sublabel_font_id: egui::FontId,
+    /// Primary foreground color.
+    fg: Color32,
+    /// Dimmed foreground color.
+    dim: Color32,
+    /// Match highlight color.
+    match_fg: Color32,
 }
 
 impl SelectorWindow {
@@ -266,19 +289,24 @@ impl SelectorWindow {
     /// Render an optional selector item sublabel line.
     fn render_sublabel(
         ui: &mut egui::Ui,
+        index: usize,
         sublabel: Option<&str>,
-        font_id: &egui::FontId,
-        fg: Color32,
+        assets: &SelectorRenderAssets,
     ) {
         let Some(sub) = sublabel else {
             return;
         };
         ui.add_space(2.0);
-        ui.label(egui::RichText::new(sub).font(font_id.clone()).color(fg));
+        ui.dev_label(
+            format!("selector.item.{index}.sublabel"),
+            egui::RichText::new(sub)
+                .font(assets.sublabel_font_id.clone())
+                .color(assets.dim),
+        );
     }
 
     /// Render and update the selector viewport.
-    pub fn render(&mut self, ctx: &Context) {
+    pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) {
         let Some(snapshot) = self.state.as_ref() else {
             self.viewport.hide(ctx);
             return;
@@ -298,145 +326,33 @@ impl SelectorWindow {
             .viewport
             .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
-        let style = self.style.clone();
-        let title_font_id = self.title_font_id();
-        let input_font_id = self.input_font_id();
-        let item_font_id = self.item_font_id();
-        let sublabel_font_id = self.sublabel_font_id();
+        let assets = self.render_assets();
         let snapshot = model.snapshot.clone();
+        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, move |vp_ui, _| {
-            let border = Self::rgba(style.border, BG_ALPHA);
-            let bg = Self::rgba(style.bg, BG_ALPHA);
-            let mut frame = Frame::new()
-                .fill(bg)
-                .stroke(Stroke::new(1.0, border))
-                .corner_radius(egui::CornerRadius::same(SELECTOR_RADIUS as u8))
-                .inner_margin(Margin::same(SELECTOR_PADDING as i8));
-            frame.shadow = Shadow {
-                offset: [0, 6],
-                blur: 24,
-                spread: 0,
-                color: Self::rgba(style.shadow, 64),
-            };
+            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+                let border = Self::rgba(assets.style.border, BG_ALPHA);
+                let bg = Self::rgba(assets.style.bg, BG_ALPHA);
+                let mut frame = Frame::new()
+                    .fill(bg)
+                    .stroke(Stroke::new(1.0, border))
+                    .corner_radius(egui::CornerRadius::same(SELECTOR_RADIUS as u8))
+                    .inner_margin(Margin::same(SELECTOR_PADDING as i8));
+                frame.shadow = Shadow {
+                    offset: [0, 6],
+                    blur: 24,
+                    spread: 0,
+                    color: Self::rgba(assets.style.shadow, 64),
+                };
 
-            CentralPanel::default()
-                .frame(frame)
-                .show_inside(vp_ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-
-                    let fg = Color32::from_rgba_unmultiplied(230, 230, 230, 255);
-                    let dim = Color32::from_rgba_unmultiplied(160, 160, 160, 255);
-                    let match_fg =
-                        Color32::from_rgb(style.match_fg.0, style.match_fg.1, style.match_fg.2);
-
-                    if !snapshot.title.trim().is_empty() {
-                        let title_fmt = egui::TextFormat {
-                            color: fg,
-                            font_id: title_font_id.clone(),
-                            ..Default::default()
-                        };
-                        ui.horizontal(|ui| {
-                            let mut job = LayoutJob::default();
-                            job.append(snapshot.title.as_str(), 0.0, title_fmt);
-                            ui.label(job);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{}", snapshot.total_matches))
-                                            .size(SUBLABEL_FONT_SIZE)
-                                            .color(dim),
-                                    );
-                                },
-                            );
+                CentralPanel::default()
+                    .frame(frame)
+                    .show_inside(vp_ui, |ui| {
+                        container(ui, "selector.panel", |ui| {
+                            Self::render_panel(ui, &snapshot, &assets);
                         });
-                        ui.add_space(SECTION_GAP);
-                    }
-
-                    let input_bg = Self::rgba(style.input_bg, BG_ALPHA);
-                    let input_frame = Frame::new()
-                        .fill(input_bg)
-                        .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                        .inner_margin(INPUT_MARGIN);
-                    input_frame.show(ui, |ui| {
-                        let inner_h = (INPUT_HEIGHT
-                            - f32::from(
-                                i16::from(INPUT_MARGIN.top) + i16::from(INPUT_MARGIN.bottom),
-                            ))
-                        .max(0.0);
-                        let text = if snapshot.query.is_empty() {
-                            egui::RichText::new(snapshot.placeholder.clone())
-                                .font(input_font_id.clone())
-                                .color(dim)
-                        } else {
-                            egui::RichText::new(format!("{}▏", snapshot.query))
-                                .font(input_font_id.clone())
-                                .color(fg)
-                        };
-                        let (rect, _) = ui.allocate_exact_size(
-                            vec2(ui.available_width(), inner_h),
-                            egui::Sense::hover(),
-                        );
-                        let mut inner = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        inner.label(text);
                     });
-
-                    ui.add_space(SECTION_GAP);
-
-                    if snapshot.items.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No results")
-                                .size(ITEM_FONT_SIZE)
-                                .color(dim),
-                        );
-                        return;
-                    }
-
-                    ui.scope(|ui| {
-                        ui.style_mut().spacing.scroll = ScrollStyle::floating();
-                        egui::ScrollArea::vertical()
-                            .auto_shrink(false)
-                            .show(ui, |ui| {
-                                for (i, item) in snapshot.items.iter().enumerate() {
-                                    let selected = i == snapshot.selected;
-                                    let item_bg = if selected {
-                                        style.item_selected_bg
-                                    } else {
-                                        style.item_bg
-                                    };
-                                    let fill = Self::rgba(item_bg, BG_ALPHA);
-                                    let row = Frame::new()
-                                        .fill(fill)
-                                        .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
-                                        .inner_margin(ITEM_MARGIN);
-                                    row.show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        let label_job = Self::layout_label_with_matches(
-                                            item.label.as_str(),
-                                            &item.label_match_indices,
-                                            fg,
-                                            match_fg,
-                                            item_font_id.clone(),
-                                        );
-                                        ui.label(label_job);
-                                        Self::render_sublabel(
-                                            ui,
-                                            item.sublabel.as_deref(),
-                                            &sublabel_font_id,
-                                            dim,
-                                        );
-                                    });
-                                    if i + 1 != snapshot.items.len() {
-                                        ui.add_space(ITEM_GAP);
-                                    }
-                                }
-                            });
-                    });
-                });
+            });
         });
 
         if !self.window_configured && frame_by_title("Hotki Selector").is_some() {
@@ -452,6 +368,193 @@ impl SelectorWindow {
         self.viewport
             .record_geometry(model.geometry.pos, model.geometry.size);
     }
+
+    /// Build selector render values that are reused throughout one frame.
+    fn render_assets(&self) -> SelectorRenderAssets {
+        let fg = Color32::from_rgba_unmultiplied(230, 230, 230, 255);
+        let dim = Color32::from_rgba_unmultiplied(160, 160, 160, 255);
+        let match_fg = Color32::from_rgb(
+            self.style.match_fg.0,
+            self.style.match_fg.1,
+            self.style.match_fg.2,
+        );
+        SelectorRenderAssets {
+            style: self.style.clone(),
+            title_font_id: self.title_font_id(),
+            input_font_id: self.input_font_id(),
+            item_font_id: self.item_font_id(),
+            sublabel_font_id: self.sublabel_font_id(),
+            fg,
+            dim,
+            match_fg,
+        }
+    }
+
+    /// Render selector panel contents.
+    fn render_panel(ui: &mut egui::Ui, snapshot: &SelectorSnapshot, assets: &SelectorRenderAssets) {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        devtools::value_anchor(
+            ui,
+            "selector.placeholder",
+            WidgetValue::Text(snapshot.placeholder.clone()),
+        );
+        devtools::value_anchor(
+            ui,
+            "selector.selected_index",
+            WidgetValue::Int(snapshot.selected as i64),
+        );
+        Self::render_header(ui, snapshot, assets);
+        Self::render_query(ui, snapshot, assets);
+        ui.add_space(SECTION_GAP);
+        Self::render_items(ui, snapshot, assets);
+    }
+
+    /// Render the optional selector title and match count.
+    fn render_header(
+        ui: &mut egui::Ui,
+        snapshot: &SelectorSnapshot,
+        assets: &SelectorRenderAssets,
+    ) {
+        if snapshot.title.trim().is_empty() {
+            return;
+        }
+        let title_fmt = egui::TextFormat {
+            color: assets.fg,
+            font_id: assets.title_font_id.clone(),
+            ..Default::default()
+        };
+        ui.horizontal(|ui| {
+            let mut job = LayoutJob::default();
+            job.append(snapshot.title.as_str(), 0.0, title_fmt);
+            ui.dev_label("selector.title", job);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.dev_label(
+                    "selector.result_count",
+                    egui::RichText::new(format!("{}", snapshot.total_matches))
+                        .size(SUBLABEL_FONT_SIZE)
+                        .color(assets.dim),
+                );
+            });
+        });
+        ui.add_space(SECTION_GAP);
+    }
+
+    /// Render the selector query or placeholder field.
+    fn render_query(ui: &mut egui::Ui, snapshot: &SelectorSnapshot, assets: &SelectorRenderAssets) {
+        let input_bg = Self::rgba(assets.style.input_bg, BG_ALPHA);
+        let input_frame = Frame::new()
+            .fill(input_bg)
+            .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
+            .inner_margin(INPUT_MARGIN);
+        input_frame.show(ui, |ui| {
+            let margin = i16::from(INPUT_MARGIN.top) + i16::from(INPUT_MARGIN.bottom);
+            let inner_h = (INPUT_HEIGHT - f32::from(margin)).max(0.0);
+            let text = selector_query_text(snapshot, assets);
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), inner_h), egui::Sense::hover());
+            let mut inner = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            inner.dev_label("selector.query", text);
+        });
+    }
+
+    /// Render selector item rows or the empty state.
+    fn render_items(ui: &mut egui::Ui, snapshot: &SelectorSnapshot, assets: &SelectorRenderAssets) {
+        if snapshot.items.is_empty() {
+            ui.dev_label(
+                "selector.empty",
+                egui::RichText::new("No results")
+                    .size(ITEM_FONT_SIZE)
+                    .color(assets.dim),
+            );
+            return;
+        }
+        ui.scope(|ui| {
+            ui.style_mut().spacing.scroll = ScrollStyle::floating();
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .dev_show(ui, "selector.scroll", |ui| {
+                    for (i, item) in snapshot.items.iter().enumerate() {
+                        Self::render_item(ui, i, item, i == snapshot.selected, assets);
+                        if i + 1 != snapshot.items.len() {
+                            ui.add_space(ITEM_GAP);
+                        }
+                    }
+                });
+        });
+    }
+
+    /// Render a single selector item row.
+    fn render_item(
+        ui: &mut egui::Ui,
+        index: usize,
+        item: &SelectorItemSnapshot,
+        selected: bool,
+        assets: &SelectorRenderAssets,
+    ) {
+        container(ui, format!("selector.item.{index}"), |ui| {
+            devtools::value_anchor(
+                ui,
+                format!("selector.item.{index}.selected"),
+                WidgetValue::Bool(selected),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("selector.item.{index}.match_indices"),
+                WidgetValue::Text(match_indices_text(&item.label_match_indices)),
+            );
+            let item_bg = if selected {
+                assets.style.item_selected_bg
+            } else {
+                assets.style.item_bg
+            };
+            let fill = Self::rgba(item_bg, BG_ALPHA);
+            let row = Frame::new()
+                .fill(fill)
+                .corner_radius(egui::CornerRadius::same(ROW_RADIUS as u8))
+                .inner_margin(ITEM_MARGIN);
+            row.show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let label_job = Self::layout_label_with_matches(
+                    item.label.as_str(),
+                    &item.label_match_indices,
+                    assets.fg,
+                    assets.match_fg,
+                    assets.item_font_id.clone(),
+                );
+                ui.dev_label(format!("selector.item.{index}.label"), label_job);
+                Self::render_sublabel(ui, index, item.sublabel.as_deref(), assets);
+            });
+        });
+    }
+}
+
+/// Build the visible query text for the selector input row.
+fn selector_query_text(
+    snapshot: &SelectorSnapshot,
+    assets: &SelectorRenderAssets,
+) -> egui::RichText {
+    if snapshot.query.is_empty() {
+        egui::RichText::new(snapshot.placeholder.clone())
+            .font(assets.input_font_id.clone())
+            .color(assets.dim)
+    } else {
+        egui::RichText::new(format!("{}▏", snapshot.query))
+            .font(assets.input_font_id.clone())
+            .color(assets.fg)
+    }
+}
+
+/// Render match codepoint indices as a stable comma-separated value.
+fn match_indices_text(indices: &[u32]) -> String {
+    indices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]

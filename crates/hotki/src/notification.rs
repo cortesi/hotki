@@ -2,9 +2,11 @@
 use std::time::{Duration, Instant};
 
 use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob};
+use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
 use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
 use crate::{
+    devtools,
     display::{DisplayBounds, DisplayMetrics, WindowGeometry},
     fonts, nswindow,
     overlay::{OverlayMetrics, OverlayWindow},
@@ -30,10 +32,25 @@ pub struct BacklogEntry {
     pub text: String,
 }
 
+/// Root-viewport stack alias for one live notification.
+#[derive(Clone)]
+pub struct NotificationStackAlias {
+    /// Stack index, newest first.
+    pub(crate) index: usize,
+    /// Stable live notification id.
+    pub(crate) live_id: String,
+    /// Stable kind label.
+    pub(crate) kind: &'static str,
+    /// Notification title.
+    pub(crate) title: String,
+}
+
 /// Runtime state for an on-screen notification viewport.
 struct NotificationItem {
     /// Shared overlay viewport state for this notification window.
     viewport: OverlayWindow,
+    /// Stable eguidev id prefix for this notification.
+    dev_id: String,
     /// Title text.
     title: String,
     /// Body text.
@@ -67,6 +84,19 @@ struct NotificationPlacement {
     geometry: WindowGeometry,
     /// Next bottom-left cursor position for lower cards in the stack.
     next_cursor_bottom: f32,
+}
+
+#[derive(Clone, Copy)]
+/// Presentation details for a notification title row.
+struct NotificationTitleStyle<'a> {
+    /// Optional leading icon.
+    icon: Option<&'a str>,
+    /// Title font size.
+    title_size: f32,
+    /// Title font weight.
+    title_weight: FontWeight,
+    /// Title foreground color.
+    title_fg: Color32,
 }
 
 /// Manages transient in-app notifications and their windows.
@@ -114,9 +144,13 @@ impl NotificationCenter {
     }
 
     /// Generate the next unique viewport id for a notification.
-    fn next_viewport(&mut self) -> OverlayWindow {
+    fn next_notification_identity(&mut self) -> (OverlayWindow, String) {
         self.counter += 1;
-        OverlayWindow::new(format!("hotki_notify_{}", self.counter))
+        let id = self.counter;
+        (
+            OverlayWindow::new(format!("hotki_notify_{id}")),
+            format!("notification.live.{id}"),
+        )
     }
 
     /// Update display metrics used for anchoring notifications.
@@ -133,39 +167,40 @@ impl NotificationCenter {
     fn render_title_row(
         ui: &mut egui::Ui,
         nctx: &Context,
+        id_base: &str,
         title: &str,
-        icon: Option<&str>,
-        title_size: f32,
-        title_weight: FontWeight,
-        title_fg: Color32,
+        style: NotificationTitleStyle<'_>,
     ) {
         let title_fmt = egui::TextFormat {
-            color: title_fg,
-            font_id: egui::FontId::new(title_size, fonts::weight_family(title_weight)),
+            color: style.title_fg,
+            font_id: egui::FontId::new(style.title_size, fonts::weight_family(style.title_weight)),
             ..Default::default()
         };
-        if let Some(ic) = icon
+        if let Some(ic) = style.icon
             && !ic.is_empty()
         {
             let icon_text = egui::RichText::new(ic).font(egui::FontId::new(
-                title_size * 2.0,
+                style.title_size * 2.0,
                 egui::FontFamily::Proportional,
             ));
-            ui.label(icon_text.color(title_fg));
+            ui.dev_label(format!("{id_base}.icon"), icon_text.color(style.title_fg));
             let (icon_h, title_h) = nctx.fonts_mut(|f| {
                 let ih = f
                     .layout_no_wrap(
                         ic.to_string(),
-                        egui::FontId::new(title_size * 2.0, egui::FontFamily::Proportional),
-                        title_fg,
+                        egui::FontId::new(style.title_size * 2.0, egui::FontFamily::Proportional),
+                        style.title_fg,
                     )
                     .size()
                     .y;
                 let th = f
                     .layout_no_wrap(
                         title.to_string(),
-                        egui::FontId::new(title_size, fonts::weight_family(title_weight)),
-                        title_fg,
+                        egui::FontId::new(
+                            style.title_size,
+                            fonts::weight_family(style.title_weight),
+                        ),
+                        style.title_fg,
                     )
                     .size()
                     .y;
@@ -179,13 +214,13 @@ impl NotificationCenter {
                 }
                 let mut title_job = LayoutJob::default();
                 title_job.append(title, 0.0, title_fmt);
-                ui.label(title_job);
+                ui.dev_label(format!("{id_base}.title"), title_job);
             });
             return;
         }
         let mut title_job = LayoutJob::default();
         title_job.append(title, 0.0, title_fmt);
-        ui.label(title_job);
+        ui.dev_label(format!("{id_base}.title"), title_job);
     }
 
     /// Queue a new notification to be displayed.
@@ -205,8 +240,10 @@ impl NotificationCenter {
             self.backlog.truncate(self.max_items);
         }
 
+        let (viewport, dev_id) = self.next_notification_identity();
         let item = NotificationItem {
-            viewport: self.next_viewport(),
+            viewport,
+            dev_id,
             title,
             text,
             kind,
@@ -325,7 +362,7 @@ impl NotificationCenter {
     }
 
     /// Render notification windows and advance animations.
-    pub fn render(&mut self, ctx: &Context) {
+    pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) {
         // Remove expired
         let now = Instant::now();
         self.items
@@ -373,55 +410,65 @@ impl NotificationCenter {
                 .viewport
                 .sync_builder(ctx, builder, it.current_pos, it.size);
 
+            devtools::pump_viewport_input(devmcp, ctx, it.viewport.id());
             ctx.show_viewport_immediate(it.viewport.id(), builder, |vp_ui, _| {
-                let nctx = vp_ui.ctx().clone();
-                let style = self.theme.style_for(it.kind);
-                let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
-                let title_fg =
-                    Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
-                let body_fg = Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
-                let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let frame = Frame::new()
-                    .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
-                    .corner_radius(egui::CornerRadius::same(self.radius as u8))
-                    .inner_margin(egui::Margin {
-                        left: 12,
-                        right: 12,
-                        top: 12,
-                        bottom: 12,
-                    });
-                egui::CentralPanel::default()
-                    .frame(frame)
-                    .show_inside(vp_ui, |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
-                        ui.horizontal(|ui| {
-                            Self::render_title_row(
-                                ui,
-                                &nctx,
-                                &it.title,
-                                style.icon.as_deref(),
-                                style.title_font_size,
-                                style.title_font_weight,
-                                title_fg,
-                            );
+                devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+                    let nctx = vp_ui.ctx().clone();
+                    let style = self.theme.style_for(it.kind);
+                    let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
+                    let title_fg =
+                        Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
+                    let body_fg =
+                        Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
+                    let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let frame = Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
+                        .corner_radius(egui::CornerRadius::same(self.radius as u8))
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 12,
+                            top: 12,
+                            bottom: 12,
                         });
-                        ui.horizontal_wrapped(|ui| {
-                            let mut text_job = LayoutJob::default();
-                            text_job.append(
-                                &it.text,
-                                0.0,
-                                egui::TextFormat {
-                                    color: body_fg,
-                                    font_id: egui::FontId::new(
-                                        style.body_font_size,
-                                        fonts::weight_family(style.body_font_weight),
-                                    ),
-                                    ..Default::default()
-                                },
-                            );
-                            ui.label(text_job);
+                    egui::CentralPanel::default()
+                        .frame(frame)
+                        .show_inside(vp_ui, |ui| {
+                            container(ui, it.dev_id.clone(), |ui| {
+                                render_notification_metadata(ui, it);
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
+                                ui.horizontal(|ui| {
+                                    Self::render_title_row(
+                                        ui,
+                                        &nctx,
+                                        &it.dev_id,
+                                        &it.title,
+                                        NotificationTitleStyle {
+                                            icon: style.icon.as_deref(),
+                                            title_size: style.title_font_size,
+                                            title_weight: style.title_font_weight,
+                                            title_fg,
+                                        },
+                                    );
+                                });
+                                ui.horizontal_wrapped(|ui| {
+                                    let mut text_job = LayoutJob::default();
+                                    text_job.append(
+                                        &it.text,
+                                        0.0,
+                                        egui::TextFormat {
+                                            color: body_fg,
+                                            font_id: egui::FontId::new(
+                                                style.body_font_size,
+                                                fonts::weight_family(style.body_font_weight),
+                                            ),
+                                            ..Default::default()
+                                        },
+                                    );
+                                    ui.dev_label(format!("{}.body", it.dev_id), text_job);
+                                });
+                            });
                         });
-                    });
+                });
             });
             if !it.window_configured && nswindow::frame_by_title("Hotki Notification").is_some() {
                 if let Err(e) =
@@ -461,9 +508,10 @@ impl NotificationCenter {
     }
 
     /// Clear all current notifications immediately and hide their windows.
-    pub fn clear_all(&mut self, ctx: &Context) {
+    pub fn clear_all(&mut self, ctx: &Context, devmcp: &DevMcp) {
         for it in &mut self.items {
             it.viewport.hide(ctx);
+            eguidev::clear_viewport(devmcp, it.viewport.id());
         }
         self.items.clear();
         self.backlog.clear();
@@ -471,6 +519,110 @@ impl NotificationCenter {
     /// Access the current backlog entries (newest first).
     pub fn backlog(&self) -> &[BacklogEntry] {
         &self.backlog
+    }
+
+    /// Return root-viewport stack aliases for current live notifications.
+    pub(crate) fn stack_aliases(&self) -> Vec<NotificationStackAlias> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| NotificationStackAlias {
+                index,
+                live_id: item.dev_id.clone(),
+                kind: notify_kind_label(item.kind),
+                title: item.title.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Record metadata for the visible notification stack.
+pub fn render_stack_metadata(ui: &mut egui::Ui, stack: &[NotificationStackAlias]) {
+    container(ui, "notification.stack", |ui| {
+        devtools::value_anchor(
+            ui,
+            "notification.stack.count",
+            WidgetValue::Float(stack.len() as f64),
+        );
+        for item in stack {
+            render_stack_item_metadata(ui, item);
+        }
+    });
+}
+
+/// Record stack-order aliases for the current live notification.
+fn render_stack_item_metadata(ui: &mut egui::Ui, item: &NotificationStackAlias) {
+    let id = format!("notification.stack.item.{}", item.index);
+    devtools::value_anchor(
+        ui,
+        format!("{id}.live_id"),
+        WidgetValue::Text(item.live_id.clone()),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.kind"),
+        WidgetValue::Text(item.kind.to_string()),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.title"),
+        WidgetValue::Text(item.title.clone()),
+    );
+}
+
+/// Record script-visible metadata for one live notification viewport.
+fn render_notification_metadata(ui: &mut egui::Ui, item: &NotificationItem) {
+    let id = &item.dev_id;
+    devtools::value_anchor(
+        ui,
+        format!("{id}.kind"),
+        WidgetValue::Text(notify_kind_label(item.kind).to_string()),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.timeout_secs"),
+        WidgetValue::Float(item.timeout.as_secs_f64()),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.current_x"),
+        WidgetValue::Float(f64::from(item.current_pos.x)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.current_y"),
+        WidgetValue::Float(f64::from(item.current_pos.y)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.target_x"),
+        WidgetValue::Float(f64::from(item.target_pos.x)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.target_y"),
+        WidgetValue::Float(f64::from(item.target_pos.y)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.width"),
+        WidgetValue::Float(f64::from(item.size.x)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.height"),
+        WidgetValue::Float(f64::from(item.size.y)),
+    );
+}
+
+/// Stable script-visible label for notification kind.
+fn notify_kind_label(kind: NotifyKind) -> &'static str {
+    match kind {
+        NotifyKind::Info => "info",
+        NotifyKind::Success => "success",
+        NotifyKind::Warn => "warn",
+        NotifyKind::Error => "error",
+        NotifyKind::Ignore => "ignore",
     }
 }
 

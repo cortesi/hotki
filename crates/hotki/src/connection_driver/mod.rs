@@ -1,15 +1,15 @@
-use std::{collections::VecDeque, fmt::Write as _, path::PathBuf};
+use std::{collections::VecDeque, fmt::Write as _, path::PathBuf, pin::Pin};
 
 /// UI event forwarding and repaint coordination.
 mod ui_sink;
 
-use hotki_protocol::{NotifyKind, ipc::heartbeat};
+use hotki_protocol::{NotifyKind, ipc::heartbeat, rpc::InjectKind};
 use hotki_server::{Client, Result as ServerResult};
 use tokio::{
     sync::{mpsc, oneshot},
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{app::UiEvent, logs, permissions::check_permissions, runtime::ControlMsg};
@@ -86,6 +86,17 @@ enum ServerControl {
     Reload,
     /// Request a server-side theme switch by name.
     SwitchTheme(String),
+    /// Inject a synthetic key event through the connected server.
+    InjectKey {
+        /// Key chord identifier, for example `shift+cmd+0`.
+        ident: String,
+        /// Key event kind.
+        kind: InjectKind,
+        /// Whether this down event is a repeat.
+        repeat: bool,
+        /// Whether failed injection should be surfaced to the user.
+        report_errors: bool,
+    },
 }
 
 /// Routing class for a UI/runtime control message.
@@ -106,6 +117,17 @@ impl ControlRoute {
             ControlMsg::Shutdown => Self::Shutdown,
             ControlMsg::Reload => Self::Server(ServerControl::Reload),
             ControlMsg::SwitchTheme(name) => Self::Server(ServerControl::SwitchTheme(name)),
+            ControlMsg::InjectKey {
+                ident,
+                kind,
+                repeat,
+                report_errors,
+            } => Self::Server(ServerControl::InjectKey {
+                ident,
+                kind,
+                repeat,
+                report_errors,
+            }),
             ControlMsg::OpenPermissionsHelp => Self::Local(LocalControl::OpenPermissionsHelp),
             ControlMsg::Notice { kind, title, text } => {
                 Self::Local(LocalControl::Notice { kind, title, text })
@@ -142,6 +164,11 @@ impl ConnectionDriver {
         if self.state != state {
             debug!(previous = ?self.state, next = ?state, "connection state changed");
             self.state = state;
+            let connected = matches!(state, ConnectionState::Connected);
+            self.ui.set_server_connected(connected);
+            if !connected {
+                self.ui.set_server_bindings(Vec::new());
+            }
         }
     }
 
@@ -167,6 +194,15 @@ impl ConnectionDriver {
             }
             ServerControl::SwitchTheme(name) => {
                 self.switch_theme(conn, &name).await;
+            }
+            ServerControl::InjectKey {
+                ident,
+                kind,
+                repeat,
+                report_errors,
+            } => {
+                self.inject_key(conn, &ident, kind, repeat, report_errors)
+                    .await;
             }
         }
     }
@@ -253,6 +289,7 @@ impl ConnectionDriver {
             Ok(()) => {
                 self.notify_local(NotifyKind::Success, "Config", "Reloaded successfully");
                 self.ui.set_config_path(Some(self.config_path.clone()));
+                self.refresh_server_bindings(conn).await;
             }
             Err(err) => self.notify_local(NotifyKind::Error, "Config", &err.to_string()),
         }
@@ -264,6 +301,31 @@ impl ConnectionDriver {
             self.notify_local(NotifyKind::Error, "Theme", &err.to_string());
         } else {
             self.ui.request_repaint();
+        }
+    }
+
+    /// Inject a synthetic key event through the server-side test hook.
+    async fn inject_key(
+        &self,
+        conn: &mut hotki_server::Connection,
+        ident: &str,
+        kind: InjectKind,
+        repeat: bool,
+        report_errors: bool,
+    ) {
+        let result = match (kind, repeat) {
+            (InjectKind::Down, true) => conn.inject_key_repeat(ident).await,
+            (InjectKind::Down, false) => conn.inject_key_down(ident).await,
+            (InjectKind::Up, _) => conn.inject_key_up(ident).await,
+        };
+        if let Err(err) = result
+            && report_errors
+        {
+            self.notify_local(
+                NotifyKind::Error,
+                "Devtools",
+                &format!("Failed to inject {ident}: {err}"),
+            );
         }
     }
 
@@ -322,36 +384,7 @@ impl ConnectionDriver {
             self.server_event_tap_enabled,
         );
         self.set_state(ConnectionState::Connecting);
-        let mut client: Client = loop {
-            tokio::select! {
-                biased;
-                res = &mut rx_conn_ready => {
-                    match res {
-                        Ok(Ok(client)) => break client,
-                        Ok(Err(err)) => {
-                            error!("Failed to connect to hotkey server: {}", err);
-                            self.notify_local(
-                                NotifyKind::Error,
-                                "Connection",
-                                &format!("Failed to start hotkey server: {err}"),
-                            );
-                            self.set_state(ConnectionState::Disconnected);
-                            return None;
-                        }
-                        Err(_) => {
-                            error!("Connect task canceled before reporting a result");
-                            self.set_state(ConnectionState::Disconnected);
-                            return None;
-                        }
-                    }
-                }
-                Some(msg) = self.rx_ctrl.recv() => {
-                    if self.route_control_msg(None, msg).await.should_stop() {
-                        return None;
-                    }
-                }
-            }
-        };
+        let mut client = self.wait_for_connected_client(&mut rx_conn_ready).await?;
 
         let conn = match client.connection() {
             Ok(conn) => conn,
@@ -361,17 +394,8 @@ impl ConnectionDriver {
                 return None;
             }
         };
-        match conn
-            .set_config_path(self.config_path.to_string_lossy().as_ref())
-            .await
-        {
-            Ok(()) => {}
-            Err(err) => {
-                error!("Failed to set config path on server: {}", err);
-                self.set_state(ConnectionState::Disconnected);
-                return None;
-            }
-        };
+        self.send_initial_config(conn).await?;
+        self.refresh_server_bindings(conn).await;
         self.set_state(ConnectionState::Connected);
         self.ui.set_config_path(Some(self.config_path.clone()));
         info!("Config path sent to server engine");
@@ -379,6 +403,70 @@ impl ConnectionDriver {
         self.drain_pending_controls(conn).await;
 
         Some(client)
+    }
+
+    /// Wait for the background connect task while still accepting local controls.
+    async fn wait_for_connected_client(
+        &mut self,
+        rx_conn_ready: &mut oneshot::Receiver<ServerResult<Client>>,
+    ) -> Option<Client> {
+        loop {
+            tokio::select! {
+                biased;
+                res = &mut *rx_conn_ready => return self.handle_connect_result(res),
+                Some(msg) = self.rx_ctrl.recv() => {
+                    if self.route_control_msg(None, msg).await.should_stop() {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert the background connect result into a client or user-facing error.
+    fn handle_connect_result(
+        &mut self,
+        result: Result<ServerResult<Client>, oneshot::error::RecvError>,
+    ) -> Option<Client> {
+        match result {
+            Ok(Ok(client)) => Some(client),
+            Ok(Err(err)) => {
+                error!("Failed to connect to hotkey server: {}", err);
+                self.notify_local(
+                    NotifyKind::Error,
+                    "Connection",
+                    &format!("Failed to start hotkey server: {err}"),
+                );
+                self.set_state(ConnectionState::Disconnected);
+                None
+            }
+            Err(_) => {
+                error!("Connect task canceled before reporting a result");
+                self.set_state(ConnectionState::Disconnected);
+                None
+            }
+        }
+    }
+
+    /// Send the active config path to the connected server.
+    async fn send_initial_config(&mut self, conn: &mut hotki_server::Connection) -> Option<()> {
+        if let Err(err) = conn
+            .set_config_path(self.config_path.to_string_lossy().as_ref())
+            .await
+        {
+            error!("Failed to set config path on server: {}", err);
+            self.set_state(ConnectionState::Disconnected);
+            return None;
+        }
+        Some(())
+    }
+
+    /// Refresh UI-visible server binding diagnostics.
+    async fn refresh_server_bindings(&self, conn: &mut hotki_server::Connection) {
+        match conn.get_bindings().await {
+            Ok(bindings) => self.ui.set_server_bindings(bindings),
+            Err(err) => warn!("failed to refresh server bindings: {err}"),
+        }
     }
 
     /// Main UI event loop once connected: handles control, server events, and heartbeat.
@@ -406,43 +494,74 @@ impl ConnectionDriver {
         tokio::pin!(dump_timer);
 
         loop {
-            tokio::select! {
-                biased;
-                _ = &mut hb_timer => {
-                    error!("No IPC activity within heartbeat timeout; exiting UI event loop");
-                    break;
-                }
-                Some(msg) = self.rx_ctrl.recv() => {
-                    if self.route_control_msg(Some(&mut *conn), msg).await.should_stop() {
-                        break;
-                    }
-                }
-                resp = conn.recv_event() => {
-                    match resp {
-                        Ok(msg) => {
-                            hb_timer.as_mut().reset(TokioInstant::now() + heartbeat::timeout());
-                            self.handle_server_msg(msg).await;
-                        }
-                        Err(err) => {
-                            match err {
-                                hotki_server::Error::Ipc(ref s) if s == "Event channel closed" => {
-                                    tracing::info!("Event channel closed; exiting event loop");
-                                }
-                                _ => error!("Connection error receiving event: {}", err),
-                            }
-                            break;
-                        }
-                    }
-                }
-                _ = &mut dump_timer => {
-                    let next = self.compute_dump_reset(conn, dump_interval, dump_far_future).await;
-                    dump_timer.as_mut().reset(TokioInstant::now() + next);
-                }
+            if !self
+                .drive_event_once(
+                    conn,
+                    &mut hb_timer,
+                    &mut dump_timer,
+                    dump_interval,
+                    dump_far_future,
+                )
+                .await
+            {
+                break;
             }
         }
         info!("Exiting key loop");
         if self.state != ConnectionState::ShuttingDown {
             self.begin_shutdown();
+        }
+    }
+
+    /// Drive one select iteration for the connected event loop.
+    async fn drive_event_once(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+        hb_timer: &mut Pin<&mut Sleep>,
+        dump_timer: &mut Pin<&mut Sleep>,
+        dump_interval: Duration,
+        dump_far_future: Duration,
+    ) -> bool {
+        tokio::select! {
+            biased;
+            _ = hb_timer.as_mut() => {
+                error!("No IPC activity within heartbeat timeout; exiting UI event loop");
+                false
+            }
+            Some(msg) = self.rx_ctrl.recv() => {
+                !self.route_control_msg(Some(conn), msg).await.should_stop()
+            }
+            resp = conn.recv_event() => self.handle_recv_event_result(resp, hb_timer).await,
+            _ = dump_timer.as_mut() => {
+                let next = self.compute_dump_reset(conn, dump_interval, dump_far_future).await;
+                dump_timer.as_mut().reset(TokioInstant::now() + next);
+                true
+            }
+        }
+    }
+
+    /// Handle one server event receive result.
+    async fn handle_recv_event_result(
+        &self,
+        resp: hotki_server::Result<hotki_protocol::MsgToUI>,
+        hb_timer: &mut Pin<&mut Sleep>,
+    ) -> bool {
+        match resp {
+            Ok(msg) => {
+                hb_timer
+                    .as_mut()
+                    .reset(TokioInstant::now() + heartbeat::timeout());
+                self.handle_server_msg(msg).await;
+                true
+            }
+            Err(hotki_server::Error::Ipc(ref message)) if message == "Event channel closed" => {
+                tracing::info!("Event channel closed; exiting event loop");
+                false
+            }
+            Err(err) => {
+                error!("Connection error receiving event: {}", err);
+                false
+            }
         }
     }
 
@@ -511,7 +630,7 @@ fn spawn_connect(
 
 #[cfg(test)]
 mod tests {
-    use hotki_protocol::NotifyKind;
+    use hotki_protocol::{NotifyKind, rpc::InjectKind};
 
     use super::{ConnectionState, ControlOutcome, ControlRoute, LocalControl, ServerControl};
     use crate::runtime::ControlMsg;
@@ -541,6 +660,20 @@ mod tests {
         assert_eq!(
             ControlRoute::from_msg(ControlMsg::SwitchTheme("dark".to_string())),
             ControlRoute::Server(ServerControl::SwitchTheme("dark".to_string()))
+        );
+        assert_eq!(
+            ControlRoute::from_msg(ControlMsg::InjectKey {
+                ident: "shift+cmd+0".to_string(),
+                kind: InjectKind::Down,
+                repeat: false,
+                report_errors: true,
+            }),
+            ControlRoute::Server(ServerControl::InjectKey {
+                ident: "shift+cmd+0".to_string(),
+                kind: InjectKind::Down,
+                repeat: false,
+                report_errors: true,
+            })
         );
         assert_eq!(
             ControlRoute::from_msg(ControlMsg::Shutdown),
