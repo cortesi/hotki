@@ -62,7 +62,7 @@ impl Engine {
             );
         }
 
-        self.rebind_and_refresh(focus).await?;
+        self.rebind_and_refresh(&focus).await?;
         trace!(
             "Key event completed in {:?}: {}",
             start.elapsed(),

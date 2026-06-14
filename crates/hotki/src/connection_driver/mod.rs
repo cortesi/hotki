@@ -31,7 +31,7 @@ pub struct ConnectionDriver {
     /// Current server connection lifecycle.
     state: ConnectionState,
     /// Server-bound controls received before a connection is ready.
-    pending_controls: VecDeque<ControlMsg>,
+    pending_controls: VecDeque<ServerControl>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,24 +63,53 @@ impl ControlOutcome {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Local UI control that does not require a server connection.
+#[derive(Debug, PartialEq, Eq)]
+enum LocalControl {
+    /// Show the permissions helper window.
+    OpenPermissionsHelp,
+    /// Forward a user-facing notice into the app UI.
+    Notice {
+        /// Notice severity kind.
+        kind: NotifyKind,
+        /// Notice title text.
+        title: String,
+        /// Notice body text.
+        text: String,
+    },
+}
+
+/// Server-bound control command.
+#[derive(Debug, PartialEq, Eq)]
+enum ServerControl {
+    /// Reload from disk using the configured config path.
+    Reload,
+    /// Request a server-side theme switch by name.
+    SwitchTheme(String),
+}
+
 /// Routing class for a UI/runtime control message.
-enum ControlTarget {
+#[derive(Debug, PartialEq, Eq)]
+enum ControlRoute {
     /// Control can be handled locally without a server connection.
-    Local,
+    Local(LocalControl),
     /// Control must be delivered to the server.
-    Server,
+    Server(ServerControl),
     /// Control requests app/server shutdown.
     Shutdown,
 }
 
-impl ControlTarget {
+impl ControlRoute {
     /// Classify a control message by the connection it needs.
-    fn for_msg(msg: &ControlMsg) -> Self {
+    fn from_msg(msg: ControlMsg) -> Self {
         match msg {
             ControlMsg::Shutdown => Self::Shutdown,
-            ControlMsg::Reload | ControlMsg::SwitchTheme(_) => Self::Server,
-            ControlMsg::OpenPermissionsHelp | ControlMsg::Notice { .. } => Self::Local,
+            ControlMsg::Reload => Self::Server(ServerControl::Reload),
+            ControlMsg::SwitchTheme(name) => Self::Server(ServerControl::SwitchTheme(name)),
+            ControlMsg::OpenPermissionsHelp => Self::Local(LocalControl::OpenPermissionsHelp),
+            ControlMsg::Notice { kind, title, text } => {
+                Self::Local(LocalControl::Notice { kind, title, text })
+            }
         }
     }
 }
@@ -117,37 +146,27 @@ impl ConnectionDriver {
     }
 
     /// Handle control messages that do not require a connected server.
-    fn handle_local_control(&self, msg: ControlMsg) {
-        match msg {
-            ControlMsg::OpenPermissionsHelp => self.ui.show_permissions_help(),
-            ControlMsg::Notice { kind, title, text } => self.notify_local(kind, &title, &text),
-            _ => {}
+    fn handle_local_control(&self, control: LocalControl) {
+        match control {
+            LocalControl::OpenPermissionsHelp => self.ui.show_permissions_help(),
+            LocalControl::Notice { kind, title, text } => {
+                self.notify_local(kind, &title, &text);
+            }
         }
     }
 
     /// Handle control messages that require an active server connection.
-    async fn handle_connected_control(
+    async fn handle_server_control(
         &self,
         conn: &mut hotki_server::Connection,
-        msg: ControlMsg,
-    ) -> bool {
-        match msg {
-            ControlMsg::Shutdown => {
-                self.ui.trigger_graceful_shutdown(750);
-                conn.shutdown().await.ok();
-                true
-            }
-            ControlMsg::Reload => {
+        control: ServerControl,
+    ) {
+        match control {
+            ServerControl::Reload => {
                 self.reload_config(conn).await;
-                false
             }
-            ControlMsg::SwitchTheme(name) => {
+            ServerControl::SwitchTheme(name) => {
                 self.switch_theme(conn, &name).await;
-                false
-            }
-            other => {
-                self.handle_local_control(other);
-                false
             }
         }
     }
@@ -158,24 +177,20 @@ impl ConnectionDriver {
         conn: Option<&mut hotki_server::Connection>,
         msg: ControlMsg,
     ) -> ControlOutcome {
-        match ControlTarget::for_msg(&msg) {
-            ControlTarget::Local => {
-                self.handle_local_control(msg);
+        match ControlRoute::from_msg(msg) {
+            ControlRoute::Local(control) => {
+                self.handle_local_control(control);
                 ControlOutcome::Continue
             }
-            ControlTarget::Server => {
+            ControlRoute::Server(control) => {
                 if let Some(conn) = conn {
-                    if self.handle_connected_control(conn, msg).await {
-                        ControlOutcome::Stop
-                    } else {
-                        ControlOutcome::Continue
-                    }
+                    self.handle_server_control(conn, control).await;
                 } else {
-                    self.pending_controls.push_back(msg);
-                    ControlOutcome::Continue
+                    self.pending_controls.push_back(control);
                 }
+                ControlOutcome::Continue
             }
-            ControlTarget::Shutdown => {
+            ControlRoute::Shutdown => {
                 self.begin_shutdown();
                 if let Some(conn) = conn {
                     conn.shutdown().await.ok();
@@ -192,17 +207,10 @@ impl ConnectionDriver {
     }
 
     /// Drain server-bound controls queued while connecting.
-    async fn drain_pending_controls(
-        &mut self,
-        conn: &mut hotki_server::Connection,
-    ) -> ControlOutcome {
-        while let Some(msg) = self.pending_controls.pop_front() {
-            let outcome = self.route_control_msg(Some(&mut *conn), msg).await;
-            if outcome.should_stop() {
-                return outcome;
-            }
+    async fn drain_pending_controls(&mut self, conn: &mut hotki_server::Connection) {
+        while let Some(control) = self.pending_controls.pop_front() {
+            self.handle_server_control(conn, control).await;
         }
-        ControlOutcome::Continue
     }
 
     /// Record and display a server-originated notification.
@@ -368,9 +376,7 @@ impl ConnectionDriver {
         self.ui.set_config_path(Some(self.config_path.clone()));
         info!("Config path sent to server engine");
 
-        if self.drain_pending_controls(conn).await.should_stop() {
-            return None;
-        }
+        self.drain_pending_controls(conn).await;
 
         Some(client)
     }
@@ -507,34 +513,38 @@ fn spawn_connect(
 mod tests {
     use hotki_protocol::NotifyKind;
 
-    use super::{ConnectionState, ControlOutcome, ControlTarget};
+    use super::{ConnectionState, ControlOutcome, ControlRoute, LocalControl, ServerControl};
     use crate::runtime::ControlMsg;
 
     #[test]
-    fn control_target_separates_local_server_and_shutdown_messages() {
+    fn control_route_separates_local_server_and_shutdown_messages() {
         assert_eq!(
-            ControlTarget::for_msg(&ControlMsg::OpenPermissionsHelp),
-            ControlTarget::Local
+            ControlRoute::from_msg(ControlMsg::OpenPermissionsHelp),
+            ControlRoute::Local(LocalControl::OpenPermissionsHelp)
         );
         assert_eq!(
-            ControlTarget::for_msg(&ControlMsg::Notice {
+            ControlRoute::from_msg(ControlMsg::Notice {
                 kind: NotifyKind::Info,
                 title: "Config".to_string(),
                 text: "Reloaded".to_string(),
             }),
-            ControlTarget::Local
+            ControlRoute::Local(LocalControl::Notice {
+                kind: NotifyKind::Info,
+                title: "Config".to_string(),
+                text: "Reloaded".to_string(),
+            })
         );
         assert_eq!(
-            ControlTarget::for_msg(&ControlMsg::Reload),
-            ControlTarget::Server
+            ControlRoute::from_msg(ControlMsg::Reload),
+            ControlRoute::Server(ServerControl::Reload)
         );
         assert_eq!(
-            ControlTarget::for_msg(&ControlMsg::SwitchTheme("dark".to_string())),
-            ControlTarget::Server
+            ControlRoute::from_msg(ControlMsg::SwitchTheme("dark".to_string())),
+            ControlRoute::Server(ServerControl::SwitchTheme("dark".to_string()))
         );
         assert_eq!(
-            ControlTarget::for_msg(&ControlMsg::Shutdown),
-            ControlTarget::Shutdown
+            ControlRoute::from_msg(ControlMsg::Shutdown),
+            ControlRoute::Shutdown
         );
     }
 

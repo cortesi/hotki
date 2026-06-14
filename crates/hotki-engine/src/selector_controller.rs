@@ -168,7 +168,7 @@ impl<'a> SelectorController<'a> {
             let mut cfg_guard = self.engine.config.lock().await;
             let Some(cfg) = cfg_guard.as_mut() else {
                 tracing::trace!("No dynamic config loaded; ignoring selector close");
-                self.engine.rebind_and_refresh(focus.clone()).await?;
+                self.engine.rebind_and_refresh(focus).await?;
                 return Ok(());
             };
             execute_selector_close(cfg, &close)
@@ -178,7 +178,7 @@ impl<'a> SelectorController<'a> {
             Ok(result) => result,
             Err(err) => {
                 self.engine.notifier.send_error("Selector", err.pretty())?;
-                self.engine.rebind_and_refresh(focus.clone()).await?;
+                self.engine.rebind_and_refresh(focus).await?;
                 return Ok(());
             }
         };
@@ -187,7 +187,7 @@ impl<'a> SelectorController<'a> {
             .engine
             .apply_effects_and_nav(identifier, result.effects, result.nav)
             .await?;
-        self.engine.rebind_and_refresh(focus.clone()).await
+        self.engine.rebind_and_refresh(focus).await
     }
 }
 

@@ -24,9 +24,9 @@ pub(crate) struct RefreshPlan {
 pub(crate) fn build_refresh_plan(
     rt: &mut RuntimeState,
     cfg: Option<&mut dyn_engine::DynamicConfig>,
-    focus: FocusInfo,
+    focus: &FocusInfo,
 ) -> RefreshPlan {
-    rt.focus = focus;
+    rt.focus = focus.clone();
 
     match cfg {
         Some(cfg) => build_loaded_refresh_plan(rt, cfg),
@@ -156,7 +156,7 @@ pub(crate) fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::
 }
 
 impl Engine {
-    pub(crate) async fn rebind_and_refresh(&self, focus: FocusInfo) -> Result<()> {
+    pub(crate) async fn rebind_and_refresh(&self, focus: &FocusInfo) -> Result<()> {
         tracing::debug!("start app={} title={}", focus.app, focus.title);
 
         let plan = {

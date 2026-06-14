@@ -151,7 +151,7 @@ impl Engine {
             "Rebinding with context: app={}, title={}",
             focus.app, focus.title
         );
-        self.rebind_and_refresh(focus).await
+        self.rebind_and_refresh(&focus).await
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
