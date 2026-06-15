@@ -2,7 +2,7 @@
 
 use std::{fs, path::PathBuf, sync::Arc};
 
-use oxau::{
+use ruau::{
     decl::DeclSource,
     embed::{
         ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule, RuntimeError,

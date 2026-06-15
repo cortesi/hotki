@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxau::{
+use ruau::{
     compile::CompileError,
     diagnostic::{DiagnosticLocation, TypeDiagnostic},
     embed::{RuntimeError, Scope, ScriptError, serde::from_scoped_value},
@@ -26,7 +26,7 @@ pub fn config_validation(path: Option<PathBuf>, err: impl fmt::Display) -> Error
     }
 }
 
-/// Convert a structured oxau compile error into a config error.
+/// Convert a structured ruau compile error into a config error.
 pub fn config_compile_error(source: &str, err: &CompileError, path: Option<&Path>) -> Error {
     let Some((line, col)) = compile_location(err) else {
         return config_validation(path.map(Path::to_path_buf), err.message());
@@ -41,7 +41,7 @@ pub fn config_compile_error(source: &str, err: &CompileError, path: Option<&Path
     }
 }
 
-/// Convert an oxau runtime-surface error into a locationless config error.
+/// Convert an ruau runtime-surface error into a locationless config error.
 pub fn config_runtime_error(path: Option<PathBuf>, err: &RuntimeError) -> Error {
     config_validation(path, err.message())
 }
@@ -155,7 +155,7 @@ pub fn config_type_error(
     }
 }
 
-/// Convert a structured oxau compile error into a theme error.
+/// Convert a structured ruau compile error into a theme error.
 pub fn theme_compile_error(source: &str, err: &CompileError, path: &Path) -> ThemeError {
     let Some((line, col)) = compile_location(err) else {
         return theme_validation(path, err.message());
@@ -231,7 +231,7 @@ fn traceback_frame_location(frame: &TracebackFrame) -> Option<(String, usize)> {
         .map(|line| (frame.chunk_name.clone(), line as usize))
 }
 
-/// Extract the first `path:line` location from an oxau traceback.
+/// Extract the first `path:line` location from an ruau traceback.
 fn first_traceback_location(traceback: Option<&str>) -> Option<(String, usize)> {
     traceback?
         .lines()

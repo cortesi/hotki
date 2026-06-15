@@ -1,6 +1,6 @@
 //! Native Luau `themes` library implementation.
 
-use oxau::{
+use ruau::{
     decl::DeclSource,
     embed::{
         IntoLuaMulti, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,

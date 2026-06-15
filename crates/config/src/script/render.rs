@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use oxau::{embed::ScriptError, session::CallOptions};
+use ruau::{embed::ScriptError, session::CallOptions};
 use tracing::warn;
 
 use super::{

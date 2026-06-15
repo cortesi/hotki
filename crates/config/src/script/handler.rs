@@ -1,4 +1,4 @@
-use oxau::{embed::ScriptError, session::CallOptions};
+use ruau::{embed::ScriptError, session::CallOptions};
 
 use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem, diagnostics};
 use crate::Error;

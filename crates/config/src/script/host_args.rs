@@ -2,7 +2,7 @@
 
 use std::vec::IntoIter;
 
-use oxau::embed::{
+use ruau::embed::{
     FromLua, Function, MultiValue, RuntimeError, Scope, ScopedValue, Table,
     serde::from_scoped_value,
 };
@@ -70,7 +70,7 @@ impl<'s> HostArgs<'s> {
         String::from_lua(self.required(context)?, scope)
     }
 
-    /// Decode a required argument through oxau's `FromLua` bridge.
+    /// Decode a required argument through ruau's `FromLua` bridge.
     pub(super) fn lua<T>(&mut self, scope: &Scope<'s>, context: &str) -> Result<T, RuntimeError>
     where
         T: FromLua<'s>,

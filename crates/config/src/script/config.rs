@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use oxau::session::{Limits, LoadedModule, Vm};
+use ruau::session::{Limits, LoadedModule, Vm};
 
 use super::{ModeRef, util::lock_unpoisoned};
 use crate::{Style, raw, style};
@@ -26,7 +26,7 @@ pub struct DynamicConfig {
     pub(crate) themes: HashMap<String, raw::RawStyle>,
     /// Active theme selected while loading the config.
     pub(crate) active_theme: String,
-    /// Retained oxau VM used for later renders and handler execution.
+    /// Retained ruau VM used for later renders and handler execution.
     pub(crate) vm: Vm,
     /// Loaded root module retained for the VM lifetime.
     pub(crate) _root_module: LoadedModule,

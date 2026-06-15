@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use oxau::embed::StashedClosure;
+use ruau::embed::StashedClosure;
 
 use super::{
     HandlerRef, ModeRef, SelectorItem, config::SourceMap, imports::ImportRole,

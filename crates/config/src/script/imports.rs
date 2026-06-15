@@ -5,7 +5,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use oxau::embed::RuntimeError;
+use ruau::embed::RuntimeError;
 
 use crate::Error;
 

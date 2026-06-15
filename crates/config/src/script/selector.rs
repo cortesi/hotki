@@ -1,6 +1,6 @@
 //! Selector binding configuration types.
 
-use oxau::{
+use ruau::{
     embed::{Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table},
     session::CallOptions,
 };

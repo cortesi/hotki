@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use oxau::{
+use ruau::{
     compile::{self, CompileOptions},
     decl::DeclSource,
     diagnostic::DiagnosticSeverity,
@@ -422,7 +422,7 @@ fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
     root_dir.join(format!("__hotki_check_{suffix}_{id}.luau"))
 }
 
-/// Build the static Hotki script surface used by the oxau checker.
+/// Build the static Hotki script surface used by the ruau checker.
 fn checker_surface() -> Result<SurfaceSpec, Error> {
     SurfaceSpec::builder(Profile::full().with_runtime_compilation())
         .module(Arc::new(StaticHotkiApiModule))
@@ -447,7 +447,7 @@ fn checker_type_prelude() -> &'static str {
     })
 }
 
-/// Run oxau's checker and bytecode compiler on one source module.
+/// Run ruau's checker and bytecode compiler on one source module.
 fn check_module(path: &Path, source: &str) -> Result<(), Error> {
     let surface = checker_surface()?;
     let mut checker = surface.new_checker();

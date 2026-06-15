@@ -5,11 +5,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use oxau::embed::{
+use regex::Regex;
+use ruau::embed::{
     FromLua, Function, HostType, HostTypeBuilder, MultiValue, RuntimeError, Scope, ScopedValue,
     Table, Userdata,
 };
-use regex::Regex;
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, ModeCtx, ModeRef, NavRequest, SourcePos,

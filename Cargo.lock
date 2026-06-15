@@ -1104,8 +1104,8 @@ dependencies = [
  "colornames",
  "hotki-protocol",
  "mac-keycode",
- "oxau",
  "regex",
+ "ruau",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1723,7 +1723,7 @@ dependencies = [
  "eguidev",
  "glob",
  "image",
- "oxau",
+ "ruau",
  "schemars",
  "serde",
  "serde_json",
@@ -4554,96 +4554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxau"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "oxau-analysis",
- "oxau-ast",
- "oxau-bytecode",
- "oxau-decl",
- "oxau-source",
- "oxau-typecheck",
- "oxau-vm",
- "oxau-vm-api",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "oxau-analysis"
-version = "0.1.0"
-dependencies = [
- "oxau-ast",
- "oxau-source",
- "serde_json",
-]
-
-[[package]]
-name = "oxau-ast"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "strum",
-]
-
-[[package]]
-name = "oxau-bytecode"
-version = "0.1.0"
-dependencies = [
- "oxau-ast",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oxau-decl"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-source"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-typecheck"
-version = "0.1.0"
-dependencies = [
- "oxau-analysis",
- "oxau-ast",
- "oxau-source",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oxau-vm"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "blake3",
- "foldhash 0.2.0",
- "oxau-bytecode",
- "oxau-decl",
- "oxau-source",
- "oxau-vm-api",
- "serde",
- "stacker",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "oxau-vm-api"
-version = "0.1.0"
-dependencies = [
- "oxau-decl",
- "serde",
-]
-
-[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5643,6 +5553,96 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "ruau"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ruau-analysis",
+ "ruau-ast",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-typecheck",
+ "ruau-vm",
+ "ruau-vm-api",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ruau-analysis"
+version = "0.1.0"
+dependencies = [
+ "ruau-ast",
+ "ruau-source",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-ast"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "strum",
+]
+
+[[package]]
+name = "ruau-bytecode"
+version = "0.1.0"
+dependencies = [
+ "ruau-ast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-decl"
+version = "0.1.0"
+
+[[package]]
+name = "ruau-source"
+version = "0.1.0"
+
+[[package]]
+name = "ruau-typecheck"
+version = "0.1.0"
+dependencies = [
+ "ruau-analysis",
+ "ruau-ast",
+ "ruau-source",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-vm"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "foldhash 0.2.0",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-vm-api",
+ "serde",
+ "stacker",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ruau-vm-api"
+version = "0.1.0"
+dependencies = [
+ "ruau-decl",
+ "serde",
 ]
 
 [[package]]

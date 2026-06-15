@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use oxau::{
+use ruau::{
     compile::{self, CompileOptions},
     embed::ScriptError,
     profile::Profile,

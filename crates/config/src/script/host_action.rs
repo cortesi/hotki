@@ -1,6 +1,6 @@
 //! Native Luau `action` library implementation.
 
-use oxau::{
+use ruau::{
     decl::DeclSource,
     embed::{
         HostType, HostTypeBuilder, ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue,

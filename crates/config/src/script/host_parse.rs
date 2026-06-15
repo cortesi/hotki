@@ -1,7 +1,7 @@
 //! Shared parsing helpers for Luau host values.
 
 use mac_keycode::Chord;
-use oxau::embed::{RuntimeError, Scope, ScopedValue, serde::from_scoped_value};
+use ruau::embed::{RuntimeError, Scope, ScopedValue, serde::from_scoped_value};
 use serde::Deserialize;
 
 use super::{Binding, RepeatSpec, StyleOverlay, binding_style::BindingStyleSpec};

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxau::{
+use ruau::{
     compile::{self, CompileOptions},
     embed::{ScopedValue, ScriptError, serde::from_scoped_value},
     profile::Profile,
@@ -204,7 +204,7 @@ fn theme_limits() -> Limits {
     Limits::production(THEME_GAS_LIMIT, THEME_MEMORY_LIMIT)
 }
 
-/// Convert a filesystem or built-in theme path into an oxau chunk name.
+/// Convert a filesystem or built-in theme path into an ruau chunk name.
 fn chunk_name(path: &Path) -> String {
     format!("@{}", path.display())
 }
@@ -216,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn valid_theme_loads_through_oxau() {
+    fn valid_theme_loads_through_ruau() {
         let style = eval_theme_source(
             r##"
             return {

@@ -9,7 +9,7 @@ use std::{
 
 pub use hotki_protocol::{HudRow, HudRowStyle};
 use mac_keycode::Chord;
-use oxau::embed::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
+use ruau::embed::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
 
 use super::{SelectorConfig, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style, raw::RawStyle};
@@ -122,7 +122,7 @@ impl HandlerRef {
 }
 
 impl SourcePos {
-    /// Build a source position from oxau's caller-location metadata.
+    /// Build a source position from ruau's caller-location metadata.
     pub(crate) fn from_location(location: SourceLocation) -> Self {
         let path = (location.chunk_name != "<memory>").then(|| PathBuf::from(location.chunk_name));
         Self {

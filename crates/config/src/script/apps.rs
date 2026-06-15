@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxau::embed::{RuntimeError, Scope, serde::to_scoped_value};
+use ruau::embed::{RuntimeError, Scope, serde::to_scoped_value};
 use serde::Serialize;
 
 use super::{SelectorData, SelectorItem};
