@@ -16,7 +16,7 @@ use ruau::{
     compile::{self, CompileOptions},
     decl::DeclSource,
     surface::SurfaceSpec,
-    typecheck::{checker::CheckerConfig, diagnostic::DiagnosticSeverity},
+    typecheck::diagnostic::DiagnosticSeverity,
     vm::{ModuleBuilderExt, MultiValue, Profile, RuntimeError, Scope, ScopedHostFunction},
 };
 
@@ -421,6 +421,7 @@ fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
 /// Build the static Hotki script surface used by the ruau checker.
 fn checker_surface() -> Result<SurfaceSpec, Error> {
     SurfaceSpec::builder(Profile::full().with_runtime_compilation())
+        .analysis_mode(AnalysisMode::Nonstrict)
         .module(Arc::new(StaticHotkiApiModule))
         .build()
         .map_err(|err| Error::Validation {
@@ -446,18 +447,10 @@ fn checker_type_prelude() -> &'static str {
 /// Run ruau's checker and bytecode compiler on one source module.
 fn check_module(path: &Path, source: &str) -> Result<(), Error> {
     let surface = checker_surface()?;
-    let mut checker = surface.new_checker();
     let prelude = checker_type_prelude();
     let checked_source = format!("{prelude}\n{source}");
     let line_offset = prelude.lines().count();
-    let checked = checker.check_source_bytes_with_config(
-        checked_source.as_bytes(),
-        CheckerConfig {
-            default_mode: AnalysisMode::Nonstrict,
-            source_mode_override: Some(AnalysisMode::Nonstrict),
-            ..CheckerConfig::default()
-        },
-    );
+    let checked = surface.check_source_bytes(checked_source.as_bytes());
     let errors = checked
         .diagnostics()
         .iter()
