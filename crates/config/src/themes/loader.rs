@@ -7,9 +7,10 @@ use std::{
 
 use ruau::{
     compile::{self, CompileOptions},
-    embed::{ScopedValue, ScriptError, serde::from_scoped_value},
-    profile::Profile,
-    session::{Ambient, CallOptions, Limits, Vm},
+    vm::{
+        Ambient, CallOptions, Limits, Profile, ScopedValue, ScriptError, Vm,
+        serde::from_scoped_value,
+    },
 };
 
 use super::ThemeError;
@@ -157,7 +158,7 @@ fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeEr
     let mut parsed = None;
     let mut script_error = None;
     let mut decode_error = None;
-    vm.step_with(CallOptions::new().limits(theme_limits()), |scope| {
+    vm.step_with(&CallOptions::new().limits(theme_limits()), |scope| {
         let main = scope.module_function(&module);
         let result: Result<ScopedValue<'_>, ScriptError<'_>> = scope.call_protected(main, ())?;
         match result {

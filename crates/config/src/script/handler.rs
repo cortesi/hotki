@@ -1,4 +1,4 @@
-use ruau::{embed::ScriptError, session::CallOptions};
+use ruau::vm::{CallOptions, ScriptError};
 
 use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem, diagnostics};
 use crate::Error;
@@ -36,7 +36,7 @@ pub fn execute_handler(
 
     cfg.vm
         .step_with(
-            CallOptions::new().limits(DynamicConfig::entry_limits()),
+            &CallOptions::new().limits(DynamicConfig::entry_limits()),
             |scope| {
                 let ctx_value =
                     super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
@@ -78,7 +78,7 @@ pub fn execute_selector_handler(
 
     cfg.vm
         .step_with(
-            CallOptions::new().limits(DynamicConfig::entry_limits()),
+            &CallOptions::new().limits(DynamicConfig::entry_limits()),
             |scope| {
                 let ctx_value =
                     super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;

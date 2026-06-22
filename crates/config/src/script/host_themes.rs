@@ -1,10 +1,11 @@
 //! Native Luau `themes` library implementation.
 
 use ruau::{
+    abi::{ModuleBinding, ModuleBuilder, NativeModule},
     decl::DeclSource,
-    embed::{
-        IntoLuaMulti, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,
-        RuntimeError, Scope, ScopedHostFunction, serde::to_scoped_value,
+    vm::{
+        IntoLuaMulti, ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction,
+        serde::to_scoped_value,
     },
 };
 

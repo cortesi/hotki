@@ -10,9 +10,7 @@ use std::{
 
 use ruau::{
     compile::{self, CompileOptions},
-    embed::ScriptError,
-    profile::Profile,
-    session::{Ambient, CallOptions, Vm},
+    vm::{Ambient, CallOptions, ExecError, Profile, ScriptError, Vm},
 };
 
 use super::{
@@ -92,15 +90,12 @@ pub fn load_dynamic_config_from_string(
         .load_named(&chunk, chunk_name.as_bytes())
         .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
 
-    match vm
-        .call_protected(
-            &module,
-            CallOptions::new().limits(DynamicConfig::entry_limits()),
-        )
-        .map_err(|err| diagnostics::config_validation(path.clone(), format!("{err:?}")))?
-    {
+    match vm.exec(
+        &module,
+        CallOptions::new().limits(DynamicConfig::entry_limits()),
+    ) {
         Ok(_) => {}
-        Err(err) => {
+        Err(ExecError::Script(err)) => {
             return Err(diagnostics::config_protected_error(
                 source,
                 path.as_deref(),
@@ -108,6 +103,7 @@ pub fn load_dynamic_config_from_string(
                 &err,
             ));
         }
+        Err(err) => return Err(diagnostics::config_validation(path.clone(), err)),
     }
 
     let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
@@ -163,7 +159,7 @@ fn validate_root(
     };
     let mut script_error = None;
     vm.step_with(
-        CallOptions::new().limits(DynamicConfig::entry_limits()),
+        &CallOptions::new().limits(DynamicConfig::entry_limits()),
         |scope| {
             let builder = mode_builder_userdata(scope, builder.clone())?;
             let ctx = mode_context_userdata(scope, ctx.clone())?;

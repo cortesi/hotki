@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use ruau::session::{Limits, LoadedModule, Vm};
+use ruau::vm::{Limits, LoadedModule, Vm};
 
 use super::{ModeRef, util::lock_unpoisoned};
 use crate::{Style, raw, style};

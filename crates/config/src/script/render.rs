@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use ruau::{embed::ScriptError, session::CallOptions};
+use ruau::vm::{CallOptions, ScriptError};
 use tracing::warn;
 
 use super::{
@@ -102,7 +102,7 @@ fn render_mode(
 
     cfg.vm
         .step_with(
-            CallOptions::new().limits(DynamicConfig::entry_limits()),
+            &CallOptions::new().limits(DynamicConfig::entry_limits()),
             |scope| {
                 let builder_value =
                     super::host_userdata::mode_builder_userdata(scope, builder.clone())?;

@@ -9,7 +9,7 @@ use std::{
 
 pub use hotki_protocol::{HudRow, HudRowStyle};
 use mac_keycode::Chord;
-use ruau::embed::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
+use ruau::vm::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
 
 use super::{SelectorConfig, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style, raw::RawStyle};

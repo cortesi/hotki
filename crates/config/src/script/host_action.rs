@@ -1,10 +1,11 @@
 //! Native Luau `action` library implementation.
 
 use ruau::{
+    abi::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
     decl::DeclSource,
-    embed::{
-        HostType, HostTypeBuilder, ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue,
-        MultiValue, NativeModule, RuntimeError, Scope, ScopedHostFunction, ScopedValue, Userdata,
+    vm::{
+        HostType, HostTypeBuilder, ModuleBuilderExt, MultiValue, RuntimeError, Scope,
+        ScopedHostFunction, ScopedValue, Userdata,
     },
 };
 

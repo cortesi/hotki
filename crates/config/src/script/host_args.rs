@@ -2,7 +2,7 @@
 
 use std::vec::IntoIter;
 
-use ruau::embed::{
+use ruau::vm::{
     FromLua, Function, MultiValue, RuntimeError, Scope, ScopedValue, Table,
     serde::from_scoped_value,
 };

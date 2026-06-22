@@ -1,8 +1,7 @@
 //! Selector binding configuration types.
 
-use ruau::{
-    embed::{Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table},
-    session::CallOptions,
+use ruau::vm::{
+    CallOptions, Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table,
 };
 
 use super::{DynamicConfig, HandlerRef, ModeCtx, diagnostics};
@@ -208,7 +207,7 @@ impl SelectorConfig {
                 let sources = cfg.sources.clone();
                 cfg.vm
                     .step_with(
-                        CallOptions::new().limits(DynamicConfig::entry_limits()),
+                        &CallOptions::new().limits(DynamicConfig::entry_limits()),
                         |scope| {
                             let provider = scope.fetch_function(provider)?;
                             let ctx_value =

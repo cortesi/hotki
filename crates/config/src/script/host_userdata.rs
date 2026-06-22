@@ -6,7 +6,7 @@ use std::{
 };
 
 use regex::Regex;
-use ruau::embed::{
+use ruau::vm::{
     FromLua, Function, HostType, HostTypeBuilder, MultiValue, RuntimeError, Scope, ScopedValue,
     Table, Userdata,
 };

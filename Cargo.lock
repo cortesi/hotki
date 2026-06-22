@@ -5560,18 +5560,26 @@ name = "ruau"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ruau-abi",
  "ruau-analysis",
  "ruau-ast",
  "ruau-bytecode",
  "ruau-decl",
+ "ruau-runner",
  "ruau-source",
  "ruau-typecheck",
  "ruau-vm",
- "ruau-vm-api",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "ruau-abi"
+version = "0.1.0"
+dependencies = [
+ "ruau-vm-api",
 ]
 
 [[package]]
@@ -5606,6 +5614,13 @@ name = "ruau-decl"
 version = "0.1.0"
 
 [[package]]
+name = "ruau-runner"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "ruau-source"
 version = "0.1.0"
 
@@ -5627,11 +5642,14 @@ dependencies = [
  "bincode",
  "blake3",
  "foldhash 0.2.0",
+ "pin-project-lite",
+ "ruau-abi",
  "ruau-bytecode",
  "ruau-decl",
  "ruau-source",
  "ruau-vm-api",
  "serde",
+ "serde_json",
  "stacker",
  "tokio",
  "tokio-util",

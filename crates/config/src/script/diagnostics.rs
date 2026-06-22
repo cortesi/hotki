@@ -7,9 +7,11 @@ use std::{
 
 use ruau::{
     compile::CompileError,
-    diagnostic::{DiagnosticLocation, TypeDiagnostic},
-    embed::{RuntimeError, Scope, ScriptError, serde::from_scoped_value},
-    session::{ProtectedScriptError, TracebackFrame},
+    typecheck::diagnostic::{DiagnosticLocation, TypeDiagnostic},
+    vm::{
+        MarshaledScriptError, RuntimeError, Scope, ScriptError, TracebackFrame,
+        serde::from_scoped_value,
+    },
 };
 
 use super::{config::SourceMap, util::lock_unpoisoned};
@@ -51,7 +53,7 @@ pub fn config_protected_error(
     source: &str,
     default_path: Option<&Path>,
     sources: &SourceMap,
-    err: &ProtectedScriptError,
+    err: &MarshaledScriptError,
 ) -> Error {
     if let Some(error) = err.payload_ref::<Error>() {
         return error.clone();
@@ -217,7 +219,7 @@ fn script_error_message<'s>(scope: &Scope<'s>, err: &ScriptError<'s>, noun: &str
 }
 
 /// Extract the VM's first rendered traceback line, falling back to a generic message.
-fn protected_error_message(err: &ProtectedScriptError) -> String {
+fn protected_error_message(err: &MarshaledScriptError) -> String {
     err.traceback()
         .and_then(|traceback| traceback.lines().next())
         .unwrap_or("script raised an error")

@@ -11,17 +11,13 @@ use std::{
 };
 
 use ruau::{
+    abi::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
+    analysis::source::AnalysisMode,
     compile::{self, CompileOptions},
     decl::DeclSource,
-    diagnostic::DiagnosticSeverity,
-    embed::{
-        ModuleBinding, ModuleBuilder, ModuleBuilderExt, ModuleValue, MultiValue, NativeModule,
-        RuntimeError, Scope, ScopedHostFunction,
-    },
-    profile::Profile,
-    source::AnalysisMode,
     surface::SurfaceSpec,
-    types::CheckerConfig,
+    typecheck::{checker::CheckerConfig, diagnostic::DiagnosticSeverity},
+    vm::{ModuleBuilderExt, MultiValue, Profile, RuntimeError, Scope, ScopedHostFunction},
 };
 
 use crate::{
