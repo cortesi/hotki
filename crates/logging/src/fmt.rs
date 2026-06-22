@@ -22,40 +22,50 @@ pub struct RenderedLog {
     pub message: String,
 }
 
+/// Visitor that captures the message field and accumulates other fields.
+struct MsgVisitor {
+    /// Captured `message` field, if present.
+    msg: Option<String>,
+    /// Accumulated non-message fields rendered as `key=value`.
+    fields: String,
+}
+
+impl MsgVisitor {
+    /// Create an empty visitor ready to record one event.
+    fn new() -> Self {
+        Self {
+            msg: None,
+            fields: String::new(),
+        }
+    }
+}
+
+impl Visit for MsgVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.msg = Some(value.to_string());
+        } else {
+            let _ignored = write!(&mut self.fields, "{}=\"{}\" ", field.name(), value);
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+        if field.name() == "message" {
+            self.msg = Some(format!("{:?}", value));
+        } else {
+            let _ignored = write!(&mut self.fields, "{}={:?} ", field.name(), value);
+        }
+    }
+}
+
 /// Extract a concise triple (level, target, message) from a tracing Event.
 ///
 /// Behavior:
 /// - If the event contains a `message` field, use it.
 /// - Otherwise, concatenate `key=value` pairs from remaining fields.
 pub fn render_event(event: &Event<'_>) -> RenderedLog {
-    /// Visitor that captures the message field and accumulates other fields.
-    struct MsgVisitor {
-        /// Captured `message` field, if present.
-        msg: Option<String>,
-        /// Accumulated non‑message fields rendered as `key=value`.
-        fields: String,
-    }
-    impl Visit for MsgVisitor {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            if field.name() == "message" {
-                self.msg = Some(value.to_string());
-            } else {
-                let _ignored = write!(&mut self.fields, "{}=\"{}\" ", field.name(), value);
-            }
-        }
-        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-            if field.name() == "message" {
-                self.msg = Some(format!("{:?}", value));
-            } else {
-                let _ignored = write!(&mut self.fields, "{}={:?} ", field.name(), value);
-            }
-        }
-    }
     let meta: &Metadata<'_> = event.metadata();
-    let mut vis = MsgVisitor {
-        msg: None,
-        fields: String::new(),
-    };
+    let mut vis = MsgVisitor::new();
     event.record(&mut vis);
     let rendered = vis.msg.unwrap_or_else(|| vis.fields.trim_end().to_string());
     RenderedLog {

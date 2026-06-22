@@ -50,10 +50,6 @@ pub enum Error {
         status: ExitStatus,
     },
 
-    /// A task could not proceed because the current environment is unsupported.
-    #[error("{0}")]
-    Unsupported(String),
-
     /// Luau validation failed.
     #[error("luau validation failed at {path}: {message}")]
     Luau {

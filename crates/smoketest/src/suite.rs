@@ -36,15 +36,6 @@ pub fn case_by_slug(slug: &str) -> Option<&'static CaseEntry> {
     CASES.iter().find(|entry| entry.name == slug)
 }
 
-/// Optional overrides applied when running registry-backed cases.
-#[derive(Clone, Copy, Default)]
-pub struct CaseRunOpts {
-    /// Override whether the warn overlay should be shown during the run.
-    pub warn_overlay: Option<bool>,
-    /// Override the fail-fast behavior for the runner configuration.
-    pub fail_fast: Option<bool>,
-}
-
 /// Configured time budget for a smoketest case.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Budget {

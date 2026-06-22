@@ -31,7 +31,6 @@ use std::{
 
 use cli::{Cli, Commands};
 use error::print_hints;
-use suite::CaseRunOpts;
 use warn_overlay::WARN_OVERLAY_STANDALONE_FLAG;
 /// Tracks whether hotki was already built during this smoketest invocation.
 static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
@@ -77,27 +76,20 @@ fn maybe_run_warn_overlay_standalone() -> bool {
     true
 }
 
-/// Build a runner configuration from the CLI flags with optional overrides applied.
-fn runner_config<'a>(cli: &'a Cli, opts: &CaseRunOpts) -> suite::RunnerConfig<'a> {
-    let mut config = suite::RunnerConfig {
+/// Build a runner configuration from the CLI flags.
+fn runner_config(cli: &Cli) -> suite::RunnerConfig<'_> {
+    suite::RunnerConfig {
         quiet: cli.quiet,
         warn_overlay: !cli.no_warn,
         base_timeout_ms: cli.timeout,
         fail_fast: !cli.no_fail_fast,
         overlay_info: cli.info.as_deref(),
-    };
-    if let Some(warn_overlay) = opts.warn_overlay {
-        config.warn_overlay = warn_overlay;
     }
-    if let Some(fail_fast) = opts.fail_fast {
-        config.fail_fast = fail_fast;
-    }
-    config
 }
 
 /// Execute the supplied case slugs and exit on failure.
-fn run_cases(cli: &Cli, slugs: &[&str], opts: CaseRunOpts) {
-    let config = runner_config(cli, &opts);
+fn run_cases(cli: &Cli, slugs: &[&str]) {
+    let config = runner_config(cli);
     if let Err(err) = suite::run_sequence(slugs, &config) {
         let label = slugs.join(", ");
         eprintln!("smoketest {label}: ERROR: {err}");
@@ -107,8 +99,8 @@ fn run_cases(cli: &Cli, slugs: &[&str], opts: CaseRunOpts) {
 }
 
 /// Execute a single registry case and exit on failure.
-fn run_case_by_slug(cli: &Cli, slug: &str, opts: CaseRunOpts) {
-    run_cases(cli, &[slug], opts);
+fn run_case_by_slug(cli: &Cli, slug: &str) {
+    run_cases(cli, &[slug]);
 }
 
 fn main() {
@@ -172,14 +164,14 @@ fn dispatch_command(cli: &Cli) {
 
 /// Execute one iteration of the smoketest command dispatch.
 fn dispatch_command_once(cli: &Cli) {
-    if let Some((slug, opts)) = cli.command.case_info(false) {
-        run_case_by_slug(cli, slug, opts);
+    if let Some(slug) = cli.command.case_slug() {
+        run_case_by_slug(cli, slug);
         return;
     }
 
     match &cli.command {
         Commands::All => {
-            let config = runner_config(cli, &CaseRunOpts::default());
+            let config = runner_config(cli);
             if let Err(err) = suite::run_all(&config) {
                 eprintln!("smoketest all failed: {err}");
                 exit(1);
@@ -187,7 +179,7 @@ fn dispatch_command_once(cli: &Cli) {
         }
         Commands::Seq { tests } => {
             let slugs: Vec<&str> = tests.iter().map(|test| test.slug()).collect();
-            run_cases(cli, &slugs, CaseRunOpts::default());
+            run_cases(cli, &slugs);
         }
         _ => {
             // Commands without a case_info entry are handled here or are errors.

@@ -1,7 +1,6 @@
 //! macOS install task for Hotki.
 
 use std::{
-    env::consts,
     fs,
     io::Error as IoError,
     path::{Path, PathBuf},
@@ -27,8 +26,6 @@ pub struct InstallArgs {
 
 /// Build and install Hotki to `/Applications`.
 pub fn install(root_dir: &Path, args: &InstallArgs) -> Result<()> {
-    ensure_macos()?;
-
     println!("==> Building Hotki release bundle");
     let source_bundle = bundle::bundle_release_default(root_dir)?;
     let installed_bundle = applications_bundle_path(&source_bundle)?;
@@ -77,18 +74,6 @@ pub fn install(root_dir: &Path, args: &InstallArgs) -> Result<()> {
 
     println!("==> Install complete: {}", installed_bundle.display());
     Ok(())
-}
-
-/// Return an error when the current target is not macOS.
-fn ensure_macos() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(format!(
-            "xtask install is only supported on macOS (target: {})",
-            consts::OS
-        )))
-    }
 }
 
 /// Resolve the destination `.app` path under `/Applications`.

@@ -3,10 +3,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use logging::LogArgs;
 
-use crate::{
-    config,
-    suite::{CaseRunOpts, case_by_slug},
-};
+use crate::config;
 
 /// Command-line interface arguments for the smoketest binary.
 #[derive(Parser, Debug)]
@@ -62,19 +59,16 @@ pub enum SeqTest {
 impl SeqTest {
     /// Return the registry slug corresponding to this sequence entry.
     pub fn slug(self) -> &'static str {
-        let alias_value = self
-            .to_possible_value()
-            .expect("seq test must expose a clap alias");
-        let alias = alias_value.get_name();
-        case_by_slug(alias)
-            .map(|entry| entry.name)
-            .expect("seq test alias must map to a registered case")
+        match self {
+            Self::Hud => "hud",
+            Self::Mini => "mini",
+            Self::Displays => "displays",
+        }
     }
 }
 
 /// CLI commands for the smoketest runner.
 #[derive(Subcommand, Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Run all smoketests
     #[command(name = "all")]
@@ -104,18 +98,13 @@ pub enum Commands {
 }
 
 impl Commands {
-    /// Return the case slug and run options for a command.
-    pub fn case_info(&self, _fake_mode: bool) -> Option<(&'static str, CaseRunOpts)> {
-        let default_opts = CaseRunOpts::default();
-
-        let candidate = match self {
-            Self::Hud => "hud",
-            Self::Mini => "mini",
-            Self::Displays => "displays",
-            Self::All | Self::Seq { .. } => return None,
-        };
-
-        let entry = case_by_slug(candidate)?;
-        Some((entry.name, default_opts))
+    /// Return the case slug for a registry-backed command.
+    pub fn case_slug(&self) -> Option<&'static str> {
+        match self {
+            Self::Hud => Some("hud"),
+            Self::Mini => Some("mini"),
+            Self::Displays => Some("displays"),
+            Self::All | Self::Seq { .. } => None,
+        }
     }
 }

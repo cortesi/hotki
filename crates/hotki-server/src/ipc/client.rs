@@ -27,8 +27,8 @@ pub struct Connection {
     // MRPC connection closes before we tear down the receive channel. Otherwise
     // in-flight notifications arrive after the receiver disappears, spamming
     // "Failed to send event to channel" errors during normal shutdown.
-    event_rx: UnboundedReceiver<MsgToUI>,
     client: MrpcClient<ClientHandler>,
+    event_rx: UnboundedReceiver<MsgToUI>,
 }
 
 impl Connection {
@@ -51,7 +51,7 @@ impl Connection {
 
         info!("IPC client connected");
 
-        Ok(Connection { event_rx, client })
+        Ok(Connection { client, event_rx })
     }
 
     async fn request(&mut self, method: HotkeyMethod, params: &[Value]) -> Result<Value> {

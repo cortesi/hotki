@@ -33,11 +33,7 @@ pub(crate) trait Poster: Send + Sync {
 }
 
 /// Default system poster that uses CoreGraphics to inject events.
-struct MacPoster {
-    /// When true, do not set the `HOTK_TAG` on injected events so upstream
-    /// taps can observe them (used by tools/smoketests).
-    untagged: bool,
-}
+struct MacPoster;
 
 impl MacPoster {
     /// Build a raw keyboard event for a virtual keycode.
@@ -63,10 +59,8 @@ impl MacPoster {
                 return Err(Error::EventCreate);
             }
         };
-        // Tag injected events unless explicitly untagged
-        if !self.untagged {
-            e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
-        }
+        // Tag injected events so the app's own event tap ignores them.
+        e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
         Ok(e)
     }
 
@@ -165,7 +159,7 @@ impl RelayKey {
     /// Create a new relayer with no held key and repeats disabled.
     pub fn new() -> Self {
         Self {
-            poster: Arc::new(MacPoster { untagged: false }),
+            poster: Arc::new(MacPoster),
         }
     }
 

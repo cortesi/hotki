@@ -6,7 +6,7 @@ use tokio::{
 use crate::WorldEvent;
 
 /// Default broadcast buffer capacity for world events.
-pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 16_384;
+pub(crate) const DEFAULT_EVENT_CAPACITY: usize = 256;
 
 /// Cursor tracking progress through a subscription stream.
 pub struct EventCursor {
