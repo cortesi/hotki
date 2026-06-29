@@ -3,12 +3,12 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use ruau::{
-    abi::{ModuleBinding, ModuleBuilder, NativeModule},
     decl::DeclSource,
     vm::{
         ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction, ScopedValue, Table,
         serde::to_scoped_value,
     },
+    vm_api::{ModuleBinding, ModuleBuilder, NativeModule},
 };
 
 use super::{

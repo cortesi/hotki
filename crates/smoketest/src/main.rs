@@ -21,19 +21,11 @@ mod tmp_paths;
 /// UI overlay to warn users to avoid typing during smoketests.
 mod warn_overlay;
 
-use std::{
-    env,
-    ffi::OsString,
-    path::PathBuf,
-    process::exit,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{env, ffi::OsString, path::PathBuf, process::exit};
 
 use cli::{Cli, Commands};
 use error::print_hints;
 use warn_overlay::WARN_OVERLAY_STANDALONE_FLAG;
-/// Tracks whether hotki was already built during this smoketest invocation.
-static HOTKI_BUILT: AtomicBool = AtomicBool::new(false);
 
 /// Print a standardized heading for a smoketest section.
 pub(crate) fn heading(title: &str) {
@@ -137,9 +129,6 @@ fn init_tracing_from_cli(cli: &Cli) {
 
 /// Build the hotki binary once up-front to avoid stale binaries.
 fn build_hotki_or_exit(cli: &Cli) {
-    if env::var_os("HOTKI_SKIP_BUILD").is_some() || HOTKI_BUILT.load(Ordering::SeqCst) {
-        return;
-    }
     if !cli.quiet {
         heading("Building hotki");
     }
@@ -148,7 +137,6 @@ fn build_hotki_or_exit(cli: &Cli) {
         eprintln!("Try: cargo build -p hotki");
         exit(1);
     }
-    HOTKI_BUILT.store(true, Ordering::SeqCst);
 }
 
 /// Dispatch to the concrete smoketest command handlers.

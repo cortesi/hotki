@@ -9,8 +9,8 @@ use std::{
 };
 
 use ruau::{
-    compile::{self, CompileOptions},
-    vm::{Ambient, CallOptions, ExecError, Profile, ScriptError, Vm},
+    bytecode::CompileOptions,
+    vm::{Ambient, CallOptions, ExecError, RuntimeCapabilities, ScriptError, Vm},
 };
 
 use super::{
@@ -77,14 +77,11 @@ pub fn load_dynamic_config_from_string(
     );
 
     let state = Arc::new(Mutex::new(state));
-    let profile = Profile::full().with_runtime_compilation();
-    let chunk = compile::compile_for(
-        &profile,
-        source.as_bytes(),
-        &CompileOptions::for_vm_execution(),
-    )
-    .map_err(|err| diagnostics::config_compile_error(source, &err, path.as_deref()))?;
-    let mut vm = build_vm(profile, state.clone(), path.as_deref())?;
+    let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
+    let chunk = runtime_capabilities
+        .compile_source(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .map_err(|err| diagnostics::config_compile_error(source, &err, path.as_deref()))?;
+    let mut vm = build_vm(runtime_capabilities, state.clone(), path.as_deref())?;
     let chunk_name = chunk_name(path.as_deref());
     let module = vm
         .load_named(&chunk, chunk_name.as_bytes())
@@ -124,11 +121,15 @@ pub fn load_dynamic_config_from_string(
 }
 
 /// Build the sandboxed retained VM used by a dynamic config.
-fn build_vm(profile: Profile, state: SharedRuntimeState, path: Option<&Path>) -> Result<Vm, Error> {
+fn build_vm(
+    runtime_capabilities: RuntimeCapabilities,
+    state: SharedRuntimeState,
+    path: Option<&Path>,
+) -> Result<Vm, Error> {
     Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(DynamicConfig::entry_limits())
-        .profile(profile)
+        .runtime_capabilities(runtime_capabilities)
         .module(Arc::new(HotkiModule {
             state: state.clone(),
         }))

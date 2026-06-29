@@ -5550,26 +5550,17 @@ dependencies = [
 name = "ruau"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "ruau-abi",
  "ruau-analysis",
  "ruau-ast",
  "ruau-bytecode",
  "ruau-decl",
+ "ruau-fs",
+ "ruau-host",
  "ruau-runner",
  "ruau-source",
+ "ruau-surface",
  "ruau-typecheck",
  "ruau-vm",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "ruau-abi"
-version = "0.1.0"
-dependencies = [
  "ruau-vm-api",
 ]
 
@@ -5605,15 +5596,63 @@ name = "ruau-decl"
 version = "0.1.0"
 
 [[package]]
+name = "ruau-fs"
+version = "0.1.0"
+dependencies = [
+ "ruau-analysis",
+ "ruau-ast",
+ "ruau-source",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-host"
+version = "0.1.0"
+dependencies = [
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-surface",
+ "ruau-vm",
+ "ruau-vm-api",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ruau-runner"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ruau-analysis",
+ "ruau-ast",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-surface",
+ "ruau-typecheck",
+ "ruau-vm",
+ "ruau-vm-api",
+ "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "ruau-source"
 version = "0.1.0"
+
+[[package]]
+name = "ruau-surface"
+version = "0.1.0"
+dependencies = [
+ "ruau-analysis",
+ "ruau-ast",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-typecheck",
+ "ruau-vm",
+ "ruau-vm-api",
+]
 
 [[package]]
 name = "ruau-typecheck"
@@ -5634,7 +5673,6 @@ dependencies = [
  "foldhash 0.2.0",
  "pin-project-lite",
  "rmp-serde",
- "ruau-abi",
  "ruau-bytecode",
  "ruau-decl",
  "ruau-source",

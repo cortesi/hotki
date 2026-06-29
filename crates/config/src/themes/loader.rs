@@ -6,9 +6,9 @@ use std::{
 };
 
 use ruau::{
-    compile::{self, CompileOptions},
+    bytecode::CompileOptions,
     vm::{
-        Ambient, CallOptions, Limits, Profile, ScopedValue, ScriptError, Vm,
+        Ambient, CallOptions, Limits, RuntimeCapabilities, ScopedValue, ScriptError, Vm,
         serde::from_scoped_value,
     },
 };
@@ -142,15 +142,12 @@ fn load_theme_file(path: &Path) -> Result<raw::RawStyle, ThemeError> {
 
 /// Evaluate one Luau theme source file into a raw style overlay.
 fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeError> {
-    let profile = Profile::full();
-    let chunk = compile::compile_for(
-        &profile,
-        source.as_bytes(),
-        &CompileOptions::for_vm_execution(),
-    )
-    .map_err(|err| diagnostics::theme_compile_error(source, &err, path))?;
+    let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
+    let chunk = runtime_capabilities
+        .compile_source(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .map_err(|err| diagnostics::theme_compile_error(source, &err, path))?;
     let chunk_name = chunk_name(path);
-    let mut vm = build_theme_vm(profile, path)?;
+    let mut vm = build_theme_vm(runtime_capabilities, path)?;
     let module = vm
         .load_named(&chunk, chunk_name.as_bytes())
         .map_err(|err| diagnostics::theme_validation(path, err.to_string()))?;
@@ -191,11 +188,14 @@ fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeEr
 }
 
 /// Build the sandboxed VM used to evaluate one theme.
-fn build_theme_vm(profile: Profile, path: &Path) -> Result<Vm, ThemeError> {
+fn build_theme_vm(
+    runtime_capabilities: RuntimeCapabilities,
+    path: &Path,
+) -> Result<Vm, ThemeError> {
     Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(theme_limits())
-        .profile(profile)
+        .runtime_capabilities(runtime_capabilities)
         .build_sandboxed()
         .map_err(|err| diagnostics::theme_validation(path, err.to_string()))
 }

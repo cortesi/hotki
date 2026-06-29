@@ -11,13 +11,13 @@ use std::{
 };
 
 use ruau::{
-    abi::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
-    analysis::source::AnalysisMode,
-    compile::{self, CompileOptions},
+    analysis::resolve::AnalysisMode,
+    bytecode::CompileOptions,
     decl::DeclSource,
-    surface::SurfaceSpec,
-    typecheck::diagnostic::DiagnosticSeverity,
-    vm::{ModuleBuilderExt, MultiValue, Profile, RuntimeError, Scope, ScopedHostFunction},
+    surface::Surface,
+    typecheck::diagnostics::Severity,
+    vm::{ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction},
+    vm_api::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
 };
 
 use crate::{
@@ -419,8 +419,9 @@ fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
 }
 
 /// Build the static Hotki script surface used by the ruau checker.
-fn checker_surface() -> Result<SurfaceSpec, Error> {
-    SurfaceSpec::builder(Profile::full().with_runtime_compilation())
+fn checker_surface() -> Result<Surface, Error> {
+    Surface::builder()
+        .enable_runtime_compilation()
         .analysis_mode(AnalysisMode::Nonstrict)
         .module(Arc::new(StaticHotkiApiModule))
         .build()
@@ -454,7 +455,7 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
     let errors = checked
         .diagnostics()
         .iter()
-        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
         .cloned()
         .collect::<Vec<_>>();
     if !errors.is_empty() {
@@ -466,13 +467,10 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
         ));
     }
 
-    compile::compile_for(
-        surface.profile(),
-        source.as_bytes(),
-        &CompileOptions::for_vm_execution(),
-    )
-    .map(|_| ())
-    .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
+    surface
+        .compile(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .map(|_| ())
+        .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
 }
 
 /// Checker-only native module that declares and audits the full Hotki host API surface.

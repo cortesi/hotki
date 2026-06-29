@@ -6,8 +6,8 @@ use std::{
 };
 
 use ruau::{
-    compile::CompileError,
-    typecheck::diagnostic::{DiagnosticLocation, TypeDiagnostic},
+    bytecode::CompileError,
+    typecheck::diagnostics::{Diagnostic as TypeDiagnostic, DiagnosticLocation},
     vm::{
         MarshaledScriptError, RuntimeError, Scope, ScriptError, TracebackFrame,
         serde::from_scoped_value,

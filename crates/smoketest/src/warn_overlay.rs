@@ -52,8 +52,7 @@ fn spawn_overlay_child() -> SmoketestResult<ManagedChild> {
     let status_path = status_file_path();
     let info_path = info_file_path();
     let mut cmd = Command::new(exe);
-    cmd.env("HOTKI_SKIP_BUILD", "1")
-        .arg(WARN_OVERLAY_STANDALONE_FLAG)
+    cmd.arg(WARN_OVERLAY_STANDALONE_FLAG)
         .arg("--status-path")
         .arg(status_path)
         .arg("--info-path")
