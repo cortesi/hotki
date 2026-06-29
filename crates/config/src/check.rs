@@ -12,7 +12,6 @@ use std::{
 
 use ruau::{
     analysis::resolve::AnalysisMode,
-    bytecode::CompileOptions,
     decl::DeclSource,
     surface::Surface,
     typecheck::diagnostics::Severity,
@@ -468,7 +467,7 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
     }
 
     surface
-        .compile(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .compile(source.as_bytes())
         .map(|_| ())
         .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
 }

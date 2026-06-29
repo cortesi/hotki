@@ -79,7 +79,7 @@ pub fn load_dynamic_config_from_string(
     let state = Arc::new(Mutex::new(state));
     let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
     let chunk = runtime_capabilities
-        .compile_source(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .compile_source(source.as_bytes(), &CompileOptions::new())
         .map_err(|err| diagnostics::config_compile_error(source, &err, path.as_deref()))?;
     let mut vm = build_vm(runtime_capabilities, state.clone(), path.as_deref())?;
     let chunk_name = chunk_name(path.as_deref());
@@ -139,7 +139,8 @@ fn build_vm(
         .host_type(action_value_type())
         .host_type(mode_context_type())
         .host_type(action_context_type())
-        .build_sandboxed()
+        .sandboxed()
+        .build()
         .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))
 }
 

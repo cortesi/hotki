@@ -144,7 +144,7 @@ fn load_theme_file(path: &Path) -> Result<raw::RawStyle, ThemeError> {
 fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeError> {
     let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
     let chunk = runtime_capabilities
-        .compile_source(source.as_bytes(), &CompileOptions::for_vm_execution())
+        .compile_source(source.as_bytes(), &CompileOptions::new())
         .map_err(|err| diagnostics::theme_compile_error(source, &err, path))?;
     let chunk_name = chunk_name(path);
     let mut vm = build_theme_vm(runtime_capabilities, path)?;
@@ -196,7 +196,8 @@ fn build_theme_vm(
         .ambient(Ambient::deterministic(0))
         .limits(theme_limits())
         .runtime_capabilities(runtime_capabilities)
-        .build_sandboxed()
+        .sandboxed()
+        .build()
         .map_err(|err| diagnostics::theme_validation(path, err.to_string()))
 }
 
