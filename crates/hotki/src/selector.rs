@@ -335,7 +335,7 @@ impl SelectorWindow {
                 let bg = Self::rgba(assets.style.bg, BG_ALPHA);
                 let mut frame = Frame::new()
                     .fill(bg)
-                    .stroke(Stroke::new(1.0, border))
+                    .stroke(Stroke::new(1.0_f32, border))
                     .corner_radius(egui::CornerRadius::same(SELECTOR_RADIUS as u8))
                     .inner_margin(Margin::same(SELECTOR_PADDING as i8));
                 frame.shadow = Shadow {
@@ -345,13 +345,11 @@ impl SelectorWindow {
                     color: Self::rgba(assets.style.shadow, 64),
                 };
 
-                CentralPanel::default()
-                    .frame(frame)
-                    .show_inside(vp_ui, |ui| {
-                        container(ui, "selector.panel", |ui| {
-                            Self::render_panel(ui, &snapshot, &assets);
-                        });
+                CentralPanel::default().frame(frame).show(vp_ui, |ui| {
+                    container(ui, "selector.panel", |ui| {
+                        Self::render_panel(ui, &snapshot, &assets);
                     });
+                });
             });
         });
 
@@ -559,7 +557,7 @@ fn match_indices_text(indices: &[u32]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use egui::Color32;
+    use egui::{Color32, text::ByteIndex};
 
     use super::SelectorWindow;
 
@@ -575,9 +573,9 @@ mod tests {
 
         assert_eq!(job.text, "abcd");
         assert_eq!(job.sections.len(), 3);
-        assert_eq!(job.sections[0].byte_range, 0..1);
-        assert_eq!(job.sections[1].byte_range, 1..3);
-        assert_eq!(job.sections[2].byte_range, 3..4);
+        assert_eq!(job.sections[0].byte_range, ByteIndex(0)..ByteIndex(1));
+        assert_eq!(job.sections[1].byte_range, ByteIndex(1)..ByteIndex(3));
+        assert_eq!(job.sections[2].byte_range, ByteIndex(3)..ByteIndex(4));
         assert_eq!(job.sections[1].format.color, Color32::LIGHT_BLUE);
     }
 }

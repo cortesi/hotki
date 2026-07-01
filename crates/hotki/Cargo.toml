@@ -34,7 +34,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 tray-icon = "0.21.2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-egui_extras = "0.34.1"
+egui_extras = "0.35"
 clap = { workspace = true, features = ["derive"] }
 parking_lot = { workspace = true }
 objc2-quartz-core = { workspace = true }

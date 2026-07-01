@@ -463,15 +463,13 @@ impl Hud {
                 let a = (self.cfg.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                 let (r, g, b) = self.cfg.bg;
                 frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
-                CentralPanel::default()
-                    .frame(frame)
-                    .show_inside(vp_ui, |ui| {
-                        container(ui, "hud.root", |ui| {
-                            container(ui, "hud.panel", |ui| {
-                                self.render_panel(ui, &hud_ctx, &model);
-                            });
+                CentralPanel::default().frame(frame).show(vp_ui, |ui| {
+                    container(ui, "hud.root", |ui| {
+                        container(ui, "hud.panel", |ui| {
+                            self.render_panel(ui, &hud_ctx, &model);
                         });
                     });
+                });
             });
         });
 

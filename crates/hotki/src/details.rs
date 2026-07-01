@@ -280,7 +280,7 @@ impl Details {
                     wctx.send_viewport_cmd_to(self.viewport.id(), ViewportCommand::Focus);
                     self.want_focus = false;
                 }
-                CentralPanel::default().show_inside(vp_ui, |ui| {
+                CentralPanel::default().show(vp_ui, |ui| {
                     container(ui, "details.root", |ui| {
                         self.render_contents(ui, backlog);
                     });

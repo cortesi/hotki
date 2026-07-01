@@ -28,7 +28,7 @@ impl eframe::App for DumpInput {
         let ctx = ui.ctx().clone();
 
         // Top toolbar: title, input, modifiers, clear button
-        Panel::top("top_bar").show_inside(ui, |ui| {
+        Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Key Input Dumper");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

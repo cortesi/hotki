@@ -432,7 +432,7 @@ impl NotificationCenter {
                         });
                     egui::CentralPanel::default()
                         .frame(frame)
-                        .show_inside(vp_ui, |ui| {
+                        .show(vp_ui, |ui| {
                             container(ui, it.dev_id.clone(), |ui| {
                                 render_notification_metadata(ui, it);
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);

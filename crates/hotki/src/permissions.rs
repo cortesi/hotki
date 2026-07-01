@@ -136,7 +136,7 @@ impl PermissionsHelp {
 
     /// Render the permissions content inside the active viewport.
     fn render_body(&mut self, ui: &mut egui::Ui, status: &PermissionsStatus) {
-        CentralPanel::default().show_inside(ui, |ui| {
+        CentralPanel::default().show(ui, |ui| {
             container(ui, "permissions.root", |ui| {
                 container(ui, "permissions.panel", |ui| {
                     self.render_intro(ui);

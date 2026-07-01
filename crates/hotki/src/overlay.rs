@@ -1,6 +1,4 @@
-use std::hash::Hash;
-
-use egui::{Context, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
+use egui::{AsId, Context, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 
 use crate::display::DisplayMetrics;
 
@@ -40,7 +38,7 @@ pub struct OverlayWindow {
 
 impl OverlayWindow {
     /// Create a new overlay window with a stable viewport id.
-    pub fn new(id: impl Hash) -> Self {
+    pub fn new(id: impl AsId) -> Self {
         Self {
             id: ViewportId::from_hash_of(id),
             metrics: OverlayMetrics::default(),
