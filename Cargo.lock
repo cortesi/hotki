@@ -1733,7 +1733,7 @@ dependencies = [
 
 [[package]]
 name = "eguidev"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "egui",
  "schemars",
@@ -1744,14 +1744,18 @@ dependencies = [
 
 [[package]]
 name = "eguidev_runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "base64",
+ "core-foundation 0.9.4",
+ "core-graphics 0.23.2",
  "egui",
  "eguidev",
+ "foreign-types",
  "glob",
  "image",
+ "objc2 0.6.4",
  "ruau",
  "schemars",
  "serde",
@@ -6751,6 +6755,8 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "tmcp"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7116c072b070584d73b46849e9cdba7fbcccfabf9f86c4f7f7c585ed1aa08716"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6785,6 +6791,8 @@ dependencies = [
 [[package]]
 name = "tmcp-macros"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "846619d5e53211a8a2d833eb2e0900116fa0a4a46ea19597cb72f71ed4037815"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",

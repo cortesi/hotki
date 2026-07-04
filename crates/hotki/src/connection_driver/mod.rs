@@ -12,7 +12,12 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
-use crate::{app::UiEvent, logs, permissions::check_permissions, runtime::ControlMsg};
+use crate::{
+    app::UiEvent,
+    logs,
+    permissions::{PermissionsStatus, check_permissions},
+    runtime::ControlMsg,
+};
 
 /// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
 pub struct ConnectionDriver {
@@ -52,6 +57,8 @@ enum ConnectionState {
 enum ControlOutcome {
     /// Continue connecting or driving events.
     Continue,
+    /// Retry the server connection.
+    RetryConnect,
     /// Stop the current driver loop.
     Stop,
 }
@@ -60,6 +67,11 @@ impl ControlOutcome {
     /// Whether the caller should stop the active loop.
     fn should_stop(self) -> bool {
         matches!(self, Self::Stop)
+    }
+
+    /// Whether the caller should retry the server connection.
+    fn should_retry(self) -> bool {
+        matches!(self, Self::RetryConnect)
     }
 }
 
@@ -77,6 +89,8 @@ enum LocalControl {
         /// Notice body text.
         text: String,
     },
+    /// Current permission status observed by the UI.
+    PermissionsChanged(PermissionsStatus),
 }
 
 /// Server-bound control command.
@@ -132,6 +146,9 @@ impl ControlRoute {
             ControlMsg::Notice { kind, title, text } => {
                 Self::Local(LocalControl::Notice { kind, title, text })
             }
+            ControlMsg::PermissionsChanged(status) => {
+                Self::Local(LocalControl::PermissionsChanged(status))
+            }
         }
     }
 }
@@ -173,11 +190,27 @@ impl ConnectionDriver {
     }
 
     /// Handle control messages that do not require a connected server.
-    fn handle_local_control(&self, control: LocalControl) {
+    fn handle_local_control(&self, control: LocalControl) -> ControlOutcome {
         match control {
-            LocalControl::OpenPermissionsHelp => self.ui.show_permissions_help(),
+            LocalControl::OpenPermissionsHelp => {
+                self.ui.show_permissions_help();
+                ControlOutcome::Continue
+            }
             LocalControl::Notice { kind, title, text } => {
                 self.notify_local(kind, &title, &text);
+                ControlOutcome::Continue
+            }
+            LocalControl::PermissionsChanged(status) => {
+                if self.required_permissions_granted(status)
+                    && matches!(
+                        self.state,
+                        ConnectionState::Disconnected | ConnectionState::Connecting
+                    )
+                {
+                    ControlOutcome::RetryConnect
+                } else {
+                    ControlOutcome::Continue
+                }
             }
         }
     }
@@ -214,17 +247,15 @@ impl ConnectionDriver {
         msg: ControlMsg,
     ) -> ControlOutcome {
         match ControlRoute::from_msg(msg) {
-            ControlRoute::Local(control) => {
-                self.handle_local_control(control);
-                ControlOutcome::Continue
-            }
+            ControlRoute::Local(control) => self.handle_local_control(control),
             ControlRoute::Server(control) => {
                 if let Some(conn) = conn {
                     self.handle_server_control(conn, control).await;
+                    ControlOutcome::Continue
                 } else {
                     self.pending_controls.push_back(control);
+                    ControlOutcome::RetryConnect
                 }
-                ControlOutcome::Continue
             }
             ControlRoute::Shutdown => {
                 self.begin_shutdown();
@@ -260,14 +291,15 @@ impl ConnectionDriver {
         self.ui.notify(kind, title, text);
     }
 
+    /// Whether the current permission snapshot allows the server event tap to start.
+    fn required_permissions_granted(&self, perms: PermissionsStatus) -> bool {
+        !self.server_event_tap_enabled || (perms.accessibility_ok() && perms.input_ok())
+    }
+
     /// Show permission guidance and keep the server from being spawned without required grants.
     fn event_tap_permissions_missing(&self) -> bool {
-        if !self.server_event_tap_enabled {
-            return false;
-        }
-
         let perms = check_permissions();
-        if perms.accessibility_ok() && perms.input_ok() {
+        if self.required_permissions_granted(perms) {
             return false;
         }
 
@@ -275,7 +307,7 @@ impl ConnectionDriver {
         self.notify_local(
             NotifyKind::Error,
             "Permissions",
-            "Grant Accessibility and Input Monitoring to Hotki, then restart Hotki.",
+            "Grant Accessibility and Input Monitoring to Hotki. It will retry automatically.",
         );
         true
     }
@@ -405,6 +437,42 @@ impl ConnectionDriver {
         Some(client)
     }
 
+    /// Run the connection lifecycle until shutdown.
+    pub(crate) async fn run(&mut self) {
+        loop {
+            if matches!(self.state, ConnectionState::ShuttingDown) {
+                break;
+            }
+
+            if let Some(mut client) = self.connect().await {
+                self.drive_events(&mut client).await;
+                continue;
+            }
+
+            if matches!(self.state, ConnectionState::ShuttingDown) {
+                break;
+            }
+
+            if !self.wait_for_retry_signal().await {
+                break;
+            }
+        }
+    }
+
+    /// Wait for a local control, permission change, or queued server command that should retry.
+    async fn wait_for_retry_signal(&mut self) -> bool {
+        while let Some(msg) = self.rx_ctrl.recv().await {
+            let outcome = self.route_control_msg(None, msg).await;
+            if outcome.should_stop() {
+                return false;
+            }
+            if outcome.should_retry() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Wait for the background connect task while still accepting local controls.
     async fn wait_for_connected_client(
         &mut self,
@@ -509,7 +577,7 @@ impl ConnectionDriver {
         }
         info!("Exiting key loop");
         if self.state != ConnectionState::ShuttingDown {
-            self.begin_shutdown();
+            self.set_state(ConnectionState::Disconnected);
         }
     }
 
@@ -631,9 +699,14 @@ fn spawn_connect(
 #[cfg(test)]
 mod tests {
     use hotki_protocol::{NotifyKind, rpc::InjectKind};
+    use permissions::PermissionState;
+    use tokio::sync::mpsc::unbounded_channel;
 
-    use super::{ConnectionState, ControlOutcome, ControlRoute, LocalControl, ServerControl};
-    use crate::runtime::ControlMsg;
+    use super::{
+        ConnectionDriver, ConnectionState, ControlOutcome, ControlRoute, LocalControl,
+        ServerControl,
+    };
+    use crate::{permissions::PermissionsStatus, runtime::ControlMsg};
 
     #[test]
     fn control_route_separates_local_server_and_shutdown_messages() {
@@ -679,12 +752,25 @@ mod tests {
             ControlRoute::from_msg(ControlMsg::Shutdown),
             ControlRoute::Shutdown
         );
+        let status = PermissionsStatus {
+            accessibility: PermissionState::Granted,
+            input_monitoring: PermissionState::Granted,
+            screen_recording: PermissionState::Denied,
+        };
+        assert_eq!(
+            ControlRoute::from_msg(ControlMsg::PermissionsChanged(status)),
+            ControlRoute::Local(LocalControl::PermissionsChanged(status))
+        );
     }
 
     #[test]
     fn control_outcome_names_loop_exit_decision() {
         assert!(!ControlOutcome::Continue.should_stop());
+        assert!(!ControlOutcome::RetryConnect.should_stop());
         assert!(ControlOutcome::Stop.should_stop());
+        assert!(!ControlOutcome::Continue.should_retry());
+        assert!(ControlOutcome::RetryConnect.should_retry());
+        assert!(!ControlOutcome::Stop.should_retry());
     }
 
     #[test]
@@ -697,5 +783,52 @@ mod tests {
         ];
 
         assert_eq!(states.len(), 4);
+    }
+
+    #[test]
+    fn permission_status_retries_when_disconnected_and_ready() {
+        let (tx_ui, rx_ui) = unbounded_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let ctx = egui::Context::default();
+        let mut driver =
+            ConnectionDriver::new("config.luau".into(), None, tx_ui, ctx, rx_ctrl, true, false);
+        drop(rx_ui);
+
+        let ready = PermissionsStatus {
+            accessibility: PermissionState::Granted,
+            input_monitoring: PermissionState::Granted,
+            screen_recording: PermissionState::Denied,
+        };
+        assert_eq!(
+            driver.handle_local_control(LocalControl::PermissionsChanged(ready)),
+            ControlOutcome::RetryConnect
+        );
+
+        driver.set_state(ConnectionState::Connected);
+        assert_eq!(
+            driver.handle_local_control(LocalControl::PermissionsChanged(ready)),
+            ControlOutcome::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn server_control_without_connection_is_queued_retry() {
+        let (tx_ui, _rx_ui) = unbounded_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let ctx = egui::Context::default();
+        let mut driver = ConnectionDriver::new(
+            "config.luau".into(),
+            None,
+            tx_ui,
+            ctx,
+            rx_ctrl,
+            false,
+            false,
+        );
+
+        let outcome = driver.route_control_msg(None, ControlMsg::Reload).await;
+
+        assert_eq!(outcome, ControlOutcome::RetryConnect);
+        assert_eq!(driver.pending_controls.len(), 1);
     }
 }

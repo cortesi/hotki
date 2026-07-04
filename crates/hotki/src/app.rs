@@ -11,7 +11,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::TrayIcon;
 
 use crate::{
-    details::Details,
+    details::{Details, DetailsTab},
     devtools::{FixtureRuntime, render_app_anchors},
     display::DisplayMetrics,
     fonts,
@@ -31,6 +31,8 @@ pub enum UiCommand {
     SetConfigPath(Option<PathBuf>),
     /// Show the permissions helper window.
     ShowPermissionsHelp,
+    /// Show the Details window with a specific tab selected.
+    ShowDetailsTab(DetailsTab),
     /// Update whether the server/runtime lane is connected.
     SetServerConnected(bool),
     /// Update the server binding identifiers visible to devtools.
@@ -135,10 +137,6 @@ impl App for HotkiApp {
     }
 
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
-
-    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
-        eguidev::raw_input_hook(&self.devmcp, ctx, raw_input);
-    }
 }
 
 impl HotkiApp {
@@ -220,6 +218,9 @@ impl HotkiApp {
             }
             UiCommand::ShowPermissionsHelp => {
                 self.permissions.show();
+            }
+            UiCommand::ShowDetailsTab(tab) => {
+                self.details.show_tab(tab);
             }
             UiCommand::SetServerConnected(connected) => {
                 self.server_connected = connected;

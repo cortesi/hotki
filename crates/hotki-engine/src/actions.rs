@@ -79,7 +79,7 @@ impl Engine {
 
                 let pid = self.current_focus_info().pid;
                 self.relay
-                    .start_relay(identifier.to_string(), target.clone(), pid, false);
+                    .start_relay(identifier.to_string(), target, pid, false);
                 let _ = self.relay.stop_relay(identifier, pid);
                 Ok(DispatchResult::AutoExit)
             }

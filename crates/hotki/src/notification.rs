@@ -20,6 +20,10 @@ const NOTIFICATION_MARGIN: f32 = 12.0;
 const NOTIFICATION_GAP: f32 = 8.0;
 /// Inner padding used by notification cards.
 const NOTIFICATION_PAD: f32 = 12.0;
+/// Minimum supported notification timeout.
+const NOTIFICATION_TIMEOUT_MIN_SECS: f32 = 0.1;
+/// Maximum supported notification timeout.
+const NOTIFICATION_TIMEOUT_MAX_SECS: f32 = 3600.0;
 
 #[derive(Debug, Clone)]
 /// A single notification retained in the backlog list.
@@ -135,7 +139,7 @@ impl NotificationCenter {
             width: cfg.width,
             side: cfg.pos,
             opacity: cfg.opacity,
-            timeout: Duration::from_secs_f32(cfg.timeout.max(0.1)),
+            timeout: notification_timeout(cfg.timeout),
             counter: 0,
             theme: cfg.theme.clone(),
             radius: cfg.radius,
@@ -260,6 +264,18 @@ impl NotificationCenter {
         self.items.insert(0, item);
     }
 
+    /// Trim live notifications to the configured maximum, hiding removed windows when possible.
+    fn trim_live_items(&mut self, ctx: Option<&Context>) {
+        while self.items.len() > self.max_items {
+            let Some(mut item) = self.items.pop() else {
+                break;
+            };
+            if let Some(ctx) = ctx {
+                item.viewport.hide(ctx);
+            }
+        }
+    }
+
     /// Compute a notification card position from measured size and stack cursor.
     fn placement_for(
         bounds: DisplayBounds,
@@ -367,6 +383,7 @@ impl NotificationCenter {
         let now = Instant::now();
         self.items
             .retain(|it| now.duration_since(it.created) < it.timeout);
+        self.trim_live_items(Some(ctx));
         // Compute positions and sizes
         self.layout(ctx);
         let mut any_animating = false;
@@ -410,7 +427,6 @@ impl NotificationCenter {
                 .viewport
                 .sync_builder(ctx, builder, it.current_pos, it.size);
 
-            devtools::pump_viewport_input(devmcp, ctx, it.viewport.id());
             ctx.show_viewport_immediate(it.viewport.id(), builder, |vp_ui, _| {
                 devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
                     let nctx = vp_ui.ctx().clone();
@@ -493,7 +509,7 @@ impl NotificationCenter {
         self.width = cfg.width;
         self.side = cfg.pos;
         self.opacity = cfg.opacity;
-        self.timeout = Duration::from_secs_f32(cfg.timeout.max(0.1));
+        self.timeout = notification_timeout(cfg.timeout);
         self.theme = cfg.theme.clone();
         if self.radius != cfg.radius {
             self.radius = cfg.radius;
@@ -626,8 +642,20 @@ fn notify_kind_label(kind: NotifyKind) -> &'static str {
     }
 }
 
+/// Convert a user timeout into a safe notification lifetime.
+fn notification_timeout(timeout: f32) -> Duration {
+    let seconds = if timeout.is_finite() {
+        timeout.clamp(NOTIFICATION_TIMEOUT_MIN_SECS, NOTIFICATION_TIMEOUT_MAX_SECS)
+    } else {
+        NOTIFICATION_TIMEOUT_MIN_SECS
+    };
+    Duration::from_secs_f32(seconds)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use egui::{pos2, vec2};
     use hotki_protocol::{DisplayFrame, DisplaysSnapshot, NotifyPos};
 
@@ -675,5 +703,30 @@ mod tests {
         );
 
         assert_eq!(placed.geometry.pos.x, 12.0);
+    }
+
+    #[test]
+    fn timeout_conversion_handles_non_finite_values() {
+        assert_eq!(
+            super::notification_timeout(f32::INFINITY),
+            Duration::from_secs_f32(super::NOTIFICATION_TIMEOUT_MIN_SECS)
+        );
+    }
+
+    #[test]
+    fn trim_live_items_keeps_newest_notifications() {
+        let mut center = NotificationCenter::new(&hotki_protocol::NotifyConfig {
+            buffer: 2,
+            ..hotki_protocol::NotifyConfig::default()
+        });
+        center.push(hotki_protocol::NotifyKind::Info, "one".into(), "1".into());
+        center.push(hotki_protocol::NotifyKind::Info, "two".into(), "2".into());
+        center.push(hotki_protocol::NotifyKind::Info, "three".into(), "3".into());
+
+        center.trim_live_items(None);
+
+        assert_eq!(center.items.len(), 2);
+        assert_eq!(center.items[0].title, "three");
+        assert_eq!(center.items[1].title, "two");
     }
 }

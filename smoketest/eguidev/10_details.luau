@@ -26,7 +26,6 @@ details:wait_for_widget_visible("details.config.reload")
 assert(details:widget_get("details.active_tab"):state().value_text == "config")
 assert(details:widget_get("details.config.reload"):state().role == "button")
 details:widget_get("details.config.reload"):click()
-details:wait_for_settle()
 
 details:widget_get("details.tab.logs"):click()
 details:wait_for_widget_visible("details.logs.clear")
@@ -43,8 +42,7 @@ end)
 assert(details:widget_get("details.active_tab"):state().value_text == "about")
 assert(details:widget_get("details.about.repository"):state().role == "link")
 
-details:widget_get("details.tab.notifications"):click({ settle = false })
-wait_for_frames(5)
+details:widget_get("details.tab.notifications"):click()
 assert(details:widget_get("details.active_tab"):state().value_text == "notifications")
 details:wait_for_widget("details.notification.0.title", function(widget)
     return widget.value_text == "Config"

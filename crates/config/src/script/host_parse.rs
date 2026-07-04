@@ -75,7 +75,12 @@ pub(super) fn parse_raw_style<'s>(
     scope: &Scope<'s>,
     value: ScopedValue<'s>,
 ) -> Result<raw::RawStyle, RuntimeError> {
-    from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))
+    let style: raw::RawStyle =
+        from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))?;
+    style
+        .validate()
+        .map_err(|message| RuntimeError::runtime(format!("invalid style: {message}")))?;
+    Ok(style)
 }
 
 /// Parse a hotkey chord string into a normalized `Chord`.

@@ -37,6 +37,8 @@ fn tray_icon_image() -> Option<Icon> {
 #[derive(Clone)]
 /// Menu actions emitted by the tray menu.
 enum TrayAction {
+    /// Show (or raise) the Details window.
+    ShowWindow,
     /// Reload the current config file.
     Reload,
     /// Open the permissions helper window.
@@ -50,14 +52,16 @@ enum TrayAction {
 /// Build the tray menu and an id-to-action lookup table.
 fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
     let menu = Menu::new();
+    let show_window = MenuItem::new("Open Hotki", true, None);
     let reload = MenuItem::new("Reload Config", true, None);
-    let help = MenuItem::new("Permissions Help", true, None);
+    let help = MenuItem::new("Permissions…", true, None);
     let themes_menu = Submenu::new("Themes", true);
     let quit = MenuItem::new("Quit", true, None);
 
     let mut actions = HashMap::new();
-    register_base_actions(&mut actions, &reload, &help, &quit);
+    register_base_actions(&mut actions, &show_window, &reload, &help, &quit);
     append_theme_items(&themes_menu, &mut actions);
+    append_menu_item(&menu, &show_window);
     append_menu_item(&menu, &reload);
     append_themes_menu(&menu, &themes_menu);
     append_menu_item(&menu, &help);
@@ -69,10 +73,12 @@ fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
 /// Register fixed tray menu actions.
 fn register_base_actions(
     actions: &mut HashMap<MenuId, TrayAction>,
+    show_window: &MenuItem,
     reload: &MenuItem,
     help: &MenuItem,
     quit: &MenuItem,
 ) {
+    actions.insert(show_window.id().clone(), TrayAction::ShowWindow);
     actions.insert(reload.id().clone(), TrayAction::Reload);
     actions.insert(help.id().clone(), TrayAction::OpenPermissionsHelp);
     actions.insert(quit.id().clone(), TrayAction::Quit);
@@ -106,9 +112,24 @@ fn append_themes_menu(menu: &Menu, themes_menu: &Submenu) {
     }
 }
 
-/// Dispatch one tray action onto the runtime control channel.
-fn dispatch_tray_action(tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>, action: TrayAction) {
+/// Dispatch one tray action onto the runtime control channel or the UI channel.
+fn dispatch_tray_action(
+    tx: &tokio_mpsc::UnboundedSender<UiEvent>,
+    tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
+    action: TrayAction,
+) {
+    // `ShowWindow` targets the UI event channel directly; every other action
+    // maps onto a runtime control message.
     let message = match action {
+        TrayAction::ShowWindow => {
+            if tx
+                .send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+                .is_err()
+            {
+                tracing::warn!("failed to send ShowDetails event: UI channel closed");
+            }
+            return;
+        }
         TrayAction::Reload => ControlMsg::Reload,
         TrayAction::OpenPermissionsHelp => ControlMsg::OpenPermissionsHelp,
         TrayAction::Quit => ControlMsg::Shutdown,
@@ -173,13 +194,14 @@ pub fn build_tray_and_listeners(
     }
 
     if tray_icon_opt.is_some() {
+        let tx = tx.clone();
         let tx_ctrl = tx_ctrl.clone();
         let egui_ctx = egui_ctx.clone();
         thread::spawn(move || {
             let menu_rx = MenuEvent::receiver();
             while let Ok(ev) = menu_rx.recv() {
                 if let Some(action) = actions.get(&ev.id).cloned() {
-                    dispatch_tray_action(&tx_ctrl, action);
+                    dispatch_tray_action(&tx, &tx_ctrl, action);
                     egui_ctx.request_repaint();
                 }
             }

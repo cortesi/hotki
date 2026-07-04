@@ -7,6 +7,11 @@ use super::{
     types::{FontWeight, NotifyPos, Offset, Pos},
 };
 
+/// Smallest accepted notification auto-dismiss timeout.
+const NOTIFY_TIMEOUT_MIN_SECS: f32 = 0.1;
+/// Largest accepted notification auto-dismiss timeout.
+const NOTIFY_TIMEOUT_MAX_SECS: f32 = 3600.0;
+
 // ===== FIELD WRAPPERS FOR OPTIONAL VALUES =====
 
 /// Generic optional wrapper used when deserializing user config values.
@@ -227,6 +232,14 @@ pub struct RawNotify {
 }
 
 impl RawNotify {
+    /// Validate user-provided notification settings before style resolution.
+    fn validate(&self) -> Result<(), String> {
+        if let Some(timeout) = self.timeout.as_option() {
+            validate_notify_timeout(*timeout)?;
+        }
+        Ok(())
+    }
+
     /// Convert to final Notify using the provided base as defaults
     pub fn into_notify_over(self, base: &Notify) -> Notify {
         let defaults = base.clone();
@@ -276,6 +289,20 @@ impl RawNotify {
             ]
         )
     }
+}
+
+/// Validate the finite notification timeout range accepted by the UI.
+fn validate_notify_timeout(timeout: f32) -> Result<(), String> {
+    if !timeout.is_finite() {
+        return Err("notify.timeout must be finite".to_string());
+    }
+    if !(NOTIFY_TIMEOUT_MIN_SECS..=NOTIFY_TIMEOUT_MAX_SECS).contains(&timeout) {
+        return Err(format!(
+            "notify.timeout must be between {NOTIFY_TIMEOUT_MIN_SECS} and \
+             {NOTIFY_TIMEOUT_MAX_SECS} seconds"
+        ));
+    }
+    Ok(())
 }
 
 // ===== RAW HUD CONFIG =====
@@ -531,6 +558,14 @@ pub struct RawStyle {
 }
 
 impl RawStyle {
+    /// Validate raw style values that cannot be represented safely at runtime.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(notify) = self.notify.as_option() {
+            notify.validate()?;
+        }
+        Ok(())
+    }
+
     /// Merge another style overlay on top of this one.
     pub(crate) fn merge(&self, other: &Self) -> Self {
         merge_overlay!(
@@ -549,11 +584,37 @@ impl RawStyle {
 mod tests {
     use serde_json::json;
 
-    use super::RawHud;
+    use super::{Maybe, RawHud, RawNotify, RawStyle};
 
     #[test]
     fn raw_struct_accepts_bare_maybe_field_values() {
         let hud: RawHud = serde_json::from_value(json!({ "radius": 8.0 })).unwrap();
         assert_eq!(hud.radius.as_option().copied(), Some(8.0));
+    }
+
+    #[test]
+    fn raw_style_rejects_non_finite_notify_timeout() {
+        let style = RawStyle {
+            notify: Maybe::Value(RawNotify {
+                timeout: Maybe::Value(f32::INFINITY),
+                ..RawNotify::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        assert!(style.validate().is_err());
+    }
+
+    #[test]
+    fn raw_style_rejects_out_of_range_notify_timeout() {
+        let style = RawStyle {
+            notify: Maybe::Value(RawNotify {
+                timeout: Maybe::Value(0.0),
+                ..RawNotify::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        assert!(style.validate().is_err());
     }
 }

@@ -137,6 +137,6 @@ impl EventPipeline {
         let Some(run) = self.heartbeat_lifecycle.begin() else {
             return;
         };
-        spawn_heartbeat(self.shutdown.clone(), self.event_tx.clone(), run);
+        spawn_heartbeat(self.shutdown.clone(), self.registry.clone(), run);
     }
 }

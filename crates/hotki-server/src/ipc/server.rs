@@ -3,7 +3,10 @@
 use std::{
     fs,
     io::ErrorKind,
-    os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
+    os::unix::{
+        fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
+        net::UnixStream,
+    },
     path::Path,
     sync::{
         Arc,
@@ -161,6 +164,12 @@ fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
                     uid
                 )));
             }
+            if socket_accepts_connections(path) {
+                return Err(Error::Ipc(format!(
+                    "Refusing to remove live socket at '{}'",
+                    path
+                )));
+            }
             fs::remove_file(path).map_err(|e| {
                 Error::Ipc(format!(
                     "Failed to remove pre-existing socket '{}': {}",
@@ -169,6 +178,10 @@ fn validate_or_unlink_existing_socket(path: &str) -> Result<()> {
             })
         }
     }
+}
+
+fn socket_accepts_connections(path: &str) -> bool {
+    UnixStream::connect(path).is_ok()
 }
 
 #[cfg(test)]
@@ -222,11 +235,22 @@ mod tests {
     }
 
     #[test]
-    fn guard_unlinks_owned_socket() {
+    fn guard_refuses_live_owned_socket() {
         let d = tmpdir();
         let sock = d.join("owned.sock");
         let _listener = UnixListener::bind(&sock).unwrap();
-        // Path now exists and is a socket; should be removed
+        let res = validate_or_unlink_existing_socket(sock.to_str().unwrap());
+        assert!(res.is_err());
+        assert!(sock.exists());
+    }
+
+    #[test]
+    fn guard_unlinks_stale_owned_socket() {
+        let d = tmpdir();
+        let sock = d.join("stale.sock");
+        {
+            let _listener = UnixListener::bind(&sock).unwrap();
+        }
         validate_or_unlink_existing_socket(sock.to_str().unwrap()).unwrap();
         assert!(!sock.exists());
     }

@@ -1,7 +1,8 @@
 use std::process::Command;
 
 use egui::{
-    CentralPanel, Color32, Context, RichText, ViewportBuilder, ViewportCommand, ViewportId, vec2,
+    CentralPanel, Color32, Context, Frame, RichText, ScrollArea, ViewportBuilder, ViewportCommand,
+    ViewportId, vec2,
 };
 use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
 use hotki_protocol::NotifyKind;
@@ -53,6 +54,8 @@ pub struct PermissionsHelp {
     status_override: Option<PermissionsStatus>,
     /// Recorded opener intents while `status_override` is active.
     open_intents: PermissionOpenIntents,
+    /// Last permission status reported to the runtime control loop.
+    last_reported_status: Option<PermissionsStatus>,
 }
 
 impl PermissionsHelp {
@@ -65,6 +68,7 @@ impl PermissionsHelp {
             tx_ctrl: None,
             status_override: None,
             open_intents: PermissionOpenIntents::default(),
+            last_reported_status: None,
         }
     }
 
@@ -89,6 +93,7 @@ impl PermissionsHelp {
     pub fn set_status_override(&mut self, status: Option<PermissionsStatus>) {
         self.status_override = status;
         self.open_intents = PermissionOpenIntents::default();
+        self.last_reported_status = None;
         self.show();
     }
 
@@ -100,15 +105,14 @@ impl PermissionsHelp {
         }
 
         let builder = ViewportBuilder::default()
-            .with_title("Permissions Required")
+            .with_title("Hotki Permissions")
             .with_visible(true)
             .with_decorations(true)
             .with_resizable(true)
             .with_transparent(false)
             .with_has_shadow(true)
-            .with_inner_size(vec2(700.0, 520.0));
+            .with_inner_size(vec2(620.0, 360.0));
 
-        devtools::pump_viewport_input(devmcp, ctx, self.id);
         ctx.show_viewport_immediate(self.id, builder, |vp_ui, _| {
             devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
                 let wctx = vp_ui.ctx().clone();
@@ -124,6 +128,7 @@ impl PermissionsHelp {
                 }
 
                 let status = self.status();
+                self.report_status_if_changed(status);
                 self.render_body(vp_ui, &status);
             });
         });
@@ -134,61 +139,91 @@ impl PermissionsHelp {
         self.status_override.unwrap_or_else(check_permissions)
     }
 
+    /// Notify the runtime when macOS permission status changes.
+    fn report_status_if_changed(&mut self, status: PermissionsStatus) {
+        if self.last_reported_status == Some(status) {
+            return;
+        }
+        self.last_reported_status = Some(status);
+        let Some(tx) = self.tx_ctrl.as_ref() else {
+            return;
+        };
+        if tx.send(ControlMsg::PermissionsChanged(status)).is_err() {
+            tracing::warn!("failed to send permissions status change");
+        }
+    }
+
     /// Render the permissions content inside the active viewport.
     fn render_body(&mut self, ui: &mut egui::Ui, status: &PermissionsStatus) {
         CentralPanel::default().show(ui, |ui| {
             container(ui, "permissions.root", |ui| {
                 container(ui, "permissions.panel", |ui| {
-                    self.render_intro(ui);
-                    self.render_section(
-                        ui,
-                        PermissionSection {
-                            id: "accessibility",
-                            enabled: status.accessibility_ok(),
-                            name: "Accessibility",
-                            help: "Grant permission in System Settings → Privacy & Security → Accessibility. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
-                            open_settings: open_accessibility_settings,
-                            notice_text: "Opening Accessibility settings...",
-                            open_intent: self.open_intents.accessibility,
-                        },
-                    );
-                    ui.add_space(10.0);
-                    ui.dev_separator("permissions.separator.sections");
-                    ui.add_space(8.0);
-                    self.render_section(
-                        ui,
-                        PermissionSection {
-                            id: "input_monitoring",
-                            enabled: status.input_ok(),
-                            name: "Input Monitoring",
-                            help: "Grant permission in System Settings → Privacy & Security → Input Monitoring. If Hotki was updated or re-installed, remove the existing Hotki entry first, then add it again.",
-                            open_settings: open_input_monitoring_settings,
-                            notice_text: "Opening Input Monitoring settings...",
-                            open_intent: self.open_intents.input_monitoring,
-                        },
-                    );
-                    self.render_tip(ui);
+                    ui.add_space(14.0);
+                    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        self.render_intro(ui, status);
+                        ui.add_space(12.0);
+                        self.render_section(
+                            ui,
+                            PermissionSection {
+                                id: "accessibility",
+                                enabled: status.accessibility_ok(),
+                                name: "Accessibility",
+                                help: "Allow Hotki in System Settings → Privacy & Security → Accessibility.",
+                                open_settings: open_accessibility_settings,
+                                notice_text: "Opening Accessibility settings...",
+                                open_intent: self.open_intents.accessibility,
+                            },
+                        );
+                        ui.add_space(10.0);
+                        self.render_section(
+                            ui,
+                            PermissionSection {
+                                id: "input_monitoring",
+                                enabled: status.input_ok(),
+                                name: "Input Monitoring",
+                                help: "Allow Hotki in System Settings → Privacy & Security → Input Monitoring.",
+                                open_settings: open_input_monitoring_settings,
+                                notice_text: "Opening Input Monitoring settings...",
+                                open_intent: self.open_intents.input_monitoring,
+                            },
+                        );
+                        self.render_tip(ui);
+                    });
                 });
             });
         });
     }
 
     /// Render the permissions heading and shared explanation.
-    fn render_intro(&self, ui: &mut egui::Ui) {
-        ui.heading(RichText::new("Hotki Needs Permissions").strong());
-        ui.add_space(8.0);
+    fn render_intro(&self, ui: &mut egui::Ui, status: &PermissionsStatus) {
+        let all_granted = status.accessibility_ok() && status.input_ok();
+        let (summary, color) = if all_granted {
+            (
+                "All required permissions are granted.",
+                Color32::from_rgb(64, 201, 99),
+            )
+        } else {
+            (
+                "Hotki cannot register hotkeys until these permissions are granted.",
+                Color32::from_rgb(220, 50, 47),
+            )
+        };
+        ui.heading(RichText::new("Permissions").strong());
+        ui.add_space(6.0);
+        ui.dev_label(
+            "permissions.summary",
+            RichText::new(summary).color(color).strong(),
+        );
+        ui.add_space(6.0);
         ui.dev_label(
             "permissions.description",
             "Hotki requires Accessibility and Input Monitoring permissions to register hotkeys and synthesize keystrokes.",
         );
-        ui.add_space(12.0);
-        ui.dev_separator("permissions.separator.intro");
-        ui.add_space(8.0);
     }
 
     /// Render one permission status row, help text, and opener button.
     fn render_section(&mut self, ui: &mut egui::Ui, section: PermissionSection<'_>) {
-        let (icon, color, status) = permission_status_parts(section.enabled);
+        let (color, status) = permission_status_parts(section.enabled);
         devtools::value_anchor(
             ui,
             format!("permissions.{}.granted", section.id),
@@ -199,38 +234,38 @@ impl PermissionsHelp {
             format!("permissions.{}.open_intent", section.id),
             WidgetValue::Bool(section.open_intent),
         );
-        ui.horizontal(|ui| {
-            ui.dev_label(
-                format!("permissions.{}.icon", section.id),
-                RichText::new(icon.to_string())
-                    .size(26.0)
-                    .color(color)
-                    .strong(),
-            );
-            ui.add_space(6.0);
-            ui.dev_label(
-                format!("permissions.{}.name", section.id),
-                RichText::new(section.name).color(color).strong(),
-            );
-            ui.add_space(4.0);
-            ui.dev_label(
-                format!("permissions.{}.status", section.id),
-                RichText::new(status).color(color),
-            );
+        Frame::group(ui.style()).show(ui, |ui| {
+            container(ui, format!("permissions.{}.section", section.id), |ui| {
+                ui.horizontal(|ui| {
+                    ui.dev_label(
+                        format!("permissions.{}.icon", section.id),
+                        RichText::new("●").color(color),
+                    );
+                    ui.dev_label(
+                        format!("permissions.{}.name", section.id),
+                        RichText::new(section.name).strong(),
+                    );
+                    ui.dev_label(
+                        format!("permissions.{}.status", section.id),
+                        RichText::new(status).color(color).strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .dev_button(
+                                format!("permissions.{}.open_settings", section.id),
+                                "Open Settings…",
+                            )
+                            .clicked()
+                        {
+                            self.open_settings(section);
+                            self.send_settings_notice(section.name, section.notice_text);
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                ui.dev_label(format!("permissions.{}.help", section.id), section.help);
+            });
         });
-        ui.add_space(4.0);
-        ui.dev_label(format!("permissions.{}.help", section.id), section.help);
-        ui.add_space(6.0);
-        if ui
-            .dev_button(
-                format!("permissions.{}.open_settings", section.id),
-                format!("Open {} Settings", section.name),
-            )
-            .clicked()
-        {
-            self.open_settings(section);
-            self.send_settings_notice(section.name, section.notice_text);
-        }
     }
 
     /// Open settings in production or record intent for deterministic fixtures.
@@ -268,24 +303,23 @@ impl PermissionsHelp {
         ui.add_space(14.0);
         ui.dev_separator("permissions.separator.tip");
         ui.add_space(8.0);
-        ui.dev_label("permissions.tip.label", RichText::new("Tip").strong());
         ui.dev_label(
             "permissions.tip.text",
-            "After changing permissions, restart Hotki if keys still don't respond.",
+            RichText::new(
+                "If Hotki was updated or re-installed, remove the old Hotki entry in System \
+                 Settings and add it again. Restart Hotki if hotkeys still do not respond.",
+            )
+            .weak(),
         );
     }
 }
 
 /// Presentation details for a permission status row.
-fn permission_status_parts(enabled: bool) -> (char, Color32, &'static str) {
+fn permission_status_parts(enabled: bool) -> (Color32, &'static str) {
     if enabled {
-        ('\u{f05d}', Color32::from_rgb(64, 201, 99), "Enabled")
+        (Color32::from_rgb(64, 201, 99), "Granted")
     } else {
-        (
-            '\u{f52f}',
-            Color32::from_rgb(220, 50, 47),
-            "Not enabled yet",
-        )
+        (Color32::from_rgb(220, 50, 47), "Not granted")
     }
 }
 

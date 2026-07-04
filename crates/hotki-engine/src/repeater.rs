@@ -401,12 +401,12 @@ impl Repeater {
         let relay = self.relay.clone();
         let focus_ctx = self.focus_ctx.clone();
         let id_for_log = id.clone();
-        let ch = chord.clone();
+        let ch = chord;
 
         let mut last_pid = initial_pid;
         let on_relay_repeat = self.on_relay_repeat.clone();
         let running_flag = Arc::new(AtomicBool::new(false));
-        let repeat_running = running_flag.clone();
+        let repeat_running = running_flag;
         self.spawn_repeat_loop(id, repeat, move || {
             let pid = focus_ctx
                 .lock()

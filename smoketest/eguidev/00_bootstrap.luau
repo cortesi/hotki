@@ -3,6 +3,9 @@ configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 local expected = {
     ["hotki.basic.default"] = false,
     ["hotki.details"] = false,
+    ["hotki.details.config"] = false,
+    ["hotki.details.logs"] = false,
+    ["hotki.details.about"] = false,
     ["hotki.hud"] = false,
     ["hotki.hud.mini"] = false,
     ["hotki.selector"] = false,

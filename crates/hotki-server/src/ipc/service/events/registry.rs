@@ -55,8 +55,14 @@ impl ClientRegistry {
     }
 
     /// Remove a client by ID if it disconnected.
-    pub(super) async fn remove(&self, id: u32) {
-        self.clients.lock().await.retain(|c| c.id != id);
+    ///
+    /// Returns true when this removal transitions the registry from non-empty to empty.
+    pub(super) async fn remove(&self, id: u32) -> bool {
+        let mut clients = self.clients.lock().await;
+        let had_clients = !clients.is_empty();
+        let before = clients.len();
+        clients.retain(|c| c.id != id);
+        had_clients && clients.len() < before && clients.is_empty()
     }
 
     /// Clear all connected clients.

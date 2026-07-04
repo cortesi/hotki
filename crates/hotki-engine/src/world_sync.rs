@@ -37,16 +37,12 @@ impl Engine {
                             }
                             last_lost = cursor.lost_count;
                             if let hotki_world::WorldEvent::FocusChanged(change) = event {
-                                let world_clone = world.clone();
-                                let engine_clone = engine.clone();
-                                tokio::spawn(async move {
-                                    Engine::handle_focus_change_event(
-                                        engine_clone,
-                                        world_clone,
-                                        change,
-                                    )
-                                    .await;
-                                });
+                                Self::handle_focus_change_event(
+                                    engine.clone(),
+                                    world.clone(),
+                                    change,
+                                )
+                                .await;
                             }
                             if let Err(err) = engine.refresh_displays_if_changed(&world).await {
                                 warn!("Display refresh after world event failed: {}", err);
@@ -126,7 +122,7 @@ impl Engine {
     }
 
     async fn handle_focus_change_event(
-        engine: Engine,
+        engine: Self,
         world: Arc<dyn WorldView>,
         change: FocusChange,
     ) {
@@ -195,5 +191,85 @@ impl Engine {
             pid: -1,
             ..FocusInfo::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use hotki_protocol::FocusSnapshot;
+    use hotki_world::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldWindow};
+    use tokio::sync::mpsc;
+
+    use crate::{Engine, deps::MockHotkeyApi};
+
+    #[tokio::test]
+    async fn focus_events_apply_in_stream_order() {
+        let world = Arc::new(TestWorld::new());
+        world.set_snapshot(
+            vec![WorldWindow {
+                app: "Seed".into(),
+                title: "Initial".into(),
+                pid: 1,
+                id: 1,
+                display_id: None,
+                focused: true,
+            }],
+            Some(WindowKey { pid: 1, id: 1 }),
+        );
+        let (tx, _rx) = mpsc::channel(128);
+        let engine = Engine::new_with_api_and_world(
+            Arc::new(MockHotkeyApi::new()),
+            tx,
+            false,
+            world.clone(),
+        );
+
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if engine.current_focus_info().pid == 1 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("engine did not observe seed focus");
+
+        world.push_event(WorldEvent::FocusChanged(FocusChange {
+            key: Some(WindowKey { pid: 1, id: 1 }),
+            focus: Some(FocusSnapshot {
+                app: "Old".into(),
+                title: "First".into(),
+                pid: 1,
+                display_id: None,
+            }),
+        }));
+        world.push_event(WorldEvent::FocusChanged(FocusChange {
+            key: Some(WindowKey { pid: 2, id: 2 }),
+            focus: Some(FocusSnapshot {
+                app: "New".into(),
+                title: "Second".into(),
+                pid: 2,
+                display_id: None,
+            }),
+        }));
+
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if engine.current_focus_info().pid == 2 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("engine did not observe final focus event");
+
+        let focus = engine.current_focus_info();
+        assert_eq!(focus.pid, 2);
+        assert_eq!(focus.app, "New");
+        assert_eq!(focus.title, "Second");
     }
 }

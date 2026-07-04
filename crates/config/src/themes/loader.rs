@@ -160,7 +160,10 @@ fn eval_theme_source(source: &str, path: &Path) -> Result<raw::RawStyle, ThemeEr
         let result: Result<ScopedValue<'_>, ScriptError<'_>> = scope.call_protected(main, ())?;
         match result {
             Ok(value) => match from_scoped_value::<raw::RawStyle>(scope, value) {
-                Ok(style) => parsed = Some(style),
+                Ok(style) => match style.validate() {
+                    Ok(()) => parsed = Some(style),
+                    Err(message) => decode_error = Some(format!("invalid style: {message}")),
+                },
                 Err(err) => decode_error = Some(err.message().to_string()),
             },
             Err(err) => {

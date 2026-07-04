@@ -454,7 +454,6 @@ impl Hud {
             .viewport
             .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
-        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
             devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
                 let hud_ctx = vp_ui.ctx().clone();

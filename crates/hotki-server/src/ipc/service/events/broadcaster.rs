@@ -11,7 +11,10 @@ use hotki_protocol::MsgToUI;
 use tracing::{error, warn};
 
 use super::registry::ClientRegistry;
-use crate::ipc::service::rpc::enc_event;
+use crate::{
+    ipc::service::rpc::enc_event,
+    loop_wake::{self, WakeEvent},
+};
 
 /// Fan out one queued UI event to all currently connected clients.
 pub(super) async fn broadcast_event(
@@ -52,7 +55,9 @@ pub(super) async fn broadcast_event(
     while let Some((client_id, result)) = sends.next().await {
         if let Err(err) = result {
             warn!("Dropping disconnected client (send failed): {:?}", err);
-            registry.remove(client_id).await;
+            if registry.remove(client_id).await {
+                let _ = loop_wake::post_user_event(WakeEvent::ClientDisconnected);
+            }
         }
     }
 }

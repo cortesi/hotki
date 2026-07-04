@@ -8,7 +8,7 @@ use hotki_protocol::{NotifyKind, rpc::InjectKind};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::{app::UiEvent, connection_driver::ConnectionDriver};
+use crate::{app::UiEvent, connection_driver::ConnectionDriver, permissions::PermissionsStatus};
 
 /// Control messages routed to the runtime event loop.
 #[derive(Debug)]
@@ -41,6 +41,8 @@ pub enum ControlMsg {
         /// Notice body text.
         text: String,
     },
+    /// Current macOS permission status as observed by the UI.
+    PermissionsChanged(PermissionsStatus),
 }
 
 /// Start background key runtime and server connection driver on a dedicated thread.
@@ -76,9 +78,7 @@ pub fn spawn_key_runtime(
                 server_event_tap_enabled,
                 dumpworld,
             );
-            if let Some(mut client) = driver.connect().await {
-                driver.drive_events(&mut client).await;
-            }
+            driver.run().await;
         });
     });
 }

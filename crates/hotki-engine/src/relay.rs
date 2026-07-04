@@ -121,7 +121,7 @@ mod tests {
         let id = "id1".to_string();
         let ch = chord(Key::A);
 
-        handler.start_relay(id.clone(), ch.clone(), 1234, false);
+        handler.start_relay(id.clone(), ch, 1234, false);
         assert!(handler.active.lock().contains_key(&id));
 
         assert!(handler.repeat_relay(&id));
@@ -140,7 +140,7 @@ mod tests {
         let id = "id1".to_string();
         let ch = chord(Key::A);
 
-        handler.start_relay(id.clone(), ch.clone(), 1234, false);
+        handler.start_relay(id.clone(), ch, 1234, false);
         assert!(handler.active.lock().contains_key(&id));
 
         // When dropped, it should execute stop_all and empty the map

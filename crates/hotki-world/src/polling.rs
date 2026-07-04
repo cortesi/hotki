@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::time;
+use tokio::{sync::Notify, task, time};
 
 use crate::{
     FocusSnapshot, WindowKey, WorldCfg, WorldWindow,
@@ -36,20 +36,44 @@ impl PollingWorld {
     async fn run_poll_loop(core: Weak<WorldCore>, cfg: WorldCfg, poll_tuner: Arc<PollTuner>) {
         let mut interval_ms = cfg.poll_ms_min.max(50);
         loop {
+            let start = Instant::now();
+            let platform = Self::capture_platform_snapshot().await;
+            let elapsed = start.elapsed().as_millis() as u64;
             let Some(core) = core.upgrade() else {
                 break;
             };
-            Self::poll_once_core(&core, interval_ms).await;
+            Self::poll_once_core(&core, platform, elapsed, interval_ms);
             interval_ms = poll_tuner.next_interval(interval_ms);
             drop(core);
-            time::sleep(Duration::from_millis(interval_ms)).await;
+            let notified = poll_tuner.wake.notified();
+            tokio::pin!(notified);
+            if let Some(hinted_ms) = poll_tuner.consume_hint() {
+                interval_ms = hinted_ms;
+                continue;
+            }
+            let sleep = time::sleep(Duration::from_millis(interval_ms));
+            tokio::pin!(sleep);
+            tokio::select! {
+                () = &mut sleep => {}
+                () = &mut notified => {
+                    interval_ms = poll_tuner.consume_hint().unwrap_or(interval_ms);
+                }
+            }
         }
     }
 
-    async fn poll_once_core(core: &WorldCore, interval_ms: u64) {
-        let start = Instant::now();
-        let platform = capture_platform_snapshot();
-        let elapsed = start.elapsed().as_millis() as u64;
+    async fn capture_platform_snapshot() -> PlatformSnapshot {
+        task::spawn_blocking(capture_platform_snapshot)
+            .await
+            .unwrap_or_default()
+    }
+
+    fn poll_once_core(
+        core: &WorldCore,
+        platform: PlatformSnapshot,
+        elapsed: u64,
+        interval_ms: u64,
+    ) {
         let changes =
             core.state
                 .apply_poll_update(world_poll_update(platform), elapsed, interval_ms);
@@ -72,6 +96,7 @@ struct PollTuner {
     min_ms: u64,
     max_ms: u64,
     next_ms: AtomicU64,
+    wake: Notify,
 }
 
 impl PollTuner {
@@ -80,20 +105,31 @@ impl PollTuner {
         Self {
             min_ms: clamped_min,
             max_ms,
-            next_ms: AtomicU64::new(clamped_min),
+            next_ms: AtomicU64::new(0),
+            wake: Notify::new(),
         }
     }
 
     /// Compute the next interval, applying a gentle backoff up to max_ms.
     fn next_interval(&self, last_ms: u64) -> u64 {
-        let proposed = last_ms.saturating_add(10).min(self.max_ms);
-        self.next_ms.store(proposed, AtomicOrdering::SeqCst);
-        proposed
+        if let Some(hinted_ms) = self.consume_hint() {
+            return hinted_ms;
+        }
+
+        last_ms.saturating_add(10).min(self.max_ms)
     }
 
     /// Reset the cadence to the minimum to react quickly to external changes.
     fn reset(&self) {
         self.next_ms.store(self.min_ms, AtomicOrdering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn consume_hint(&self) -> Option<u64> {
+        match self.next_ms.swap(0, AtomicOrdering::SeqCst) {
+            0 => None,
+            ms => Some(ms),
+        }
     }
 }
 
@@ -147,7 +183,19 @@ mod tests {
         assert_eq!(tuner.next_interval(70), 70);
 
         tuner.reset();
-        assert_eq!(tuner.next_ms.load(AtomicOrdering::SeqCst), 50);
+        assert_eq!(tuner.next_interval(70), 50);
+        assert_eq!(tuner.next_ms.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn poll_tuner_reset_wakes_waiters() {
+        let tuner = PollTuner::new(10, 70);
+        let notified = tuner.wake.notified();
+
+        tuner.reset();
+        notified.await;
+
+        assert_eq!(tuner.consume_hint(), Some(50));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

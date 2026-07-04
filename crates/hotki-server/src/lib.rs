@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 #![deny(clippy::disallowed_methods)]
 //! Internal hotkey server integration for Hotki.
 //!
@@ -43,7 +44,6 @@
 //!   the server emits notifications and status fields to guide the user. On
 //!   macOS this commonly means granting Accessibility, Input Monitoring, and
 //!   Screen Recording permissions in System Settings.
-#![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{env, path::PathBuf, process::id, sync::OnceLock};

@@ -51,7 +51,10 @@ impl Default for RetryPolicy {
 /// Auto-spawn policy and managed server process lifecycle for a client.
 pub(crate) struct ManagedServer {
     socket_path: String,
+    auto_spawn: bool,
     config: Option<ProcessConfig>,
+    pending_log_filter: Option<String>,
+    pending_event_tap_enabled: Option<bool>,
     server: Option<ServerProcess>,
     retry_policy: RetryPolicy,
 }
@@ -66,7 +69,10 @@ impl ManagedServer {
     pub(crate) fn new_with_socket(socket_path: impl Into<String>) -> Self {
         Self {
             socket_path: socket_path.into(),
+            auto_spawn: false,
             config: None,
+            pending_log_filter: None,
+            pending_event_tap_enabled: None,
             server: None,
             retry_policy: RetryPolicy::default(),
         }
@@ -82,6 +88,12 @@ impl ManagedServer {
     #[cfg(test)]
     pub(crate) fn server_config(&self) -> Option<&ProcessConfig> {
         self.config.as_ref()
+    }
+
+    /// Return whether automatic server spawning is enabled.
+    #[cfg(test)]
+    pub(crate) fn auto_spawn_enabled(&self) -> bool {
+        self.auto_spawn
     }
 
     #[cfg(test)]
@@ -104,6 +116,14 @@ impl ManagedServer {
 
     /// Enable automatic server spawning using the current executable.
     pub(crate) fn enable_auto_spawn_server(&mut self) {
+        self.auto_spawn = true;
+        self.ensure_auto_spawn_config();
+    }
+
+    fn ensure_auto_spawn_config(&mut self) -> Option<&mut ProcessConfig> {
+        if !self.auto_spawn {
+            return None;
+        }
         if let Ok(current_exe) = env::current_exe() {
             let mut config = self
                 .config
@@ -113,40 +133,37 @@ impl ManagedServer {
             config.ensure_server_mode();
             config.set_socket_path(&self.socket_path);
             config.set_parent_pid(process::id());
+            if let Some(filter) = &self.pending_log_filter {
+                config.set_log_filter(filter);
+            }
+            if let Some(enabled) = self.pending_event_tap_enabled {
+                config.set_event_tap_enabled(enabled);
+            }
             self.config = Some(config);
         }
+        self.config.as_mut()
     }
 
     /// Propagate a log filter to any auto-spawned server via `--log-filter`.
     pub(crate) fn set_server_log_filter(&mut self, filter: impl Into<String>) {
-        if self.config.is_none()
-            && let Ok(current_exe) = env::current_exe()
-        {
-            let mut config = ProcessConfig::new(current_exe);
-            config.set_socket_path(&self.socket_path);
-            self.config = Some(config);
-        }
-        if let Some(config) = &mut self.config {
-            config.set_log_filter(&filter.into());
+        let filter = filter.into();
+        self.pending_log_filter = Some(filter.clone());
+        if let Some(config) = self.ensure_auto_spawn_config() {
+            config.set_log_filter(&filter);
         }
     }
 
     /// Configure whether an auto-spawned server starts the physical keyboard event tap.
     pub(crate) fn set_server_event_tap_enabled(&mut self, enabled: bool) {
-        if self.config.is_none()
-            && let Ok(current_exe) = env::current_exe()
-        {
-            let mut config = ProcessConfig::new(current_exe);
-            config.set_socket_path(&self.socket_path);
-            self.config = Some(config);
-        }
-        if let Some(config) = &mut self.config {
+        self.pending_event_tap_enabled = Some(enabled);
+        if let Some(config) = self.ensure_auto_spawn_config() {
             config.set_event_tap_enabled(enabled);
         }
     }
 
     /// Disable automatic server spawning and only connect to existing servers.
     pub(crate) fn disable_auto_spawn(&mut self) {
+        self.auto_spawn = false;
         self.config = None;
     }
 
@@ -328,5 +345,35 @@ mod tests {
 
         assert_eq!(socket_path, "/tmp/hotki.sock");
         assert!(status.contains('7'));
+    }
+
+    #[test]
+    fn connect_only_stays_disabled_after_option_setters() {
+        let mut server = ManagedServer::new_with_socket("/tmp/hotki.sock");
+        server.enable_auto_spawn_server();
+        assert!(server.auto_spawn_enabled());
+        assert!(server.server_config().is_some());
+
+        server.disable_auto_spawn();
+        server.set_server_log_filter("hotki=debug");
+        server.set_server_event_tap_enabled(false);
+
+        assert!(!server.auto_spawn_enabled());
+        assert!(server.server_config().is_none());
+    }
+
+    #[test]
+    fn auto_spawn_config_always_has_parent_pid() {
+        let mut server = ManagedServer::new_with_socket("/tmp/hotki.sock");
+        server.enable_auto_spawn_server();
+        server.set_server_log_filter("hotki=debug");
+
+        let config = server.server_config().expect("auto spawn config");
+        assert!(
+            config
+                .args()
+                .windows(2)
+                .any(|pair| pair[0] == crate::process::PARENT_PID_FLAG)
+        );
     }
 }

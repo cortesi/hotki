@@ -13,7 +13,7 @@ allow-panic-in-tests = true
 
 # Quality metrics
 excessive-nesting-threshold = 8
-too-many-lines-threshold = 800
+too-many-lines-threshold = 180
 cognitive-complexity-threshold = 25
 
 disallowed-methods = []

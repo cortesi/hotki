@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use egui::{Context, Sense, ViewportId};
+use egui::{Context, Sense};
 use eguidev::{DevMcp, FixtureSpec, FrameGuard, WidgetRole, WidgetValue, id_with_meta};
 use hotki_protocol::{MsgToUI, NotifyKind, Toggle, rpc::InjectKind};
 use permissions::{PermissionState, PermissionsStatus};
@@ -10,6 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     app::{UiCommand, UiEvent},
+    details::DetailsTab,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
 };
@@ -74,6 +75,39 @@ fn fixtures() -> Vec<FixtureSpec> {
         FixtureSpec::new("hotki.details", "UI-thread lane: open the Details window.")
             .anchor_value("app.ready", WidgetValue::Bool(true))
             .anchor_in("details.tab.notifications", details),
+        FixtureSpec::new(
+            "hotki.details.config",
+            "UI-thread lane: open Details directly to the Config tab.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true))
+        .anchor_value_in(
+            "details.active_tab",
+            WidgetValue::Text("config".to_string()),
+            details,
+        )
+        .anchor_in("details.config.reload", details),
+        FixtureSpec::new(
+            "hotki.details.logs",
+            "UI-thread lane: open Details directly to the Logs tab.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true))
+        .anchor_value_in(
+            "details.active_tab",
+            WidgetValue::Text("logs".to_string()),
+            details,
+        )
+        .anchor_in("details.logs.clear", details),
+        FixtureSpec::new(
+            "hotki.details.about",
+            "UI-thread lane: open Details directly to the About tab.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true))
+        .anchor_value_in(
+            "details.active_tab",
+            WidgetValue::Text("about".to_string()),
+            details,
+        )
+        .anchor_in("details.about.name", details),
         FixtureSpec::new(
             "hotki.permissions",
             "UI-thread lane: open the Permissions helper window.",
@@ -215,6 +249,18 @@ impl FixtureBridge {
                 self.clear_transient_ui()?;
                 self.show_details()?;
             }
+            "hotki.details.config" => {
+                self.clear_transient_ui()?;
+                self.show_details_tab(DetailsTab::Config)?;
+            }
+            "hotki.details.logs" => {
+                self.clear_transient_ui()?;
+                self.show_details_tab(DetailsTab::Logs)?;
+            }
+            "hotki.details.about" => {
+                self.clear_transient_ui()?;
+                self.show_details_tab(DetailsTab::About)?;
+            }
             "hotki.permissions" => {
                 self.clear_transient_ui()?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
@@ -309,6 +355,11 @@ impl FixtureBridge {
     /// Open Details through the same UI event consumed by normal actions.
     fn show_details(&self) -> Result<(), String> {
         self.send_ui_message(MsgToUI::ShowDetails(Toggle::On))
+    }
+
+    /// Open Details with a specific tab selected through the UI thread.
+    fn show_details_tab(&self, tab: DetailsTab) -> Result<(), String> {
+        self.send_ui_command(UiCommand::ShowDetailsTab(tab))
     }
 
     /// Override permission status for deterministic fixtures.
@@ -462,18 +513,8 @@ pub fn value_anchor(ui: &mut egui::Ui, id: impl Into<String>, value: WidgetValue
         Some(id),
         Some(value),
         |ui| {
-            let (_rect, response) = ui.allocate_exact_size(egui::Vec2::ZERO, Sense::hover());
+            let (_rect, response) = ui.allocate_exact_size(egui::Vec2::splat(1.0), Sense::hover());
             response
         },
     );
-}
-
-/// Drain queued eguidev input for an immediate viewport before it renders.
-pub fn pump_viewport_input(devmcp: &DevMcp, ctx: &Context, viewport_id: ViewportId) {
-    if !devmcp.is_enabled() {
-        return;
-    }
-    ctx.input_mut_for(viewport_id, |input| {
-        eguidev::raw_input_hook_for_viewport(devmcp, viewport_id, &mut input.raw);
-    });
 }

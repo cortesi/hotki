@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 #![deny(clippy::disallowed_methods)]
 //! Hotki Engine
 //!
@@ -39,7 +40,6 @@
 //!   then triggers a rebind. Do not re-enter config while a write guard is held.
 //! - Selector opening resolves items under `config`, drops that guard, installs selector
 //!   state under `runtime`, then publishes UI after guards are released.
-#![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 /// Test support utilities exported for the test suite.
@@ -210,7 +210,7 @@ impl Engine {
         ));
         let focus_ctx = Arc::new(Mutex::new(None));
         let relay = RelayHandler::new_with_enabled(relay_enabled);
-        let notifier = NotificationDispatcher::new(event_tx.clone());
+        let notifier = NotificationDispatcher::new(event_tx);
         let selector_notify = Arc::new(tokio::sync::Notify::new());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::Mutex::new(None));

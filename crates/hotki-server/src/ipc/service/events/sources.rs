@@ -10,7 +10,7 @@ use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use hotki_world::WorldView;
 use tokio::sync::mpsc::Sender;
 
-use super::LifecycleRun;
+use super::{LifecycleRun, broadcaster::broadcast_event, registry::ClientRegistry};
 
 /// Spawn the shared focus-change forwarder.
 pub(super) fn spawn_world_forwarder(
@@ -56,7 +56,7 @@ pub(super) fn spawn_world_forwarder(
 /// Spawn the shared heartbeat source that feeds the event queue.
 pub(super) fn spawn_heartbeat(
     shutdown: Arc<AtomicBool>,
-    event_tx: Sender<MsgToUI>,
+    registry: ClientRegistry,
     run: LifecycleRun,
 ) {
     tokio::spawn(async move {
@@ -70,12 +70,7 @@ pub(super) fn spawn_heartbeat(
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or(0);
-            if let Err(err) = event_tx.try_send(MsgToUI::Heartbeat(ts)) {
-                match err {
-                    tokio::sync::mpsc::error::TrySendError::Full(_) => {}
-                    tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
-                }
-            }
+            broadcast_event(&registry, &shutdown, MsgToUI::Heartbeat(ts)).await;
             tokio::time::sleep(interval).await;
         }
     });

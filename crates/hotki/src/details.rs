@@ -22,7 +22,9 @@ use crate::{
 };
 
 /// Horizontal/vertical padding around details content.
-const DETAILS_PAD: f32 = 12.0;
+const DETAILS_PAD: f32 = 16.0;
+/// Smaller gap between related controls.
+const CONTROL_GAP: f32 = 8.0;
 /// Table header height in logical pixels.
 const HEADER_H: f32 = 22.0;
 /// Minimum row height for notifications table.
@@ -35,10 +37,12 @@ const COL_TITLE_INIT: f32 = 180.0;
 const COL_KIND_MIN: f32 = 70.0;
 /// Minimum width for the Title column.
 const COL_TITLE_MIN: f32 = 120.0;
+/// Window title for the Details window; must match nswindow title lookups.
+const DETAILS_WINDOW_TITLE: &str = "Hotki";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Active tab within the Details window.
-enum Tab {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailsTab {
     /// Notifications list view.
     Notifications,
     /// Configuration file view.
@@ -76,7 +80,7 @@ pub struct Details {
     /// Last known geometry for this session.
     last_saved: Option<WindowGeometry>,
     /// Currently active tab.
-    active_tab: Tab,
+    active_tab: DetailsTab,
     /// Current notification theme for colors.
     theme: NotifyTheme,
     /// Optional path to the hotki config file.
@@ -104,7 +108,7 @@ impl Details {
             restore_pending: false,
             want_focus: false,
             last_saved: None,
-            active_tab: Tab::Notifications,
+            active_tab: DetailsTab::Notifications,
             theme,
             config_path: None,
             config_contents: String::new(),
@@ -133,6 +137,12 @@ impl Details {
         }
     }
 
+    /// Show the window with a specific tab selected.
+    pub fn show_tab(&mut self, tab: DetailsTab) {
+        self.active_tab = tab;
+        self.show();
+    }
+
     /// Hide the window.
     pub fn hide(&mut self) {
         self.visible = false;
@@ -152,7 +162,7 @@ impl Details {
     /// Query the current Details window geometry converted to a top-left origin.
     fn current_geom_top_left(&self) -> Option<WindowGeometry> {
         // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
-        let (x_b, y_b, w, h) = nswindow::frame_by_title("Details")?;
+        let (x_b, y_b, w, h) = nswindow::frame_by_title(DETAILS_WINDOW_TITLE)?;
         Some(WindowGeometry::from_bottom_left_frame(
             self.viewport.display().active_bounds(),
             x_b,
@@ -234,18 +244,17 @@ impl Details {
         }
 
         let mut builder = ViewportBuilder::default()
-            .with_title("Details")
+            .with_title(DETAILS_WINDOW_TITLE)
             .with_visible(true)
             .with_decorations(true)
             .with_resizable(true)
             .with_transparent(false)
             .with_has_shadow(true);
         if self.want_initial_size {
-            builder = builder.with_inner_size(vec2(720.0, 420.0));
+            builder = builder.with_inner_size(vec2(760.0, 480.0));
             self.want_initial_size = false;
         }
 
-        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
             devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
                 let wctx = vp_ui.ctx().clone();
@@ -320,25 +329,25 @@ impl Details {
                 ui.dev_selectable_value(
                     "details.tab.notifications",
                     &mut self.active_tab,
-                    Tab::Notifications,
+                    DetailsTab::Notifications,
                     "Notifications",
                 );
                 ui.dev_selectable_value(
                     "details.tab.config",
                     &mut self.active_tab,
-                    Tab::Config,
+                    DetailsTab::Config,
                     "Config",
                 );
                 ui.dev_selectable_value(
                     "details.tab.logs",
                     &mut self.active_tab,
-                    Tab::Logs,
+                    DetailsTab::Logs,
                     "Logs",
                 );
                 ui.dev_selectable_value(
                     "details.tab.about",
                     &mut self.active_tab,
-                    Tab::About,
+                    DetailsTab::About,
                     "About",
                 );
             });
@@ -348,10 +357,10 @@ impl Details {
     /// Render the currently selected Details tab.
     fn render_active_tab(&mut self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
         match self.active_tab {
-            Tab::Notifications => self.render_notifications(ui, backlog),
-            Tab::Config => self.render_config_tab_with_reload(ui),
-            Tab::About => Self::render_about_tab(ui),
-            Tab::Logs => self.render_logs(ui),
+            DetailsTab::Notifications => self.render_notifications(ui, backlog),
+            DetailsTab::Config => self.render_config_tab_with_reload(ui),
+            DetailsTab::About => Self::render_about_tab(ui),
+            DetailsTab::Logs => self.render_logs(ui),
         }
     }
 
@@ -366,35 +375,33 @@ impl Details {
 
     /// Render the About tab.
     fn render_about_tab(ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
-            ui.dev_label(
-                "details.about.name",
-                RichText::new("Hotki")
-                    .size(32.0)
-                    .color(Color32::from_rgb(255, 255, 255))
-                    .strong(),
-            );
-            ui.add_space(15.0);
-            ui.dev_label(
-                "details.about.description",
-                "A powerful hotkey management system for macOS",
-            );
-            ui.add_space(30.0);
-            ui.dev_separator("details.about.separator");
-            ui.add_space(30.0);
-            ui.dev_label(
-                "details.about.version",
-                RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                    .color(Color32::from_rgb(200, 200, 200)),
-            );
-            ui.add_space(30.0);
-            ui.dev_hyperlink_to(
-                "details.about.repository",
-                RichText::new("github.com/cortesi/hotki").color(Color32::from_rgb(100, 149, 237)),
-                "https://github.com/cortesi/hotki",
-            );
-            ui.add_space(40.0);
+        container(ui, "details.about.panel", |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(24.0);
+                ui.dev_label(
+                    "details.about.name",
+                    RichText::new("Hotki").size(28.0).strong(),
+                );
+                ui.add_space(CONTROL_GAP);
+                ui.dev_label(
+                    "details.about.description",
+                    "A powerful hotkey management system for macOS",
+                );
+                ui.add_space(DETAILS_PAD);
+                ui.dev_separator("details.about.separator");
+                ui.add_space(DETAILS_PAD);
+                ui.dev_label(
+                    "details.about.version",
+                    RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak(),
+                );
+                ui.add_space(CONTROL_GAP);
+                ui.dev_hyperlink_to(
+                    "details.about.repository",
+                    "github.com/cortesi/hotki",
+                    "https://github.com/cortesi/hotki",
+                );
+                ui.add_space(24.0);
+            });
         });
     }
 
@@ -407,7 +414,7 @@ impl Details {
     /// AppKit from reasserting the default arrow during display-cycle updates.
     fn ensure_cursor_rects_disabled(&mut self) {
         if !self.cursor_rects_disabled
-            && let Ok(true) = nswindow::disable_cursor_rects("Details")
+            && let Ok(true) = nswindow::disable_cursor_rects(DETAILS_WINDOW_TITLE)
         {
             self.cursor_rects_disabled = true;
         }
@@ -418,7 +425,8 @@ impl Details {
     /// This restores normal AppKit behavior outside the Details window's
     /// lifecycle to avoid surprising cursor behavior elsewhere.
     fn ensure_cursor_rects_enabled(&mut self) {
-        if self.cursor_rects_disabled && nswindow::enable_cursor_rects("Details").is_ok() {
+        if self.cursor_rects_disabled && nswindow::enable_cursor_rects(DETAILS_WINDOW_TITLE).is_ok()
+        {
             self.cursor_rects_disabled = false;
         }
     }
@@ -434,10 +442,7 @@ impl Details {
     /// Render the notifications table.
     fn render_notifications(&self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
         if backlog.is_empty() {
-            ui.dev_label(
-                "details.notifications.empty",
-                RichText::new("No notifications yet").weak(),
-            );
+            render_empty_state(ui, "details.notifications.empty", "No notifications yet");
             return;
         }
 
@@ -516,31 +521,34 @@ impl Details {
     fn render_config_tab(ui: &mut egui::Ui, model: &ConfigTabModel<'_>) -> bool {
         let mut reload_clicked = false;
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.dev_label(
-                    "details.config.path.label",
-                    RichText::new("Config File:").strong(),
-                );
-                ui.dev_label("details.config.path", &model.path_text);
+            container(ui, "details.config.toolbar", |ui| {
+                ui.horizontal(|ui| {
+                    ui.dev_label(
+                        "details.config.path.label",
+                        RichText::new("Config file").strong(),
+                    );
+                    ui.dev_label(
+                        "details.config.path",
+                        RichText::new(&model.path_text).monospace(),
+                    );
+                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                        reload_clicked = ui.dev_button("details.config.reload", "Reload").clicked();
+                    });
+                });
             });
 
-            ui.add_space(10.0);
+            ui.add_space(CONTROL_GAP);
 
             if let Some(err) = model.error {
                 ui.dev_label(
                     "details.config.error",
                     RichText::new(err).color(Color32::from_rgb(220, 50, 47)),
                 );
-                ui.add_space(10.0);
+                ui.add_space(CONTROL_GAP);
             }
 
-            reload_clicked = ui
-                .dev_button("details.config.reload", "Reload Config")
-                .clicked();
-
-            ui.add_space(10.0);
             ui.dev_separator("details.config.separator");
-            ui.add_space(10.0);
+            ui.add_space(CONTROL_GAP);
 
             ui.dev_label(
                 "details.config.contents.label",
@@ -548,7 +556,11 @@ impl Details {
             );
             ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                ui.dev_label("details.config.contents", model.contents);
+                if model.contents.is_empty() {
+                    render_empty_state(ui, "details.config.empty", "No config contents loaded");
+                } else {
+                    ui.dev_label("details.config.contents", model.contents);
+                }
             });
         });
         reload_clicked
@@ -562,46 +574,56 @@ impl Details {
         }
 
         ui.vertical(|ui| {
-            if ui.dev_button("details.logs.clear", "Clear").clicked() {
-                logs::clear();
-                self.log_generation = u64::MAX;
-                self.log_rows.clear();
-            }
-            ui.dev_label(
-                "details.logs.count",
-                format!("{} log rows", self.log_rows.len()),
-            );
-            ui.add_space(8.0);
-            ui.dev_separator("details.logs.separator");
-            ui.add_space(8.0);
-            ScrollArea::vertical()
-                .auto_shrink(false)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                    for (index, ent) in self.log_rows.iter().enumerate() {
-                        let prefix = if matches!(ent.side, Side::Client) {
-                            "client"
-                        } else {
-                            "server"
-                        };
-                        let text = format!(
-                            "[{:<6}] {:<5} {:<} - {}",
-                            prefix, ent.level, ent.target, ent.message
-                        );
-                        container(ui, format!("details.log.{index}.row"), |ui| {
-                            ui.dev_label(
-                                format!("details.log.{index}.message"),
-                                RichText::new(text).color(ent.color()),
-                            );
-                        });
-                    }
+            container(ui, "details.logs.toolbar", |ui| {
+                ui.horizontal(|ui| {
+                    ui.dev_label(
+                        "details.logs.count",
+                        format!("{} log rows", self.log_rows.len()),
+                    );
+                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.dev_button("details.logs.clear", "Clear").clicked() {
+                            logs::clear();
+                            self.log_generation = u64::MAX;
+                            self.log_rows.clear();
+                        }
+                    });
                 });
+            });
+            ui.add_space(CONTROL_GAP);
+            ui.dev_separator("details.logs.separator");
+            ui.add_space(CONTROL_GAP);
+            if self.log_rows.is_empty() {
+                render_empty_state(ui, "details.logs.empty", "No logs yet");
+            } else {
+                ScrollArea::both()
+                    .auto_shrink(false)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
+                        for (index, ent) in self.log_rows.iter().enumerate() {
+                            let prefix = if matches!(ent.side, Side::Client) {
+                                "client"
+                            } else {
+                                "server"
+                            };
+                            let text = format!(
+                                "[{:<6}] {:<5} {:<} - {}",
+                                prefix, ent.level, ent.target, ent.message
+                            );
+                            container(ui, format!("details.log.{index}.row"), |ui| {
+                                ui.dev_label(
+                                    format!("details.log.{index}.message"),
+                                    RichText::new(text).color(ent.color()),
+                                );
+                            });
+                        }
+                    });
+            }
         });
     }
 }
 
-impl Tab {
+impl DetailsTab {
     /// Stable script-visible label for this tab.
     fn label(self) -> &'static str {
         match self {
@@ -611,6 +633,14 @@ impl Tab {
             Self::Logs => "logs",
         }
     }
+}
+
+/// Render a subdued, centered empty-state line.
+fn render_empty_state(ui: &mut egui::Ui, id: &'static str, text: &'static str) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(24.0);
+        ui.dev_label(id, RichText::new(text).weak());
+    });
 }
 
 /// Foreground color for a notification kind using the active theme.

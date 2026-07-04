@@ -10,7 +10,7 @@ use std::{
 
 use tao::{
     event::Event,
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     platform::macos::{ActivationPolicy, EventLoopExtMacOS},
 };
 use tracing::{debug, error, info, trace};
@@ -18,7 +18,7 @@ use tracing::{debug, error, info, trace};
 use crate::{
     Error, Result, default_socket_path,
     ipc::{IPCServer, IdleTimerState},
-    loop_wake,
+    loop_wake::{self, WakeEvent},
 };
 
 /// Default idle timeout in seconds after client disconnects.
@@ -78,7 +78,7 @@ fn spawn_parent_watcher(
                             // Parent exited; request shutdown.
                             shutdown.store(true, Ordering::SeqCst);
                             shutdown_notify.notify_waiters();
-                            let _ = loop_wake::post_user_event();
+                            let _ = loop_wake::post_user_event(WakeEvent::Shutdown);
                             break;
                         } else if res < 0 {
                             let err = io::Error::last_os_error().raw_os_error();
@@ -110,7 +110,7 @@ fn spawn_parent_watcher(
             if !alive {
                 shutdown.store(true, Ordering::SeqCst);
                 shutdown_notify.notify_waiters();
-                let _ = loop_wake::post_user_event();
+                let _ = loop_wake::post_user_event(WakeEvent::Shutdown);
                 break;
             }
             thread::sleep(Duration::from_millis(100));
@@ -190,11 +190,11 @@ impl Server {
         info!("Starting hotkey server on socket: {}", self.socket_path);
 
         // Create the tao event loop (must be on main thread for macOS)
-        let mut event_loop = EventLoop::new();
+        let mut event_loop = EventLoopBuilder::<WakeEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
         // Keep a clone for posting wakeups from other threads
         let proxy_for_ipc = proxy.clone();
-        loop_wake::set_main_proxy(proxy.clone());
+        loop_wake::set_main_proxy(proxy);
 
         // Set activation policy to Accessory to prevent dock icon
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -222,11 +222,7 @@ impl Server {
         );
         let shutdown_requested_clone = shutdown_requested.clone();
         let shutdown_notify_clone = shutdown_notify.clone();
-        let ipc_wakeup = proxy_for_ipc.clone();
-
-        // Track when client disconnects to start idle countdown
-        let client_disconnected = Arc::new(AtomicBool::new(false));
-        let client_disconnected_clone = client_disconnected.clone();
+        let ipc_wakeup = proxy_for_ipc;
 
         // Spawn IPC server in background thread
         let server_thread = thread::spawn(move || {
@@ -241,7 +237,7 @@ impl Server {
                     shutdown_requested_clone.store(true, Ordering::SeqCst);
                     shutdown_notify_clone.notify_waiters();
                     // Wake the Tao loop to observe shutdown
-                    let _ = ipc_wakeup.send_event(());
+                    let _ = ipc_wakeup.send_event(WakeEvent::Shutdown);
                     return;
                 }
             };
@@ -255,11 +251,7 @@ impl Server {
                 }
             });
 
-            info!("IPC server thread ending, client disconnected");
-            // Mark that client has disconnected to start idle countdown
-            client_disconnected_clone.store(true, Ordering::SeqCst);
-            // Wake the Tao loop so it can start/advance the idle timer immediately
-            let _ = proxy_for_ipc.send_event(());
+            info!("IPC server thread ending");
         });
 
         // If a parent PID is provided (standard when auto-spawned by the UI),
@@ -270,7 +262,7 @@ impl Server {
             parent_watcher_thread = Some(spawn_parent_watcher(
                 ppid,
                 shutdown_requested.clone(),
-                shutdown_notify.clone(),
+                shutdown_notify,
             ));
         }
 
@@ -284,12 +276,13 @@ impl Server {
         // Track an idle shutdown deadline once the client disconnects.
         // None means no disconnect or timer canceled by activity.
         let mut idle_deadline: Option<Instant> = None;
+        let mut client_disconnected = false;
         // Keep the IPC thread handle so we can join on exit.
         let mut server_thread = Some(server_thread);
         // Ensure we only log the shutdown transition once.
         let mut shutdown_logged = false;
 
-        let idle_state_for_loop = idle_state.clone();
+        let idle_state_for_loop = idle_state;
         event_loop.run(move |event, _, control_flow| {
             // Default to waiting until the next concrete event.
             *control_flow = ControlFlow::Wait;
@@ -306,7 +299,7 @@ impl Server {
             }
 
             // Handle client disconnect-driven idle timeout using a monotonic clock.
-            if client_disconnected.load(Ordering::SeqCst) {
+            if client_disconnected {
                 match idle_deadline {
                     None => {
                         // Arm the idle timer on first observation of disconnect
@@ -346,15 +339,18 @@ impl Server {
                 Event::NewEvents(_) | Event::MainEventsCleared | Event::RedrawEventsCleared => {
                     // These events fire frequently, ignore them
                 }
-                Event::UserEvent(()) => {
-                    // User events indicate client activity - reset disconnect timer if set
-                    if client_disconnected.load(Ordering::SeqCst) {
-                        client_disconnected.store(false, Ordering::SeqCst);
+                Event::UserEvent(WakeEvent::ClientConnected) => {
+                    if client_disconnected {
+                        client_disconnected = false;
                         idle_state_for_loop.disarm();
                         idle_deadline = None;
                         info!("Client reconnected, canceling idle timer");
                     }
                 }
+                Event::UserEvent(WakeEvent::ClientDisconnected) => {
+                    client_disconnected = true;
+                }
+                Event::UserEvent(WakeEvent::Shutdown) => {}
                 Event::LoopDestroyed => {
                     // Join the parent watcher thread
                     if let Some(h) = parent_watcher_thread.take()
@@ -422,7 +418,7 @@ mod tests {
         let handle = spawn_parent_watcher(
             process::id() as libc::pid_t,
             shutdown.clone(),
-            shutdown_notify.clone(),
+            shutdown_notify,
         );
 
         // Sleep briefly to let the thread start

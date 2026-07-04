@@ -328,7 +328,6 @@ impl SelectorWindow {
 
         let assets = self.render_assets();
         let snapshot = model.snapshot.clone();
-        devtools::pump_viewport_input(devmcp, ctx, self.viewport.id());
         ctx.show_viewport_immediate(self.viewport.id(), builder, move |vp_ui, _| {
             devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
                 let border = Self::rgba(assets.style.border, BG_ALPHA);
