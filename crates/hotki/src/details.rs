@@ -1,8 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use egui::{
-    CentralPanel, Color32, Context, Layout, RichText, ScrollArea, ViewportBuilder, ViewportCommand,
-    vec2,
+    CentralPanel, Color32, Context, Layout, Pos2, RichText, ScrollArea, Vec2, ViewportBuilder,
+    ViewportCommand, vec2,
 };
 use egui_extras::{Column, TableBuilder};
 use eguidev::{
@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     devtools,
-    display::{DisplayMetrics, WindowGeometry},
+    display::{DisplayBounds, DisplayMetrics, WindowGeometry},
     logs::{self, LogEntry, Side},
     notification::BacklogEntry,
     nswindow,
@@ -63,6 +63,40 @@ struct ConfigTabModel<'a> {
     contents: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// Details restore geometry with outer position and inner content size kept separate.
+struct DetailsGeometry {
+    /// Decorated window top-left position in global top-left coordinates.
+    pos: Pos2,
+    /// egui viewport inner size used with `ViewportCommand::InnerSize`.
+    inner_size: Vec2,
+}
+
+impl DetailsGeometry {
+    /// Construct Details restore geometry from already-normalized parts.
+    fn new(pos: Pos2, inner_size: Vec2) -> Self {
+        Self { pos, inner_size }
+    }
+
+    /// Convert an AppKit outer frame and egui inner size into restore geometry.
+    fn from_appkit_outer_frame(
+        bounds: DisplayBounds,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        inner_size: Vec2,
+    ) -> Self {
+        let outer = WindowGeometry::from_bottom_left_frame(bounds, x, y, w, h);
+        Self::new(outer.pos, inner_size)
+    }
+
+    /// Return the geometry shape expected by shared display clamping helpers.
+    fn window_geometry(self) -> WindowGeometry {
+        WindowGeometry::new(self.pos, self.inner_size)
+    }
+}
+
 /// State and rendering for the Details window.
 pub struct Details {
     /// Whether the window is currently visible.
@@ -77,8 +111,8 @@ pub struct Details {
     restore_pending: bool,
     /// Request focus on next frame.
     want_focus: bool,
-    /// Last known geometry for this session.
-    last_saved: Option<WindowGeometry>,
+    /// Last known outer position and inner size for this session.
+    last_saved: Option<DetailsGeometry>,
     /// Currently active tab.
     active_tab: DetailsTab,
     /// Current notification theme for colors.
@@ -160,15 +194,17 @@ impl Details {
     }
 
     /// Query the current Details window geometry converted to a top-left origin.
-    fn current_geom_top_left(&self) -> Option<WindowGeometry> {
+    fn current_geom_top_left(&self, viewport: &egui::ViewportInfo) -> Option<DetailsGeometry> {
+        let inner_size = viewport.inner_rect?.size();
         // NSWindow uses bottom-left origin; convert to global top-left expected by winit.
         let (x_b, y_b, w, h) = nswindow::frame_by_title(DETAILS_WINDOW_TITLE)?;
-        Some(WindowGeometry::from_bottom_left_frame(
+        Some(DetailsGeometry::from_appkit_outer_frame(
             self.viewport.display().active_bounds(),
             x_b,
             y_b,
             w,
             h,
+            inner_size,
         ))
     }
 
@@ -250,8 +286,10 @@ impl Details {
             .with_resizable(true)
             .with_transparent(false)
             .with_has_shadow(true);
-        if self.want_initial_size {
+        if self.want_initial_size && self.last_saved.is_none() {
             builder = builder.with_inner_size(vec2(760.0, 480.0));
+        }
+        if self.want_initial_size {
             self.want_initial_size = false;
         }
 
@@ -263,7 +301,8 @@ impl Details {
                     self.visible = false;
                     wctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     // Remember final geometry for this session only
-                    if let Some(cur) = self.current_geom_top_left() {
+                    let viewport = wctx.input(|i| i.viewport().clone());
+                    if let Some(cur) = self.current_geom_top_left(&viewport) {
                         self.last_saved = Some(cur);
                     }
                     return;
@@ -272,7 +311,7 @@ impl Details {
                 // Apply saved geometry once after opening (clamped to active screen)
                 if self.restore_pending {
                     if let Some(stored) = self.last_saved {
-                        let clamped = self.clamp_to_active_frame(stored);
+                        let clamped = self.clamp_to_active_frame(stored.window_geometry());
                         wctx.send_viewport_cmd_to(
                             self.viewport.id(),
                             ViewportCommand::InnerSize(clamped.size),
@@ -295,11 +334,12 @@ impl Details {
                     });
                 });
                 // Track geometry in-memory if it changed (no file persistence)
-                if let Some(cur) = self.current_geom_top_left()
+                let viewport = wctx.input(|i| i.viewport().clone());
+                if let Some(cur) = self.current_geom_top_left(&viewport)
                     && self.last_saved.map(|g| g != cur).unwrap_or(true)
                 {
                     self.last_saved = Some(cur);
-                    self.viewport.record_geometry(cur.pos, cur.size);
+                    self.viewport.record_geometry(cur.pos, cur.inner_size);
                 }
             });
         });
@@ -664,7 +704,7 @@ mod tests {
     use egui::{pos2, vec2};
     use hotki_protocol::{DisplayFrame, DisplaysSnapshot, NotifyTheme};
 
-    use super::Details;
+    use super::{Details, DetailsGeometry};
     use crate::display::{DisplayMetrics, WindowGeometry};
 
     #[test]
@@ -687,6 +727,36 @@ mod tests {
 
         assert_eq!(clamped.pos, pos2(50.0, 500.0));
         assert_eq!(clamped.size, vec2(500.0, 80.0));
+    }
+
+    #[test]
+    fn saved_geometry_keeps_inner_size_separate_from_decorated_frame() {
+        let mut details = Details::new(NotifyTheme::default());
+        details.set_display_metrics(DisplayMetrics::from_snapshot(&DisplaysSnapshot {
+            global_top: 900.0,
+            active: Some(DisplayFrame {
+                id: 1,
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 800.0,
+            }),
+            displays: Vec::new(),
+        }));
+
+        let saved = DetailsGeometry::from_appkit_outer_frame(
+            details.viewport.display().active_bounds(),
+            80.0,
+            120.0,
+            760.0,
+            508.0,
+            vec2(760.0, 480.0),
+        );
+        let restored = details.clamp_to_active_frame(saved.window_geometry());
+
+        assert_eq!(saved.pos, pos2(80.0, 272.0));
+        assert_eq!(saved.inner_size, vec2(760.0, 480.0));
+        assert_eq!(restored.size, vec2(760.0, 480.0));
     }
 
     #[test]

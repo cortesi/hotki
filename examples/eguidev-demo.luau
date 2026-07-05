@@ -6,6 +6,9 @@ hotki.root(function(menu, ctx)
       mode = "hud",
       pos = "se",
     },
+    notify = {
+      pos = "left",
+    },
   })
 
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)

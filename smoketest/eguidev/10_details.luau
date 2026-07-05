@@ -12,8 +12,27 @@ local function viewport_with_widget(id: string): Viewport
     error("no viewport exposes " .. id)
 end
 
+local function widget_size(viewport: Viewport, id: string): { width: number, height: number }
+    local rect = viewport:widget_get(id):state().rect
+    return {
+        width = rect.max.x - rect.min.x,
+        height = rect.max.y - rect.min.y,
+    }
+end
+
 fixture("hotki.details")
 local details = viewport_with_widget("details.root")
+wait_for_frames(5)
+local first_size = widget_size(details, "details.root")
+
+for _ = 1, 3 do
+    fixture("hotki.details")
+    wait_for_frames(5)
+    details = viewport_with_widget("details.root")
+    local next_size = widget_size(details, "details.root")
+    assert(math.abs(next_size.width - first_size.width) <= 2, "details width should not grow on reopen")
+    assert(math.abs(next_size.height - first_size.height) <= 2, "details height should not grow on reopen")
+end
 
 assert(details:widget_get("details.active_tab"):state().value_text == "notifications")
 assert(details:widget_get("details.tab.notifications"):state().role == "selectable")

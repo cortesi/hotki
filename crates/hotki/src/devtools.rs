@@ -335,10 +335,15 @@ impl FixtureBridge {
             (NotifyKind::Error, "Error"),
             (NotifyKind::Success, "Success"),
         ] {
+            let text = if kind == NotifyKind::Error {
+                "Error notification fixture: /Users/example/hotki/long-unbroken-path-that-must-wrap-inside-the-card-without-being-clipped".to_string()
+            } else {
+                format!("{title} notification fixture")
+            };
             self.send_ui_message(MsgToUI::Notify {
                 kind,
                 title: title.to_string(),
-                text: format!("{title} notification fixture"),
+                text,
             })?;
         }
         Ok(())

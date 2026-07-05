@@ -280,4 +280,12 @@ mod tests {
         assert_eq!(bounds.notification_x(NotifyPos::Left, 1000.0, 12.0), 112.0);
         assert_eq!(bounds.notification_x(NotifyPos::Right, 1000.0, 12.0), 112.0);
     }
+
+    #[test]
+    fn notification_x_honors_requested_side() {
+        let bounds = metrics().active_bounds();
+
+        assert_eq!(bounds.notification_x(NotifyPos::Left, 320.0, 12.0), 112.0);
+        assert_eq!(bounds.notification_x(NotifyPos::Right, 320.0, 12.0), 568.0);
+    }
 }

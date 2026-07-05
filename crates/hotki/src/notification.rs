@@ -2,7 +2,9 @@
 use std::time::{Duration, Instant};
 
 use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob};
-use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
+use eguidev::{
+    DevMcp, DevUiExt, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full,
+};
 use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
 use crate::{
@@ -24,6 +26,34 @@ const NOTIFICATION_PAD: f32 = 12.0;
 const NOTIFICATION_TIMEOUT_MIN_SECS: f32 = 0.1;
 /// Maximum supported notification timeout.
 const NOTIFICATION_TIMEOUT_MAX_SECS: f32 = 3600.0;
+
+/// Body text width inside a notification card after horizontal padding.
+fn notification_body_wrap_width(width: f32) -> f32 {
+    (width - 2.0 * NOTIFICATION_PAD).max(1.0)
+}
+
+/// Build the body text layout used by both measurement and rendering.
+fn notification_body_layout_job(
+    text: &str,
+    font_size: f32,
+    font_weight: FontWeight,
+    color: Color32,
+    wrap_width: f32,
+) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+    job.wrap.break_anywhere = true;
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            color,
+            font_id: egui::FontId::new(font_size, fonts::weight_family(font_weight)),
+            ..Default::default()
+        },
+    );
+    job
+}
 
 #[derive(Debug, Clone)]
 /// A single notification retained in the backlog list.
@@ -304,7 +334,7 @@ impl NotificationCenter {
         let frame = bounds.frame();
         let mut y_cursor = frame.y + frame.height - NOTIFICATION_MARGIN;
         let width = self.width.max(1.0);
-        let body_wrap_width = (width - 2.0 * NOTIFICATION_PAD).max(1.0);
+        let body_wrap_width = notification_body_wrap_width(width);
 
         // Measure each notification to compute height using the same fonts and paddings as render
         for item in &mut self.items {
@@ -313,17 +343,14 @@ impl NotificationCenter {
                 style.title_font_size,
                 fonts::weight_family(style.title_font_weight),
             );
-            let body_font = egui::FontId::new(
-                style.body_font_size,
-                fonts::weight_family(style.body_font_weight),
-            );
             let text_gal = ctx.fonts_mut(|f| {
-                f.layout(
-                    item.text.clone(),
-                    body_font.clone(),
+                f.layout_job(notification_body_layout_job(
+                    &item.text,
+                    style.body_font_size,
+                    style.body_font_weight,
                     Color32::WHITE,
                     body_wrap_width,
-                )
+                ))
             });
             let title_gal = ctx.fonts_mut(|f| {
                 f.layout_no_wrap(item.title.clone(), title_font.clone(), Color32::WHITE)
@@ -450,7 +477,7 @@ impl NotificationCenter {
                         .frame(frame)
                         .show(vp_ui, |ui| {
                             container(ui, it.dev_id.clone(), |ui| {
-                                render_notification_metadata(ui, it);
+                                render_notification_metadata(ui, it, self.side, bounds);
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
                                 ui.horizontal(|ui| {
                                     Self::render_title_row(
@@ -466,22 +493,32 @@ impl NotificationCenter {
                                         },
                                     );
                                 });
-                                ui.horizontal_wrapped(|ui| {
-                                    let mut text_job = LayoutJob::default();
-                                    text_job.append(
-                                        &it.text,
-                                        0.0,
-                                        egui::TextFormat {
-                                            color: body_fg,
-                                            font_id: egui::FontId::new(
-                                                style.body_font_size,
-                                                fonts::weight_family(style.body_font_weight),
-                                            ),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    ui.dev_label(format!("{}.body", it.dev_id), text_job);
-                                });
+                                let body_wrap_width = notification_body_wrap_width(it.size.x);
+                                let text_job = notification_body_layout_job(
+                                    &it.text,
+                                    style.body_font_size,
+                                    style.body_font_weight,
+                                    body_fg,
+                                    body_wrap_width,
+                                );
+                                let body_response = ui
+                                    .vertical(|ui| {
+                                        ui.set_width(body_wrap_width);
+                                        ui.add(egui::Label::new(text_job).wrap())
+                                    })
+                                    .inner;
+                                track_response_full(
+                                    format!("{}.body", it.dev_id),
+                                    &body_response,
+                                    WidgetMeta {
+                                        role: WidgetRole::Label,
+                                        label: Some(it.text.clone()),
+                                        value: Some(WidgetValue::Text(it.text.clone())),
+                                        visible: ui.is_visible()
+                                            && ui.is_rect_visible(body_response.rect),
+                                        ..Default::default()
+                                    },
+                                );
                             });
                         });
                 });
@@ -587,12 +624,23 @@ fn render_stack_item_metadata(ui: &mut egui::Ui, item: &NotificationStackAlias) 
 }
 
 /// Record script-visible metadata for one live notification viewport.
-fn render_notification_metadata(ui: &mut egui::Ui, item: &NotificationItem) {
+fn render_notification_metadata(
+    ui: &mut egui::Ui,
+    item: &NotificationItem,
+    side: NotifyPos,
+    bounds: DisplayBounds,
+) {
     let id = &item.dev_id;
+    let expected_x = bounds.notification_x(side, item.size.x, NOTIFICATION_MARGIN);
     devtools::value_anchor(
         ui,
         format!("{id}.kind"),
         WidgetValue::Text(notify_kind_label(item.kind).to_string()),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.side"),
+        WidgetValue::Text(notification_side_label(side).to_string()),
     );
     devtools::value_anchor(
         ui,
@@ -616,6 +664,11 @@ fn render_notification_metadata(ui: &mut egui::Ui, item: &NotificationItem) {
     );
     devtools::value_anchor(
         ui,
+        format!("{id}.expected_x"),
+        WidgetValue::Float(f64::from(expected_x)),
+    );
+    devtools::value_anchor(
+        ui,
         format!("{id}.target_y"),
         WidgetValue::Float(f64::from(item.target_pos.y)),
     );
@@ -623,6 +676,11 @@ fn render_notification_metadata(ui: &mut egui::Ui, item: &NotificationItem) {
         ui,
         format!("{id}.width"),
         WidgetValue::Float(f64::from(item.size.x)),
+    );
+    devtools::value_anchor(
+        ui,
+        format!("{id}.body_wrap_width"),
+        WidgetValue::Float(f64::from(notification_body_wrap_width(item.size.x))),
     );
     devtools::value_anchor(
         ui,
@@ -639,6 +697,14 @@ fn notify_kind_label(kind: NotifyKind) -> &'static str {
         NotifyKind::Warn => "warn",
         NotifyKind::Error => "error",
         NotifyKind::Ignore => "ignore",
+    }
+}
+
+/// Stable script-visible label for notification stack side.
+fn notification_side_label(side: NotifyPos) -> &'static str {
+    match side {
+        NotifyPos::Left => "left",
+        NotifyPos::Right => "right",
     }
 }
 
@@ -693,6 +759,16 @@ mod tests {
     }
 
     #[test]
+    fn placement_for_stacks_from_top_left_in_top_left_coordinates() {
+        let first =
+            NotificationCenter::placement_for(bounds(), NotifyPos::Left, 120.0, 40.0, 300.0 - 12.0);
+
+        assert_eq!(first.geometry.pos, pos2(12.0, 612.0));
+        assert_eq!(first.geometry.size, vec2(120.0, 40.0));
+        assert_eq!(first.next_cursor_bottom, 240.0);
+    }
+
+    #[test]
     fn placement_for_collapses_oversized_width_to_left_margin() {
         let placed = NotificationCenter::placement_for(
             bounds(),
@@ -711,6 +787,22 @@ mod tests {
             super::notification_timeout(f32::INFINITY),
             Duration::from_secs_f32(super::NOTIFICATION_TIMEOUT_MIN_SECS)
         );
+    }
+
+    #[test]
+    fn body_layout_wraps_long_tokens_inside_card_width() {
+        let wrap_width = super::notification_body_wrap_width(64.0);
+        let job = super::notification_body_layout_job(
+            "averylongunbrokennotificationmessage",
+            12.0,
+            hotki_protocol::FontWeight::Regular,
+            egui::Color32::WHITE,
+            wrap_width,
+        );
+
+        assert_eq!(wrap_width, 40.0);
+        assert_eq!(job.wrap.max_width, 40.0);
+        assert!(job.wrap.break_anywhere);
     }
 
     #[test]

@@ -40,6 +40,7 @@ mod tray;
 
 use config::{
     check_luau_config, load_dynamic_config, luau_api_markdown, luau_api_text, resolve_config_path,
+    script::engine::{ModeCtx, ModeFrame, render_stack},
     themes,
 };
 
@@ -261,7 +262,7 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
             process::exit(1);
         }
     };
-    let initial_style = hotki_protocol::Style::default();
+    let initial_style = initial_style_for_config(&config_path);
     let (tx, rx) = tokio_mpsc::unbounded_channel::<UiEvent>();
     let (tx_ctrl, rx_ctrl) = tokio_mpsc::unbounded_channel();
 
@@ -313,4 +314,39 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
             )))
         }),
     )
+}
+
+/// Render the root config style once so UI-local startup notices match user configuration.
+fn initial_style_for_config(config_path: &Path) -> hotki_protocol::Style {
+    let mut cfg = match load_dynamic_config(config_path) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            error!("failed to load initial UI style: {}", err.pretty());
+            return hotki_protocol::Style::default();
+        }
+    };
+    let base_style = cfg.base_style(None);
+    let mut stack = vec![ModeFrame {
+        title: "root".to_string(),
+        closure: cfg.root(),
+        entered_via: None,
+        rendered: Vec::new(),
+        style: None,
+        capture: false,
+    }];
+    let ctx = ModeCtx {
+        app: String::new(),
+        title: String::new(),
+        pid: 0,
+        hud: false,
+        depth: 0,
+    };
+
+    match render_stack(&mut cfg, &mut stack, &ctx, &base_style) {
+        Ok(output) => output.rendered.style,
+        Err(err) => {
+            error!("failed to render initial UI style: {}", err.pretty());
+            base_style
+        }
+    }
 }

@@ -39,34 +39,60 @@ for base, kind in pairs(expected) do
     assert(seen[base] == kind, base .. " should expose kind " .. kind)
 end
 
-local function widget_value(id: string): string
+local function find_widget(id: string): (Viewport, Widget)
     for _, viewport in ipairs(viewports()) do
-        local ok, value = pcall(function()
-            return viewport:widget_get(id):state().value_text
+        local ok, widget = pcall(function()
+            return viewport:widget_get(id)
         end)
         if ok then
-            return value
+            return viewport, widget
         end
     end
     error("missing widget " .. id)
 end
 
+local function widget_value(id: string): string
+    local _, widget = find_widget(id)
+    return widget:state().value_text
+end
+
+local function rect_width(rect: Rect): number
+    return rect.max.x - rect.min.x
+end
+
 local rects = {}
 for _, live_id in ipairs(live_ids) do
+    local _, body_widget = find_widget(live_id .. ".body")
+    local body_state = body_widget:state()
+    local body_measure = body_widget:text_measure() :: any
     local rect = {
         id = live_id,
         current_x = tonumber(widget_value(live_id .. ".current_x")),
         current_y = tonumber(widget_value(live_id .. ".current_y")),
         target_x = tonumber(widget_value(live_id .. ".target_x")),
+        expected_x = tonumber(widget_value(live_id .. ".expected_x")),
         target_y = tonumber(widget_value(live_id .. ".target_y")),
+        side = widget_value(live_id .. ".side"),
         width = tonumber(widget_value(live_id .. ".width")),
+        body_width = rect_width(body_state.rect),
+        body_wrap_width = tonumber(widget_value(live_id .. ".body_wrap_width")),
+        body_text = body_state.value_text,
+        body_visible_text = body_measure.visible_text,
+        body_ellipsis = body_measure.ellipsis,
         height = tonumber(widget_value(live_id .. ".height")),
     }
     assert(rect.current_x ~= nil and rect.current_y ~= nil, live_id .. " should expose current position")
     assert(rect.target_x ~= nil and rect.target_y ~= nil, live_id .. " should expose target position")
+    assert(rect.expected_x ~= nil, live_id .. " should expose expected x")
     assert(rect.width ~= nil and rect.width > 0, live_id .. " should expose positive width")
+    assert(rect.body_wrap_width ~= nil and rect.body_wrap_width > 0, live_id .. " should expose body width")
     assert(rect.height ~= nil and rect.height > 0, live_id .. " should expose positive height")
     assert(rect.target_x >= 0 and rect.target_y >= 0, live_id .. " target should be on-screen")
+    assert(rect.side == "left", live_id .. " should use left-side notification config")
+    assert(math.abs(rect.target_x - rect.expected_x) <= 1, live_id .. " should target its configured side")
+    assert(rect.body_width <= rect.body_wrap_width + 1, live_id .. " body should stay within wrap width")
+    assert(rect.body_visible_text == rect.body_text, live_id .. " body text should be fully visible")
+    assert(rect.body_ellipsis == false, live_id .. " body text should not ellipsize")
     table.insert(rects, rect)
 end
 
