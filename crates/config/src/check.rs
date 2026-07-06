@@ -4,19 +4,14 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ruau::{
-    analysis::resolve::AnalysisMode,
-    decl::DeclSource,
+    analysis::AnalysisMode,
+    source::{ModuleId, Source},
     surface::Surface,
-    typecheck::diagnostics::Severity,
-    vm::{ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction},
-    vm_api::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
+    typecheck::Severity,
 };
 
 use crate::{
@@ -422,7 +417,6 @@ fn checker_surface() -> Result<Surface, Error> {
     Surface::builder()
         .enable_runtime_compilation()
         .analysis_mode(AnalysisMode::Nonstrict)
-        .module(Arc::new(StaticHotkiApiModule))
         .build()
         .map_err(|err| Error::Validation {
             path: None,
@@ -433,24 +427,13 @@ fn checker_surface() -> Result<Surface, Error> {
         })
 }
 
-/// API type aliases prepended to checked user modules so generic aliases are user-visible.
-fn checker_type_prelude() -> &'static str {
-    static PRELUDE: OnceLock<String> = OnceLock::new();
-    PRELUDE.get_or_init(|| {
-        luau_api()
-            .split_once("\ndeclare hotki:")
-            .map_or_else(|| luau_api().trim_end(), |(types, _)| types.trim_end())
-            .to_string()
-    })
-}
-
 /// Run ruau's checker and bytecode compiler on one source module.
 fn check_module(path: &Path, source: &str) -> Result<(), Error> {
     let surface = checker_surface()?;
-    let prelude = checker_type_prelude();
+    let prelude = luau_api().trim_end();
     let checked_source = format!("{prelude}\n{source}");
     let line_offset = prelude.lines().count();
-    let checked = surface.check_source_bytes(checked_source.as_bytes());
+    let checked = surface.check_bytes(checked_source.as_bytes());
     let errors = checked
         .diagnostics()
         .iter()
@@ -466,100 +449,11 @@ fn check_module(path: &Path, source: &str) -> Result<(), Error> {
         ));
     }
 
+    let compile_source = Source::text(ModuleId::new(path.to_string_lossy().into_owned()), source);
     surface
-        .compile(source.as_bytes())
+        .compile(&compile_source)
         .map(|_| ())
         .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
-}
-
-/// Checker-only native module that declares and audits the full Hotki host API surface.
-struct StaticHotkiApiModule;
-
-impl NativeModule for StaticHotkiApiModule {
-    fn name(&self) -> &str {
-        "hotki"
-    }
-
-    fn declaration(&self) -> DeclSource<'_> {
-        DeclSource::Text(luau_api())
-    }
-
-    fn build(&self, builder: &mut dyn ModuleBuilder) {
-        install_hotki_api_shape(builder);
-        install_action_api_shape(builder);
-        install_themes_api_shape(builder);
-    }
-}
-
-/// Install the `hotki` library bindings for checker surface auditing.
-fn install_hotki_api_shape(builder: &mut dyn ModuleBuilder) {
-    let binding = ModuleBinding::library("hotki");
-    for name in [
-        "root",
-        "applications",
-        "import_mode",
-        "import_items",
-        "import_handler",
-        "import_style",
-    ] {
-        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
-    }
-}
-
-/// Install the `action` library bindings for checker surface auditing.
-fn install_action_api_shape(builder: &mut dyn ModuleBuilder) {
-    let binding = ModuleBinding::library("action");
-    for name in [
-        "pop",
-        "exit",
-        "show_root",
-        "hide_hud",
-        "reload_config",
-        "clear_notifications",
-        "theme_next",
-        "theme_prev",
-    ] {
-        builder.constant(
-            name,
-            binding.clone(),
-            ModuleValue::LightUserdata { handle: 0, tag: 0 },
-        );
-    }
-    for name in [
-        "shell",
-        "open",
-        "relay",
-        "show_details",
-        "theme_set",
-        "set_volume",
-        "change_volume",
-        "mute",
-        "run",
-        "selector",
-    ] {
-        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
-    }
-}
-
-/// Install the `themes` library bindings for checker surface auditing.
-fn install_themes_api_shape(builder: &mut dyn ModuleBuilder) {
-    let binding = ModuleBinding::library("themes");
-    for name in ["use", "current", "list", "get", "register", "remove"] {
-        builder.scoped_function(name, binding.clone(), Box::new(StaticHostFunction));
-    }
-}
-
-/// Function placeholder used only for native-module shape auditing.
-struct StaticHostFunction;
-
-impl ScopedHostFunction for StaticHostFunction {
-    fn call<'s>(
-        &self,
-        _scope: &Scope<'s>,
-        _args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        Err(RuntimeError::runtime("checker-only Hotki API surface"))
-    }
 }
 
 #[cfg(test)]

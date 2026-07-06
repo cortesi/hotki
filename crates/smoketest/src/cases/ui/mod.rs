@@ -5,14 +5,18 @@ mod activation;
 /// CoreGraphics window and display inspection helpers.
 mod window_inspection;
 
-use std::{fs, thread, time::Duration};
+use std::{
+    cmp::Ordering,
+    fs, thread,
+    time::{Duration, Instant},
+};
 
 use hotki_protocol::{MsgToUI, Toggle};
 use tracing::{debug, info};
 
 use self::{
     activation::{ActivationOutcome, BindingWatcher},
-    window_inspection::{HudWindowSnapshot, collect_hud_windows},
+    window_inspection::{WindowSnapshot, collect_hotki_windows, collect_notification_windows},
 };
 use crate::{
     config,
@@ -30,6 +34,8 @@ const UI_DEMO_ACTIVATE: &str = "t";
 const UI_DEMO_THEME_KEYS: &[&str] = &["l", "l", "l", "l", "l"];
 /// Key that triggers a shell-backed notification.
 const UI_DEMO_NOTIFY: &str = "n";
+/// Direct global key used by the notification-focused smoke case.
+const NOTIFICATION_IDENT: &str = "shift+cmd+n";
 /// Key that opens the Details window.
 const UI_DEMO_DETAILS: &str = "d";
 /// Key that opens the selector demo.
@@ -40,6 +46,10 @@ const UI_DEMO_SELECTOR_QUERY: &str = "a";
 const UI_DEMO_SELECTOR_SELECT: &str = "return";
 /// Key that exits the demo submenu.
 const UI_DEMO_EXIT: &str = "esc";
+/// Screen edge margin used by notification placement.
+const NOTIFICATION_MARGIN_PX: f32 = 12.0;
+/// Tolerance used for native window-edge comparisons.
+const LAYOUT_SLOP_PX: f32 = 2.0;
 
 /// Demo HUD mode applied in the generated Luau config.
 #[derive(Clone, Copy)]
@@ -103,6 +113,130 @@ end)
     )
 }
 
+/// Build a minimal default-theme config that triggers one notification.
+fn notification_config() -> String {
+    format!(
+        r#"
+themes:use("default")
+
+hotki.root(function(menu, ctx)
+  menu:bind("{}", "Native Notification", action.shell("echo native notification", {{
+    ok_notify = "info",
+    err_notify = "warn",
+  }}))
+end)
+"#,
+        NOTIFICATION_IDENT
+    )
+}
+
+/// Poll CoreGraphics until a notification window is visible.
+fn wait_for_notification_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
+    let start = Instant::now();
+    let timeout = config::ms(config::DEFAULTS.timeout_ms);
+    loop {
+        let windows = collect_notification_windows(pid)?;
+        if !windows.is_empty() {
+            return Ok(windows);
+        }
+        if start.elapsed() >= timeout {
+            let all_windows = collect_hotki_windows(pid)?;
+            return Err(Error::InvalidState(format!(
+                "no notification window candidates; hotki windows: {}",
+                describe_windows(&all_windows)
+            )));
+        }
+        thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
+    }
+}
+
+/// Verify a notification candidate is aligned to the active display's top-right edge.
+fn verify_notification_window(window: &WindowSnapshot) -> Result<()> {
+    let displays = window_inspection::enumerate_displays()?;
+    let display_id = window.display_id.ok_or_else(|| {
+        Error::InvalidState(format!(
+            "notification window {} missing display id",
+            window.id
+        ))
+    })?;
+    let display = displays
+        .iter()
+        .copied()
+        .find(|display| display.id == display_id)
+        .ok_or_else(|| {
+            Error::InvalidState(format!(
+                "display {display_id} missing during notification check"
+            ))
+        })?;
+    let tolerance = NOTIFICATION_MARGIN_PX + LAYOUT_SLOP_PX;
+    let right_delta = (display.max_x() - window.max_x()).abs();
+    let expected_top = display.visible_y() + NOTIFICATION_MARGIN_PX;
+    let top_delta = (window.y - expected_top).abs();
+    if right_delta > tolerance {
+        return Err(Error::InvalidState(format!(
+            "notification right edge misaligned: window_max_x={} display_max_x={} delta={} \
+             tolerance={} window={}",
+            window.max_x(),
+            display.max_x(),
+            right_delta,
+            tolerance,
+            describe_window(window)
+        )));
+    }
+    if top_delta > tolerance {
+        return Err(Error::InvalidState(format!(
+            "notification top edge misaligned: window_y={} expected_top={} visible_y={} \
+             display_y={} delta={} tolerance={} window={}",
+            window.y,
+            expected_top,
+            display.visible_y(),
+            display.y(),
+            top_delta,
+            tolerance,
+            describe_window(window)
+        )));
+    }
+    let max_height = (display.visible_height() - 2.0 * NOTIFICATION_MARGIN_PX).max(1.0);
+    if window.height > max_height + LAYOUT_SLOP_PX {
+        return Err(Error::InvalidState(format!(
+            "notification height exceeds max: height={} max={} window={}",
+            window.height,
+            max_height,
+            describe_window(window)
+        )));
+    }
+    Ok(())
+}
+
+/// Render a compact diagnostic for a list of windows.
+fn describe_windows(windows: &[WindowSnapshot]) -> String {
+    if windows.is_empty() {
+        return "<none>".to_string();
+    }
+    windows
+        .iter()
+        .map(describe_window)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Render a compact diagnostic for one window.
+fn describe_window(window: &WindowSnapshot) -> String {
+    format!(
+        "title={} pid={} id={} display_id={:?} on_screen={} layer={} bounds=({}, {}, {}, {})",
+        window.title,
+        window.pid,
+        window.id,
+        window.display_id,
+        window.is_on_screen,
+        window.layer,
+        window.x,
+        window.y,
+        window.width,
+        window.height
+    )
+}
+
 /// Verify full HUD appears and responds to keys.
 pub fn hud(ctx: &mut CaseCtx<'_>) -> Result<()> {
     run_ui_case(
@@ -140,6 +274,73 @@ pub fn displays(ctx: &mut CaseCtx<'_>) -> Result<()> {
     )
 }
 
+/// Verify a default-position notification appears at the active display's right edge.
+pub fn notifications(ctx: &mut CaseCtx<'_>) -> Result<()> {
+    let mut session: Option<HotkiSession> = None;
+    let mut notification_windows: Option<Vec<WindowSnapshot>> = None;
+
+    ctx.setup(|ctx| {
+        let config_path = ctx.scratch_path("notifications_config.luau");
+        fs::write(&config_path, notification_config().as_bytes())?;
+        let spawned = HotkiSession::spawn(
+            HotkiSessionConfig::from_env()?
+                .with_config(&config_path)
+                .with_logs(true),
+        )?;
+        session = Some(spawned);
+        Ok(())
+    })?;
+
+    ctx.action(|_| {
+        let session_ref = session.as_mut().ok_or_else(|| {
+            Error::InvalidState("notification case state missing during action".into())
+        })?;
+        let gate_ms = config::BINDING_GATES.default_ms * 2;
+        {
+            let driver = session_ref.driver_mut();
+            driver.ensure_ready(1_000)?;
+            driver.wait_for_idents(&[NOTIFICATION_IDENT], gate_ms)?;
+            let cursor = driver.event_cursor()?;
+            driver.inject_key(NOTIFICATION_IDENT)?;
+            driver.wait_for_message_since(
+                cursor,
+                gate_ms,
+                |msg| matches!(msg, MsgToUI::Notify { title, .. } if title == "Shell command"),
+            )?;
+        }
+
+        let mut windows = wait_for_notification_windows(session_ref.pid() as i32)?;
+        windows.sort_by(|a, b| b.max_y().partial_cmp(&a.max_y()).unwrap_or(Ordering::Equal));
+        let topmost = windows.first().ok_or_else(|| {
+            Error::InvalidState("no notification window candidates were visible".into())
+        })?;
+        verify_notification_window(topmost)?;
+        notification_windows = Some(windows);
+        Ok(())
+    })?;
+
+    ctx.settle(|ctx| {
+        let mut session_inner = session
+            .take()
+            .ok_or_else(|| Error::InvalidState("notification case state missing".into()))?;
+        let windows_desc = notification_windows
+            .as_ref()
+            .map(|windows| describe_windows(windows))
+            .unwrap_or_else(|| "<none>".to_string());
+        ctx.log_event("notification_windows", &windows_desc);
+        if let Err(err) = session_inner.shutdown() {
+            debug!(
+                ?err,
+                "server driver shutdown returned error (expected on clean exit)"
+            );
+        }
+        session_inner.kill_and_wait();
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
 /// Parameters describing a UI demo scenario.
 struct UiCaseSpec {
     /// Registry slug recorded in artifacts.
@@ -166,7 +367,7 @@ struct UiCaseState {
     /// Observed time in milliseconds until the HUD became visible.
     time_to_hud_ms: Option<u64>,
     /// Snapshot of HUD-related windows after activation.
-    hud_windows: Option<Vec<HudWindowSnapshot>>,
+    hud_windows: Option<Vec<WindowSnapshot>>,
     /// Detailed activation diagnostics for the HUD.
     hud_activation: Option<ActivationOutcome>,
 }
@@ -281,7 +482,7 @@ where
             })?;
         }
 
-        let hud_windows = collect_hud_windows(state_ref.session.pid() as i32)?;
+        let hud_windows = collect_hotki_windows(state_ref.session.pid() as i32)?;
 
         state_ref.time_to_hud_ms = activation.hud_visible_ms();
         state_ref.hud_activation = Some(activation);
@@ -301,17 +502,7 @@ where
         let hud_windows_desc = state_inner
             .hud_windows
             .as_ref()
-            .map(|wins| {
-                wins.iter()
-                    .map(|w| {
-                        format!(
-                            "title={} pid={} id={} display_id={:?} on_screen={} layer={}",
-                            w.title, w.pid, w.id, w.display_id, w.is_on_screen, w.layer
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
+            .map(|wins| describe_windows(wins))
             .unwrap_or_else(|| "<none>".to_string());
         let hud_activation_summary = state_inner
             .hud_activation
@@ -381,7 +572,7 @@ fn verify_display_alignment(state: &mut UiCaseState) -> Result<()> {
     let hud_windows = if let Some(windows) = state.hud_windows.clone() {
         windows
     } else {
-        let windows = collect_hud_windows(state.session.pid() as i32)?;
+        let windows = collect_hotki_windows(state.session.pid() as i32)?;
         state.hud_windows = Some(windows.clone());
         windows
     };

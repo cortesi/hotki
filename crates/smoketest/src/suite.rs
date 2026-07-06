@@ -542,4 +542,11 @@ static CASES: &[CaseEntry] = &[
         Budget::new(800, 2000, 1200),
         cases::displays,
     ),
+    CaseEntry::new(
+        "notifications",
+        Some("Verify notification window placement."),
+        EXTRA_TIMEOUT,
+        Budget::new(800, 2000, 1200),
+        cases::notifications,
+    ),
 ];

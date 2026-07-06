@@ -54,6 +54,9 @@ pub enum SeqTest {
     /// Verify HUD placement on multi-display setups
     #[value(name = "displays")]
     Displays,
+    /// Verify notification window placement
+    #[value(name = "notifications")]
+    Notifications,
 }
 
 impl SeqTest {
@@ -63,6 +66,7 @@ impl SeqTest {
             Self::Hud => "hud",
             Self::Mini => "mini",
             Self::Displays => "displays",
+            Self::Notifications => "notifications",
         }
     }
 }
@@ -95,6 +99,10 @@ pub enum Commands {
     /// Verify HUD placement on multi-display setups
     #[command(name = "displays")]
     Displays,
+
+    /// Verify notification window placement
+    #[command(name = "notifications")]
+    Notifications,
 }
 
 impl Commands {
@@ -104,6 +112,7 @@ impl Commands {
             Self::Hud => Some("hud"),
             Self::Mini => Some("mini"),
             Self::Displays => Some("displays"),
+            Self::Notifications => Some("notifications"),
             Self::All | Self::Seq { .. } => None,
         }
     }

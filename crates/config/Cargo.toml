@@ -20,4 +20,4 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
 tracing.workspace = true
-ruau = { version = "0.0.1", default-features = false }
+ruau = { path = "/Users/cortesi/git/private/ruau/crates/ruau", default-features = false }

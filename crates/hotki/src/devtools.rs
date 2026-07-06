@@ -11,7 +11,10 @@ use eguidev::{
     FixtureSpec, FrameGuard, ViewportSel, WidgetRole, WidgetValue, frame_scope, id_with_meta,
     name_viewport,
 };
-use hotki_protocol::{MsgToUI, NotifyKind, Toggle, rpc::InjectKind};
+use hotki_protocol::{
+    DisplayFrame, DisplaysSnapshot, HudState, MsgToUI, NotifyKind, NotifyPos, Style, Toggle,
+    rpc::InjectKind,
+};
 use permissions::{PermissionState, PermissionsStatus};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
@@ -302,7 +305,17 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_in("details.notification.0.title", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.notifications.variants",
-            "UI-thread lane: create deterministic info, warning, error, and success notifications.",
+            "UI-thread lane: create deterministic default-right notification variants.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true)),
+        FixtureSpec::new(
+            "hotki.notifications.left_variants",
+            "UI-thread lane: create deterministic explicit-left notification variants.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true)),
+        FixtureSpec::new(
+            "hotki.notifications.truncated",
+            "UI-thread lane: create a notification that must vertically truncate on a short display.",
         )
         .anchor_value("app.ready", WidgetValue::Bool(true)),
         FixtureSpec::new(
@@ -374,6 +387,21 @@ fn viewport_sel(name: &'static str) -> ViewportSel {
     ViewportSel::name(name).expect("hard-coded hotki viewport name is valid")
 }
 
+/// Synthetic display small enough to force vertical notification truncation.
+fn short_display_snapshot() -> DisplaysSnapshot {
+    DisplaysSnapshot {
+        global_top: 90.0,
+        active: Some(DisplayFrame {
+            id: 1,
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 90.0,
+        }),
+        displays: Vec::new(),
+    }
+}
+
 /// Fixture bridge into production UI and runtime channels.
 #[derive(Clone)]
 struct FixtureBridge {
@@ -433,6 +461,7 @@ impl FixtureBridge {
             }
             "hotki.notifications" => {
                 self.clear_transient_ui()?;
+                self.reconfigure_notifications(NotifyPos::Right, DisplaysSnapshot::default())?;
                 self.send_ui_message(MsgToUI::Notify {
                     kind: NotifyKind::Info,
                     title: "Eguidev".to_string(),
@@ -442,7 +471,15 @@ impl FixtureBridge {
             }
             "hotki.notifications.variants" => {
                 self.clear_transient_ui()?;
-                self.send_notification_variants()?;
+                self.send_notification_variants(NotifyPos::Right)?;
+            }
+            "hotki.notifications.left_variants" => {
+                self.clear_transient_ui()?;
+                self.send_notification_variants(NotifyPos::Left)?;
+            }
+            "hotki.notifications.truncated" => {
+                self.clear_transient_ui()?;
+                self.send_truncated_notification()?;
             }
             "hotki.hud" => {
                 self.clear_transient_ui()?;
@@ -479,25 +516,66 @@ impl FixtureBridge {
     }
 
     /// Create one visible notification for each practical display kind.
-    fn send_notification_variants(&self) -> Result<(), String> {
-        for (kind, title) in [
-            (NotifyKind::Info, "Info"),
-            (NotifyKind::Warn, "Warning"),
-            (NotifyKind::Error, "Error"),
-            (NotifyKind::Success, "Success"),
+    fn send_notification_variants(&self, pos: NotifyPos) -> Result<(), String> {
+        self.reconfigure_notifications(pos, DisplaysSnapshot::default())?;
+        for (kind, title, text) in [
+            (
+                NotifyKind::Info,
+                "Information With A Long Title That Wraps Inside The Card",
+                "This notification body is ordinary wrapped prose that should remain fully visible \
+                 inside the measured card.",
+            ),
+            (NotifyKind::Warn, "Warning", "Warning notification fixture"),
+            (
+                NotifyKind::Error,
+                "Error",
+                "Error notification fixture: \
+                 /Users/example/hotki/long-unbroken-path-that-must-wrap-inside-the-card-without-being-clipped",
+            ),
+            (
+                NotifyKind::Success,
+                "Success",
+                "Success notification fixture",
+            ),
         ] {
-            let text = if kind == NotifyKind::Error {
-                "Error notification fixture: /Users/example/hotki/long-unbroken-path-that-must-wrap-inside-the-card-without-being-clipped".to_string()
-            } else {
-                format!("{title} notification fixture")
-            };
             self.send_ui_message(MsgToUI::Notify {
                 kind,
                 title: title.to_string(),
-                text,
+                text: text.to_string(),
             })?;
         }
         Ok(())
+    }
+
+    /// Create one notification with a deliberately over-height body.
+    fn send_truncated_notification(&self) -> Result<(), String> {
+        self.reconfigure_notifications(NotifyPos::Right, short_display_snapshot())?;
+        self.send_ui_message(MsgToUI::Notify {
+            kind: NotifyKind::Warn,
+            title: "Tall Notification".to_string(),
+            text: "This notification body is intentionally long. ".repeat(80),
+        })
+    }
+
+    /// Reconfigure notification placement through the production HUD update path.
+    fn reconfigure_notifications(
+        &self,
+        pos: NotifyPos,
+        displays: DisplaysSnapshot,
+    ) -> Result<(), String> {
+        let mut style = Style::default();
+        style.notify.pos = pos;
+        self.send_ui_message(MsgToUI::HudUpdate {
+            hud: Box::new(HudState {
+                visible: false,
+                rows: Vec::new(),
+                depth: 0,
+                breadcrumbs: Vec::new(),
+                style,
+                capture: false,
+            }),
+            displays,
+        })
     }
 
     /// Clear UI-local transient state before applying a fixture.

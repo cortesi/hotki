@@ -1,11 +1,11 @@
 //! Transient in-app notifications with stacking, animation, and theming.
 use std::time::{Duration, Instant};
 
-use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob};
-use eguidev::{
-    DevMcp, DevUiExt, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full,
+use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob, vec2};
+use eguidev::{DevMcp, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full};
+use hotki_protocol::{
+    FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme, NotifyWindowStyle,
 };
-use hotki_protocol::{FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme};
 
 use crate::{
     devtools,
@@ -22,6 +22,12 @@ const NOTIFICATION_MARGIN: f32 = 12.0;
 const NOTIFICATION_GAP: f32 = 8.0;
 /// Inner padding used by notification cards.
 const NOTIFICATION_PAD: f32 = 12.0;
+/// Horizontal gap between a notification icon and title text.
+const NOTIFICATION_ICON_TITLE_GAP: f32 = 8.0;
+/// Vertical gap between a notification title row and body.
+const NOTIFICATION_TITLE_BODY_GAP: f32 = 6.0;
+/// Allowed layout delta for runtime compactness assertions.
+const LAYOUT_SLOP_PX: f32 = 2.0;
 /// Minimum supported notification timeout.
 const NOTIFICATION_TIMEOUT_MIN_SECS: f32 = 0.1;
 /// Maximum supported notification timeout.
@@ -32,8 +38,8 @@ fn notification_body_wrap_width(width: f32) -> f32 {
     (width - 2.0 * NOTIFICATION_PAD).max(1.0)
 }
 
-/// Build the body text layout used by both measurement and rendering.
-fn notification_body_layout_job(
+/// Build wrapped notification text used by both measurement and rendering.
+fn notification_text_layout_job(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
@@ -53,6 +59,49 @@ fn notification_body_layout_job(
         },
     );
     job
+}
+
+/// Build the body text layout used by both measurement and rendering.
+fn notification_body_layout_job(
+    text: &str,
+    font_size: f32,
+    font_weight: FontWeight,
+    color: Color32,
+    wrap_width: f32,
+) -> LayoutJob {
+    notification_text_layout_job(text, font_size, font_weight, color, wrap_width)
+}
+
+/// Build the title text layout used by both measurement and rendering.
+fn notification_title_layout_job(
+    text: &str,
+    font_size: f32,
+    font_weight: FontWeight,
+    color: Color32,
+    wrap_width: f32,
+) -> LayoutJob {
+    notification_text_layout_job(text, font_size, font_weight, color, wrap_width)
+}
+
+/// Clamp configured notification width to fit inside the active display margin.
+fn notification_card_width(configured_width: f32, display_width: f32) -> f32 {
+    let available_width = (display_width - 2.0 * NOTIFICATION_MARGIN).max(1.0);
+    configured_width.max(1.0).min(available_width)
+}
+
+/// Maximum notification card height for a display.
+fn notification_max_card_height(display_height: f32) -> f32 {
+    (display_height - 2.0 * NOTIFICATION_MARGIN).max(1.0)
+}
+
+/// Return the text rows whose glyphs are visible within a clipped height.
+fn notification_visible_text(galley: &egui::Galley, visible_height: f32) -> String {
+    galley
+        .rows
+        .iter()
+        .take_while(|row| row.rect().min.y < visible_height)
+        .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +156,8 @@ struct NotificationItem {
     snap_to_target: bool,
     /// Cached window size used to build the viewport.
     size: Vec2,
+    /// Last measured card layout.
+    layout: NotificationCardMeasure,
     /// Whether NSWindow style has been applied for this notification viewport.
     window_configured: bool,
 }
@@ -131,6 +182,144 @@ struct NotificationTitleStyle<'a> {
     title_weight: FontWeight,
     /// Title foreground color.
     title_fg: Color32,
+}
+
+#[derive(Clone, Copy, Debug)]
+/// Shared measurement for one notification card.
+struct NotificationCardMeasure {
+    /// Body text width after horizontal card padding.
+    body_wrap_width: f32,
+    /// Title text width after accounting for the optional icon.
+    title_wrap_width: f32,
+    /// Optional icon width.
+    icon_width: f32,
+    /// Optional icon height.
+    icon_height: f32,
+    /// Wrapped title text height.
+    title_height: f32,
+    /// Full title row height, including the optional icon.
+    title_row_height: f32,
+    /// Full body text height before vertical truncation.
+    body_height: f32,
+    /// Content height before frame padding.
+    content_height: f32,
+    /// Card height before applying display maximum height.
+    unclamped_height: f32,
+    /// Maximum card height for the active display.
+    max_height: f32,
+    /// Final card height after applying maximum height.
+    height: f32,
+    /// Body height that can be painted inside the final card.
+    body_visible_height: f32,
+    /// Whether body content must be vertically clipped.
+    truncated: bool,
+}
+
+impl NotificationCardMeasure {
+    /// Minimal placeholder used before a card has been measured against a display.
+    fn empty(width: f32) -> Self {
+        let body_wrap_width = notification_body_wrap_width(width);
+        Self {
+            body_wrap_width,
+            title_wrap_width: body_wrap_width,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            title_height: 0.0,
+            title_row_height: 0.0,
+            body_height: 0.0,
+            content_height: 0.0,
+            unclamped_height: 1.0,
+            max_height: 1.0,
+            height: 1.0,
+            body_visible_height: 0.0,
+            truncated: false,
+        }
+    }
+}
+
+/// Measure one card using the same text wrapping, icon sizing, and padding as render.
+fn measure_notification_card(
+    ctx: &Context,
+    width: f32,
+    display_height: f32,
+    title: &str,
+    body: &str,
+    style: &NotifyWindowStyle,
+) -> NotificationCardMeasure {
+    let width = width.max(1.0);
+    let body_wrap_width = notification_body_wrap_width(width);
+    let title_fg = Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
+    let body_fg = Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
+    let (icon_width, icon_height) = measure_notification_icon(ctx, style, title_fg);
+    let title_wrap_width = if icon_width > 0.0 {
+        (body_wrap_width - icon_width - NOTIFICATION_ICON_TITLE_GAP).max(1.0)
+    } else {
+        body_wrap_width
+    };
+
+    let title_galley = ctx.fonts_mut(|fonts| {
+        fonts.layout_job(notification_title_layout_job(
+            title,
+            style.title_font_size,
+            style.title_font_weight,
+            title_fg,
+            title_wrap_width,
+        ))
+    });
+    let body_galley = ctx.fonts_mut(|fonts| {
+        fonts.layout_job(notification_body_layout_job(
+            body,
+            style.body_font_size,
+            style.body_font_weight,
+            body_fg,
+            body_wrap_width,
+        ))
+    });
+    let title_height = title_galley.size().y;
+    let title_row_height = title_height.max(icon_height);
+    let body_height = body_galley.size().y;
+    let content_height = title_row_height + NOTIFICATION_TITLE_BODY_GAP + body_height;
+    let unclamped_height = (content_height + 2.0 * NOTIFICATION_PAD).max(1.0);
+    let max_height = notification_max_card_height(display_height);
+    let height = unclamped_height.min(max_height).max(1.0);
+    let available_body_height =
+        height - 2.0 * NOTIFICATION_PAD - title_row_height - NOTIFICATION_TITLE_BODY_GAP;
+    let body_visible_height = available_body_height.clamp(0.0, body_height);
+
+    NotificationCardMeasure {
+        body_wrap_width,
+        title_wrap_width,
+        icon_width,
+        icon_height,
+        title_height,
+        title_row_height,
+        body_height,
+        content_height,
+        unclamped_height,
+        max_height,
+        height,
+        body_visible_height,
+        truncated: body_visible_height + LAYOUT_SLOP_PX < body_height,
+    }
+}
+
+/// Measure the optional notification icon.
+fn measure_notification_icon(
+    ctx: &Context,
+    style: &NotifyWindowStyle,
+    title_fg: Color32,
+) -> (f32, f32) {
+    let Some(icon) = style.icon.as_deref().filter(|icon| !icon.is_empty()) else {
+        return (0.0, 0.0);
+    };
+    ctx.fonts_mut(|fonts| {
+        let galley = fonts.layout_no_wrap(
+            icon.to_string(),
+            egui::FontId::new(style.title_font_size * 2.0, egui::FontFamily::Proportional),
+            title_fg,
+        );
+        (galley.size().x, galley.size().y)
+    })
 }
 
 /// Manages transient in-app notifications and their windows.
@@ -200,61 +389,139 @@ impl NotificationCenter {
     /// Render the title row with optional icon.
     fn render_title_row(
         ui: &mut egui::Ui,
-        nctx: &Context,
         id_base: &str,
         title: &str,
         style: NotificationTitleStyle<'_>,
+        measure: NotificationCardMeasure,
     ) {
-        let title_fmt = egui::TextFormat {
-            color: style.title_fg,
-            font_id: egui::FontId::new(style.title_size, fonts::weight_family(style.title_weight)),
-            ..Default::default()
-        };
+        let (row_rect, _) = ui.allocate_exact_size(
+            vec2(measure.body_wrap_width, measure.title_row_height),
+            egui::Sense::hover(),
+        );
+        let mut title_x = row_rect.min.x;
         if let Some(ic) = style.icon
             && !ic.is_empty()
         {
-            let icon_text = egui::RichText::new(ic).font(egui::FontId::new(
+            let icon_rect = egui::Rect::from_min_size(
+                pos2(
+                    row_rect.min.x,
+                    row_rect.min.y + (measure.title_row_height - measure.icon_height) * 0.5,
+                ),
+                vec2(measure.icon_width, measure.icon_height),
+            );
+            let icon_job = notification_title_layout_job(
+                ic,
                 style.title_size * 2.0,
-                egui::FontFamily::Proportional,
-            ));
-            ui.dev_label(format!("{id_base}.icon"), icon_text.color(style.title_fg));
-            let (icon_h, title_h) = nctx.fonts_mut(|f| {
-                let ih = f
-                    .layout_no_wrap(
-                        ic.to_string(),
-                        egui::FontId::new(style.title_size * 2.0, egui::FontFamily::Proportional),
-                        style.title_fg,
-                    )
-                    .size()
-                    .y;
-                let th = f
-                    .layout_no_wrap(
-                        title.to_string(),
-                        egui::FontId::new(
-                            style.title_size,
-                            fonts::weight_family(style.title_weight),
-                        ),
-                        style.title_fg,
-                    )
-                    .size()
-                    .y;
-                (ih, th)
-            });
-            let vpad = ((icon_h - title_h) / 2.0).max(0.0);
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                if vpad > 0.0 {
-                    ui.add_space(vpad);
-                }
-                let mut title_job = LayoutJob::default();
-                title_job.append(title, 0.0, title_fmt);
-                ui.dev_label(format!("{id_base}.title"), title_job);
-            });
-            return;
+                FontWeight::Regular,
+                style.title_fg,
+                measure.icon_width,
+            );
+            let mut icon_job = icon_job;
+            if let Some(section) = icon_job.sections.first_mut() {
+                section.format.font_id =
+                    egui::FontId::new(style.title_size * 2.0, egui::FontFamily::Proportional);
+            }
+            Self::paint_measured_label(
+                ui,
+                format!("{id_base}.icon"),
+                ic,
+                icon_job,
+                icon_rect,
+                style.title_fg,
+            );
+            title_x = icon_rect.max.x + NOTIFICATION_ICON_TITLE_GAP;
         }
-        let mut title_job = LayoutJob::default();
-        title_job.append(title, 0.0, title_fmt);
-        ui.dev_label(format!("{id_base}.title"), title_job);
+        let title_rect = egui::Rect::from_min_size(
+            pos2(
+                title_x,
+                row_rect.min.y + (measure.title_row_height - measure.title_height) * 0.5,
+            ),
+            vec2(measure.title_wrap_width, measure.title_height),
+        );
+        let title_job = notification_title_layout_job(
+            title,
+            style.title_size,
+            style.title_weight,
+            style.title_fg,
+            measure.title_wrap_width,
+        );
+        Self::paint_measured_label(
+            ui,
+            format!("{id_base}.title"),
+            title,
+            title_job,
+            title_rect,
+            style.title_fg,
+        );
+    }
+
+    /// Paint a measured label inside an explicit rect and record eguidev metadata.
+    fn paint_measured_label(
+        ui: &mut egui::Ui,
+        id: impl Into<String>,
+        text: &str,
+        job: LayoutJob,
+        rect: egui::Rect,
+        color: Color32,
+    ) -> egui::Response {
+        let id = id.into();
+        let response = ui.allocate_rect(rect, egui::Sense::hover());
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        ui.painter()
+            .with_clip_rect(rect.intersect(ui.clip_rect()))
+            .galley(rect.min, galley, color);
+        track_response_full(
+            id,
+            &response,
+            WidgetMeta {
+                role: WidgetRole::Label,
+                label: Some(text.to_string()),
+                value: Some(WidgetValue::Text(text.to_string())),
+                visible: ui.is_visible() && ui.is_rect_visible(rect),
+                ..Default::default()
+            },
+        );
+        response
+    }
+
+    /// Paint the measured body region, clipping vertically when the card is too short.
+    fn render_body(
+        ui: &mut egui::Ui,
+        id_base: &str,
+        text: &str,
+        style: &NotifyWindowStyle,
+        body_fg: Color32,
+        measure: NotificationCardMeasure,
+    ) {
+        let body_size = vec2(measure.body_wrap_width, measure.body_visible_height);
+        let (rect, response) = ui.allocate_exact_size(body_size, egui::Sense::hover());
+        let text_job = notification_body_layout_job(
+            text,
+            style.body_font_size,
+            style.body_font_weight,
+            body_fg,
+            measure.body_wrap_width,
+        );
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(text_job));
+        let visible_text = if measure.truncated {
+            notification_visible_text(&galley, measure.body_visible_height)
+        } else {
+            text.to_string()
+        };
+        ui.painter()
+            .with_clip_rect(rect.intersect(ui.clip_rect()))
+            .galley(rect.min, galley, body_fg);
+        track_response_full(
+            format!("{id_base}.body"),
+            &response,
+            WidgetMeta {
+                role: WidgetRole::Label,
+                label: Some(text.to_string()),
+                value: Some(WidgetValue::Text(visible_text)),
+                visible: ui.is_visible() && ui.is_rect_visible(rect),
+                ..Default::default()
+            },
+        );
     }
 
     /// Queue a new notification to be displayed.
@@ -275,6 +542,7 @@ impl NotificationCenter {
         }
 
         let (viewport, dev_id) = self.next_notification_identity();
+        let width = self.width.max(1.0);
         let item = NotificationItem {
             viewport,
             dev_id,
@@ -289,6 +557,7 @@ impl NotificationCenter {
             anim_start_time: Instant::now(),
             snap_to_target: true,
             size: Vec2::ZERO,
+            layout: NotificationCardMeasure::empty(width),
             window_configured: false,
         };
         self.items.insert(0, item);
@@ -333,59 +602,18 @@ impl NotificationCenter {
         let bounds = self.metrics.display().active_bounds();
         let frame = bounds.frame();
         let mut y_cursor = frame.y + frame.height - NOTIFICATION_MARGIN;
-        let width = self.width.max(1.0);
-        let body_wrap_width = notification_body_wrap_width(width);
+        let width = notification_card_width(self.width, frame.width);
 
-        // Measure each notification to compute height using the same fonts and paddings as render
         for item in &mut self.items {
             let style = self.theme.style_for(item.kind);
-            let title_font = egui::FontId::new(
-                style.title_font_size,
-                fonts::weight_family(style.title_font_weight),
-            );
-            let text_gal = ctx.fonts_mut(|f| {
-                f.layout_job(notification_body_layout_job(
-                    &item.text,
-                    style.body_font_size,
-                    style.body_font_weight,
-                    Color32::WHITE,
-                    body_wrap_width,
-                ))
-            });
-            let title_gal = ctx.fonts_mut(|f| {
-                f.layout_no_wrap(item.title.clone(), title_font.clone(), Color32::WHITE)
-            });
-            // Account for icon height (rendered at 2x title size) when computing title line height
-            let icon_h = if let Some(ic) = &style.icon {
-                if !ic.is_empty() {
-                    ctx.fonts_mut(|f| {
-                        f.layout_no_wrap(
-                            ic.clone(),
-                            // Use proportional family to allow fallback for symbol glyphs
-                            egui::FontId::new(
-                                style.title_font_size * 2.0,
-                                egui::FontFamily::Proportional,
-                            ),
-                            Color32::WHITE,
-                        )
-                        .size()
-                        .y
-                    })
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            // Vertical spacing between title and body is 6.0 in render
-            let content_h = title_gal.size().y.max(icon_h) + 6.0 + text_gal.size().y;
-            // Guard for negative/degenerate heights and ensure a minimal positive size.
-            let total_h = (content_h + 2.0 * NOTIFICATION_PAD).max(1.0);
-            let placement = Self::placement_for(bounds, self.side, width, total_h, y_cursor);
+            let measure =
+                measure_notification_card(ctx, width, frame.height, &item.title, &item.text, style);
+            let placement = Self::placement_for(bounds, self.side, width, measure.height, y_cursor);
             let new_target = placement.geometry.pos;
             let old_target = item.target_pos;
             item.target_pos = new_target;
             item.size = placement.geometry.size;
+            item.layout = measure;
             y_cursor = placement.next_cursor_bottom;
 
             // Decide whether to animate or snap to target
@@ -461,7 +689,6 @@ impl NotificationCenter {
                     it.dev_id.clone(),
                     it.dev_id.clone(),
                     |vp_ui| {
-                        let nctx = vp_ui.ctx().clone();
                         let style = self.theme.style_for(it.kind);
                         let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
                         let title_fg =
@@ -469,59 +696,30 @@ impl NotificationCenter {
                         let body_fg =
                             Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
                         let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        render_notification_metadata(vp_ui, it, self.side, bounds);
                         let frame = Frame::new()
                             .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
                             .corner_radius(egui::CornerRadius::same(self.radius as u8))
-                            .inner_margin(egui::Margin {
-                                left: 12,
-                                right: 12,
-                                top: 12,
-                                bottom: 12,
-                            });
+                            .inner_margin(egui::Margin::same(NOTIFICATION_PAD as i8));
                         egui::CentralPanel::default()
                             .frame(frame)
                             .show(vp_ui, |ui| {
-                                render_notification_metadata(ui, it, self.side, bounds);
-                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
-                                ui.horizontal(|ui| {
-                                    Self::render_title_row(
-                                        ui,
-                                        &nctx,
-                                        &it.dev_id,
-                                        &it.title,
-                                        NotificationTitleStyle {
-                                            icon: style.icon.as_deref(),
-                                            title_size: style.title_font_size,
-                                            title_weight: style.title_font_weight,
-                                            title_fg,
-                                        },
-                                    );
-                                });
-                                let body_wrap_width = notification_body_wrap_width(it.size.x);
-                                let text_job = notification_body_layout_job(
-                                    &it.text,
-                                    style.body_font_size,
-                                    style.body_font_weight,
-                                    body_fg,
-                                    body_wrap_width,
-                                );
-                                let body_response = ui
-                                    .vertical(|ui| {
-                                        ui.set_width(body_wrap_width);
-                                        ui.add(egui::Label::new(text_job).wrap())
-                                    })
-                                    .inner;
-                                track_response_full(
-                                    format!("{}.body", it.dev_id),
-                                    &body_response,
-                                    WidgetMeta {
-                                        role: WidgetRole::Label,
-                                        label: Some(it.text.clone()),
-                                        value: Some(WidgetValue::Text(it.text.clone())),
-                                        visible: ui.is_visible()
-                                            && ui.is_rect_visible(body_response.rect),
-                                        ..Default::default()
+                                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                                Self::render_title_row(
+                                    ui,
+                                    &it.dev_id,
+                                    &it.title,
+                                    NotificationTitleStyle {
+                                        icon: style.icon.as_deref(),
+                                        title_size: style.title_font_size,
+                                        title_weight: style.title_font_weight,
+                                        title_fg,
                                     },
+                                    it.layout,
+                                );
+                                ui.add_space(NOTIFICATION_TITLE_BODY_GAP);
+                                Self::render_body(
+                                    ui, &it.dev_id, &it.text, style, body_fg, it.layout,
                                 );
                             });
                     },
@@ -630,68 +828,150 @@ fn render_stack_item_metadata(ui: &mut egui::Ui, item: &NotificationStackAlias) 
 
 /// Record script-visible metadata for one live notification viewport.
 fn render_notification_metadata(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     item: &NotificationItem,
     side: NotifyPos,
     bounds: DisplayBounds,
 ) {
     let id = &item.dev_id;
-    let expected_x = bounds.notification_x(side, item.size.x, NOTIFICATION_MARGIN);
-    devtools::value_anchor(
-        ui,
-        format!("{id}.kind"),
-        WidgetValue::Text(notify_kind_label(item.kind).to_string()),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.side"),
-        WidgetValue::Text(notification_side_label(side).to_string()),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.timeout_secs"),
-        WidgetValue::Float(item.timeout.as_secs_f64()),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.current_x"),
-        WidgetValue::Float(f64::from(item.current_pos.x)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.current_y"),
-        WidgetValue::Float(f64::from(item.current_pos.y)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.target_x"),
-        WidgetValue::Float(f64::from(item.target_pos.x)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.expected_x"),
-        WidgetValue::Float(f64::from(expected_x)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.target_y"),
-        WidgetValue::Float(f64::from(item.target_pos.y)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.width"),
-        WidgetValue::Float(f64::from(item.size.x)),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.body_wrap_width"),
-        WidgetValue::Float(f64::from(notification_body_wrap_width(item.size.x))),
-    );
-    devtools::value_anchor(
-        ui,
-        format!("{id}.height"),
-        WidgetValue::Float(f64::from(item.size.y)),
-    );
+    let area_id = egui::Id::new(format!("{id}.metadata"));
+    egui::Area::new(area_id)
+        .fixed_pos(Pos2::ZERO)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            let frame = bounds.frame();
+            let expected_x = bounds.notification_x(side, item.size.x, NOTIFICATION_MARGIN);
+            devtools::value_anchor(
+                ui,
+                format!("{id}.kind"),
+                WidgetValue::Text(notify_kind_label(item.kind).to_string()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.side"),
+                WidgetValue::Text(notification_side_label(side).to_string()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.timeout_secs"),
+                WidgetValue::Float(item.timeout.as_secs_f64()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.current_x"),
+                WidgetValue::Float(f64::from(item.current_pos.x)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.current_y"),
+                WidgetValue::Float(f64::from(item.current_pos.y)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.target_x"),
+                WidgetValue::Float(f64::from(item.target_pos.x)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.expected_x"),
+                WidgetValue::Float(f64::from(expected_x)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.target_y"),
+                WidgetValue::Float(f64::from(item.target_pos.y)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.width"),
+                WidgetValue::Float(f64::from(item.size.x)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.body_wrap_width"),
+                WidgetValue::Float(f64::from(item.layout.body_wrap_width)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.height"),
+                WidgetValue::Float(f64::from(item.size.y)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.content_height"),
+                WidgetValue::Float(f64::from(item.layout.content_height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.unclamped_height"),
+                WidgetValue::Float(f64::from(item.layout.unclamped_height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.max_height"),
+                WidgetValue::Float(f64::from(item.layout.max_height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.body_visible_height"),
+                WidgetValue::Float(f64::from(item.layout.body_visible_height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.body_height"),
+                WidgetValue::Float(f64::from(item.layout.body_height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.body_text"),
+                WidgetValue::Text(item.text.clone()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.truncated"),
+                WidgetValue::Bool(item.layout.truncated),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.padding"),
+                WidgetValue::Float(f64::from(NOTIFICATION_PAD)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.title_body_gap"),
+                WidgetValue::Float(f64::from(NOTIFICATION_TITLE_BODY_GAP)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.layout_slop"),
+                WidgetValue::Float(f64::from(LAYOUT_SLOP_PX)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.display_x"),
+                WidgetValue::Float(f64::from(frame.x)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.display_y"),
+                WidgetValue::Float(f64::from(frame.y)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.display_width"),
+                WidgetValue::Float(f64::from(frame.width)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.display_height"),
+                WidgetValue::Float(f64::from(frame.height)),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("{id}.margin"),
+                WidgetValue::Float(f64::from(NOTIFICATION_MARGIN)),
+            );
+        });
 }
 
 /// Stable script-visible label for notification kind.
@@ -728,10 +1008,26 @@ mod tests {
     use std::time::Duration;
 
     use egui::{pos2, vec2};
-    use hotki_protocol::{DisplayFrame, DisplaysSnapshot, NotifyPos};
+    use hotki_protocol::{
+        DisplayFrame, DisplaysSnapshot, NotifyKind, NotifyPos, NotifyTheme, NotifyWindowStyle,
+    };
 
-    use super::NotificationCenter;
-    use crate::display::{DisplayBounds, DisplayMetrics};
+    use super::{NotificationCenter, measure_notification_card};
+    use crate::{
+        display::{DisplayBounds, DisplayMetrics},
+        fonts,
+    };
+
+    fn test_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        fonts::install_fonts(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        ctx
+    }
+
+    fn style(kind: NotifyKind) -> NotifyWindowStyle {
+        NotifyTheme::default().style_for(kind).clone()
+    }
 
     fn bounds() -> DisplayBounds {
         DisplayMetrics::from_snapshot(&DisplaysSnapshot {
@@ -808,6 +1104,91 @@ mod tests {
         assert_eq!(wrap_width, 40.0);
         assert_eq!(job.wrap.max_width, 40.0);
         assert!(job.wrap.break_anywhere);
+    }
+
+    #[test]
+    fn notification_card_width_clamps_to_display_margin() {
+        assert_eq!(super::notification_card_width(420.0, 900.0), 420.0);
+        assert_eq!(
+            super::notification_card_width(420.0, 100.0),
+            100.0 - 2.0 * super::NOTIFICATION_MARGIN
+        );
+    }
+
+    #[test]
+    fn measure_notification_card_keeps_representative_short_card_compact() {
+        let ctx = test_context();
+        let style = style(NotifyKind::Success);
+
+        let measure = measure_notification_card(&ctx, 420.0, 900.0, "Done", "Short body", &style);
+
+        assert!(!measure.truncated);
+        assert_eq!(measure.height, measure.unclamped_height);
+        assert!(measure.height <= measure.content_height + 2.0 * super::NOTIFICATION_PAD);
+        assert_eq!(measure.body_visible_height, measure.body_height);
+        assert_eq!(measure.max_height, 900.0 - 2.0 * super::NOTIFICATION_MARGIN);
+    }
+
+    #[test]
+    fn measure_notification_card_wraps_long_body_title_and_icon_variants() {
+        let ctx = test_context();
+        let icon_style = style(NotifyKind::Error);
+        let mut no_icon_style = icon_style.clone();
+        no_icon_style.icon = None;
+        let long_body = "/Users/example/hotki/long-unbroken-path-that-must-wrap-inside-the-card-\
+            without-being-clipped-or-forcing-horizontal-growth";
+        let wrapped_body = "This notification body has enough ordinary prose to wrap across \
+            multiple lines while staying within the configured card width.";
+        let long_title = "A very long notification title that should wrap inside the card";
+
+        let long_body_measure =
+            measure_notification_card(&ctx, 420.0, 900.0, "Error", long_body, &icon_style);
+        let wrapped_body_measure =
+            measure_notification_card(&ctx, 420.0, 900.0, "Info", wrapped_body, &icon_style);
+        let long_title_measure =
+            measure_notification_card(&ctx, 220.0, 900.0, long_title, "body", &icon_style);
+        let no_icon_measure =
+            measure_notification_card(&ctx, 420.0, 900.0, "Plain", "body", &no_icon_style);
+
+        assert!(long_body_measure.body_height > no_icon_measure.body_height);
+        assert!(wrapped_body_measure.body_height > no_icon_measure.body_height);
+        assert!(long_title_measure.title_height > no_icon_measure.title_height);
+        assert!(long_title_measure.title_wrap_width < long_title_measure.body_wrap_width);
+        assert!(icon_style.icon.is_some());
+        assert_eq!(no_icon_measure.icon_width, 0.0);
+        assert_eq!(
+            no_icon_measure.title_wrap_width,
+            no_icon_measure.body_wrap_width
+        );
+    }
+
+    #[test]
+    fn measure_notification_card_reports_vertical_truncation_when_display_is_short() {
+        let ctx = test_context();
+        let style = style(NotifyKind::Warn);
+        let body = "line ".repeat(200);
+        let display_height = 90.0;
+
+        let measure =
+            measure_notification_card(&ctx, 420.0, display_height, "Warning", &body, &style);
+
+        assert_eq!(
+            measure.max_height,
+            display_height - 2.0 * super::NOTIFICATION_MARGIN
+        );
+        assert!(measure.height <= measure.max_height);
+        assert!(measure.unclamped_height > measure.max_height);
+        assert!(measure.truncated);
+        assert!(measure.body_visible_height > 0.0);
+        assert!(measure.body_visible_height < measure.body_height);
+        assert!(
+            super::NOTIFICATION_PAD
+                + measure.title_row_height
+                + super::NOTIFICATION_TITLE_BODY_GAP
+                + measure.body_visible_height
+                + super::NOTIFICATION_PAD
+                <= measure.height + super::LAYOUT_SLOP_PX
+        );
     }
 
     #[test]
