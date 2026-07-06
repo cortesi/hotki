@@ -1,5 +1,5 @@
 //! Heads-up display (HUD) rendering for key hints.
-use egui::{CentralPanel, Color32, Context, Frame, Vec2, ViewportBuilder, vec2};
+use egui::{CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, vec2};
 use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
 use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode};
 use mac_keycode::{Chord, Modifier};
@@ -188,18 +188,9 @@ impl Hud {
         row_index: usize,
         row: &HudRow,
     ) {
+        render_row_metadata(ui, row_index, row);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            devtools::value_anchor(
-                ui,
-                format!("hud.row.{row_index}.chord"),
-                WidgetValue::Text(row.chord.to_string()),
-            );
-            devtools::value_anchor(
-                ui,
-                format!("hud.row.{row_index}.is_mode"),
-                WidgetValue::Bool(row.is_mode),
-            );
             self.render_key_tokens(ui, &row.chord, row_index, row.style.as_ref());
             ui.add_space(KEY_DESC_GAP);
             ui.dev_label(format!("hud.row.{row_index}.desc"), &row.desc);
@@ -501,33 +492,38 @@ impl Hud {
     }
 
     /// Record script-visible HUD state that is not otherwise represented by text widgets.
-    fn render_metadata(&self, ui: &mut egui::Ui, model: &HudViewModel) {
-        devtools::value_anchor(
-            ui,
-            "hud.mode",
-            WidgetValue::Text(hud_mode_label(self.cfg.mode)),
-        );
-        devtools::value_anchor(ui, "hud.visible", WidgetValue::Bool(self.visible));
-        devtools::value_anchor(
-            ui,
-            "hud.geometry.x",
-            WidgetValue::Float(f64::from(model.geometry.pos.x)),
-        );
-        devtools::value_anchor(
-            ui,
-            "hud.geometry.y",
-            WidgetValue::Float(f64::from(model.geometry.pos.y)),
-        );
-        devtools::value_anchor(
-            ui,
-            "hud.geometry.width",
-            WidgetValue::Float(f64::from(model.geometry.size.x)),
-        );
-        devtools::value_anchor(
-            ui,
-            "hud.geometry.height",
-            WidgetValue::Float(f64::from(model.geometry.size.y)),
-        );
+    fn render_metadata(&self, ui: &egui::Ui, model: &HudViewModel) {
+        egui::Area::new(egui::Id::new("hud.metadata"))
+            .fixed_pos(Pos2::ZERO)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                devtools::value_anchor(
+                    ui,
+                    "hud.mode",
+                    WidgetValue::Text(hud_mode_label(self.cfg.mode)),
+                );
+                devtools::value_anchor(ui, "hud.visible", WidgetValue::Bool(self.visible));
+                devtools::value_anchor(
+                    ui,
+                    "hud.geometry.x",
+                    WidgetValue::Float(f64::from(model.geometry.pos.x)),
+                );
+                devtools::value_anchor(
+                    ui,
+                    "hud.geometry.y",
+                    WidgetValue::Float(f64::from(model.geometry.pos.y)),
+                );
+                devtools::value_anchor(
+                    ui,
+                    "hud.geometry.width",
+                    WidgetValue::Float(f64::from(model.geometry.size.x)),
+                );
+                devtools::value_anchor(
+                    ui,
+                    "hud.geometry.height",
+                    WidgetValue::Float(f64::from(model.geometry.size.y)),
+                );
+            });
     }
 
     /// Render compact HUD mode.
@@ -566,6 +562,25 @@ impl Hud {
     // (hide method is defined alongside state setters)
 }
 
+/// Record row metadata without changing the visible row layout.
+fn render_row_metadata(ui: &egui::Ui, row_index: usize, row: &HudRow) {
+    egui::Area::new(egui::Id::new(format!("hud.row.{row_index}.metadata")))
+        .fixed_pos(Pos2::ZERO)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.chord"),
+                WidgetValue::Text(row.chord.to_string()),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.is_mode"),
+                WidgetValue::Bool(row.is_mode),
+            );
+        });
+}
+
 /// Stable script-visible label for the HUD mode.
 fn hud_mode_label(mode: Mode) -> String {
     match mode {
@@ -574,4 +589,113 @@ fn hud_mode_label(mode: Mode) -> String {
         Mode::Mini => "mini",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Pos2, RawInput, Rect};
+    use hotki_protocol::{DisplayFrame, DisplaysSnapshot, HudStyle};
+
+    use super::*;
+
+    const LAYOUT_SLOP_PX: f32 = 1.0;
+
+    fn test_context() -> Context {
+        let ctx = Context::default();
+        fonts::install_fonts(&ctx);
+        ctx
+    }
+
+    fn raw_input(size: Vec2) -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        }
+    }
+
+    fn test_hud(row_count: usize, display_size: Vec2) -> Hud {
+        let mut hud = Hud::new(&HudStyle::default());
+        hud.set_display_metrics(DisplayMetrics::from_snapshot(&DisplaysSnapshot {
+            global_top: display_size.y,
+            active: Some(DisplayFrame {
+                id: 1,
+                x: 0.0,
+                y: 0.0,
+                width: display_size.x,
+                height: display_size.y,
+            }),
+            displays: Vec::new(),
+        }));
+        hud.set_state(test_rows(row_count), true, vec!["Tall HUD".to_string()]);
+        hud
+    }
+
+    fn test_rows(row_count: usize) -> Vec<HudRow> {
+        (0..row_count)
+            .map(|index| HudRow {
+                chord: Chord::parse(test_chord(index)).expect("test chord should parse"),
+                desc: format!("Command row {index:02} with a representative description"),
+                is_mode: index % 3 == 0,
+                style: None,
+            })
+            .collect()
+    }
+
+    fn test_chord(index: usize) -> &'static str {
+        const CHORDS: &[&str] = &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+        CHORDS[index % CHORDS.len()]
+    }
+
+    fn view_model_for(ctx: &Context, hud: &Hud, screen_size: Vec2) -> HudViewModel {
+        ctx.begin_pass(raw_input(screen_size));
+        let model = hud.view_model(ctx);
+        drop(ctx.end_pass());
+        model
+    }
+
+    fn rendered_panel_rect(ctx: &Context, hud: &Hud, model: &HudViewModel) -> Rect {
+        let mut used = Rect::NOTHING;
+        drop(ctx.run_ui(raw_input(model.geometry.size), |ui| {
+            ui.set_min_size(model.geometry.size);
+            hud.render_panel(ui, ctx, model);
+            used = ui.min_rect();
+        }));
+        used
+    }
+
+    #[test]
+    fn full_hud_render_stays_inside_measured_height_before_screen_cap() {
+        let ctx = test_context();
+        let display_size = vec2(1600.0, 1200.0);
+
+        for row_count in [0, 1, 4, 12, 24] {
+            let hud = test_hud(row_count, display_size);
+            let model = view_model_for(&ctx, &hud, display_size);
+
+            assert!(
+                model.content_size.y + 2.0 * HUD_PADDING_Y
+                    <= model.geometry.size.y + LAYOUT_SLOP_PX,
+                "row count {row_count} should not be screen-height capped"
+            );
+            let used = rendered_panel_rect(&ctx, &hud, &model);
+
+            assert!(
+                used.max.y <= model.geometry.size.y + LAYOUT_SLOP_PX,
+                "row count {row_count} rendered past measured height: used={used:?} geometry={:?}",
+                model.geometry
+            );
+        }
+    }
+
+    #[test]
+    fn full_hud_height_caps_at_screen_when_rows_exceed_display() {
+        let ctx = test_context();
+        let display_size = vec2(1000.0, 360.0);
+        let hud = test_hud(48, display_size);
+        let model = view_model_for(&ctx, &hud, display_size);
+
+        assert_eq!(model.geometry.pos.y, 0.0);
+        assert_eq!(model.geometry.size.y, display_size.y);
+        assert!(model.content_size.y + 2.0 * HUD_PADDING_Y > model.geometry.size.y);
+    }
 }

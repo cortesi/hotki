@@ -12,9 +12,10 @@ use eguidev::{
     name_viewport,
 };
 use hotki_protocol::{
-    DisplayFrame, DisplaysSnapshot, HudState, MsgToUI, NotifyKind, NotifyPos, Style, Toggle,
-    rpc::InjectKind,
+    DisplayFrame, DisplaysSnapshot, HudRow, HudState, MsgToUI, NotifyKind, NotifyPos, Style,
+    Toggle, rpc::InjectKind,
 };
+use mac_keycode::Chord;
 use permissions::{PermissionState, PermissionsStatus};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
@@ -328,6 +329,12 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
         .anchor_in("hud.panel", viewport_sel("hud")),
         FixtureSpec::new(
+            "hotki.hud.tall",
+            "UI-thread lane: render a tall HUD that should fit without clipping.",
+        )
+        .anchor_value("app.ready", WidgetValue::Bool(true))
+        .anchor_in("hud.row.21.desc", viewport_sel("hud")),
+        FixtureSpec::new(
             "hotki.hud.mini",
             "Runtime/server lane: enter the demo mini HUD submenu through server key injection.",
         )
@@ -341,6 +348,15 @@ fn fixtures() -> Vec<FixtureSpec> {
             viewport_sel("hud"),
         )
         .anchor_in("hud.mini.title", viewport_sel("hud")),
+    ]
+    .into_iter()
+    .chain(selector_fixture_specs())
+    .collect()
+}
+
+/// Selector fixture catalog entries.
+fn selector_fixture_specs() -> Vec<FixtureSpec> {
+    vec![
         FixtureSpec::new(
             "hotki.selector",
             "Runtime/server lane: open the demo selector through server key injection.",
@@ -397,6 +413,21 @@ fn short_display_snapshot() -> DisplaysSnapshot {
             y: 0.0,
             width: 500.0,
             height: 90.0,
+        }),
+        displays: Vec::new(),
+    }
+}
+
+/// Synthetic display used for tall HUD layout coverage.
+fn tall_hud_display_snapshot() -> DisplaysSnapshot {
+    DisplaysSnapshot {
+        global_top: 900.0,
+        active: Some(DisplayFrame {
+            id: 1,
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 900.0,
         }),
         displays: Vec::new(),
     }
@@ -485,6 +516,10 @@ impl FixtureBridge {
                 self.clear_transient_ui()?;
                 self.inject_key_quiet("escape")?;
                 self.inject_key("cmd+shift+0")?;
+            }
+            "hotki.hud.tall" => {
+                self.clear_transient_ui()?;
+                self.send_tall_hud()?;
             }
             "hotki.hud.mini" => {
                 self.clear_transient_ui()?;
@@ -578,6 +613,21 @@ impl FixtureBridge {
         })
     }
 
+    /// Render a tall HUD through the same UI update path used by the runtime.
+    fn send_tall_hud(&self) -> Result<(), String> {
+        self.send_ui_message(MsgToUI::HudUpdate {
+            hud: Box::new(HudState {
+                visible: true,
+                rows: tall_hud_rows()?,
+                depth: 1,
+                breadcrumbs: vec!["Tall HUD".to_string()],
+                style: Style::default(),
+                capture: false,
+            }),
+            displays: tall_hud_display_snapshot(),
+        })
+    }
+
     /// Clear UI-local transient state before applying a fixture.
     fn clear_transient_ui(&self) -> Result<(), String> {
         self.send_ui_message(MsgToUI::SelectorHide)?;
@@ -665,6 +715,30 @@ impl FixtureBridge {
             .send(message)
             .map_err(|err| format!("failed to send runtime control: {err}"))
     }
+}
+
+/// Rows used by the tall HUD fixture.
+fn tall_hud_rows() -> Result<Vec<HudRow>, String> {
+    (0..22)
+        .map(|index| {
+            Ok(HudRow {
+                chord: Chord::parse(tall_hud_chord(index))
+                    .ok_or_else(|| format!("invalid tall HUD chord {index}"))?,
+                desc: format!("Tall HUD command {index:02} with enough text to measure"),
+                is_mode: index % 4 == 0,
+                style: None,
+            })
+        })
+        .collect()
+}
+
+/// Deterministic chord list for the tall HUD fixture.
+fn tall_hud_chord(index: usize) -> &'static str {
+    const CHORDS: &[&str] = &[
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v",
+    ];
+    CHORDS[index % CHORDS.len()]
 }
 
 #[cfg(feature = "devtools")]

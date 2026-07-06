@@ -152,29 +152,33 @@ pub(super) fn enumerate_displays() -> Result<Vec<DisplayFrame>> {
     let mut frames = Vec::new();
     if let Ok(active) = CGDisplay::active_displays() {
         for id in active {
-            let display = CGDisplay::new(id);
-            let bounds: CGRect = display.bounds();
-            let mut frame = DisplayFrame {
-                id: display.id,
-                x: bounds.origin.x as f32,
-                y: bounds.origin.y as f32,
-                width: bounds.size.width as f32,
-                height: bounds.size.height as f32,
-                visible_y: bounds.origin.y as f32,
-                visible_height: bounds.size.height as f32,
-            };
-            if let Some((visible_y, visible_height)) = visible_frame_for_display(&frame) {
-                frame.visible_y = visible_y;
-                frame.visible_height = visible_height;
-            }
-            frames.push(frame);
+            frames.push(display_frame(CGDisplay::new(id)));
         }
     }
 
     if frames.is_empty() {
-        return Err(Error::InvalidState("no active displays detected".into()));
+        frames.push(display_frame(CGDisplay::main()));
     }
     Ok(frames)
+}
+
+/// Convert a CoreGraphics display to the smoke helper frame shape.
+fn display_frame(display: CGDisplay) -> DisplayFrame {
+    let bounds: CGRect = display.bounds();
+    let mut frame = DisplayFrame {
+        id: display.id,
+        x: bounds.origin.x as f32,
+        y: bounds.origin.y as f32,
+        width: bounds.size.width as f32,
+        height: bounds.size.height as f32,
+        visible_y: bounds.origin.y as f32,
+        visible_height: bounds.size.height as f32,
+    };
+    if let Some((visible_y, visible_height)) = visible_frame_for_display(&frame) {
+        frame.visible_y = visible_y;
+        frame.visible_height = visible_height;
+    }
+    frame
 }
 
 impl DisplayFrame {

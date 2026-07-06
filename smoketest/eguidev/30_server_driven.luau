@@ -41,6 +41,26 @@ hud:wait_for_widget("hud.geometry.width", function(widget)
     return tonumber(widget.value_text) ~= nil and tonumber(widget.value_text) > 0
 end)
 
+fixture("hotki.hud.tall")
+hud = viewport({ name = "hud" })
+hud:wait_for_widget("hud.row.21.desc", function(widget)
+    return widget.value_text == "Tall HUD command 21 with enough text to measure"
+end)
+local panel = hud:widget_get("hud.panel")
+local layout_issues = panel:check_layout()
+assert(#layout_issues == 0, "tall HUD panel should have no layout issues")
+local geometry_height = tonumber(hud:widget_get("hud.geometry.height"):state().value_text)
+assert(geometry_height ~= nil and geometry_height > 0, "tall HUD should expose a measured height")
+for index = 0, 21 do
+    local desc = hud:widget_get("hud.row." .. tostring(index) .. ".desc")
+    local state = desc:state()
+    local measure = desc:text_measure()
+    assert(state.visible, desc.id .. " should be visible")
+    assert(state.rect.max.y <= (geometry_height :: number) + 1, desc.id .. " should fit in HUD")
+    assert(measure.visible_text == state.value_text, desc.id .. " text should be fully visible")
+    assert(measure.ellipsis == false, desc.id .. " text should not ellipsize")
+end
+
 fixture("hotki.selector")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
