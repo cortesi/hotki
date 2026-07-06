@@ -13,8 +13,8 @@
 ## Eguidev Automation
 
 Hotki can be launched with an embedded eguidev MCP runtime for interactive and
-scripted egui inspection. Install `edev` from the sibling
-`~/git/public/eguidev` checkout, then use the repo-local `.edev.toml`:
+scripted egui inspection. Install `edev` from crates.io, then use the repo-local
+`.edev.toml`:
 
 ```bash
 edev fixtures
@@ -35,5 +35,5 @@ Details has tab-specific fixtures for ordinary-window inspection:
 `hotki.details.config`, `hotki.details.logs`, and `hotki.details.about`.
 
 Treat `edev smoke` as a local macOS automation suite for now. Do not add it to
-CI until a macOS runner has the eguidev checkout, `edev`, and the required
-windowing permissions configured explicitly.
+CI until a macOS runner has `edev` and the required windowing permissions
+configured explicitly.

@@ -71,6 +71,8 @@ pub struct HotkiApp {
     pub(crate) display_metrics: DisplayMetrics,
     /// Developer automation instrumentation handle.
     pub(crate) devmcp: DevMcp,
+    /// Shared fixture and diagnostic state for developer automation.
+    pub(crate) fixture_runtime: FixtureRuntime,
     /// Whether the server/runtime lane is connected.
     pub(crate) server_connected: bool,
     /// Sorted server binding identifiers, when the runtime has reported them.
@@ -121,6 +123,11 @@ impl App for HotkiApp {
         }
 
         let notification_stack = self.notifications.stack_aliases();
+        self.fixture_runtime.update_diagnostics(
+            self.server_connected,
+            &self.server_bindings,
+            &notification_stack,
+        );
         render_app_anchors(
             &self.devmcp,
             ctx,
@@ -130,7 +137,8 @@ impl App for HotkiApp {
         );
         self.hud.render(ctx, &self.devmcp);
         self.selector.render(ctx, &self.devmcp);
-        self.notifications.render(ctx, &self.devmcp);
+        let notifications_animating = self.notifications.render(ctx, &self.devmcp);
+        self.fixture_runtime.set_app_idle(!notifications_animating);
         self.details
             .render(ctx, self.notifications.backlog(), &self.devmcp);
         self.permissions.render(ctx, &self.devmcp);
@@ -153,7 +161,8 @@ impl HotkiApp {
 
         fonts::install_fonts(&cc.egui_ctx);
 
-        bootstrap.fixture_runtime.set_context(cc.egui_ctx.clone());
+        let fixture_runtime = bootstrap.fixture_runtime.clone();
+        fixture_runtime.set_context(cc.egui_ctx.clone());
 
         runtime::spawn_key_runtime(
             bootstrap.config_path.as_path(),
@@ -195,6 +204,7 @@ impl HotkiApp {
             shutdown_in_progress: false,
             display_metrics: metrics,
             devmcp: bootstrap.devmcp,
+            fixture_runtime,
             server_connected: false,
             server_bindings: Vec::new(),
         }

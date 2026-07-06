@@ -29,6 +29,18 @@ pub fn execute_handler(
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
+    cfg.collect_entrypoint_garbage();
+    let result = execute_handler_inner(cfg, handler, ctx);
+    cfg.collect_entrypoint_garbage();
+    result
+}
+
+/// Execute a handler closure without managing the retained VM heap boundary.
+fn execute_handler_inner(
+    cfg: &mut DynamicConfig,
+    handler: &HandlerRef,
+    ctx: &ModeCtx,
+) -> Result<HandlerResult, Error> {
     let action_ctx = ActionCtx::new(ctx.clone());
     let mut script_error = None;
     let path = cfg.path.clone();
@@ -64,6 +76,20 @@ pub fn execute_handler(
 
 /// Execute a selector handler closure with `(ctx, item, query)` arguments.
 pub fn execute_selector_handler(
+    cfg: &mut DynamicConfig,
+    handler: &HandlerRef,
+    ctx: &ModeCtx,
+    item: &SelectorItem,
+    query: &str,
+) -> Result<HandlerResult, Error> {
+    cfg.collect_entrypoint_garbage();
+    let result = execute_selector_handler_inner(cfg, handler, ctx, item, query);
+    cfg.collect_entrypoint_garbage();
+    result
+}
+
+/// Execute a selector handler without managing the retained VM heap boundary.
+fn execute_selector_handler_inner(
     cfg: &mut DynamicConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,

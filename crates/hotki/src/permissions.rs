@@ -114,7 +114,7 @@ impl PermissionsHelp {
             .with_inner_size(vec2(620.0, 360.0));
 
         ctx.show_viewport_immediate(self.id, builder, |vp_ui, _| {
-            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+            devtools::viewport_frame(devmcp, vp_ui, "permissions", "permissions.root", |vp_ui| {
                 let wctx = vp_ui.ctx().clone();
                 if wctx.input(|i| i.viewport().close_requested()) {
                     self.visible = false;
@@ -156,39 +156,37 @@ impl PermissionsHelp {
     /// Render the permissions content inside the active viewport.
     fn render_body(&mut self, ui: &mut egui::Ui, status: &PermissionsStatus) {
         CentralPanel::default().show(ui, |ui| {
-            container(ui, "permissions.root", |ui| {
-                container(ui, "permissions.panel", |ui| {
-                    ui.add_space(14.0);
-                    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                        self.render_intro(ui, status);
-                        ui.add_space(12.0);
-                        self.render_section(
-                            ui,
-                            PermissionSection {
-                                id: "accessibility",
-                                enabled: status.accessibility_ok(),
-                                name: "Accessibility",
-                                help: "Allow Hotki in System Settings → Privacy & Security → Accessibility.",
-                                open_settings: open_accessibility_settings,
-                                notice_text: "Opening Accessibility settings...",
-                                open_intent: self.open_intents.accessibility,
-                            },
-                        );
-                        ui.add_space(10.0);
-                        self.render_section(
-                            ui,
-                            PermissionSection {
-                                id: "input_monitoring",
-                                enabled: status.input_ok(),
-                                name: "Input Monitoring",
-                                help: "Allow Hotki in System Settings → Privacy & Security → Input Monitoring.",
-                                open_settings: open_input_monitoring_settings,
-                                notice_text: "Opening Input Monitoring settings...",
-                                open_intent: self.open_intents.input_monitoring,
-                            },
-                        );
-                        self.render_tip(ui);
-                    });
+            container(ui, "permissions.panel", |ui| {
+                ui.add_space(14.0);
+                ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    self.render_intro(ui, status);
+                    ui.add_space(12.0);
+                    self.render_section(
+                        ui,
+                        PermissionSection {
+                            id: "accessibility",
+                            enabled: status.accessibility_ok(),
+                            name: "Accessibility",
+                            help: "Allow Hotki in System Settings → Privacy & Security → Accessibility.",
+                            open_settings: open_accessibility_settings,
+                            notice_text: "Opening Accessibility settings...",
+                            open_intent: self.open_intents.accessibility,
+                        },
+                    );
+                    ui.add_space(10.0);
+                    self.render_section(
+                        ui,
+                        PermissionSection {
+                            id: "input_monitoring",
+                            enabled: status.input_ok(),
+                            name: "Input Monitoring",
+                            help: "Allow Hotki in System Settings → Privacy & Security → Input Monitoring.",
+                            open_settings: open_input_monitoring_settings,
+                            notice_text: "Opening Input Monitoring settings...",
+                            open_intent: self.open_intents.input_monitoring,
+                        },
+                    );
+                    self.render_tip(ui);
                 });
             });
         });

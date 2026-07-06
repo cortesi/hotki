@@ -75,6 +75,11 @@ impl DynamicConfig {
         lock_unpoisoned(&self.sources).get(path).cloned()
     }
 
+    /// Collect garbage left unreachable by completed config entrypoints.
+    pub(crate) fn collect_entrypoint_garbage(&mut self) {
+        self.vm.collect();
+    }
+
     /// Return the per-entrypoint execution limits.
     pub(crate) fn entry_limits() -> Limits {
         Limits::production(SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT)

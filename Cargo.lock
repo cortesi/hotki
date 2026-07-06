@@ -1733,7 +1733,9 @@ dependencies = [
 
 [[package]]
 name = "eguidev"
-version = "0.0.3"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffd72d5b07c862ff3c7713afab1531e8b7dfbff208cb93672081c0b9a6b107fe"
 dependencies = [
  "egui",
  "schemars",
@@ -1744,7 +1746,9 @@ dependencies = [
 
 [[package]]
 name = "eguidev_runtime"
-version = "0.0.3"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef3aef45f46ea7cdd928db94c230240acc7c8ec40ff85b8537158ea25b462af3"
 dependencies = [
  "async-trait",
  "base64",

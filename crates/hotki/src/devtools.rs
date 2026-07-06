@@ -1,11 +1,19 @@
 //! Developer automation hooks for eguidev instrumentation.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use egui::{Context, Sense};
-use eguidev::{DevMcp, FixtureSpec, FrameGuard, WidgetRole, WidgetValue, id_with_meta};
+use eguidev::{
+    DevMcp, DiagnosticError, FixtureCall, FixtureError, FixtureResponse, FixtureResult,
+    FixtureSpec, FrameGuard, ViewportSel, WidgetRole, WidgetValue, frame_scope, id_with_meta,
+    name_viewport,
+};
 use hotki_protocol::{MsgToUI, NotifyKind, Toggle, rpc::InjectKind};
 use permissions::{PermissionState, PermissionsStatus};
+use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -20,6 +28,10 @@ use crate::{
 pub struct FixtureRuntime {
     /// Egui context becomes available only inside `HotkiApp::new`.
     ctx: Arc<Mutex<Option<Context>>>,
+    /// Latest app diagnostic snapshot recorded from the UI thread.
+    diagnostics: Arc<Mutex<HotkiDiagnostics>>,
+    /// Latest UI-thread idle state reported to eguidev settle waits.
+    app_idle: Arc<AtomicBool>,
 }
 
 impl FixtureRuntime {
@@ -39,6 +51,126 @@ impl FixtureRuntime {
             ctx.request_repaint();
         }
     }
+
+    /// Update the app diagnostic snapshot from the UI thread.
+    pub fn update_diagnostics(
+        &self,
+        server_connected: bool,
+        server_bindings: &[String],
+        notification_stack: &[NotificationStackAlias],
+    ) {
+        if let Ok(mut diagnostics) = self.diagnostics.lock() {
+            *diagnostics = HotkiDiagnostics::from_app_state(
+                server_connected,
+                server_bindings,
+                notification_stack,
+            );
+        }
+    }
+
+    /// Update whether the UI has no finite animation work in progress.
+    pub fn set_app_idle(&self, idle: bool) {
+        self.app_idle.store(idle, Ordering::Relaxed);
+    }
+
+    /// Return the latest UI idle state for eguidev settle waits.
+    fn is_app_idle(&self) -> bool {
+        self.app_idle.load(Ordering::Relaxed)
+    }
+
+    /// Return the latest app diagnostic snapshot.
+    fn diagnostic(&self) -> Result<Value, DiagnosticError> {
+        let diagnostics = self
+            .diagnostics
+            .lock()
+            .map_err(|err| DiagnosticError::new("diagnostic_lock", err.to_string()))?;
+        Ok(diagnostics.to_json())
+    }
+}
+
+#[derive(Clone, Default)]
+/// App state exposed through `diagnostic("hotki.state")`.
+struct HotkiDiagnostics {
+    /// Whether the runtime/server lane is connected.
+    server_connected: bool,
+    /// Sorted server binding identifiers reported by the runtime.
+    server_bindings: Vec<String>,
+    /// Live notification stack aliases, newest first.
+    notifications: Vec<NotificationDiagnostic>,
+}
+
+impl HotkiDiagnostics {
+    /// Build a diagnostic snapshot from the currently rendered app state.
+    fn from_app_state(
+        server_connected: bool,
+        server_bindings: &[String],
+        notification_stack: &[NotificationStackAlias],
+    ) -> Self {
+        Self {
+            server_connected,
+            server_bindings: server_bindings.to_vec(),
+            notifications: notification_stack
+                .iter()
+                .map(NotificationDiagnostic::from)
+                .collect(),
+        }
+    }
+
+    /// Convert the snapshot into script-visible JSON.
+    fn to_json(&self) -> Value {
+        let notifications = self
+            .notifications
+            .iter()
+            .map(NotificationDiagnostic::to_json)
+            .collect::<Vec<_>>();
+        json!({
+            "server": {
+                "connected": self.server_connected,
+                "binding_count": self.server_bindings.len(),
+                "bindings": self.server_bindings,
+            },
+            "notifications": {
+                "live_count": self.notifications.len(),
+                "items": notifications,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+/// Diagnostic alias for one live notification viewport.
+struct NotificationDiagnostic {
+    /// Stack index, newest first.
+    index: usize,
+    /// Stable live notification id.
+    live_id: String,
+    /// Stable notification kind.
+    kind: &'static str,
+    /// Notification title.
+    title: String,
+}
+
+impl From<&NotificationStackAlias> for NotificationDiagnostic {
+    fn from(alias: &NotificationStackAlias) -> Self {
+        Self {
+            index: alias.index,
+            live_id: alias.live_id.clone(),
+            kind: alias.kind,
+            title: alias.title.clone(),
+        }
+    }
+}
+
+impl NotificationDiagnostic {
+    /// Convert the notification alias into script-visible JSON.
+    fn to_json(&self) -> Value {
+        json!({
+            "index": self.index,
+            "live_id": self.live_id,
+            "kind": self.kind,
+            "title": self.title,
+        })
+    }
 }
 
 /// Build the DevMCP handle for this run.
@@ -53,28 +185,31 @@ pub fn build_devmcp(
         tx_ctrl,
         fixture_runtime: fixture_runtime.clone(),
     };
+    let diagnostic_runtime = fixture_runtime.clone();
+    let idle_runtime = fixture_runtime.clone();
     let devmcp = DevMcp::new()
         .fixtures(fixtures())
-        .on_fixture(move |name| bridge.apply(name));
+        .on_fixture_runtime(move |call| bridge.apply(call))
+        .expect("hard-coded hotki fixture handler is unique")
+        .diagnostic("hotki.state", move || diagnostic_runtime.diagnostic())
+        .expect("hard-coded hotki diagnostic name is unique")
+        .on_idle_ui(move |_| idle_runtime.is_app_idle())
+        .expect("hard-coded hotki idle provider is unique");
     attach_runtime(devmcp, enable_runtime).map(|devmcp| (devmcp, fixture_runtime))
 }
 
 /// Stable fixture catalog advertised through eguidev.
 fn fixtures() -> Vec<FixtureSpec> {
-    let details = egui::ViewportId::from_hash_of("hotki_details");
-    let hud = egui::ViewportId::from_hash_of("hotki_hud");
-    let permissions = egui::ViewportId::from_hash_of("hotki_permissions");
-    let selector = egui::ViewportId::from_hash_of("hotki_selector");
     vec![
         FixtureSpec::new(
             "hotki.basic.default",
             "UI-thread lane: open a clean Details window for baseline readiness.",
         )
         .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("details.root", details),
+        .anchor_in("details.root", viewport_sel("details")),
         FixtureSpec::new("hotki.details", "UI-thread lane: open the Details window.")
             .anchor_value("app.ready", WidgetValue::Bool(true))
-            .anchor_in("details.tab.notifications", details),
+            .anchor_in("details.tab.notifications", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.details.config",
             "UI-thread lane: open Details directly to the Config tab.",
@@ -83,9 +218,9 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "details.active_tab",
             WidgetValue::Text("config".to_string()),
-            details,
+            viewport_sel("details"),
         )
-        .anchor_in("details.config.reload", details),
+        .anchor_in("details.config.reload", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.details.logs",
             "UI-thread lane: open Details directly to the Logs tab.",
@@ -94,9 +229,9 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "details.active_tab",
             WidgetValue::Text("logs".to_string()),
-            details,
+            viewport_sel("details"),
         )
-        .anchor_in("details.logs.clear", details),
+        .anchor_in("details.logs.clear", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.details.about",
             "UI-thread lane: open Details directly to the About tab.",
@@ -105,15 +240,15 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "details.active_tab",
             WidgetValue::Text("about".to_string()),
-            details,
+            viewport_sel("details"),
         )
-        .anchor_in("details.about.name", details),
+        .anchor_in("details.about.name", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.permissions",
             "UI-thread lane: open the Permissions helper window.",
         )
         .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("permissions.root", permissions),
+        .anchor_in("permissions.root", viewport_sel("permissions")),
         FixtureSpec::new(
             "hotki.permissions.all_granted",
             "UI-thread lane: open Permissions with deterministic granted status.",
@@ -122,12 +257,12 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "permissions.accessibility.granted",
             WidgetValue::Bool(true),
-            permissions,
+            viewport_sel("permissions"),
         )
         .anchor_value_in(
             "permissions.input_monitoring.granted",
             WidgetValue::Bool(true),
-            permissions,
+            viewport_sel("permissions"),
         ),
         FixtureSpec::new(
             "hotki.permissions.none_granted",
@@ -137,12 +272,12 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "permissions.accessibility.granted",
             WidgetValue::Bool(false),
-            permissions,
+            viewport_sel("permissions"),
         )
         .anchor_value_in(
             "permissions.input_monitoring.granted",
             WidgetValue::Bool(false),
-            permissions,
+            viewport_sel("permissions"),
         ),
         FixtureSpec::new(
             "hotki.permissions.mixed",
@@ -152,19 +287,19 @@ fn fixtures() -> Vec<FixtureSpec> {
         .anchor_value_in(
             "permissions.accessibility.granted",
             WidgetValue::Bool(true),
-            permissions,
+            viewport_sel("permissions"),
         )
         .anchor_value_in(
             "permissions.input_monitoring.granted",
             WidgetValue::Bool(false),
-            permissions,
+            viewport_sel("permissions"),
         ),
         FixtureSpec::new(
             "hotki.notifications",
             "UI-thread lane: create a deterministic notification and open Details history.",
         )
         .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", details),
+        .anchor_in("details.notification.0.title", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.notifications.variants",
             "UI-thread lane: create deterministic info, warning, error, and success notifications.",
@@ -178,7 +313,7 @@ fn fixtures() -> Vec<FixtureSpec> {
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("hud.panel", hud),
+        .anchor_in("hud.panel", viewport_sel("hud")),
         FixtureSpec::new(
             "hotki.hud.mini",
             "Runtime/server lane: enter the demo mini HUD submenu through server key injection.",
@@ -187,8 +322,12 @@ fn fixtures() -> Vec<FixtureSpec> {
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_value_in("hud.mode", WidgetValue::Text("mini".to_string()), hud)
-        .anchor_in("hud.mini.title", hud),
+        .anchor_value_in(
+            "hud.mode",
+            WidgetValue::Text("mini".to_string()),
+            viewport_sel("hud"),
+        )
+        .anchor_in("hud.mini.title", viewport_sel("hud")),
         FixtureSpec::new(
             "hotki.selector",
             "Runtime/server lane: open the demo selector through server key injection.",
@@ -197,7 +336,7 @@ fn fixtures() -> Vec<FixtureSpec> {
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("selector.panel", selector),
+        .anchor_in("selector.panel", viewport_sel("selector")),
         FixtureSpec::new(
             "hotki.selector.query",
             "Runtime/server lane: open the selector and type a deterministic query.",
@@ -206,32 +345,37 @@ fn fixtures() -> Vec<FixtureSpec> {
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("selector.panel", selector),
+        .anchor_in("selector.panel", viewport_sel("selector")),
         FixtureSpec::new(
             "hotki.selector.confirmed",
             "Runtime/server lane: confirm the currently open selector, then open Details history.",
         )
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .precondition_in("selector.panel", selector)
+        .precondition_in("selector.panel", viewport_sel("selector"))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", details),
+        .anchor_in("details.notification.0.title", viewport_sel("details")),
         FixtureSpec::new(
             "hotki.selector.canceled",
             "Runtime/server lane: cancel the currently open selector, then open Details history.",
         )
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .precondition_in("selector.panel", selector)
+        .precondition_in("selector.panel", viewport_sel("selector"))
         .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", details),
+        .anchor_in("details.notification.0.title", viewport_sel("details")),
     ]
 }
 
-#[derive(Clone)]
+/// Build a checked semantic viewport selector for a hard-coded Hotki viewport.
+fn viewport_sel(name: &'static str) -> ViewportSel {
+    ViewportSel::name(name).expect("hard-coded hotki viewport name is valid")
+}
+
 /// Fixture bridge into production UI and runtime channels.
+#[derive(Clone)]
 struct FixtureBridge {
     /// Sender for UI-thread events.
     tx_ui: UnboundedSender<UiEvent>,
@@ -243,7 +387,14 @@ struct FixtureBridge {
 
 impl FixtureBridge {
     /// Apply a named fixture through Hotki's existing event lanes.
-    fn apply(&self, name: &str) -> Result<(), String> {
+    fn apply(&self, call: &FixtureCall) -> FixtureResult {
+        self.apply_name(&call.name)
+            .map(|()| FixtureResponse::new())
+            .map_err(|error| FixtureError::new("hotki_fixture", error))
+    }
+
+    /// Dispatch one named fixture onto the lane that owns the affected state.
+    fn apply_name(&self, name: &str) -> Result<(), String> {
         match name {
             "hotki.basic.default" | "hotki.details" => {
                 self.clear_transient_ui()?;
@@ -461,11 +612,15 @@ fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> Result<DevMcp, String
 pub fn viewport_frame<R>(
     devmcp: &DevMcp,
     ui: &mut egui::Ui,
+    viewport_name: impl Into<String>,
+    container_id: impl Into<String>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let ctx = ui.ctx().clone();
-    let _guard = FrameGuard::new(devmcp, &ctx);
-    add_contents(ui)
+    let viewport_name = viewport_name.into();
+    frame_scope(devmcp, ui, container_id, |ui| {
+        name_viewport(ui.ctx(), viewport_name);
+        add_contents(ui)
+    })
 }
 
 /// Render root-viewport readiness anchors for scripts and fixture checks.

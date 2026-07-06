@@ -405,7 +405,7 @@ impl NotificationCenter {
     }
 
     /// Render notification windows and advance animations.
-    pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) {
+    pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) -> bool {
         // Remove expired
         let now = Instant::now();
         self.items
@@ -455,28 +455,32 @@ impl NotificationCenter {
                 .sync_builder(ctx, builder, it.current_pos, it.size);
 
             ctx.show_viewport_immediate(it.viewport.id(), builder, |vp_ui, _| {
-                devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
-                    let nctx = vp_ui.ctx().clone();
-                    let style = self.theme.style_for(it.kind);
-                    let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
-                    let title_fg =
-                        Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
-                    let body_fg =
-                        Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
-                    let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let frame = Frame::new()
-                        .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
-                        .corner_radius(egui::CornerRadius::same(self.radius as u8))
-                        .inner_margin(egui::Margin {
-                            left: 12,
-                            right: 12,
-                            top: 12,
-                            bottom: 12,
-                        });
-                    egui::CentralPanel::default()
-                        .frame(frame)
-                        .show(vp_ui, |ui| {
-                            container(ui, it.dev_id.clone(), |ui| {
+                devtools::viewport_frame(
+                    devmcp,
+                    vp_ui,
+                    it.dev_id.clone(),
+                    it.dev_id.clone(),
+                    |vp_ui| {
+                        let nctx = vp_ui.ctx().clone();
+                        let style = self.theme.style_for(it.kind);
+                        let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
+                        let title_fg =
+                            Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
+                        let body_fg =
+                            Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
+                        let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        let frame = Frame::new()
+                            .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
+                            .corner_radius(egui::CornerRadius::same(self.radius as u8))
+                            .inner_margin(egui::Margin {
+                                left: 12,
+                                right: 12,
+                                top: 12,
+                                bottom: 12,
+                            });
+                        egui::CentralPanel::default()
+                            .frame(frame)
+                            .show(vp_ui, |ui| {
                                 render_notification_metadata(ui, it, self.side, bounds);
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
                                 ui.horizontal(|ui| {
@@ -520,8 +524,8 @@ impl NotificationCenter {
                                     },
                                 );
                             });
-                        });
-                });
+                    },
+                );
             });
             if !it.window_configured && nswindow::frame_by_title("Hotki Notification").is_some() {
                 if let Err(e) =
@@ -537,6 +541,7 @@ impl NotificationCenter {
         if any_animating {
             ctx.request_repaint();
         }
+        any_animating
     }
 
     /// Update sizing/placement/opacity config without clearing existing notifications.

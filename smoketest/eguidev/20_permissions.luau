@@ -1,19 +1,7 @@
 configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
-local function viewport_with_widget(id: string): Viewport
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get(id):state()
-        end)
-        if ok then
-            return viewport
-        end
-    end
-    error("no viewport exposes " .. id)
-end
-
 fixture("hotki.permissions.none_granted")
-local permissions = viewport_with_widget("permissions.root")
+local permissions = viewport({ name = "permissions" })
 
 permissions:wait_for_widget_visible("permissions.description")
 local accessibility = permissions:widget_get("permissions.accessibility.status"):state()
@@ -32,7 +20,7 @@ permissions:wait_for_widget("permissions.accessibility.open_intent", function(wi
 end)
 
 fixture("hotki.permissions.all_granted")
-permissions = viewport_with_widget("permissions.root")
+permissions = viewport({ name = "permissions" })
 permissions:wait_for_widget("permissions.accessibility.granted", function(widget)
     return widget.value_text == "true"
 end)
@@ -41,7 +29,7 @@ permissions:wait_for_widget("permissions.input_monitoring.granted", function(wid
 end)
 
 fixture("hotki.permissions.mixed")
-permissions = viewport_with_widget("permissions.root")
+permissions = viewport({ name = "permissions" })
 permissions:wait_for_widget("permissions.accessibility.granted", function(widget)
     return widget.value_text == "true"
 end)

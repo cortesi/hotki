@@ -11,49 +11,23 @@ local expected = {
 }
 local seen = {}
 local live_ids = {}
-local stack_count = nil
 
-for _, viewport in ipairs(viewports()) do
-    local stack_ok = pcall(function()
-        stack_count = viewport:widget_get("notification.stack.count"):state().value_text
-    end)
-    if stack_ok and stack_count == "4" then
-        assert(viewport:widget_get("notification.stack"):state() ~= nil)
-    end
+local stack_count = expect("notification.stack.count", { viewport = "root", value_text_contains = "4" }).value_text
+assert(widget("notification.stack", { viewport = "root" }):state() ~= nil)
 
-    for base, _ in pairs(expected) do
-        local item_ok = pcall(function()
-            seen[base] = viewport:widget_get(base .. ".kind"):state().value_text
-            local live_id = viewport:widget_get(base .. ".live_id"):state().value_text
-            assert(live_id ~= "")
-            table.insert(live_ids, live_id)
-        end)
-        if item_ok then
-            seen[base] = viewport:widget_get(base .. ".kind"):state().value_text
-        end
-    end
+for base, _ in pairs(expected) do
+    seen[base] = widget(base .. ".kind", { viewport = "root" }):state().value_text
+    local live_id = widget(base .. ".live_id", { viewport = "root" }):state().value_text
+    assert(live_id ~= "")
+    table.insert(live_ids, live_id)
 end
 
-assert(stack_count == "4", "notification stack count should reflect all live variants")
 for base, kind in pairs(expected) do
     assert(seen[base] == kind, base .. " should expose kind " .. kind)
 end
 
-local function find_widget(id: string): (Viewport, Widget)
-    for _, viewport in ipairs(viewports()) do
-        local ok, widget = pcall(function()
-            return viewport:widget_get(id)
-        end)
-        if ok then
-            return viewport, widget
-        end
-    end
-    error("missing widget " .. id)
-end
-
-local function widget_value(id: string): string
-    local _, widget = find_widget(id)
-    return widget:state().value_text
+local function widget_value(id: string, viewport: string): string
+    return widget(id, { viewport = viewport }):state().value_text
 end
 
 local function rect_width(rect: Rect): number
@@ -62,24 +36,24 @@ end
 
 local rects = {}
 for _, live_id in ipairs(live_ids) do
-    local _, body_widget = find_widget(live_id .. ".body")
+    local body_widget = widget(live_id .. ".body", { viewport = live_id })
     local body_state = body_widget:state()
     local body_measure = body_widget:text_measure() :: any
     local rect = {
         id = live_id,
-        current_x = tonumber(widget_value(live_id .. ".current_x")),
-        current_y = tonumber(widget_value(live_id .. ".current_y")),
-        target_x = tonumber(widget_value(live_id .. ".target_x")),
-        expected_x = tonumber(widget_value(live_id .. ".expected_x")),
-        target_y = tonumber(widget_value(live_id .. ".target_y")),
-        side = widget_value(live_id .. ".side"),
-        width = tonumber(widget_value(live_id .. ".width")),
+        current_x = tonumber(widget_value(live_id .. ".current_x", live_id)),
+        current_y = tonumber(widget_value(live_id .. ".current_y", live_id)),
+        target_x = tonumber(widget_value(live_id .. ".target_x", live_id)),
+        expected_x = tonumber(widget_value(live_id .. ".expected_x", live_id)),
+        target_y = tonumber(widget_value(live_id .. ".target_y", live_id)),
+        side = widget_value(live_id .. ".side", live_id),
+        width = tonumber(widget_value(live_id .. ".width", live_id)),
         body_width = rect_width(body_state.rect),
-        body_wrap_width = tonumber(widget_value(live_id .. ".body_wrap_width")),
+        body_wrap_width = tonumber(widget_value(live_id .. ".body_wrap_width", live_id)),
         body_text = body_state.value_text,
         body_visible_text = body_measure.visible_text,
         body_ellipsis = body_measure.ellipsis,
-        height = tonumber(widget_value(live_id .. ".height")),
+        height = tonumber(widget_value(live_id .. ".height", live_id)),
     }
     assert(rect.current_x ~= nil and rect.current_y ~= nil, live_id .. " should expose current position")
     assert(rect.target_x ~= nil and rect.target_y ~= nil, live_id .. " should expose target position")

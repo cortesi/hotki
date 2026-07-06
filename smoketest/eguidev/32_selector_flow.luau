@@ -1,19 +1,7 @@
 configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-local function viewport_with_widget(id: string): Viewport
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get(id):state()
-        end)
-        if ok then
-            return viewport
-        end
-    end
-    error("no viewport exposes " .. id)
-end
-
 local function wait_for_notification(title: string, text: string)
-    local details = viewport_with_widget("details.root")
+    local details = viewport({ name = "details" })
     details:wait_for_widget("details.notification.0.title", function(widget)
         return widget.value_text == title
     end)
@@ -24,7 +12,7 @@ local function wait_for_notification(title: string, text: string)
 end
 
 fixture("hotki.selector.query")
-local selector = viewport_with_widget("selector.panel")
+local selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.query", function(widget)
     return string.find(widget.value_text, "b", 1, true) ~= nil
 end)
@@ -36,7 +24,7 @@ local confirmed = wait_for_notification("Selector", "Beta:b")
 assert(confirmed:widget_get("details.notification.0.kind"):state().value_text == "info")
 
 fixture("hotki.selector.query")
-selector = viewport_with_widget("selector.panel")
+selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.query", function(widget)
     return string.find(widget.value_text, "b", 1, true) ~= nil
 end)

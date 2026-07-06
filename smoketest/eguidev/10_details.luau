@@ -1,17 +1,5 @@
 configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
-local function viewport_with_widget(id: string): Viewport
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get(id):state()
-        end)
-        if ok then
-            return viewport
-        end
-    end
-    error("no viewport exposes " .. id)
-end
-
 local function widget_size(viewport: Viewport, id: string): { width: number, height: number }
     local rect = viewport:widget_get(id):state().rect
     return {
@@ -21,14 +9,14 @@ local function widget_size(viewport: Viewport, id: string): { width: number, hei
 end
 
 fixture("hotki.details")
-local details = viewport_with_widget("details.root")
+local details = viewport({ name = "details" })
 wait_for_frames(5)
 local first_size = widget_size(details, "details.root")
 
 for _ = 1, 3 do
     fixture("hotki.details")
     wait_for_frames(5)
-    details = viewport_with_widget("details.root")
+    details = viewport({ name = "details" })
     local next_size = widget_size(details, "details.root")
     assert(math.abs(next_size.width - first_size.width) <= 2, "details width should not grow on reopen")
     assert(math.abs(next_size.height - first_size.height) <= 2, "details height should not grow on reopen")
@@ -72,25 +60,18 @@ details:wait_for_widget("details.notification.0.text", function(widget)
 end)
 
 fixture("hotki.notifications")
-details = viewport_with_widget("details.root")
+details = viewport({ name = "details" })
 details:wait_for_widget("details.notification.0.title", function(widget)
     return widget.value_text == "Eguidev"
 end)
 
-local live_notification = nil
-local live_base = nil
-for _, viewport in ipairs(viewports()) do
-    for _, widget in ipairs(viewport:widget_list({ id_prefix = "notification.live.", include_invisible = true })) do
-        local state = widget:state()
-        if string.sub(widget.id, -6) == ".title" and state.value_text == "Eguidev" then
-            live_notification = viewport
-            live_base = string.sub(widget.id, 1, #widget.id - 6)
-        end
-    end
-end
-assert(live_notification ~= nil, "live notification viewport should expose the fixture title")
 assert(root():widget_get("notification.stack.count"):state().value_text == "1")
 assert(root():widget_get("notification.stack.item.0.title"):state().value_text == "Eguidev")
+root():wait_for_widget("notification.stack.item.0.live_id", function(widget)
+    return widget.value_text ~= ""
+end)
+local live_base = root():widget_get("notification.stack.item.0.live_id"):state().value_text
+local live_notification = viewport({ name = live_base })
 assert(live_notification:widget_get(live_base .. ".kind"):state().value_text == "info")
 assert(tonumber(live_notification:widget_get(live_base .. ".width"):state().value_text) > 0)
 assert(tonumber(live_notification:widget_get(live_base .. ".height"):state().value_text) > 0)

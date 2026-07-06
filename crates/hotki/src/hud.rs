@@ -455,7 +455,7 @@ impl Hud {
             .sync_builder(ctx, builder, model.geometry.pos, model.geometry.size);
 
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
-            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+            devtools::viewport_frame(devmcp, vp_ui, "hud", "hud.root", |vp_ui| {
                 let hud_ctx = vp_ui.ctx().clone();
                 let mut frame =
                     Frame::default().corner_radius(egui::CornerRadius::same(self.cfg.radius as u8));
@@ -463,10 +463,8 @@ impl Hud {
                 let (r, g, b) = self.cfg.bg;
                 frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
                 CentralPanel::default().frame(frame).show(vp_ui, |ui| {
-                    container(ui, "hud.root", |ui| {
-                        container(ui, "hud.panel", |ui| {
-                            self.render_panel(ui, &hud_ctx, &model);
-                        });
+                    container(ui, "hud.panel", |ui| {
+                        self.render_panel(ui, &hud_ctx, &model);
                     });
                 });
             });

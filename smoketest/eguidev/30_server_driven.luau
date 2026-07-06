@@ -1,23 +1,11 @@
 configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-local function viewport_with_widget(id: string): Viewport
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get(id):state()
-        end)
-        if ok then
-            return viewport
-        end
-    end
-    error("no viewport exposes " .. id)
-end
-
 fixture("hotki.hud")
 local root_vp = root()
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
 end)
-local hud = viewport_with_widget("hud.panel")
+local hud = viewport({ name = "hud" })
 hud:wait_for_widget_visible("hud.panel")
 hud:wait_for_widget("hud.mode", function(widget)
     return widget.value_text == "hud"
@@ -39,7 +27,7 @@ fixture("hotki.hud.mini")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
 end)
-hud = viewport_with_widget("hud.panel")
+hud = viewport({ name = "hud" })
 hud:wait_for_widget("hud.mode", function(widget)
     return widget.value_text == "mini"
 end)
@@ -57,7 +45,7 @@ fixture("hotki.selector")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
 end)
-local selector = viewport_with_widget("selector.panel")
+local selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.title", function(widget)
     return widget.value_text == "Pick Demo"
 end)
@@ -76,7 +64,7 @@ fixture("hotki.selector.query")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
 end)
-selector = viewport_with_widget("selector.panel")
+selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.query", function(widget)
     return string.find(widget.value_text, "b", 1, true) ~= nil
 end)

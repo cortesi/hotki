@@ -294,7 +294,7 @@ impl Details {
         }
 
         ctx.show_viewport_immediate(self.viewport.id(), builder, |vp_ui, _| {
-            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+            devtools::viewport_frame(devmcp, vp_ui, "details", "details.root", |vp_ui| {
                 let wctx = vp_ui.ctx().clone();
                 if wctx.input(|i| i.viewport().close_requested()) {
                     // Close via decorations; stop rendering next frame
@@ -329,9 +329,7 @@ impl Details {
                     self.want_focus = false;
                 }
                 CentralPanel::default().show(vp_ui, |ui| {
-                    container(ui, "details.root", |ui| {
-                        self.render_contents(ui, backlog);
-                    });
+                    self.render_contents(ui, backlog);
                 });
                 // Track geometry in-memory if it changed (no file persistence)
                 let viewport = wctx.input(|i| i.viewport().clone());

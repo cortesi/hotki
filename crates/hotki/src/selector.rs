@@ -329,7 +329,7 @@ impl SelectorWindow {
         let assets = self.render_assets();
         let snapshot = model.snapshot.clone();
         ctx.show_viewport_immediate(self.viewport.id(), builder, move |vp_ui, _| {
-            devtools::viewport_frame(devmcp, vp_ui, |vp_ui| {
+            devtools::viewport_frame(devmcp, vp_ui, "selector", "selector.panel", |vp_ui| {
                 let border = Self::rgba(assets.style.border, BG_ALPHA);
                 let bg = Self::rgba(assets.style.bg, BG_ALPHA);
                 let mut frame = Frame::new()
@@ -345,9 +345,7 @@ impl SelectorWindow {
                 };
 
                 CentralPanel::default().frame(frame).show(vp_ui, |ui| {
-                    container(ui, "selector.panel", |ui| {
-                        Self::render_panel(ui, &snapshot, &assets);
-                    });
+                    Self::render_panel(ui, &snapshot, &assets);
                 });
             });
         });

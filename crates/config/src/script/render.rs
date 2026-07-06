@@ -39,6 +39,19 @@ pub fn render_stack(
     ctx: &ModeCtx,
     base_style: &Style,
 ) -> Result<RenderOutput, Error> {
+    cfg.collect_entrypoint_garbage();
+    let result = render_stack_inner(cfg, stack, ctx, base_style);
+    cfg.collect_entrypoint_garbage();
+    result
+}
+
+/// Render the full mode stack without managing the retained VM heap boundary.
+fn render_stack_inner(
+    cfg: &mut DynamicConfig,
+    stack: &mut Vec<ModeFrame>,
+    ctx: &ModeCtx,
+    base_style: &Style,
+) -> Result<RenderOutput, Error> {
     let mut warnings = Vec::new();
 
     for depth in 0..stack.len() {

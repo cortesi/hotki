@@ -80,6 +80,13 @@ mod tests {
         });
     }
 
+    fn assert_heap_plateaus(baseline_heap: usize, retained_heap: usize) {
+        assert!(
+            retained_heap <= baseline_heap + 4 * 1024 * 1024,
+            "retained heap should plateau; baseline={baseline_heap}, retained={retained_heap}"
+        );
+    }
+
     #[test]
     fn imported_runtime_errors_report_imported_file_excerpt() {
         let root = test_dir("imported-runtime-error");
@@ -510,5 +517,135 @@ end)
             let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
             assert_eq!(find_binding(&out.rendered, "a").desc, "loop");
         }
+    }
+
+    #[test]
+    fn render_stack_reclaims_temporary_selector_tables_between_renders() {
+        let source = r#"
+local function synthetic_applications()
+    local items = {}
+    local payload = string.rep("x", 2048)
+    for i = 1, 768 do
+        items[i] = {
+            label = "Application " .. i,
+            sublabel = payload .. i,
+            data = { path = payload .. i },
+        }
+    end
+    return items
+end
+
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Selector", action.selector({
+        title = "Run Application",
+        items = synthetic_applications(),
+        on_select = function(actx, item, query)
+        end,
+    }))
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let ctx = base_ctx("TestApp", false, 0);
+        let mut stack = vec![root_frame(&cfg)];
+
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        assert_eq!(find_binding(&out.rendered, "a").desc, "Selector");
+        let baseline_heap = cfg.vm.heap_used_bytes();
+
+        for _ in 0..24 {
+            let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+            assert_eq!(find_binding(&out.rendered, "a").desc, "Selector");
+        }
+
+        let retained_heap = cfg.vm.heap_used_bytes();
+        assert_heap_plateaus(baseline_heap, retained_heap);
+    }
+
+    #[test]
+    fn handler_execution_reclaims_temporary_tables_between_calls() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("h", "Handler", action.run(function(actx)
+        local scratch = {}
+        local payload = string.rep("x", 2048)
+        for i = 1, 768 do
+            scratch[i] = { path = payload .. i }
+        end
+    end))
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let ctx = base_ctx("TestApp", false, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "h").kind.clone() else {
+            panic!("expected handler binding");
+        };
+
+        execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        let baseline_heap = cfg.vm.heap_used_bytes();
+
+        for _ in 0..24 {
+            execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        }
+
+        let retained_heap = cfg.vm.heap_used_bytes();
+        assert_heap_plateaus(baseline_heap, retained_heap);
+    }
+
+    #[test]
+    fn selector_provider_reclaims_temporary_tables_between_resolves() {
+        let source = r#"
+local function synthetic_applications()
+    local items = {}
+    local payload = string.rep("x", 2048)
+    for i = 1, 512 do
+        items[i] = {
+            label = "Application " .. i,
+            sublabel = payload .. i,
+            data = { path = payload .. i },
+        }
+    end
+    return items
+end
+
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Selector", action.selector({
+        title = "Run Application",
+        items = function(inner)
+            return synthetic_applications()
+        end,
+        on_select = function(actx, item, query)
+        end,
+    }))
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style(None);
+        let ctx = base_ctx("TestApp", false, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Selector(selector) = find_binding(&out.rendered, "a").kind.clone() else {
+            panic!("expected selector binding");
+        };
+
+        let mut items = selector
+            .resolve_items(&mut cfg, &ctx)
+            .expect("resolve items");
+        assert_eq!(items.len(), 512);
+        let baseline_heap = cfg.vm.heap_used_bytes();
+
+        for _ in 0..24 {
+            items = selector
+                .resolve_items(&mut cfg, &ctx)
+                .expect("resolve items");
+            assert_eq!(items.len(), 512);
+        }
+        cfg.collect_entrypoint_garbage();
+
+        let retained_heap = cfg.vm.heap_used_bytes();
+        assert_heap_plateaus(baseline_heap, retained_heap);
     }
 }

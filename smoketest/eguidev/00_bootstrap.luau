@@ -48,28 +48,22 @@ end
 
 fixture("hotki.basic.default")
 local root_vp = root()
-root_vp:wait_for_widget("app.ready", function(widget)
-    return widget.value_text == "true"
-end)
+expect("app.ready", { viewport = "root", value_text_contains = "true" })
+local settle_report = root_vp:wait_for_settle()
+local saw_app_idle = false
+for _, phase in ipairs(settle_report.phases) do
+    if phase.phase == "app_idle" then
+        saw_app_idle = true
+        assert(phase.complete, "hotki idle provider should report idle")
+    end
+end
+assert(saw_app_idle, "hotki should expose app_idle settle phase")
 assert_no_duplicate_widget_ids()
 
-local function viewport_with_widget(id: string): Viewport
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get(id):state()
-        end)
-        if ok then
-            return viewport
-        end
-    end
-    error("no viewport exposes " .. id)
-end
-
-local details = viewport_with_widget("details.root")
-local root_state = details:widget_get("details.root"):state()
+local root_state = expect("details.root", { viewport = "details", visible = true })
 assert(root_state.visible, "details.root should be visible after baseline fixture")
 
 return {
-    app_ready = root_vp:widget_get("app.ready"):state().value_text,
+    app_ready = widget("app.ready", { viewport = "root" }):state().value_text,
     viewports = #viewports(),
 }

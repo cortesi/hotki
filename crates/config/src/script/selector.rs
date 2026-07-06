@@ -198,6 +198,18 @@ impl SelectorConfig {
         cfg: &mut DynamicConfig,
         ctx: &ModeCtx,
     ) -> Result<Vec<SelectorItem>, crate::Error> {
+        cfg.collect_entrypoint_garbage();
+        let result = self.resolve_items_inner(cfg, ctx);
+        cfg.collect_entrypoint_garbage();
+        result
+    }
+
+    /// Resolve items without managing the retained VM heap boundary.
+    fn resolve_items_inner(
+        &self,
+        cfg: &mut DynamicConfig,
+        ctx: &ModeCtx,
+    ) -> Result<Vec<SelectorItem>, crate::Error> {
         match &self.items {
             SelectorItems::Static(items) => Ok(items.clone()),
             SelectorItems::Provider(provider) => {

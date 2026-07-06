@@ -102,11 +102,13 @@ pub fn load_dynamic_config_from_string(
         }
         Err(err) => return Err(diagnostics::config_validation(path.clone(), err)),
     }
+    vm.collect();
 
     let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
         diagnostics::config_validation(path.clone(), "hotki.root() must be called exactly once")
     })?;
     validate_root(&mut vm, &root, path.as_deref(), &sources)?;
+    vm.collect();
 
     let state_guard = lock_unpoisoned(&state);
     Ok(DynamicConfig {
