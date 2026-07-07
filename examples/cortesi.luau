@@ -5,8 +5,6 @@
 -- - `spotify` is available on PATH (or adjust commands)
 -- - `/opt/homebrew/bin/wezterm` exists (or adjust)
 
-themes:use("default")
-
 local DEFAULT_REPEAT: RepeatOptions = {}
 local GLOBAL_HIDDEN: BindingOptions = { global = true, hidden = true }
 local STAY: BindingOptions = { stay = true }
@@ -96,7 +94,6 @@ hotki.root(function(menu, ctx)
             sub:bind("d", "Details", action.show_details("toggle"))
             sub:bind("r", "Reload Config", action.reload_config)
             sub:bind("o", "Show Root Keys", action.show_root)
-            sub:bind("t", "Theme", action.theme_next, STAY)
         end)
 
         root:submenu("g", "go", function(go, _go_ctx)

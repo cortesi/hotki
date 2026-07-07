@@ -24,12 +24,6 @@ pub enum Action {
     ClearNotifications,
     /// Control the details window: on/off/toggle
     ShowDetails(Toggle),
-    /// Switch to the next theme in the list
-    ThemeNext,
-    /// Switch to the previous theme in the list
-    ThemePrev,
-    /// Set a specific theme by name
-    ThemeSet(String),
     /// Open a path or URL via the system opener.
     Open(String),
     /// Clear to root and show HUD.

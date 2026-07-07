@@ -18,13 +18,11 @@ pub enum ImportRole {
     Items,
     /// Imported action handler.
     Handler,
-    /// Imported style overlay.
-    Style,
 }
 
 impl ImportRole {
     /// All import roles exposed by the `hotki` host module.
-    pub(crate) const ALL: [Self; 4] = [Self::Mode, Self::Items, Self::Handler, Self::Style];
+    pub(crate) const ALL: [Self; 3] = [Self::Mode, Self::Items, Self::Handler];
 
     /// Return the host import function name for this role.
     pub(crate) fn function_name(self) -> &'static str {
@@ -32,7 +30,6 @@ impl ImportRole {
             Self::Mode => "import_mode",
             Self::Items => "import_items",
             Self::Handler => "import_handler",
-            Self::Style => "import_style",
         }
     }
 
@@ -60,12 +57,6 @@ impl ImportRole {
                  \tmenu:bind(\"a\", \"Run\", action.run(imported))\n\
                  end)\n"
             ),
-            Self::Style => format!(
-                "local imported = hotki.import_style(\"{rel_path}\")\n\
-                 hotki.root(function(menu, ctx)\n\
-                 \tmenu:style(imported)\n\
-                 end)\n"
-            ),
         }
     }
 
@@ -75,7 +66,6 @@ impl ImportRole {
             Self::Mode => "ModeModule",
             Self::Items => "ItemsProvider<any>",
             Self::Handler => "HandlerModule",
-            Self::Style => "any",
         };
         format!("local _module = (function(): {target}\n{module_source}\nend)()\n")
     }
@@ -86,7 +76,6 @@ impl ImportRole {
             Self::Mode => "mode",
             Self::Items => "items",
             Self::Handler => "handler",
-            Self::Style => "style",
         }
     }
 }

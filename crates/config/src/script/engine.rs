@@ -7,7 +7,7 @@ pub use super::{
     render::{RenderOutput, render_stack, resolve_binding},
     selector::{SelectorConfig, SelectorItem, SelectorItems},
     types::{
-        ActionCtx, Binding, BindingFlags, BindingKind, BindingStyle, Effect, HandlerRef, ModeCtx,
-        ModeFrame, ModeId, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos, StyleOverlay,
+        ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, ModeCtx, ModeFrame,
+        ModeId, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos,
     },
 };

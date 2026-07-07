@@ -65,28 +65,6 @@ fn maybe_or<T>(value: Maybe<T>, default: T) -> T {
     value.into_option().unwrap_or(default)
 }
 
-/// Merge two `Maybe<T>` values, preferring the overlay when it is present.
-fn merge_maybe<T: Clone>(base: &Maybe<T>, overlay: &Maybe<T>) -> Maybe<T> {
-    match overlay.as_option() {
-        Some(_) => overlay.clone(),
-        None => base.clone(),
-    }
-}
-
-/// Merge two nested `Maybe<T>` values, merging inner values when both are present.
-fn merge_maybe_nested<T: Clone>(
-    base: &Maybe<T>,
-    overlay: &Maybe<T>,
-    merge: impl FnOnce(&T, &T) -> T,
-) -> Maybe<T> {
-    match (base.as_option(), overlay.as_option()) {
-        (Some(b), Some(o)) => Maybe::Value(merge(b, o)),
-        (Some(_), None) => base.clone(),
-        (None, Some(_)) => overlay.clone(),
-        (None, None) => base.clone(),
-    }
-}
-
 /// Apply an optional overlay section to a resolved protocol-facing style value.
 pub fn apply_optional_overlay<T, U: Clone>(
     overlay: Option<T>,
@@ -96,29 +74,6 @@ pub fn apply_optional_overlay<T, U: Clone>(
     overlay
         .map(|overlay| apply(overlay, base))
         .unwrap_or_else(|| base.clone())
-}
-
-/// Merge overlay structs field-by-field, with optional nested merge functions.
-macro_rules! merge_overlay {
-    ($base:expr, $overlay:expr; nested[$($nested:ident => $merge:path),* $(,)?]) => {
-        Self {
-            $(
-                $nested: merge_maybe_nested(&$base.$nested, &$overlay.$nested, $merge),
-            )*
-        }
-    };
-    ($base:expr, $overlay:expr; flat[$($field:ident),* $(,)?] $(; nested[$($nested:ident => $merge:path),* $(,)?])?) => {
-        Self {
-            $(
-                $field: merge_maybe(&$base.$field, &$overlay.$field),
-            )*
-            $(
-                $(
-                    $nested: merge_maybe_nested(&$base.$nested, &$overlay.$nested, $merge),
-                )*
-            )?
-        }
-    };
 }
 
 // ===== RAW NOTIFICATION STYLE =====
@@ -172,24 +127,6 @@ impl RawNotifyStyle {
             body_font_weight: maybe_or(self.body_font_weight, defaults.body_font_weight),
             icon: self.icon.into_option().or(defaults.icon),
         }
-    }
-
-    /// Merge another notification style on top of this one.
-    pub(crate) fn merge(&self, other: &Self) -> Self {
-        merge_overlay!(
-            self,
-            other;
-            flat[
-                bg,
-                title_fg,
-                body_fg,
-                title_font_size,
-                title_font_weight,
-                body_font_size,
-                body_font_weight,
-                icon,
-            ]
-        )
     }
 }
 
@@ -273,21 +210,6 @@ impl RawNotify {
                 ),
             },
         }
-    }
-
-    /// Merge another notification overlay on top of this one.
-    pub(crate) fn merge(&self, other: &Self) -> Self {
-        merge_overlay!(
-            self,
-            other;
-            flat[width, pos, opacity, timeout, buffer, radius];
-            nested[
-                info => RawNotifyStyle::merge,
-                warn => RawNotifyStyle::merge,
-                error => RawNotifyStyle::merge,
-                success => RawNotifyStyle::merge,
-            ]
-        )
     }
 }
 
@@ -431,15 +353,6 @@ impl RawSelector {
             shadow: parse_color(self.shadow.into_option(), base.shadow),
         }
     }
-
-    /// Merge another selector overlay on top of this one.
-    pub(crate) fn merge(&self, other: &Self) -> Self {
-        merge_overlay!(
-            self,
-            other;
-            flat[bg, input_bg, item_bg, item_selected_bg, match_fg, border, shadow]
-        )
-    }
 }
 
 // Shared color fallback for HUD
@@ -507,39 +420,6 @@ impl RawHud {
                 .unwrap_or_else(|| defaults.tag_submenu.clone()),
         }
     }
-
-    /// Merge another HUD overlay on top of this one.
-    pub(crate) fn merge(&self, other: &Self) -> Self {
-        merge_overlay!(
-            self,
-            other;
-            flat[
-                mode,
-                pos,
-                offset,
-                font_size,
-                title_font_weight,
-                key_font_size,
-                key_font_weight,
-                tag_font_size,
-                tag_font_weight,
-                title_fg,
-                bg,
-                key_fg,
-                key_bg,
-                mod_fg,
-                mod_font_weight,
-                mod_bg,
-                tag_fg,
-                opacity,
-                key_radius,
-                key_pad_x,
-                key_pad_y,
-                radius,
-                tag_submenu,
-            ]
-        )
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -564,19 +444,6 @@ impl RawStyle {
             notify.validate()?;
         }
         Ok(())
-    }
-
-    /// Merge another style overlay on top of this one.
-    pub(crate) fn merge(&self, other: &Self) -> Self {
-        merge_overlay!(
-            self,
-            other;
-            nested[
-                hud => RawHud::merge,
-                notify => RawNotify::merge,
-                selector => RawSelector::merge,
-            ]
-        )
     }
 }
 

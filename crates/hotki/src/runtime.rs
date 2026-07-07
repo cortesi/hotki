@@ -17,8 +17,6 @@ pub enum ControlMsg {
     Reload,
     /// Gracefully shut down the UI and exit the process.
     Shutdown,
-    /// Request a server-side theme switch by name.
-    SwitchTheme(String),
     /// Inject a synthetic key event through the connected server.
     InjectKey {
         /// Key chord identifier, for example `shift+cmd+0`.

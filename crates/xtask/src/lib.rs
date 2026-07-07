@@ -42,7 +42,7 @@ enum Xtask {
     Install(install::InstallArgs),
     /// Generate UI screenshots for the README gallery.
     Screenshots,
-    /// Validate Luau API/docs, themes, and example configs.
+    /// Validate Luau API/docs, style files, and example configs.
     Luau,
     /// Run clippy fixes and format the workspace.
     Tidy,

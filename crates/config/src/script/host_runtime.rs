@@ -12,8 +12,6 @@ use super::{
     HandlerRef, ModeRef, SelectorItem, config::SourceMap, imports::ImportRole,
     util::lock_unpoisoned,
 };
-use crate::raw;
-
 /// Shared mutable state captured by native host functions installed into one VM.
 pub(super) type SharedRuntimeState = Arc<Mutex<RuntimeState>>;
 
@@ -22,10 +20,6 @@ pub(super) type SharedRuntimeState = Arc<Mutex<RuntimeState>>;
 pub(super) struct RuntimeState {
     /// Root mode declared by `hotki.root(...)`.
     pub(super) root: Option<ModeRef>,
-    /// Theme registry after built-in, user, and script registration.
-    pub(super) themes: HashMap<String, raw::RawStyle>,
-    /// Active theme selected during loading.
-    pub(super) active_theme: String,
     /// Cached application selector items.
     pub(super) applications_cache: Option<Arc<[SelectorItem]>>,
     /// Directory containing the root config file.
@@ -45,8 +39,6 @@ pub(super) enum ImportedValue {
     Items(ImportedItems),
     /// Imported action handler.
     Handler(HandlerRef),
-    /// Imported style overlay.
-    Style(Box<raw::RawStyle>),
 }
 
 /// Imported selector item values.

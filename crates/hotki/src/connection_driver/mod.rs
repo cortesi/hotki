@@ -98,8 +98,6 @@ enum LocalControl {
 enum ServerControl {
     /// Reload from disk using the configured config path.
     Reload,
-    /// Request a server-side theme switch by name.
-    SwitchTheme(String),
     /// Inject a synthetic key event through the connected server.
     InjectKey {
         /// Key chord identifier, for example `shift+cmd+0`.
@@ -130,7 +128,6 @@ impl ControlRoute {
         match msg {
             ControlMsg::Shutdown => Self::Shutdown,
             ControlMsg::Reload => Self::Server(ServerControl::Reload),
-            ControlMsg::SwitchTheme(name) => Self::Server(ServerControl::SwitchTheme(name)),
             ControlMsg::InjectKey {
                 ident,
                 kind,
@@ -224,9 +221,6 @@ impl ConnectionDriver {
         match control {
             ServerControl::Reload => {
                 self.reload_config(conn).await;
-            }
-            ServerControl::SwitchTheme(name) => {
-                self.switch_theme(conn, &name).await;
             }
             ServerControl::InjectKey {
                 ident,
@@ -324,15 +318,6 @@ impl ConnectionDriver {
                 self.refresh_server_bindings(conn).await;
             }
             Err(err) => self.notify_local(NotifyKind::Error, "Config", &err.to_string()),
-        }
-    }
-
-    /// Switch the server-side theme by name and request an updated HUD/style.
-    async fn switch_theme(&self, conn: &mut hotki_server::Connection, name: &str) {
-        if let Err(err) = conn.set_theme(name).await {
-            self.notify_local(NotifyKind::Error, "Theme", &err.to_string());
-        } else {
-            self.ui.request_repaint();
         }
     }
 
@@ -729,10 +714,6 @@ mod tests {
         assert_eq!(
             ControlRoute::from_msg(ControlMsg::Reload),
             ControlRoute::Server(ServerControl::Reload)
-        );
-        assert_eq!(
-            ControlRoute::from_msg(ControlMsg::SwitchTheme("dark".to_string())),
-            ControlRoute::Server(ServerControl::SwitchTheme("dark".to_string()))
         );
         assert_eq!(
             ControlRoute::from_msg(ControlMsg::InjectKey {

@@ -86,7 +86,6 @@ impl Engine {
                     closure: mode,
                     entered_via: binding.mode_id.map(|id| (binding.chord, id)),
                     rendered: Vec::new(),
-                    style: None,
                     capture: binding.mode_capture,
                 });
                 DispatchResult::EnteredMode

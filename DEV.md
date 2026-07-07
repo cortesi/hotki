@@ -25,6 +25,8 @@ edev mcp
 
 The eguidev launch command builds `hotki` with `--features devtools` and runs
 the checked-in `examples/eguidev-demo.luau` config with `--disable-event-tap`.
+Style is loaded from an optional `style.luau` sibling of the active config; keep eguidev fixtures
+aligned with that split when adding style-sensitive checks.
 Use eguidev input for egui-native windows such as Details and Permissions. HUD,
 selector, and notifications are server-driven surfaces; drive those through
 fixtures/server actions and inspect the rendered widgets. Synthetic input

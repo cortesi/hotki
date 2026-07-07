@@ -17,7 +17,6 @@ pub(crate) struct RuntimeState {
     pub(crate) stack: Vec<ModeFrame>,
     pub(crate) focus: FocusInfo,
     pub(crate) rendered: RenderedState,
-    pub(crate) theme_name: String,
     pub(crate) selector: Option<SelectorState>,
 }
 
@@ -28,7 +27,6 @@ impl RuntimeState {
             stack: Vec::new(),
             focus: FocusInfo::default(),
             rendered: Self::empty_rendered(config::Style::default()),
-            theme_name: "default".to_string(),
             selector: None,
         }
     }
@@ -48,7 +46,6 @@ impl RuntimeState {
             closure,
             entered_via: None,
             rendered: Vec::new(),
-            style: None,
             capture: false,
         }
     }

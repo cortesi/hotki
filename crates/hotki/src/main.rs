@@ -5,7 +5,7 @@ use std::{
     process,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use eframe::{NativeOptions, Renderer};
 use hotki_server::Server;
 use logging::{self as logshared, forward};
@@ -39,9 +39,8 @@ mod selector;
 mod tray;
 
 use config::{
-    check_luau_config, load_dynamic_config, luau_api_markdown, luau_api_text, resolve_config_path,
-    script::engine::{ModeCtx, ModeFrame, render_stack},
-    themes,
+    LuauApiSurface, check_luau_config, default_style_source, load_dynamic_config,
+    luau_api_markdown, luau_api_text, resolve_config_path,
 };
 
 use crate::app::{AppBootstrap, HotkiApp, UiEvent};
@@ -96,6 +95,10 @@ struct Cli {
 enum Command {
     /// Print the checked-in Luau scripting API definitions.
     Api {
+        /// Which Luau API surface to print.
+        #[arg(long, value_enum, default_value_t = ApiSurface::Config)]
+        surface: ApiSurface,
+
         /// Wrap the output in a markdown code fence.
         #[arg(long)]
         markdown: bool,
@@ -113,11 +116,40 @@ enum Command {
         #[arg(long)]
         dump: bool,
     },
+    /// Print style source or the resolved effective style.
+    Style {
+        /// Path to configuration file (defaults to ~/.hotki/config.luau).
+        path: Option<String>,
+
+        /// Dump the embedded default style source.
+        #[arg(long)]
+        default: bool,
+    },
+}
+
+/// Luau API surfaces exposed by `hotki api`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ApiSurface {
+    /// Behavior config declarations.
+    Config,
+    /// Standalone `style.luau` declarations.
+    Style,
+    /// Combined declarations for tooling.
+    All,
+}
+
+impl From<ApiSurface> for LuauApiSurface {
+    fn from(surface: ApiSurface) -> Self {
+        match surface {
+            ApiSurface::Config => Self::Config,
+            ApiSurface::Style => Self::Style,
+            ApiSurface::All => Self::All,
+        }
+    }
 }
 
 fn main() -> eframe::Result<()> {
     let cli = Cli::parse();
-    themes::init_builtins();
     let server_filter = init_logging(&cli);
 
     if handle_subcommand(&cli) {
@@ -153,17 +185,25 @@ fn init_logging(cli: &Cli) -> String {
 fn handle_subcommand(cli: &Cli) -> bool {
     if let Some(command) = &cli.command {
         match command {
-            Command::Api { markdown, filter } => {
+            Command::Api {
+                surface,
+                markdown,
+                filter,
+            } => {
                 let output = if *markdown {
-                    luau_api_markdown(filter.as_deref())
+                    luau_api_markdown((*surface).into(), filter.as_deref())
                 } else {
-                    luau_api_text(filter.as_deref())
+                    luau_api_text((*surface).into(), filter.as_deref())
                 };
                 print!("{output}");
                 return true;
             }
             Command::Check { path, dump } => {
                 run_check_command(path.as_deref(), cli.config.as_deref(), *dump);
+                return true;
+            }
+            Command::Style { path, default } => {
+                run_style_command(path.as_deref(), cli.config.as_deref(), *default);
                 return true;
             }
         }
@@ -192,8 +232,8 @@ fn run_check_command(path: Option<&str>, cli_config: Option<&Path>, dump: bool) 
         dump_config_style(&resolved);
     } else {
         println!(
-            "OK (validated {} imports, {} theme files)",
-            report.imports, report.themes
+            "OK (validated {} imports, style: {})",
+            report.imports, report.style
         );
     }
 }
@@ -201,21 +241,35 @@ fn run_check_command(path: Option<&str>, cli_config: Option<&Path>, dump: bool) 
 /// Dump the base style for a validated config.
 fn dump_config_style(resolved: &Path) {
     match load_dynamic_config(resolved) {
-        Ok(cfg) => {
-            let style = cfg.base_style(None);
-            match serde_json::to_string_pretty(&style) {
-                Ok(json) => println!("{json}"),
-                Err(e) => {
-                    eprintln!("Failed to serialize style: {e}");
-                    process::exit(1);
-                }
+        Ok(cfg) => match serde_json::to_string_pretty(&cfg.resolved_style()) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("Failed to serialize style: {e}");
+                process::exit(1);
             }
-        }
+        },
         Err(e) => {
             eprintln!("{}", e.pretty());
             process::exit(1);
         }
     }
+}
+
+/// Dump the embedded default style source or the resolved effective style.
+fn run_style_command(path: Option<&str>, cli_config: Option<&Path>, default: bool) {
+    if default {
+        print!("{}", default_style_source());
+        return;
+    }
+    let explicit = path.map(Path::new).or(cli_config);
+    let resolved = match resolve_config_path(explicit) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e.pretty());
+            process::exit(1);
+        }
+    };
+    dump_config_style(&resolved);
 }
 
 /// Run hotki as the background server.
@@ -318,35 +372,12 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
 
 /// Render the root config style once so UI-local startup notices match user configuration.
 fn initial_style_for_config(config_path: &Path) -> hotki_protocol::Style {
-    let mut cfg = match load_dynamic_config(config_path) {
+    let cfg = match load_dynamic_config(config_path) {
         Ok(cfg) => cfg,
         Err(err) => {
             error!("failed to load initial UI style: {}", err.pretty());
             return hotki_protocol::Style::default();
         }
     };
-    let base_style = cfg.base_style(None);
-    let mut stack = vec![ModeFrame {
-        title: "root".to_string(),
-        closure: cfg.root(),
-        entered_via: None,
-        rendered: Vec::new(),
-        style: None,
-        capture: false,
-    }];
-    let ctx = ModeCtx {
-        app: String::new(),
-        title: String::new(),
-        pid: 0,
-        hud: false,
-        depth: 0,
-    };
-
-    match render_stack(&mut cfg, &mut stack, &ctx, &base_style) {
-        Ok(output) => output.rendered.style,
-        Err(err) => {
-            error!("failed to render initial UI style: {}", err.pretty());
-            base_style
-        }
-    }
+    cfg.base_style()
 }

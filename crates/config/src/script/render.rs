@@ -8,9 +8,9 @@ use tracing::warn;
 
 use super::{
     Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState, diagnostics,
-    types::{HudRow, HudRowStyle, SourcePos},
+    types::{HudRow, SourcePos},
 };
-use crate::{Error, NotifyKind, Style, error::excerpt_at, style};
+use crate::{Error, NotifyKind, Style, error::excerpt_at};
 
 /// Output of rendering a full stack, including user-visible warnings.
 #[derive(Debug, Clone)]
@@ -26,8 +26,6 @@ pub struct RenderOutput {
 struct ModeView {
     /// Bindings produced by the mode renderer.
     bindings: Vec<Binding>,
-    /// Optional mode-level style overlay.
-    style: Option<super::StyleOverlay>,
     /// Whether this mode requested capture-all behavior.
     capture: bool,
 }
@@ -60,7 +58,6 @@ fn render_stack_inner(
 
         let frame = &mut stack[depth];
         frame.rendered = view.bindings;
-        frame.style = view.style;
         frame.capture = view.capture;
 
         if stack[depth].rendered.is_empty() && depth > 0 {
@@ -85,16 +82,15 @@ fn render_stack_inner(
         }
     }
 
-    let effective_style = compute_effective_style(base_style, stack);
     let capture = stack.last().is_some_and(|frame| frame.capture);
     let bindings = flatten_bindings(stack);
-    let hud_rows = build_hud_rows(&effective_style, &bindings);
+    let hud_rows = build_hud_rows(&bindings);
 
     Ok(RenderOutput {
         rendered: RenderedState {
             bindings,
             hud_rows,
-            style: effective_style,
+            style: base_style.clone(),
             capture,
         },
         warnings,
@@ -107,8 +103,7 @@ fn render_mode(
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
-    let builder =
-        super::host_userdata::ModeBuilder::new_for_render(frame.style.clone(), frame.capture);
+    let builder = super::host_userdata::ModeBuilder::new_for_render(frame.capture);
     let mut script_error = None;
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
@@ -140,17 +135,10 @@ fn render_mode(
         return Err(err);
     }
 
-    let (bindings, style, capture) = builder.finish();
+    let (bindings, capture) = builder.finish();
     let (bindings, warnings) = dedup_mode_bindings(cfg, &bindings);
 
-    Ok((
-        ModeView {
-            bindings,
-            style,
-            capture,
-        },
-        warnings,
-    ))
+    Ok((ModeView { bindings, capture }, warnings))
 }
 
 /// Keep the first binding for each chord and surface warnings for duplicates.
@@ -189,15 +177,6 @@ fn dedup_mode_bindings(cfg: &DynamicConfig, bindings: &[Binding]) -> (Vec<Bindin
     (out, warnings)
 }
 
-/// Apply every mode-level overlay in the current stack to the base style.
-fn compute_effective_style(base: &Style, stack: &[ModeFrame]) -> Style {
-    let overlays = stack
-        .iter()
-        .filter_map(|frame| frame.style.as_ref().map(|style| style.raw.clone()))
-        .collect::<Vec<_>>();
-    style::overlay_all_raw(base.clone(), &overlays)
-}
-
 /// Flatten local and inherited bindings into dispatch order.
 fn flatten_bindings(stack: &[ModeFrame]) -> Vec<(Chord, Binding)> {
     let mut out = Vec::new();
@@ -227,34 +206,19 @@ fn flatten_bindings(stack: &[ModeFrame]) -> Vec<(Chord, Binding)> {
 }
 
 /// Build visible HUD rows from the flattened binding list.
-fn build_hud_rows(base_style: &Style, bindings: &[(Chord, Binding)]) -> Vec<HudRow> {
+fn build_hud_rows(bindings: &[(Chord, Binding)]) -> Vec<HudRow> {
     let mut rows = Vec::new();
 
     for (chord, binding) in bindings {
-        let hidden =
-            binding.flags.hidden || binding.style.as_ref().is_some_and(|style| style.hidden);
-        if hidden {
+        if binding.flags.hidden {
             continue;
         }
-
-        let style = binding.style.as_ref().and_then(|style| {
-            style.overlay.as_ref().map(|overlay| {
-                let resolved = style::overlay_raw(base_style.clone(), overlay);
-                HudRowStyle {
-                    key_fg: resolved.hud.key_fg,
-                    key_bg: resolved.hud.key_bg,
-                    mod_fg: resolved.hud.mod_fg,
-                    mod_bg: resolved.hud.mod_bg,
-                    tag_fg: resolved.hud.tag_fg,
-                }
-            })
-        });
 
         rows.push(HudRow {
             chord: chord.clone(),
             desc: binding.desc.clone(),
             is_mode: matches!(binding.kind, BindingKind::Mode(_)),
-            style,
+            style: None,
         });
     }
 

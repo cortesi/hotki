@@ -4,8 +4,8 @@ use mac_keycode::Chord;
 use ruau::vm::{RuntimeError, Scope, ScopedValue, serde::from_scoped_value};
 use serde::Deserialize;
 
-use super::{Binding, RepeatSpec, StyleOverlay, binding_style::BindingStyleSpec};
-use crate::{NotifyKind, raw};
+use super::{Binding, RepeatSpec};
+use crate::NotifyKind;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,8 +39,6 @@ pub(super) struct BindingOptionsSpec {
     stay: Option<bool>,
     /// Optional software-repeat configuration.
     repeat: Option<RepeatOptionsSpec>,
-    /// Optional binding-level style overrides.
-    style: Option<BindingStyleSpec>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -70,19 +68,6 @@ where
         .map_err(|err| RuntimeError::runtime(err.message()))
 }
 
-/// Deserialize a Luau style overlay table into raw config types.
-pub(super) fn parse_raw_style<'s>(
-    scope: &Scope<'s>,
-    value: ScopedValue<'s>,
-) -> Result<raw::RawStyle, RuntimeError> {
-    let style: raw::RawStyle =
-        from_scoped_value(scope, value).map_err(|err| RuntimeError::runtime(err.message()))?;
-    style
-        .validate()
-        .map_err(|message| RuntimeError::runtime(format!("invalid style: {message}")))?;
-    Ok(style)
-}
-
 /// Parse a hotkey chord string into a normalized `Chord`.
 pub(super) fn parse_chord(spec: &str) -> Result<Chord, RuntimeError> {
     Chord::parse(spec).ok_or_else(|| RuntimeError::runtime(format!("invalid chord string: {spec}")))
@@ -101,13 +86,4 @@ pub(super) fn apply_binding_options(binding: &mut Binding, options: Option<Bindi
         delay_ms: repeat.delay_ms,
         interval_ms: repeat.interval_ms,
     });
-    binding.style = options.style.map(BindingStyleSpec::into_binding_style);
-}
-
-/// Merge a series of mode-level style overlays into one overlay.
-pub(super) fn merge_style_overlays(overlays: &[raw::RawStyle]) -> Option<StyleOverlay> {
-    let mut iter = overlays.iter();
-    let first = iter.next()?.clone();
-    let raw = iter.fold(first, |acc, overlay| acc.merge(overlay));
-    Some(StyleOverlay { raw })
 }

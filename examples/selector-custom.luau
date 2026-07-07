@@ -1,5 +1,3 @@
-themes:use("default")
-
 local items = {
     "Alpha",
     "Beta",

@@ -1,26 +1,4 @@
-themes:use("default")
-
 hotki.root(function(menu, ctx)
-    menu:style({
-        hud = {
-            pos = "ne",
-            font_size = 16,
-            key_font_size = 16,
-            title_font_weight = "regular",
-            key_font_weight = "regular",
-            tag_font_size = 16,
-            tag_font_weight = "regular",
-            title_fg = "white",
-            key_fg = "white",
-            key_bg = "#303030",
-            mod_fg = "white",
-            mod_bg = "#404040",
-            tag_fg = "white",
-            bg = "#202020",
-            opacity = 0.95,
-        },
-    })
-
     menu:submenu("shift+cmd+0", "Activate", function(root, inner)
         if inner:app_matches("Safari|Arc|Google Chrome") then
             root:submenu("b", "Browser", function(browser, browser_ctx)

@@ -14,8 +14,6 @@ pub enum HotkeyMethod {
     Shutdown,
     /// Set the configuration path (server loads config from disk).
     SetConfigPath,
-    /// Set the active theme by name.
-    SetTheme,
     /// Inject a synthetic key event.
     InjectKey,
     /// Get the current key bindings.
@@ -36,7 +34,6 @@ impl HotkeyMethod {
         match self {
             Self::Shutdown => "shutdown",
             Self::SetConfigPath => "set_config_path",
-            Self::SetTheme => "set_theme",
             Self::InjectKey => "inject_key",
             Self::GetBindings => "get_bindings",
             Self::GetDepth => "get_depth",
@@ -51,7 +48,6 @@ impl HotkeyMethod {
         match s {
             "shutdown" => Some(Self::Shutdown),
             "set_config_path" => Some(Self::SetConfigPath),
-            "set_theme" => Some(Self::SetTheme),
             "inject_key" => Some(Self::InjectKey),
             "get_bindings" => Some(Self::GetBindings),
             "get_depth" => Some(Self::GetDepth),

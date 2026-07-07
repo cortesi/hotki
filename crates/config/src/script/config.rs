@@ -7,7 +7,7 @@ use std::{
 use ruau::vm::{Limits, LoadedModule, Vm};
 
 use super::{ModeRef, util::lock_unpoisoned};
-use crate::{Style, raw, style};
+use crate::{Style, StyleProvenance};
 
 /// Gas budget for each dynamic config entrypoint.
 pub const SCRIPT_GAS_LIMIT: u64 = 4_000_000;
@@ -22,10 +22,10 @@ pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
 pub struct DynamicConfig {
     /// Root mode renderer declared by `hotki.root(...)`.
     pub(crate) root: ModeRef,
-    /// Theme registry after built-in, user, and script overrides are applied.
-    pub(crate) themes: HashMap<String, raw::RawStyle>,
-    /// Active theme selected while loading the config.
-    pub(crate) active_theme: String,
+    /// Resolved base style loaded from the embedded default and optional sibling override.
+    pub(crate) base_style: Style,
+    /// Source of the resolved base style.
+    pub(crate) style_provenance: StyleProvenance,
     /// Retained ruau VM used for later renders and handler execution.
     pub(crate) vm: Vm,
     /// Loaded root module retained for the VM lifetime.
@@ -42,32 +42,22 @@ impl DynamicConfig {
         self.root.clone()
     }
 
-    /// Return all registered theme names, sorted alphabetically.
-    pub fn theme_names(&self) -> Vec<String> {
-        let mut names = self.themes.keys().cloned().collect::<Vec<_>>();
-        names.sort();
-        names
+    /// Return the resolved base style.
+    pub fn base_style(&self) -> Style {
+        self.base_style.clone()
     }
 
-    /// Return true when a theme exists in this config's registry.
-    pub fn theme_exists(&self, name: &str) -> bool {
-        self.themes.contains_key(name)
+    /// Return the source of the resolved base style.
+    pub fn style_provenance(&self) -> &StyleProvenance {
+        &self.style_provenance
     }
 
-    /// Return the active theme name selected by the config.
-    pub fn active_theme(&self) -> &str {
-        self.active_theme.as_str()
-    }
-
-    /// Compute base style for the config, including optional theme override.
-    pub fn base_style(&self, theme_override: Option<&str>) -> Style {
-        let name = theme_override
-            .filter(|n| !n.is_empty())
-            .unwrap_or(self.active_theme());
-        let Some(raw) = self.themes.get(name).or_else(|| self.themes.get("default")) else {
-            return Style::default();
-        };
-        style::overlay_raw(Style::default(), raw)
+    /// Return the resolved style and its provenance.
+    pub fn resolved_style(&self) -> crate::ResolvedStyle {
+        crate::ResolvedStyle {
+            style: self.base_style.clone(),
+            provenance: self.style_provenance.clone(),
+        }
     }
 
     /// Return cached source text for a known filesystem path.

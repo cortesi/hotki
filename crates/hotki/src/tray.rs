@@ -1,13 +1,12 @@
 //! System tray icon and event wiring for the Hotki UI.
 use std::{collections::HashMap, thread};
 
-use config::themes;
 use egui::Context;
 use hotki_protocol::{MsgToUI, Toggle};
 use tokio::sync::mpsc as tokio_mpsc;
 use tray_icon::{
     Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
-    menu::{Menu, MenuEvent, MenuId, MenuItem, Submenu},
+    menu::{Menu, MenuEvent, MenuId, MenuItem},
 };
 
 use crate::{app::UiEvent, runtime::ControlMsg};
@@ -34,7 +33,7 @@ fn tray_icon_image() -> Option<Icon> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 /// Menu actions emitted by the tray menu.
 enum TrayAction {
     /// Show (or raise) the Details window.
@@ -45,8 +44,6 @@ enum TrayAction {
     OpenPermissionsHelp,
     /// Shut the application down.
     Quit,
-    /// Switch to the named theme.
-    Theme(String),
 }
 
 /// Build the tray menu and an id-to-action lookup table.
@@ -55,15 +52,12 @@ fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
     let show_window = MenuItem::new("Open Hotki", true, None);
     let reload = MenuItem::new("Reload Config", true, None);
     let help = MenuItem::new("Permissions…", true, None);
-    let themes_menu = Submenu::new("Themes", true);
     let quit = MenuItem::new("Quit", true, None);
 
     let mut actions = HashMap::new();
     register_base_actions(&mut actions, &show_window, &reload, &help, &quit);
-    append_theme_items(&themes_menu, &mut actions);
     append_menu_item(&menu, &show_window);
     append_menu_item(&menu, &reload);
-    append_themes_menu(&menu, &themes_menu);
     append_menu_item(&menu, &help);
     append_menu_item(&menu, &quit);
 
@@ -84,31 +78,10 @@ fn register_base_actions(
     actions.insert(quit.id().clone(), TrayAction::Quit);
 }
 
-/// Add all configured themes to the themes submenu.
-fn append_theme_items(themes_menu: &Submenu, actions: &mut HashMap<MenuId, TrayAction>) {
-    for theme_name in themes::list_themes() {
-        let theme_item = MenuItem::new(theme_name, true, None);
-        actions.insert(
-            theme_item.id().clone(),
-            TrayAction::Theme(theme_name.to_string()),
-        );
-        if let Err(error) = themes_menu.append(&theme_item) {
-            tracing::warn!("failed to append theme item: {}", error);
-        }
-    }
-}
-
 /// Append one menu item and log failures.
 fn append_menu_item(menu: &Menu, item: &MenuItem) {
     if let Err(error) = menu.append(item) {
         tracing::warn!("failed to append tray menu item: {}", error);
-    }
-}
-
-/// Append the themes submenu and log failures.
-fn append_themes_menu(menu: &Menu, themes_menu: &Submenu) {
-    if let Err(error) = menu.append(themes_menu) {
-        tracing::warn!("failed to append themes submenu: {}", error);
     }
 }
 
@@ -133,7 +106,6 @@ fn dispatch_tray_action(
         TrayAction::Reload => ControlMsg::Reload,
         TrayAction::OpenPermissionsHelp => ControlMsg::OpenPermissionsHelp,
         TrayAction::Quit => ControlMsg::Shutdown,
-        TrayAction::Theme(name) => ControlMsg::SwitchTheme(name),
     };
 
     if tx_ctrl.send(message).is_err() {

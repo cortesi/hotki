@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -15,13 +16,13 @@ use ruau::{
 };
 
 use crate::{
-    Error, luau_api,
+    Error, LuauApiSurface, STYLE_FILE_NAME, luau_api_surface,
     script::{
         diagnostics,
         imports::{self, ImportRole},
         load_dynamic_config_from_string,
     },
-    themes,
+    style::eval_style_source,
 };
 
 /// Summary of a successful Luau validation run.
@@ -29,8 +30,8 @@ use crate::{
 pub struct LuauCheckReport {
     /// Number of imported role files validated in isolation.
     pub imports: usize,
-    /// Number of user theme files validated from the sibling `themes/` directory.
-    pub themes: usize,
+    /// Whether a sibling `style.luau` file was validated.
+    pub style: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,7 +43,7 @@ struct ImportSpec {
     path: PathBuf,
 }
 
-/// Validate a filesystem-backed Luau config, its reachable imports, and any sibling user themes.
+/// Validate a filesystem-backed Luau config, its reachable imports, and optional sibling style.
 pub fn check_luau_config(path: &Path) -> Result<LuauCheckReport, Error> {
     let canonical = fs::canonicalize(path).map_err(|err| Error::Read {
         path: Some(path.to_path_buf()),
@@ -59,48 +60,42 @@ pub fn check_luau_config(path: &Path) -> Result<LuauCheckReport, Error> {
         path: Some(canonical.clone()),
         message: err.to_string(),
     })?;
+    reject_removed_config_surface(&canonical, &source)?;
     let imports = discover_imports(&canonical, &root_dir)?;
     analyze_root_config(&canonical, &source)?;
     analyze_imports(&imports)?;
-    let theme_count = check_luau_theme_dir(&root_dir.join("themes"))?;
+    let style = check_luau_style_file(&root_dir.join(STYLE_FILE_NAME))?;
 
     crate::load_dynamic_config(&canonical)?;
     validate_imports(&imports, &root_dir)?;
 
     Ok(LuauCheckReport {
         imports: imports.len(),
-        themes: theme_count,
+        style,
     })
 }
 
-/// Analyze and validate every `*.luau` theme file in `dir`.
-pub fn check_luau_theme_dir(dir: &Path) -> Result<usize, Error> {
-    let mut count = 0usize;
-    if !dir.exists() {
-        return Ok(0);
-    }
+/// Analyze and validate one optional standalone `style.luau` file.
+pub fn check_luau_style_file(path: &Path) -> Result<bool, Error> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(Error::Read {
+                path: Some(path.to_path_buf()),
+                message: err.to_string(),
+            });
+        }
+    };
+    check_luau_style_source(path, &source)?;
+    Ok(true)
+}
 
-    let mut paths = fs::read_dir(dir)
-        .map_err(|err| Error::Read {
-            path: Some(dir.to_path_buf()),
-            message: err.to_string(),
-        })?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "luau"))
-        .collect::<Vec<_>>();
-    paths.sort();
-
-    for path in &paths {
-        let source = fs::read_to_string(path).map_err(|err| Error::Read {
-            path: Some(path.clone()),
-            message: err.to_string(),
-        })?;
-        check_module(path, &ImportRole::Style.analysis_source(&source))?;
-        count += 1;
-    }
-
-    themes::validate_theme_dir(dir)?;
-    Ok(count)
+/// Analyze and evaluate style source text under a diagnostic path.
+pub fn check_luau_style_source(path: &Path, source: &str) -> Result<(), Error> {
+    analyze_style_file(path, source)?;
+    eval_style_source(source, path)?;
+    Ok(())
 }
 
 /// Discover every reachable role-specific import from `path`.
@@ -130,6 +125,7 @@ fn visit_imports(
         path: Some(canonical.clone()),
         message: err.to_string(),
     })?;
+    reject_removed_config_surface(&canonical, &source)?;
 
     for (role, import_text, offset) in parse_import_calls(&source, &canonical)? {
         let resolved = imports::resolve_path(root_dir, import_text.as_str())
@@ -213,6 +209,76 @@ fn import_literal_error(path: &Path, source: &str, offset: usize) -> Error {
         offset,
         "hotki imports must use literal relative path strings".to_string(),
     )
+}
+
+/// Reject removed style and theme APIs with migration-oriented diagnostics.
+fn reject_removed_config_surface(path: &Path, source: &str) -> Result<(), Error> {
+    let mut cursor = 0;
+    while cursor < source.len() {
+        if let Some(next) = skip_ignored_luau(source, cursor) {
+            cursor = next;
+            continue;
+        }
+        if source[cursor..].starts_with("hotki.import_style") {
+            return Err(migration_error(
+                path,
+                source,
+                cursor,
+                "hotki.import_style was removed; put global style overrides in sibling style.luau"
+                    .to_string(),
+            ));
+        }
+        if source[cursor..].starts_with("action.theme_") {
+            return Err(migration_error(
+                path,
+                source,
+                cursor,
+                "theme actions were removed; edit sibling style.luau and reload the config"
+                    .to_string(),
+            ));
+        }
+        if themes_reference_at(source, cursor) {
+            return Err(migration_error(
+                path,
+                source,
+                cursor,
+                "the themes registry was removed; put global style overrides in sibling style.luau"
+                    .to_string(),
+            ));
+        }
+        if source[cursor..].starts_with(":style") {
+            return Err(migration_error(
+                path,
+                source,
+                cursor,
+                "local render styling was removed; put global style overrides in sibling style.luau"
+                    .to_string(),
+            ));
+        }
+        cursor = next_char_boundary(source, cursor);
+    }
+    Ok(())
+}
+
+/// Return true if `themes` is used as a global property or method target at this offset.
+fn themes_reference_at(source: &str, offset: usize) -> bool {
+    let Some(after_prefix) = source[offset..].strip_prefix("themes") else {
+        return false;
+    };
+    if offset > 0
+        && source[..offset]
+            .chars()
+            .next_back()
+            .is_some_and(is_identifier_continue)
+    {
+        return false;
+    }
+    matches!(after_prefix.chars().next(), Some(':') | Some('.'))
+}
+
+/// Build a migration diagnostic at the removed API call site.
+fn migration_error(path: &Path, source: &str, offset: usize, message: String) -> Error {
+    diagnostics::config_error_at_offset(path, source, offset, message)
 }
 
 /// Return the import role and the offset after its function name at `offset`.
@@ -389,7 +455,7 @@ fn validate_imports(imports: &BTreeSet<ImportSpec>, root_dir: &Path) -> Result<(
 
 /// Analyze the root config source against the checked-in Luau API definitions.
 fn analyze_root_config(path: &Path, source: &str) -> Result<(), Error> {
-    check_module(path, source)
+    check_module_with_surface(path, source, LuauApiSurface::Config)
 }
 
 /// Analyze each imported module against its declared role alias.
@@ -399,9 +465,23 @@ fn analyze_imports(imports: &BTreeSet<ImportSpec>) -> Result<(), Error> {
             path: Some(import.path.clone()),
             message: err.to_string(),
         })?;
-        check_module(&import.path, &import.role.analysis_source(&source))?;
+        check_module_with_surface(
+            &import.path,
+            &import.role.analysis_source(&source),
+            LuauApiSurface::Config,
+        )?;
     }
     Ok(())
+}
+
+/// Analyze a standalone style file against the style-only declaration surface.
+fn analyze_style_file(path: &Path, source: &str) -> Result<(), Error> {
+    check_module_with_surface(path, &style_analysis_source(source), LuauApiSurface::Style)
+}
+
+/// Wrap style source so top-level `return` is checked as a `Style` value.
+fn style_analysis_source(source: &str) -> String {
+    format!("local _style = ((function()\n{source}\nend)() :: Style)\n")
 }
 
 /// Build a synthetic in-memory wrapper path rooted at the checked config directory.
@@ -428,9 +508,14 @@ fn checker_surface() -> Result<Surface, Error> {
 }
 
 /// Run ruau's checker and bytecode compiler on one source module.
-fn check_module(path: &Path, source: &str) -> Result<(), Error> {
+fn check_module_with_surface(
+    path: &Path,
+    source: &str,
+    api_surface: LuauApiSurface,
+) -> Result<(), Error> {
     let surface = checker_surface()?;
-    let prelude = luau_api().trim_end();
+    let api = luau_api_surface(api_surface);
+    let prelude = api.trim_end();
     let checked_source = format!("{prelude}\n{source}");
     let line_offset = prelude.lines().count();
     let checked = surface.check_bytes(checked_source.as_bytes());
@@ -466,7 +551,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use super::check_luau_config;
+    use super::{check_luau_config, check_luau_style_file};
 
     fn test_dir(name: &str) -> PathBuf {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -522,7 +607,7 @@ end
 
         let report = check_luau_config(&root.join("config.luau")).expect("check config");
         assert_eq!(report.imports, 2);
-        assert_eq!(report.themes, 0);
+        assert!(!report.style);
     }
 
     #[test]
@@ -570,7 +655,7 @@ end)
 
         let report = check_luau_config(&root.join("config.luau")).expect("check config");
         assert_eq!(report.imports, 0);
-        assert_eq!(report.themes, 0);
+        assert!(!report.style);
     }
 
     #[test]
@@ -599,25 +684,114 @@ hotki.root(child)
     }
 
     #[test]
-    fn check_validates_user_themes() {
-        let root = test_dir("theme-dir");
-        fs::create_dir_all(root.join("themes")).expect("create theme dir");
+    fn check_validates_sibling_style() {
+        let root = test_dir("sibling-style");
         fs::write(
             root.join("config.luau"),
             r#"
-themes:use("custom")
 hotki.root(function(menu, ctx) end)
 "#,
         )
         .expect("write root config");
         fs::write(
-            root.join("themes/custom.luau"),
+            root.join("style.luau"),
             r##"return { hud = { bg = "#010203" } }"##,
         )
-        .expect("write theme");
+        .expect("write style");
 
         let report = check_luau_config(&root.join("config.luau")).expect("check config");
-        assert_eq!(report.themes, 1);
+        assert!(report.style);
+    }
+
+    #[test]
+    fn check_rejects_old_theme_registry_with_migration_hint() {
+        let root = test_dir("old-themes");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+themes:use("default")
+hotki.root(function(menu, ctx) end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("themes registry was removed"));
+        assert!(pretty.contains("style.luau"));
+    }
+
+    #[test]
+    fn check_rejects_old_theme_actions_with_migration_hint() {
+        let root = test_dir("old-theme-action");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("t", "Theme", action.theme_next)
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("theme actions were removed"));
+        assert!(pretty.contains("style.luau"));
+    }
+
+    #[test]
+    fn check_rejects_old_menu_style_with_migration_hint() {
+        let root = test_dir("old-menu-style");
+        fs::write(
+            root.join("config.luau"),
+            r##"
+hotki.root(function(menu, ctx)
+    menu:style({ hud = { bg = "#000000" } })
+end)
+"##,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("local render styling was removed"));
+        assert!(pretty.contains("style.luau"));
+    }
+
+    #[test]
+    fn check_rejects_old_import_style_with_migration_hint() {
+        let root = test_dir("old-import-style");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local local_style = hotki.import_style("local-style")
+hotki.root(function(menu, ctx) end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("hotki.import_style was removed"));
+        assert!(pretty.contains("style.luau"));
+    }
+
+    #[test]
+    fn style_file_rejects_config_globals() {
+        let root = test_dir("style-config-global");
+        let path = root.join("style.luau");
+        fs::write(
+            &path,
+            r#"
+action.shell("true")
+return {}
+"#,
+        )
+        .expect("write style");
+
+        let err = check_luau_style_file(&path).expect_err("check should fail");
+        assert!(err.pretty().contains("action"));
     }
 
     #[test]
@@ -626,7 +800,10 @@ hotki.root(function(menu, ctx) end)
         let mut example_paths = fs::read_dir(&examples_dir)
             .expect("read examples dir")
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension() == Some(OsStr::new("luau")))
+            .filter(|path| {
+                path.extension() == Some(OsStr::new("luau"))
+                    && path.file_name() != Some(OsStr::new("style.luau"))
+            })
             .collect::<Vec<_>>();
         example_paths.sort();
 

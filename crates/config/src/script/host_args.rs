@@ -22,13 +22,6 @@ impl<'s> HostArgs<'s> {
         }
     }
 
-    /// Start decoding a method call, dropping Luau's explicit receiver value.
-    pub(super) fn method(args: MultiValue<'s>) -> Self {
-        let mut args = Self::new(args);
-        let _receiver = args.values.next();
-        args
-    }
-
     /// Decode a required value with the standard "`context` is required" error.
     pub(super) fn required(&mut self, context: &str) -> Result<ScopedValue<'s>, RuntimeError> {
         self.values

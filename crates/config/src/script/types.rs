@@ -7,12 +7,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub use hotki_protocol::{HudRow, HudRowStyle};
+pub use hotki_protocol::HudRow;
 use mac_keycode::Chord;
 use ruau::vm::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
 
 use super::{SelectorConfig, util::lock_unpoisoned};
-use crate::{Action, NotifyKind, Style, raw::RawStyle};
+use crate::{Action, NotifyKind, Style};
 
 /// Source location attached to a binding for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,22 +294,6 @@ pub struct BindingFlags {
     pub repeat: Option<RepeatSpec>,
 }
 
-/// Mode-level style overlay.
-#[derive(Clone, Debug)]
-pub struct StyleOverlay {
-    /// Static raw style overlay.
-    pub(crate) raw: RawStyle,
-}
-
-/// Binding-level style overlay and visibility modifiers.
-#[derive(Clone, Debug, Default)]
-pub struct BindingStyle {
-    /// Whether the binding should be hidden from the HUD.
-    pub hidden: bool,
-    /// Optional overlay to apply to HUD row colors.
-    pub overlay: Option<RawStyle>,
-}
-
 /// The kind of binding produced by a mode closure.
 #[derive(Debug, Clone)]
 pub enum BindingKind {
@@ -336,8 +320,6 @@ pub struct Binding {
     pub mode_id: Option<ModeId>,
     /// Execution and visibility flags.
     pub flags: BindingFlags,
-    /// Optional per-binding style overlay.
-    pub style: Option<BindingStyle>,
     /// True when entering the bound mode should enable capture-all.
     pub mode_capture: bool,
     /// Source position of the binding declaration for diagnostics.
@@ -355,8 +337,6 @@ pub struct ModeFrame {
     pub entered_via: Option<(Chord, ModeId)>,
     /// Cached rendered bindings for this frame.
     pub rendered: Vec<Binding>,
-    /// Optional mode-level style overlay for this frame.
-    pub style: Option<StyleOverlay>,
     /// True when this frame requests capture-all while HUD is visible.
     pub capture: bool,
 }

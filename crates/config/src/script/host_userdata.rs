@@ -13,16 +13,14 @@ use ruau::vm::{
 
 use super::{
     ActionCtx, Binding, BindingFlags, BindingKind, ModeCtx, ModeRef, NavRequest, SourcePos,
-    StyleOverlay,
     host_action::{ActionPayload, action_payload_from_value, primitive_action_from_value},
     host_args::HostArgs,
     host_parse::{
-        BindingOptionsSpec, SubmenuOptionsSpec, apply_binding_options, merge_style_overlays,
-        parse_chord, parse_optional, parse_raw_style,
+        BindingOptionsSpec, SubmenuOptionsSpec, apply_binding_options, parse_chord, parse_optional,
     },
     util::lock_unpoisoned,
 };
-use crate::{NotifyKind, raw};
+use crate::NotifyKind;
 
 /// Luau userdata used to build one rendered mode.
 #[derive(Clone, Debug)]
@@ -36,8 +34,6 @@ pub struct ModeBuilder {
 struct ModeBuildState {
     /// Bindings declared by the current mode render.
     bindings: Vec<Binding>,
-    /// Mode-level style overlays applied during render.
-    styles: Vec<raw::RawStyle>,
     /// Whether the mode requested capture-all behavior.
     capture: bool,
 }
@@ -51,27 +47,23 @@ struct ModeContextUserData(ModeCtx);
 struct ActionContextUserData(ActionCtx);
 
 impl ModeBuilder {
-    /// Create a mode builder seeded with inherited style and capture state.
-    pub(crate) fn new_for_render(style: Option<StyleOverlay>, capture: bool) -> Self {
-        let mut state = ModeBuildState {
+    /// Create a mode builder seeded with inherited capture state.
+    pub(crate) fn new_for_render(capture: bool) -> Self {
+        let state = ModeBuildState {
             capture,
             ..ModeBuildState::default()
         };
-        if let Some(style) = style {
-            state.styles.push(style.raw);
-        }
         Self {
             state: Arc::new(Mutex::new(state)),
         }
     }
 
-    /// Finish the builder and return bindings, merged style, and capture flag.
-    pub(crate) fn finish(self) -> (Vec<Binding>, Option<StyleOverlay>, bool) {
+    /// Finish the builder and return bindings plus capture flag.
+    pub(crate) fn finish(self) -> (Vec<Binding>, bool) {
         let mut guard = lock_unpoisoned(&self.state);
         let bindings = mem::take(&mut guard.bindings);
         let capture = guard.capture;
-        let style = merge_style_overlays(&guard.styles);
-        (bindings, style, capture)
+        (bindings, capture)
     }
 }
 
@@ -105,7 +97,6 @@ pub(super) fn mode_builder_type() -> HostType {
         .method_raw("bind", mode_builder_bind)
         .method_raw("bind_many", mode_builder_bind_many)
         .method_raw("submenu", mode_builder_submenu)
-        .method_raw("style", mode_builder_style)
         .method_raw("capture", mode_builder_capture)
         .declaration("declare class ModeBuilder\nend\n")
         .build()
@@ -183,7 +174,6 @@ fn binding_from_action<'s>(
             kind: BindingKind::Action(action),
             flags: BindingFlags::default(),
             mode_id: None,
-            style: None,
             mode_capture: false,
             pos,
         },
@@ -193,7 +183,6 @@ fn binding_from_action<'s>(
             kind: BindingKind::Handler(handler),
             flags: BindingFlags::default(),
             mode_id: None,
-            style: None,
             mode_capture: false,
             pos,
         },
@@ -203,7 +192,6 @@ fn binding_from_action<'s>(
             kind: BindingKind::Selector(config),
             flags: BindingFlags::default(),
             mode_id: None,
-            style: None,
             mode_capture: false,
             pos,
         },
@@ -229,7 +217,6 @@ fn binding_from_mode<'s>(
         kind: BindingKind::Mode(mode.clone()),
         flags: BindingFlags::default(),
         mode_id: Some(mode.id),
-        style: None,
         mode_capture: false,
         pos,
     };
@@ -344,26 +331,6 @@ fn mode_builder_submenu<'s>(
         .map_err(|err| RuntimeError::runtime(err.to_string()))?
         .bindings
         .push(binding);
-    Ok(MultiValue::new())
-}
-
-/// Implement `menu:style`.
-fn mode_builder_style<'s>(
-    scope: &Scope<'s>,
-    receiver: Userdata<'s>,
-    args: MultiValue<'s>,
-) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut args = HostArgs::new(args);
-    let overlay = args.required_with_message("menu:style expects a style overlay")?;
-    args.finish("menu:style")?;
-    let raw = parse_raw_style(scope, overlay)?;
-    receiver
-        .borrow_mut::<ModeBuilder>(scope)?
-        .state
-        .lock()
-        .map_err(|err| RuntimeError::runtime(err.to_string()))?
-        .styles
-        .push(raw);
     Ok(MultiValue::new())
 }
 

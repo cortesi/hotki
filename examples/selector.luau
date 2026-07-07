@@ -1,5 +1,3 @@
-themes:use("default")
-
 hotki.root(function(menu, ctx)
     menu:bind("shift+cmd+0", "Run Application", action.selector({
         title = "Run Application",

@@ -1,7 +1,4 @@
-use std::{
-    cmp::Ordering,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use config::script::engine as dyn_engine;
 use hotki_protocol::HudState;
@@ -48,10 +45,7 @@ fn build_loaded_refresh_plan(
     cfg: &mut dyn_engine::DynamicConfig,
 ) -> RefreshPlan {
     rt.ensure_root(cfg.root());
-    if !cfg.theme_exists(rt.theme_name.as_str()) {
-        rt.theme_name = cfg.active_theme().to_string();
-    }
-    let base_style = cfg.base_style(Some(rt.theme_name.as_str()));
+    let base_style = cfg.base_style();
 
     if rt.selector.is_some() {
         let key_pairs = crate::selector::selector_capture_chords()
@@ -208,36 +202,5 @@ impl Engine {
         }
 
         Ok(())
-    }
-}
-
-pub(crate) fn theme_step_name(theme_names: &[String], current: &str, step: isize) -> String {
-    if theme_names.is_empty() {
-        return "default".to_string();
-    }
-
-    let Some(idx) = theme_names.iter().position(|n| n == current) else {
-        return theme_names[0].clone();
-    };
-
-    let len = theme_names.len();
-    let next = match step.cmp(&0) {
-        Ordering::Greater => (idx + 1) % len,
-        Ordering::Less => idx.checked_sub(1).unwrap_or(len - 1),
-        Ordering::Equal => idx,
-    };
-
-    theme_names[next].clone()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn theme_step_name_uses_first_theme_when_current_is_missing() {
-        let themes = vec!["light".to_string(), "dark".to_string()];
-
-        assert_eq!(theme_step_name(&themes, "missing", 1), "light");
     }
 }

@@ -2,23 +2,35 @@
 
 use std::{fs, path::Path};
 
-use config::{check_luau_config, check_luau_theme_dir, luau_api, themes};
+use config::{
+    LuauApiSurface, check_luau_config, check_luau_style_file, check_luau_style_source,
+    default_style_source, luau_api_surface,
+};
 
 use crate::{Error, Result};
 
-/// Validate the checked-in Luau API, built-in themes, and example configs.
+/// Validate the checked-in Luau API, embedded style, and example configs.
 pub fn luau(root_dir: &Path) -> Result<()> {
     println!("==> checked-in Luau API");
-    let _ = luau_api();
+    let _ = luau_api_surface(LuauApiSurface::All);
 
-    println!("==> built-in themes");
-    themes::init_builtins();
-    let repo_theme_dir = root_dir.join("themes");
-    let theme_count = check_luau_theme_dir(&repo_theme_dir).map_err(|source| Error::Luau {
-        path: repo_theme_dir.clone(),
-        message: source.pretty(),
+    println!("==> embedded default style");
+    let default_style_path = root_dir.join("crates/config/styles/default.luau");
+    check_luau_style_source(&default_style_path, default_style_source()).map_err(|source| {
+        Error::Luau {
+            path: default_style_path.clone(),
+            message: source.pretty(),
+        }
     })?;
-    println!("validated {theme_count} theme files");
+
+    println!("==> example style");
+    let example_style_path = root_dir.join("examples/style.luau");
+    let style_present =
+        check_luau_style_file(&example_style_path).map_err(|source| Error::Luau {
+            path: example_style_path.clone(),
+            message: source.pretty(),
+        })?;
+    println!("validated example style: {style_present}");
 
     println!("==> example configs");
     let example_dir = root_dir.join("examples");
@@ -28,7 +40,10 @@ pub fn luau(root_dir: &Path) -> Result<()> {
             source,
         })?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "luau"))
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "luau")
+                && path.file_name().is_some_and(|name| name != "style.luau")
+        })
         .collect::<Vec<_>>();
     example_paths.sort();
 
@@ -38,12 +53,12 @@ pub fn luau(root_dir: &Path) -> Result<()> {
             message: source.pretty(),
         })?;
         println!(
-            "{}: {} imports, {} theme files",
+            "{}: {} imports, style file: {}",
             path.strip_prefix(root_dir)
                 .unwrap_or(path)
                 .to_string_lossy(),
             report.imports,
-            report.themes
+            report.style
         );
     }
 

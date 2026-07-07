@@ -1,20 +1,21 @@
 # Configuration
 
-Hotki configs are Luau scripts loaded from `~/.hotki/config.luau` by default.
+Hotki behavior configs are Luau scripts loaded from `~/.hotki/config.luau` by default.
+Styling is separate: place optional global style overrides in sibling `~/.hotki/style.luau`.
 
 > [!NOTE]
-> All configuration files and imported scripts are statically checked under Luau **strict mode** by default during validation. There is no need to add `--!strict` annotations to your scripts—strict mode is implicit and automatically enforced.
+> All configuration files and imported scripts are statically checked under Luau strict mode
+> during validation. There is no need to add `--!strict` annotations.
 
-The exact API surface is defined by [`crates/config/luau/hotki.d.luau`](./crates/config/luau/hotki.d.luau).
-Use `hotki api` when you want the checked-in contract instead of prose.
+The config API surface is defined by [`hotki_core.d.luau`](./crates/config/luau/hotki_core.d.luau)
+and [`hotki_config.d.luau`](./crates/config/luau/hotki_config.d.luau). Use `hotki api` when you
+want the checked-in contract instead of prose.
 
 ## Root Config
 
 A config registers exactly one root renderer:
 
 ```luau
-themes:use("default")
-
 hotki.root(function(menu, ctx)
     if ctx.hud then
         menu:bind("esc", "Back", action.pop, {
@@ -25,7 +26,6 @@ hotki.root(function(menu, ctx)
 
     menu:submenu("shift+cmd+0", "Main", function(root, inner)
         root:bind("r", "Reload", action.reload_config)
-        root:bind("t", "Next Theme", action.theme_next, { stay = true })
         root:bind("a", "Run Application", action.selector({
             title = "Run Application",
             items = hotki.applications,
@@ -43,7 +43,6 @@ end)
 
 - `hotki`: root registration, multi-file imports, and app discovery.
 - `action`: primitive actions plus `action.run(...)` and `action.selector(...)`.
-- `themes`: built-in and user theme registry access.
 
 ## Menu API
 
@@ -52,7 +51,6 @@ Mode renderers receive `(menu, ctx)`.
 - `menu:bind(chord, desc, action, opts?)`
 - `menu:bind_many(entries)`
 - `menu:submenu(chord, title, render, opts?)`
-- `menu:style(overlay)`
 - `menu:capture()`
 
 Binding options are plain tables:
@@ -66,11 +64,10 @@ menu:bind("r", "Repeat Relay", action.relay("cmd+c"), {
         delay_ms = 200,
         interval_ms = 300,
     },
-    style = {
-        key_bg = "#ff0000",
-    },
 })
 ```
+
+Submenu options accept the same behavior flags plus `capture`.
 
 ## Contexts
 
@@ -96,7 +93,7 @@ Hotki supports typed, role-specific imports instead of general `require(...)`:
 
 ```luau
 local app_selector = hotki.import_mode("common/app-selector")
-local local_theme = hotki.import_style("themes/local")
+local after_launch = hotki.import_handler("handlers/after-launch")
 ```
 
 Available helpers:
@@ -104,7 +101,6 @@ Available helpers:
 - `hotki.import_mode(path)`
 - `hotki.import_items(path)`
 - `hotki.import_handler(path)`
-- `hotki.import_style(path)`
 
 Rules:
 
@@ -130,30 +126,23 @@ menu:bind("a", "Run Application", action.selector({
 
 Static items use `{ label, sublabel?, data }` records.
 
-## Themes
+## Style
 
-- Built-in themes live in `themes/*.luau`.
-- User themes load from `themes/` next to the active config.
-- User themes override built-ins by name.
-- Script-registered themes override both.
+`config.luau` does not contain style declarations. Put global style overrides in sibling
+`style.luau`; see [STYLE.md](./STYLE.md).
 
-Examples:
+Removed style and theme APIs now fail validation with migration-oriented diagnostics:
 
-```luau
-themes:use("dark-blue")
-
-local custom = themes:get("default")
-custom.hud = custom.hud or {}
-custom.hud.font_size = 18
-themes:register("large-default", custom)
-themes:use("large-default")
-```
-
-Theme files are plain Luau scripts that `return` a `StyleOverlay` table.
+- `themes`
+- `action.theme_next`, `action.theme_prev`, `action.theme_set`
+- `menu:style(...)`
+- binding option `style`
+- `hotki.import_style(...)`
 
 ## Validation
 
 ```bash
 hotki check --config ~/.hotki/config.luau
-hotki api --filter action
+hotki api --surface config --filter action
+hotki api --surface style
 ```

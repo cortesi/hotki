@@ -2,8 +2,6 @@
 
 /// Application discovery for selector providers.
 mod apps;
-/// Binding-level style parsing helpers.
-mod binding_style;
 /// Loaded config state and source tracking.
 mod config;
 pub(crate) mod diagnostics;
@@ -15,7 +13,6 @@ mod host_args;
 mod host_hotki;
 mod host_parse;
 mod host_runtime;
-mod host_themes;
 pub(crate) mod host_userdata;
 /// Shared Luau import roles and filesystem policy.
 pub(crate) mod imports;
@@ -39,6 +36,6 @@ pub(crate) use render::render_stack;
 pub(crate) use selector::SelectorItems;
 pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem};
 pub(crate) use types::{
-    ActionCtx, Binding, BindingFlags, BindingKind, BindingStyle, Effect, HandlerRef, ModeCtx,
-    ModeFrame, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos, StyleOverlay,
+    ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, ModeCtx, ModeFrame, ModeRef,
+    NavRequest, RenderedState, RepeatSpec, SourcePos,
 };

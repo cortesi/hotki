@@ -20,14 +20,13 @@ use super::{
     host_action::{ActionModule, action_value_type},
     host_hotki::HotkiModule,
     host_runtime::{RuntimeState, SharedRuntimeState, chunk_name},
-    host_themes::ThemesModule,
     host_userdata::{
         ModeBuilder, action_context_type, mode_builder_type, mode_builder_userdata,
         mode_context_type, mode_context_userdata,
     },
     util::lock_unpoisoned,
 };
-use crate::{Error, themes};
+use crate::{Error, StyleResolver};
 
 /// Load a Luau config from a file at `path`.
 pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
@@ -55,8 +54,7 @@ pub fn load_dynamic_config_from_string(
     let source_key = path.clone().unwrap_or_else(|| PathBuf::from("<memory>"));
     lock_unpoisoned(&sources).insert(source_key, Arc::from(source.to_string().into_boxed_str()));
 
-    let mut state = RuntimeState {
-        active_theme: "default".to_string(),
+    let state = RuntimeState {
         config_dir: path
             .as_deref()
             .and_then(Path::parent)
@@ -64,17 +62,10 @@ pub fn load_dynamic_config_from_string(
         sources: sources.clone(),
         ..RuntimeState::default()
     };
-
-    if let Some(dir) = path.as_deref().and_then(Path::parent) {
-        state
-            .themes
-            .extend(themes::load_user_themes(&dir.join("themes"))?);
-    }
-    state.themes.extend(
-        themes::builtin_raw_themes()
-            .iter()
-            .map(|(name, raw)| ((*name).to_string(), raw.clone())),
-    );
+    let resolved_style = match path.as_deref() {
+        Some(path) => StyleResolver::from_config_path(path)?.resolve()?,
+        None => StyleResolver::default_only()?.resolve()?,
+    };
 
     let state = Arc::new(Mutex::new(state));
     let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
@@ -110,11 +101,10 @@ pub fn load_dynamic_config_from_string(
     validate_root(&mut vm, &root, path.as_deref(), &sources)?;
     vm.collect();
 
-    let state_guard = lock_unpoisoned(&state);
     Ok(DynamicConfig {
         root,
-        themes: state_guard.themes.clone(),
-        active_theme: state_guard.active_theme.clone(),
+        base_style: resolved_style.style,
+        style_provenance: resolved_style.provenance,
         vm,
         _root_module: module,
         path,
@@ -132,11 +122,8 @@ fn build_vm(
         .ambient(Ambient::deterministic(0))
         .limits(DynamicConfig::entry_limits())
         .runtime_capabilities(runtime_capabilities)
-        .module(Arc::new(HotkiModule {
-            state: state.clone(),
-        }))
+        .module(Arc::new(HotkiModule { state }))
         .module(Arc::new(ActionModule))
-        .module(Arc::new(ThemesModule { state }))
         .host_type(mode_builder_type())
         .host_type(action_value_type())
         .host_type(mode_context_type())
@@ -153,7 +140,7 @@ fn validate_root(
     path: Option<&Path>,
     sources: &SourceMap,
 ) -> Result<(), Error> {
-    let builder = ModeBuilder::new_for_render(None, false);
+    let builder = ModeBuilder::new_for_render(false);
     let ctx = ModeCtx {
         app: String::new(),
         title: String::new(),

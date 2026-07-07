@@ -145,7 +145,7 @@ use crate::runtime::{FocusInfo, RuntimeState};
 /// lookup. Do not hold this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
-    /// Stack-based runtime state (mode stack + focus + theme/user-style).
+    /// Stack-based runtime state (mode stack + focus + rendered style).
     runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     /// Key binding manager
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
@@ -239,7 +239,6 @@ impl Engine {
     pub async fn set_config_path(&self, path: PathBuf) -> Result<()> {
         let dyn_cfg = dyn_engine::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
-        let theme_name = dyn_cfg.active_theme().to_string();
 
         // LOCK ORDER: config (write) must be released before rebind_current_context.
         {
@@ -253,28 +252,8 @@ impl Engine {
         {
             let mut rt = self.runtime.lock().await;
             rt.hud_visible = false;
-            rt.theme_name = theme_name;
             rt.focus = self.current_focus_info();
             rt.reset_to_root(root);
-        }
-        self.rebind_current_context().await
-    }
-
-    /// Set the active theme by name and re-render the stack.
-    pub async fn set_theme(&self, name: &str) -> Result<()> {
-        let cfg_guard = self.config.lock().await;
-        let Some(cfg) = cfg_guard.as_ref() else {
-            return Err(Error::Msg("No config loaded; cannot set theme".to_string()));
-        };
-        let exists = cfg.theme_exists(name);
-        drop(cfg_guard);
-
-        if !exists {
-            return Err(Error::Msg(format!("Unknown theme: {}", name)));
-        }
-        {
-            let mut rt = self.runtime.lock().await;
-            rt.theme_name = name.to_string();
         }
         self.rebind_current_context().await
     }

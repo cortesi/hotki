@@ -3,7 +3,6 @@ use mac_keycode::Chord;
 
 use crate::{
     DispatchResult, Engine, Result,
-    refresh::theme_step_name,
     repeater::{ExecSpec, RepeatSpec},
 };
 
@@ -107,9 +106,6 @@ impl Engine {
                     .send_ui(hotki_protocol::MsgToUI::ShowDetails(*arg))?;
                 Ok(DispatchResult::AutoExit)
             }
-            config::Action::ThemeNext => self.cycle_theme(identifier, true).await,
-            config::Action::ThemePrev => self.cycle_theme(identifier, false).await,
-            config::Action::ThemeSet(name) => self.set_theme_by_name(identifier, name).await,
             config::Action::Open(target) => {
                 self.start_shell_action(
                     identifier,
@@ -173,40 +169,6 @@ impl Engine {
         );
     }
 
-    async fn cycle_theme(&self, identifier: &str, next: bool) -> Result<DispatchResult> {
-        self.key_tracker.set_repeat_allowed(identifier, false);
-        let cfg_guard = self.config.lock().await;
-        let Some(cfg) = cfg_guard.as_ref() else {
-            return Ok(DispatchResult::AutoExit);
-        };
-        let theme_names = cfg.theme_names();
-        drop(cfg_guard);
-
-        let mut rt = self.runtime.lock().await;
-        let step = if next { 1 } else { -1 };
-        rt.theme_name = theme_step_name(&theme_names, rt.theme_name.as_str(), step);
-        Ok(DispatchResult::AutoExit)
-    }
-
-    async fn set_theme_by_name(&self, identifier: &str, name: &str) -> Result<DispatchResult> {
-        self.key_tracker.set_repeat_allowed(identifier, false);
-        let cfg_guard = self.config.lock().await;
-        let exists = cfg_guard.as_ref().is_some_and(|cfg| cfg.theme_exists(name));
-        drop(cfg_guard);
-
-        if exists {
-            let mut rt = self.runtime.lock().await;
-            rt.theme_name = name.to_string();
-        } else {
-            self.notifier.send_notification(
-                config::NotifyKind::Warn,
-                "Theme".to_string(),
-                format!("Unknown theme: {}", name),
-            )?;
-        }
-        Ok(DispatchResult::AutoExit)
-    }
-
     pub(crate) async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchResult {
         let mut rt = self.runtime.lock().await;
         match nav {
@@ -220,7 +182,6 @@ impl Engine {
                     closure: mode,
                     entered_via: None,
                     rendered: Vec::new(),
-                    style: None,
                     capture: false,
                 });
                 DispatchResult::EnteredMode
@@ -270,12 +231,6 @@ impl Engine {
         let dyn_cfg =
             dyn_engine::load_dynamic_config(&path).map_err(|e| crate::Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
-        let current_theme = { self.runtime.lock().await.theme_name.clone() };
-        let theme_name = if dyn_cfg.theme_exists(current_theme.as_str()) {
-            current_theme
-        } else {
-            dyn_cfg.active_theme().to_string()
-        };
 
         {
             let mut g = self.config.lock().await;
@@ -283,7 +238,6 @@ impl Engine {
         }
         {
             let mut rt = self.runtime.lock().await;
-            rt.theme_name = theme_name;
             rt.reset_to_root(root);
         }
 

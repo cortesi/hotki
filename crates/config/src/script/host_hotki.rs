@@ -6,7 +6,6 @@ use ruau::{
     decl::DeclSource,
     vm::{
         ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction, ScopedValue, Table,
-        serde::to_scoped_value,
     },
     vm_api::{ModuleBinding, ModuleBuilder, NativeModule},
 };
@@ -14,7 +13,6 @@ use ruau::{
 use super::{
     HandlerRef, ModeRef, SelectorItem, apps, diagnostics,
     host_args::{HostArgs, expect_function_value, single_return},
-    host_parse::parse_raw_style,
     host_runtime::{
         ImportedItems, ImportedValue, RuntimeState, SharedRuntimeState, chunk_name, clone_sources,
     },
@@ -205,9 +203,6 @@ fn parse_imported_value<'s>(
                 scope, func,
             )?))
         }
-        ImportRole::Style => Ok(ImportedValue::Style(Box::new(parse_raw_style(
-            scope, value,
-        )?))),
     }
 }
 
@@ -227,7 +222,6 @@ fn imported_value_to_lua<'s>(
         ImportedValue::Handler(handler) => {
             ScopedValue::Function(scope.fetch_function(&handler.func)?)
         }
-        ImportedValue::Style(style) => to_scoped_value(scope, &*style)?,
     };
     Ok(MultiValue::from_values(vec![value]))
 }

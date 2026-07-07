@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Child, Command},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -30,9 +30,6 @@ use core_graphics::window::{
     version
 )]
 struct Cli {
-    /// Theme name to apply before capturing (optional)
-    #[arg(long)]
-    theme: Option<String>,
     /// Output directory for PNG files
     #[arg(long)]
     dir: PathBuf,
@@ -57,33 +54,9 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
         .filter(|p| p.exists())
 }
 
-fn resolve_config_path(theme: &Option<String>) -> io::Result<PathBuf> {
+fn resolve_config_path() -> io::Result<PathBuf> {
     let cwd = env::current_dir()?;
-    let cfg_path = cwd.join("examples/test.luau");
-    let Some(name) = theme else {
-        return Ok(cfg_path);
-    };
-    match fs::read_to_string(&cfg_path) {
-        Ok(s) => {
-            let re = regex::Regex::new("themes:use\\(\\s*\"[^\"]*\"\\s*\\)")
-                .map_err(io::Error::other)?;
-            let out = if re.is_match(&s) {
-                re.replace(&s, format!("themes:use(\"{}\")", name))
-                    .to_string()
-            } else {
-                format!("themes:use(\"{}\")\n{}", name, s)
-            };
-            let suffix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0);
-            let tmp =
-                env::temp_dir().join(format!("hotki-shots-{}-{}.luau", process::id(), suffix));
-            fs::write(&tmp, out)?;
-            Ok(tmp)
-        }
-        Err(_) => Ok(cfg_path),
-    }
+    Ok(cwd.join("examples/test.luau"))
 }
 
 fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
@@ -252,10 +225,10 @@ fn main() {
         }
     };
 
-    let cfg_path = match resolve_config_path(&cli.theme) {
+    let cfg_path = match resolve_config_path() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("ERROR: unable to read or write config: {}", e);
+            eprintln!("ERROR: unable to resolve config: {}", e);
             process::exit(2);
         }
     };

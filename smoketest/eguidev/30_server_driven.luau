@@ -17,9 +17,9 @@ hud:wait_for_widget("hud.geometry.width", function(widget)
     return tonumber(widget.value_text) ~= nil and tonumber(widget.value_text) > 0
 end)
 hud:wait_for_widget("hud.row.0.desc", function(widget)
-    return widget.value_text == "Theme tester"
+    return widget.value_text == "Demo"
 end)
-assert(hud:widget_get("hud.row.0.chord"):state().value_text == "t")
+assert(hud:widget_get("hud.row.0.chord"):state().value_text == "d")
 assert(hud:widget_get("hud.row.0.is_mode"):state().value_text == "true")
 assert(hud:widget_get("hud.row.0.tag"):state().value_text ~= "")
 

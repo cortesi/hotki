@@ -140,23 +140,6 @@ impl HotkeyService {
         Ok(Value::Boolean(true))
     }
 
-    async fn handle_set_theme(&self, params: &[Value]) -> StdResult<Value, RpcError> {
-        let raw_name = string_param(
-            params,
-            HotkeyMethod::SetTheme.as_str(),
-            "theme name",
-            RpcErrorCode::MissingParams,
-        )?;
-        let engine = self.engine().await;
-        if let Err(err) = engine.set_theme(raw_name.as_str()).await {
-            return Err(typed_err(
-                RpcErrorCode::EngineSetConfig,
-                &[("message", Value::String(err.to_string().into()))],
-            ));
-        }
-        Ok(Value::Boolean(true))
-    }
-
     async fn handle_inject_key(&self, params: &[Value]) -> StdResult<Value, RpcError> {
         if params.is_empty() {
             return Err(typed_err(
@@ -263,7 +246,6 @@ impl HotkeyService {
         match method {
             HotkeyMethod::Shutdown => self.handle_shutdown_request().await,
             HotkeyMethod::SetConfigPath => self.handle_set_config_path(params).await,
-            HotkeyMethod::SetTheme => self.handle_set_theme(params).await,
             HotkeyMethod::InjectKey => self.handle_inject_key(params).await,
             HotkeyMethod::GetBindings => self.handle_get_bindings().await,
             HotkeyMethod::GetDepth => self.handle_get_depth().await,

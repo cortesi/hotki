@@ -1,4 +1,4 @@
-//! Shared configuration types (modes, themes, parsing) used by Hotki.
+//! Shared configuration types (modes, style, parsing) used by Hotki.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -14,19 +14,23 @@ mod mode;
 mod raw;
 pub mod script;
 mod style;
-pub mod themes;
 mod types;
 
 #[cfg(test)]
 mod test_merge;
 
-pub use check::{LuauCheckReport, check_luau_config, check_luau_theme_dir};
-pub use docs::{luau_api, luau_api_markdown, luau_api_text};
+pub use check::{
+    LuauCheckReport, check_luau_config, check_luau_style_file, check_luau_style_source,
+};
+pub use docs::{LuauApiSurface, luau_api, luau_api_markdown, luau_api_surface, luau_api_text};
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};
 pub use script::engine::{DynamicConfig, load_dynamic_config};
-pub use style::{Hud, Notify, Selector, Style};
+pub use style::{
+    Hud, Notify, ResolvedStyle, STYLE_FILE_NAME, Selector, Style, StyleProvenance, StyleResolver,
+    default_style, default_style_source,
+};
 pub use types::{FontWeight, Mode, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos};
 
 /// Parse color into raw rgb tuple.

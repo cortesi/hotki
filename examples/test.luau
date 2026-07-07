@@ -1,5 +1,3 @@
-themes:use("default")
-
 local demo_items = {
     { label = "Calendar", sublabel = "demo://calendar", data = "calendar" },
     { label = "Calculator", sublabel = "demo://calculator", data = "calculator" },
@@ -62,12 +60,7 @@ hotki.root(function(menu, ctx)
             )
         end)
 
-        root:submenu("t", "Theme tester", function(sub, subctx)
-            sub:bind("h", "Theme Prev", action.theme_prev, { stay = true })
-            sub:bind("l", "Theme Next", action.theme_next, { stay = true })
-            sub:bind("1", "Dark Blue", action.theme_set("dark-blue"), { stay = true })
-            sub:bind("2", "Charcoal", action.theme_set("charcoal"), { stay = true })
-            sub:bind("3", "Default", action.theme_set("default"), { stay = true })
+        root:submenu("n", "Notifications", function(sub, subctx)
             sub:bind("s", "Success", action.shell("echo success", { ok_notify = "success", err_notify = "warn" }), { stay = true })
             sub:bind("i", "Info", action.shell("echo info", { ok_notify = "info", err_notify = "warn" }), { stay = true })
             sub:bind("w", "Warning", action.shell("echo warn && false"), { stay = true })
@@ -89,18 +82,7 @@ hotki.root(function(menu, ctx)
                 end,
             }))
             sub:submenu("m", "Mini", function(mini, mini_ctx)
-                mini:style({ hud = { mode = "mini" } })
-                mini:bind("h", "Theme Prev", action.theme_prev, { stay = true })
-                mini:bind("l", "Theme Next", action.theme_next, { stay = true })
-            end)
-        end)
-
-        root:submenu("u", "Subtheme", function(sub, subctx)
-            sub:style({ hud = { pos = "nw" } })
-            sub:submenu("u", "Sub Subtheme", function(inner_sub, inner_ctx)
-                inner_sub:style({ hud = { bg = "#ff0000" } })
-                inner_sub:bind("h", "Theme Prev", action.theme_prev, { stay = true })
-                inner_sub:bind("l", "Theme Next", action.theme_next, { stay = true })
+                mini:bind("s", "Success", action.shell("echo success", { ok_notify = "success", err_notify = "warn" }), { stay = true })
             end)
         end)
 

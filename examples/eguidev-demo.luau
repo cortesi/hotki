@@ -1,17 +1,6 @@
-themes:use("default")
-
 hotki.root(function(menu, ctx)
-  menu:style({
-    hud = {
-      mode = "hud",
-      pos = "se",
-    },
-  })
-
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)
-    activate:submenu("t", "Theme tester", function(sub, subctx)
-      sub:bind("h", "Theme Prev", action.theme_prev, { stay = true })
-      sub:bind("l", "Theme Next", action.theme_next, { stay = true })
+    activate:submenu("d", "Demo", function(sub, subctx)
       sub:bind("n", "Notify", action.shell("echo notify", {
         ok_notify = "info",
         err_notify = "warn",
@@ -29,9 +18,7 @@ hotki.root(function(menu, ctx)
         end,
       }), { stay = true })
       sub:submenu("m", "Mini", function(mini, mini_ctx)
-        mini:style({ hud = { mode = "mini" } })
-        mini:bind("h", "Theme Prev", action.theme_prev, { stay = true })
-        mini:bind("l", "Theme Next", action.theme_next, { stay = true })
+        mini:bind("n", "Notify", action.shell("echo mini", { ok_notify = "info" }), { stay = true })
         mini:bind("esc", "Exit", action.exit, { hidden = true })
       end)
       sub:bind("esc", "Exit", action.exit, { hidden = true })

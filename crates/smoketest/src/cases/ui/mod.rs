@@ -5,11 +5,7 @@ mod activation;
 /// CoreGraphics window and display inspection helpers.
 mod window_inspection;
 
-use std::{
-    cmp::Ordering,
-    fs, thread,
-    time::{Duration, Instant},
-};
+use std::{cmp::Ordering, fs, thread, time::Instant};
 
 use hotki_protocol::{MsgToUI, Toggle};
 use tracing::{debug, info};
@@ -30,8 +26,6 @@ pub const ACTIVATION_IDENT: &str = "shift+cmd+0";
 
 /// Key that enters the demo submenu once the HUD is visible.
 const UI_DEMO_ACTIVATE: &str = "t";
-/// Theme-switching keys applied after the submenu opens.
-const UI_DEMO_THEME_KEYS: &[&str] = &["l", "l", "l", "l", "l"];
 /// Key that triggers a shell-backed notification.
 const UI_DEMO_NOTIFY: &str = "n";
 /// Direct global key used by the notification-focused smoke case.
@@ -71,43 +65,45 @@ impl DemoHudMode {
 }
 
 /// Build the standard demo config used by the UI smoketests.
-fn demo_config(mode: DemoHudMode) -> String {
-    format!(
-        r#"
-themes:use("default")
-
+fn demo_config() -> String {
+    r#"
 hotki.root(function(menu, ctx)
-  menu:style({{
-    hud = {{
-      mode = {},
-      pos = "se",
-    }},
-    notify = {{
-      pos = "left",
-    }},
-  }})
-
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)
-    activate:submenu("t", "Theme tester", function(sub, subctx)
-      sub:bind("h", "Theme Prev", action.theme_prev, {{ stay = true }})
-      sub:bind("l", "Theme Next", action.theme_next, {{ stay = true }})
-      sub:bind("n", "Notify", action.shell("echo notify", {{ ok_notify = "info", err_notify = "warn" }}), {{ stay = true }})
-      sub:bind("d", "Details", action.show_details("on"), {{ stay = true }})
-      sub:bind("s", "Selector", action.selector({{
+    activate:submenu("t", "Tools", function(sub, subctx)
+      sub:bind("n", "Notify", action.shell("echo notify", { ok_notify = "info", err_notify = "warn" }), { stay = true })
+      sub:bind("d", "Details", action.show_details("on"), { stay = true })
+      sub:bind("s", "Selector", action.selector({
         title = "Pick Demo",
         placeholder = "Search...",
-        items = {{ "Alpha", "Beta" }},
+        items = { "Alpha", "Beta" },
         on_select = function(actx, item, query)
           actx:notify("info", "Selector", item.label .. ":" .. query)
         end,
         on_cancel = function(actx)
           actx:notify("warn", "Selector", "cancel")
         end,
-      }}), {{ stay = true }})
-      sub:bind("esc", "Exit", action.exit, {{ hidden = true }})
+      }), { stay = true })
+      sub:bind("esc", "Exit", action.exit, { hidden = true })
     end)
   end)
 end)
+"#
+    .to_string()
+}
+
+/// Build the sibling style file used by the UI smoketests.
+fn demo_style(mode: DemoHudMode) -> String {
+    format!(
+        r#"
+return {{
+  hud = {{
+      mode = {},
+      pos = "se",
+  }},
+  notify = {{
+      pos = "left",
+  }},
+}}
 "#,
         mode.luau_value()
     )
@@ -117,8 +113,6 @@ end)
 fn notification_config() -> String {
     format!(
         r#"
-themes:use("default")
-
 hotki.root(function(menu, ctx)
   menu:bind("{}", "Native Notification", action.shell("echo native notification", {{
     ok_notify = "info",
@@ -354,7 +348,12 @@ struct UiCaseSpec {
 impl UiCaseSpec {
     /// Render the Luau config used by this scenario.
     fn render_config(&self) -> String {
-        demo_config(self.hud_mode)
+        demo_config()
+    }
+
+    /// Render the style file used by this scenario.
+    fn render_style(&self) -> String {
+        demo_style(self.hud_mode)
     }
 }
 
@@ -389,6 +388,10 @@ where
         let config_path = ctx.scratch_path(filename);
         let luau_config = spec.render_config();
         fs::write(&config_path, luau_config.as_bytes())?;
+        fs::write(
+            config_path.with_file_name("style.luau"),
+            spec.render_style().as_bytes(),
+        )?;
 
         let session = HotkiSession::spawn(
             HotkiSessionConfig::from_env()?
@@ -433,13 +436,7 @@ where
         {
             let driver = state_ref.session.driver_mut();
             driver.inject_key(UI_DEMO_ACTIVATE)?;
-            driver.wait_for_idents(&["h", "l", "n", "d", "s"], gate_ms)?;
-        }
-
-        for key in UI_DEMO_THEME_KEYS {
-            let driver = state_ref.session.driver_mut();
-            driver.inject_key(key)?;
-            thread::sleep(Duration::from_millis(config::THEME_SWITCH_DELAY_MS));
+            driver.wait_for_idents(&["n", "d", "s"], gate_ms)?;
         }
 
         {

@@ -1,4 +1,4 @@
-//! Shared diagnostic conversion for Luau config, render, check, and theme paths.
+//! Shared diagnostic conversion for Luau config, render, and check paths.
 
 use std::{
     fmt,
@@ -15,7 +15,7 @@ use ruau::{
 };
 
 use super::{config::SourceMap, util::lock_unpoisoned};
-use crate::{Error, error::excerpt_at, themes::ThemeError};
+use crate::{Error, error::excerpt_at};
 
 /// Build a locationless `Error::Validation` with only a path and message.
 pub fn config_validation(path: Option<PathBuf>, err: impl fmt::Display) -> Error {
@@ -157,52 +157,6 @@ pub fn config_type_error(
     }
 }
 
-/// Convert a structured ruau compile error into a theme error.
-pub fn theme_compile_error(source: &str, err: &CompileError, path: &Path) -> ThemeError {
-    let Some((line, col)) = compile_location(err) else {
-        return theme_validation(path, err.message());
-    };
-
-    ThemeError::Parse {
-        path: path.to_path_buf(),
-        line,
-        col,
-        message: err.message().to_string(),
-        excerpt: excerpt_at(source, line, col),
-    }
-}
-
-/// Build a locationless theme validation error.
-pub fn theme_validation(path: &Path, message: impl Into<String>) -> ThemeError {
-    ThemeError::Validation {
-        path: path.to_path_buf(),
-        line: None,
-        col: None,
-        message: message.into(),
-        excerpt: None,
-    }
-}
-
-/// Convert a protected theme script failure into a located validation error.
-pub fn theme_script_error<'s>(
-    source: &str,
-    path: &Path,
-    scope: &Scope<'s>,
-    err: &ScriptError<'s>,
-) -> ThemeError {
-    let message = script_error_message(scope, err, "theme script");
-    let (line, col, excerpt) = theme_traceback_location(err.traceback(), path)
-        .map(|(line, col)| (Some(line), Some(col), Some(excerpt_at(source, line, col))))
-        .unwrap_or((None, None, None));
-    ThemeError::Validation {
-        path: path.to_path_buf(),
-        line,
-        col,
-        message,
-        excerpt,
-    }
-}
-
 /// Convert a structured compile location into 1-based line and column coordinates.
 fn compile_location(err: &CompileError) -> Option<(usize, usize)> {
     let location = err.location()?;
@@ -258,15 +212,6 @@ fn parse_location_prefix(line: &str) -> Option<(String, usize)> {
         return Some((line[..index].to_string(), line_no));
     }
     None
-}
-
-/// Extract the first traceback line that matches one theme path.
-fn theme_traceback_location(traceback: Option<&str>, path: &Path) -> Option<(usize, usize)> {
-    let expected = path.to_string_lossy();
-    traceback?.lines().find_map(|line| {
-        let (found, line) = parse_location_prefix(line.trim())?;
-        (found == expected).then_some((line, 1))
-    })
 }
 
 /// Convert VM traceback chunk names into user-facing filesystem paths.

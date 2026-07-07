@@ -222,7 +222,6 @@ fn build_bundle(root_dir: &Path, spec: &BundleSpec) -> Result<PathBuf> {
 
     ensure_file_exists(&icon_src)?;
     prepare_bundle_dirs(&app_dir, &iconset_dir, &macos_dir, &res_dir)?;
-    copy_themes(root_dir, &res_dir)?;
 
     generate_iconset(root_dir, &icon_src, &iconset_dir, spec.icon_profile)?;
     run_status(
@@ -308,49 +307,6 @@ fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
         path: path.to_path_buf(),
         source,
     })
-}
-
-/// Copy bundled themes into the app bundle resources.
-fn copy_themes(root_dir: &Path, res_dir: &Path) -> Result<()> {
-    let themes_src = root_dir.join("themes");
-    if !themes_src.is_dir() {
-        return Ok(());
-    }
-    let themes_dst = res_dir.join("themes");
-    remove_dir_all_if_exists(&themes_dst)?;
-    copy_dir_recursive(&themes_src, &themes_dst)
-}
-
-/// Copy a directory tree recursively.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst).map_err(|source| Error::Io {
-        path: dst.to_path_buf(),
-        source,
-    })?;
-    for entry in fs::read_dir(src).map_err(|source| Error::Io {
-        path: src.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Io {
-            path: src.to_path_buf(),
-            source,
-        })?;
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_file() {
-            fs::copy(&src_path, &dst_path).map_err(|source| Error::Io {
-                path: dst_path,
-                source,
-            })?;
-        }
-    }
-    Ok(())
 }
 
 /// Ensure a required input file exists.

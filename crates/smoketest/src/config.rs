@@ -13,8 +13,6 @@ pub struct Defaults {
 pub const DEFAULTS: Defaults = Defaults { timeout_ms: 3000 };
 
 /// Delay between theme switches to make transitions visible (milliseconds).
-pub const THEME_SWITCH_DELAY_MS: u64 = 150;
-
 /// Input-event pacing constants.
 #[derive(Debug, Clone, Copy)]
 pub struct InputDelays {

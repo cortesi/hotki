@@ -93,13 +93,6 @@ impl Connection {
             .await
     }
 
-    /// Set the active theme by name.
-    pub async fn set_theme(&mut self, name: &str) -> Result<()> {
-        debug!("Sending set_theme request");
-        self.request_ok(HotkeyMethod::SetTheme, &[value::string_param(name)])
-            .await
-    }
-
     /// Receive the next UI/log event from the server.
     ///
     /// Returns a `MsgToUI` value. Keep polling this to avoid backpressure on

@@ -36,23 +36,17 @@ enum PrimitiveAction {
     ReloadConfig = 5,
     /// Clear in-app notifications.
     ClearNotifications = 6,
-    /// Select the next theme.
-    ThemeNext = 7,
-    /// Select the previous theme.
-    ThemePrev = 8,
 }
 
 impl PrimitiveAction {
     /// All primitive action constants installed in the `action` module.
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 6] = [
         Self::Pop,
         Self::Exit,
         Self::ShowRoot,
         Self::HideHud,
         Self::ReloadConfig,
         Self::ClearNotifications,
-        Self::ThemeNext,
-        Self::ThemePrev,
     ];
 
     /// Name installed in the Luau `action` module.
@@ -64,8 +58,6 @@ impl PrimitiveAction {
             Self::HideHud => "hide_hud",
             Self::ReloadConfig => "reload_config",
             Self::ClearNotifications => "clear_notifications",
-            Self::ThemeNext => "theme_next",
-            Self::ThemePrev => "theme_prev",
         }
     }
 
@@ -78,8 +70,6 @@ impl PrimitiveAction {
             4 => Self::HideHud,
             5 => Self::ReloadConfig,
             6 => Self::ClearNotifications,
-            7 => Self::ThemeNext,
-            8 => Self::ThemePrev,
             _ => return None,
         })
     }
@@ -93,8 +83,6 @@ impl PrimitiveAction {
             Self::HideHud => Action::HideHud,
             Self::ReloadConfig => Action::ReloadConfig,
             Self::ClearNotifications => Action::ClearNotifications,
-            Self::ThemeNext => Action::ThemeNext,
-            Self::ThemePrev => Action::ThemePrev,
         }
     }
 
@@ -148,7 +136,6 @@ impl NativeModule for ActionModule {
             ActionFunction::Open,
             ActionFunction::Relay,
             ActionFunction::ShowDetails,
-            ActionFunction::ThemeSet,
             ActionFunction::SetVolume,
             ActionFunction::ChangeVolume,
             ActionFunction::Mute,
@@ -171,8 +158,6 @@ enum ActionFunction {
     Relay,
     /// Build a show-details toggle action.
     ShowDetails,
-    /// Build a set-theme action.
-    ThemeSet,
     /// Build an absolute volume action.
     SetVolume,
     /// Build a relative volume action.
@@ -193,7 +178,6 @@ impl ActionFunction {
             Self::Open => "open",
             Self::Relay => "relay",
             Self::ShowDetails => "show_details",
-            Self::ThemeSet => "theme_set",
             Self::SetVolume => "set_volume",
             Self::ChangeVolume => "change_volume",
             Self::Mute => "mute",
@@ -242,11 +226,6 @@ impl ScopedHostFunction for ActionFunction {
                 let toggle = args.serde::<Toggle>(scope, "action.show_details toggle")?;
                 args.finish("action.show_details")?;
                 ActionPayload::Action(Action::ShowDetails(toggle))
-            }
-            Self::ThemeSet => {
-                let name = args.string(scope, "action.theme_set name")?;
-                args.finish("action.theme_set")?;
-                ActionPayload::Action(Action::ThemeSet(name))
             }
             Self::SetVolume => {
                 let level = args.lua::<u8>(scope, "action.set_volume level")?;
