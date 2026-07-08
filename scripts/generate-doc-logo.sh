@@ -11,8 +11,8 @@ fi
 # Define paths
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MASTER_LOGO="$PROJECT_ROOT/crates/hotki/assets/logo.png"
-DOC_LOGO="$PROJECT_ROOT/crates/hotki/assets/logo-doc.png"
+MASTER_LOGO="$PROJECT_ROOT/crates/hotki-app/assets/logo.png"
+DOC_LOGO="$PROJECT_ROOT/crates/hotki-app/assets/logo-doc.png"
 
 # Check if master logo exists
 if [ ! -f "$MASTER_LOGO" ]; then

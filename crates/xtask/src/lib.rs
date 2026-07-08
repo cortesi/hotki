@@ -38,7 +38,7 @@ enum Xtask {
     Bundle(bundle::BundleArgs),
     /// Build a debug `.app` bundle for Hotki (dev icon + identifiers).
     BundleDev(bundle::BundleDevArgs),
-    /// Install Hotki to `/Applications`.
+    /// Install Hotki to `/Applications` and link the CLI.
     Install(install::InstallArgs),
     /// Generate UI screenshots for the README gallery.
     Screenshots,

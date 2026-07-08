@@ -127,14 +127,14 @@ fn init_tracing_from_cli(cli: &Cli) {
         .try_init();
 }
 
-/// Build the hotki binary once up-front to avoid stale binaries.
+/// Build the hotki app binary once up-front to avoid stale binaries.
 fn build_hotki_or_exit(cli: &Cli) {
     if !cli.quiet {
-        heading("Building hotki");
+        heading("Building hotki-app");
     }
-    if let Err(e) = process::build_hotki_quiet() {
-        eprintln!("Failed to build 'hotki' binary: {}", e);
-        eprintln!("Try: cargo build -p hotki");
+    if let Err(e) = process::build_hotki_app_quiet() {
+        eprintln!("Failed to build 'hotki-app' binary: {}", e);
+        eprintln!("Try: cargo build -p hotki-app --bin hotki-app");
         exit(1);
     }
 }

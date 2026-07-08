@@ -3,4 +3,4 @@
 set -e
 
 cd "$(dirname "$0")/.."
-sips -z 22 22 crates/hotki/assets/logo.png --out crates/hotki/assets/tray-icon.png
+sips -z 22 22 crates/hotki-app/assets/logo.png --out crates/hotki-app/assets/tray-icon.png

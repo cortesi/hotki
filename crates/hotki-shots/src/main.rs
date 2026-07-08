@@ -46,17 +46,23 @@ struct Cli {
 
 const DEFAULT_CONFIG_PATH: &str = "crates/hotki-shots/fixtures/config.luau";
 
-fn resolve_hotki_bin() -> Option<PathBuf> {
-    if let Ok(p) = env::var("HOTKI_BIN") {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
+fn resolve_hotki_app_bin() -> Option<PathBuf> {
+    if let Some(path) =
+        existing_env_path("HOTKI_APP_BIN").or_else(|| existing_env_path("HOTKI_BIN"))
+    {
+        return Some(path);
     }
     env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hotki")))
+        .and_then(|p| p.parent().map(|d| d.join("hotki-app")))
         .filter(|p| p.exists())
+}
+
+fn existing_env_path(var: &str) -> Option<PathBuf> {
+    env::var(var)
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
 }
 
 fn resolve_config_path(config: Option<&Path>) -> io::Result<PathBuf> {
@@ -75,7 +81,7 @@ fn resolve_config_path(config: Option<&Path>) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
+fn spawn_hotki_app(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
     let mut cmd = Command::new(bin);
     if logs {
         // Respect parent's RUST_LOG if set; otherwise default to info for server logs
@@ -261,11 +267,11 @@ fn inject_until_window(
 fn main() {
     let cli = Cli::parse();
 
-    let hotki_bin = match resolve_hotki_bin() {
+    let hotki_app_bin = match resolve_hotki_app_bin() {
         Some(p) => p,
         None => {
             eprintln!(
-                "ERROR: could not locate 'hotki' binary (set HOTKI_BIN or cargo build --bin hotki)"
+                "ERROR: could not locate 'hotki-app' binary (set HOTKI_APP_BIN or cargo build -p hotki-app --bin hotki-app)"
             );
             process::exit(2);
         }
@@ -279,10 +285,10 @@ fn main() {
         }
     };
 
-    let mut child = match spawn_hotki(&hotki_bin, &cfg_path, cli.logs) {
+    let mut child = match spawn_hotki_app(&hotki_app_bin, &cfg_path, cli.logs) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("ERROR: failed to spawn hotki: {}", e);
+            eprintln!("ERROR: failed to spawn hotki-app: {}", e);
             process::exit(2);
         }
     };

@@ -99,7 +99,7 @@ pub fn push_client_notification(kind: NotifyKind, title: &str, text: &str) {
     push(LogEntry {
         side: Side::Client,
         level: notification_level(kind).to_string(),
-        target: "hotki::notification".to_string(),
+        target: "hotki_app::notification".to_string(),
         message: notification_message(kind, title, text),
     });
 }

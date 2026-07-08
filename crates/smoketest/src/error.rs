@@ -7,9 +7,11 @@ use crate::server_drive::DriverError;
 /// Errors that can occur during smoketest execution.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// The hotki binary could not be found.
-    #[error("could not locate 'hotki' binary (set HOTKI_BIN or `cargo build --bin hotki`)")]
-    HotkiBinNotFound,
+    /// The hotki app binary could not be found.
+    #[error(
+        "could not locate 'hotki-app' binary (set HOTKI_APP_BIN or `cargo build -p hotki-app --bin hotki-app`)"
+    )]
+    HotkiAppBinNotFound,
 
     /// Failed to spawn a process.
     #[error("failed to launch hotki: {0}")]
@@ -41,8 +43,10 @@ pub type Result<T> = StdResult<T, Error>;
 /// Print helpful hints for common errors.
 pub fn print_hints(err: &Error) {
     match err {
-        Error::HotkiBinNotFound => {
-            eprintln!("hint: set HOTKI_BIN to an existing binary or run: cargo build --bin hotki");
+        Error::HotkiAppBinNotFound => {
+            eprintln!(
+                "hint: set HOTKI_APP_BIN to an existing binary or run: cargo build -p hotki-app --bin hotki-app"
+            );
         }
         Error::HudNotVisible { .. } => {
             eprintln!("hint: we inject the activation chord via RPC");

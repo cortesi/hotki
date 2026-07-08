@@ -21,6 +21,9 @@ hotki api --surface style
 hotki api --surface all --markdown
 ```
 
+`cargo xtask install` installs `Hotki.app` to `/Applications` and links the
+embedded CLI at `~/.local/bin/hotki`.
+
 ## Screenshots
 
 Generated from Hotki's embedded default style with `cargo xtask screenshots`.

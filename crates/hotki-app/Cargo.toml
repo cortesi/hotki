@@ -1,0 +1,41 @@
+[package]
+name = "hotki-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+devtools = ["dep:eguidev_runtime"]
+
+# objc2-quartz-core used via unsafe FFI (setCornerRadius)
+[package.metadata.cargo-machete]
+ignored = ["objc2-quartz-core"]
+
+[dependencies]
+hotki-server = { path = "../hotki-server" }
+permissions = { path = "../permissions" }
+config = { path = "../config" }
+hotki-protocol = { path = "../hotki-protocol" }
+logging = { path = "../logging" }
+
+eframe = { workspace = true, features = ["glow"] }
+egui = { workspace = true }
+eguidev = { path = "../../../eguidev/crates/eguidev" }
+eguidev_runtime = { path = "../../../eguidev/crates/eguidev_runtime", optional = true }
+image = "0.25.9"
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tray-icon = "0.21.2"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+egui_extras = "0.35"
+clap = { workspace = true, features = ["derive"] }
+parking_lot = { workspace = true }
+objc2-quartz-core = { workspace = true }
+mac-keycode = { path = "../mac-keycode" }

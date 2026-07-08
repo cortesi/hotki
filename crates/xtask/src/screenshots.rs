@@ -17,6 +17,7 @@ pub fn screenshots(root_dir: &Path) -> Result<()> {
     println!("==> Capturing screenshots");
     let screenshot_dir = root_dir.join(SCREENSHOT_DIR);
     recreate_dir(&screenshot_dir)?;
+    build_hotki_app(root_dir)?;
 
     run_status(
         root_dir,
@@ -35,6 +36,22 @@ pub fn screenshots(root_dir: &Path) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Build the GUI app binary used by the screenshot harness.
+fn build_hotki_app(root_dir: &Path) -> Result<()> {
+    run_status(
+        root_dir,
+        "cargo",
+        [
+            OsString::from("build"),
+            OsString::from("-p"),
+            OsString::from("hotki-app"),
+            OsString::from("--bin"),
+            OsString::from("hotki-app"),
+        ],
+        OutputMode::Streaming,
+    )
 }
 
 /// Remove and recreate a generated artifact directory.

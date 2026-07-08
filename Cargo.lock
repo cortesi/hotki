@@ -2844,6 +2844,17 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "config",
+ "logging",
+ "serde_json",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "hotki-app"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "config",
  "eframe",
  "egui",
  "egui_extras",

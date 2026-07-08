@@ -10,9 +10,9 @@ use crate::{
     server_drive::ServerDriver,
 };
 
-/// Launch configuration for a smoketest-backed hotki session.
+/// Launch configuration for a smoketest-backed hotki app session.
 pub struct HotkiSessionConfig {
-    /// Path to the hotki binary to run.
+    /// Path to the hotki app binary to run.
     binary_path: PathBuf,
     /// Optional path to a config file to load.
     config_path: Option<PathBuf>,
@@ -21,10 +21,10 @@ pub struct HotkiSessionConfig {
 }
 
 impl HotkiSessionConfig {
-    /// Construct a configuration using the default hotki binary resolution.
+    /// Construct a configuration using the default hotki app binary resolution.
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            binary_path: resolve_hotki_binary()?,
+            binary_path: resolve_hotki_app_binary()?,
             config_path: None,
             with_logs: false,
         })
@@ -56,7 +56,7 @@ pub struct HotkiSession {
 }
 
 impl HotkiSession {
-    /// Spawn a hotki process according to the supplied configuration.
+    /// Spawn a hotki app process according to the supplied configuration.
     pub fn spawn(config: HotkiSessionConfig) -> Result<Self> {
         let HotkiSessionConfig {
             binary_path,
@@ -91,7 +91,7 @@ impl HotkiSession {
         })
     }
 
-    /// Return the OS process id for the hotki child.
+    /// Return the OS process id for the hotki app child.
     pub fn pid(&self) -> u32 {
         self.child.pid as u32
     }
@@ -139,9 +139,9 @@ pub fn socket_path_for_pid(pid: u32) -> String {
     hotki_server::socket_path_for_pid(pid)
 }
 
-/// Resolve the hotki binary path from env overrides or the current executable dir.
-fn resolve_hotki_binary() -> Result<PathBuf> {
-    if let Ok(path) = env::var("HOTKI_BIN") {
+/// Resolve the hotki app binary path from env overrides or the current executable dir.
+fn resolve_hotki_app_binary() -> Result<PathBuf> {
+    if let Ok(path) = env::var("HOTKI_APP_BIN").or_else(|_| env::var("HOTKI_BIN")) {
         let candidate = PathBuf::from(path);
         if candidate.exists() {
             return Ok(candidate);
@@ -150,10 +150,10 @@ fn resolve_hotki_binary() -> Result<PathBuf> {
 
     let inferred = env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("hotki")))
+        .and_then(|exe| exe.parent().map(|dir| dir.join("hotki-app")))
         .filter(|path| path.exists());
 
-    inferred.ok_or(Error::HotkiBinNotFound)
+    inferred.ok_or(Error::HotkiAppBinNotFound)
 }
 
 #[cfg(test)]
@@ -163,7 +163,7 @@ mod tests {
     fn spawn_initializes_server_driver() -> Result<()> {
         let config = match HotkiSessionConfig::from_env() {
             Ok(cfg) => cfg.with_logs(false),
-            Err(Error::HotkiBinNotFound) => return Ok(()),
+            Err(Error::HotkiAppBinNotFound) => return Ok(()),
             Err(other) => return Err(other),
         };
         let mut session = HotkiSession::spawn(config)?;

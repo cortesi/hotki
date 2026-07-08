@@ -18,14 +18,16 @@ use crate::{
 
 /// Default app name used for release bundles.
 const RELEASE_APP_NAME: &str = "Hotki";
-/// Default binary name embedded in release bundles.
-const RELEASE_BIN_NAME: &str = "hotki";
+/// Default GUI executable name embedded in release bundles.
+const APP_BIN_NAME: &str = "hotki-app";
+/// Default CLI executable name embedded in release bundles.
+pub const CLI_BIN_NAME: &str = "hotki";
 /// Default macOS bundle identifier for release builds.
 const RELEASE_BUNDLE_ID: &str = "si.corte.hotki";
 /// Default output directory (workspace-relative) for release bundles.
 const RELEASE_OUT_DIR: &str = "target/bundle";
 /// Default source icon path (workspace-relative) for release bundles.
-const RELEASE_ICON_SRC: &str = "crates/hotki/assets/logo.png";
+const RELEASE_ICON_SRC: &str = "crates/hotki-app/assets/logo.png";
 
 /// Arguments for `cargo xtask bundle`.
 #[derive(Debug, Args)]
@@ -33,9 +35,12 @@ pub struct BundleArgs {
     /// Bundle application name (also used as `.app` directory name).
     #[arg(long, default_value = RELEASE_APP_NAME)]
     app_name: String,
-    /// Cargo binary name (also used as the bundle executable name).
-    #[arg(long, default_value = RELEASE_BIN_NAME)]
-    bin_name: String,
+    /// GUI binary name embedded as the bundle executable.
+    #[arg(long, default_value = APP_BIN_NAME)]
+    app_bin_name: String,
+    /// CLI binary name embedded beside the app executable.
+    #[arg(long, default_value = CLI_BIN_NAME)]
+    cli_bin_name: String,
     /// Bundle identifier.
     #[arg(long, default_value = RELEASE_BUNDLE_ID)]
     bundle_id: String,
@@ -51,7 +56,8 @@ impl Default for BundleArgs {
     fn default() -> Self {
         Self {
             app_name: RELEASE_APP_NAME.to_string(),
-            bin_name: RELEASE_BIN_NAME.to_string(),
+            app_bin_name: APP_BIN_NAME.to_string(),
+            cli_bin_name: CLI_BIN_NAME.to_string(),
             bundle_id: RELEASE_BUNDLE_ID.to_string(),
             out_dir: PathBuf::from(RELEASE_OUT_DIR),
             icon_src: PathBuf::from(RELEASE_ICON_SRC),
@@ -65,9 +71,12 @@ pub struct BundleDevArgs {
     /// Bundle application name (also used as `.app` directory name).
     #[arg(long, default_value = "Hotki-Dev")]
     app_name: String,
-    /// Cargo binary name (also used as the bundle executable name).
-    #[arg(long, default_value = "hotki")]
-    bin_name: String,
+    /// GUI binary name embedded as the bundle executable.
+    #[arg(long, default_value = APP_BIN_NAME)]
+    app_bin_name: String,
+    /// CLI binary name embedded beside the app executable.
+    #[arg(long, default_value = CLI_BIN_NAME)]
+    cli_bin_name: String,
     /// Bundle identifier.
     #[arg(long, default_value = "si.corte.hotki.dev")]
     bundle_id: String,
@@ -78,11 +87,11 @@ pub struct BundleDevArgs {
     #[arg(long, default_value = "target/bundle-dev")]
     out_dir: PathBuf,
     /// Source icon PNG (relative to workspace root).
-    #[arg(long, default_value = "crates/hotki/assets/logo-dev.png")]
+    #[arg(long, default_value = "crates/hotki-app/assets/logo-dev.png")]
     icon_src: PathBuf,
 }
 
-/// Cargo profile used when building the bundle executable.
+/// Cargo profile used when building the bundle executables.
 #[derive(Clone, Copy, Debug)]
 enum BuildProfile {
     /// Build the debug binary.
@@ -115,8 +124,10 @@ enum PlistKind {
 struct BundleSpec {
     /// `.app` directory name and user-visible application name.
     app_name: String,
-    /// Executable name embedded in the bundle.
-    bin_name: String,
+    /// GUI executable name embedded in the bundle.
+    app_bin_name: String,
+    /// CLI executable name embedded beside the app executable.
+    cli_bin_name: String,
     /// macOS bundle identifier.
     bundle_id: String,
     /// Output directory relative to the workspace root.
@@ -137,7 +148,8 @@ impl From<&BundleArgs> for BundleSpec {
     fn from(args: &BundleArgs) -> Self {
         Self {
             app_name: args.app_name.clone(),
-            bin_name: args.bin_name.clone(),
+            app_bin_name: args.app_bin_name.clone(),
+            cli_bin_name: args.cli_bin_name.clone(),
             bundle_id: args.bundle_id.clone(),
             out_dir: args.out_dir.clone(),
             icon_src: args.icon_src.clone(),
@@ -153,7 +165,8 @@ impl From<&BundleDevArgs> for BundleSpec {
     fn from(args: &BundleDevArgs) -> Self {
         Self {
             app_name: args.app_name.clone(),
-            bin_name: args.bin_name.clone(),
+            app_bin_name: args.app_bin_name.clone(),
+            cli_bin_name: args.cli_bin_name.clone(),
             bundle_id: args.bundle_id.clone(),
             out_dir: args.out_dir.clone(),
             icon_src: args.icon_src.clone(),
@@ -198,16 +211,26 @@ fn build_bundle(root_dir: &Path, spec: &BundleSpec) -> Result<PathBuf> {
         version
     );
 
-    build_binary(root_dir, spec)?;
+    build_bundle_binaries(root_dir, spec)?;
 
-    let bin_path = root_dir
+    let app_bin_path = root_dir
         .join("target")
         .join(spec.build_profile.target_dir())
-        .join(&spec.bin_name);
-    if !bin_path.is_file() {
+        .join(APP_BIN_NAME);
+    if !app_bin_path.is_file() {
         return Err(Error::Io {
-            path: bin_path,
-            source: io_not_found("bundle binary missing after cargo build"),
+            path: app_bin_path,
+            source: io_not_found("app binary missing after cargo build"),
+        });
+    }
+    let cli_bin_path = root_dir
+        .join("target")
+        .join(spec.build_profile.target_dir())
+        .join(CLI_BIN_NAME);
+    if !cli_bin_path.is_file() {
+        return Err(Error::Io {
+            path: cli_bin_path,
+            source: io_not_found("CLI binary missing after cargo build"),
         });
     }
 
@@ -217,7 +240,7 @@ fn build_bundle(root_dir: &Path, spec: &BundleSpec) -> Result<PathBuf> {
     let macos_dir = contents_dir.join("MacOS");
     let res_dir = contents_dir.join("Resources");
     let iconset_dir = out_dir.join("icon.iconset");
-    let icns_file = res_dir.join(format!("{}.icns", spec.bin_name));
+    let icns_file = res_dir.join(format!("{}.icns", spec.app_bin_name));
     let icon_src = root_dir.join(&spec.icon_src);
 
     ensure_file_exists(&icon_src)?;
@@ -238,33 +261,51 @@ fn build_bundle(root_dir: &Path, spec: &BundleSpec) -> Result<PathBuf> {
         plist_contents(
             spec.plist_kind,
             &spec.app_name,
-            &spec.bin_name,
+            &spec.app_bin_name,
             &spec.bundle_id,
             &version,
         ),
     )?;
 
-    let bundle_bin_path = macos_dir.join(&spec.bin_name);
-    fs::copy(&bin_path, &bundle_bin_path).map_err(|source| Error::Io {
-        path: bundle_bin_path.clone(),
-        source,
-    })?;
-    chmod_executable(&bundle_bin_path)?;
+    copy_executable(&app_bin_path, &macos_dir.join(&spec.app_bin_name))?;
+    copy_executable(&cli_bin_path, &macos_dir.join(&spec.cli_bin_name))?;
 
     Ok(app_dir)
 }
 
-/// Build the target executable that will be embedded in the app bundle.
-fn build_binary(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
-    let mut cargo_args = vec!["build".to_string(), "-p".to_string(), "hotki".to_string()];
-    if matches!(spec.build_profile, BuildProfile::Release) {
+/// Build the app and CLI executables that will be embedded in the bundle.
+fn build_bundle_binaries(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
+    build_package_binary(
+        root_dir,
+        spec.build_profile,
+        "hotki-app",
+        APP_BIN_NAME,
+        &spec.features,
+    )?;
+    build_package_binary(root_dir, spec.build_profile, "hotki", CLI_BIN_NAME, &[])
+}
+
+/// Build one Cargo package binary for the selected bundle profile.
+fn build_package_binary(
+    root_dir: &Path,
+    build_profile: BuildProfile,
+    package: &str,
+    bin_target: &str,
+    features: &[String],
+) -> Result<()> {
+    let mut cargo_args = vec![
+        "build".to_string(),
+        "-p".to_string(),
+        package.to_string(),
+        "--bin".to_string(),
+        bin_target.to_string(),
+    ];
+    if matches!(build_profile, BuildProfile::Release) {
         cargo_args.push("--release".to_string());
     }
-    cargo_args.push("--bin".to_string());
-    cargo_args.push(spec.bin_name.clone());
-    if !spec.features.is_empty() {
+    if !features.is_empty() {
         cargo_args.push("--features".to_string());
-        cargo_args.push(spec.features.join(","));
+        cargo_args.push(features.join(","));
     }
     run_status(
         root_dir,
@@ -272,6 +313,15 @@ fn build_binary(root_dir: &Path, spec: &BundleSpec) -> Result<()> {
         cargo_args.iter().map(String::as_str),
         OutputMode::Streaming,
     )
+}
+
+/// Copy a built executable into the bundle and ensure it is executable.
+fn copy_executable(src: &Path, dst: &Path) -> Result<()> {
+    fs::copy(src, dst).map_err(|source| Error::Io {
+        path: dst.to_path_buf(),
+        source,
+    })?;
+    chmod_executable(dst)
 }
 
 /// Recreate the bundle directory structure and the iconset directory.

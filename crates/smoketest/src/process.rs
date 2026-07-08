@@ -87,11 +87,11 @@ pub fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     Ok(ManagedChild::new(child))
 }
 
-/// Build the hotki binary quietly.
+/// Build the hotki app binary quietly.
 /// Output is suppressed to avoid interleaved cargo logs.
-pub fn build_hotki_quiet() -> Result<()> {
+pub fn build_hotki_app_quiet() -> Result<()> {
     // First check if the binary already exists and is recent
-    if let Ok(metadata) = fs::metadata("target/debug/hotki")
+    if let Ok(metadata) = fs::metadata("target/debug/hotki-app")
         && let Ok(modified) = metadata.modified()
         && let Ok(elapsed) = SystemTime::now().duration_since(modified)
         && elapsed.as_secs() < 60
@@ -101,7 +101,7 @@ pub fn build_hotki_quiet() -> Result<()> {
     }
 
     let mut child = Command::new("cargo")
-        .args(["build", "-q", "-p", "hotki"])
+        .args(["build", "-q", "-p", "hotki-app", "--bin", "hotki-app"])
         .env("CARGO_TERM_COLOR", "never")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -117,7 +117,7 @@ pub fn build_hotki_quiet() -> Result<()> {
             Some(status) => {
                 if !status.success() {
                     return Err(Error::SpawnFailed(
-                        "Failed to build hotki binary".to_string(),
+                        "Failed to build hotki-app binary".to_string(),
                     ));
                 }
                 return Ok(());
