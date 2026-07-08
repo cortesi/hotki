@@ -39,7 +39,7 @@ fn notification_body_wrap_width(width: f32) -> f32 {
 }
 
 /// Build wrapped notification text used by both measurement and rendering.
-fn notification_text_layout_job(
+fn notification_layout_job(
     text: &str,
     font_size: f32,
     font_weight: FontWeight,
@@ -59,28 +59,6 @@ fn notification_text_layout_job(
         },
     );
     job
-}
-
-/// Build the body text layout used by both measurement and rendering.
-fn notification_body_layout_job(
-    text: &str,
-    font_size: f32,
-    font_weight: FontWeight,
-    color: Color32,
-    wrap_width: f32,
-) -> LayoutJob {
-    notification_text_layout_job(text, font_size, font_weight, color, wrap_width)
-}
-
-/// Build the title text layout used by both measurement and rendering.
-fn notification_title_layout_job(
-    text: &str,
-    font_size: f32,
-    font_weight: FontWeight,
-    color: Color32,
-    wrap_width: f32,
-) -> LayoutJob {
-    notification_text_layout_job(text, font_size, font_weight, color, wrap_width)
 }
 
 /// Clamp configured notification width to fit inside the active display margin.
@@ -258,7 +236,7 @@ fn measure_notification_card(
     };
 
     let title_galley = ctx.fonts_mut(|fonts| {
-        fonts.layout_job(notification_title_layout_job(
+        fonts.layout_job(notification_layout_job(
             title,
             style.title_font_size,
             style.title_font_weight,
@@ -267,7 +245,7 @@ fn measure_notification_card(
         ))
     });
     let body_galley = ctx.fonts_mut(|fonts| {
-        fonts.layout_job(notification_body_layout_job(
+        fonts.layout_job(notification_layout_job(
             body,
             style.body_font_size,
             style.body_font_weight,
@@ -409,7 +387,7 @@ impl NotificationCenter {
                 ),
                 vec2(measure.icon_width, measure.icon_height),
             );
-            let icon_job = notification_title_layout_job(
+            let icon_job = notification_layout_job(
                 ic,
                 style.title_size * 2.0,
                 FontWeight::Regular,
@@ -438,7 +416,7 @@ impl NotificationCenter {
             ),
             vec2(measure.title_wrap_width, measure.title_height),
         );
-        let title_job = notification_title_layout_job(
+        let title_job = notification_layout_job(
             title,
             style.title_size,
             style.title_weight,
@@ -495,7 +473,7 @@ impl NotificationCenter {
     ) {
         let body_size = vec2(measure.body_wrap_width, measure.body_visible_height);
         let (rect, response) = ui.allocate_exact_size(body_size, egui::Sense::hover());
-        let text_job = notification_body_layout_job(
+        let text_job = notification_layout_job(
             text,
             style.body_font_size,
             style.body_font_weight,
@@ -1093,7 +1071,7 @@ mod tests {
     #[test]
     fn body_layout_wraps_long_tokens_inside_card_width() {
         let wrap_width = super::notification_body_wrap_width(64.0);
-        let job = super::notification_body_layout_job(
+        let job = super::notification_layout_job(
             "averylongunbrokennotificationmessage",
             12.0,
             hotki_protocol::FontWeight::Regular,

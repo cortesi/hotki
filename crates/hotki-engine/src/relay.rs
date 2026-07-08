@@ -17,12 +17,6 @@ pub struct RelayHandler {
     relay_key: Option<relaykey::RelayKey>,
 }
 
-impl Default for RelayHandler {
-    fn default() -> Self {
-        Self::new_with_enabled(true)
-    }
-}
-
 impl RelayHandler {
     /// Create a new relay handler with relay enabled/disabled.
     pub fn new_with_enabled(enabled: bool) -> Self {

@@ -21,9 +21,6 @@ pub(crate) trait HotkeyApi: Send + Sync {
     fn intercept(&self, chord: mac_keycode::Chord) -> u32;
     fn unregister(&self, id: u32) -> Result<()>;
     fn capture_all(&self) -> CaptureGuard;
-    fn is_fake(&self) -> bool {
-        false
-    }
 }
 
 pub(crate) struct RealHotkeyApi {
@@ -79,8 +76,5 @@ impl HotkeyApi for MockHotkeyApi {
     }
     fn capture_all(&self) -> CaptureGuard {
         CaptureGuard::Fake
-    }
-    fn is_fake(&self) -> bool {
-        true
     }
 }

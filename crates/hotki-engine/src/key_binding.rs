@@ -27,24 +27,18 @@ pub struct KeyBindingManager {
     idents_by_id: HashMap<u32, String>,
     /// Guard that keeps capture-all active while present
     capture_guard: Option<CaptureGuard>,
-    /// Capture-all requested by the engine (tracked even in fake mode).
+    /// Capture-all requested by the engine (tracked independently of the OS guard).
     capture_all_active: bool,
-    /// Test mode: when true, simulate registrations without OS intercepts.
-    fake: bool,
-    next_id: u32,
 }
 
 impl KeyBindingManager {
     pub fn new_with_api(api: Arc<dyn HotkeyApi>) -> Self {
-        let fake = api.is_fake();
         Self {
             api,
             bindings: HashMap::new(),
             idents_by_id: HashMap::new(),
             capture_guard: None,
             capture_all_active: false,
-            fake,
-            next_id: 1000,
         }
     }
 
@@ -126,10 +120,6 @@ impl KeyBindingManager {
     /// Enable/disable capture-all mode atomically using a guard.
     pub fn set_capture_all(&mut self, active: bool) {
         self.capture_all_active = active;
-        if self.fake {
-            tracing::debug!("capture_all(fake) {}", active);
-            return;
-        }
         match (active, self.capture_guard.is_some()) {
             (true, false) => {
                 self.capture_guard = Some(self.api.capture_all());
@@ -185,12 +175,7 @@ impl KeyBindingManager {
     }
 
     fn register_binding(&mut self, ident: &str, chord: &Chord) -> Result<()> {
-        let id = if self.fake {
-            self.next_id += 1;
-            self.next_id
-        } else {
-            self.api.intercept(chord.clone())
-        };
+        let id = self.api.intercept(chord.clone());
         self.bindings.insert(
             ident.to_string(),
             BindingRegistration {
@@ -207,9 +192,7 @@ impl KeyBindingManager {
         let Some(binding) = self.bindings.remove(ident) else {
             return Ok(());
         };
-        if !self.fake {
-            self.api.unregister(binding.id)?;
-        }
+        self.api.unregister(binding.id)?;
         self.idents_by_id.remove(&binding.id);
         trace!("Unregistered key: {} (id {})", ident, binding.id);
         Ok(())

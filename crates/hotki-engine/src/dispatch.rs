@@ -80,14 +80,12 @@ impl Engine {
         let result = match binding.kind {
             dyn_engine::BindingKind::Mode(mode) => {
                 let mut rt = self.runtime.lock().await;
-                rt.hud_visible = true;
-                rt.stack.push(dyn_engine::ModeFrame {
-                    title: binding.desc,
-                    closure: mode,
-                    entered_via: binding.mode_id.map(|id| (binding.chord, id)),
-                    rendered: Vec::new(),
-                    capture: binding.mode_capture,
-                });
+                rt.push_mode(
+                    binding.desc,
+                    mode,
+                    binding.mode_id.map(|id| (binding.chord, id)),
+                    binding.mode_capture,
+                );
                 DispatchResult::EnteredMode
             }
             dyn_engine::BindingKind::Action(action) => {

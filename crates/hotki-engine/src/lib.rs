@@ -10,7 +10,7 @@
 //!
 //! This crate is macOS-only by design. It exposes a minimal, documented API:
 //! - [`Engine`]: the primary type you construct and drive
-//! - [`RepeatSpec`], [`OnRelayRepeat`], [`OnShellRepeat`]: instrumentation hooks
+//! - [`RepeatSpec`], [`OnRelayRepeat`]: instrumentation hooks
 //!
 //! All other modules are crate-private implementation details.
 //!
@@ -122,14 +122,14 @@ use config::script::engine as dyn_engine;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};
-use hotki_world::{WorldView, WorldWindow};
+use hotki_world::WorldView;
 use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use notification::NotificationDispatcher;
 use parking_lot::Mutex;
 use relay::RelayHandler;
 use repeater::Repeater;
-pub use repeater::{OnRelayRepeat, OnShellRepeat, RepeatSpec};
+pub use repeater::{OnRelayRepeat, RepeatSpec};
 
 use crate::runtime::{FocusInfo, RuntimeState};
 
@@ -237,25 +237,43 @@ impl Engine {
 
     /// Load and install a dynamic configuration from `path`.
     pub async fn set_config_path(&self, path: PathBuf) -> Result<()> {
-        let dyn_cfg = dyn_engine::load_dynamic_config(&path).map_err(|e| Error::Msg(e.pretty()))?;
-        let root = dyn_cfg.root();
-
+        {
+            let mut g = self.config_path.write().await;
+            *g = Some(path.clone());
+        }
         // LOCK ORDER: config (write) must be released before rebind_current_context.
+        self.install_config(&path, ConfigInstall::ResetFocus)
+            .await?;
+        self.rebind_current_context().await
+    }
+
+    /// Load config from `path` into runtime state.
+    ///
+    /// `ConfigInstall::ResetFocus` also resets HUD visibility and focus for a fresh install.
+    /// `ConfigInstall::KeepFocus` only replaces the mode stack root (config reload).
+    pub(crate) async fn install_config(
+        &self,
+        path: &std::path::Path,
+        mode: ConfigInstall,
+    ) -> Result<()> {
+        let dyn_cfg = dyn_engine::load_dynamic_config(path).map_err(|e| Error::Msg(e.pretty()))?;
+        let root = dyn_cfg.root();
         {
             let mut g = self.config.lock().await;
             *g = Some(dyn_cfg);
         }
-        {
-            let mut g = self.config_path.write().await;
-            *g = Some(path);
+        let mut rt = self.runtime.lock().await;
+        match mode {
+            ConfigInstall::ResetFocus => {
+                rt.hud_visible = false;
+                rt.focus = self.current_focus_info();
+                rt.reset_to_root(root);
+            }
+            ConfigInstall::KeepFocus => {
+                rt.reset_to_root(root);
+            }
         }
-        {
-            let mut rt = self.runtime.lock().await;
-            rt.hud_visible = false;
-            rt.focus = self.current_focus_info();
-            rt.reset_to_root(root);
-        }
-        self.rebind_current_context().await
+        Ok(())
     }
 
     /// Get the current depth (0 = root) if state is initialized.
@@ -268,18 +286,17 @@ impl Engine {
         self.binding_manager.lock().await.bindings_snapshot()
     }
 
-    /// Re-export: current world snapshot of windows.
-    pub async fn world_snapshot(&self) -> Vec<WorldWindow> {
-        self.world.snapshot().await
-    }
-
-    /// Re-export: subscribe to world events (FocusChanged/DisplaysChanged).
-    pub fn world_events(&self) -> hotki_world::EventCursor {
-        self.world.subscribe()
-    }
-
     /// Diagnostics: world status snapshot (counts, timings, permissions).
     pub async fn world_status(&self) -> hotki_world::WorldStatus {
         self.world.status().await
     }
+}
+
+/// How [`Engine::install_config`] should treat existing focus and HUD state.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ConfigInstall {
+    /// Fresh install: clear HUD and refresh focus from the world cache.
+    ResetFocus,
+    /// Reload in place: keep current focus and HUD visibility.
+    KeepFocus,
 }

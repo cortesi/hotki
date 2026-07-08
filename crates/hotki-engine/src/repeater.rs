@@ -208,8 +208,6 @@ impl Repeater {
             .unwrap_or(-1)
     }
 
-    /* tests moved to end of module */
-
     /// Get or create the per-id shell run state.
     fn shell_state(&self, id: &str) -> Arc<ShellRunState> {
         let mut map = self.shell_states.lock();
@@ -456,8 +454,6 @@ impl Repeater {
     pub fn is_ticking(&self, id: &str) -> bool {
         self.ticker.is_active(id)
     }
-
-    // No public callback constructor is exposed; registration is managed by KeyBindingManager.
 
     /// Stop all tickers asynchronously and wait briefly for completion.
     pub async fn clear_async(&self) {

@@ -1,4 +1,5 @@
-use config::script::engine::{ModeCtx, ModeFrame, ModeRef, RenderedState};
+use config::script::engine::{ModeCtx, ModeFrame, ModeId, ModeRef, RenderedState};
+use mac_keycode::Chord;
 
 use crate::selector::SelectorState;
 
@@ -69,6 +70,24 @@ impl RuntimeState {
 
     pub(crate) fn depth(&self) -> usize {
         self.stack.len().saturating_sub(1)
+    }
+
+    /// Push a child mode frame and make the HUD visible.
+    pub(crate) fn push_mode(
+        &mut self,
+        title: String,
+        closure: ModeRef,
+        entered_via: Option<(Chord, ModeId)>,
+        capture: bool,
+    ) {
+        self.hud_visible = true;
+        self.stack.push(ModeFrame {
+            title,
+            closure,
+            entered_via,
+            rendered: Vec::new(),
+            capture,
+        });
     }
 }
 

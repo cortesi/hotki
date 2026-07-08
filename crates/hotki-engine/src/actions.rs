@@ -173,17 +173,10 @@ impl Engine {
         let mut rt = self.runtime.lock().await;
         match nav {
             dyn_engine::NavRequest::Push { mode, title } => {
-                rt.hud_visible = true;
                 let title = title
                     .or_else(|| mode.default_title().map(|t| t.to_string()))
                     .unwrap_or_else(|| "mode".to_string());
-                rt.stack.push(dyn_engine::ModeFrame {
-                    title,
-                    closure: mode,
-                    entered_via: None,
-                    rendered: Vec::new(),
-                    capture: false,
-                });
+                rt.push_mode(title, mode, None, false);
                 DispatchResult::EnteredMode
             }
             dyn_engine::NavRequest::Pop => {
@@ -227,21 +220,8 @@ impl Engine {
                 "No config path set; cannot reload config".to_string(),
             ));
         };
-
-        let dyn_cfg =
-            dyn_engine::load_dynamic_config(&path).map_err(|e| crate::Error::Msg(e.pretty()))?;
-        let root = dyn_cfg.root();
-
-        {
-            let mut g = self.config.lock().await;
-            *g = Some(dyn_cfg);
-        }
-        {
-            let mut rt = self.runtime.lock().await;
-            rt.reset_to_root(root);
-        }
-
-        Ok(())
+        self.install_config(&path, crate::ConfigInstall::KeepFocus)
+            .await
     }
 }
 

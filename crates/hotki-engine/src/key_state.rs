@@ -22,14 +22,11 @@ impl KeyStateTracker {
         self.states.lock().contains_key(identifier)
     }
 
-    /// Record a key down; returns true for the first down, false for repeats.
-    pub fn on_key_down(&self, identifier: &str) -> bool {
+    /// Record a key down. Subsequent downs for the same id are ignored.
+    pub fn on_key_down(&self, identifier: &str) {
         let mut states = self.states.lock();
-        if states.contains_key(identifier) {
-            false
-        } else {
+        if !states.contains_key(identifier) {
             states.insert(identifier.to_string(), false);
-            true
         }
     }
 

@@ -131,21 +131,9 @@ impl<'a> SelectorController<'a> {
                 SelectorInput::Update(snapshot)
             }
             SelectorEvent::Select(selection) => {
-                rt.hud_visible = selector.prev_hud_visible;
-                SelectorInput::Close(Box::new(SelectorClose {
-                    terminal: SelectorTerminal::Select(selection),
-                    ctx: rt.focus.mode_ctx(rt.hud_visible, rt.depth()),
-                    config: selector.config,
-                }))
+                close_selector(&mut rt, selector, SelectorTerminal::Select(selection))
             }
-            SelectorEvent::Cancel => {
-                rt.hud_visible = selector.prev_hud_visible;
-                SelectorInput::Close(Box::new(SelectorClose {
-                    terminal: SelectorTerminal::Cancel,
-                    ctx: rt.focus.mode_ctx(rt.hud_visible, rt.depth()),
-                    config: selector.config,
-                }))
-            }
+            SelectorEvent::Cancel => close_selector(&mut rt, selector, SelectorTerminal::Cancel),
             SelectorEvent::None => {
                 rt.selector = Some(selector);
                 SelectorInput::Consumed
@@ -189,6 +177,20 @@ impl<'a> SelectorController<'a> {
             .await?;
         self.engine.rebind_and_refresh(focus).await
     }
+}
+
+/// Tear down selector state and package the terminal close request.
+fn close_selector(
+    rt: &mut crate::runtime::RuntimeState,
+    selector: SelectorState,
+    terminal: SelectorTerminal,
+) -> SelectorInput {
+    rt.hud_visible = selector.prev_hud_visible;
+    SelectorInput::Close(Box::new(SelectorClose {
+        terminal,
+        ctx: rt.focus.mode_ctx(rt.hud_visible, rt.depth()),
+        config: selector.config,
+    }))
 }
 
 /// Execute the close handler described by a terminal selector event.
