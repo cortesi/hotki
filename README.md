@@ -1,44 +1,53 @@
 # Hotki
 
-Hotki is a macOS-only hotkey application with a Luau-based configuration runtime.
+Hotki is a macOS-only hotkey application configured with Luau.
 
 Behavior lives at `~/.hotki/config.luau`. Styling lives in optional sibling
-`~/.hotki/style.luau`, which returns a partial style table merged over Hotki's embedded default.
-The checked-in Luau declaration files define both surfaces, and the CLI can print them directly:
+`~/.hotki/style.luau`, which overlays Hotki's embedded default style.
 
-```bash
-hotki api
-hotki api --surface style
-hotki api --surface all --markdown
-hotki api --filter selector
-```
+Features:
 
-Useful entry points:
-
-- [CONFIG.md](./CONFIG.md): Luau config structure, imports, selectors, and validation.
-- [STYLE.md](./STYLE.md): `style.luau`, the embedded default style, and style dumping.
-
-Examples:
-
-- `examples/complete.luau`
-- `examples/style.luau`
-- `examples/cortesi.luau`
-- `examples/match.luau`
-- `examples/selector.luau`
-- `examples/selector-custom.luau`
-- `examples/test.luau`
-
-Validate a config and its sibling style file:
+- Global hotkeys and nested HUD menus.
+- Luau config with typed API docs.
+- App and custom-item selectors.
+- Shell, open, relay, media, and volume actions.
+- Native notifications and style overlays.
 
 ```bash
 hotki check --config ~/.hotki/config.luau
-```
-
-Dump the embedded default style source:
-
-```bash
 hotki style --default
+hotki api
+hotki api --surface style
+hotki api --surface all --markdown
 ```
+
+## Screenshots
+
+Generated from Hotki's embedded default style with `cargo xtask screenshots`.
+
+### HUD
+
+![Hotki HUD screenshot with the default style](./assets/screenshots/hud.png)
+
+### Selector
+
+![Hotki selector screenshot with the default style](./assets/screenshots/selector.png)
+
+### Notifications
+
+![Hotki success notification screenshot with the default style](./assets/screenshots/notify_success.png)
+
+![Hotki info notification screenshot with the default style](./assets/screenshots/notify_info.png)
+
+![Hotki warning notification screenshot with the default style](./assets/screenshots/notify_warning.png)
+
+![Hotki error notification screenshot with the default style](./assets/screenshots/notify_error.png)
+
+Docs:
+
+- [CONFIG.md](./CONFIG.md): Luau config structure, imports, selectors, and validation.
+- [STYLE.md](./STYLE.md): `style.luau`, the embedded default style, and style dumping.
+- [examples/](./examples/): example configs and style overlays.
 
 Minimal `config.luau`:
 

@@ -33,6 +33,9 @@ struct Cli {
     /// Output directory for PNG files
     #[arg(long)]
     dir: PathBuf,
+    /// Hotki config to drive while capturing screenshots
+    #[arg(long)]
+    config: Option<PathBuf>,
     /// Timeout in milliseconds for HUD readiness and waits
     #[arg(long, default_value_t = 10_000)]
     timeout: u64,
@@ -40,6 +43,8 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     logs: bool,
 }
+
+const DEFAULT_CONFIG_PATH: &str = "crates/hotki-shots/fixtures/config.luau";
 
 fn resolve_hotki_bin() -> Option<PathBuf> {
     if let Ok(p) = env::var("HOTKI_BIN") {
@@ -54,9 +59,20 @@ fn resolve_hotki_bin() -> Option<PathBuf> {
         .filter(|p| p.exists())
 }
 
-fn resolve_config_path() -> io::Result<PathBuf> {
+fn resolve_config_path(config: Option<&Path>) -> io::Result<PathBuf> {
     let cwd = env::current_dir()?;
-    Ok(cwd.join("examples/test.luau"))
+    let path = match config {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => cwd.join(path),
+        None => cwd.join(DEFAULT_CONFIG_PATH),
+    };
+    if !path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("config not found: {}", path.display()),
+        ));
+    }
+    Ok(path)
 }
 
 fn spawn_hotki(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
@@ -183,10 +199,40 @@ fn capture_window_by_id(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
     false
 }
 
+fn capture_window_after_wait(
+    pid: u32,
+    title: &str,
+    dir: &Path,
+    name: &str,
+    timeout_ms: u64,
+) -> bool {
+    if !wait_for_window_by_pid_title(pid, title, timeout_ms) {
+        eprintln!(
+            "WARN: window not ready for capture (pid={}, title={})",
+            pid, title
+        );
+        return false;
+    }
+    capture_window_by_id(pid, title, dir, name)
+}
+
 fn wait_for_window_by_pid_title(pid: u32, title: &str, timeout_ms: u64) -> bool {
+    wait_for_window_state_by_pid_title(pid, title, true, timeout_ms)
+}
+
+fn wait_for_no_window_by_pid_title(pid: u32, title: &str, timeout_ms: u64) -> bool {
+    wait_for_window_state_by_pid_title(pid, title, false, timeout_ms)
+}
+
+fn wait_for_window_state_by_pid_title(
+    pid: u32,
+    title: &str,
+    should_exist: bool,
+    timeout_ms: u64,
+) -> bool {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        if find_window_by_pid_title(pid, title).is_some() {
+        if find_window_by_pid_title(pid, title).is_some() == should_exist {
             return true;
         }
         thread::sleep(Duration::from_millis(50));
@@ -225,7 +271,7 @@ fn main() {
         }
     };
 
-    let cfg_path = match resolve_config_path() {
+    let cfg_path = match resolve_config_path(cli.config.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("ERROR: unable to resolve config: {}", e);
@@ -283,32 +329,36 @@ fn main() {
 
     // Capture HUD first
     let mut failed = Vec::new();
-    let hud_ok = capture_window_by_id(hotki_pid, "Hotki HUD", &cli.dir, "hud");
+    let hud_ok = capture_window_after_wait(hotki_pid, "Hotki HUD", &cli.dir, "hud", cli.timeout);
     if !hud_ok {
         failed.push("hud");
     }
 
-    // Trigger notifications via chords and capture
+    // Enter the screenshot fixture's notification submenu, then capture each kind.
+    inject_key(&rt, conn, "n");
     let gap = Duration::from_millis(CHORD_GAP_MS);
+    thread::sleep(gap);
     for (k, name) in [
-        ("t", None::<&str>),
-        ("s", Some("notify_success")),
-        ("i", Some("notify_info")),
-        ("w", Some("notify_warning")),
-        ("e", Some("notify_error")),
+        ("s", "notify_success"),
+        ("i", "notify_info"),
+        ("w", "notify_warning"),
+        ("e", "notify_error"),
     ] {
         inject_key(&rt, conn, k);
-        thread::sleep(gap);
-        if let Some(n) = name {
+        if wait_for_window_by_pid_title(hotki_pid, "Hotki Notification", cli.timeout) {
             thread::sleep(Duration::from_millis(NOTIFICATION_SETTLE_MS));
-            let ok = capture_window_by_id(hotki_pid, "Hotki Notification", &cli.dir, n);
+            let ok = capture_window_by_id(hotki_pid, "Hotki Notification", &cli.dir, name);
             if !ok {
-                failed.push(n);
+                failed.push(name);
             }
+        } else {
+            failed.push(name);
         }
+        inject_key(&rt, conn, "c");
+        let _ = wait_for_no_window_by_pid_title(hotki_pid, "Hotki Notification", cli.timeout);
     }
 
-    // Selector capture: open selector demo, type a query, and screenshot.
+    // Selector capture: open selector demo from the fixture submenu, type a query, and screenshot.
     if inject_until_window(&rt, conn, hotki_pid, "Hotki Selector", "p", cli.timeout) {
         for k in ["c", "a", "l"] {
             inject_key(&rt, conn, k);

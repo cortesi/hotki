@@ -172,7 +172,7 @@ fn resolve_default_style() -> Result<Style, Error> {
 }
 
 /// Evaluate one Luau style source file into a raw style overlay.
-pub(crate) fn eval_style_source(source: &str, path: &Path) -> Result<raw::RawStyle, Error> {
+pub fn eval_style_source(source: &str, path: &Path) -> Result<raw::RawStyle, Error> {
     let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
     let chunk = runtime_capabilities
         .compile_source(source.as_bytes(), &CompileOptions::new())

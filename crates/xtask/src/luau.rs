@@ -62,5 +62,21 @@ pub fn luau(root_dir: &Path) -> Result<()> {
         );
     }
 
+    println!("==> screenshot config");
+    let screenshot_config_path = root_dir.join("crates/hotki-shots/fixtures/config.luau");
+    let report = check_luau_config(&screenshot_config_path).map_err(|source| Error::Luau {
+        path: screenshot_config_path.clone(),
+        message: source.pretty(),
+    })?;
+    println!(
+        "{}: {} imports, style file: {}",
+        screenshot_config_path
+            .strip_prefix(root_dir)
+            .unwrap_or(&screenshot_config_path)
+            .to_string_lossy(),
+        report.imports,
+        report.style
+    );
+
     Ok(())
 }
