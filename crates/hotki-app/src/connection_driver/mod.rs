@@ -538,23 +538,12 @@ impl ConnectionDriver {
         tokio::pin!(hb_timer);
 
         let dump_interval = Duration::from_secs(5);
-        let dump_far_future = Duration::from_secs(3600);
-        let dump_timer: Sleep = sleep(if self.dumpworld {
-            dump_interval
-        } else {
-            dump_far_future
-        });
+        let dump_timer: Sleep = sleep(dump_interval);
         tokio::pin!(dump_timer);
 
         loop {
             if !self
-                .drive_event_once(
-                    conn,
-                    &mut hb_timer,
-                    &mut dump_timer,
-                    dump_interval,
-                    dump_far_future,
-                )
+                .drive_event_once(conn, &mut hb_timer, &mut dump_timer, dump_interval)
                 .await
             {
                 break;
@@ -573,8 +562,8 @@ impl ConnectionDriver {
         hb_timer: &mut Pin<&mut Sleep>,
         dump_timer: &mut Pin<&mut Sleep>,
         dump_interval: Duration,
-        dump_far_future: Duration,
     ) -> bool {
+        let dumpworld = self.dumpworld;
         tokio::select! {
             biased;
             _ = hb_timer.as_mut() => {
@@ -585,9 +574,9 @@ impl ConnectionDriver {
                 !self.route_control_msg(Some(conn), msg).await.should_stop()
             }
             resp = conn.recv_event() => self.handle_recv_event_result(resp, hb_timer).await,
-            _ = dump_timer.as_mut() => {
-                let next = self.compute_dump_reset(conn, dump_interval, dump_far_future).await;
-                dump_timer.as_mut().reset(TokioInstant::now() + next);
+            _ = dump_timer.as_mut(), if dumpworld => {
+                self.dump_world_snapshot(conn).await;
+                dump_timer.as_mut().reset(TokioInstant::now() + dump_interval);
                 true
             }
         }
@@ -618,45 +607,35 @@ impl ConnectionDriver {
         }
     }
 
-    /// Compute the next dump timer reset and optionally log a world snapshot.
-    async fn compute_dump_reset(
-        &self,
-        conn: &mut hotki_server::Connection,
-        dump_interval: Duration,
-        dump_far_future: Duration,
-    ) -> Duration {
-        if self.dumpworld {
-            if let Ok(snap) = conn.get_world_snapshot().await {
-                let mut out = String::new();
-                let focused_ctx = snap
-                    .focused
-                    .as_ref()
-                    .map(|focused| {
-                        format!("{} (pid={}) — {}", focused.app, focused.pid, focused.title)
-                    })
-                    .unwrap_or_else(|| "none".to_string());
-                let display_count = snap.displays.displays.len();
-                let active_disp = snap
-                    .displays
-                    .active
-                    .as_ref()
-                    .map(|display| display.id.to_string())
-                    .unwrap_or_else(|| "-".into());
-                if writeln!(
-                    out,
-                    "World: focused={} displays={} active_display={}",
-                    focused_ctx, display_count, active_disp
-                )
-                .is_err()
-                {
-                    tracing::warn!("failed to format world dump line");
-                }
-                tracing::info!(target: "hotki::worlddump", "\n{}", out);
-            }
-            dump_interval
-        } else {
-            dump_far_future
+    /// Log a world snapshot for dumpworld diagnostics.
+    async fn dump_world_snapshot(&self, conn: &mut hotki_server::Connection) {
+        let Ok(snap) = conn.get_world_snapshot().await else {
+            return;
+        };
+
+        let mut out = String::new();
+        let focused_ctx = snap
+            .focused
+            .as_ref()
+            .map(|focused| format!("{} (pid={}) — {}", focused.app, focused.pid, focused.title))
+            .unwrap_or_else(|| "none".to_string());
+        let display_count = snap.displays.displays.len();
+        let active_disp = snap
+            .displays
+            .active
+            .as_ref()
+            .map(|display| display.id.to_string())
+            .unwrap_or_else(|| "-".into());
+        if writeln!(
+            out,
+            "World: focused={} displays={} active_display={}",
+            focused_ctx, display_count, active_disp
+        )
+        .is_err()
+        {
+            tracing::warn!("failed to format world dump line");
         }
+        tracing::info!(target: "hotki::worlddump", "\n{}", out);
     }
 }
 

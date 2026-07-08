@@ -127,8 +127,7 @@ impl Ticker {
 
         // Await each handle with a timeout
         for e in entries {
-            let _ =
-                tokio::time::timeout(Duration::from_millis(STOP_WAIT_TIMEOUT_MS), e.handle).await;
+            let _ = time::timeout(Duration::from_millis(STOP_WAIT_TIMEOUT_MS), e.handle).await;
         }
         trace!("ticker_clear_async");
     }

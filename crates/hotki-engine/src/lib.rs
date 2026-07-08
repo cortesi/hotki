@@ -44,7 +44,10 @@
 
 /// Test support utilities exported for the test suite.
 pub mod test_support;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 mod actions;
 mod deps;
@@ -215,7 +218,7 @@ impl Engine {
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
         let config_arc = Arc::new(tokio::sync::Mutex::new(None));
 
-        let eng = Self {
+        let engine = Self {
             runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::empty())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
@@ -230,9 +233,9 @@ impl Engine {
             repeater,
             world,
         };
-        eng.spawn_world_focus_subscription();
-        eng.spawn_selector_notify_task();
-        eng
+        engine.spawn_world_focus_subscription();
+        engine.spawn_selector_notify_task();
+        engine
     }
 
     /// Load and install a dynamic configuration from `path`.
@@ -251,11 +254,7 @@ impl Engine {
     ///
     /// `ConfigInstall::ResetFocus` also resets HUD visibility and focus for a fresh install.
     /// `ConfigInstall::KeepFocus` only replaces the mode stack root (config reload).
-    pub(crate) async fn install_config(
-        &self,
-        path: &std::path::Path,
-        mode: ConfigInstall,
-    ) -> Result<()> {
+    pub(crate) async fn install_config(&self, path: &Path, mode: ConfigInstall) -> Result<()> {
         let dyn_cfg = dyn_engine::load_dynamic_config(path).map_err(|e| Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
         {
