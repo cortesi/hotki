@@ -140,6 +140,22 @@ struct NotificationItem {
     window_configured: bool,
 }
 
+impl NotificationItem {
+    /// Advance the easing animation and return whether another repaint is needed.
+    fn advance_animation(&mut self, now: Instant) -> bool {
+        let progress = (now
+            .saturating_duration_since(self.anim_start_time)
+            .as_secs_f32()
+            / ADJUST_MOVE_SECS)
+            .clamp(0.0, 1.0);
+        let ease = 1.0 - (1.0 - progress) * (1.0 - progress) * (1.0 - progress);
+        let nx = self.anim_start_pos.x + (self.target_pos.x - self.anim_start_pos.x) * ease;
+        let ny = self.anim_start_pos.y + (self.target_pos.y - self.anim_start_pos.y) * ease;
+        self.current_pos = pos2(nx, ny);
+        progress < 1.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 /// Placement decision for one notification card.
 struct NotificationPlacement {
@@ -505,7 +521,6 @@ impl NotificationCenter {
     /// Queue a new notification to be displayed.
     pub fn push(&mut self, kind: NotifyKind, title: String, text: String) {
         let created = Instant::now();
-        // Record in backlog first
         self.backlog.insert(
             0,
             BacklogEntry {
@@ -514,7 +529,6 @@ impl NotificationCenter {
                 text: text.clone(),
             },
         );
-        // Trim backlog to configured size
         if self.backlog.len() > self.max_items {
             self.backlog.truncate(self.max_items);
         }
@@ -532,7 +546,7 @@ impl NotificationCenter {
             target_pos: pos2(0.0, 0.0),
             current_pos: pos2(0.0, 0.0),
             anim_start_pos: pos2(0.0, 0.0),
-            anim_start_time: Instant::now(),
+            anim_start_time: created,
             snap_to_target: true,
             size: Vec2::ZERO,
             layout: NotificationCardMeasure::empty(width),
@@ -576,7 +590,7 @@ impl NotificationCenter {
     }
 
     /// Compute layout positions for notification windows and update animations.
-    fn layout(&mut self, ctx: &Context) {
+    fn layout(&mut self, ctx: &Context, now: Instant) {
         let bounds = self.metrics.display().active_bounds();
         let frame = bounds.frame();
         let mut y_cursor = frame.y + frame.height - NOTIFICATION_MARGIN;
@@ -594,31 +608,27 @@ impl NotificationCenter {
             item.layout = measure;
             y_cursor = placement.next_cursor_bottom;
 
-            // Decide whether to animate or snap to target
             if item.snap_to_target {
                 item.current_pos = item.target_pos;
                 item.anim_start_pos = item.target_pos;
-                item.anim_start_time = Instant::now();
+                item.anim_start_time = now;
                 item.snap_to_target = false;
             } else if (old_target.x - new_target.x).abs() > f32::EPSILON
                 || (old_target.y - new_target.y).abs() > f32::EPSILON
             {
-                // Start new animation from current position
                 item.anim_start_pos = item.current_pos;
-                item.anim_start_time = Instant::now();
+                item.anim_start_time = now;
             }
         }
     }
 
     /// Render notification windows and advance animations.
     pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) -> bool {
-        // Remove expired
         let now = Instant::now();
         self.items
             .retain(|it| now.duration_since(it.created) < it.timeout);
         self.trim_live_items(Some(ctx));
-        // Compute positions and sizes
-        self.layout(ctx);
+        self.layout(ctx, now);
         let mut any_animating = false;
 
         let bounds = self.metrics.display().active_bounds();
@@ -627,22 +637,10 @@ impl NotificationCenter {
         // screen are not rendered, but remain in the backlog and ephemeral list until
         // they time out naturally.
         for it in &mut self.items {
-            // Progress for easing towards target
-            let t = (now
-                .saturating_duration_since(it.anim_start_time)
-                .as_secs_f32()
-                / ADJUST_MOVE_SECS)
-                .clamp(0.0, 1.0);
-            // Ease-out cubic
-            let ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-            let nx = it.anim_start_pos.x + (it.target_pos.x - it.anim_start_pos.x) * ease;
-            let ny = it.anim_start_pos.y + (it.target_pos.y - it.anim_start_pos.y) * ease;
-            it.current_pos = pos2(nx, ny);
-            if t < 1.0 {
+            if it.advance_animation(now) {
                 any_animating = true;
             }
 
-            // Skip rendering windows that would be completely off-screen below the bottom.
             if !bounds.is_visible_vertically(WindowGeometry::new(it.target_pos, it.size)) {
                 it.viewport.hide(ctx);
                 continue;
@@ -668,38 +666,8 @@ impl NotificationCenter {
                     it.dev_id.clone(),
                     |vp_ui| {
                         let style = self.theme.style_for(it.kind);
-                        let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
-                        let title_fg =
-                            Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
-                        let body_fg =
-                            Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
-                        let a = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                         render_notification_metadata(vp_ui, it, self.side, bounds);
-                        let frame = Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), a))
-                            .corner_radius(egui::CornerRadius::same(self.radius as u8))
-                            .inner_margin(egui::Margin::same(NOTIFICATION_PAD as i8));
-                        egui::CentralPanel::default()
-                            .frame(frame)
-                            .show(vp_ui, |ui| {
-                                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                                Self::render_title_row(
-                                    ui,
-                                    &it.dev_id,
-                                    &it.title,
-                                    NotificationTitleStyle {
-                                        icon: style.icon.as_deref(),
-                                        title_size: style.title_font_size,
-                                        title_weight: style.title_font_weight,
-                                        title_fg,
-                                    },
-                                    it.layout,
-                                );
-                                ui.add_space(NOTIFICATION_TITLE_BODY_GAP);
-                                Self::render_body(
-                                    ui, &it.dev_id, &it.text, style, body_fg, it.layout,
-                                );
-                            });
+                        Self::render_card(vp_ui, it, style, self.opacity, self.radius);
                     },
                 );
             });
@@ -718,6 +686,46 @@ impl NotificationCenter {
             ctx.request_repaint();
         }
         any_animating
+    }
+
+    /// Render the card contents for one visible notification viewport.
+    fn render_card(
+        ui: &mut egui::Ui,
+        item: &NotificationItem,
+        style: &NotifyWindowStyle,
+        opacity: f32,
+        radius: f32,
+    ) {
+        let bg = Color32::from_rgb(style.bg.0, style.bg.1, style.bg.2);
+        let title_fg = Color32::from_rgb(style.title_fg.0, style.title_fg.1, style.title_fg.2);
+        let body_fg = Color32::from_rgb(style.body_fg.0, style.body_fg.1, style.body_fg.2);
+        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let frame = Frame::new()
+            .fill(Color32::from_rgba_unmultiplied(
+                bg.r(),
+                bg.g(),
+                bg.b(),
+                alpha,
+            ))
+            .corner_radius(egui::CornerRadius::same(radius as u8))
+            .inner_margin(egui::Margin::same(NOTIFICATION_PAD as i8));
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            Self::render_title_row(
+                ui,
+                &item.dev_id,
+                &item.title,
+                NotificationTitleStyle {
+                    icon: style.icon.as_deref(),
+                    title_size: style.title_font_size,
+                    title_weight: style.title_font_weight,
+                    title_fg,
+                },
+                item.layout,
+            );
+            ui.add_space(NOTIFICATION_TITLE_BODY_GAP);
+            Self::render_body(ui, &item.dev_id, &item.text, style, body_fg, item.layout);
+        });
     }
 
     /// Update sizing/placement/opacity config without clearing existing notifications.
