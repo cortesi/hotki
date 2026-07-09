@@ -48,7 +48,7 @@ Generated from Hotki's embedded default style with `cargo xtask screenshots`.
 
 Docs:
 
-- [CONFIG.md](./CONFIG.md): Luau config structure, imports, selectors, and validation.
+- [CONFIG.md](./CONFIG.md): Luau config structure, selectors, and validation.
 - [STYLE.md](./STYLE.md): `style.luau`, the embedded default style, and style dumping.
 - [examples/](./examples/): example configs and style overlays.
 

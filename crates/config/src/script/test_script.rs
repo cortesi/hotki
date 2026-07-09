@@ -86,30 +86,19 @@ mod tests {
     }
 
     #[test]
-    fn imported_runtime_errors_report_imported_file_excerpt() {
-        let root = test_dir("imported-runtime-error");
+    fn path_backed_runtime_errors_report_root_file_excerpt() {
+        let root = test_dir("root-runtime-error");
         let root_path = root.join("hotki.luau");
-        let child_path = root.join("child.luau");
-        fs::write(
-            &child_path,
-            r#"
+        let root_source = r#"
 local missing = nil
 missing()
-return function(menu, ctx)
-end
-"#,
-        )
-        .expect("write child config");
-        let root_source = r#"
-local child = hotki.import_mode("child")
 
 hotki.root(function(menu, ctx)
-    menu:submenu("a", "Child", child)
 end)
 "#;
         fs::write(&root_path, root_source).expect("write root config");
 
-        let err = match load_dynamic_config_from_string(root_source, Some(root_path)) {
+        let err = match load_dynamic_config_from_string(root_source, Some(root_path.clone())) {
             Ok(_) => panic!("expected imported config load to fail"),
             Err(err) => err,
         };
@@ -121,13 +110,10 @@ end)
                 excerpt,
                 ..
             } => {
-                let path = path.expect("expected imported path");
-                assert_eq!(
-                    fs::canonicalize(path).expect("canonicalize error path"),
-                    fs::canonicalize(child_path).expect("canonicalize child path")
-                );
-                assert!(line.is_some(), "expected imported source line");
-                let excerpt = excerpt.expect("expected imported source excerpt");
+                let path = path.expect("expected root path");
+                assert_eq!(path, root_path);
+                assert!(line.is_some(), "expected root source line");
+                let excerpt = excerpt.expect("expected root source excerpt");
                 assert!(
                     excerpt.contains("missing()"),
                     "unexpected excerpt: {excerpt}"

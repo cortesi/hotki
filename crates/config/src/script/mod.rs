@@ -14,8 +14,6 @@ mod host_hotki;
 mod host_parse;
 mod host_runtime;
 pub(crate) mod host_userdata;
-/// Shared Luau import roles and filesystem policy.
-pub(crate) mod imports;
 mod loader;
 mod render;
 /// Selector parsing and runtime types.
@@ -29,6 +27,7 @@ mod util;
 mod test_script;
 
 pub(crate) use config::DynamicConfig;
+#[cfg(test)]
 pub(crate) use loader::load_dynamic_config_from_string;
 #[cfg(test)]
 pub(crate) use render::render_stack;

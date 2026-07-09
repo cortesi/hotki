@@ -131,11 +131,6 @@ pub fn config_error_at_offset(path: &Path, source: &str, offset: usize, message:
     }
 }
 
-/// Raise an already-shaped config error through Luau without losing its structure.
-pub fn config_error_payload(error: Error) -> RuntimeError {
-    RuntimeError::runtime(error.to_string()).with_payload(error)
-}
-
 /// Convert structured checker diagnostics into the stable config error shape.
 pub fn config_type_error(
     path: &Path,

@@ -149,10 +149,7 @@ fn run_check_command(path: Option<&str>, cli_config: Option<&Path>, dump: bool) 
     if dump {
         dump_config_style(&resolved);
     } else {
-        println!(
-            "OK (validated {} imports, style: {})",
-            report.imports, report.style
-        );
+        println!("OK (style: {})", report.style);
     }
 }
 

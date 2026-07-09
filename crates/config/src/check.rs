@@ -1,12 +1,6 @@
 //! Luau configuration validation helpers.
 
-use std::{
-    collections::BTreeSet,
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fs, io::ErrorKind, path::Path};
 
 use ruau::{
     analysis::AnalysisMode,
@@ -16,34 +10,48 @@ use ruau::{
 };
 
 use crate::{
-    Error, LuauApiSurface, STYLE_FILE_NAME, luau_api_surface,
-    script::{
-        diagnostics,
-        imports::{self, ImportRole},
-        load_dynamic_config_from_string,
-    },
+    Error, LuauApiSurface, STYLE_FILE_NAME, luau_api_surface, script::diagnostics,
     style::eval_style_source,
 };
 
 /// Summary of a successful Luau validation run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LuauCheckReport {
-    /// Number of imported role files validated in isolation.
-    pub imports: usize,
     /// Whether a sibling `style.luau` file was validated.
     pub style: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-/// One discovered import edge in the checked config graph.
-struct ImportSpec {
-    /// Expected role for the imported file.
-    role: ImportRole,
-    /// Canonical filesystem path to the imported module.
-    path: PathBuf,
+/// Cursor for scanning Luau code while skipping comments and strings.
+struct LuauCodeScanner<'a> {
+    /// Source text being scanned.
+    source: &'a str,
+    /// Current byte offset.
+    cursor: usize,
 }
 
-/// Validate a filesystem-backed Luau config, its reachable imports, and optional sibling style.
+impl<'a> LuauCodeScanner<'a> {
+    /// Build a scanner for source text.
+    fn new(source: &'a str) -> Self {
+        Self { source, cursor: 0 }
+    }
+
+    /// Return the next byte offset that belongs to code rather than an ignored region.
+    fn next_code_offset(&mut self) -> Option<usize> {
+        while self.cursor < self.source.len() {
+            if let Some(next) = skip_ignored_luau(self.source, self.cursor) {
+                self.cursor = next;
+                continue;
+            }
+
+            let offset = self.cursor;
+            self.cursor = next_char_boundary(self.source, self.cursor);
+            return Some(offset);
+        }
+        None
+    }
+}
+
+/// Validate a filesystem-backed Luau config and optional sibling style.
 pub fn check_luau_config(path: &Path) -> Result<LuauCheckReport, Error> {
     let canonical = fs::canonicalize(path).map_err(|err| Error::Read {
         path: Some(path.to_path_buf()),
@@ -61,18 +69,12 @@ pub fn check_luau_config(path: &Path) -> Result<LuauCheckReport, Error> {
         message: err.to_string(),
     })?;
     reject_removed_config_surface(&canonical, &source)?;
-    let imports = discover_imports(&canonical, &root_dir)?;
     analyze_root_config(&canonical, &source)?;
-    analyze_imports(&imports)?;
     let style = check_luau_style_file(&root_dir.join(STYLE_FILE_NAME))?;
 
     crate::load_dynamic_config(&canonical)?;
-    validate_imports(&imports, &root_dir)?;
 
-    Ok(LuauCheckReport {
-        imports: imports.len(),
-        style,
-    })
+    Ok(LuauCheckReport { style })
 }
 
 /// Analyze and validate one optional standalone `style.luau` file.
@@ -98,127 +100,10 @@ pub fn check_luau_style_source(path: &Path, source: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Discover every reachable role-specific import from `path`.
-fn discover_imports(path: &Path, root_dir: &Path) -> Result<BTreeSet<ImportSpec>, Error> {
-    let mut imports = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    visit_imports(path, root_dir, &mut visited, &mut imports)?;
-    Ok(imports)
-}
-
-/// Walk one Luau source file, collecting its imports recursively.
-fn visit_imports(
-    path: &Path,
-    root_dir: &Path,
-    visited: &mut BTreeSet<PathBuf>,
-    imports: &mut BTreeSet<ImportSpec>,
-) -> Result<(), Error> {
-    let canonical = fs::canonicalize(path).map_err(|err| Error::Read {
-        path: Some(path.to_path_buf()),
-        message: err.to_string(),
-    })?;
-    if !visited.insert(canonical.clone()) {
-        return Ok(());
-    }
-
-    let source = fs::read_to_string(&canonical).map_err(|err| Error::Read {
-        path: Some(canonical.clone()),
-        message: err.to_string(),
-    })?;
-    reject_removed_config_surface(&canonical, &source)?;
-
-    for (role, import_text, offset) in parse_import_calls(&source, &canonical)? {
-        let resolved = imports::resolve_path(root_dir, import_text.as_str())
-            .map_err(|err| err.into_config_error(root_dir))?;
-        let spec = ImportSpec {
-            role,
-            path: resolved.clone(),
-        };
-        imports.insert(spec);
-        visit_imports(&resolved, root_dir, visited, imports).map_err(|err| {
-            if err.path().is_some() {
-                err
-            } else {
-                diagnostics::config_error_at_offset(
-                    &canonical,
-                    &source,
-                    offset,
-                    format!(
-                        "failed to validate import '{}': {}",
-                        import_text,
-                        err.pretty()
-                    ),
-                )
-            }
-        })?;
-    }
-
-    Ok(())
-}
-
-/// Parse literal `hotki.import_*("...")` calls from a Luau source file.
-fn parse_import_calls(
-    source: &str,
-    path: &Path,
-) -> Result<Vec<(ImportRole, String, usize)>, Error> {
-    let mut cursor = 0;
-    let mut imports = Vec::new();
-
-    while cursor < source.len() {
-        if let Some(next) = skip_ignored_luau(source, cursor) {
-            cursor = next;
-            continue;
-        }
-
-        let Some((role, after_name)) = import_role_at(source, cursor) else {
-            cursor = next_char_boundary(source, cursor);
-            continue;
-        };
-        let Some(open_paren) = skip_whitespace(source, after_name).and_then(|next| {
-            source[next..]
-                .starts_with('(')
-                .then_some(next + '('.len_utf8())
-        }) else {
-            cursor = next_char_boundary(source, cursor);
-            continue;
-        };
-        let Some((import_path, after_literal)) = parse_import_literal(
-            source,
-            skip_whitespace(source, open_paren).unwrap_or(open_paren),
-        ) else {
-            return Err(import_literal_error(path, source, cursor));
-        };
-        let Some(after_args) = skip_whitespace(source, after_literal) else {
-            return Err(import_literal_error(path, source, cursor));
-        };
-        if !source[after_args..].starts_with(')') {
-            return Err(import_literal_error(path, source, cursor));
-        }
-        imports.push((role, import_path, cursor));
-        cursor = after_args + ')'.len_utf8();
-    }
-
-    Ok(imports)
-}
-
-/// Build the checker error used when an import call is not a single literal string.
-fn import_literal_error(path: &Path, source: &str, offset: usize) -> Error {
-    diagnostics::config_error_at_offset(
-        path,
-        source,
-        offset,
-        "hotki imports must use literal relative path strings".to_string(),
-    )
-}
-
 /// Reject removed style and theme APIs with migration-oriented diagnostics.
 fn reject_removed_config_surface(path: &Path, source: &str) -> Result<(), Error> {
-    let mut cursor = 0;
-    while cursor < source.len() {
-        if let Some(next) = skip_ignored_luau(source, cursor) {
-            cursor = next;
-            continue;
-        }
+    let mut scanner = LuauCodeScanner::new(source);
+    while let Some(cursor) = scanner.next_code_offset() {
         if source[cursor..].starts_with("hotki.import_style") {
             return Err(migration_error(
                 path,
@@ -255,7 +140,6 @@ fn reject_removed_config_surface(path: &Path, source: &str) -> Result<(), Error>
                     .to_string(),
             ));
         }
-        cursor = next_char_boundary(source, cursor);
     }
     Ok(())
 }
@@ -281,66 +165,7 @@ fn migration_error(path: &Path, source: &str, offset: usize, message: String) ->
     diagnostics::config_error_at_offset(path, source, offset, message)
 }
 
-/// Return the import role and the offset after its function name at `offset`.
-fn import_role_at(source: &str, offset: usize) -> Option<(ImportRole, usize)> {
-    let after_prefix = source[offset..].strip_prefix("hotki.")?;
-    let name_offset = offset + "hotki.".len();
-    for role in ImportRole::ALL {
-        let name = role.function_name();
-        if !after_prefix.starts_with(name) {
-            continue;
-        }
-        let after_name = name_offset + name.len();
-        if source[after_name..]
-            .chars()
-            .next()
-            .is_some_and(is_identifier_continue)
-        {
-            continue;
-        }
-        return Some((role, after_name));
-    }
-    None
-}
-
-/// Parse one short quoted import literal without escapes or newlines.
-fn parse_import_literal(source: &str, offset: usize) -> Option<(String, usize)> {
-    let quote = match source[offset..].chars().next()? {
-        '"' => '"',
-        '\'' => '\'',
-        _ => return None,
-    };
-    let mut cursor = offset + quote.len_utf8();
-    let mut value = String::new();
-
-    while cursor < source.len() {
-        let ch = source[cursor..].chars().next()?;
-        if ch == quote {
-            return (!value.is_empty()).then_some((value, cursor + ch.len_utf8()));
-        }
-        if matches!(ch, '\\' | '\r' | '\n') {
-            return None;
-        }
-        value.push(ch);
-        cursor += ch.len_utf8();
-    }
-
-    None
-}
-
-/// Skip whitespace from `offset`, returning `None` when already at end of source.
-fn skip_whitespace(source: &str, mut offset: usize) -> Option<usize> {
-    while offset < source.len() {
-        let ch = source[offset..].chars().next()?;
-        if !ch.is_whitespace() {
-            break;
-        }
-        offset += ch.len_utf8();
-    }
-    (offset < source.len()).then_some(offset)
-}
-
-/// Skip comments and strings that should not be scanned for import calls.
+/// Skip comments and strings that should not be scanned for removed APIs.
 fn skip_ignored_luau(source: &str, offset: usize) -> Option<usize> {
     if source[offset..].starts_with("--") {
         if let Some(end) = long_bracket_end(source, offset + "--".len()) {
@@ -433,45 +258,9 @@ fn is_identifier_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-/// Validate each imported file by wrapping it in a synthetic root config.
-fn validate_imports(imports: &BTreeSet<ImportSpec>, root_dir: &Path) -> Result<(), Error> {
-    for import in imports {
-        let rel_path = import
-            .path
-            .strip_prefix(root_dir)
-            .map_err(|_| Error::Validation {
-                path: Some(import.path.clone()),
-                line: None,
-                col: None,
-                message: "import resolved outside the config root".to_string(),
-                excerpt: None,
-            })?;
-        let wrapper_path = synthetic_wrapper_path(root_dir, import.role);
-        let wrapper_source = import.role.wrapper_source(rel_path);
-        load_dynamic_config_from_string(&wrapper_source, Some(wrapper_path))?;
-    }
-    Ok(())
-}
-
 /// Analyze the root config source against the checked-in Luau API definitions.
 fn analyze_root_config(path: &Path, source: &str) -> Result<(), Error> {
     check_module_with_surface(path, source, LuauApiSurface::Config)
-}
-
-/// Analyze each imported module against its declared role alias.
-fn analyze_imports(imports: &BTreeSet<ImportSpec>) -> Result<(), Error> {
-    for import in imports {
-        let source = fs::read_to_string(&import.path).map_err(|err| Error::Read {
-            path: Some(import.path.clone()),
-            message: err.to_string(),
-        })?;
-        check_module_with_surface(
-            &import.path,
-            &import.role.analysis_source(&source),
-            LuauApiSurface::Config,
-        )?;
-    }
-    Ok(())
 }
 
 /// Analyze a standalone style file against the style-only declaration surface.
@@ -484,19 +273,11 @@ fn style_analysis_source(source: &str) -> String {
     format!("local _style = ((function()\n{source}\nend)() :: Style)\n")
 }
 
-/// Build a synthetic in-memory wrapper path rooted at the checked config directory.
-fn synthetic_wrapper_path(root_dir: &Path, role: ImportRole) -> PathBuf {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let suffix = role.synthetic_suffix();
-    root_dir.join(format!("__hotki_check_{suffix}_{id}.luau"))
-}
-
 /// Build the static Hotki script surface used by the ruau checker.
 fn checker_surface() -> Result<Surface, Error> {
     Surface::builder()
         .enable_runtime_compilation()
-        .analysis_mode(AnalysisMode::Nonstrict)
+        .analysis_mode(AnalysisMode::Strict)
         .build()
         .map_err(|err| Error::Validation {
             path: None,
@@ -546,7 +327,6 @@ mod tests {
     use std::{
         ffi::OsStr,
         fs,
-        os::unix::fs as unix_fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -571,53 +351,47 @@ mod tests {
     }
 
     #[test]
-    fn check_validates_nested_role_imports() {
-        let root = test_dir("nested-imports");
-        fs::write(
-            root.join("config.luau"),
-            r#"
-local child = hotki.import_mode("child")
+    fn check_rejects_removed_role_imports_as_missing_api_fields() {
+        for function_name in ["import_mode", "import_items", "import_handler"] {
+            let root = test_dir(function_name);
+            fs::write(
+                root.join("config.luau"),
+                format!(
+                    r#"
+local imported = hotki.{function_name}("child")
 
 hotki.root(function(menu, ctx)
-    menu:submenu("a", "Child", child)
 end)
-"#,
-        )
-        .expect("write root config");
-        fs::write(
-            root.join("child.luau"),
-            r#"
-local handler = hotki.import_handler("handler")
+"#
+                ),
+            )
+            .expect("write root config");
 
-return function(menu, ctx)
-    menu:bind("b", "Run", action.run(handler))
-end
-"#,
-        )
-        .expect("write child import");
-        fs::write(
-            root.join("handler.luau"),
-            r#"
-return function(actx)
-    actx:notify("info", "ok", "done")
-end
-"#,
-        )
-        .expect("write handler import");
-
-        let report = check_luau_config(&root.join("config.luau")).expect("check config");
-        assert_eq!(report.imports, 2);
-        assert!(!report.style);
+            let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+            let pretty = err.pretty();
+            assert!(pretty.contains(function_name), "unexpected error: {pretty}");
+            assert!(
+                !pretty.contains("literal relative path strings"),
+                "old scanner diagnostic leaked: {pretty}"
+            );
+            assert!(
+                !pretty.contains("style.luau"),
+                "role imports should not get a migration hint: {pretty}"
+            );
+            assert!(
+                !pretty.contains("was removed"),
+                "role imports should fail through the API surface: {pretty}"
+            );
+        }
     }
 
     #[test]
-    fn check_rejects_computed_imports() {
-        let root = test_dir("computed-import");
+    fn check_rejects_require_as_missing_config_surface() {
+        let root = test_dir("require");
         fs::write(
             root.join("config.luau"),
             r#"
-local part = "child"
-local child = hotki.import_mode(part)
+local child = require("child")
 
 hotki.root(function(menu, ctx)
     menu:submenu("a", "Child", child)
@@ -625,62 +399,153 @@ end)
 "#,
         )
         .expect("write root config");
-        fs::write(root.join("child.luau"), "return function(menu, ctx)\nend\n")
-            .expect("write child import");
 
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
-        assert!(pretty.contains("literal relative path strings"));
-        assert!(pretty.contains("config.luau"));
+        assert!(pretty.contains("require"), "unexpected error: {pretty}");
+        assert!(
+            !pretty.contains("not supported"),
+            "require should fail normally, not through a Hotki policy error: {pretty}"
+        );
     }
 
     #[test]
-    fn check_ignores_import_text_in_comments_and_strings() {
-        let root = test_dir("inert-import-text");
+    fn check_enforces_strict_root_context_types() {
+        let root = test_dir("strict-root-context");
         fs::write(
             root.join("config.luau"),
             r#"
-local one = "hotki.import_mode('missing-mode')"
-local two = [[hotki.import_handler("missing-handler")]]
--- hotki.import_items("missing-items")
---[=[
-hotki.import_style("missing-block-style")
-]=]
-
 hotki.root(function(menu, ctx)
+    local app: number = ctx.app
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("number"), "unexpected error: {pretty}");
+        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_enforces_strict_action_handler_types() {
+        let root = test_dir("strict-action-handler");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Run", action.run(function(actx)
+        local depth: string = actx.depth
+    end))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+        assert!(pretty.contains("number"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_enforces_strict_mode_renderer_types() {
+        let root = test_dir("strict-mode-renderer");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local render: ModeRenderer = function(menu, ctx)
+    local app: number = ctx.app
+end
+
+hotki.root(render)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("number"), "unexpected error: {pretty}");
+        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_enforces_selector_item_declarations() {
+        let root = test_dir("selector-items");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Select", action.selector({
+        items = {
+            { label = 123, data = "bad" },
+        },
+        on_select = function(actx, item, query)
+        end,
+    }))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("label"), "unexpected error: {pretty}");
+        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_accepts_static_selector_item_tables() {
+        let root = test_dir("static-selector-items");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Select", action.selector({
+        items = {
+            { label = "Alpha", data = "alpha" },
+            { label = "Beta", sublabel = "second", data = "beta" },
+        },
+        on_select = function(actx, item: SelectorItem<string>, query)
+            actx:notify("info", item.label, item.data)
+        end,
+    }))
 end)
 "#,
         )
         .expect("write root config");
 
         let report = check_luau_config(&root.join("config.luau")).expect("check config");
-        assert_eq!(report.imports, 0);
         assert!(!report.style);
     }
 
     #[test]
-    fn check_rejects_imports_that_escape_root_via_symlink() {
-        let root = test_dir("escaped-import");
-        let outside = test_dir("escaped-import-target");
+    fn check_accepts_selector_item_providers() {
+        let root = test_dir("selector-provider");
         fs::write(
             root.join("config.luau"),
             r#"
-local child = hotki.import_mode("alias")
+local function items(ctx: ModeContext): { SelectorItem<string> }
+    return {
+        { label = ctx.app, data = ctx.app },
+    }
+end
 
-hotki.root(child)
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Select", action.selector({
+        items = items,
+        on_select = function(actx, item: SelectorItem<string>, query)
+            actx:notify("info", item.label, item.data)
+        end,
+    }))
+end)
 "#,
         )
         .expect("write root config");
-        fs::write(
-            outside.join("child.luau"),
-            "return function(menu, ctx)\nend\n",
-        )
-        .expect("write external child import");
-        unix_fs::symlink(outside.join("child.luau"), root.join("alias.luau"))
-            .expect("symlink external child import");
 
-        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
-        assert!(err.pretty().contains("import escapes the config directory"));
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert!(!report.style);
     }
 
     #[test]

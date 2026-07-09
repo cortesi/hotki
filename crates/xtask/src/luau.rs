@@ -53,11 +53,10 @@ pub fn luau(root_dir: &Path) -> Result<()> {
             message: source.pretty(),
         })?;
         println!(
-            "{}: {} imports, style file: {}",
+            "{}: style file: {}",
             path.strip_prefix(root_dir)
                 .unwrap_or(path)
                 .to_string_lossy(),
-            report.imports,
             report.style
         );
     }
@@ -69,12 +68,11 @@ pub fn luau(root_dir: &Path) -> Result<()> {
         message: source.pretty(),
     })?;
     println!(
-        "{}: {} imports, style file: {}",
+        "{}: style file: {}",
         screenshot_config_path
             .strip_prefix(root_dir)
             .unwrap_or(&screenshot_config_path)
             .to_string_lossy(),
-        report.imports,
         report.style
     );
 

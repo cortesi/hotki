@@ -110,14 +110,3 @@ pub(super) fn expect_function_value<'s>(
         ))),
     }
 }
-
-/// Require exactly one returned Luau value.
-pub(super) fn single_return<'s>(
-    values: MultiValue<'s>,
-    context: &str,
-) -> Result<ScopedValue<'s>, RuntimeError> {
-    let mut values = HostArgs::new(values);
-    let value = values.optional();
-    values.finish(context)?;
-    Ok(value)
-}

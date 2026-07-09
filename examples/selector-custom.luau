@@ -1,7 +1,7 @@
-local items = {
-    "Alpha",
-    "Beta",
-    "Gamma",
+local items: { SelectorItem<string> } = {
+    { label = "Alpha", data = "Alpha" },
+    { label = "Beta", data = "Beta" },
+    { label = "Gamma", data = "Gamma" },
     { label = "Delta", sublabel = "Custom sublabel", data = "4" },
     { label = "Epsilon", data = "ep" },
     { label = "Zeta", data = "ze" },

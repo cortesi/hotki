@@ -1,4 +1,5 @@
 type ItemsProvider<T> = (ctx: ModeContext) -> { SelectorItem<T> }
+type StringItemsProvider = (ctx: ModeContext) -> { string }
 
 type ModeContext = {
     app: string,
@@ -43,13 +44,13 @@ type ModeBatchEntry =
     { chord: string, desc: string, action: Action, opts: BindingOptions? }
     | { chord: string, title: string, render: ModeRenderer, opts: SubmenuOptions? }
 
-type ItemSource<T> = { SelectorItem<T> } | { string } | ItemsProvider<T>
+type ItemSource<T> = { SelectorItem<T> } | { string } | ItemsProvider<T> | StringItemsProvider
 
-type SelectorSpec = {
+type SelectorSpec<T> = {
     title: string?,
     placeholder: string?,
-    items: any,
-    on_select: (ctx: ActionContext, item: SelectorItem<any>, query: string) -> (),
+    items: ItemSource<T>,
+    on_select: (ctx: ActionContext, item: SelectorItem<T>, query: string) -> (),
     on_cancel: ((ctx: ActionContext) -> ())?,
     max_visible: number?,
 }
@@ -93,8 +94,6 @@ type ActionContext = {
 }
 
 type ActionHandler = (ctx: ActionContext) -> ()
-type ModeModule = ModeRenderer
-type HandlerModule = ActionHandler
 
 type ActionApi = {
     pop: Action,
@@ -111,23 +110,17 @@ type ActionApi = {
     change_volume: (delta: number) -> Action,
     mute: (toggle: Toggle) -> Action,
     run: (handler: ActionHandler) -> Action,
-    selector: (spec: SelectorSpec) -> Action,
+    selector: <T>(spec: SelectorSpec<T>) -> Action,
 }
 
 type HotkiApi = {
     root: (render: ModeRenderer) -> (),
     applications: ItemsProvider<ApplicationInfo>,
-    import_mode: (path: string) -> ModeModule,
-    import_items: <T>(path: string) -> ItemsProvider<T>,
-    import_handler: (path: string) -> HandlerModule,
 }
 
 declare hotki: {
     root: (render: ModeRenderer) -> (),
     applications: (ctx: ModeContext) -> { SelectorItem<ApplicationInfo> },
-    import_mode: (path: string) -> ModeModule,
-    import_items: <T>(path: string) -> ItemsProvider<T>,
-    import_handler: (path: string) -> HandlerModule,
 }
 
 declare action: {
@@ -145,5 +138,5 @@ declare action: {
     change_volume: (delta: number) -> Action,
     mute: (toggle: Toggle) -> Action,
     run: (handler: ActionHandler) -> Action,
-    selector: (spec: SelectorSpec) -> Action,
+    selector: <T>(spec: SelectorSpec<T>) -> Action,
 }

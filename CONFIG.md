@@ -4,8 +4,8 @@ Hotki behavior configs are Luau scripts loaded from `~/.hotki/config.luau` by de
 Styling is separate: place optional global style overrides in sibling `~/.hotki/style.luau`.
 
 > [!NOTE]
-> All configuration files and imported scripts are statically checked under Luau strict mode
-> during validation. There is no need to add `--!strict` annotations.
+> The behavior config and optional style file are statically checked under Luau strict mode during
+> validation. There is no need to add `--!strict` annotations.
 
 The config API surface is defined by [`hotki_core.d.luau`](./crates/config/luau/hotki_core.d.luau)
 and [`hotki_config.d.luau`](./crates/config/luau/hotki_config.d.luau). Use `hotki api` when you
@@ -41,7 +41,7 @@ end)
 
 ## Core Tables
 
-- `hotki`: root registration, multi-file imports, and app discovery.
+- `hotki`: root registration and app discovery.
 - `action`: primitive actions plus `action.run(...)` and `action.selector(...)`.
 
 ## Menu API
@@ -87,27 +87,26 @@ Submenu options accept the same behavior flags plus `capture`.
 - `ctx:exit()`
 - `ctx:show_root()`
 
-## Multi-file Configs
+## Single-file Configs
 
-Hotki supports typed, role-specific imports instead of general `require(...)`:
+Hotki behavior config is one `config.luau` file. Use local functions, local tables, and Luau
+types to organize larger configs:
 
 ```luau
-local app_selector = hotki.import_mode("common/app-selector")
-local after_launch = hotki.import_handler("handlers/after-launch")
+local function notify(title: string): Action
+    return action.run(function(ctx)
+        ctx:notify("info", title, "done")
+    end)
+end
+
+local utility_items: { SelectorItem<string> } = {
+    { label = "Calendar", data = "calendar" },
+    { label = "Calculator", data = "calculator" },
+}
 ```
 
-Available helpers:
-
-- `hotki.import_mode(path)`
-- `hotki.import_items(path)`
-- `hotki.import_handler(path)`
-
-Rules:
-
-- Paths are relative to the config directory.
-- Absolute paths and `..` traversal are rejected.
-- Files use the `.luau` extension.
-- Imported files are cached by canonical path and validated by role.
+Config `require` calls are not supported. Keep shared behavior in the root file unless Hotki adds a
+normal Ruau module system later.
 
 ## Selectors
 
@@ -124,7 +123,8 @@ menu:bind("a", "Run Application", action.selector({
 }))
 ```
 
-Static items use `{ label, sublabel?, data }` records.
+Static items use either string arrays or `{ label, sublabel?, data }` records. Provider functions
+receive `ModeContext` and return the same kind of list.
 
 ## Style
 

@@ -1,4 +1,4 @@
-local demo_items = {
+local demo_items: { SelectorItem<string> } = {
     { label = "Calendar", sublabel = "demo://calendar", data = "calendar" },
     { label = "Calculator", sublabel = "demo://calculator", data = "calculator" },
     { label = "Callsheet", sublabel = "demo://callsheet", data = "callsheet" },

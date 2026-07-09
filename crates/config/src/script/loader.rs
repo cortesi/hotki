@@ -54,14 +54,7 @@ pub fn load_dynamic_config_from_string(
     let source_key = path.clone().unwrap_or_else(|| PathBuf::from("<memory>"));
     lock_unpoisoned(&sources).insert(source_key, Arc::from(source.to_string().into_boxed_str()));
 
-    let state = RuntimeState {
-        config_dir: path
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf),
-        sources: sources.clone(),
-        ..RuntimeState::default()
-    };
+    let state = RuntimeState::default();
     let resolved_style = match path.as_deref() {
         Some(path) => StyleResolver::from_config_path(path)?.resolve()?,
         None => StyleResolver::default_only()?.resolve()?,
