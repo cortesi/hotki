@@ -202,200 +202,285 @@ pub fn build_devmcp(
     attach_runtime(devmcp, enable_runtime).map(|devmcp| (devmcp, fixture_runtime))
 }
 
-/// Stable fixture catalog advertised through eguidev.
-fn fixtures() -> Vec<FixtureSpec> {
-    vec![
-        FixtureSpec::new(
-            "hotki.basic.default",
-            "UI-thread lane: open a clean Details window for baseline readiness.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("details.root", viewport_sel("details")),
-        FixtureSpec::new("hotki.details", "UI-thread lane: open the Details window.")
-            .anchor_value("app.ready", WidgetValue::Bool(true))
-            .anchor_in("details.tab.notifications", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.details.config",
-            "UI-thread lane: open Details directly to the Config tab.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "details.active_tab",
-            WidgetValue::Text("config".to_string()),
-            viewport_sel("details"),
-        )
-        .anchor_in("details.config.reload", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.details.logs",
-            "UI-thread lane: open Details directly to the Logs tab.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "details.active_tab",
-            WidgetValue::Text("logs".to_string()),
-            viewport_sel("details"),
-        )
-        .anchor_in("details.logs.clear", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.details.about",
-            "UI-thread lane: open Details directly to the About tab.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "details.active_tab",
-            WidgetValue::Text("about".to_string()),
-            viewport_sel("details"),
-        )
-        .anchor_in("details.about.name", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.permissions",
-            "UI-thread lane: open the Permissions helper window.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("permissions.root", viewport_sel("permissions")),
-        FixtureSpec::new(
-            "hotki.permissions.all_granted",
-            "UI-thread lane: open Permissions with deterministic granted status.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "permissions.accessibility.granted",
-            WidgetValue::Bool(true),
-            viewport_sel("permissions"),
-        )
-        .anchor_value_in(
-            "permissions.input_monitoring.granted",
-            WidgetValue::Bool(true),
-            viewport_sel("permissions"),
-        ),
-        FixtureSpec::new(
-            "hotki.permissions.none_granted",
-            "UI-thread lane: open Permissions with deterministic missing status.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "permissions.accessibility.granted",
-            WidgetValue::Bool(false),
-            viewport_sel("permissions"),
-        )
-        .anchor_value_in(
-            "permissions.input_monitoring.granted",
-            WidgetValue::Bool(false),
-            viewport_sel("permissions"),
-        ),
-        FixtureSpec::new(
-            "hotki.permissions.mixed",
-            "UI-thread lane: open Permissions with Accessibility granted and Input Monitoring missing.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "permissions.accessibility.granted",
-            WidgetValue::Bool(true),
-            viewport_sel("permissions"),
-        )
-        .anchor_value_in(
-            "permissions.input_monitoring.granted",
-            WidgetValue::Bool(false),
-            viewport_sel("permissions"),
-        ),
-        FixtureSpec::new(
-            "hotki.notifications",
-            "UI-thread lane: create a deterministic notification and open Details history.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.notifications.variants",
-            "UI-thread lane: create deterministic default-right notification variants.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true)),
-        FixtureSpec::new(
-            "hotki.notifications.left_variants",
-            "UI-thread lane: create deterministic explicit-left notification variants.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true)),
-        FixtureSpec::new(
-            "hotki.notifications.truncated",
-            "UI-thread lane: create a notification that must vertically truncate on a short display.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true)),
-        FixtureSpec::new(
-            "hotki.hud",
-            "Runtime/server lane: open the demo HUD through server key injection.",
-        )
-        .precondition_value("app.server.connected", WidgetValue::Bool(true))
-        .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("hud.panel", viewport_sel("hud")),
-        FixtureSpec::new(
-            "hotki.hud.tall",
-            "UI-thread lane: render a tall HUD that should fit without clipping.",
-        )
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_in("hud.row.21.desc", viewport_sel("hud")),
-        FixtureSpec::new(
-            "hotki.hud.mini",
-            "Runtime/server lane: enter the demo mini HUD submenu through server key injection.",
-        )
-        .precondition_value("app.server.connected", WidgetValue::Bool(true))
-        .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_value_in(
-            "hud.mode",
-            WidgetValue::Text("mini".to_string()),
-            viewport_sel("hud"),
-        )
-        .anchor_in("hud.mini.title", viewport_sel("hud")),
-    ]
-    .into_iter()
-    .chain(selector_fixture_specs())
-    .collect()
+/// Stable fixture ids advertised through eguidev and dispatched by `FixtureBridge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkiFixture {
+    /// Baseline Details readiness fixture.
+    BasicDefault,
+    /// Details window fixture.
+    Details,
+    /// Details Config tab fixture.
+    DetailsConfig,
+    /// Details Logs tab fixture.
+    DetailsLogs,
+    /// Details About tab fixture.
+    DetailsAbout,
+    /// Permissions helper fixture.
+    Permissions,
+    /// Permissions fixture with all required grants present.
+    PermissionsAllGranted,
+    /// Permissions fixture with all required grants missing.
+    PermissionsNoneGranted,
+    /// Permissions fixture with mixed grant state.
+    PermissionsMixed,
+    /// Single notification plus Details history fixture.
+    Notifications,
+    /// Default-right notification variants fixture.
+    NotificationVariants,
+    /// Explicit-left notification variants fixture.
+    NotificationLeftVariants,
+    /// Vertically truncated notification fixture.
+    NotificationTruncated,
+    /// Server-driven HUD fixture.
+    Hud,
+    /// Direct tall HUD fixture.
+    HudTall,
+    /// Server-driven mini HUD fixture.
+    HudMini,
+    /// Server-driven selector fixture.
+    Selector,
+    /// Server-driven selector query fixture.
+    SelectorQuery,
+    /// Selector confirmation fixture.
+    SelectorConfirmed,
+    /// Selector cancellation fixture.
+    SelectorCanceled,
 }
 
-/// Selector fixture catalog entries.
-fn selector_fixture_specs() -> Vec<FixtureSpec> {
-    vec![
-        FixtureSpec::new(
-            "hotki.selector",
-            "Runtime/server lane: open the demo selector through server key injection.",
-        )
+/// Catalog metadata for a fixture id.
+#[derive(Debug, Clone, Copy)]
+struct FixtureDef {
+    /// Typed fixture id used for dispatch.
+    fixture: HotkiFixture,
+    /// Stable fixture id exposed over eguidev.
+    name: &'static str,
+    /// Human-readable fixture description.
+    description: &'static str,
+}
+
+impl FixtureDef {
+    /// Construct a fixture definition.
+    const fn new(fixture: HotkiFixture, name: &'static str, description: &'static str) -> Self {
+        Self {
+            fixture,
+            name,
+            description,
+        }
+    }
+
+    /// Fixture catalog entry advertised through eguidev.
+    fn spec(self) -> FixtureSpec {
+        self.fixture.spec(self.name, self.description)
+    }
+}
+
+/// Fixtures in the order advertised to eguidev.
+const HOTKI_FIXTURES: &[FixtureDef] = &[
+    FixtureDef::new(
+        HotkiFixture::BasicDefault,
+        "hotki.basic.default",
+        "UI-thread lane: open a clean Details window for baseline readiness.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Details,
+        "hotki.details",
+        "UI-thread lane: open the Details window.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::DetailsConfig,
+        "hotki.details.config",
+        "UI-thread lane: open Details directly to the Config tab.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::DetailsLogs,
+        "hotki.details.logs",
+        "UI-thread lane: open Details directly to the Logs tab.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::DetailsAbout,
+        "hotki.details.about",
+        "UI-thread lane: open Details directly to the About tab.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Permissions,
+        "hotki.permissions",
+        "UI-thread lane: open the Permissions helper window.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::PermissionsAllGranted,
+        "hotki.permissions.all_granted",
+        "UI-thread lane: open Permissions with deterministic granted status.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::PermissionsNoneGranted,
+        "hotki.permissions.none_granted",
+        "UI-thread lane: open Permissions with deterministic missing status.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::PermissionsMixed,
+        "hotki.permissions.mixed",
+        "UI-thread lane: open Permissions with Accessibility granted and Input Monitoring missing.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Notifications,
+        "hotki.notifications",
+        "UI-thread lane: create a deterministic notification and open Details history.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::NotificationVariants,
+        "hotki.notifications.variants",
+        "UI-thread lane: create deterministic default-right notification variants.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::NotificationLeftVariants,
+        "hotki.notifications.left_variants",
+        "UI-thread lane: create deterministic explicit-left notification variants.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::NotificationTruncated,
+        "hotki.notifications.truncated",
+        "UI-thread lane: create a notification that must vertically truncate on a short display.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Hud,
+        "hotki.hud",
+        "Runtime/server lane: open the demo HUD through server key injection.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::HudTall,
+        "hotki.hud.tall",
+        "UI-thread lane: render a tall HUD that should fit without clipping.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::HudMini,
+        "hotki.hud.mini",
+        "Runtime/server lane: enter the demo mini HUD submenu through server key injection.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Selector,
+        "hotki.selector",
+        "Runtime/server lane: open the demo selector through server key injection.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::SelectorQuery,
+        "hotki.selector.query",
+        "Runtime/server lane: open the selector and type a deterministic query.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::SelectorConfirmed,
+        "hotki.selector.confirmed",
+        "Runtime/server lane: confirm the currently open selector, then open Details history.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::SelectorCanceled,
+        "hotki.selector.canceled",
+        "Runtime/server lane: cancel the currently open selector, then open Details history.",
+    ),
+];
+
+impl HotkiFixture {
+    /// Look up a fixture by its stable eguidev id.
+    fn from_name(name: &str) -> Option<Self> {
+        HOTKI_FIXTURES
+            .iter()
+            .find(|def| def.name == name)
+            .map(|def| def.fixture)
+    }
+
+    /// Fixture catalog entry advertised through eguidev.
+    fn spec(self, name: &'static str, description: &'static str) -> FixtureSpec {
+        let spec = FixtureSpec::new(name, description);
+        match self {
+            Self::BasicDefault => {
+                app_ready(spec).anchor_in("details.root", viewport_sel("details"))
+            }
+            Self::Details => {
+                app_ready(spec).anchor_in("details.tab.notifications", viewport_sel("details"))
+            }
+            Self::DetailsConfig => details_tab_spec(spec, "config", "details.config.reload"),
+            Self::DetailsLogs => details_tab_spec(spec, "logs", "details.logs.clear"),
+            Self::DetailsAbout => details_tab_spec(spec, "about", "details.about.name"),
+            Self::Permissions => {
+                app_ready(spec).anchor_in("permissions.root", viewport_sel("permissions"))
+            }
+            Self::PermissionsAllGranted => permission_status_spec(spec, true, true),
+            Self::PermissionsNoneGranted => permission_status_spec(spec, false, false),
+            Self::PermissionsMixed => permission_status_spec(spec, true, false),
+            Self::Notifications => {
+                app_ready(spec).anchor_in("details.notification.0.title", viewport_sel("details"))
+            }
+            Self::NotificationVariants
+            | Self::NotificationLeftVariants
+            | Self::NotificationTruncated => app_ready(spec),
+            Self::Hud => runtime_ready(spec).anchor_in("hud.panel", viewport_sel("hud")),
+            Self::HudTall => app_ready(spec).anchor_in("hud.row.21.desc", viewport_sel("hud")),
+            Self::HudMini => runtime_ready(spec)
+                .anchor_value_in(
+                    "hud.mode",
+                    WidgetValue::Text("mini".to_string()),
+                    viewport_sel("hud"),
+                )
+                .anchor_in("hud.mini.title", viewport_sel("hud")),
+            Self::Selector | Self::SelectorQuery => {
+                runtime_ready(spec).anchor_in("selector.panel", viewport_sel("selector"))
+            }
+            Self::SelectorConfirmed | Self::SelectorCanceled => runtime_ready(spec)
+                .precondition_in("selector.panel", viewport_sel("selector"))
+                .anchor_in("details.notification.0.title", viewport_sel("details")),
+        }
+    }
+}
+
+/// Stable fixture catalog advertised through eguidev.
+fn fixtures() -> Vec<FixtureSpec> {
+    HOTKI_FIXTURES
+        .iter()
+        .copied()
+        .map(FixtureDef::spec)
+        .collect()
+}
+
+/// Add the baseline app-ready anchor common to every UI fixture.
+fn app_ready(spec: FixtureSpec) -> FixtureSpec {
+    spec.anchor_value("app.ready", WidgetValue::Bool(true))
+}
+
+/// Add runtime/server preconditions and anchors common to server-driven fixtures.
+fn runtime_ready(spec: FixtureSpec) -> FixtureSpec {
+    app_ready(spec)
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("selector.panel", viewport_sel("selector")),
-        FixtureSpec::new(
-            "hotki.selector.query",
-            "Runtime/server lane: open the selector and type a deterministic query.",
+}
+
+/// Build a Details tab fixture with the shared active-tab anchor.
+fn details_tab_spec(spec: FixtureSpec, tab: &'static str, anchor: &'static str) -> FixtureSpec {
+    app_ready(spec)
+        .anchor_value_in(
+            "details.active_tab",
+            WidgetValue::Text(tab.to_string()),
+            viewport_sel("details"),
         )
-        .precondition_value("app.server.connected", WidgetValue::Bool(true))
-        .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("selector.panel", viewport_sel("selector")),
-        FixtureSpec::new(
-            "hotki.selector.confirmed",
-            "Runtime/server lane: confirm the currently open selector, then open Details history.",
+        .anchor_in(anchor, viewport_sel("details"))
+}
+
+/// Build a Permissions fixture with deterministic grant-state anchors.
+fn permission_status_spec(
+    spec: FixtureSpec,
+    accessibility: bool,
+    input_monitoring: bool,
+) -> FixtureSpec {
+    app_ready(spec)
+        .anchor_value_in(
+            "permissions.accessibility.granted",
+            WidgetValue::Bool(accessibility),
+            viewport_sel("permissions"),
         )
-        .precondition_value("app.server.connected", WidgetValue::Bool(true))
-        .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .precondition_in("selector.panel", viewport_sel("selector"))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", viewport_sel("details")),
-        FixtureSpec::new(
-            "hotki.selector.canceled",
-            "Runtime/server lane: cancel the currently open selector, then open Details history.",
+        .anchor_value_in(
+            "permissions.input_monitoring.granted",
+            WidgetValue::Bool(input_monitoring),
+            viewport_sel("permissions"),
         )
-        .precondition_value("app.server.connected", WidgetValue::Bool(true))
-        .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .precondition_in("selector.panel", viewport_sel("selector"))
-        .anchor_value("app.ready", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
-        .anchor_in("details.notification.0.title", viewport_sel("details")),
-    ]
 }
 
 /// Build a checked semantic viewport selector for a hard-coded Hotki viewport.
@@ -454,43 +539,52 @@ impl FixtureBridge {
 
     /// Dispatch one named fixture onto the lane that owns the affected state.
     fn apply_name(&self, name: &str) -> Result<(), String> {
-        match name {
-            "hotki.basic.default" | "hotki.details" => {
+        let fixture = HotkiFixture::from_name(name)
+            .ok_or_else(|| format!("unknown Hotki fixture: {name}"))?;
+        self.apply_fixture(fixture)?;
+        self.fixture_runtime.request_repaint();
+        Ok(())
+    }
+
+    /// Dispatch one typed fixture onto the lane that owns the affected state.
+    fn apply_fixture(&self, fixture: HotkiFixture) -> Result<(), String> {
+        match fixture {
+            HotkiFixture::BasicDefault | HotkiFixture::Details => {
                 self.clear_transient_ui()?;
                 self.show_details()?;
             }
-            "hotki.details.config" => {
+            HotkiFixture::DetailsConfig => {
                 self.clear_transient_ui()?;
                 self.show_details_tab(DetailsTab::Config)?;
             }
-            "hotki.details.logs" => {
+            HotkiFixture::DetailsLogs => {
                 self.clear_transient_ui()?;
                 self.show_details_tab(DetailsTab::Logs)?;
             }
-            "hotki.details.about" => {
+            HotkiFixture::DetailsAbout => {
                 self.clear_transient_ui()?;
                 self.show_details_tab(DetailsTab::About)?;
             }
-            "hotki.permissions" => {
+            HotkiFixture::Permissions => {
                 self.clear_transient_ui()?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
             }
-            "hotki.permissions.all_granted" => {
+            HotkiFixture::PermissionsAllGranted => {
                 self.clear_transient_ui()?;
                 self.set_permission_override(true, true)?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
             }
-            "hotki.permissions.none_granted" => {
+            HotkiFixture::PermissionsNoneGranted => {
                 self.clear_transient_ui()?;
                 self.set_permission_override(false, false)?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
             }
-            "hotki.permissions.mixed" => {
+            HotkiFixture::PermissionsMixed => {
                 self.clear_transient_ui()?;
                 self.set_permission_override(true, false)?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
             }
-            "hotki.notifications" => {
+            HotkiFixture::Notifications => {
                 self.clear_transient_ui()?;
                 self.reconfigure_notifications(NotifyPos::Right, DisplaysSnapshot::default())?;
                 self.send_ui_message(MsgToUI::Notify {
@@ -500,53 +594,51 @@ impl FixtureBridge {
                 })?;
                 self.show_details()?;
             }
-            "hotki.notifications.variants" => {
+            HotkiFixture::NotificationVariants => {
                 self.clear_transient_ui()?;
                 self.send_notification_variants(NotifyPos::Right)?;
             }
-            "hotki.notifications.left_variants" => {
+            HotkiFixture::NotificationLeftVariants => {
                 self.clear_transient_ui()?;
                 self.send_notification_variants(NotifyPos::Left)?;
             }
-            "hotki.notifications.truncated" => {
+            HotkiFixture::NotificationTruncated => {
                 self.clear_transient_ui()?;
                 self.send_truncated_notification()?;
             }
-            "hotki.hud" => {
+            HotkiFixture::Hud => {
                 self.clear_transient_ui()?;
                 self.inject_key_quiet("escape")?;
                 self.inject_key("cmd+shift+0")?;
             }
-            "hotki.hud.tall" => {
+            HotkiFixture::HudTall => {
                 self.clear_transient_ui()?;
                 self.send_tall_hud()?;
             }
-            "hotki.hud.mini" => {
+            HotkiFixture::HudMini => {
                 self.clear_transient_ui()?;
                 self.inject_key_quiet("escape")?;
                 self.inject_keys(["cmd+shift+0", "t", "m"])?;
             }
-            "hotki.selector" => {
+            HotkiFixture::Selector => {
                 self.clear_transient_ui()?;
                 self.inject_key_quiet("escape")?;
                 self.inject_keys(["cmd+shift+0", "t", "s"])?;
             }
-            "hotki.selector.query" => {
+            HotkiFixture::SelectorQuery => {
                 self.clear_transient_ui()?;
                 self.inject_key_quiet("escape")?;
                 self.inject_keys(["cmd+shift+0", "t", "s", "b"])?;
             }
-            "hotki.selector.confirmed" => {
+            HotkiFixture::SelectorConfirmed => {
                 self.inject_key("return")?;
                 self.show_details()?;
             }
-            "hotki.selector.canceled" => {
+            HotkiFixture::SelectorCanceled => {
                 self.inject_key("escape")?;
                 self.show_details()?;
             }
-            _ => return Err(format!("unknown Hotki fixture: {name}")),
         }
-        self.fixture_runtime.request_repaint();
         Ok(())
     }
 
@@ -829,4 +921,33 @@ pub fn value_anchor(ui: &mut egui::Ui, id: impl Into<String>, value: WidgetValue
             response
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn fixture_catalog_round_trips_stable_names() {
+        let specs = fixtures();
+        let expected_names = HOTKI_FIXTURES
+            .iter()
+            .map(|def| def.name)
+            .collect::<Vec<_>>();
+        let actual_names = specs
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_names, expected_names);
+
+        let mut seen = HashSet::new();
+        for def in HOTKI_FIXTURES {
+            assert!(seen.insert(def.name));
+            assert_eq!(HotkiFixture::from_name(def.name), Some(def.fixture));
+        }
+        assert_eq!(specs.len(), seen.len());
+        assert_eq!(HotkiFixture::from_name("hotki.unknown"), None);
+    }
 }
