@@ -133,6 +133,7 @@ use parking_lot::Mutex;
 use relay::RelayHandler;
 use repeater::Repeater;
 pub use repeater::{OnRelayRepeat, RepeatSpec};
+use ticker::Ticker;
 
 use crate::runtime::{FocusInfo, RuntimeState};
 
@@ -172,6 +173,8 @@ pub struct Engine {
     selector_notify: Arc<tokio::sync::Notify>,
     /// Unified repeater for shell commands and key relays.
     repeater: Repeater,
+    /// Repeater for Luau action closures created by `ctx:until_keyup`.
+    action_repeater: Ticker,
     /// World view for focus and display tracking.
     world: Arc<dyn WorldView>,
 }
@@ -216,6 +219,7 @@ impl Engine {
         let notifier = NotificationDispatcher::new(event_tx);
         let selector_notify = Arc::new(tokio::sync::Notify::new());
         let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+        let action_repeater = Ticker::default();
         let config_arc = Arc::new(tokio::sync::Mutex::new(None));
 
         let engine = Self {
@@ -231,6 +235,7 @@ impl Engine {
             notifier,
             selector_notify,
             repeater,
+            action_repeater,
             world,
         };
         engine.spawn_world_focus_subscription();

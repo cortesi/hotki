@@ -88,10 +88,6 @@ impl Engine {
                 );
                 DispatchResult::EnteredMode
             }
-            dyn_engine::BindingKind::Action(action) => {
-                self.apply_action(identifier, &action, binding.flags.repeat)
-                    .await?
-            }
             dyn_engine::BindingKind::Handler(handler) => {
                 let result = {
                     let mut cfg_guard = self.config.lock().await;
@@ -108,15 +104,9 @@ impl Engine {
                     }
                 };
 
-                self.apply_effects_and_nav(identifier, result.effects, result.nav)
+                self.apply_effects(identifier, result.effects, ctx)
                     .await?
                     .with_stay(result.stay)
-            }
-            dyn_engine::BindingKind::Selector(sel_cfg) => {
-                if !SelectorController::new(self).open(sel_cfg, ctx).await? {
-                    return Ok(None);
-                }
-                DispatchResult::SelectorOpened
             }
         };
 
@@ -125,6 +115,7 @@ impl Engine {
 
     fn handle_key_up(&self, identifier: &str) {
         let pid = self.current_focus_info().pid;
+        self.action_repeater.stop_sync(identifier);
         self.repeater.stop_sync(identifier);
         if self.relay.stop_relay(identifier, pid) {
             tracing::debug!("Stopped relay for {}", identifier);

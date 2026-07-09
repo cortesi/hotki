@@ -4,7 +4,7 @@ use mac_keycode::Chord;
 use ruau::vm::{RuntimeError, Scope, ScopedValue, serde::from_scoped_value};
 use serde::Deserialize;
 
-use super::{Binding, RepeatSpec};
+use super::Binding;
 use crate::NotifyKind;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -12,9 +12,9 @@ use crate::NotifyKind;
 /// Software-repeat options parsed from Luau binding tables.
 pub(super) struct RepeatOptionsSpec {
     /// Optional initial repeat delay in milliseconds.
-    delay_ms: Option<u64>,
+    pub(super) delay_ms: Option<u64>,
     /// Optional repeat interval in milliseconds.
-    interval_ms: Option<u64>,
+    pub(super) interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -37,8 +37,6 @@ pub(super) struct BindingOptionsSpec {
     global: Option<bool>,
     /// Whether the binding suppresses auto-exit after execution.
     stay: Option<bool>,
-    /// Optional software-repeat configuration.
-    repeat: Option<RepeatOptionsSpec>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -82,8 +80,4 @@ pub(super) fn apply_binding_options(binding: &mut Binding, options: Option<Bindi
     binding.flags.hidden = options.hidden.unwrap_or(false);
     binding.flags.global = options.global.unwrap_or(false);
     binding.flags.stay = options.stay.unwrap_or(false);
-    binding.flags.repeat = options.repeat.map(|repeat| RepeatSpec {
-        delay_ms: repeat.delay_ms,
-        interval_ms: repeat.interval_ms,
-    });
 }

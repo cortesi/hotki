@@ -435,9 +435,9 @@ end)
             root.join("config.luau"),
             r#"
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Run", action.run(function(actx)
+    menu:bind("a", "Run", function(actx)
         local depth: string = actx.depth
-    end))
+    end)
 end)
 "#,
         )
@@ -501,12 +501,38 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
+local items: SelectorItemList<string> = {
+    { label = "Alpha", data = "alpha" },
+    { label = "Beta", sublabel = "second", data = "beta" },
+}
+
 hotki.root(function(menu, ctx)
     menu:bind("a", "Select", action.selector({
-        items = {
-            { label = "Alpha", data = "alpha" },
-            { label = "Beta", sublabel = "second", data = "beta" },
-        },
+        items = items,
+        on_select = function(actx, item: SelectorItem<string>, query)
+            actx:notify("info", item.label, item.data)
+        end,
+    }))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert!(!report.style);
+    }
+
+    #[test]
+    fn check_accepts_static_selector_string_lists() {
+        let root = test_dir("static-selector-strings");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local items: SelectorStringList = { "Alpha", "Beta" }
+
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Select", action.selector({
+        items = items,
         on_select = function(actx, item: SelectorItem<string>, query)
             actx:notify("info", item.label, item.data)
         end,
@@ -526,19 +552,147 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-local function items(ctx: ModeContext): { SelectorItem<string> }
+local function items(ctx: ModeContext): SelectorItemList<string>
     return {
         { label = ctx.app, data = ctx.app },
     }
 end
 
+local provider: SelectorItemProvider<string> = items
+
 hotki.root(function(menu, ctx)
     menu:bind("a", "Select", action.selector({
-        items = items,
+        items = provider,
         on_select = function(actx, item: SelectorItem<string>, query)
             actx:notify("info", item.label, item.data)
         end,
     }))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert!(!report.style);
+    }
+
+    #[test]
+    fn check_accepts_selector_string_providers() {
+        let root = test_dir("selector-string-provider");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local function items(ctx: ModeContext): SelectorStringList
+    return { ctx.app, "Fallback" }
+end
+
+local provider: SelectorStringProvider = items
+
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Select", action.selector({
+        items = provider,
+        on_select = function(actx, item: SelectorItem<string>, query)
+            actx:notify("info", item.label, item.data)
+        end,
+    }))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert!(!report.style);
+    }
+
+    #[test]
+    fn check_accepts_filtering_applications_provider_items() {
+        let root = test_dir("filter-applications-provider");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local function visible_apps(ctx: ModeContext): SelectorItemList<ApplicationInfo>
+    local out: SelectorItemList<ApplicationInfo> = {}
+    for _, item in hotki.applications(ctx) do
+        local path: string = item.data.path
+        if item.label ~= "Skip" and path ~= "" then
+            table.insert(out, item)
+        end
+    end
+    return out
+end
+
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Apps", action.selector({
+        items = visible_apps,
+        on_select = function(actx, item: SelectorItem<ApplicationInfo>, query)
+            actx:open(item.data.path)
+        end,
+    }))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check config");
+        assert!(!report.style);
+    }
+
+    #[test]
+    fn check_rejects_action_run_as_missing_config_surface() {
+        let root = test_dir("removed-action-run");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Bad", action.run(function(actx)
+    end))
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("run"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_rejects_ctx_exec_as_missing_action_context_surface() {
+        let root = test_dir("removed-ctx-exec");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Bad", function(actx)
+        actx:exec(action.shell("true"))
+    end)
+end)
+"#,
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("exec"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn check_accepts_closure_actions_and_action_sugar() {
+        let root = test_dir("closure-actions-and-action-sugar");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+hotki.root(function(menu, ctx)
+    menu:bind("a", "Handler", function(actx)
+        actx:shell("true")
+        actx:pop()
+    end)
+    menu:bind("b", "Selector", action.selector({
+        items = { "One" },
+        on_select = function(actx, item, query)
+        end,
+    }))
+    menu:bind("c", "Constant", action.reload_config)
 end)
 "#,
         )

@@ -30,8 +30,12 @@ hotki.root(function(menu, ctx)
         root:bind("a", "Run Application", action.selector({
             title = "Run Application",
             items = hotki.applications,
-            on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
-                actx:exec(action.open(item.data.path))
+            on_select = function(
+                actx: ActionContext,
+                item: SelectorItem<ApplicationInfo>,
+                query: string
+            )
+                actx:open(item.data.path)
             end,
         }))
     end, {
@@ -43,32 +47,50 @@ end)
 ## Core Tables
 
 - `hotki`: root registration and app discovery.
-- `action`: primitive actions plus `action.run(...)` and `action.selector(...)`.
+- `action`: ready-to-bind action functions and builder sugar for `ActionContext` methods.
 
 ## Menu API
 
 Mode renderers receive `(menu, ctx)`.
 
 - `menu:bind(chord, desc, action, opts?)`
-- `menu:bind_many(entries)`
 - `menu:submenu(chord, title, render, opts?)`
 - `menu:capture()`
 
 Binding options are plain tables:
 
 ```luau
-menu:bind("r", "Repeat Relay", action.relay("cmd+c"), {
+menu:bind("r", "Relay", action.relay("cmd+c"), {
     stay = true,
     global = false,
     hidden = false,
-    ["repeat"] = {
-        delay_ms = 200,
-        interval_ms = 300,
-    },
 })
 ```
 
 Submenu options accept the same behavior flags plus `capture`.
+
+Bulk binding is ordinary Luau. Annotate local entry tables if you want Luau to
+check a helper shape:
+
+```luau
+type BindingEntry = {
+    chord: string,
+    desc: string,
+    action: Action,
+    opts: BindingOptions?,
+}
+
+local entries: { BindingEntry } = {
+    { chord = "r", desc = "Reload", action = action.reload_config },
+    { chord = "n", desc = "Notify", action = function(actx)
+        actx:notify("info", "Done", "The handler ran")
+    end },
+}
+
+for _, entry in entries do
+    menu:bind(entry.chord, entry.desc, entry.action, entry.opts)
+end
+```
 
 ## Contexts
 
@@ -80,13 +102,38 @@ Submenu options accept the same behavior flags plus `capture`.
 
 `ActionContext` additionally exposes:
 
-- `ctx:exec(action)`
 - `ctx:notify(kind, title, body)`
 - `ctx:stay()`
 - `ctx:push(render, title?)`
 - `ctx:pop()`
 - `ctx:exit()`
 - `ctx:show_root()`
+- `ctx:hide_hud()`
+- `ctx:reload_config()`
+- `ctx:clear_notifications()`
+- `ctx:shell(cmd, opts?)`
+- `ctx:open(target)`
+- `ctx:relay(spec)`
+- `ctx:show_details(toggle)`
+- `ctx:set_volume(level)`
+- `ctx:change_volume(delta)`
+- `ctx:mute(toggle)`
+- `ctx:until_keyup(action, opts?)`
+- `ctx:select(spec)`
+
+Effects queue while the action runs and apply in source order after it returns.
+`action.*` builders are just convenient functions that call these methods on the
+provided context.
+
+Repeat is requested from inside an action:
+
+```luau
+local FAST_REPEAT: RepeatOptions = { delay_ms = 200, interval_ms = 50 }
+
+menu:bind("down", "Volume down", function(ctx)
+    ctx:until_keyup(action.change_volume(-5), FAST_REPEAT)
+end, { stay = true })
+```
 
 ## Single-file Configs
 
@@ -95,9 +142,9 @@ types to organize larger configs:
 
 ```luau
 local function notify(title: string): Action
-    return action.run(function(ctx)
+    return function(ctx)
         ctx:notify("info", title, "done")
-    end)
+    end
 end
 
 local utility_items: { SelectorItem<string> } = {
@@ -118,14 +165,20 @@ menu:bind("a", "Run Application", action.selector({
     title = "Run Application",
     placeholder = "Search apps...",
     items = hotki.applications,
-    on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
-        actx:exec(action.open(item.data.path))
+    on_select = function(
+        actx: ActionContext,
+        item: SelectorItem<ApplicationInfo>,
+        query: string
+    )
+        actx:open(item.data.path)
     end,
 }))
 ```
 
 Static items use either string arrays or `{ label, sublabel?, data }` records. Provider functions
-receive `ModeContext` and return the same kind of list.
+receive `ModeContext` and return the same kind of list. Use `SelectorStringList` for string lists,
+`SelectorItemList<T>` for item records, `SelectorStringProvider` for string providers, and
+`SelectorItemProvider<T>` for item providers.
 
 ## Style
 

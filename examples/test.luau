@@ -4,6 +4,12 @@ local demo_items: { SelectorItem<string> } = {
     { label = "Callsheet", sublabel = "demo://callsheet", data = "callsheet" },
 }
 
+local function repeat_action(act: Action, opts: RepeatOptions): Action
+    return function(actx: ActionContext)
+        actx:until_keyup(act, opts)
+    end
+end
+
 hotki.root(function(menu, ctx)
     if ctx.hud then
         menu:bind("esc", "Back", action.pop, { global = true, hidden = true })
@@ -24,19 +30,22 @@ hotki.root(function(menu, ctx)
         root:submenu("s", "Shell", function(sub, subctx)
             sub:bind("e", "Simple echo", action.shell("echo hi", { ok_notify = "success", err_notify = "warn" }))
             sub:bind("s", "Sleep 5s", action.shell("sleep 5; echo slept 5s", { ok_notify = "success", err_notify = "warn" }))
-            sub:bind("r", "Repeat Shell Default", action.shell("echo tick", { ok_notify = "success", err_notify = "warn" }), {
-                ["repeat"] = { delay_ms = 250, interval_ms = 350 },
-            })
-            sub:bind("t", "Repeat Shell Custom", action.shell("echo tock", { ok_notify = "success", err_notify = "warn" }), {
-                ["repeat"] = { delay_ms = 250, interval_ms = 350 },
-            })
+            sub:bind("r", "Repeat Shell Default", repeat_action(action.shell("echo tick", { ok_notify = "success", err_notify = "warn" }), {
+                delay_ms = 250,
+                interval_ms = 350,
+            }))
+            sub:bind("t", "Repeat Shell Custom", repeat_action(action.shell("echo tock", { ok_notify = "success", err_notify = "warn" }), {
+                delay_ms = 250,
+                interval_ms = 350,
+            }))
         end)
 
         root:submenu("r", "Relay", function(sub, subctx)
             sub:bind("a", "Send X", action.relay("shift+x"), { stay = true })
-            sub:bind("b", "Repeat Relay Custom", action.relay("shift+x"), {
-                ["repeat"] = { delay_ms = 200, interval_ms = 300 },
-            })
+            sub:bind("b", "Repeat Relay Custom", repeat_action(action.relay("shift+x"), {
+                delay_ms = 200,
+                interval_ms = 300,
+            }))
         end)
 
         root:submenu("m", "Media", function(sub, subctx)
@@ -47,16 +56,16 @@ hotki.root(function(menu, ctx)
             sub:bind("5", "50%", action.set_volume(50), { stay = true })
             sub:bind("m", "mute", action.mute("toggle"), { stay = true })
             sub:bind(
-                "up", "Up 10", action.change_volume(10), { 
-                    stay = true ,
-                    ["repeat"] = { delay_ms = 250, interval_ms = 350 },
-                }
+                "up", "Up 10", repeat_action(action.change_volume(10), {
+                    delay_ms = 250,
+                    interval_ms = 350,
+                }), { stay = true }
             )
             sub:bind(
-                "down", "Down 10", action.change_volume(-10), { 
-                    stay = true,
-                    ["repeat"] = { delay_ms = 250, interval_ms = 350 },
-                }
+                "down", "Down 10", repeat_action(action.change_volume(-10), {
+                    delay_ms = 250,
+                    interval_ms = 350,
+                }), { stay = true }
             )
         end)
 
@@ -70,7 +79,7 @@ hotki.root(function(menu, ctx)
                 placeholder = "Search apps...",
                 items = hotki.applications,
                 on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, query: string)
-                    actx:exec(action.open(item.data.path))
+                    actx:open(item.data.path)
                 end,
             }))
             sub:bind("p", "Selector Demo", action.selector({

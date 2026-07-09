@@ -8,19 +8,21 @@ use std::{
 use regex::Regex;
 use ruau::vm::{
     FromLua, Function, HostType, HostTypeBuilder, MultiValue, RuntimeError, Scope, ScopedValue,
-    Table, Userdata,
+    Userdata,
 };
 
 use super::{
-    ActionCtx, Binding, BindingFlags, BindingKind, ModeCtx, ModeRef, NavRequest, SourcePos,
-    host_action::{ActionPayload, action_payload_from_value, primitive_action_from_value},
+    ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, ModeCtx, ModeRef,
+    NavRequest, RepeatSpec, SourcePos,
     host_args::HostArgs,
     host_parse::{
-        BindingOptionsSpec, SubmenuOptionsSpec, apply_binding_options, parse_chord, parse_optional,
+        BindingOptionsSpec, RepeatOptionsSpec, ShellOptionsSpec, SubmenuOptionsSpec,
+        apply_binding_options, parse_chord, parse_optional,
     },
+    selector,
     util::lock_unpoisoned,
 };
-use crate::NotifyKind;
+use crate::{Action, NotifyKind, ShellModifiers, ShellSpec, Toggle};
 
 /// Luau userdata used to build one rendered mode.
 #[derive(Clone, Debug)]
@@ -95,7 +97,6 @@ pub fn action_context_userdata<'s>(
 pub(super) fn mode_builder_type() -> HostType {
     HostTypeBuilder::<ModeBuilder>::new("ModeBuilder")
         .method_raw("bind", mode_builder_bind)
-        .method_raw("bind_many", mode_builder_bind_many)
         .method_raw("submenu", mode_builder_submenu)
         .method_raw("capture", mode_builder_capture)
         .declaration("declare class ModeBuilder\nend\n")
@@ -135,66 +136,53 @@ pub(super) fn action_context_type() -> HostType {
             regex_matches(this.0.title(), &pattern)
         })
         .method_raw("notify", action_context_notify)
-        .method("stay", |_, this, (): ()| {
-            this.0.set_stay();
-            Ok(())
-        })
-        .method_raw("exec", action_context_exec)
+        .method("stay", |_, this, (): ()| this.0.set_stay())
         .method_raw("push", action_context_push)
-        .method("pop", |_, this, (): ()| {
-            this.0.set_nav(NavRequest::Pop);
-            Ok(())
-        })
-        .method("exit", |_, this, (): ()| {
-            this.0.set_nav(NavRequest::Exit);
-            Ok(())
-        })
+        .method("pop", |_, this, (): ()| this.0.push_nav(NavRequest::Pop))
+        .method("exit", |_, this, (): ()| this.0.push_nav(NavRequest::Exit))
         .method("show_root", |_, this, (): ()| {
-            this.0.set_nav(NavRequest::ShowRoot);
-            Ok(())
+            this.0.push_nav(NavRequest::ShowRoot)
         })
+        .method("hide_hud", |_, this, (): ()| {
+            this.0.push_nav(NavRequest::HideHud)
+        })
+        .method("reload_config", |_, this, (): ()| {
+            this.0.push_effect(Effect::Exec(Action::ReloadConfig))
+        })
+        .method("clear_notifications", |_, this, (): ()| {
+            this.0.push_effect(Effect::Exec(Action::ClearNotifications))
+        })
+        .method_raw("shell", action_context_shell)
+        .method_raw("open", action_context_open)
+        .method_raw("relay", action_context_relay)
+        .method_raw("show_details", action_context_show_details)
+        .method_raw("set_volume", action_context_set_volume)
+        .method_raw("change_volume", action_context_change_volume)
+        .method_raw("mute", action_context_mute)
+        .method_raw("until_keyup", action_context_until_keyup)
+        .method_raw("select", action_context_select)
         .declaration("declare class ActionContext\nend\n")
         .build()
 }
 
-/// Build one primitive-action, handler, or selector binding from Luau inputs.
-fn binding_from_action<'s>(
+/// Build one handler binding from Luau inputs.
+fn binding_from_handler<'s>(
     scope: &Scope<'s>,
     chord: &str,
     desc: String,
-    action_value: ActionPayload,
+    action: Function<'s>,
     options: Option<BindingOptionsSpec>,
 ) -> Result<Binding, RuntimeError> {
     let chord = parse_chord(chord)?;
     let pos = current_source_pos(scope);
-    let mut binding = match action_value {
-        ActionPayload::Action(action) => Binding {
-            chord,
-            desc,
-            kind: BindingKind::Action(action),
-            flags: BindingFlags::default(),
-            mode_id: None,
-            mode_capture: false,
-            pos,
-        },
-        ActionPayload::Handler(handler) => Binding {
-            chord,
-            desc,
-            kind: BindingKind::Handler(handler),
-            flags: BindingFlags::default(),
-            mode_id: None,
-            mode_capture: false,
-            pos,
-        },
-        ActionPayload::Selector(config) => Binding {
-            chord,
-            desc,
-            kind: BindingKind::Selector(config),
-            flags: BindingFlags::default(),
-            mode_id: None,
-            mode_capture: false,
-            pos,
-        },
+    let mut binding = Binding {
+        chord,
+        desc,
+        kind: BindingKind::Handler(HandlerRef::from_function(scope, action)?),
+        flags: BindingFlags::default(),
+        mode_id: None,
+        mode_capture: false,
+        pos,
     };
     apply_binding_options(&mut binding, options);
     Ok(binding)
@@ -249,13 +237,12 @@ fn mode_builder_bind<'s>(
     let mut args = HostArgs::new(args);
     let chord = args.string(scope, "menu:bind chord")?;
     let desc = args.string(scope, "menu:bind desc")?;
-    let action = args.required_with_message("menu:bind expects an action")?;
+    let action = args.function("menu:bind expected action function")?;
     let opts = args.optional();
     args.finish("menu:bind")?;
 
-    let action = action_payload_from_value(scope, action)?;
     let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
-    let binding = binding_from_action(scope, &chord, desc, action, options)?;
+    let binding = binding_from_handler(scope, &chord, desc, action, options)?;
     receiver
         .borrow_mut::<ModeBuilder>(scope)?
         .state
@@ -263,50 +250,6 @@ fn mode_builder_bind<'s>(
         .map_err(|err| RuntimeError::runtime(err.to_string()))?
         .bindings
         .push(binding);
-    Ok(MultiValue::new())
-}
-
-/// Implement `menu:bind_many`.
-fn mode_builder_bind_many<'s>(
-    scope: &Scope<'s>,
-    receiver: Userdata<'s>,
-    args: MultiValue<'s>,
-) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut args = HostArgs::new(args);
-    let table = args.table("menu:bind_many entries")?;
-    args.finish("menu:bind_many")?;
-
-    let len = usize::try_from(table.len(scope)?)
-        .map_err(|_| RuntimeError::runtime("menu:bind_many entries length does not fit usize"))?;
-    let mut bindings = Vec::with_capacity(len);
-    for index in 1..=len {
-        let entry: Table<'_> = table.get(scope, index as f64)?;
-        let action: ScopedValue<'_> = entry.get(scope, "action")?;
-        if !matches!(action, ScopedValue::Nil) {
-            let chord: String = entry.get(scope, "chord")?;
-            let desc: String = entry.get(scope, "desc")?;
-            let opts: ScopedValue<'_> = entry.get(scope, "opts")?;
-            let action = action_payload_from_value(scope, action)?;
-            let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
-            bindings.push(binding_from_action(scope, &chord, desc, action, options)?);
-            continue;
-        }
-
-        let chord: String = entry.get(scope, "chord")?;
-        let title: String = entry.get(scope, "title")?;
-        let render: Function<'_> = entry.get(scope, "render")?;
-        let opts: ScopedValue<'_> = entry.get(scope, "opts")?;
-        let options = parse_optional::<SubmenuOptionsSpec>(scope, opts)?;
-        bindings.push(binding_from_mode(scope, &chord, title, render, options)?);
-    }
-
-    receiver
-        .borrow_mut::<ModeBuilder>(scope)?
-        .state
-        .lock()
-        .map_err(|err| RuntimeError::runtime(err.to_string()))?
-        .bindings
-        .extend(bindings);
     Ok(MultiValue::new())
 }
 
@@ -364,24 +307,25 @@ fn action_context_notify<'s>(
     receiver
         .borrow::<ActionContextUserData>(scope)?
         .0
-        .push_effect(super::Effect::Notify { kind, title, body });
+        .push_effect(Effect::Notify { kind, title, body })?;
     Ok(MultiValue::new())
 }
 
-/// Implement `ctx:exec`.
-fn action_context_exec<'s>(
+/// Implement `ctx:shell`.
+fn action_context_shell<'s>(
     scope: &Scope<'s>,
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let mut args = HostArgs::new(args);
-    let value = args.required_with_message("ctx:exec expects an action")?;
-    args.finish("ctx:exec")?;
-    let action = primitive_action_from_value(scope, value)?;
+    let cmd = args.string(scope, "ctx:shell command")?;
+    let opts = parse_optional::<ShellOptionsSpec>(scope, args.optional())?;
+    args.finish("ctx:shell")?;
+    let action = Action::Shell(shell_spec(cmd, opts));
     receiver
         .borrow::<ActionContextUserData>(scope)?
         .0
-        .push_effect(super::Effect::Exec(action));
+        .push_effect(Effect::Exec(action))?;
     Ok(MultiValue::new())
 }
 
@@ -402,6 +346,146 @@ fn action_context_push<'s>(
     receiver
         .borrow::<ActionContextUserData>(scope)?
         .0
-        .set_nav(NavRequest::Push { mode, title });
+        .push_nav(NavRequest::Push { mode, title })?;
     Ok(MultiValue::new())
+}
+
+/// Implement `ctx:open`.
+fn action_context_open<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let target = args.string(scope, "ctx:open target")?;
+    args.finish("ctx:open")?;
+    push_exec(scope, receiver, Action::Open(target))
+}
+
+/// Implement `ctx:relay`.
+fn action_context_relay<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let spec = args.string(scope, "ctx:relay spec")?;
+    args.finish("ctx:relay")?;
+    push_exec(scope, receiver, Action::Relay(spec))
+}
+
+/// Implement `ctx:show_details`.
+fn action_context_show_details<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let toggle = args.serde::<Toggle>(scope, "ctx:show_details toggle")?;
+    args.finish("ctx:show_details")?;
+    push_exec(scope, receiver, Action::ShowDetails(toggle))
+}
+
+/// Implement `ctx:set_volume`.
+fn action_context_set_volume<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let level = args.lua::<u8>(scope, "ctx:set_volume level")?;
+    args.finish("ctx:set_volume")?;
+    push_exec(scope, receiver, Action::SetVolume(level))
+}
+
+/// Implement `ctx:change_volume`.
+fn action_context_change_volume<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let delta = args.lua::<i8>(scope, "ctx:change_volume delta")?;
+    args.finish("ctx:change_volume")?;
+    push_exec(scope, receiver, Action::ChangeVolume(delta))
+}
+
+/// Implement `ctx:mute`.
+fn action_context_mute<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let toggle = args.serde::<Toggle>(scope, "ctx:mute toggle")?;
+    args.finish("ctx:mute")?;
+    push_exec(scope, receiver, Action::Mute(toggle))
+}
+
+/// Implement `ctx:until_keyup`.
+fn action_context_until_keyup<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let action = args.function("ctx:until_keyup action")?;
+    let repeat = parse_optional::<RepeatOptionsSpec>(scope, args.optional())?;
+    args.finish("ctx:until_keyup")?;
+    let repeat = repeat.map(|repeat| RepeatSpec {
+        delay_ms: repeat.delay_ms,
+        interval_ms: repeat.interval_ms,
+    });
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .push_until_keyup(HandlerRef::from_function(scope, action)?, repeat)?;
+    Ok(MultiValue::new())
+}
+
+/// Implement `ctx:select`.
+fn action_context_select<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let spec = args.required_with_message("ctx:select expects a table")?;
+    args.finish("ctx:select")?;
+    let selector = selector::parse_selector_config(scope, spec)?;
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .push_effect(Effect::Select(selector))?;
+    Ok(MultiValue::new())
+}
+
+/// Push an action effect into an action context.
+fn push_exec<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    action: Action,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    receiver
+        .borrow::<ActionContextUserData>(scope)?
+        .0
+        .push_effect(Effect::Exec(action))?;
+    Ok(MultiValue::new())
+}
+
+/// Build a shell spec from parsed options.
+fn shell_spec(cmd: String, opts: Option<ShellOptionsSpec>) -> ShellSpec {
+    match opts {
+        Some(opts) => {
+            let defaults = ShellModifiers::default();
+            ShellSpec::WithMods(
+                cmd,
+                ShellModifiers {
+                    ok_notify: opts.ok_notify.unwrap_or(defaults.ok_notify),
+                    err_notify: opts.err_notify.unwrap_or(defaults.err_notify),
+                },
+            )
+        }
+        None => ShellSpec::Cmd(cmd),
+    }
 }

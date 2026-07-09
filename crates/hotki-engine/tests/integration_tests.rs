@@ -6,7 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant as StdInstant},
 };
 
 use hotki_engine::test_support::{
@@ -117,9 +117,12 @@ fn repeat_relay_ticks() {
         let path = write_test_config(
             r#"
             hotki.root(function(menu, ctx)
-              menu:bind("a", "repeat", action.relay("b"), {
-                ["repeat"] = { delay_ms = 100, interval_ms = 100 },
-              })
+              menu:bind("a", "repeat", function(actx)
+                actx:until_keyup(action.relay("b"), {
+                  delay_ms = 100,
+                  interval_ms = 100,
+                })
+              end)
             end)
             "#,
         );
@@ -158,6 +161,73 @@ fn repeat_relay_ticks() {
         assert!(
             count.load(Ordering::SeqCst) > 0,
             "expected at least one relay repeat tick"
+        );
+
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("dispatch a up");
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn repeat_change_volume_ticks() {
+    run_engine_test_paused(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            hotki.root(function(menu, ctx)
+              menu:bind("a", "repeat", function(actx)
+                actx:until_keyup(function(repeat_ctx)
+                  repeat_ctx:change_volume(5)
+                  repeat_ctx:notify("info", "volume tick", "")
+                end, {
+                  delay_ms = 100,
+                  interval_ms = 100,
+                })
+              end)
+            end)
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        while rx.try_recv().is_ok() {}
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+
+        let a = engine.resolve_id_for_ident("a").await.expect("id for a");
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch a down");
+
+        let mut ticks = 0usize;
+        let started = StdInstant::now();
+        while ticks < 2 && started.elapsed() < Duration::from_secs(2) {
+            advance(Duration::from_millis(100)).await;
+            for _ in 0..3 {
+                tokio::task::yield_now().await;
+            }
+            while let Ok(msg) = rx.try_recv() {
+                if let MsgToUI::Notify { title, .. } = msg
+                    && title == "volume tick"
+                {
+                    ticks += 1;
+                }
+            }
+        }
+        assert!(
+            ticks >= 2,
+            "expected immediate and repeated change-volume ticks"
         );
 
         engine

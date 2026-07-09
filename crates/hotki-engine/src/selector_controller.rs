@@ -173,7 +173,7 @@ impl<'a> SelectorController<'a> {
 
         let _outcome_ignored = self
             .engine
-            .apply_effects_and_nav(identifier, result.effects, result.nav)
+            .apply_effects(identifier, result.effects, close.ctx)
             .await?;
         self.engine.rebind_and_refresh(focus).await
     }
@@ -217,7 +217,6 @@ fn execute_selector_close(
 fn selector_noop_result() -> dyn_engine::HandlerResult {
     dyn_engine::HandlerResult {
         effects: Vec::new(),
-        nav: None,
         stay: true,
     }
 }

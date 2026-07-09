@@ -2,12 +2,14 @@
 
 pub use super::{
     config::DynamicConfig,
-    handler::{HandlerResult, execute_handler, execute_selector_handler},
+    handler::{
+        HandlerResult, execute_handler, execute_handler_with_permission, execute_selector_handler,
+    },
     loader::load_dynamic_config,
     render::{RenderOutput, render_stack, resolve_binding},
     selector::{SelectorConfig, SelectorItem, SelectorItems},
     types::{
-        ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, ModeCtx, ModeFrame,
-        ModeId, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos,
+        ActionCtx, ActionRepeatPermission, Binding, BindingFlags, BindingKind, Effect, HandlerRef,
+        ModeCtx, ModeFrame, ModeId, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos,
     },
 };

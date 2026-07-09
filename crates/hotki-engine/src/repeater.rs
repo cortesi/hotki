@@ -222,7 +222,7 @@ impl Repeater {
         state
     }
 
-    fn effective_timings(&self, spec: Option<RepeatSpec>) -> (Duration, Duration) {
+    pub(crate) fn effective_timings(&self, spec: Option<RepeatSpec>) -> (Duration, Duration) {
         let sys_initial_ms = self.sys_initial.as_millis() as u64;
         let sys_interval_ms = self.sys_interval.as_millis() as u64;
         let default_interval = cmp::max(sys_interval_ms, REPEAT_DEFAULT_MIN_INTERVAL_MS);
@@ -315,6 +315,13 @@ impl Repeater {
     /// Optional: install a relay repeat callback for instrumentation/testing.
     pub fn set_on_relay_repeat(&self, cb: OnRelayRepeat) {
         *self.on_relay_repeat.lock() = Some(cb);
+    }
+
+    /// Notify relay repeat instrumentation for an externally driven repeat loop.
+    pub(crate) fn note_relay_repeat(&self, id: &str) {
+        if let Some(cb) = self.on_relay_repeat.lock().as_ref() {
+            cb(id);
+        }
     }
 
     /// Optional: install a shell repeat callback for instrumentation/testing.
@@ -422,8 +429,9 @@ impl Repeater {
                     trace!("repeater_relay_tick_skip_running" = %id_for_log);
                     return;
                 }
-                let _ = relay.repeat_relay(&id_for_log);
-                if let Some(cb) = on_relay_repeat.lock().as_ref() {
+                if relay.repeat_relay(&id_for_log)
+                    && let Some(cb) = on_relay_repeat.lock().as_ref()
+                {
                     cb(&id_for_log);
                 }
                 repeat_running.store(false, Ordering::SeqCst);

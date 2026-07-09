@@ -8,11 +8,31 @@
 local DEFAULT_REPEAT: RepeatOptions = {}
 local GLOBAL_HIDDEN: BindingOptions = { global = true, hidden = true }
 local STAY: BindingOptions = { stay = true }
-local STAY_REPEAT: BindingOptions = { stay = true, ["repeat"] = DEFAULT_REPEAT }
 local CAPTURE: SubmenuOptions = { capture = true }
 
-local function yabai_grid(cols: number, rows: number, x: number, y: number, w: number, h: number): Action
-    return action.shell(string.format("yabai -m window --grid %d:%d:%d:%d:%d:%d", rows, cols, x, y, w, h))
+local function repeat_action(act: Action): Action
+    return function(actx: ActionContext)
+        actx:until_keyup(act, DEFAULT_REPEAT)
+    end
+end
+
+local function yabai_grid(
+    cols: number,
+    rows: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number
+): Action
+    return action.shell(string.format(
+        "yabai -m window --grid %d:%d:%d:%d:%d:%d",
+        rows,
+        cols,
+        x,
+        y,
+        w,
+        h
+    ))
 end
 
 local function yabai_cell(cols: number, rows: number, x: number, y: number): Action
@@ -57,8 +77,12 @@ hotki.root(function(menu, ctx)
         title = "Run Application",
         placeholder = "Search apps...",
         items = hotki.applications,
-        on_select = function(actx: ActionContext, item: SelectorItem<ApplicationInfo>, _query: string)
-            actx:exec(action.open(item.data.path))
+        on_select = function(
+            actx: ActionContext,
+            item: SelectorItem<ApplicationInfo>,
+            _query: string
+        )
+            actx:open(item.data.path)
         end,
     }))
 
@@ -79,8 +103,8 @@ hotki.root(function(menu, ctx)
     end
 
     menu:submenu("shift+cmd+m", "music", function(music, _music_ctx)
-        music:bind("k", "vol up", action.change_volume(5), STAY_REPEAT)
-        music:bind("j", "vol down", action.change_volume(-5), STAY_REPEAT)
+        music:bind("k", "vol up", repeat_action(action.change_volume(5)), STAY)
+        music:bind("j", "vol down", repeat_action(action.change_volume(-5)), STAY)
         music:bind("l", "next >>", action.shell("spotify next"))
         music:bind("h", "<< prev", action.shell("spotify prev"))
         music:bind("p", "play/pause", action.shell("spotify pause"))

@@ -165,6 +165,17 @@ pub enum Effect {
         /// Notification body text.
         body: String,
     },
+    /// Apply a navigation request.
+    Nav(NavRequest),
+    /// Open a selector popup.
+    Select(SelectorConfig),
+    /// Run a stashed action repeatedly until the triggering key is released.
+    UntilKeyUp {
+        /// Action closure to run on each repeat tick.
+        action: HandlerRef,
+        /// Repeat timing overrides.
+        repeat: Option<RepeatSpec>,
+    },
 }
 
 /// Navigation request emitted by handlers or primitive actions.
@@ -194,6 +205,8 @@ pub struct ActionCtx {
     snapshot: ContextSnapshot,
     /// Shared mutable handler output state.
     shared: Arc<Mutex<ActionCtxShared>>,
+    /// Whether this context may create an until-keyup loop.
+    repeat: ActionRepeatPermission,
 }
 
 #[derive(Debug, Default)]
@@ -201,18 +214,35 @@ pub struct ActionCtx {
 struct ActionCtxShared {
     /// Queued side effects.
     effects: Vec<Effect>,
-    /// Pending navigation request.
-    nav: Option<NavRequest>,
     /// Whether the handler requested stay-in-mode behavior.
     stay: bool,
+    /// Whether the context is still valid for host effects.
+    active: bool,
+    /// Whether `ctx:until_keyup` was already requested during this activation.
+    until_keyup: bool,
+}
+
+/// Whether a handler context may create a held-key repeat loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionRepeatPermission {
+    /// A top-level binding activation with a held key.
+    HeldKey,
+    /// A selector callback or other action with no held triggering key.
+    Keyless,
+    /// A repeated action invocation, where nested repeat loops are rejected.
+    RepeatedAction,
 }
 
 impl ActionCtx {
     /// Create a new handler context for a given focused app/window state.
-    pub(crate) fn new(snapshot: ContextSnapshot) -> Self {
+    pub(crate) fn new(snapshot: ContextSnapshot, repeat: ActionRepeatPermission) -> Self {
         Self {
             snapshot,
-            shared: Arc::new(Mutex::new(ActionCtxShared::default())),
+            shared: Arc::new(Mutex::new(ActionCtxShared {
+                active: true,
+                ..ActionCtxShared::default()
+            })),
+            repeat,
         }
     }
 
@@ -242,33 +272,76 @@ impl ActionCtx {
     }
 
     /// Push a new effect into the handler result queue.
-    pub(crate) fn push_effect(&self, effect: Effect) {
-        lock_unpoisoned(&self.shared).effects.push(effect);
+    pub(crate) fn push_effect(&self, effect: Effect) -> Result<(), RuntimeError> {
+        let mut shared = lock_unpoisoned(&self.shared);
+        ensure_active(&shared)?;
+        shared.effects.push(effect);
+        Ok(())
     }
 
-    /// Set the navigation request, replacing any previously requested navigation.
-    pub(crate) fn set_nav(&self, nav: NavRequest) {
-        lock_unpoisoned(&self.shared).nav = Some(nav);
+    /// Push an ordered navigation effect into the handler result queue.
+    pub(crate) fn push_nav(&self, nav: NavRequest) -> Result<(), RuntimeError> {
+        self.push_effect(Effect::Nav(nav))
+    }
+
+    /// Push an until-keyup effect into the handler result queue.
+    pub(crate) fn push_until_keyup(
+        &self,
+        action: HandlerRef,
+        repeat: Option<RepeatSpec>,
+    ) -> Result<(), RuntimeError> {
+        let mut shared = lock_unpoisoned(&self.shared);
+        ensure_active(&shared)?;
+        match self.repeat {
+            ActionRepeatPermission::HeldKey => {}
+            ActionRepeatPermission::Keyless => {
+                return Err(RuntimeError::runtime(
+                    "ctx:until_keyup requires a held triggering key",
+                ));
+            }
+            ActionRepeatPermission::RepeatedAction => {
+                return Err(RuntimeError::runtime(
+                    "ctx:until_keyup cannot be nested inside a repeated action",
+                ));
+            }
+        }
+        if shared.until_keyup {
+            return Err(RuntimeError::runtime(
+                "ctx:until_keyup can only be called once per action",
+            ));
+        }
+        shared.until_keyup = true;
+        shared.effects.push(Effect::UntilKeyUp { action, repeat });
+        Ok(())
     }
 
     /// Request that the engine stays in the current mode after executing the handler.
-    pub(crate) fn set_stay(&self) {
-        lock_unpoisoned(&self.shared).stay = true;
+    pub(crate) fn set_stay(&self) -> Result<(), RuntimeError> {
+        let mut shared = lock_unpoisoned(&self.shared);
+        ensure_active(&shared)?;
+        shared.stay = true;
+        Ok(())
     }
 
-    /// Drain and return all queued effects.
-    pub(crate) fn take_effects(&self) -> Vec<Effect> {
-        mem::take(&mut lock_unpoisoned(&self.shared).effects)
+    /// Finish this context, invalidate it, and drain the queued effects.
+    pub(crate) fn finish(&self) -> (Vec<Effect>, bool) {
+        let mut shared = lock_unpoisoned(&self.shared);
+        shared.active = false;
+        (mem::take(&mut shared.effects), shared.stay)
     }
 
-    /// Take and clear the navigation request, if any.
-    pub(crate) fn take_nav(&self) -> Option<NavRequest> {
-        lock_unpoisoned(&self.shared).nav.take()
+    /// Invalidate this context without draining its effects.
+    pub(crate) fn invalidate(&self) {
+        lock_unpoisoned(&self.shared).active = false;
     }
+}
 
-    /// Return whether the handler requested staying in the current mode.
-    pub(crate) fn stay(&self) -> bool {
-        lock_unpoisoned(&self.shared).stay
+/// Validate that a context is still usable.
+fn ensure_active(shared: &ActionCtxShared) -> Result<(), RuntimeError> {
+    if shared.active {
+        Ok(())
+    } else {
+        Err(RuntimeError::runtime("ActionContext is no longer valid"))
     }
 }
 
@@ -290,19 +363,13 @@ pub struct BindingFlags {
     pub global: bool,
     /// True when the binding suppresses auto-exit after execution.
     pub stay: bool,
-    /// Optional software repeat configuration for this binding.
-    pub repeat: Option<RepeatSpec>,
 }
 
 /// The kind of binding produced by a mode closure.
 #[derive(Debug, Clone)]
 pub enum BindingKind {
-    /// Primitive action binding.
-    Action(Action),
     /// Handler binding.
     Handler(HandlerRef),
-    /// Open an interactive selector popup.
-    Selector(SelectorConfig),
     /// Mode entry binding.
     Mode(ModeRef),
 }

@@ -1,6 +1,9 @@
 use ruau::vm::{CallOptions, ScriptError};
 
-use super::{ActionCtx, DynamicConfig, HandlerRef, ModeCtx, NavRequest, SelectorItem, diagnostics};
+use super::{
+    ActionCtx, ActionRepeatPermission, DynamicConfig, HandlerRef, ModeCtx, SelectorItem,
+    diagnostics,
+};
 use crate::Error;
 
 /// Result of executing a handler closure.
@@ -8,19 +11,14 @@ use crate::Error;
 pub struct HandlerResult {
     /// Side effects queued by the handler.
     pub effects: Vec<super::Effect>,
-    /// Optional navigation request emitted by the handler.
-    pub nav: Option<NavRequest>,
     /// True when the handler requested to suppress auto-exit behavior.
     pub stay: bool,
 }
 
 /// Drain the queued outputs from a completed handler context.
 fn collect_handler_result(action_ctx: &ActionCtx) -> HandlerResult {
-    HandlerResult {
-        effects: action_ctx.take_effects(),
-        nav: action_ctx.take_nav(),
-        stay: action_ctx.stay(),
-    }
+    let (effects, stay) = action_ctx.finish();
+    HandlerResult { effects, stay }
 }
 
 /// Execute a handler closure and collect its queued effects.
@@ -29,8 +27,18 @@ pub fn execute_handler(
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
+    execute_handler_with_permission(cfg, handler, ctx, ActionRepeatPermission::HeldKey)
+}
+
+/// Execute a handler closure with an explicit repeat permission policy.
+pub fn execute_handler_with_permission(
+    cfg: &mut DynamicConfig,
+    handler: &HandlerRef,
+    ctx: &ModeCtx,
+    repeat: ActionRepeatPermission,
+) -> Result<HandlerResult, Error> {
     cfg.collect_entrypoint_garbage();
-    let result = execute_handler_inner(cfg, handler, ctx);
+    let result = execute_handler_inner(cfg, handler, ctx, repeat);
     cfg.collect_entrypoint_garbage();
     result
 }
@@ -40,8 +48,9 @@ fn execute_handler_inner(
     cfg: &mut DynamicConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
+    repeat: ActionRepeatPermission,
 ) -> Result<HandlerResult, Error> {
-    let action_ctx = ActionCtx::new(ctx.clone());
+    let action_ctx = ActionCtx::new(ctx.clone(), repeat);
     let mut script_error = None;
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
@@ -69,6 +78,7 @@ fn execute_handler_inner(
         .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {
+        action_ctx.invalidate();
         return Err(err);
     }
     Ok(collect_handler_result(&action_ctx))
@@ -96,7 +106,7 @@ fn execute_selector_handler_inner(
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
-    let action_ctx = ActionCtx::new(ctx.clone());
+    let action_ctx = ActionCtx::new(ctx.clone(), ActionRepeatPermission::Keyless);
     let mut script_error = None;
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
@@ -130,6 +140,7 @@ fn execute_selector_handler_inner(
         .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
 
     if let Some(err) = script_error {
+        action_ctx.invalidate();
         return Err(err);
     }
     Ok(collect_handler_result(&action_ctx))

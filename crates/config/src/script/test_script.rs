@@ -11,8 +11,9 @@ mod tests {
     use crate::{
         Action, Error,
         script::{
-            Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, NavRequest,
-            RenderedState, SelectorItems, handler::execute_handler,
+            ActionRepeatPermission, Binding, BindingKind, DynamicConfig, Effect, ModeCtx,
+            ModeFrame, RenderedState, SelectorItems,
+            handler::{execute_handler, execute_handler_with_permission, execute_selector_handler},
             load_dynamic_config_from_string, render_stack,
         },
     };
@@ -268,12 +269,12 @@ end)
     fn handler_effects_preserve_enqueue_order() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("h", "handler", action.run(function(actx)
-        actx:exec(action.shell("echo one"))
+    menu:bind("h", "handler", function(actx)
+        actx:shell("echo one")
         actx:notify("info", "Test", "middle")
-        actx:exec(action.shell("echo two"))
+        actx:shell("echo two")
         actx:pop()
-    end))
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -287,7 +288,7 @@ end)
         };
 
         let result = execute_handler(&mut cfg, handler, &ctx).expect("execute handler");
-        assert_eq!(result.effects.len(), 3);
+        assert_eq!(result.effects.len(), 4);
         match &result.effects[0] {
             Effect::Exec(Action::Shell(spec)) => assert_eq!(spec.command(), "echo one"),
             other => panic!("unexpected first effect: {other:?}"),
@@ -304,11 +305,67 @@ end)
             Effect::Exec(Action::Shell(spec)) => assert_eq!(spec.command(), "echo two"),
             other => panic!("unexpected third effect: {other:?}"),
         }
-        assert!(matches!(result.nav, Some(NavRequest::Pop)));
+        assert!(matches!(result.effects[3], Effect::Nav(_)));
     }
 
     #[test]
-    fn selector_action_builds_selector_binding() {
+    fn removed_action_run_fails_normally() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("h", "handler", action.run(function(actx)
+    end))
+end)
+"#;
+        let err = match load_dynamic_config_from_string(source, None) {
+            Ok(_) => panic!("load should fail"),
+            Err(err) => err,
+        };
+        let pretty = err.pretty();
+        assert!(pretty.contains("run"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn action_prelude_table_is_read_only() {
+        let source = r#"
+action.shell = function(ctx)
+end
+
+hotki.root(function(menu, ctx)
+end)
+"#;
+        let err = match load_dynamic_config_from_string(source, None) {
+            Ok(_) => panic!("load should fail"),
+            Err(err) => err,
+        };
+        let pretty = err.pretty();
+        assert!(pretty.contains("action.shell"), "{pretty}");
+    }
+
+    #[test]
+    fn removed_ctx_exec_fails_normally() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("h", "handler", function(actx)
+        actx:exec(action.shell("true"))
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let mut stack = vec![root_frame(&cfg)];
+        let ctx = base_ctx("TestApp", true, 0);
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = &find_binding(&out.rendered, "h").kind else {
+            panic!("expected handler binding");
+        };
+
+        let err = execute_handler(&mut cfg, handler, &ctx).expect_err("execute should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("exec"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn selector_action_queues_selector_effect() {
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:bind("a", "Selector", action.selector({
@@ -334,8 +391,13 @@ end)
         )
         .expect("render");
         let binding = find_binding(&out.rendered, "a");
-        let BindingKind::Selector(selector) = &binding.kind else {
-            panic!("expected selector binding");
+        let BindingKind::Handler(handler) = &binding.kind else {
+            panic!("expected handler binding");
+        };
+        let result = execute_handler(&mut cfg, handler, &base_ctx("TestApp", false, 0))
+            .expect("execute selector action");
+        let Effect::Select(selector) = &result.effects[0] else {
+            panic!("expected selector effect: {:?}", result.effects);
         };
         assert_eq!(selector.title, "Run");
         assert_eq!(selector.placeholder, "Search...");
@@ -351,7 +413,7 @@ end)
     }
 
     #[test]
-    fn submenu_flatten_options_accept_integer_number_fields() {
+    fn binding_options_reject_repeat_field() {
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
@@ -366,22 +428,174 @@ hotki.root(function(menu, ctx)
     })
 end)
 "#;
+        let err = match load_dynamic_config_from_string(source, None) {
+            Ok(_) => panic!("load should fail"),
+            Err(err) => err,
+        };
+        let pretty = err.pretty();
+        assert!(pretty.contains("repeat"), "unexpected error: {pretty}");
+    }
+
+    #[test]
+    fn until_keyup_queues_repeated_action_effect() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("r", "repeat", function(actx)
+        actx:until_keyup(action.shell("echo tick"), {
+            delay_ms = 125,
+            interval_ms = 250,
+        })
+    end)
+end)
+"#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
         let mut stack = vec![root_frame(&cfg)];
-        let out = render_stack(
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "r").kind.clone() else {
+            panic!("expected handler binding");
+        };
+
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        let Effect::UntilKeyUp { repeat, .. } = &result.effects[0] else {
+            panic!("expected until-keyup effect: {:?}", result.effects);
+        };
+        let repeat = (*repeat).expect("repeat spec");
+        assert_eq!(repeat.delay_ms, Some(125));
+        assert_eq!(repeat.interval_ms, Some(250));
+    }
+
+    #[test]
+    fn until_keyup_rejects_second_request_in_same_action() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("r", "repeat", function(actx)
+        actx:until_keyup(action.shell("echo one"))
+        actx:until_keyup(action.shell("echo two"))
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "r").kind.clone() else {
+            panic!("expected handler binding");
+        };
+
+        let err = execute_handler(&mut cfg, &handler, &ctx).expect_err("execute should fail");
+        let pretty = err.pretty();
+        assert!(
+            pretty.contains("only be called once"),
+            "unexpected error: {pretty}"
+        );
+    }
+
+    #[test]
+    fn action_context_rejects_use_after_handler_returns() {
+        let source = r#"
+local stored: ActionContext? = nil
+
+hotki.root(function(menu, ctx)
+    menu:bind("s", "store", function(actx)
+        stored = actx
+    end)
+    menu:bind("u", "use", function(actx)
+        if stored ~= nil then
+            stored:notify("info", "late", "")
+        end
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(store) = find_binding(&out.rendered, "s").kind.clone() else {
+            panic!("expected store handler");
+        };
+        let BindingKind::Handler(use_stored) = find_binding(&out.rendered, "u").kind.clone() else {
+            panic!("expected use handler");
+        };
+
+        execute_handler(&mut cfg, &store, &ctx).expect("store context");
+        let err = execute_handler(&mut cfg, &use_stored, &ctx).expect_err("execute should fail");
+        let pretty = err.pretty();
+        assert!(
+            pretty.contains("no longer valid"),
+            "unexpected error: {pretty}"
+        );
+    }
+
+    #[test]
+    fn selector_handler_rejects_until_keyup_without_held_key() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("s", "selector", action.selector({
+        items = { "One" },
+        on_select = function(actx, item, query)
+            actx:until_keyup(action.shell("echo tick"))
+        end,
+    }))
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "s").kind.clone() else {
+            panic!("expected handler binding");
+        };
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        let Effect::Select(selector) = &result.effects[0] else {
+            panic!("expected selector effect: {:?}", result.effects);
+        };
+        let SelectorItems::Static(items) = &selector.items else {
+            panic!("expected static selector items");
+        };
+        let item = items[0].clone();
+        let on_select = selector.on_select.clone();
+
+        let err = execute_selector_handler(&mut cfg, &on_select, &ctx, &item, "")
+            .expect_err("selector handler should fail");
+        let pretty = err.pretty();
+        assert!(
+            pretty.contains("requires a held triggering key"),
+            "unexpected error: {pretty}"
+        );
+    }
+
+    #[test]
+    fn repeated_action_rejects_nested_until_keyup() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("r", "repeat", function(actx)
+        actx:until_keyup(action.shell("echo tick"))
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "r").kind.clone() else {
+            panic!("expected handler binding");
+        };
+
+        let err = execute_handler_with_permission(
             &mut cfg,
-            &mut stack,
-            &base_ctx("TestApp", false, 0),
-            &base_style,
+            &handler,
+            &ctx,
+            ActionRepeatPermission::RepeatedAction,
         )
-        .expect("render");
-        let binding = find_binding(&out.rendered, "a");
-        assert!(binding.flags.global);
-        assert!(binding.mode_capture);
-        let repeat = binding.flags.repeat.expect("repeat options");
-        assert_eq!(repeat.delay_ms, Some(1));
-        assert_eq!(repeat.interval_ms, Some(2));
+        .expect_err("execute should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("nested"), "unexpected error: {pretty}");
     }
 
     #[test]
@@ -408,25 +622,23 @@ end)
         let binding = find_binding(&root.rendered, "m").clone();
         push_mode(&mut stack, &binding);
 
-        let child = render_stack(
+        let ctx = base_ctx("TestApp", true, 1);
+        let child = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render child");
+        assert_handler_execs(
             &mut cfg,
-            &mut stack,
-            &base_ctx("TestApp", true, 1),
-            &base_style,
-        )
-        .expect("render child");
-        assert!(matches!(
-            find_binding(&child.rendered, "k").kind,
-            BindingKind::Action(Action::ChangeVolume(5))
-        ));
-        assert!(matches!(
-            find_binding(&child.rendered, "j").kind,
-            BindingKind::Action(Action::ChangeVolume(-5))
-        ));
-        assert!(matches!(
-            find_binding(&child.rendered, "1").kind,
-            BindingKind::Action(Action::SetVolume(50))
-        ));
+            &child.rendered,
+            "k",
+            &ctx,
+            &Action::ChangeVolume(5),
+        );
+        assert_handler_execs(
+            &mut cfg,
+            &child.rendered,
+            "j",
+            &ctx,
+            &Action::ChangeVolume(-5),
+        );
+        assert_handler_execs(&mut cfg, &child.rendered, "1", &ctx, &Action::SetVolume(50));
     }
 
     #[test]
@@ -495,7 +707,7 @@ end)
     }
 
     #[test]
-    fn render_stack_reclaims_temporary_selector_tables_between_renders() {
+    fn handler_execution_reclaims_temporary_selector_tables_between_calls() {
         let source = r#"
 local function synthetic_applications()
     local items = {}
@@ -525,12 +737,16 @@ end)
         let mut stack = vec![root_frame(&cfg)];
 
         let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
-        assert_eq!(find_binding(&out.rendered, "a").desc, "Selector");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "a").kind.clone() else {
+            panic!("expected handler binding");
+        };
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        assert_selector_len(&result.effects, 768);
         let baseline_heap = cfg.vm.heap_used_bytes();
 
         for _ in 0..24 {
-            let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
-            assert_eq!(find_binding(&out.rendered, "a").desc, "Selector");
+            let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+            assert_selector_len(&result.effects, 768);
         }
 
         let retained_heap = cfg.vm.heap_used_bytes();
@@ -541,13 +757,13 @@ end)
     fn handler_execution_reclaims_temporary_tables_between_calls() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("h", "Handler", action.run(function(actx)
+    menu:bind("h", "Handler", function(actx)
         local scratch = {}
         local payload = string.rep("x", 2048)
         for i = 1, 768 do
             scratch[i] = { path = payload .. i }
         end
-    end))
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -602,8 +818,12 @@ end)
         let ctx = base_ctx("TestApp", false, 0);
         let mut stack = vec![root_frame(&cfg)];
         let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
-        let BindingKind::Selector(selector) = find_binding(&out.rendered, "a").kind.clone() else {
-            panic!("expected selector binding");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "a").kind.clone() else {
+            panic!("expected handler binding");
+        };
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
+        let Effect::Select(selector) = result.effects[0].clone() else {
+            panic!("expected selector effect: {:?}", result.effects);
         };
 
         let mut items = selector
@@ -622,5 +842,33 @@ end)
 
         let retained_heap = cfg.vm.heap_used_bytes();
         assert_heap_plateaus(baseline_heap, retained_heap);
+    }
+
+    fn assert_handler_execs(
+        cfg: &mut DynamicConfig,
+        rendered: &RenderedState,
+        ident: &str,
+        ctx: &ModeCtx,
+        expected: &Action,
+    ) {
+        let BindingKind::Handler(handler) = &find_binding(rendered, ident).kind else {
+            panic!("expected handler binding");
+        };
+        let result = execute_handler(cfg, handler, ctx).expect("execute handler");
+        assert!(
+            matches!(&result.effects[0], Effect::Exec(action) if action == expected),
+            "unexpected effects: {:?}",
+            result.effects
+        );
+    }
+
+    fn assert_selector_len(effects: &[Effect], expected_len: usize) {
+        let Effect::Select(selector) = &effects[0] else {
+            panic!("expected selector effect: {effects:?}");
+        };
+        let SelectorItems::Static(items) = &selector.items else {
+            panic!("expected static selector items");
+        };
+        assert_eq!(items.len(), expected_len);
     }
 }

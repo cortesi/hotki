@@ -3,8 +3,7 @@
 use std::vec::IntoIter;
 
 use ruau::vm::{
-    FromLua, Function, MultiValue, RuntimeError, Scope, ScopedValue, Table,
-    serde::from_scoped_value,
+    FromLua, Function, MultiValue, RuntimeError, Scope, ScopedValue, serde::from_scoped_value,
 };
 use serde::Deserialize;
 
@@ -83,17 +82,6 @@ impl<'s> HostArgs<'s> {
     /// Decode a required function argument.
     pub(super) fn function(&mut self, context: &str) -> Result<Function<'s>, RuntimeError> {
         expect_function_value(self.required(context)?, context)
-    }
-
-    /// Decode a required table argument.
-    pub(super) fn table(&mut self, context: &str) -> Result<Table<'s>, RuntimeError> {
-        match self.required(context)? {
-            ScopedValue::Table(table) => Ok(table),
-            other => Err(RuntimeError::runtime(format!(
-                "{context} must be a table, got {}",
-                other.type_name()
-            ))),
-        }
     }
 }
 

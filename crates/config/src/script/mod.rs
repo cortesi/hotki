@@ -1,5 +1,7 @@
 //! Luau-backed configuration runtime.
 
+/// Trusted Luau action-table prelude.
+mod action_prelude;
 /// Application discovery for selector providers.
 mod apps;
 /// Loaded config state and source tracking.
@@ -8,7 +10,6 @@ pub(crate) mod diagnostics;
 pub mod engine;
 /// Handler execution bridge.
 mod handler;
-mod host_action;
 mod host_args;
 mod host_hotki;
 mod host_parse;
@@ -35,6 +36,6 @@ pub(crate) use render::render_stack;
 pub(crate) use selector::SelectorItems;
 pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem};
 pub(crate) use types::{
-    ActionCtx, Binding, BindingFlags, BindingKind, Effect, HandlerRef, ModeCtx, ModeFrame, ModeRef,
-    NavRequest, RenderedState, RepeatSpec, SourcePos,
+    ActionCtx, ActionRepeatPermission, Binding, BindingFlags, BindingKind, Effect, HandlerRef,
+    ModeCtx, ModeFrame, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos,
 };

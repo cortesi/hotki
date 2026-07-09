@@ -179,6 +179,7 @@ impl Engine {
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
             self.repeater.clear_async().await;
+            self.action_repeater.clear_async().await;
             self.relay.stop_all();
         }
 
