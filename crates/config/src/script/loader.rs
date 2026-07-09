@@ -15,7 +15,6 @@ use ruau::{
 
 use super::{
     DynamicConfig, ModeCtx, ModeRef,
-    action_prelude::ACTION_PRELUDE,
     config::SourceMap,
     diagnostics,
     host_hotki::HotkiModule,
@@ -119,25 +118,9 @@ fn build_vm(
         .host_type(mode_builder_type())
         .host_type(mode_context_type())
         .host_type(action_context_type())
-        .trusted_host()
+        .sandboxed()
         .build()
         .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))
-        .and_then(|mut vm| {
-            install_action_prelude(&mut vm, path)?;
-            vm.sandbox_for_untrusted()
-                .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))?;
-            Ok(vm)
-        })
-}
-
-/// Install trusted Luau action sugar before sealing the VM for user config.
-fn install_action_prelude(vm: &mut Vm, path: Option<&Path>) -> Result<(), Error> {
-    vm.step(|scope| {
-        scope
-            .eval_chunk(ACTION_PRELUDE, b"=hotki_action_prelude")
-            .map(|_| ())
-    })
-    .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err.message()))
 }
 
 /// Invoke the configured root mode once to validate its output shape.

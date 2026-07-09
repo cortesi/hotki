@@ -1,7 +1,5 @@
 //! Luau-backed configuration runtime.
 
-/// Trusted Luau action-table prelude.
-mod action_prelude;
 /// Application discovery for selector providers.
 mod apps;
 /// Loaded config state and source tracking.

@@ -157,7 +157,7 @@ pub struct Engine {
     key_tracker: KeyStateTracker,
     /// Configuration
     config: Arc<tokio::sync::Mutex<Option<dyn_engine::DynamicConfig>>>,
-    /// Optional path used for `action.reload_config`.
+    /// Optional path used for `ctx:reload_config()`.
     config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
     /// Cached focus snapshot from World events.
     focus_ctx: Arc<Mutex<Option<hotki_protocol::FocusSnapshot>>>,

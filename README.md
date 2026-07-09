@@ -57,25 +57,31 @@ Minimal `config.luau`:
 ```luau
 hotki.root(function(menu, ctx)
     if ctx.hud then
-        menu:bind("esc", "Back", action.pop, {
+        menu:bind("esc", "Back", function(actx)
+            actx:pop()
+        end, {
             global = true,
             hidden = true,
         })
     end
 
     menu:submenu("shift+cmd+0", "Main", function(root, inner)
-        root:bind("r", "Reload", action.reload_config)
-        root:bind("a", "Run Application", action.selector({
-            title = "Run Application",
-            items = hotki.applications,
-            on_select = function(
-                actx: ActionContext,
-                item: SelectorItem<ApplicationInfo>,
-                query: string
-            )
-                actx:open(item.data.path)
-            end,
-        }))
+        root:bind("r", "Reload", function(actx)
+            actx:reload_config()
+        end)
+        root:bind("a", "Run Application", function(actx)
+            actx:select({
+                title = "Run Application",
+                items = hotki.applications,
+                on_select = function(
+                    select_ctx: ActionContext,
+                    item: SelectorItem<ApplicationInfo>,
+                    query: string
+                )
+                    select_ctx:open(item.data.path)
+                end,
+            })
+        end)
     end, {
         capture = true,
     })

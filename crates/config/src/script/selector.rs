@@ -118,7 +118,7 @@ pub fn parse_selector_config<'s>(
     value: ScopedValue<'s>,
 ) -> Result<SelectorConfig, RuntimeError> {
     let ScopedValue::Table(table) = value else {
-        return Err(RuntimeError::runtime("action.selector expects a table"));
+        return Err(RuntimeError::runtime("ctx:select expects a table"));
     };
 
     let items_value: ScopedValue<'_> = table

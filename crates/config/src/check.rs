@@ -477,13 +477,15 @@ hotki.root(render)
             root.join("config.luau"),
             r#"
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Select", action.selector({
-        items = {
-            { label = 123, data = "bad" },
-        },
-        on_select = function(actx, item, query)
-        end,
-    }))
+    menu:bind("a", "Select", function(actx)
+        actx:select({
+            items = {
+                { label = 123, data = "bad" },
+            },
+            on_select = function(select_ctx, item, query)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -507,12 +509,14 @@ local items: SelectorItemList<string> = {
 }
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Select", action.selector({
-        items = items,
-        on_select = function(actx, item: SelectorItem<string>, query)
-            actx:notify("info", item.label, item.data)
-        end,
-    }))
+    menu:bind("a", "Select", function(actx)
+        actx:select({
+            items = items,
+            on_select = function(select_ctx, item: SelectorItem<string>, query)
+                select_ctx:notify("info", item.label, item.data)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -531,12 +535,14 @@ end)
 local items: SelectorStringList = { "Alpha", "Beta" }
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Select", action.selector({
-        items = items,
-        on_select = function(actx, item: SelectorItem<string>, query)
-            actx:notify("info", item.label, item.data)
-        end,
-    }))
+    menu:bind("a", "Select", function(actx)
+        actx:select({
+            items = items,
+            on_select = function(select_ctx, item: SelectorItem<string>, query)
+                select_ctx:notify("info", item.label, item.data)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -561,12 +567,14 @@ end
 local provider: SelectorItemProvider<string> = items
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Select", action.selector({
-        items = provider,
-        on_select = function(actx, item: SelectorItem<string>, query)
-            actx:notify("info", item.label, item.data)
-        end,
-    }))
+    menu:bind("a", "Select", function(actx)
+        actx:select({
+            items = provider,
+            on_select = function(select_ctx, item: SelectorItem<string>, query)
+                select_ctx:notify("info", item.label, item.data)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -589,12 +597,14 @@ end
 local provider: SelectorStringProvider = items
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Select", action.selector({
-        items = provider,
-        on_select = function(actx, item: SelectorItem<string>, query)
-            actx:notify("info", item.label, item.data)
-        end,
-    }))
+    menu:bind("a", "Select", function(actx)
+        actx:select({
+            items = provider,
+            on_select = function(select_ctx, item: SelectorItem<string>, query)
+                select_ctx:notify("info", item.label, item.data)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -622,12 +632,14 @@ local function visible_apps(ctx: ModeContext): SelectorItemList<ApplicationInfo>
 end
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Apps", action.selector({
-        items = visible_apps,
-        on_select = function(actx, item: SelectorItem<ApplicationInfo>, query)
-            actx:open(item.data.path)
-        end,
-    }))
+    menu:bind("a", "Apps", function(actx)
+        actx:select({
+            items = visible_apps,
+            on_select = function(select_ctx, item: SelectorItem<ApplicationInfo>, query)
+                select_ctx:open(item.data.path)
+            end,
+        })
+    end)
 end)
 "#,
         )
@@ -638,14 +650,13 @@ end)
     }
 
     #[test]
-    fn check_rejects_action_run_as_missing_config_surface() {
-        let root = test_dir("removed-action-run");
+    fn check_rejects_action_global_as_missing_config_surface() {
+        let root = test_dir("removed-action-global");
         fs::write(
             root.join("config.luau"),
             r#"
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Bad", action.run(function(actx)
-    end))
+    menu:bind("a", "Bad", action.reload_config)
 end)
 "#,
         )
@@ -653,7 +664,7 @@ end)
 
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
-        assert!(pretty.contains("run"), "unexpected error: {pretty}");
+        assert!(pretty.contains("action"), "unexpected error: {pretty}");
     }
 
     #[test]
@@ -664,7 +675,8 @@ end)
             r#"
 hotki.root(function(menu, ctx)
     menu:bind("a", "Bad", function(actx)
-        actx:exec(action.shell("true"))
+        actx:exec(function(inner)
+        end)
     end)
 end)
 "#,
@@ -677,8 +689,8 @@ end)
     }
 
     #[test]
-    fn check_accepts_closure_actions_and_action_sugar() {
-        let root = test_dir("closure-actions-and-action-sugar");
+    fn check_accepts_closure_actions_and_context_effects() {
+        let root = test_dir("closure-actions-and-context-effects");
         fs::write(
             root.join("config.luau"),
             r#"
@@ -687,12 +699,16 @@ hotki.root(function(menu, ctx)
         actx:shell("true")
         actx:pop()
     end)
-    menu:bind("b", "Selector", action.selector({
-        items = { "One" },
-        on_select = function(actx, item, query)
-        end,
-    }))
-    menu:bind("c", "Constant", action.reload_config)
+    menu:bind("b", "Selector", function(actx)
+        actx:select({
+            items = { "One" },
+            on_select = function(select_ctx, item, query)
+            end,
+        })
+    end)
+    menu:bind("c", "Reload", function(actx)
+        actx:reload_config()
+    end)
 end)
 "#,
         )

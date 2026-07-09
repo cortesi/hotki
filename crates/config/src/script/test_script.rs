@@ -128,7 +128,9 @@ end)
     fn chord_parse_errors_include_location() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("cmd+bogus", "bad", action.shell("true"))
+    menu:bind("cmd+bogus", "bad", function(actx)
+        actx:shell("true")
+    end)
 end)
 "#;
         let err = match load_dynamic_config_from_string(source, None) {
@@ -157,8 +159,12 @@ end)
     fn duplicate_chord_warns_and_first_wins() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("a", "first", action.shell("true"))
-    menu:bind("a", "second", action.shell("true"))
+    menu:bind("a", "first", function(actx)
+        actx:shell("true")
+    end)
+    menu:bind("a", "second", function(actx)
+        actx:shell("true")
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -214,11 +220,15 @@ end)
 hotki.root(function(menu, ctx)
     if ctx:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
-            child:bind("x", "x", action.shell("true"))
+            child:bind("x", "x", function(actx)
+                actx:shell("true")
+            end)
         end)
     else
         menu:submenu("a", "child-b", function(child, inner)
-            child:bind("y", "y", action.shell("true"))
+            child:bind("y", "y", function(actx)
+                actx:shell("true")
+            end)
         end)
     end
 end)
@@ -245,11 +255,15 @@ end)
 hotki.root(function(menu, ctx)
     if ctx:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
-            child:bind("x", "x", action.shell("true"))
+            child:bind("x", "x", function(actx)
+                actx:shell("true")
+            end)
         end)
     elseif ctx:app_matches("B") then
         menu:submenu("b", "child-b", function(child, inner)
-            child:bind("y", "y", action.shell("true"))
+            child:bind("y", "y", function(actx)
+                actx:shell("true")
+            end)
         end)
     end
 end)
@@ -309,11 +323,10 @@ end)
     }
 
     #[test]
-    fn removed_action_run_fails_normally() {
+    fn removed_action_global_fails_normally() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("h", "handler", action.run(function(actx)
-    end))
+    menu:bind("h", "handler", action.reload_config)
 end)
 "#;
         let err = match load_dynamic_config_from_string(source, None) {
@@ -321,24 +334,7 @@ end)
             Err(err) => err,
         };
         let pretty = err.pretty();
-        assert!(pretty.contains("run"), "unexpected error: {pretty}");
-    }
-
-    #[test]
-    fn action_prelude_table_is_read_only() {
-        let source = r#"
-action.shell = function(ctx)
-end
-
-hotki.root(function(menu, ctx)
-end)
-"#;
-        let err = match load_dynamic_config_from_string(source, None) {
-            Ok(_) => panic!("load should fail"),
-            Err(err) => err,
-        };
-        let pretty = err.pretty();
-        assert!(pretty.contains("action.shell"), "{pretty}");
+        assert!(pretty.contains("action"), "unexpected error: {pretty}");
     }
 
     #[test]
@@ -346,7 +342,8 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:bind("h", "handler", function(actx)
-        actx:exec(action.shell("true"))
+        actx:exec(function(inner)
+        end)
     end)
 end)
 "#;
@@ -368,16 +365,18 @@ end)
     fn selector_action_queues_selector_effect() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Selector", action.selector({
-        title = "Run",
-        placeholder = "Search...",
-        items = {
-            "Safari",
-            { label = "Chrome", sublabel = "/Applications/Chrome.app", data = 123 },
-        },
-        on_select = function(actx, item, query)
-        end,
-    }))
+    menu:bind("a", "Selector", function(actx)
+        actx:select({
+            title = "Run",
+            placeholder = "Search...",
+            items = {
+                "Safari",
+                { label = "Chrome", sublabel = "/Applications/Chrome.app", data = 123 },
+            },
+            on_select = function(select_ctx, item, query)
+            end,
+        })
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -417,7 +416,9 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
-        child:bind("x", "x", action.shell("true"))
+        child:bind("x", "x", function(actx)
+            actx:shell("true")
+        end)
     end, {
         global = true,
         capture = true,
@@ -441,7 +442,9 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
-        actx:until_keyup(action.shell("echo tick"), {
+        actx:until_keyup(function(repeat_ctx)
+            repeat_ctx:shell("echo tick")
+        end, {
             delay_ms = 125,
             interval_ms = 250,
         })
@@ -471,8 +474,12 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
-        actx:until_keyup(action.shell("echo one"))
-        actx:until_keyup(action.shell("echo two"))
+        actx:until_keyup(function(repeat_ctx)
+            repeat_ctx:shell("echo one")
+        end)
+        actx:until_keyup(function(repeat_ctx)
+            repeat_ctx:shell("echo two")
+        end)
     end)
 end)
 "#;
@@ -534,12 +541,16 @@ end)
     fn selector_handler_rejects_until_keyup_without_held_key() {
         let source = r#"
 hotki.root(function(menu, ctx)
-    menu:bind("s", "selector", action.selector({
-        items = { "One" },
-        on_select = function(actx, item, query)
-            actx:until_keyup(action.shell("echo tick"))
-        end,
-    }))
+    menu:bind("s", "selector", function(actx)
+        actx:select({
+            items = { "One" },
+            on_select = function(select_ctx, item, query)
+                select_ctx:until_keyup(function(repeat_ctx)
+                    repeat_ctx:shell("echo tick")
+                end)
+            end,
+        })
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -574,7 +585,9 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
-        actx:until_keyup(action.shell("echo tick"))
+        actx:until_keyup(function(repeat_ctx)
+            repeat_ctx:shell("echo tick")
+        end)
     end)
 end)
 "#;
@@ -603,9 +616,15 @@ end)
         let source = r#"
 hotki.root(function(menu, ctx)
     menu:submenu("m", "music", function(music, inner)
-        music:bind("k", "vol up", action.change_volume(5))
-        music:bind("j", "vol down", action.change_volume(-5))
-        music:bind("1", "set volume", action.set_volume(50))
+        music:bind("k", "vol up", function(actx)
+            actx:change_volume(5)
+        end)
+        music:bind("j", "vol down", function(actx)
+            actx:change_volume(-5)
+        end)
+        music:bind("1", "set volume", function(actx)
+            actx:set_volume(50)
+        end)
     end)
 end)
 "#;
@@ -646,7 +665,9 @@ end)
         let source = r##"
 hotki.root(function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
-        child:bind("x", "x", action.shell("true"))
+        child:bind("x", "x", function(actx)
+            actx:shell("true")
+        end)
     end)
 end)
 "##;
@@ -691,7 +712,9 @@ hotki.root(function(menu, ctx)
     end
 
     if total > 0 then
-        menu:bind("a", "loop", action.shell("true"))
+        menu:bind("a", "loop", function(actx)
+            actx:shell("true")
+        end)
     end
 end)
 "#;
@@ -723,12 +746,14 @@ local function synthetic_applications()
 end
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Selector", action.selector({
-        title = "Run Application",
-        items = synthetic_applications(),
-        on_select = function(actx, item, query)
-        end,
-    }))
+    menu:bind("a", "Selector", function(actx)
+        actx:select({
+            title = "Run Application",
+            items = synthetic_applications(),
+            on_select = function(select_ctx, item, query)
+            end,
+        })
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
@@ -803,14 +828,16 @@ local function synthetic_applications()
 end
 
 hotki.root(function(menu, ctx)
-    menu:bind("a", "Selector", action.selector({
-        title = "Run Application",
-        items = function(inner)
-            return synthetic_applications()
-        end,
-        on_select = function(actx, item, query)
-        end,
-    }))
+    menu:bind("a", "Selector", function(actx)
+        actx:select({
+            title = "Run Application",
+            items = function(inner)
+                return synthetic_applications()
+            end,
+            on_select = function(select_ctx, item, query)
+            end,
+        })
+    end)
 end)
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");

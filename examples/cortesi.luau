@@ -10,12 +10,6 @@ local GLOBAL_HIDDEN: BindingOptions = { global = true, hidden = true }
 local STAY: BindingOptions = { stay = true }
 local CAPTURE: SubmenuOptions = { capture = true }
 
-local function repeat_action(act: Action): Action
-    return function(actx: ActionContext)
-        actx:until_keyup(act, DEFAULT_REPEAT)
-    end
-end
-
 local function yabai_grid(
     cols: number,
     rows: number,
@@ -24,15 +18,17 @@ local function yabai_grid(
     w: number,
     h: number
 ): Action
-    return action.shell(string.format(
-        "yabai -m window --grid %d:%d:%d:%d:%d:%d",
-        rows,
-        cols,
-        x,
-        y,
-        w,
-        h
-    ))
+    return function(actx: ActionContext)
+        actx:shell(string.format(
+            "yabai -m window --grid %d:%d:%d:%d:%d:%d",
+            rows,
+            cols,
+            x,
+            y,
+            w,
+            h
+        ))
+    end
 end
 
 local function yabai_cell(cols: number, rows: number, x: number, y: number): Action
@@ -40,7 +36,8 @@ local function yabai_cell(cols: number, rows: number, x: number, y: number): Act
 end
 
 local function yabai_cell_move(cols: number, rows: number, dx: number, dy: number): Action
-    return action.shell(string.format([[
+    return function(actx: ActionContext)
+        actx:shell(string.format([[
 osascript -l JavaScript \
   -e 'const app = Application.currentApplication(); app.includeStandardAdditions = true;' \
   -e 'const cols = %d; const rows = %d; const dx = %d; const dy = %d;' \
@@ -55,74 +52,120 @@ osascript -l JavaScript \
   -e 'x = Math.min(Math.max(x + dx, 0), cols - w); y = Math.min(Math.max(y + dy, 0), rows - h);' \
   -e 'const spec = rows + ":" + cols + ":" + x + ":" + y + ":" + w + ":" + h; app.doShellScript("yabai -m window --grid " + spec);'
 ]], cols, rows, dx, dy))
+    end
 end
 
 local function bind_space_switches(menu: MenuBuilder)
     for i = 1, 9 do
-        local label = tostring(i)
-        menu:bind("cmd+" .. label, label, action.shell(string.format("yabai -m space --focus %d", i)), GLOBAL_HIDDEN)
+        local space = i
+        local label = tostring(space)
+        menu:bind("cmd+" .. label, label, function(actx)
+            actx:shell(string.format("yabai -m space --focus %d", space))
+        end, GLOBAL_HIDDEN)
     end
-    menu:bind("cmd+0", "10", action.shell("yabai -m space --focus 10"), GLOBAL_HIDDEN)
+    menu:bind("cmd+0", "10", function(actx)
+        actx:shell("yabai -m space --focus 10")
+    end, GLOBAL_HIDDEN)
 end
 
 local function bind_move_to_space(menu: MenuBuilder)
     for i = 1, 9 do
-        local label = tostring(i)
-        menu:bind(label, label, action.shell(string.format("yabai -m window --space %d", i)))
+        local space = i
+        local label = tostring(space)
+        menu:bind(label, label, function(actx)
+            actx:shell(string.format("yabai -m window --space %d", space))
+        end)
     end
 end
 
 hotki.root(function(menu, ctx)
-    menu:bind("shift+cmd+p", "Run Application", action.selector({
-        title = "Run Application",
-        placeholder = "Search apps...",
-        items = hotki.applications,
-        on_select = function(
-            actx: ActionContext,
-            item: SelectorItem<ApplicationInfo>,
-            _query: string
-        )
-            actx:open(item.data.path)
-        end,
-    }))
+    menu:bind("shift+cmd+p", "Run Application", function(actx)
+        actx:select({
+            title = "Run Application",
+            placeholder = "Search apps...",
+            items = hotki.applications,
+            on_select = function(
+                select_ctx: ActionContext,
+                item: SelectorItem<ApplicationInfo>,
+                _query: string
+            )
+                select_ctx:open(item.data.path)
+            end,
+        })
+    end)
 
     bind_space_switches(menu)
 
-    menu:bind(
-        "cmd+return",
-        "wezterm window",
-        action.shell("/opt/homebrew/bin/wezterm cli spawn --new-window"),
-        GLOBAL_HIDDEN
-    )
-    menu:bind("shift+cmd+y", "y scratchpad", action.shell("yabai -m window --toggle web"), GLOBAL_HIDDEN)
-    menu:bind("shift+cmd+u", "u scratchpad", action.shell("yabai -m window --toggle web2"), GLOBAL_HIDDEN)
+    menu:bind("cmd+return", "wezterm window", function(actx)
+        actx:shell("/opt/homebrew/bin/wezterm cli spawn --new-window")
+    end, GLOBAL_HIDDEN)
+    menu:bind("shift+cmd+y", "y scratchpad", function(actx)
+        actx:shell("yabai -m window --toggle web")
+    end, GLOBAL_HIDDEN)
+    menu:bind("shift+cmd+u", "u scratchpad", function(actx)
+        actx:shell("yabai -m window --toggle web2")
+    end, GLOBAL_HIDDEN)
 
     if ctx.hud then
-        menu:bind("esc", "Exit", action.exit, GLOBAL_HIDDEN)
-        menu:bind("left", "Pop", action.pop, GLOBAL_HIDDEN)
+        menu:bind("esc", "Exit", function(actx)
+            actx:exit()
+        end, GLOBAL_HIDDEN)
+        menu:bind("left", "Pop", function(actx)
+            actx:pop()
+        end, GLOBAL_HIDDEN)
     end
 
     menu:submenu("shift+cmd+m", "music", function(music, _music_ctx)
-        music:bind("k", "vol up", repeat_action(action.change_volume(5)), STAY)
-        music:bind("j", "vol down", repeat_action(action.change_volume(-5)), STAY)
-        music:bind("l", "next >>", action.shell("spotify next"))
-        music:bind("h", "<< prev", action.shell("spotify prev"))
-        music:bind("p", "play/pause", action.shell("spotify pause"))
-        music:bind("m", "mute", action.mute("toggle"))
-        music:bind("shift+cmd+m", "exit", action.exit, GLOBAL_HIDDEN)
+        music:bind("k", "vol up", function(actx)
+            actx:until_keyup(function(repeat_ctx)
+                repeat_ctx:change_volume(5)
+            end, DEFAULT_REPEAT)
+        end, STAY)
+        music:bind("j", "vol down", function(actx)
+            actx:until_keyup(function(repeat_ctx)
+                repeat_ctx:change_volume(-5)
+            end, DEFAULT_REPEAT)
+        end, STAY)
+        music:bind("l", "next >>", function(actx)
+            actx:shell("spotify next")
+        end)
+        music:bind("h", "<< prev", function(actx)
+            actx:shell("spotify prev")
+        end)
+        music:bind("p", "play/pause", function(actx)
+            actx:shell("spotify pause")
+        end)
+        music:bind("m", "mute", function(actx)
+            actx:mute("toggle")
+        end)
+        music:bind("shift+cmd+m", "exit", function(actx)
+            actx:exit()
+        end, GLOBAL_HIDDEN)
     end, CAPTURE)
 
     menu:submenu("shift+cmd+space", "activate", function(root, _root_ctx)
         root:submenu("h", "hotki", function(sub, _subctx)
-            sub:bind("c", "Clear Notifications", action.clear_notifications)
-            sub:bind("d", "Details", action.show_details("toggle"))
-            sub:bind("r", "Reload Config", action.reload_config)
-            sub:bind("o", "Show Root Keys", action.show_root)
+            sub:bind("c", "Clear Notifications", function(actx)
+                actx:clear_notifications()
+            end)
+            sub:bind("d", "Details", function(actx)
+                actx:show_details("toggle")
+            end)
+            sub:bind("r", "Reload Config", function(actx)
+                actx:reload_config()
+            end)
+            sub:bind("o", "Show Root Keys", function(actx)
+                actx:show_root()
+            end)
         end)
 
         root:submenu("g", "go", function(go, _go_ctx)
-            go:bind("u", "u scratchpad", action.shell("yabai -m window --toggle web2"))
-            go:bind("y", "y scratchpad", action.shell("yabai -m window --toggle web"))
+            go:bind("u", "u scratchpad", function(actx)
+                actx:shell("yabai -m window --toggle web2")
+            end)
+            go:bind("y", "y scratchpad", function(actx)
+                actx:shell("yabai -m window --toggle web")
+            end)
         end)
 
         root:submenu("w", "window", function(win, _win_ctx)
@@ -150,82 +193,150 @@ hotki.root(function(menu, ctx)
                 bind_move_to_space(spaces)
             end)
 
-            win:bind("f", "fullscreen", action.shell("yabai -m window --toggle zoom-fullscreen"))
-            win:bind("n", "native fullscreen", action.shell("yabai -m window --toggle native-fullscreen"))
-            win:bind("u", "set u scratchpad", action.shell("yabai -m window --scratchpad web2"))
-            win:bind("y", "set y scratchpad", action.shell("yabai -m window --scratchpad web"))
+            win:bind("f", "fullscreen", function(actx)
+                actx:shell("yabai -m window --toggle zoom-fullscreen")
+            end)
+            win:bind("n", "native fullscreen", function(actx)
+                actx:shell("yabai -m window --toggle native-fullscreen")
+            end)
+            win:bind("u", "set u scratchpad", function(actx)
+                actx:shell("yabai -m window --scratchpad web2")
+            end)
+            win:bind("y", "set y scratchpad", function(actx)
+                actx:shell("yabai -m window --scratchpad web")
+            end)
         end)
 
-        root:bind("shift+cmd+space", "exit", action.exit, GLOBAL_HIDDEN)
+        root:bind("shift+cmd+space", "exit", function(actx)
+            actx:exit()
+        end, GLOBAL_HIDDEN)
     end, CAPTURE)
 
     if ctx:app_matches("WezTerm") then
         menu:submenu("shift+cmd+j", "wezterm", function(app_menu, _app_ctx)
             app_menu:submenu("r", "resize pane", function(sub, _subctx)
-                sub:bind("k", "up", action.relay("ctrl+cmd+shift+k"), STAY)
-                sub:bind("j", "down", action.relay("ctrl+cmd+shift+j"), STAY)
-                sub:bind("h", "left", action.relay("ctrl+cmd+shift+h"), STAY)
-                sub:bind("l", "right", action.relay("ctrl+cmd+shift+l"), STAY)
+                sub:bind("k", "up", function(actx)
+                    actx:relay("ctrl+cmd+shift+k")
+                end, STAY)
+                sub:bind("j", "down", function(actx)
+                    actx:relay("ctrl+cmd+shift+j")
+                end, STAY)
+                sub:bind("h", "left", function(actx)
+                    actx:relay("ctrl+cmd+shift+h")
+                end, STAY)
+                sub:bind("l", "right", function(actx)
+                    actx:relay("ctrl+cmd+shift+l")
+                end, STAY)
             end)
 
             app_menu:submenu("s", "split pane", function(sub, _subctx)
-                sub:bind("h", "left", action.relay("ctrl+shift+cmd+a"))
-                sub:bind("l", "right", action.relay("ctrl+shift+cmd+s"))
-                sub:bind("k", "up", action.relay("ctrl+shift+cmd+d"))
-                sub:bind("j", "down", action.relay("ctrl+shift+cmd+f"))
+                sub:bind("h", "left", function(actx)
+                    actx:relay("ctrl+shift+cmd+a")
+                end)
+                sub:bind("l", "right", function(actx)
+                    actx:relay("ctrl+shift+cmd+s")
+                end)
+                sub:bind("k", "up", function(actx)
+                    actx:relay("ctrl+shift+cmd+d")
+                end)
+                sub:bind("j", "down", function(actx)
+                    actx:relay("ctrl+shift+cmd+f")
+                end)
             end)
 
-            app_menu:bind("t", "toggle tabs", action.relay("ctrl+shift+cmd+t"))
+            app_menu:bind("t", "toggle tabs", function(actx)
+                actx:relay("ctrl+shift+cmd+t")
+            end)
         end)
     elseif ctx:app_matches("Brave") then
         menu:submenu("shift+cmd+j", "brave", function(app_menu, _app_ctx)
             app_menu:submenu("b", "bookmarks", function(sub, _subctx)
-                sub:bind("b", "toggle bar", action.relay("shift+cmd+b"))
+                sub:bind("b", "toggle bar", function(actx)
+                    actx:relay("shift+cmd+b")
+                end)
             end)
         end)
     elseif ctx:app_matches("Obsidian") then
         menu:submenu("shift+cmd+j", "obsidian", function(app_menu, _app_ctx)
             app_menu:submenu("c", "content", function(content, _content_ctx)
                 content:submenu("i", "insert", function(insert, _insert_ctx)
-                    insert:bind("a", "attachment", action.relay("ctrl+shift+cmd+6"))
-                    insert:bind("c", "code", action.relay("ctrl+shift+cmd+7"))
-                    insert:bind("f", "footnote", action.relay("ctrl+shift+cmd+8"))
-                    insert:bind("l", "link", action.relay("ctrl+shift+cmd+9"))
+                    insert:bind("a", "attachment", function(actx)
+                        actx:relay("ctrl+shift+cmd+6")
+                    end)
+                    insert:bind("c", "code", function(actx)
+                        actx:relay("ctrl+shift+cmd+7")
+                    end)
+                    insert:bind("f", "footnote", function(actx)
+                        actx:relay("ctrl+shift+cmd+8")
+                    end)
+                    insert:bind("l", "link", function(actx)
+                        actx:relay("ctrl+shift+cmd+9")
+                    end)
                 end)
 
                 content:submenu("t", "table", function(tbl, _table_ctx)
-                    tbl:bind("n", "new", action.relay("ctrl+shift+cmd+y"), STAY)
+                    tbl:bind("n", "new", function(actx)
+                        actx:relay("ctrl+shift+cmd+y")
+                    end, STAY)
                     tbl:submenu("i", "insert", function(insert, _insert_ctx)
-                        insert:bind("h", "column left", action.relay("ctrl+shift+cmd+u"), STAY)
-                        insert:bind("l", "column right", action.relay("ctrl+shift+cmd+i"), STAY)
-                        insert:bind("j", "column above", action.relay("ctrl+shift+cmd+o"), STAY)
-                        insert:bind("k", "column below", action.relay("ctrl+shift+cmd+p"), STAY)
+                        insert:bind("h", "column left", function(actx)
+                            actx:relay("ctrl+shift+cmd+u")
+                        end, STAY)
+                        insert:bind("l", "column right", function(actx)
+                            actx:relay("ctrl+shift+cmd+i")
+                        end, STAY)
+                        insert:bind("j", "column above", function(actx)
+                            actx:relay("ctrl+shift+cmd+o")
+                        end, STAY)
+                        insert:bind("k", "column below", function(actx)
+                            actx:relay("ctrl+shift+cmd+p")
+                        end, STAY)
                     end)
                     tbl:submenu("d", "delete", function(delete_menu, _delete_ctx)
-                        delete_menu:bind("r", "row", action.relay("ctrl+shift+cmd+m"), STAY)
-                        delete_menu:bind("c", "column", action.relay("ctrl+shift+cmd+n"), STAY)
+                        delete_menu:bind("r", "row", function(actx)
+                            actx:relay("ctrl+shift+cmd+m")
+                        end, STAY)
+                        delete_menu:bind("c", "column", function(actx)
+                            actx:relay("ctrl+shift+cmd+n")
+                        end, STAY)
                     end)
                 end)
             end)
 
             app_menu:submenu("f", "file", function(file_menu, _file_ctx)
-                file_menu:bind("f", "show in finder", action.relay("ctrl+shift+cmd+4"))
-                file_menu:bind("n", "rename", action.relay("ctrl+shift+cmd+5"))
+                file_menu:bind("f", "show in finder", function(actx)
+                    actx:relay("ctrl+shift+cmd+4")
+                end)
+                file_menu:bind("n", "rename", function(actx)
+                    actx:relay("ctrl+shift+cmd+5")
+                end)
             end)
 
             app_menu:submenu("s", "split", function(split, _split_ctx)
-                split:bind("l", "right", action.relay("ctrl+shift+cmd+2"))
-                split:bind("j", "down", action.relay("ctrl+shift+cmd+1"))
+                split:bind("l", "right", function(actx)
+                    actx:relay("ctrl+shift+cmd+2")
+                end)
+                split:bind("j", "down", function(actx)
+                    actx:relay("ctrl+shift+cmd+1")
+                end)
             end)
 
             app_menu:submenu("u", "utils", function(utils, _utils_ctx)
-                utils:bind("s", "shell here", action.relay("ctrl+shift+cmd+s"))
+                utils:bind("s", "shell here", function(actx)
+                    actx:relay("ctrl+shift+cmd+s")
+                end)
             end)
 
             app_menu:submenu("w", "window", function(window, _window_ctx)
-                window:bind("h", "sidebar left", action.relay("ctrl+shift+cmd+h"))
-                window:bind("l", "sidebar right", action.relay("ctrl+shift+cmd+l"))
-                window:bind("s", "settings", action.relay("ctrl+shift+cmd+3"))
+                window:bind("h", "sidebar left", function(actx)
+                    actx:relay("ctrl+shift+cmd+h")
+                end)
+                window:bind("l", "sidebar right", function(actx)
+                    actx:relay("ctrl+shift+cmd+l")
+                end)
+                window:bind("s", "settings", function(actx)
+                    actx:relay("ctrl+shift+cmd+3")
+                end)
             end)
         end)
     end

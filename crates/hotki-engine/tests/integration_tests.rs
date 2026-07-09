@@ -25,7 +25,9 @@ fn focus_change_triggers_rerender() {
             r#"
             hotki.root(function(menu, ctx)
               if ctx:app_matches("Safari") then
-                menu:bind("a", "a", action.shell("true"))
+                menu:bind("a", "a", function(actx)
+                  actx:shell("true")
+                end)
               end
             end)
             "#,
@@ -70,7 +72,9 @@ fn mode_entry_and_pop_updates_depth() {
             r#"
             hotki.root(function(menu, ctx)
               menu:submenu("cmd+k", "menu", function(child, inner)
-                child:bind("a", "back", action.pop)
+                child:bind("a", "back", function(actx)
+                  actx:pop()
+                end)
               end)
             end)
             "#,
@@ -118,7 +122,9 @@ fn repeat_relay_ticks() {
             r#"
             hotki.root(function(menu, ctx)
               menu:bind("a", "repeat", function(actx)
-                actx:until_keyup(action.relay("b"), {
+                actx:until_keyup(function(repeat_ctx)
+                  repeat_ctx:relay("b")
+                end, {
                   delay_ms = 100,
                   interval_ms = 100,
                 })
@@ -249,7 +255,9 @@ fn capture_mode_sets_capture_all() {
             hotki.root(function(menu, ctx)
               menu:submenu("cmd+k", "cap", function(child, inner)
                 child:capture()
-                child:bind("a", "back", action.pop)
+                child:bind("a", "back", function(actx)
+                  actx:pop()
+                end)
               end)
             end)
             "#,
@@ -302,7 +310,9 @@ fn reload_config_action_does_not_deadlock() {
         let path = write_test_config(
             r#"
             hotki.root(function(menu, ctx)
-              menu:bind("r", "reload", action.reload_config)
+              menu:bind("r", "reload", function(actx)
+                actx:reload_config()
+              end)
             end)
             "#,
         );
@@ -339,17 +349,19 @@ fn selector_select_runs_handler_with_item_and_query() {
         let path = write_test_config(
             r#"
             hotki.root(function(menu, ctx)
-              menu:bind("cmd+k", "pick", action.selector({
-                title = "Pick",
-                placeholder = "Filter",
-                items = { "Alpha", "Beta" },
-                on_select = function(actx, item, query)
-                  actx:notify("info", "Selected", item.label .. ":" .. query)
-                end,
-                on_cancel = function(actx)
-                  actx:notify("info", "Canceled", "cancel")
-                end,
-              }))
+              menu:bind("cmd+k", "pick", function(actx)
+                actx:select({
+                  title = "Pick",
+                  placeholder = "Filter",
+                  items = { "Alpha", "Beta" },
+                  on_select = function(select_ctx, item, query)
+                    select_ctx:notify("info", "Selected", item.label .. ":" .. query)
+                  end,
+                  on_cancel = function(cancel_ctx)
+                    cancel_ctx:notify("info", "Canceled", "cancel")
+                  end,
+                })
+              end)
             end)
             "#,
         );
@@ -397,15 +409,17 @@ fn selector_cancel_runs_cancel_handler() {
         let path = write_test_config(
             r#"
             hotki.root(function(menu, ctx)
-              menu:bind("cmd+k", "pick", action.selector({
-                items = { "Alpha" },
-                on_select = function(actx, item, query)
-                  actx:notify("info", "Selected", item.label)
-                end,
-                on_cancel = function(actx)
-                  actx:notify("info", "Canceled", "cancel")
-                end,
-              }))
+              menu:bind("cmd+k", "pick", function(actx)
+                actx:select({
+                  items = { "Alpha" },
+                  on_select = function(select_ctx, item, query)
+                    select_ctx:notify("info", "Selected", item.label)
+                  end,
+                  on_cancel = function(cancel_ctx)
+                    cancel_ctx:notify("info", "Canceled", "cancel")
+                  end,
+                })
+              end)
             end)
             "#,
         );
@@ -448,7 +462,9 @@ fn render_recovery_truncates_bad_child_mode_to_root() {
               menu:submenu("cmd+k", "bad", function(child, inner)
                 error("child render failed")
               end)
-              menu:bind("x", "ok", action.shell("true"))
+              menu:bind("x", "ok", function(actx)
+                actx:shell("true")
+              end)
             end)
             "#,
         );

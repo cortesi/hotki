@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn runtime_api_returns_config_file() {
         assert!(luau_api().contains("declare hotki: HotkiApi"));
-        assert!(luau_api().contains("declare action: ActionApi"));
+        assert!(!luau_api().contains("declare action"));
         assert!(!luau_api().contains("type Style = {"));
     }
 
@@ -90,7 +90,9 @@ mod tests {
     fn config_api_contains_only_config_declarations() {
         let api = luau_api_surface(LuauApiSurface::Config);
         assert!(api.contains("type Toggle ="));
-        assert!(api.contains("type ActionApi = {"));
+        assert!(api.contains("type Action = (ctx: ActionContext) -> ()"));
+        assert!(api.contains("type ActionContext = {"));
+        assert!(!api.contains("type ActionApi = {"));
         assert!(!api.contains("type Color ="));
         assert!(!api.contains("type Style = {"));
     }
@@ -101,33 +103,32 @@ mod tests {
         assert!(api.contains("type FontWeight ="));
         assert!(api.contains("type Style = {"));
         assert!(!api.contains("type SelectorItem"));
-        assert!(!api.contains("type ActionApi = {"));
+        assert!(!api.contains("type ActionContext = {"));
     }
 
     #[test]
     fn all_api_contains_config_and_style_declarations() {
         let api = luau_api_surface(LuauApiSurface::All);
-        assert!(api.contains("type ActionApi = {"));
+        assert!(api.contains("type ActionContext = {"));
         assert!(api.contains("type Style = {"));
     }
 
     #[test]
     fn api_filter_returns_matching_blocks() {
-        let filtered = luau_api_text(LuauApiSurface::Config, Some("ActionApi"));
-        assert!(filtered.contains("type ActionApi"));
-        assert!(filtered.contains("shell: (cmd: string"));
-        assert!(filtered.contains("selector: <T>(spec: SelectorSpec<T>)"));
-        assert!(filtered.contains("declare action: ActionApi"));
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("ActionContext"));
+        assert!(filtered.contains("type ActionContext"));
+        assert!(filtered.contains("shell: (self: ActionContext"));
+        assert!(filtered.contains("select: <T>(self: ActionContext"));
         assert!(!filtered.contains("type HotkiApi"));
     }
 
     #[test]
-    fn api_filter_action_keeps_action_field_list() {
-        let filtered = luau_api_text(LuauApiSurface::Config, Some("action"));
-        assert!(filtered.contains("type ActionApi"));
-        assert!(filtered.contains("shell: (cmd: string"));
-        assert!(filtered.contains("reload_config: Action"));
-        assert!(filtered.contains("declare action: ActionApi"));
+    fn api_filter_action_keeps_action_type_and_context() {
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("Action"));
+        assert!(filtered.contains("type Action = (ctx: ActionContext) -> ()"));
+        assert!(filtered.contains("type ActionContext"));
+        assert!(!filtered.contains("type ActionApi"));
+        assert!(!filtered.contains("declare action"));
     }
 
     #[test]
@@ -145,7 +146,7 @@ mod tests {
         assert!(filtered.contains("type HotkiApi"));
         assert!(filtered.contains("applications: SelectorItemProvider<ApplicationInfo>"));
         assert!(filtered.contains("declare hotki: HotkiApi"));
-        assert!(!filtered.contains("type ActionApi"));
+        assert!(!filtered.contains("type ActionContext"));
     }
 
     #[test]

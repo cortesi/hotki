@@ -70,20 +70,28 @@ fn demo_config() -> String {
 hotki.root(function(menu, ctx)
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)
     activate:submenu("t", "Tools", function(sub, subctx)
-      sub:bind("n", "Notify", action.shell("echo notify", { ok_notify = "info", err_notify = "warn" }), { stay = true })
-      sub:bind("d", "Details", action.show_details("on"), { stay = true })
-      sub:bind("s", "Selector", action.selector({
-        title = "Pick Demo",
-        placeholder = "Search...",
-        items = { "Alpha", "Beta" },
-        on_select = function(actx, item, query)
-          actx:notify("info", "Selector", item.label .. ":" .. query)
-        end,
-        on_cancel = function(actx)
-          actx:notify("warn", "Selector", "cancel")
-        end,
-      }), { stay = true })
-      sub:bind("esc", "Exit", action.exit, { hidden = true })
+      sub:bind("n", "Notify", function(actx)
+        actx:shell("echo notify", { ok_notify = "info", err_notify = "warn" })
+      end, { stay = true })
+      sub:bind("d", "Details", function(actx)
+        actx:show_details("on")
+      end, { stay = true })
+      sub:bind("s", "Selector", function(actx)
+        actx:select({
+          title = "Pick Demo",
+          placeholder = "Search...",
+          items = { "Alpha", "Beta" },
+          on_select = function(select_ctx, item, query)
+            select_ctx:notify("info", "Selector", item.label .. ":" .. query)
+          end,
+          on_cancel = function(cancel_ctx)
+            cancel_ctx:notify("warn", "Selector", "cancel")
+          end,
+        })
+      end, { stay = true })
+      sub:bind("esc", "Exit", function(actx)
+        actx:exit()
+      end, { hidden = true })
     end)
   end)
 end)
@@ -114,10 +122,12 @@ fn notification_config() -> String {
     format!(
         r#"
 hotki.root(function(menu, ctx)
-  menu:bind("{}", "Native Notification", action.shell("echo native notification", {{
-    ok_notify = "info",
-    err_notify = "warn",
-  }}))
+  menu:bind("{}", "Native Notification", function(actx)
+    actx:shell("echo native notification", {{
+      ok_notify = "info",
+      err_notify = "warn",
+    }})
+  end)
 end)
 "#,
         NOTIFICATION_IDENT

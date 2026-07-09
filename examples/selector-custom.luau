@@ -8,15 +8,17 @@ local items: { SelectorItem<string> } = {
 }
 
 hotki.root(function(menu, ctx)
-    menu:bind("shift+cmd+0", "Pick Item", action.selector({
-        title = "Pick Item",
-        placeholder = "Type to filter...",
-        items = items,
-        on_select = function(actx: ActionContext, item: SelectorItem<string>, query: string)
-            actx:notify("info", "Selected", item.label .. " (query: " .. query .. ")")
-        end,
-        on_cancel = function(actx: ActionContext)
-            actx:notify("info", "Selector", "Cancelled")
-        end,
-    }))
+    menu:bind("shift+cmd+0", "Pick Item", function(actx)
+        actx:select({
+            title = "Pick Item",
+            placeholder = "Type to filter...",
+            items = items,
+            on_select = function(select_ctx: ActionContext, item: SelectorItem<string>, query: string)
+                select_ctx:notify("info", "Selected", item.label .. " (query: " .. query .. ")")
+            end,
+            on_cancel = function(select_ctx: ActionContext)
+                select_ctx:notify("info", "Selector", "Cancelled")
+            end,
+        })
+    end)
 end)

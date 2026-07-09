@@ -19,25 +19,31 @@ A config registers exactly one root renderer:
 ```luau
 hotki.root(function(menu, ctx)
     if ctx.hud then
-        menu:bind("esc", "Back", action.pop, {
+        menu:bind("esc", "Back", function(actx)
+            actx:pop()
+        end, {
             global = true,
             hidden = true,
         })
     end
 
     menu:submenu("shift+cmd+0", "Main", function(root, inner)
-        root:bind("r", "Reload", action.reload_config)
-        root:bind("a", "Run Application", action.selector({
-            title = "Run Application",
-            items = hotki.applications,
-            on_select = function(
-                actx: ActionContext,
-                item: SelectorItem<ApplicationInfo>,
-                query: string
-            )
-                actx:open(item.data.path)
-            end,
-        }))
+        root:bind("r", "Reload", function(actx)
+            actx:reload_config()
+        end)
+        root:bind("a", "Run Application", function(actx)
+            actx:select({
+                title = "Run Application",
+                items = hotki.applications,
+                on_select = function(
+                    select_ctx: ActionContext,
+                    item: SelectorItem<ApplicationInfo>,
+                    query: string
+                )
+                    select_ctx:open(item.data.path)
+                end,
+            })
+        end)
     end, {
         capture = true,
     })
@@ -47,7 +53,6 @@ end)
 ## Core Tables
 
 - `hotki`: root registration and app discovery.
-- `action`: ready-to-bind action functions and builder sugar for `ActionContext` methods.
 
 ## Menu API
 
@@ -60,7 +65,9 @@ Mode renderers receive `(menu, ctx)`.
 Binding options are plain tables:
 
 ```luau
-menu:bind("r", "Relay", action.relay("cmd+c"), {
+menu:bind("r", "Relay", function(ctx)
+    ctx:relay("cmd+c")
+end, {
     stay = true,
     global = false,
     hidden = false,
@@ -81,7 +88,9 @@ type BindingEntry = {
 }
 
 local entries: { BindingEntry } = {
-    { chord = "r", desc = "Reload", action = action.reload_config },
+    { chord = "r", desc = "Reload", action = function(actx)
+        actx:reload_config()
+    end },
     { chord = "n", desc = "Notify", action = function(actx)
         actx:notify("info", "Done", "The handler ran")
     end },
@@ -122,8 +131,6 @@ end
 - `ctx:select(spec)`
 
 Effects queue while the action runs and apply in source order after it returns.
-`action.*` builders are just convenient functions that call these methods on the
-provided context.
 
 Repeat is requested from inside an action:
 
@@ -131,7 +138,9 @@ Repeat is requested from inside an action:
 local FAST_REPEAT: RepeatOptions = { delay_ms = 200, interval_ms = 50 }
 
 menu:bind("down", "Volume down", function(ctx)
-    ctx:until_keyup(action.change_volume(-5), FAST_REPEAT)
+    ctx:until_keyup(function(repeat_ctx)
+        repeat_ctx:change_volume(-5)
+    end, FAST_REPEAT)
 end, { stay = true })
 ```
 
@@ -161,18 +170,20 @@ normal Ruau module system later.
 Selectors accept either a static item list or a provider function:
 
 ```luau
-menu:bind("a", "Run Application", action.selector({
-    title = "Run Application",
-    placeholder = "Search apps...",
-    items = hotki.applications,
-    on_select = function(
-        actx: ActionContext,
-        item: SelectorItem<ApplicationInfo>,
-        query: string
-    )
-        actx:open(item.data.path)
-    end,
-}))
+menu:bind("a", "Run Application", function(ctx)
+    ctx:select({
+        title = "Run Application",
+        placeholder = "Search apps...",
+        items = hotki.applications,
+        on_select = function(
+            select_ctx: ActionContext,
+            item: SelectorItem<ApplicationInfo>,
+            query: string
+        )
+            select_ctx:open(item.data.path)
+        end,
+    })
+end)
 ```
 
 Static items use either string arrays or `{ label, sublabel?, data }` records. Provider functions
@@ -197,6 +208,6 @@ Removed style and theme APIs now fail validation with migration-oriented diagnos
 
 ```bash
 hotki check --config ~/.hotki/config.luau
-hotki api --surface config --filter action
+hotki api --surface config --filter ActionContext
 hotki api --surface style
 ```

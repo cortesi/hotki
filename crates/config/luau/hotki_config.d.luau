@@ -113,28 +113,9 @@ type ActionContext = {
     select: <T>(self: ActionContext, spec: SelectorSpec<T>) -> (),
 }
 
-type ActionApi = {
-    pop: Action,
-    exit: Action,
-    show_root: Action,
-    hide_hud: Action,
-    reload_config: Action,
-    clear_notifications: Action,
-    shell: (cmd: string, opts: ShellOptions?) -> Action,
-    open: (target: string) -> Action,
-    relay: (spec: string) -> Action,
-    show_details: (toggle: Toggle) -> Action,
-    set_volume: (level: number) -> Action,
-    change_volume: (delta: number) -> Action,
-    mute: (toggle: Toggle) -> Action,
-    selector: <T>(spec: SelectorSpec<T>) -> Action,
-}
-
 type HotkiApi = {
     root: (render: ModeRenderer) -> (),
     applications: SelectorItemProvider<ApplicationInfo>,
 }
 
 declare hotki: HotkiApi
-
-declare action: ActionApi
