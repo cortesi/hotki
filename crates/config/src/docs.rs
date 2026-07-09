@@ -1,8 +1,5 @@
 //! Embedded Luau API documentation helpers.
 
-/// Shared declarations used by both behavior configs and style files.
-pub const LUAU_CORE_API: &str = include_str!("../luau/hotki_core.d.luau");
-
 /// Declarations for behavior-oriented `config.luau` files.
 pub const LUAU_CONFIG_API: &str = include_str!("../luau/hotki_config.d.luau");
 
@@ -28,9 +25,9 @@ pub fn luau_api() -> &'static str {
 /// Return an owned declaration bundle for one surface.
 pub fn luau_api_surface(surface: LuauApiSurface) -> String {
     match surface {
-        LuauApiSurface::Config => join_api([LUAU_CORE_API, LUAU_CONFIG_API]),
-        LuauApiSurface::Style => join_api([LUAU_CORE_API, LUAU_STYLE_API]),
-        LuauApiSurface::All => join_api([LUAU_CORE_API, LUAU_CONFIG_API, LUAU_STYLE_API]),
+        LuauApiSurface::Config => join_api([LUAU_CONFIG_API]),
+        LuauApiSurface::Style => join_api([LUAU_STYLE_API]),
+        LuauApiSurface::All => join_api([LUAU_CONFIG_API, LUAU_STYLE_API]),
     }
 }
 
@@ -89,19 +86,28 @@ mod tests {
     }
 
     #[test]
-    fn config_api_includes_core_and_config_declarations() {
+    fn config_api_contains_only_config_declarations() {
         let api = luau_api_surface(LuauApiSurface::Config);
         assert!(api.contains("type Toggle ="));
         assert!(api.contains("type ActionApi = {"));
+        assert!(!api.contains("type Color ="));
         assert!(!api.contains("type Style = {"));
     }
 
     #[test]
-    fn style_api_includes_core_and_style_declarations() {
+    fn style_api_contains_only_style_declarations() {
         let api = luau_api_surface(LuauApiSurface::Style);
         assert!(api.contains("type FontWeight ="));
         assert!(api.contains("type Style = {"));
+        assert!(!api.contains("type SelectorItem"));
         assert!(!api.contains("type ActionApi = {"));
+    }
+
+    #[test]
+    fn all_api_contains_config_and_style_declarations() {
+        let api = luau_api_surface(LuauApiSurface::All);
+        assert!(api.contains("type ActionApi = {"));
+        assert!(api.contains("type Style = {"));
     }
 
     #[test]

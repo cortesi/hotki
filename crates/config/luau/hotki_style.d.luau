@@ -1,3 +1,20 @@
+type Color = string
+type FontWeight =
+    "thin"
+    | "extralight"
+    | "light"
+    | "regular"
+    | "medium"
+    | "semibold"
+    | "bold"
+    | "extrabold"
+    | "black"
+
+type Offset = {
+    x: number,
+    y: number,
+}
+
 type HudMode = "hud" | "mini" | "hide"
 type HudPos = "center" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw"
 type NotifyPos = "left" | "right"

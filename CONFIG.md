@@ -7,9 +7,10 @@ Styling is separate: place optional global style overrides in sibling `~/.hotki/
 > The behavior config and optional style file are statically checked under Luau strict mode during
 > validation. There is no need to add `--!strict` annotations.
 
-The config API surface is defined by [`hotki_core.d.luau`](./crates/config/luau/hotki_core.d.luau)
-and [`hotki_config.d.luau`](./crates/config/luau/hotki_config.d.luau). Use `hotki api` when you
-want the checked-in contract instead of prose.
+The behavior config API surface is defined by
+[`hotki_config.d.luau`](./crates/config/luau/hotki_config.d.luau), while style declarations live in
+[`hotki_style.d.luau`](./crates/config/luau/hotki_style.d.luau). Use `hotki api` when you want the
+checked-in contract instead of prose.
 
 ## Root Config
 

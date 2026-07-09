@@ -1,3 +1,18 @@
+type Toggle = "on" | "off" | "toggle"
+type NotifyKind = "ignore" | "info" | "warn" | "error" | "success"
+
+type ApplicationInfo = {
+    name: string,
+    path: string,
+    bundle_id: string?,
+}
+
+type SelectorItem<T> = {
+    label: string,
+    sublabel: string?,
+    data: T,
+}
+
 type ItemsProvider<T> = (ctx: ModeContext) -> { SelectorItem<T> }
 type StringItemsProvider = (ctx: ModeContext) -> { string }
 
