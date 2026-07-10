@@ -9,7 +9,7 @@ mod tests {
     use mac_keycode::Chord;
 
     use crate::{
-        Action, Error,
+        Action, Error, Style,
         script::{
             ActionRepeatPermission, Binding, BindingKind, DynamicConfig, Effect, ModeCtx,
             ModeFrame, RenderedState, SelectorItems,
@@ -320,6 +320,131 @@ end)
             other => panic!("unexpected third effect: {other:?}"),
         }
         assert!(matches!(result.effects[3], Effect::Nav(_)));
+    }
+
+    #[test]
+    fn replaced_render_callbacks_are_released_and_stale_handles_fail_closed() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("h", "handler", function(actx)
+        actx:notify("info", "live", "")
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+
+        let first = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("first render");
+        drop(first);
+        let second = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("second render");
+        drop(second);
+
+        let invalidated = cfg.runtime.invalidate();
+        assert_eq!(
+            invalidated.roots, 0,
+            "config root chunk is unloaded after load"
+        );
+        assert_eq!(
+            invalidated.functions, 2,
+            "only the root renderer and current binding remain retained"
+        );
+
+        let error = render_stack(&mut cfg, &mut stack, &ctx, &base_style)
+            .expect_err("invalidated renderer must be stale");
+        assert!(
+            error.to_string().contains("stale retained Function handle"),
+            "unexpected stale-handle error: {error}"
+        );
+    }
+
+    #[test]
+    fn callback_contexts_are_isolated_between_configs() {
+        let source = |title: &str| {
+            format!(
+                r#"
+hotki.root(function(menu, ctx)
+    menu:bind("h", "handler", function(actx)
+        actx:notify("info", "{title}", "")
+    end)
+end)
+"#
+            )
+        };
+        let mut left =
+            load_dynamic_config_from_string(&source("left"), None).expect("load left cfg");
+        let mut right =
+            load_dynamic_config_from_string(&source("right"), None).expect("load right cfg");
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut left_stack = vec![root_frame(&left)];
+        let mut right_stack = vec![root_frame(&right)];
+        let left_rendered =
+            render_stack(&mut left, &mut left_stack, &ctx, &Style::default()).expect("render left");
+        let right_rendered = render_stack(&mut right, &mut right_stack, &ctx, &Style::default())
+            .expect("render right");
+        let BindingKind::Handler(left_handler) =
+            find_binding(&left_rendered.rendered, "h").kind.clone()
+        else {
+            panic!("expected left handler");
+        };
+        let BindingKind::Handler(right_handler) =
+            find_binding(&right_rendered.rendered, "h").kind.clone()
+        else {
+            panic!("expected right handler");
+        };
+
+        let error = execute_handler(&mut right, &left_handler, &ctx)
+            .expect_err("foreign callback must not resolve in another config");
+        assert!(
+            error.to_string().contains("cross-VM host registry pin"),
+            "unexpected isolation error: {error}"
+        );
+
+        let left_result = execute_handler(&mut left, &left_handler, &ctx).expect("run left");
+        let right_result = execute_handler(&mut right, &right_handler, &ctx).expect("run right");
+        assert!(matches!(
+            &left_result.effects[0],
+            Effect::Notify { title, .. } if title == "left"
+        ));
+        assert!(matches!(
+            &right_result.effects[0],
+            Effect::Notify { title, .. } if title == "right"
+        ));
+    }
+
+    #[test]
+    fn handler_failure_does_not_poison_later_events() {
+        let source = r#"
+hotki.root(function(menu, ctx)
+    menu:bind("b", "bad", function(actx)
+        error("expected failure")
+    end)
+    menu:bind("g", "good", function(actx)
+        actx:notify("success", "recovered", "")
+    end)
+end)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let rendered =
+            render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render handlers");
+        let BindingKind::Handler(bad) = find_binding(&rendered.rendered, "b").kind.clone() else {
+            panic!("expected bad handler");
+        };
+        let BindingKind::Handler(good) = find_binding(&rendered.rendered, "g").kind.clone() else {
+            panic!("expected good handler");
+        };
+
+        let error = execute_handler(&mut cfg, &bad, &ctx).expect_err("bad handler fails");
+        assert!(error.to_string().contains("expected failure"));
+        let result = execute_handler(&mut cfg, &good, &ctx).expect("later handler recovers");
+        assert!(matches!(
+            &result.effects[0],
+            Effect::Notify { title, .. } if title == "recovered"
+        ));
     }
 
     #[test]
@@ -767,14 +892,14 @@ end)
         };
         let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
         assert_selector_len(&result.effects, 768);
-        let baseline_heap = cfg.vm.heap_used_bytes();
+        let baseline_heap = cfg.runtime.heap_used_bytes();
 
         for _ in 0..24 {
             let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
             assert_selector_len(&result.effects, 768);
         }
 
-        let retained_heap = cfg.vm.heap_used_bytes();
+        let retained_heap = cfg.runtime.heap_used_bytes();
         assert_heap_plateaus(baseline_heap, retained_heap);
     }
 
@@ -801,13 +926,13 @@ end)
         };
 
         execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
-        let baseline_heap = cfg.vm.heap_used_bytes();
+        let baseline_heap = cfg.runtime.heap_used_bytes();
 
         for _ in 0..24 {
             execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
         }
 
-        let retained_heap = cfg.vm.heap_used_bytes();
+        let retained_heap = cfg.runtime.heap_used_bytes();
         assert_heap_plateaus(baseline_heap, retained_heap);
     }
 
@@ -857,7 +982,7 @@ end)
             .resolve_items(&mut cfg, &ctx)
             .expect("resolve items");
         assert_eq!(items.len(), 512);
-        let baseline_heap = cfg.vm.heap_used_bytes();
+        let baseline_heap = cfg.runtime.heap_used_bytes();
 
         for _ in 0..24 {
             items = selector
@@ -865,9 +990,7 @@ end)
                 .expect("resolve items");
             assert_eq!(items.len(), 512);
         }
-        cfg.collect_entrypoint_garbage();
-
-        let retained_heap = cfg.vm.heap_used_bytes();
+        let retained_heap = cfg.runtime.heap_used_bytes();
         assert_heap_plateaus(baseline_heap, retained_heap);
     }
 

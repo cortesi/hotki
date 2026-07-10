@@ -7,11 +7,9 @@ use std::{
 
 use ruau::{
     bytecode::CompileError,
+    host::RetainedRuntimeError,
     typecheck::{Diagnostic as TypeDiagnostic, DiagnosticLocation},
-    vm::{
-        MarshaledScriptError, RuntimeError, Scope, ScriptError, TracebackFrame,
-        serde::from_scoped_value,
-    },
+    vm::{RuntimeError, Scope, ScriptError, serde::from_scoped_value},
 };
 
 use super::{config::SourceMap, util::lock_unpoisoned};
@@ -48,40 +46,15 @@ pub fn config_runtime_error(path: Option<PathBuf>, err: &RuntimeError) -> Error 
     config_validation(path, err.message())
 }
 
-/// Convert a VM-level protected script failure into a located config error.
-pub fn config_protected_error(
-    source: &str,
-    default_path: Option<&Path>,
-    sources: &SourceMap,
-    err: &MarshaledScriptError,
-) -> Error {
-    if let Some(error) = err.payload_ref::<Error>() {
-        return error.clone();
-    }
-
-    let message = protected_error_message(err);
-    let (path, line, col) = err
-        .frames()
-        .iter()
-        .find_map(traceback_frame_location)
-        .map(|(path, line)| {
-            (
-                normalize_chunk_path(path, default_path.map(Path::to_path_buf)),
-                Some(line),
-                Some(1),
-            )
-        })
-        .unwrap_or((default_path.map(Path::to_path_buf), None, None));
-    let excerpt = line.and_then(|line| {
-        config_source_excerpt(Some(source), sources, path.as_ref(), line, col.unwrap_or(1))
-    });
-
-    Error::Validation {
-        path,
-        line,
-        col,
-        message,
-        excerpt,
+/// Convert a retained-runtime failure into the stable config error shape.
+pub fn config_retained_error(path: Option<PathBuf>, err: &RetainedRuntimeError) -> Error {
+    match err {
+        RetainedRuntimeError::Runtime(error) => config_runtime_error(path, error),
+        RetainedRuntimeError::Exec(error) => config_validation(path, error),
+        RetainedRuntimeError::StaleHandle { .. }
+        | RetainedRuntimeError::Load(_)
+        | RetainedRuntimeError::PreparedLoad(_)
+        | RetainedRuntimeError::BindEnvironment(_) => config_validation(path, err),
     }
 }
 
@@ -165,21 +138,6 @@ fn compile_location(err: &CompileError) -> Option<(usize, usize)> {
 fn script_error_message<'s>(scope: &Scope<'s>, err: &ScriptError<'s>, noun: &str) -> String {
     from_scoped_value::<String>(scope, err.value())
         .unwrap_or_else(|_| format!("{noun} raised a {} value", err.value().type_name()))
-}
-
-/// Extract the VM's first rendered traceback line, falling back to a generic message.
-fn protected_error_message(err: &MarshaledScriptError) -> String {
-    err.traceback()
-        .and_then(|traceback| traceback.lines().next())
-        .unwrap_or("script raised an error")
-        .to_string()
-}
-
-/// Extract a chunk name and line from one structured traceback frame.
-fn traceback_frame_location(frame: &TracebackFrame) -> Option<(String, usize)> {
-    frame
-        .line
-        .map(|line| (frame.chunk_name.clone(), line as usize))
 }
 
 /// Extract the first `path:line` location from an ruau traceback.

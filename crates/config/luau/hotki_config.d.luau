@@ -113,9 +113,7 @@ type ActionContext = {
     select: <T>(self: ActionContext, spec: SelectorSpec<T>) -> (),
 }
 
-type HotkiApi = {
+declare hotki: {
     root: (render: ModeRenderer) -> (),
-    applications: SelectorItemProvider<ApplicationInfo>,
+    applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>,
 }
-
-declare hotki: HotkiApi

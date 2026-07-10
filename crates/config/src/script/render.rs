@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use mac_keycode::Chord;
-use ruau::vm::{CallOptions, ScriptError};
+use ruau::vm::ScriptError;
 use tracing::warn;
 
 use super::{
@@ -37,10 +37,9 @@ pub fn render_stack(
     ctx: &ModeCtx,
     base_style: &Style,
 ) -> Result<RenderOutput, Error> {
-    cfg.collect_entrypoint_garbage();
     let result = render_stack_inner(cfg, stack, ctx, base_style);
-    cfg.collect_entrypoint_garbage();
-    result
+    let synchronized = cfg.synchronize_callbacks();
+    result.and_then(|output| synchronized.map(|()| output))
 }
 
 /// Render the full mode stack without managing the retained VM heap boundary.
@@ -108,34 +107,37 @@ fn render_mode(
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
 
-    cfg.vm
-        .step_with(
-            &CallOptions::new().limits(DynamicConfig::entry_limits()),
-            |scope| {
-                let builder_value =
-                    super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
-                let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
-                let render = scope.fetch_function(&frame.closure.func)?;
-                let result: Result<(), ScriptError<'_>> =
-                    scope.call_protected(render, (builder_value, ctx_value))?;
-                if let Err(err) = result {
-                    script_error = Some(diagnostics::config_script_error(
-                        path.as_deref(),
-                        &sources,
-                        scope,
-                        &err,
-                    ));
-                }
-                Ok(())
-            },
-        )
-        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
+    let options = DynamicConfig::entry_options();
+    let mut context = cfg.callback_context();
+    let step = cfg
+        .runtime
+        .step_with_context(&mut context, &options, |scope| {
+            let builder_value =
+                super::host_userdata::mode_builder_userdata(scope, builder.clone())?;
+            let ctx_value = super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
+            let render = frame.closure.func.resolve(scope)?;
+            let result: Result<(), ScriptError<'_>> =
+                scope.call_protected(render, (builder_value, ctx_value))?;
+            if let Err(err) = result {
+                script_error = Some(diagnostics::config_script_error(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        });
 
     if let Some(err) = script_error {
+        drop(builder);
         return Err(err);
     }
 
+    step.map_err(|err| diagnostics::config_retained_error(cfg.path.clone(), &err))?;
+
     let (bindings, capture) = builder.finish();
+    cfg.synchronize_callbacks()?;
     let (bindings, warnings) = dedup_mode_bindings(cfg, &bindings);
 
     Ok((ModeView { bindings, capture }, warnings))

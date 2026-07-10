@@ -1,4 +1,4 @@
-use ruau::vm::{CallOptions, ScriptError};
+use ruau::vm::ScriptError;
 
 use super::{
     ActionCtx, ActionRepeatPermission, DynamicConfig, HandlerRef, ModeCtx, SelectorItem,
@@ -37,10 +37,7 @@ pub fn execute_handler_with_permission(
     ctx: &ModeCtx,
     repeat: ActionRepeatPermission,
 ) -> Result<HandlerResult, Error> {
-    cfg.collect_entrypoint_garbage();
-    let result = execute_handler_inner(cfg, handler, ctx, repeat);
-    cfg.collect_entrypoint_garbage();
-    result
+    execute_handler_inner(cfg, handler, ctx, repeat)
 }
 
 /// Execute a handler closure without managing the retained VM heap boundary.
@@ -55,33 +52,42 @@ fn execute_handler_inner(
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
 
-    cfg.vm
-        .step_with(
-            &CallOptions::new().limits(DynamicConfig::entry_limits()),
-            |scope| {
-                let ctx_value =
-                    super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
-                let handler = scope.fetch_function(&handler.func)?;
-                let result: Result<(), ScriptError<'_>> =
-                    scope.call_protected(handler, ctx_value)?;
-                if let Err(err) = result {
-                    script_error = Some(diagnostics::config_script_error(
-                        path.as_deref(),
-                        &sources,
-                        scope,
-                        &err,
-                    ));
-                }
-                Ok(())
-            },
-        )
-        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
+    let options = DynamicConfig::entry_options();
+    let mut context = cfg.callback_context();
+    let step = cfg
+        .runtime
+        .step_with_context(&mut context, &options, |scope| {
+            let ctx_value =
+                super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
+            let handler = handler.func.resolve(scope)?;
+            let result: Result<(), ScriptError<'_>> = scope.call_protected(handler, ctx_value)?;
+            if let Err(err) = result {
+                script_error = Some(diagnostics::config_script_error(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        });
 
     if let Some(err) = script_error {
         action_ctx.invalidate();
+        drop(action_ctx);
+        cfg.synchronize_callbacks()?;
         return Err(err);
     }
-    Ok(collect_handler_result(&action_ctx))
+    if let Err(error) = step {
+        action_ctx.invalidate();
+        drop(action_ctx);
+        cfg.synchronize_callbacks()?;
+        return Err(diagnostics::config_retained_error(cfg.path.clone(), &error));
+    }
+    let result = collect_handler_result(&action_ctx);
+    drop(action_ctx);
+    cfg.synchronize_callbacks()?;
+    Ok(result)
 }
 
 /// Execute a selector handler closure with `(ctx, item, query)` arguments.
@@ -92,10 +98,7 @@ pub fn execute_selector_handler(
     item: &SelectorItem,
     query: &str,
 ) -> Result<HandlerResult, Error> {
-    cfg.collect_entrypoint_garbage();
-    let result = execute_selector_handler_inner(cfg, handler, ctx, item, query);
-    cfg.collect_entrypoint_garbage();
-    result
+    execute_selector_handler_inner(cfg, handler, ctx, item, query)
 }
 
 /// Execute a selector handler without managing the retained VM heap boundary.
@@ -112,36 +115,46 @@ fn execute_selector_handler_inner(
     let sources = cfg.sources.clone();
     let query = query.to_string();
 
-    cfg.vm
-        .step_with(
-            &CallOptions::new().limits(DynamicConfig::entry_limits()),
-            |scope| {
-                let ctx_value =
-                    super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
-                let item_table = scope.create_table()?;
-                item_table.set(scope, "label", item.label.clone())?;
-                item_table.set(scope, "sublabel", item.sublabel.clone())?;
-                item_table.set(scope, "data", item.data.fetch(scope)?)?;
+    let options = DynamicConfig::entry_options();
+    let mut context = cfg.callback_context();
+    let step = cfg
+        .runtime
+        .step_with_context(&mut context, &options, |scope| {
+            let ctx_value =
+                super::host_userdata::action_context_userdata(scope, action_ctx.clone())?;
+            let item_table = scope.create_table()?;
+            item_table.set(scope, "label", item.label.clone())?;
+            item_table.set(scope, "sublabel", item.sublabel.clone())?;
+            item_table.set(scope, "data", item.data.fetch(scope)?)?;
 
-                let handler = scope.fetch_function(&handler.func)?;
-                let result: Result<(), ScriptError<'_>> =
-                    scope.call_protected(handler, (ctx_value, item_table, query.clone()))?;
-                if let Err(err) = result {
-                    script_error = Some(diagnostics::config_script_error(
-                        path.as_deref(),
-                        &sources,
-                        scope,
-                        &err,
-                    ));
-                }
-                Ok(())
-            },
-        )
-        .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
+            let handler = handler.func.resolve(scope)?;
+            let result: Result<(), ScriptError<'_>> =
+                scope.call_protected(handler, (ctx_value, item_table, query.clone()))?;
+            if let Err(err) = result {
+                script_error = Some(diagnostics::config_script_error(
+                    path.as_deref(),
+                    &sources,
+                    scope,
+                    &err,
+                ));
+            }
+            Ok(())
+        });
 
     if let Some(err) = script_error {
         action_ctx.invalidate();
+        drop(action_ctx);
+        cfg.synchronize_callbacks()?;
         return Err(err);
     }
-    Ok(collect_handler_result(&action_ctx))
+    if let Err(error) = step {
+        action_ctx.invalidate();
+        drop(action_ctx);
+        cfg.synchronize_callbacks()?;
+        return Err(diagnostics::config_retained_error(cfg.path.clone(), &error));
+    }
+    let result = collect_handler_result(&action_ctx);
+    drop(action_ctx);
+    cfg.synchronize_callbacks()?;
+    Ok(result)
 }

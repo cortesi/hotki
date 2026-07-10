@@ -2,6 +2,8 @@
 
 /// Application discovery for selector providers.
 mod apps;
+/// Retained callback ownership and call-context plumbing.
+mod callback;
 /// Loaded config state and source tracking.
 mod config;
 pub(crate) mod diagnostics;

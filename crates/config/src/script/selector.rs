@@ -1,10 +1,8 @@
 //! Selector binding configuration types.
 
-use ruau::vm::{
-    CallOptions, Function, RuntimeError, Scope, ScopedValue, StashedClosure, StashedValue, Table,
-};
+use ruau::vm::{Function, RuntimeError, Scope, ScopedValue, StashedValue, Table};
 
-use super::{DynamicConfig, HandlerRef, ModeCtx, diagnostics};
+use super::{DynamicConfig, HandlerRef, ModeCtx, callback::CallbackRef, diagnostics};
 
 /// Opaque selector item payload stashed in the config VM.
 #[derive(Debug, Clone, Default)]
@@ -125,7 +123,9 @@ pub fn parse_selector_config<'s>(
         .get(scope, "items")
         .map_err(|_| RuntimeError::runtime("selector: missing required field 'items'"))?;
     let items = match items_value {
-        ScopedValue::Function(func) => SelectorItems::Provider(scope.stash_function(func)?),
+        ScopedValue::Function(func) => {
+            SelectorItems::Provider(ProviderRef(CallbackRef::from_function(scope, func)?))
+        }
         other => SelectorItems::Static(parse_selector_items(scope, other)?),
     };
 
@@ -171,8 +171,12 @@ pub enum SelectorItems {
     /// Static item list.
     Static(Vec<SelectorItem>),
     /// Lazy item provider evaluated when the selector is opened.
-    Provider(StashedClosure),
+    Provider(ProviderRef),
 }
+
+/// Opaque retained selector item-provider callback.
+#[derive(Debug, Clone)]
+pub struct ProviderRef(CallbackRef);
 
 /// Configuration for an interactive selector instance.
 #[derive(Debug, Clone)]
@@ -198,10 +202,7 @@ impl SelectorConfig {
         cfg: &mut DynamicConfig,
         ctx: &ModeCtx,
     ) -> Result<Vec<SelectorItem>, crate::Error> {
-        cfg.collect_entrypoint_garbage();
-        let result = self.resolve_items_inner(cfg, ctx);
-        cfg.collect_entrypoint_garbage();
-        result
+        self.resolve_items_inner(cfg, ctx)
     }
 
     /// Resolve items without managing the retained VM heap boundary.
@@ -217,29 +218,30 @@ impl SelectorConfig {
                 let mut script_error = None;
                 let path = cfg.path.clone();
                 let sources = cfg.sources.clone();
-                cfg.vm
-                    .step_with(
-                        &CallOptions::new().limits(DynamicConfig::entry_limits()),
-                        |scope| {
-                            let provider = scope.fetch_function(provider)?;
-                            let ctx_value =
-                                super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
-                            let result = scope.call_protected(provider, ctx_value)?;
-                            match result {
-                                Ok(value) => items = Some(parse_selector_items(scope, value)?),
-                                Err(err) => {
-                                    script_error = Some(diagnostics::config_script_error(
-                                        path.as_deref(),
-                                        &sources,
-                                        scope,
-                                        &err,
-                                    ));
-                                }
+                let options = DynamicConfig::entry_options();
+                let mut context = cfg.callback_context();
+                let step = cfg
+                    .runtime
+                    .step_with_context(&mut context, &options, |scope| {
+                        let provider = provider.0.resolve(scope)?;
+                        let ctx_value =
+                            super::host_userdata::mode_context_userdata(scope, ctx.clone())?;
+                        let result = scope.call_protected(provider, ctx_value)?;
+                        match result {
+                            Ok(value) => items = Some(parse_selector_items(scope, value)?),
+                            Err(err) => {
+                                script_error = Some(diagnostics::config_script_error(
+                                    path.as_deref(),
+                                    &sources,
+                                    scope,
+                                    &err,
+                                ));
                             }
-                            Ok(())
-                        },
-                    )
-                    .map_err(|err| diagnostics::config_runtime_error(cfg.path.clone(), &err))?;
+                        }
+                        Ok(())
+                    });
+                cfg.synchronize_callbacks()?;
+                step.map_err(|err| diagnostics::config_retained_error(cfg.path.clone(), &err))?;
 
                 if let Some(err) = script_error {
                     return Err(err);

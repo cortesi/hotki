@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn runtime_api_returns_config_file() {
-        assert!(luau_api().contains("declare hotki: HotkiApi"));
+        assert!(luau_api().contains("declare hotki: {"));
         assert!(!luau_api().contains("declare action"));
         assert!(!luau_api().contains("type Style = {"));
     }
@@ -119,7 +119,7 @@ mod tests {
         assert!(filtered.contains("type ActionContext"));
         assert!(filtered.contains("shell: (self: ActionContext"));
         assert!(filtered.contains("select: <T>(self: ActionContext"));
-        assert!(!filtered.contains("type HotkiApi"));
+        assert!(!filtered.contains("declare hotki"));
     }
 
     #[test]
@@ -134,19 +134,18 @@ mod tests {
     #[test]
     fn api_filter_hotki_keeps_hotki_field_list() {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("hotki"));
-        assert!(filtered.contains("type HotkiApi"));
+        assert!(filtered.contains("declare hotki: {"));
         assert!(filtered.contains("root: (render: ModeRenderer) -> ()"));
-        assert!(filtered.contains("applications: SelectorItemProvider<ApplicationInfo>"));
-        assert!(filtered.contains("declare hotki: HotkiApi"));
+        assert!(
+            filtered
+                .contains("applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>")
+        );
     }
 
     #[test]
-    fn api_filter_hotki_api_keeps_hotki_field_list() {
+    fn api_filter_removed_hotki_alias_is_empty() {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("HotkiApi"));
-        assert!(filtered.contains("type HotkiApi"));
-        assert!(filtered.contains("applications: SelectorItemProvider<ApplicationInfo>"));
-        assert!(filtered.contains("declare hotki: HotkiApi"));
-        assert!(!filtered.contains("type ActionContext"));
+        assert!(filtered.is_empty());
     }
 
     #[test]

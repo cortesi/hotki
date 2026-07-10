@@ -10,19 +10,18 @@ use std::{
 
 use ruau::{
     bytecode::CompileOptions,
-    vm::{Ambient, CallOptions, ExecError, RuntimeCapabilities, ScriptError, Vm},
+    host::{RetainedLoadTarget, RetainedRuntime},
+    surface::{Surface, VmConfig},
+    vm::{Ambient, Limits, ScriptError},
 };
 
 use super::{
     DynamicConfig, ModeCtx, ModeRef,
     config::SourceMap,
     diagnostics,
-    host_hotki::HotkiModule,
-    host_runtime::{RuntimeState, SharedRuntimeState, chunk_name},
-    host_userdata::{
-        ModeBuilder, action_context_type, mode_builder_type, mode_builder_userdata,
-        mode_context_type, mode_context_userdata,
-    },
+    host_hotki::build_hotki_module,
+    host_runtime::{RuntimeState, chunk_name},
+    host_userdata::{ModeBuilder, mode_builder_userdata, mode_context_userdata},
     util::lock_unpoisoned,
 };
 use crate::{Error, StyleResolver};
@@ -60,72 +59,79 @@ pub fn load_dynamic_config_from_string(
     };
 
     let state = Arc::new(Mutex::new(state));
-    let runtime_capabilities = RuntimeCapabilities::default().enable_runtime_compilation();
-    let chunk = runtime_capabilities
+    let callbacks = DynamicConfig::callback_registry();
+    let module = build_hotki_module(state.clone())
+        .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
+        .module(module)
+        .build()
+        .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
+    let chunk = surface
+        .runtime_capabilities()
         .compile_source(source.as_bytes(), &CompileOptions::new())
         .map_err(|err| diagnostics::config_compile_error(source, &err, path.as_deref()))?;
-    let mut vm = build_vm(runtime_capabilities, state.clone(), path.as_deref())?;
+    let mut runtime = build_runtime(surface, path.as_deref())?;
     let chunk_name = chunk_name(path.as_deref());
-    let module = vm
-        .load_named(&chunk, chunk_name.as_bytes())
-        .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
-
-    match vm.exec(
-        &module,
-        CallOptions::new().limits(DynamicConfig::entry_limits()),
-    ) {
-        Ok(_) => {}
-        Err(ExecError::Script(err)) => {
-            return Err(diagnostics::config_protected_error(
-                source,
+    let loaded = runtime
+        .load_compiled(&chunk, &RetainedLoadTarget::named(chunk_name.into_bytes()))
+        .map_err(|err| diagnostics::config_retained_error(path.clone(), &err))?;
+    let mut context = super::callback::CallbackContext::new(Arc::clone(&callbacks));
+    let options = DynamicConfig::entry_options();
+    let mut script_error = None;
+    let run = runtime.step_root_with_context(&loaded, &mut context, &options, |scope, root| {
+        let result: Result<(), ScriptError<'_>> = scope.call_protected(root, ())?;
+        if let Err(err) = result {
+            script_error = Some(diagnostics::config_script_error(
                 path.as_deref(),
                 &sources,
+                scope,
                 &err,
             ));
         }
-        Err(err) => return Err(diagnostics::config_validation(path.clone(), err)),
+        Ok(())
+    });
+    let synchronized = super::callback::CallbackRegistry::synchronize(&callbacks, &mut runtime)
+        .map_err(|err| diagnostics::config_retained_error(path.clone(), &err));
+    let unloaded = runtime
+        .unload(&loaded)
+        .map_err(|err| diagnostics::config_retained_error(path.clone(), &err));
+    run.map_err(|err| diagnostics::config_retained_error(path.clone(), &err))?;
+    synchronized?;
+    unloaded?;
+    if let Some(error) = script_error {
+        return Err(error);
     }
-    vm.collect();
 
     let root = lock_unpoisoned(&state).root.clone().ok_or_else(|| {
         diagnostics::config_validation(path.clone(), "hotki.root() must be called exactly once")
     })?;
-    validate_root(&mut vm, &root, path.as_deref(), &sources)?;
-    vm.collect();
+    validate_root(&mut runtime, &callbacks, &root, path.as_deref(), &sources)?;
 
-    Ok(DynamicConfig {
+    Ok(DynamicConfig::new(
         root,
-        base_style: resolved_style.style,
-        style_provenance: resolved_style.provenance,
-        vm,
-        _root_module: module,
+        resolved_style.style,
+        resolved_style.provenance,
+        runtime,
+        callbacks,
         path,
         sources,
-    })
+    ))
 }
 
-/// Build the sandboxed retained VM used by a dynamic config.
-fn build_vm(
-    runtime_capabilities: RuntimeCapabilities,
-    state: SharedRuntimeState,
-    path: Option<&Path>,
-) -> Result<Vm, Error> {
-    Vm::builder()
-        .ambient(Ambient::deterministic(0))
-        .limits(DynamicConfig::entry_limits())
-        .runtime_capabilities(runtime_capabilities)
-        .module(Arc::new(HotkiModule { state }))
-        .host_type(mode_builder_type())
-        .host_type(mode_context_type())
-        .host_type(action_context_type())
-        .sandboxed()
-        .build()
-        .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))
+/// Build the sandboxed retained runtime used by a dynamic config.
+fn build_runtime(surface: Surface, path: Option<&Path>) -> Result<RetainedRuntime, Error> {
+    RetainedRuntime::new(
+        surface,
+        &VmConfig::untrusted(Ambient::deterministic(0), Limits::unlimited()),
+    )
+    .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err))
 }
 
 /// Invoke the configured root mode once to validate its output shape.
 fn validate_root(
-    vm: &mut Vm,
+    runtime: &mut RetainedRuntime,
+    callbacks: &super::callback::SharedCallbackRegistry,
     root: &ModeRef,
     path: Option<&Path>,
     sources: &SourceMap,
@@ -139,20 +145,22 @@ fn validate_root(
         depth: 0,
     };
     let mut script_error = None;
-    vm.step_with(
-        &CallOptions::new().limits(DynamicConfig::entry_limits()),
-        |scope| {
-            let builder = mode_builder_userdata(scope, builder.clone())?;
-            let ctx = mode_context_userdata(scope, ctx.clone())?;
-            let root = scope.fetch_function(&root.func)?;
-            let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
-            if let Err(err) = result {
-                script_error = Some(diagnostics::config_script_error(path, sources, scope, &err));
-            }
-            Ok(())
-        },
-    )
-    .map_err(|err| diagnostics::config_validation(path.map(Path::to_path_buf), err.message()))?;
+    let options = DynamicConfig::entry_options();
+    let mut context = super::callback::CallbackContext::new(Arc::clone(callbacks));
+    let step = runtime.step_with_context(&mut context, &options, |scope| {
+        let builder = mode_builder_userdata(scope, builder.clone())?;
+        let ctx = mode_context_userdata(scope, ctx.clone())?;
+        let root = root.func.resolve(scope)?;
+        let result: Result<(), ScriptError<'_>> = scope.call_protected(root, (builder, ctx))?;
+        if let Err(err) = result {
+            script_error = Some(diagnostics::config_script_error(path, sources, scope, &err));
+        }
+        Ok(())
+    });
+    drop(builder);
+    super::callback::CallbackRegistry::synchronize(callbacks, runtime)
+        .map_err(|err| diagnostics::config_retained_error(path.map(Path::to_path_buf), &err))?;
+    step.map_err(|err| diagnostics::config_retained_error(path.map(Path::to_path_buf), &err))?;
 
     if let Some(err) = script_error {
         return Err(err);

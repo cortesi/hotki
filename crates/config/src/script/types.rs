@@ -9,9 +9,9 @@ use std::{
 
 pub use hotki_protocol::HudRow;
 use mac_keycode::Chord;
-use ruau::vm::{Function, RuntimeError, Scope, SourceLocation, StashedClosure};
+use ruau::vm::{Function, RuntimeError, Scope, SourceLocation};
 
-use super::{SelectorConfig, util::lock_unpoisoned};
+use super::{SelectorConfig, callback::CallbackRef, util::lock_unpoisoned};
 use crate::{Action, NotifyKind, Style};
 
 /// Source location attached to a binding for diagnostics.
@@ -47,8 +47,8 @@ impl fmt::Debug for ModeId {
 pub struct ModeRef {
     /// Stable identity used for orphan detection.
     pub(crate) id: ModeId,
-    /// Stashed Luau function implementing the renderer.
-    pub(crate) func: StashedClosure,
+    /// Retained Luau function implementing the renderer.
+    pub(crate) func: CallbackRef,
     /// Optional default title.
     pub(crate) default_title: Option<String>,
 }
@@ -77,7 +77,7 @@ impl ModeRef {
         if info.chunk_name.is_none() && info.line_defined.is_none() {
             func.id().hash(&mut hasher);
         }
-        let func = scope.stash_function(func)?;
+        let func = CallbackRef::from_function(scope, func)?;
         Ok(Self {
             id: ModeId::new(hasher.finish()),
             func,
@@ -99,8 +99,8 @@ impl ModeRef {
 /// Opaque wrapper around a Luau handler closure.
 #[derive(Clone)]
 pub struct HandlerRef {
-    /// Stashed Luau function implementing the handler.
-    pub(crate) func: StashedClosure,
+    /// Retained Luau function implementing the handler.
+    pub(crate) func: CallbackRef,
 }
 
 impl fmt::Debug for HandlerRef {
@@ -116,7 +116,7 @@ impl HandlerRef {
         func: Function<'s>,
     ) -> Result<Self, RuntimeError> {
         Ok(Self {
-            func: scope.stash_function(func)?,
+            func: CallbackRef::from_function(scope, func)?,
         })
     }
 }
@@ -332,7 +332,9 @@ impl ActionCtx {
 
     /// Invalidate this context without draining its effects.
     pub(crate) fn invalidate(&self) {
-        lock_unpoisoned(&self.shared).active = false;
+        let mut shared = lock_unpoisoned(&self.shared);
+        shared.active = false;
+        shared.effects.clear();
     }
 }
 
