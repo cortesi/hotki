@@ -11,5 +11,4 @@ core-graphics = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
 hotki-server = { path = "../hotki-server" }
 mac-keycode = { path = "../mac-keycode" }
-regex = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

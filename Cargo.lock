@@ -2944,7 +2944,6 @@ dependencies = [
  "hotki-protocol",
  "hotki-server",
  "mac-keycode",
- "regex",
  "tokio",
 ]
 
