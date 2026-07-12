@@ -4,15 +4,17 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
     };
 
     use mac_keycode::Chord;
 
     use crate::{
-        Action, Error, Style,
+        Action, Error, Style, load_dynamic_config,
         script::{
             ActionRepeatPermission, Binding, BindingKind, DynamicConfig, Effect, ModeCtx,
-            ModeFrame, RenderedState, SelectorItems,
+            ModeFrame, NavRequest, RenderedState, RepeatSpec, SelectorItems,
+            config::{SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT},
             handler::{execute_handler, execute_handler_with_permission, execute_selector_handler},
             load_dynamic_config_from_string, render_stack,
         },
@@ -87,6 +89,75 @@ mod tests {
     }
 
     #[test]
+    fn config_load_render_and_dispatch_stay_within_budgets() {
+        const LOAD_BUDGET: Duration = Duration::from_secs(2);
+        const ENTRY_BUDGET: Duration = Duration::from_millis(5);
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        for relative in ["examples/complete.luau", "examples/cortesi/config.luau"] {
+            let path = workspace.join(relative);
+            let started = Instant::now();
+            let mut config = load_dynamic_config(&path).expect("load measured config");
+            let load_time = started.elapsed();
+            let heap = config.runtime.heap_used_bytes();
+            assert!(
+                load_time < LOAD_BUDGET,
+                "{relative} load took {load_time:?}"
+            );
+            assert!(config.entry_gas < SCRIPT_GAS_LIMIT);
+            assert!(config.validation_gas < SCRIPT_GAS_LIMIT);
+            assert!(heap < SCRIPT_MEMORY_LIMIT);
+
+            let style = config.base_style();
+            let ctx = base_ctx("Finder", false, 0);
+            let started = Instant::now();
+            for _ in 0..100 {
+                let mut stack = vec![root_frame(&config)];
+                render_stack(&mut config, &mut stack, &ctx, &style)
+                    .expect("render measured config");
+            }
+            let render_time = started.elapsed() / 100;
+            assert!(
+                render_time < ENTRY_BUDGET,
+                "{relative} average render took {render_time:?}"
+            );
+            eprintln!(
+                "{relative}: load={load_time:?} entry_gas={} validation_gas={} heap={heap} render={render_time:?}",
+                config.entry_gas, config.validation_gas
+            );
+        }
+
+        let mut config = load_dynamic_config_from_string(
+            "local a = hotki.actions\nreturn function(menu) menu:bind('a', 'stay', a.stay) end",
+            None,
+        )
+        .expect("load dispatch probe");
+        let style = config.base_style();
+        let ctx = base_ctx("Finder", false, 0);
+        let mut stack = vec![root_frame(&config)];
+        let rendered =
+            render_stack(&mut config, &mut stack, &ctx, &style).expect("render dispatch probe");
+        let BindingKind::Handler(handler) = &find_binding(&rendered.rendered, "a").kind else {
+            panic!("probe binding is not an action");
+        };
+        let handler = handler.clone();
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            execute_handler(&mut config, &handler, &ctx).expect("dispatch one-effect action");
+        }
+        let dispatch_time = started.elapsed() / 1_000;
+        assert!(
+            dispatch_time < ENTRY_BUDGET,
+            "average one-effect dispatch took {dispatch_time:?}"
+        );
+        assert!(config.runtime.gas_spent() < SCRIPT_GAS_LIMIT);
+        eprintln!(
+            "one-effect dispatch: average={dispatch_time:?} gas={}",
+            config.runtime.gas_spent()
+        );
+    }
+
+    #[test]
     fn path_backed_runtime_errors_report_root_file_excerpt() {
         let root = test_dir("root-runtime-error");
         let root_path = root.join("hotki.luau");
@@ -94,8 +165,8 @@ mod tests {
 local missing = nil
 missing()
 
-hotki.root(function(menu, ctx)
-end)
+return function(menu, ctx)
+end
 "#;
         fs::write(&root_path, root_source).expect("write root config");
 
@@ -125,13 +196,83 @@ end)
     }
 
     #[test]
+    fn entry_module_must_return_exactly_one_renderer() {
+        for source in ["return nil", "return {}", "return function() end, true"] {
+            let error = match load_dynamic_config_from_string(source, None) {
+                Ok(_) => panic!("invalid root return should fail: {source}"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .pretty()
+                    .contains("config.luau must return a ModeRenderer"),
+                "unexpected error for {source}: {}",
+                error.pretty()
+            );
+        }
+    }
+
+    #[test]
+    fn cached_modules_remain_available_after_entry_evaluation() {
+        let root = test_dir("cached-late-require");
+        let path = root.join("config.luau");
+        fs::write(root.join("action.luau"), "return hotki.actions.pop")
+            .expect("write action module");
+        let source = r#"
+local action = require("./action")
+return function(menu, ctx)
+    local cached = require("./action")
+    menu:bind("a", "cached", cached)
+end
+"#;
+        fs::write(&path, source).expect("write root config");
+
+        let mut config = load_dynamic_config_from_string(source, Some(path)).expect("load config");
+        let base_style = config.base_style();
+        let mut stack = vec![root_frame(&config)];
+        let rendered = render_stack(
+            &mut config,
+            &mut stack,
+            &base_ctx("", false, 0),
+            &base_style,
+        )
+        .expect("cached require renders");
+        assert_eq!(find_binding(&rendered.rendered, "a").desc, "cached");
+    }
+
+    #[test]
+    fn uncached_modules_cannot_load_after_entry_evaluation() {
+        let root = test_dir("uncached-late-require");
+        let path = root.join("config.luau");
+        fs::write(root.join("action.luau"), "return hotki.actions.pop")
+            .expect("write action module");
+        let source = r#"
+return function(menu, ctx)
+    local action = require("./action")
+    menu:bind("a", "uncached", action)
+end
+"#;
+        fs::write(&path, source).expect("write root config");
+
+        let error = match load_dynamic_config_from_string(source, Some(path)) {
+            Ok(_) => panic!("late uncached require should fail validation render"),
+            Err(error) => error,
+        };
+        assert!(
+            error.pretty().contains("module source is sealed"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+    }
+
+    #[test]
     fn chord_parse_errors_include_location() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("cmd+bogus", "bad", function(actx)
         actx:shell("true")
     end)
-end)
+end
 "#;
         let err = match load_dynamic_config_from_string(source, None) {
             Ok(_) => panic!("expected config load to fail"),
@@ -158,14 +299,14 @@ end)
     #[test]
     fn duplicate_chord_warns_and_first_wins() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "first", function(actx)
         actx:shell("true")
     end)
     menu:bind("a", "second", function(actx)
         actx:shell("true")
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -187,10 +328,10 @@ end)
     #[test]
     fn auto_pop_truncates_empty_child_modes() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -217,7 +358,7 @@ end)
     #[test]
     fn orphan_detection_pops_when_mode_identity_changes() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     if ctx:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
             child:bind("x", "x", function(actx)
@@ -231,7 +372,7 @@ hotki.root(function(menu, ctx)
             end)
         end)
     end
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -252,7 +393,7 @@ end)
         let root = test_dir("conditional-submenu-branch");
         let root_path = root.join("hotki.luau");
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     if ctx:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
             child:bind("x", "x", function(actx)
@@ -266,7 +407,7 @@ hotki.root(function(menu, ctx)
             end)
         end)
     end
-end)
+end
 "#;
         fs::write(&root_path, source).expect("write root config");
         let mut cfg = load_dynamic_config_from_string(source, Some(root_path)).expect("load cfg");
@@ -282,14 +423,14 @@ end)
     #[test]
     fn handler_effects_preserve_enqueue_order() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "handler", function(actx)
         actx:shell("echo one")
         actx:notify("info", "Test", "middle")
         actx:shell("echo two")
         actx:pop()
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -323,13 +464,148 @@ end)
     }
 
     #[test]
+    fn action_library_matches_direct_context_calls_and_is_immutable() {
+        let source = r#"
+local a = hotki.actions
+if pcall(function() hotki.actions = {} end) then
+    error("hotki table accepted replacement")
+end
+if pcall(function() a.pop = function() end end) then
+    error("actions table accepted mutation")
+end
+
+local selector_spec = {
+    items = { "before" },
+    on_select = function(ctx, item, query) end,
+}
+local select_action = a.select(selector_spec)
+selector_spec.items[1] = "after"
+
+return function(menu, ctx)
+    menu:bind("a", "helper", a.pop)
+    menu:bind("shift+a", "direct", function(c) c:pop() end)
+    menu:bind("b", "helper", a.exit)
+    menu:bind("shift+b", "direct", function(c) c:exit() end)
+    menu:bind("c", "helper", a.show_root)
+    menu:bind("shift+c", "direct", function(c) c:show_root() end)
+    menu:bind("d", "helper", a.hide_hud)
+    menu:bind("shift+d", "direct", function(c) c:hide_hud() end)
+    menu:bind("e", "helper", a.reload_config)
+    menu:bind("shift+e", "direct", function(c) c:reload_config() end)
+    menu:bind("f", "helper", a.clear_notifications)
+    menu:bind("shift+f", "direct", function(c) c:clear_notifications() end)
+    menu:bind("g", "helper", a.stay)
+    menu:bind("shift+g", "direct", function(c) c:stay() end)
+    menu:bind("h", "helper", a.notify("info", "title", "body"))
+    menu:bind("shift+h", "direct", function(c) c:notify("info", "title", "body") end)
+    menu:bind("i", "helper", a.shell("echo hi", { ok_notify = "success" }))
+    menu:bind("shift+i", "direct", function(c)
+        c:shell("echo hi", { ok_notify = "success" })
+    end)
+    menu:bind("j", "helper", a.open("https://example.com"))
+    menu:bind("shift+j", "direct", function(c) c:open("https://example.com") end)
+    menu:bind("k", "helper", a.relay("cmd+c"))
+    menu:bind("shift+k", "direct", function(c) c:relay("cmd+c") end)
+    menu:bind("l", "helper", a.show_details("toggle"))
+    menu:bind("shift+l", "direct", function(c) c:show_details("toggle") end)
+    menu:bind("m", "helper", a.set_volume(50))
+    menu:bind("shift+m", "direct", function(c) c:set_volume(50) end)
+    menu:bind("n", "helper", a.change_volume(-5))
+    menu:bind("shift+n", "direct", function(c) c:change_volume(-5) end)
+    menu:bind("o", "helper", a.mute("toggle"))
+    menu:bind("shift+o", "direct", function(c) c:mute("toggle") end)
+    menu:bind("p", "push", a.push(function() end, "child"))
+    menu:bind("q", "hold", a.hold(a.change_volume(5), {
+        delay_ms = 10,
+        interval_ms = 20,
+    }))
+    menu:bind("r", "select", select_action)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load action library");
+        let base_style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &base_style).expect("render");
+
+        for chord in 'a'..='o' {
+            let helper = chord.to_string();
+            let direct = format!("shift+{chord}");
+            let BindingKind::Handler(helper) = find_binding(&out.rendered, &helper).kind.clone()
+            else {
+                panic!("expected helper handler for {chord}");
+            };
+            let BindingKind::Handler(direct) = find_binding(&out.rendered, &direct).kind.clone()
+            else {
+                panic!("expected direct handler for {chord}");
+            };
+            let helper = execute_handler(&mut cfg, &helper, &ctx).expect("run helper");
+            let direct = execute_handler(&mut cfg, &direct, &ctx).expect("run direct");
+            assert_eq!(
+                format!("{:?}", helper.effects),
+                format!("{:?}", direct.effects)
+            );
+            assert_eq!(helper.stay, direct.stay);
+        }
+
+        let BindingKind::Handler(push) = find_binding(&out.rendered, "p").kind.clone() else {
+            panic!("expected push handler");
+        };
+        let pushed = execute_handler(&mut cfg, &push, &ctx).expect("run push helper");
+        assert!(matches!(
+            &pushed.effects[0],
+            Effect::Nav(NavRequest::Push { title, .. })
+                if title.as_deref() == Some("child")
+        ));
+
+        let BindingKind::Handler(hold) = find_binding(&out.rendered, "q").kind.clone() else {
+            panic!("expected hold handler");
+        };
+        let held = execute_handler(&mut cfg, &hold, &ctx).expect("run hold helper");
+        assert!(matches!(
+            &held.effects[0],
+            Effect::UntilKeyUp {
+                repeat: Some(RepeatSpec {
+                    delay_ms: Some(10),
+                    interval_ms: Some(20),
+                }),
+                ..
+            }
+        ));
+        for permission in [
+            ActionRepeatPermission::Keyless,
+            ActionRepeatPermission::RepeatedAction,
+        ] {
+            let error = execute_handler_with_permission(&mut cfg, &hold, &ctx, permission)
+                .expect_err("hold should preserve until-keyup permission checks");
+            assert!(
+                error.pretty().contains("until_keyup"),
+                "unexpected hold permission error: {}",
+                error.pretty()
+            );
+        }
+
+        let BindingKind::Handler(select) = find_binding(&out.rendered, "r").kind.clone() else {
+            panic!("expected select handler");
+        };
+        let selected = execute_handler(&mut cfg, &select, &ctx).expect("run select helper");
+        let Effect::Select(selector) = &selected.effects[0] else {
+            panic!("expected select effect: {:?}", selected.effects);
+        };
+        let SelectorItems::Static(items) = &selector.items else {
+            panic!("expected static selector items");
+        };
+        assert_eq!(items[0].label, "after");
+    }
+
+    #[test]
     fn replaced_render_callbacks_are_released_and_stale_handles_fail_closed() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "handler", function(actx)
         actx:notify("info", "live", "")
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -364,11 +640,11 @@ end)
         let source = |title: &str| {
             format!(
                 r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "handler", function(actx)
         actx:notify("info", "{title}", "")
     end)
-end)
+end
 "#
             )
         };
@@ -416,14 +692,14 @@ end)
     #[test]
     fn handler_failure_does_not_poison_later_events() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("b", "bad", function(actx)
         error("expected failure")
     end)
     menu:bind("g", "good", function(actx)
         actx:notify("success", "recovered", "")
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -450,9 +726,9 @@ end)
     #[test]
     fn removed_action_global_fails_normally() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "handler", action.reload_config)
-end)
+end
 "#;
         let err = match load_dynamic_config_from_string(source, None) {
             Ok(_) => panic!("load should fail"),
@@ -465,12 +741,12 @@ end)
     #[test]
     fn removed_ctx_exec_fails_normally() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "handler", function(actx)
         actx:exec(function(inner)
         end)
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -489,7 +765,7 @@ end)
     #[test]
     fn selector_action_queues_selector_effect() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Selector", function(actx)
         actx:select({
             title = "Run",
@@ -502,7 +778,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -539,7 +815,7 @@ end)
     #[test]
     fn binding_options_reject_repeat_field() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
         child:bind("x", "x", function(actx)
             actx:shell("true")
@@ -552,7 +828,7 @@ hotki.root(function(menu, ctx)
             interval_ms = 2,
         },
     })
-end)
+end
 "#;
         let err = match load_dynamic_config_from_string(source, None) {
             Ok(_) => panic!("load should fail"),
@@ -565,7 +841,7 @@ end)
     #[test]
     fn until_keyup_queues_repeated_action_effect() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
         actx:until_keyup(function(repeat_ctx)
             repeat_ctx:shell("echo tick")
@@ -574,7 +850,7 @@ hotki.root(function(menu, ctx)
             interval_ms = 250,
         })
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -597,7 +873,7 @@ end)
     #[test]
     fn until_keyup_rejects_second_request_in_same_action() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
         actx:until_keyup(function(repeat_ctx)
             repeat_ctx:shell("echo one")
@@ -606,7 +882,7 @@ hotki.root(function(menu, ctx)
             repeat_ctx:shell("echo two")
         end)
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -630,7 +906,7 @@ end)
         let source = r#"
 local stored: ActionContext? = nil
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("s", "store", function(actx)
         stored = actx
     end)
@@ -639,7 +915,7 @@ hotki.root(function(menu, ctx)
             stored:notify("info", "late", "")
         end
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -665,7 +941,7 @@ end)
     #[test]
     fn selector_handler_rejects_until_keyup_without_held_key() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("s", "selector", function(actx)
         actx:select({
             items = { "One" },
@@ -676,7 +952,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -708,13 +984,13 @@ end)
     #[test]
     fn repeated_action_rejects_nested_until_keyup() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
         actx:until_keyup(function(repeat_ctx)
             repeat_ctx:shell("echo tick")
         end)
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -739,7 +1015,7 @@ end)
     #[test]
     fn submenu_volume_actions_accept_integer_number_literals() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("m", "music", function(music, inner)
         music:bind("k", "vol up", function(actx)
             actx:change_volume(5)
@@ -751,7 +1027,7 @@ hotki.root(function(menu, ctx)
             actx:set_volume(50)
         end)
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -788,13 +1064,13 @@ end)
     #[test]
     fn render_uses_resolved_base_style_without_row_overrides() {
         let source = r##"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("a", "child", function(child, inner)
         child:bind("x", "x", function(actx)
             actx:shell("true")
         end)
     end)
-end)
+end
 "##;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let mut base_style = cfg.base_style();
@@ -830,7 +1106,7 @@ end)
     #[test]
     fn execution_budget_resets_between_renders() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     local total = 0
     for i = 1, 20000 do
         total = total + i
@@ -841,7 +1117,7 @@ hotki.root(function(menu, ctx)
             actx:shell("true")
         end)
     end
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -870,7 +1146,7 @@ local function synthetic_applications()
     return items
 end
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Selector", function(actx)
         actx:select({
             title = "Run Application",
@@ -879,7 +1155,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -906,7 +1182,7 @@ end)
     #[test]
     fn handler_execution_reclaims_temporary_tables_between_calls() {
         let source = r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("h", "Handler", function(actx)
         local scratch = {}
         local payload = string.rep("x", 2048)
@@ -914,7 +1190,7 @@ hotki.root(function(menu, ctx)
             scratch[i] = { path = payload .. i }
         end
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();
@@ -952,7 +1228,7 @@ local function synthetic_applications()
     return items
 end
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Selector", function(actx)
         actx:select({
             title = "Run Application",
@@ -963,7 +1239,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#;
         let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
         let base_style = cfg.base_style();

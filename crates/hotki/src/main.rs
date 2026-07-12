@@ -149,7 +149,7 @@ fn run_check_command(path: Option<&str>, cli_config: Option<&Path>, dump: bool) 
     if dump {
         dump_config_style(&resolved);
     } else {
-        println!("OK (style: {})", report.style);
+        println!("OK (modules: {}, style: {})", report.modules, report.style);
     }
 }
 

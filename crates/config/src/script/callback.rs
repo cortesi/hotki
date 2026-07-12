@@ -6,7 +6,7 @@ use std::{
 };
 
 use ruau::{
-    host::{FunctionHandle, RetainedRuntime, RetainedRuntimeError},
+    session::{FunctionHandle, LifecycleError, Runtime},
     vm::{Function, RuntimeError, Scope, StashedClosure},
 };
 
@@ -123,8 +123,8 @@ impl CallbackRegistry {
     /// Promote callbacks and release dead handles between VM invocations.
     pub(super) fn synchronize(
         registry: &SharedCallbackRegistry,
-        runtime: &mut RetainedRuntime,
-    ) -> Result<(), RetainedRuntimeError> {
+        runtime: &mut Runtime,
+    ) -> Result<(), LifecycleError> {
         let (pending, released) = {
             let mut registry = lock_unpoisoned(registry);
             (
@@ -134,8 +134,8 @@ impl CallbackRegistry {
         };
 
         for handle in released {
-            match runtime.release_function(&handle) {
-                Ok(()) | Err(RetainedRuntimeError::StaleHandle { .. }) => {}
+            match runtime.release(&handle) {
+                Ok(()) | Err(LifecycleError::StaleHandle { .. }) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -146,9 +146,7 @@ impl CallbackRegistry {
             };
             let mut target = lock_unpoisoned(&callback.target);
             if let Some(CallbackTarget::Pending(stash)) = target.as_ref() {
-                *target = Some(CallbackTarget::Retained(
-                    runtime.stash_function(stash.clone()),
-                ));
+                *target = Some(CallbackTarget::Retained(runtime.retain(stash.clone())));
             }
         }
         Ok(())

@@ -67,7 +67,7 @@ impl DemoHudMode {
 /// Build the standard demo config used by the UI smoketests.
 fn demo_config() -> String {
     r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)
     activate:submenu("t", "Tools", function(sub, subctx)
       sub:bind("n", "Notify", function(actx)
@@ -94,7 +94,7 @@ hotki.root(function(menu, ctx)
       end, { hidden = true })
     end)
   end)
-end)
+end
 "#
     .to_string()
 }
@@ -121,14 +121,14 @@ return {{
 fn notification_config() -> String {
     format!(
         r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
   menu:bind("{}", "Native Notification", function(actx)
     actx:shell("echo native notification", {{
       ok_notify = "info",
       err_notify = "warn",
     }})
   end)
-end)
+end
 "#,
         NOTIFICATION_IDENT
     )

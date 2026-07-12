@@ -1,21 +1,19 @@
-//! Shared state and utility types for Luau host modules.
+//! Application caching and source-name utilities for Luau host modules.
 
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
 
-use super::{ModeRef, SelectorItem};
-/// Shared mutable state captured by native host functions installed into one VM.
-pub(super) type SharedRuntimeState = Arc<Mutex<RuntimeState>>;
+use super::SelectorItem;
+/// Application cache shared by native host functions installed into one VM.
+pub(super) type SharedApplicationCache = Arc<Mutex<ApplicationCache>>;
 
-/// Mutable loader state shared across the Luau runtime.
+/// Cached application selector items for one loaded configuration.
 #[derive(Debug, Clone, Default)]
-pub(super) struct RuntimeState {
-    /// Root mode declared by `hotki.root(...)`.
-    pub(super) root: Option<ModeRef>,
-    /// Cached application selector items.
-    pub(super) applications_cache: Option<Arc<[SelectorItem]>>,
+pub(super) struct ApplicationCache {
+    /// Items discovered on the first `hotki.applications` call.
+    pub(super) items: Option<Arc<[SelectorItem]>>,
 }
 
 /// Render a display name for an optional source path.

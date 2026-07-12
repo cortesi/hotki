@@ -1,119 +1,58 @@
-local function pop(actx: ActionContext)
-    actx:pop()
-end
+local a = hotki.actions
 
-local function exit(actx: ActionContext)
-    actx:exit()
-end
+local GLOBAL = { global = true, hidden = true }
+local STAY = { stay = true }
 
-local function shell(cmd: string, opts: ShellOptions?): Action
-    return function(actx: ActionContext)
-        actx:shell(cmd, opts)
-    end
-end
-
-local function relay(spec: string): Action
-    return function(actx: ActionContext)
-        actx:relay(spec)
-    end
-end
-
-local function show_details(toggle: Toggle): Action
-    return function(actx: ActionContext)
-        actx:show_details(toggle)
-    end
-end
-
-local function set_volume(level: number): Action
-    return function(actx: ActionContext)
-        actx:set_volume(level)
-    end
-end
-
-local function change_volume(delta: number): Action
-    return function(actx: ActionContext)
-        actx:change_volume(delta)
-    end
-end
-
-local function mute(toggle: Toggle): Action
-    return function(actx: ActionContext)
-        actx:mute(toggle)
-    end
-end
-
-local function repeat_action(act: Action, opts: RepeatOptions): Action
-    return function(actx: ActionContext)
-        actx:until_keyup(act, opts)
-    end
-end
-
-type BindingEntry = {
-    chord: string,
-    desc: string,
-    action: Action,
-}
-
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     if ctx.hud then
-        menu:bind("esc", "Back", pop, { global = true, hidden = true })
+        menu:bind("esc", "Exit", a.exit, GLOBAL)
     end
 
-    menu:submenu("shift+cmd+0", "Main", function(root, inner)
-        root:bind("shift+cmd+0", "Exit", exit, { global = true, hidden = true })
-        root:bind("s", "Shell Command", shell("echo 'Hello'"))
-        root:bind("shift+S", "Shell with Notifications", shell("echo 'Success'", { ok_notify = "success", err_notify = "error" }))
-        root:bind("r", "Relay Keystroke", relay("cmd+c"))
-        root:bind("c", "Clear Notifications", function(actx)
-            actx:clear_notifications()
-        end)
-        root:bind("d", "Toggle Details", show_details("toggle"), { stay = true })
-        root:bind("shift+R", "Reload Config", function(actx)
-            actx:reload_config()
-        end)
-        root:bind("h", "Show Root HUD", function(actx)
-            actx:show_root()
-        end)
-        root:bind("shift+H", "Hide HUD", function(actx)
-            actx:hide_hud()
-        end)
-        root:bind("v", "Set Volume 50%", set_volume(50), { stay = true })
-        root:bind("shift+V", "Change Volume +10", change_volume(10), { stay = true })
-        root:bind("m", "Mute", mute("on"), { stay = true })
-        root:bind("u", "Unmute", mute("off"), { stay = true })
-        root:bind("shift+M", "Toggle Mute", mute("toggle"), { stay = true })
-        root:bind("x", "Complex Action", function(actx)
-            actx:shell("echo hello")
-            actx:notify("success", "Done", "Queued a shell command + notification")
-            actx:stay()
-        end)
-        root:bind("g", "Global Key", shell("echo 'Global'"), { global = true })
-        root:bind("shift+X", "Hidden Key", shell("echo 'Hidden'"), { hidden = true })
-        root:bind("a", "Repeat Shell", repeat_action(shell("echo tick"), {
-            delay_ms = 250,
-            interval_ms = 350,
+    menu:bind("shift+cmd+p", "Run Application", a.select({
+        title = "Run Application",
+        placeholder = "Search apps...",
+        items = hotki.applications,
+        on_select = function(select_ctx, item)
+            select_ctx:open(item.data.path)
+        end,
+    }))
+
+    menu:submenu("shift+cmd+0", "Actions", function(actions)
+        actions:bind("p", "Pop", a.pop)
+        actions:bind("e", "Exit", a.exit)
+        actions:bind("r", "Show Root", a.show_root)
+        actions:bind("h", "Hide HUD", a.hide_hud)
+        actions:bind("c", "Clear Notifications", a.clear_notifications)
+        actions:bind("shift+r", "Reload Config", a.reload_config)
+        actions:bind("n", "Notify", a.notify("success", "Hotki", "Action complete"))
+        actions:bind("s", "Shell", a.shell("echo hello", {
+            ok_notify = "success",
+            err_notify = "error",
         }))
-        root:bind("b", "Repeat Relay", repeat_action(relay("cmd+c"), {
+        actions:bind("o", "Open", a.open("https://github.com/cortesi/hotki"))
+        actions:bind("k", "Relay", a.relay("cmd+c"))
+        actions:bind("d", "Details", a.show_details("toggle"), STAY)
+        actions:bind("v", "Volume 50%", a.set_volume(50), STAY)
+        actions:bind("=", "Volume Up", a.change_volume(5), STAY)
+        actions:bind("-", "Volume Down", a.change_volume(-5), STAY)
+        actions:bind("m", "Mute", a.mute("toggle"), STAY)
+        actions:bind("t", "Stay", a.stay)
+        actions:bind("u", "Hold Volume Up", a.hold(a.change_volume(5), {
             delay_ms = 250,
-            interval_ms = 350,
-        }))
-        local bindings: { BindingEntry } = {
-            { chord = "p", desc = "Loop Pop", action = pop },
-            { chord = "shift+P", desc = "Loop Handler", action = function(actx)
-                actx:notify("info", "Batch", "Handler action ran")
-            end },
-        }
-        for _, binding in bindings do
-            root:bind(binding.chord, binding.desc, binding.action)
-        end
-        root:submenu("o", "Loop Submenu", function(loop_menu, loop_ctx)
-            loop_menu:bind("x", "Nested Shell", shell("echo nested"))
+            interval_ms = 100,
+        }), STAY)
+        actions:bind("x", "Composite Action", function(action_ctx)
+            action_ctx:shell("echo composite")
+            action_ctx:notify("info", "Composite", "Queued two ordered effects")
+            action_ctx:stay()
         end)
-        root:submenu("n", "Notifications", function(sub, subctx)
-            sub:bind("s", "Success", shell("echo success", { ok_notify = "success", err_notify = "warn" }), { stay = true })
-            sub:bind("i", "Info", shell("echo info", { ok_notify = "info", err_notify = "warn" }), { stay = true })
-            sub:bind("w", "Warning", shell("echo warn && false"), { stay = true })
-            sub:bind("e", "Error", shell("echo error && false", { ok_notify = "ignore", err_notify = "error" }), { stay = true })
-        end)
+        actions:bind("g", "Push Mode", a.push(function(child)
+            child:bind("esc", "Back", a.pop, GLOBAL)
+            child:bind("s", "Nested Shell", a.shell("echo nested"))
+        end, "Pushed"))
     end, { capture = true })
-end)
+
+    if ctx:app_matches("Finder") then
+        menu:bind("shift+cmd+f", "Finder Home", a.open("~"), GLOBAL)
+    end
+end

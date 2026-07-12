@@ -4,7 +4,7 @@ local demo_items: { SelectorItem<string> } = {
     { label = "Callsheet", sublabel = "demo://callsheet", data = "callsheet" },
 }
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     if ctx.hud then
         menu:bind("esc", "Back", function(actx)
             actx:pop()
@@ -71,4 +71,4 @@ hotki.root(function(menu, ctx)
             actx:exit()
         end, { global = true, hidden = true })
     end)
-end)
+end

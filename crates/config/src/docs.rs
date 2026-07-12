@@ -132,10 +132,27 @@ mod tests {
     }
 
     #[test]
+    fn api_filter_actions_returns_the_complete_helper_table() {
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("Actions"));
+        assert!(filtered.starts_with("type Actions = {"));
+        for member in [
+            "pop: Action",
+            "reload_config: Action",
+            "notify:",
+            "shell:",
+            "hold:",
+            "select:",
+        ] {
+            assert!(filtered.contains(member), "missing Actions member {member}");
+        }
+        assert!(!filtered.contains("type Style ="));
+    }
+
+    #[test]
     fn api_filter_hotki_keeps_hotki_field_list() {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("hotki"));
         assert!(filtered.contains("declare hotki: {"));
-        assert!(filtered.contains("root: (render: ModeRenderer) -> ()"));
+        assert!(filtered.contains("actions: Actions"));
         assert!(
             filtered
                 .contains("applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>")

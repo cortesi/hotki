@@ -7,7 +7,7 @@ use std::{
 
 use ruau::{
     bytecode::CompileError,
-    host::RetainedRuntimeError,
+    session::LifecycleError,
     typecheck::{Diagnostic as TypeDiagnostic, DiagnosticLocation},
     vm::{RuntimeError, Scope, ScriptError, serde::from_scoped_value},
 };
@@ -47,14 +47,14 @@ pub fn config_runtime_error(path: Option<PathBuf>, err: &RuntimeError) -> Error 
 }
 
 /// Convert a retained-runtime failure into the stable config error shape.
-pub fn config_retained_error(path: Option<PathBuf>, err: &RetainedRuntimeError) -> Error {
+pub fn config_retained_error(path: Option<PathBuf>, err: &LifecycleError) -> Error {
     match err {
-        RetainedRuntimeError::Runtime(error) => config_runtime_error(path, error),
-        RetainedRuntimeError::Exec(error) => config_validation(path, error),
-        RetainedRuntimeError::StaleHandle { .. }
-        | RetainedRuntimeError::Load(_)
-        | RetainedRuntimeError::PreparedLoad(_)
-        | RetainedRuntimeError::BindEnvironment(_) => config_validation(path, err),
+        LifecycleError::Runtime(error) => config_runtime_error(path, error),
+        LifecycleError::Exec(error) => config_validation(path, error),
+        LifecycleError::StaleHandle { .. }
+        | LifecycleError::Load(_)
+        | LifecycleError::PreparedLoad(_)
+        | LifecycleError::BindEnvironment(_) => config_validation(path, err),
     }
 }
 

@@ -3,10 +3,10 @@
 use std::{fs, io::ErrorKind, path::Path};
 
 use ruau::{
-    analysis::AnalysisMode,
+    bytecode::CompileOptions,
     source::{ModuleId, Source},
-    surface::Surface,
-    typecheck::Severity,
+    surface::{CheckOptions, Surface},
+    typecheck::{Mode, Severity},
 };
 
 use crate::{
@@ -17,6 +17,8 @@ use crate::{
 /// Summary of a successful Luau validation run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LuauCheckReport {
+    /// Number of checked behavior modules, including the entry module.
+    pub modules: usize,
     /// Whether a sibling `style.luau` file was validated.
     pub style: bool,
 }
@@ -69,12 +71,21 @@ pub fn check_luau_config(path: &Path) -> Result<LuauCheckReport, Error> {
         message: err.to_string(),
     })?;
     reject_removed_config_surface(&canonical, &source)?;
-    analyze_root_config(&canonical, &source)?;
     let style = check_luau_style_file(&root_dir.join(STYLE_FILE_NAME))?;
+    let config = crate::load_dynamic_config(&canonical)?;
+    let (entry_gas, validation_gas, retained_heap) = config.load_metrics();
+    tracing::debug!(
+        path = %canonical.display(),
+        entry_gas,
+        validation_gas,
+        retained_heap,
+        "validated Luau config graph"
+    );
 
-    crate::load_dynamic_config(&canonical)?;
-
-    Ok(LuauCheckReport { style })
+    Ok(LuauCheckReport {
+        modules: config.module_count(),
+        style,
+    })
 }
 
 /// Analyze and validate one optional standalone `style.luau` file.
@@ -104,6 +115,14 @@ pub fn check_luau_style_source(path: &Path, source: &str) -> Result<(), Error> {
 fn reject_removed_config_surface(path: &Path, source: &str) -> Result<(), Error> {
     let mut scanner = LuauCodeScanner::new(source);
     while let Some(cursor) = scanner.next_code_offset() {
+        if source[cursor..].starts_with("hotki.root") {
+            return Err(migration_error(
+                path,
+                source,
+                cursor,
+                "hotki.root was removed; return the renderer from config.luau".to_string(),
+            ));
+        }
         if source[cursor..].starts_with("hotki.import_style") {
             return Err(migration_error(
                 path,
@@ -258,11 +277,6 @@ fn is_identifier_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-/// Analyze the root config source against the checked-in Luau API definitions.
-fn analyze_root_config(path: &Path, source: &str) -> Result<(), Error> {
-    check_module_with_surface(path, source, LuauApiSurface::Config)
-}
-
 /// Analyze a standalone style file against the style-only declaration surface.
 fn analyze_style_file(path: &Path, source: &str) -> Result<(), Error> {
     check_module_with_surface(path, &style_analysis_source(source), LuauApiSurface::Style)
@@ -277,7 +291,7 @@ fn style_analysis_source(source: &str) -> String {
 fn checker_surface() -> Result<Surface, Error> {
     Surface::builder()
         .enable_runtime_compilation()
-        .analysis_mode(AnalysisMode::Strict)
+        .analysis_mode(Mode::Strict)
         .build()
         .map_err(|err| Error::Validation {
             path: None,
@@ -299,7 +313,11 @@ fn check_module_with_surface(
     let prelude = api.trim_end();
     let checked_source = format!("{prelude}\n{source}");
     let line_offset = prelude.lines().count();
-    let checked = surface.check_bytes(checked_source.as_bytes());
+    let check_source = Source::text(
+        ModuleId::new(path.to_string_lossy().into_owned()),
+        checked_source,
+    );
+    let checked = surface.check(&check_source, CheckOptions::default());
     let errors = checked
         .diagnostics()
         .iter()
@@ -317,7 +335,7 @@ fn check_module_with_surface(
 
     let compile_source = Source::text(ModuleId::new(path.to_string_lossy().into_owned()), source);
     surface
-        .compile(&compile_source)
+        .compile(&compile_source, &CompileOptions::default())
         .map(|_| ())
         .map_err(|err| diagnostics::config_compile_error(source, &err, Some(path)))
 }
@@ -350,6 +368,46 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
+    fn example_config_paths(root: &Path) -> Vec<PathBuf> {
+        fn visit(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(directory).expect("read example directory") {
+                let path = entry.expect("read example entry").path();
+                if path.is_dir() {
+                    visit(root, &path, paths);
+                    continue;
+                }
+                let is_top_level = path.parent() == Some(root);
+                let is_top_level_example = is_top_level
+                    && path.extension() == Some(OsStr::new("luau"))
+                    && path.file_name() != Some(OsStr::new("style.luau"));
+                let is_nested_entry =
+                    !is_top_level && path.file_name() == Some(OsStr::new("config.luau"));
+                if is_top_level_example || is_nested_entry {
+                    paths.push(path);
+                }
+            }
+        }
+
+        let mut paths = Vec::new();
+        visit(root, root, &mut paths);
+        paths
+    }
+
+    #[test]
+    fn check_rejects_hotki_root_with_migration_hint() {
+        let root = test_dir("removed-hotki-root");
+        fs::write(
+            root.join("config.luau"),
+            "hotki.root(function(menu, ctx) end)",
+        )
+        .expect("write root config");
+
+        let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
+        let pretty = err.pretty();
+        assert!(pretty.contains("hotki.root was removed"));
+        assert!(pretty.contains("return the renderer from config.luau"));
+    }
+
     #[test]
     fn check_rejects_removed_role_imports_as_missing_api_fields() {
         for function_name in ["import_mode", "import_items", "import_handler"] {
@@ -360,8 +418,8 @@ mod tests {
                     r#"
 local imported = hotki.{function_name}("child")
 
-hotki.root(function(menu, ctx)
-end)
+return function(menu, ctx)
+end
 "#
                 ),
             )
@@ -386,27 +444,246 @@ end)
     }
 
     #[test]
-    fn check_rejects_require_as_missing_config_surface() {
-        let root = test_dir("require");
+    fn check_rejects_bare_module_requests() {
+        let root = test_dir("bare-require");
         fs::write(
             root.join("config.luau"),
             r#"
 local child = require("child")
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("a", "Child", child)
-end)
+end
 "#,
         )
         .expect("write root config");
 
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
-        assert!(pretty.contains("require"), "unexpected error: {pretty}");
         assert!(
-            !pretty.contains("not supported"),
-            "require should fail normally, not through a Hotki policy error: {pretty}"
+            pretty.contains("must begin with ./ or ../"),
+            "unexpected error: {pretty}"
         );
+    }
+
+    #[test]
+    fn check_validates_nested_relative_module_graphs() {
+        let root = test_dir("nested-relative-require");
+        fs::create_dir_all(root.join("apps")).expect("create module directory");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local child = require("./apps/child")
+return function(menu, ctx)
+    child(menu, ctx)
+end
+"#,
+        )
+        .expect("write root config");
+        fs::write(
+            root.join("apps/child.luau"),
+            r#"
+return function(menu: MenuBuilder, ctx: ModeContext)
+    menu:bind("a", ctx.app, hotki.actions.pop)
+end
+"#,
+        )
+        .expect("write child module");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check graph");
+        assert_eq!(report.modules, 2);
+    }
+
+    #[test]
+    fn check_allows_computed_requests_already_in_the_graph() {
+        let root = test_dir("computed-checked-require");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local child = require("./child")
+local request = "./child"
+local computed = require(request)
+assert(child == computed)
+
+return function(menu)
+    computed(menu)
+end
+"#,
+        )
+        .expect("write root config");
+        fs::write(
+            root.join("child.luau"),
+            "return function(menu: MenuBuilder) end",
+        )
+        .expect("write child module");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check graph");
+        assert_eq!(report.modules, 2);
+    }
+
+    #[test]
+    fn check_rejects_computed_requests_outside_the_graph() {
+        let root = test_dir("computed-unchecked-require");
+        fs::write(
+            root.join("config.luau"),
+            r#"
+local child = require("./child")
+local function late_request()
+    return "./late"
+end
+require(late_request())
+
+return function(menu)
+    child(menu)
+end
+"#,
+        )
+        .expect("write root config");
+        for name in ["child", "late"] {
+            fs::write(
+                root.join(format!("{name}.luau")),
+                "return function(menu: MenuBuilder) end",
+            )
+            .expect("write child module");
+        }
+
+        let error = check_luau_config(&root.join("config.luau"))
+            .expect_err("unchecked computed request should fail");
+        assert!(
+            error.pretty().contains("outside the checked config graph"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+    }
+
+    #[test]
+    fn check_reports_module_graph_resolution_failures() {
+        let missing = test_dir("missing-require");
+        fs::write(
+            missing.join("config.luau"),
+            "require('./missing')\nreturn function(menu) end",
+        )
+        .expect("write missing config");
+        let error = check_luau_config(&missing.join("config.luau"))
+            .expect_err("missing module should fail");
+        assert!(
+            error.pretty().contains("missing"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+
+        let ambiguous = test_dir("ambiguous-require");
+        fs::create_dir_all(ambiguous.join("child")).expect("create child directory");
+        fs::write(ambiguous.join("child.luau"), "return {}").expect("write child file");
+        fs::write(ambiguous.join("child/init.luau"), "return {}").expect("write child init");
+        fs::write(
+            ambiguous.join("config.luau"),
+            "require('./child')\nreturn function(menu) end",
+        )
+        .expect("write ambiguous config");
+        let error = check_luau_config(&ambiguous.join("config.luau"))
+            .expect_err("ambiguous module should fail");
+        assert!(
+            error.pretty().contains("ambiguous"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+    }
+
+    #[test]
+    fn check_reports_cycles_child_errors_and_root_escapes() {
+        let cycle = test_dir("require-cycle");
+        fs::write(
+            cycle.join("config.luau"),
+            "require('./a')\nreturn function(menu) end",
+        )
+        .expect("write cycle config");
+        fs::write(cycle.join("a.luau"), "return require('./b')").expect("write module a");
+        fs::write(cycle.join("b.luau"), "return require('./a')").expect("write module b");
+        let error =
+            check_luau_config(&cycle.join("config.luau")).expect_err("module cycle should fail");
+        let pretty = error.pretty().to_ascii_lowercase();
+        assert!(
+            pretty.contains("circular") || pretty.contains("cyclic") || pretty.contains("cycle"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+
+        let child_error = test_dir("child-type-error");
+        fs::write(
+            child_error.join("config.luau"),
+            "require('./child')\nreturn function(menu) end",
+        )
+        .expect("write child-error config");
+        fs::write(
+            child_error.join("child.luau"),
+            "local value: number = 'bad'\nreturn value",
+        )
+        .expect("write invalid child");
+        let error = check_luau_config(&child_error.join("config.luau"))
+            .expect_err("child type error should fail");
+        let child_path = fs::canonicalize(child_error.join("child.luau"))
+            .expect("canonicalize invalid child path");
+        assert_eq!(error.path(), Some(child_path.as_path()));
+
+        let escape = test_dir("root-escape");
+        fs::write(
+            escape.join("config.luau"),
+            "require('../outside')\nreturn function(menu) end",
+        )
+        .expect("write escaping config");
+        let error =
+            check_luau_config(&escape.join("config.luau")).expect_err("root escape should fail");
+        assert!(
+            error.pretty().contains("escape") || error.pretty().contains("outside"),
+            "unexpected error: {}",
+            error.pretty()
+        );
+    }
+
+    #[test]
+    fn check_reports_all_child_diagnostics_in_dependency_order() {
+        let root = test_dir("ordered-child-errors");
+        fs::write(
+            root.join("config.luau"),
+            "require('./a')\nrequire('./b')\nreturn function(menu) end",
+        )
+        .expect("write root config");
+        for name in ["a", "b"] {
+            fs::write(
+                root.join(format!("{name}.luau")),
+                format!("local {name}: number = 'bad'\nreturn {name}"),
+            )
+            .expect("write invalid dependency");
+        }
+
+        let error = check_luau_config(&root.join("config.luau"))
+            .expect_err("child diagnostics should reject graph");
+        let pretty = error.pretty();
+        let a = pretty.find("a.luau").expect("a diagnostic path");
+        let b = pretty.find("b.luau").expect("b diagnostic path");
+        assert!(a < b, "diagnostics are not in dependency order: {pretty}");
+    }
+
+    #[test]
+    fn check_follows_symlinks_inside_the_trusted_config_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_dir("symlink-require");
+        fs::write(
+            root.join("config.luau"),
+            "local child = require('./alias')\nreturn function(menu) child(menu) end",
+        )
+        .expect("write root config");
+        fs::write(
+            root.join("child.luau"),
+            "return function(menu: MenuBuilder) end",
+        )
+        .expect("write child module");
+        symlink("child.luau", root.join("alias.luau")).expect("create module symlink");
+
+        let report = check_luau_config(&root.join("config.luau")).expect("check symlink graph");
+        assert_eq!(report.modules, 2);
     }
 
     #[test]
@@ -415,9 +692,9 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     local app: number = ctx.app
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -434,11 +711,11 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Run", function(actx)
         local depth: string = actx.depth
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -459,7 +736,7 @@ local render: ModeRenderer = function(menu, ctx)
     local app: number = ctx.app
 end
 
-hotki.root(render)
+return render
 "#,
         )
         .expect("write root config");
@@ -476,7 +753,7 @@ hotki.root(render)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Select", function(actx)
         actx:select({
             items = {
@@ -486,14 +763,14 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
 
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
-        assert!(pretty.contains("label"), "unexpected error: {pretty}");
+        assert!(pretty.contains("number"), "unexpected error: {pretty}");
         assert!(pretty.contains("string"), "unexpected error: {pretty}");
     }
 
@@ -508,7 +785,7 @@ local items: SelectorItemList<string> = {
     { label = "Beta", sublabel = "second", data = "beta" },
 }
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Select", function(actx)
         actx:select({
             items = items,
@@ -517,7 +794,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -534,7 +811,7 @@ end)
             r#"
 local items: SelectorStringList = { "Alpha", "Beta" }
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Select", function(actx)
         actx:select({
             items = items,
@@ -543,7 +820,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -566,7 +843,7 @@ end
 
 local provider: SelectorItemProvider<string> = items
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Select", function(actx)
         actx:select({
             items = provider,
@@ -575,7 +852,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -596,7 +873,7 @@ end
 
 local provider: SelectorStringProvider = items
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Select", function(actx)
         actx:select({
             items = provider,
@@ -605,7 +882,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -621,17 +898,21 @@ end)
             root.join("config.luau"),
             r#"
 local function visible_apps(ctx: ModeContext): SelectorItemList<ApplicationInfo>
-    local out: SelectorItemList<ApplicationInfo> = {}
+    local out: { SelectorItem<ApplicationInfo> } = {}
     for _, item in hotki.applications(ctx) do
         local path: string = item.data.path
         if item.label ~= "Skip" and path ~= "" then
-            table.insert(out, item)
+            table.insert(out, {
+                label = item.label,
+                sublabel = item.sublabel,
+                data = item.data,
+            })
         end
     end
     return out
 end
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Apps", function(actx)
         actx:select({
             items = visible_apps,
@@ -640,7 +921,7 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -655,9 +936,9 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Bad", action.reload_config)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -673,12 +954,12 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Bad", function(actx)
         actx:exec(function(inner)
         end)
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -694,7 +975,7 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("a", "Handler", function(actx)
         actx:shell("true")
         actx:pop()
@@ -709,7 +990,7 @@ hotki.root(function(menu, ctx)
     menu:bind("c", "Reload", function(actx)
         actx:reload_config()
     end)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -724,7 +1005,7 @@ end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx) end)
+return function(menu, ctx) end
 "#,
         )
         .expect("write root config");
@@ -745,7 +1026,7 @@ hotki.root(function(menu, ctx) end)
             root.join("config.luau"),
             r#"
 themes:use("default")
-hotki.root(function(menu, ctx) end)
+return function(menu, ctx) end
 "#,
         )
         .expect("write root config");
@@ -762,9 +1043,9 @@ hotki.root(function(menu, ctx) end)
         fs::write(
             root.join("config.luau"),
             r#"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("t", "Theme", action.theme_next)
-end)
+end
 "#,
         )
         .expect("write root config");
@@ -781,9 +1062,9 @@ end)
         fs::write(
             root.join("config.luau"),
             r##"
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:style({ hud = { bg = "#000000" } })
-end)
+end
 "##,
         )
         .expect("write root config");
@@ -801,7 +1082,7 @@ end)
             root.join("config.luau"),
             r#"
 local local_style = hotki.import_style("local-style")
-hotki.root(function(menu, ctx) end)
+return function(menu, ctx) end
 "#,
         )
         .expect("write root config");
@@ -832,20 +1113,19 @@ return {}
     #[test]
     fn check_validates_all_workspace_examples() {
         let examples_dir = workspace_root().join("examples");
-        let mut example_paths = fs::read_dir(&examples_dir)
-            .expect("read examples dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.extension() == Some(OsStr::new("luau"))
-                    && path.file_name() != Some(OsStr::new("style.luau"))
-            })
-            .collect::<Vec<_>>();
+        let mut example_paths = example_config_paths(&examples_dir);
         example_paths.sort();
 
         assert!(
             !example_paths.is_empty(),
             "no Luau examples found in {}",
             examples_dir.display()
+        );
+        assert!(
+            example_paths
+                .iter()
+                .any(|path| path.ends_with("examples/cortesi/config.luau")),
+            "nested Cortesi entry was not discovered"
         );
 
         for path in &example_paths {

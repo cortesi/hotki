@@ -5,7 +5,7 @@ use std::{
 };
 
 use ruau::{
-    host::RetainedRuntime,
+    session::Runtime,
     vm::{CallOptions, Limits},
 };
 
@@ -28,20 +28,26 @@ pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
 
 /// A loaded Luau configuration consisting of a root mode plus the runtime.
 pub struct DynamicConfig {
-    /// Root mode renderer declared by `hotki.root(...)`.
+    /// Root mode renderer returned by the entry module.
     pub(crate) root: ModeRef,
     /// Resolved base style loaded from the embedded default and optional sibling override.
     pub(crate) base_style: Style,
     /// Source of the resolved base style.
     pub(crate) style_provenance: StyleProvenance,
     /// Retained Ruau runtime used for later renders and handler execution.
-    pub(crate) runtime: RetainedRuntime,
+    pub(crate) runtime: Runtime,
     /// Callback promotion and deferred-release registry.
-    callbacks: SharedCallbackRegistry,
+    pub(super) callbacks: SharedCallbackRegistry,
     /// Optional origin path for the loaded config.
     pub(crate) path: Option<PathBuf>,
     /// Cached source text for excerpts and diagnostics.
     pub(crate) sources: SourceMap,
+    /// Number of checked behavior modules, including the entry module.
+    pub(crate) module_count: usize,
+    /// Gas spent evaluating the entry module.
+    pub(crate) entry_gas: u64,
+    /// Gas spent by the initial root validation render.
+    pub(crate) validation_gas: u64,
 }
 
 impl DynamicConfig {
@@ -73,6 +79,20 @@ impl DynamicConfig {
         lock_unpoisoned(&self.sources).get(path).cloned()
     }
 
+    /// Number of behavior modules validated for this config.
+    pub(crate) const fn module_count(&self) -> usize {
+        self.module_count
+    }
+
+    /// Return entry gas, validation gas, and retained heap for load diagnostics.
+    pub(crate) fn load_metrics(&self) -> (u64, u64, usize) {
+        (
+            self.entry_gas,
+            self.validation_gas,
+            self.runtime.heap_used_bytes(),
+        )
+    }
+
     /// Return the per-entrypoint execution limits.
     pub(crate) fn entry_limits() -> Limits {
         Limits::production(SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT)
@@ -92,27 +112,6 @@ impl DynamicConfig {
     pub(crate) fn synchronize_callbacks(&mut self) -> Result<(), Error> {
         CallbackRegistry::synchronize(&self.callbacks, &mut self.runtime)
             .map_err(|error| diagnostics::config_retained_error(self.path.clone(), &error))
-    }
-
-    /// Assemble a loaded config from its retained runtime and root callback.
-    pub(super) fn new(
-        root: ModeRef,
-        base_style: Style,
-        style_provenance: StyleProvenance,
-        runtime: RetainedRuntime,
-        callbacks: SharedCallbackRegistry,
-        path: Option<PathBuf>,
-        sources: SourceMap,
-    ) -> Self {
-        Self {
-            root,
-            base_style,
-            style_provenance,
-            runtime,
-            callbacks,
-            path,
-            sources,
-        }
     }
 
     /// Allocate the callback registry used while loading a config.

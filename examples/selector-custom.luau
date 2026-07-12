@@ -7,7 +7,7 @@ local items: { SelectorItem<string> } = {
     { label = "Zeta", data = "ze" },
 }
 
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("shift+cmd+0", "Pick Item", function(actx)
         actx:select({
             title = "Pick Item",
@@ -21,4 +21,4 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end

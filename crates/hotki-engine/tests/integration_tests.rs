@@ -23,13 +23,13 @@ fn focus_change_triggers_rerender() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               if ctx:app_matches("Safari") then
                 menu:bind("a", "a", function(actx)
                   actx:shell("true")
                 end)
               end
-            end)
+            end
             "#,
         );
         engine
@@ -70,13 +70,13 @@ fn mode_entry_and_pop_updates_depth() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:submenu("cmd+k", "menu", function(child, inner)
                 child:bind("a", "back", function(actx)
                   actx:pop()
                 end)
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -120,7 +120,7 @@ fn repeat_relay_ticks() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:bind("a", "repeat", function(actx)
                 actx:until_keyup(function(repeat_ctx)
                   repeat_ctx:relay("b")
@@ -129,7 +129,7 @@ fn repeat_relay_ticks() {
                   interval_ms = 100,
                 })
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -185,7 +185,7 @@ fn repeat_change_volume_ticks() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:bind("a", "repeat", function(actx)
                 actx:until_keyup(function(repeat_ctx)
                   repeat_ctx:change_volume(5)
@@ -195,7 +195,7 @@ fn repeat_change_volume_ticks() {
                   interval_ms = 100,
                 })
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -252,14 +252,14 @@ fn capture_mode_sets_capture_all() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:submenu("cmd+k", "cap", function(child, inner)
                 child:capture()
                 child:bind("a", "back", function(actx)
                   actx:pop()
                 end)
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -309,11 +309,11 @@ fn reload_config_action_does_not_deadlock() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:bind("r", "reload", function(actx)
                 actx:reload_config()
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -342,13 +342,106 @@ fn reload_config_action_does_not_deadlock() {
 }
 
 #[test]
+fn failed_reload_keeps_previous_callbacks_active() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            local a = hotki.actions
+            return function(menu)
+              menu:bind("a", "old callback", a.notify("info", "Active", "old"))
+              menu:bind("r", "reload", a.reload_config)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+
+        fs::write(&path, "return 42").expect("replace config with invalid root");
+        dispatch_ident(&engine, "r").await;
+        assert!(
+            recv_notify_text(&mut rx, 500, "Config").await.is_some(),
+            "failed reload should report its validation error"
+        );
+
+        dispatch_ident(&engine, "a").await;
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Active").await.as_deref(),
+            Some("old")
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn reload_discards_factory_submenu_with_changed_capture() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let config = |label: &str, capture: bool| {
+            format!(
+                r#"
+                local a = hotki.actions
+                local function make_child(value: string): ModeRenderer
+                  return function(menu)
+                    menu:bind("n", value, a.notify("info", "Version", value))
+                  end
+                end
+                local child = make_child("{label}")
+
+                return function(menu)
+                  menu:submenu("m", "mode", child, {{ capture = {capture} }})
+                  menu:bind("r", "reload", a.reload_config, {{ global = true }})
+                end
+                "#
+            )
+        };
+        let path = write_test_config(&config("old", true));
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+        dispatch_ident(&engine, "m").await;
+        assert_eq!(engine.get_depth().await, 1);
+
+        fs::write(&path, config("new", false)).expect("write replacement config");
+        dispatch_ident(&engine, "r").await;
+        assert_eq!(
+            engine.get_depth().await,
+            0,
+            "reload must discard the old child"
+        );
+
+        dispatch_ident(&engine, "m").await;
+        dispatch_ident(&engine, "n").await;
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Version").await.as_deref(),
+            Some("new")
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
 fn selector_select_runs_handler_with_item_and_query() {
     run_engine_test(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:bind("cmd+k", "pick", function(actx)
                 actx:select({
                   title = "Pick",
@@ -362,7 +455,7 @@ fn selector_select_runs_handler_with_item_and_query() {
                   end,
                 })
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -408,7 +501,7 @@ fn selector_cancel_runs_cancel_handler() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:bind("cmd+k", "pick", function(actx)
                 actx:select({
                   items = { "Alpha" },
@@ -420,7 +513,7 @@ fn selector_cancel_runs_cancel_handler() {
                   end,
                 })
               end)
-            end)
+            end
             "#,
         );
         engine
@@ -458,14 +551,14 @@ fn render_recovery_truncates_bad_child_mode_to_root() {
 
         let path = write_test_config(
             r#"
-            hotki.root(function(menu, ctx)
+            return function(menu, ctx)
               menu:submenu("cmd+k", "bad", function(child, inner)
                 error("child render failed")
               end)
               menu:bind("x", "ok", function(actx)
                 actx:shell("true")
               end)
-            end)
+            end
             "#,
         );
         engine

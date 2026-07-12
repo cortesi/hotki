@@ -1,4 +1,4 @@
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:bind("shift+cmd+0", "Run Application", function(actx)
         actx:select({
             title = "Run Application",
@@ -9,4 +9,4 @@ hotki.root(function(menu, ctx)
             end,
         })
     end)
-end)
+end

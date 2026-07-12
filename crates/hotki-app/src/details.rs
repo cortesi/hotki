@@ -760,12 +760,12 @@ mod tests {
     #[test]
     fn config_tab_model_names_missing_path_without_copying_contents() {
         let mut details = Details::new(NotifyTheme::default());
-        details.config_contents = "hotki.root(function() end)".to_string();
+        details.config_contents = "return function() end".to_string();
 
         let model = details.config_tab_model();
 
         assert_eq!(model.path_text, "No config file loaded");
-        assert_eq!(model.contents, "hotki.root(function() end)");
+        assert_eq!(model.contents, "return function() end");
         assert!(model.error.is_none());
     }
 }

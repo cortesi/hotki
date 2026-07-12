@@ -3,33 +3,31 @@
 use std::sync::Arc;
 
 use ruau::{
-    decl::DeclSource,
-    module::{NativeBinding, NativeModuleBuilder, NativeModuleBuilderError},
-    vm::{MultiValue, RuntimeError, Scope, ScopedValue, Table},
-    vm_api::NativeModule,
+    declaration::DeclarationSource,
+    module::{self, Binding},
+    vm::{MultiValue, NativeModule, RuntimeError, Scope, ScopedValue, Table},
 };
 
-use super::{
-    ModeRef, SelectorItem, apps, host_args::HostArgs, host_runtime::SharedRuntimeState,
-    util::lock_unpoisoned,
-};
+use super::{SelectorItem, apps, host_runtime::SharedApplicationCache, util::lock_unpoisoned};
+
+/// Pure-Luau implementation installed as the typed `hotki.actions` value.
+const ACTIONS_SOURCE: &[u8] = include_bytes!("../../luau/actions.luau");
 
 /// Build the declaration-coupled native module backing the `hotki` library.
 pub(super) fn build_hotki_module(
-    state: SharedRuntimeState,
-) -> Result<Arc<dyn NativeModule>, NativeModuleBuilderError> {
+    applications: SharedApplicationCache,
+) -> Result<Arc<dyn NativeModule>, module::BuildError> {
     let mut builder =
-        NativeModuleBuilder::from_declaration("hotki", DeclSource::Text(crate::luau_api()));
-    let root_state = Arc::clone(&state);
-    builder.borrowed_function(
-        "root",
-        NativeBinding::declared_library("hotki"),
-        move |scope, args| hotki_root(&root_state, scope, args),
+        module::Builder::from_declaration("hotki", DeclarationSource::Text(crate::luau_api()));
+    builder.source_value(
+        "actions",
+        Binding::declared_library("hotki"),
+        ACTIONS_SOURCE,
     );
     builder.borrowed_function(
         "applications",
-        NativeBinding::declared_library("hotki"),
-        move |scope, args| hotki_applications(&state, scope, args),
+        Binding::declared_library("hotki"),
+        move |scope, args| hotki_applications(&applications, scope, args),
     );
     builder.declared_host_type(Arc::new(super::host_userdata::mode_builder_type()));
     builder.declared_host_type(Arc::new(super::host_userdata::mode_context_type()));
@@ -37,39 +35,19 @@ pub(super) fn build_hotki_module(
     builder.build()
 }
 
-/// Host implementation of `hotki.root`.
-fn hotki_root<'s>(
-    state: &SharedRuntimeState,
-    scope: &Scope<'s>,
-    args: MultiValue<'s>,
-) -> Result<MultiValue<'s>, RuntimeError> {
-    let mut args = HostArgs::new(args);
-    let render = args.function("hotki.root render")?;
-    args.finish("hotki.root")?;
-    let mode = ModeRef::from_function(scope, render, None)?;
-    let mut guard = lock_unpoisoned(state);
-    if guard.root.is_some() {
-        return Err(RuntimeError::runtime(
-            "hotki.root() must be called exactly once",
-        ));
-    }
-    guard.root = Some(mode);
-    Ok(MultiValue::new())
-}
-
 /// Host implementation of `hotki.applications`.
 fn hotki_applications<'s>(
-    state: &SharedRuntimeState,
+    applications: &SharedApplicationCache,
     scope: &Scope<'s>,
     _args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let cached = { lock_unpoisoned(state).applications_cache.clone() };
+    let cached = { lock_unpoisoned(applications).items.clone() };
     let items = if let Some(cached) = cached {
         cached
     } else {
         let apps = apps::application_items(scope)?;
         let shared: Arc<[SelectorItem]> = apps.into();
-        lock_unpoisoned(state).applications_cache = Some(shared.clone());
+        lock_unpoisoned(applications).items = Some(shared.clone());
         shared
     };
     let table = selector_items_table(scope, items.as_ref())?;

@@ -2,19 +2,19 @@ type Toggle = "on" | "off" | "toggle"
 type NotifyKind = "ignore" | "info" | "warn" | "error" | "success"
 
 type ApplicationInfo = {
-    name: string,
-    path: string,
-    bundle_id: string?,
+    read name: string,
+    read path: string,
+    read bundle_id: string?,
 }
 
 type SelectorItem<T> = {
-    label: string,
-    sublabel: string?,
-    data: T,
+    read label: string,
+    read sublabel: string?,
+    read data: T,
 }
 
-type SelectorItemList<T> = { SelectorItem<T> }
-type SelectorStringList = { string }
+type SelectorItemList<T> = { read [number]: SelectorItem<T> }
+type SelectorStringList = { read [number]: string }
 type SelectorItemProvider<T> = (ctx: ModeContext) -> SelectorItemList<T>
 type SelectorStringProvider = (ctx: ModeContext) -> SelectorStringList
 
@@ -31,38 +31,38 @@ type ModeContext = {
 type Action = (ctx: ActionContext) -> ()
 
 type ShellOptions = {
-    ok_notify: NotifyKind?,
-    err_notify: NotifyKind?,
+    read ok_notify: NotifyKind?,
+    read err_notify: NotifyKind?,
 }
 
 type RepeatOptions = {
-    delay_ms: number?,
-    interval_ms: number?,
+    read delay_ms: number?,
+    read interval_ms: number?,
 }
 
 type BindingOptions = {
-    hidden: boolean?,
-    global: boolean?,
-    stay: boolean?,
+    read hidden: boolean?,
+    read global: boolean?,
+    read stay: boolean?,
 }
 
 type SubmenuOptions = {
-    hidden: boolean?,
-    global: boolean?,
-    stay: boolean?,
-    capture: boolean?,
+    read hidden: boolean?,
+    read global: boolean?,
+    read stay: boolean?,
+    read capture: boolean?,
 }
 
 type ItemSource<T> =
     SelectorItemList<T> | SelectorStringList | SelectorItemProvider<T> | SelectorStringProvider
 
 type SelectorSpec<T> = {
-    title: string?,
-    placeholder: string?,
-    items: ItemSource<T>,
-    on_select: (ctx: ActionContext, item: SelectorItem<T>, query: string) -> (),
-    on_cancel: ((ctx: ActionContext) -> ())?,
-    max_visible: number?,
+    read title: string?,
+    read placeholder: string?,
+    read items: ItemSource<T>,
+    read on_select: (ctx: ActionContext, item: SelectorItem<T>, query: string) -> (),
+    read on_cancel: ((ctx: ActionContext) -> ())?,
+    read max_visible: number?,
 }
 
 type MenuBuilder = {
@@ -113,7 +113,28 @@ type ActionContext = {
     select: <T>(self: ActionContext, spec: SelectorSpec<T>) -> (),
 }
 
+type Actions = {
+    pop: Action,
+    exit: Action,
+    show_root: Action,
+    hide_hud: Action,
+    reload_config: Action,
+    clear_notifications: Action,
+    stay: Action,
+    notify: (kind: NotifyKind, title: string, body: string) -> Action,
+    push: (render: ModeRenderer, title: string?) -> Action,
+    shell: (cmd: string, opts: ShellOptions?) -> Action,
+    open: (target: string) -> Action,
+    relay: (spec: string) -> Action,
+    show_details: (toggle: Toggle) -> Action,
+    set_volume: (level: number) -> Action,
+    change_volume: (delta: number) -> Action,
+    mute: (toggle: Toggle) -> Action,
+    hold: (action: Action, opts: RepeatOptions?) -> Action,
+    select: <T>(spec: SelectorSpec<T>) -> Action,
+}
+
 declare hotki: {
-    root: (render: ModeRenderer) -> (),
+    actions: Actions,
     applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>,
 }

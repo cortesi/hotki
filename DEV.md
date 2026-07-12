@@ -8,6 +8,9 @@
 ## Validation
 
 - Always run `cargo xtask tidy` after changes, and fix all reported issues.
+- Run `cargo xtask luau` after changing config declarations, examples, or marked Markdown Luau
+  fences. It validates top-level examples, nested `config.luau` graphs, and complete documentation
+  entries; helper modules are checked through their entry graph rather than as roots.
 - For UI‑path changes, run: `cargo run --bin smoketest -- all`.
 
 ## Eguidev Automation

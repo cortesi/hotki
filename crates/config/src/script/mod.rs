@@ -16,6 +16,8 @@ mod host_parse;
 mod host_runtime;
 pub(crate) mod host_userdata;
 mod loader;
+/// Checked and cached filesystem module source.
+mod module_source;
 mod render;
 /// Selector parsing and runtime types.
 mod selector;

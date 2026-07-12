@@ -262,21 +262,16 @@ impl Engine {
     pub(crate) async fn install_config(&self, path: &Path, mode: ConfigInstall) -> Result<()> {
         let dyn_cfg = dyn_engine::load_dynamic_config(path).map_err(|e| Error::Msg(e.pretty()))?;
         let root = dyn_cfg.root();
-        {
-            let mut g = self.config.lock().await;
-            *g = Some(dyn_cfg);
-        }
+        let style = dyn_cfg.base_style();
+        self.action_repeater.clear_async().await;
+        let mut config = self.config.lock().await;
         let mut rt = self.runtime.lock().await;
-        match mode {
-            ConfigInstall::ResetFocus => {
-                rt.hud_visible = false;
-                rt.focus = self.current_focus_info();
-                rt.reset_to_root(root);
-            }
-            ConfigInstall::KeepFocus => {
-                rt.reset_to_root(root);
-            }
+        if matches!(mode, ConfigInstall::ResetFocus) {
+            rt.hud_visible = false;
+            rt.focus = self.current_focus_info();
         }
+        rt.install_root(root, style);
+        *config = Some(dyn_cfg);
         Ok(())
     }
 

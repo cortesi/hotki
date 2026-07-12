@@ -17,6 +17,7 @@ Features:
 hotki check --config ~/.hotki/config.luau
 hotki style --default
 hotki api
+hotki api --surface config --filter Actions
 hotki api --surface style
 hotki api --surface all --markdown
 ```
@@ -54,36 +55,24 @@ Docs:
 
 Minimal `config.luau`:
 
+<!-- hotki-luau: config -->
 ```luau
-hotki.root(function(menu, ctx)
+local a = hotki.actions
+local GLOBAL = { global = true, hidden = true }
+
+return function(menu, ctx)
     if ctx.hud then
-        menu:bind("esc", "Back", function(actx)
-            actx:pop()
-        end, {
-            global = true,
-            hidden = true,
-        })
+        menu:bind("esc", "Back", a.pop, GLOBAL)
     end
 
-    menu:submenu("shift+cmd+0", "Main", function(root, inner)
-        root:bind("r", "Reload", function(actx)
-            actx:reload_config()
-        end)
-        root:bind("a", "Run Application", function(actx)
-            actx:select({
-                title = "Run Application",
-                items = hotki.applications,
-                on_select = function(
-                    select_ctx: ActionContext,
-                    item: SelectorItem<ApplicationInfo>,
-                    query: string
-                )
-                    select_ctx:open(item.data.path)
-                end,
-            })
-        end)
-    end, {
-        capture = true,
-    })
-end)
+    menu:submenu("shift+cmd+0", "Main", function(root)
+        root:bind("r", "Reload", a.reload_config)
+        root:bind("a", "Run Application", a.select({
+            items = hotki.applications,
+            on_select = function(select_ctx, item)
+                select_ctx:open(item.data.path)
+            end,
+        }))
+    end, { capture = true })
+end
 ```

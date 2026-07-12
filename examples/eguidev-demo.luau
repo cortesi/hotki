@@ -1,4 +1,4 @@
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
   menu:submenu("shift+cmd+0", "activate", function(activate, inner)
     activate:submenu("d", "Demo", function(sub, subctx)
       sub:bind("n", "Notify", function(actx)
@@ -36,4 +36,4 @@ hotki.root(function(menu, ctx)
       end, { hidden = true })
     end)
   end)
-end)
+end

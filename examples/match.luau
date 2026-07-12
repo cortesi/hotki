@@ -1,4 +1,4 @@
-hotki.root(function(menu, ctx)
+return function(menu, ctx)
     menu:submenu("shift+cmd+0", "Activate", function(root, inner)
         if inner:app_matches("Safari|Arc|Google Chrome") then
             root:submenu("b", "Browser", function(browser, browser_ctx)
@@ -29,4 +29,4 @@ hotki.root(function(menu, ctx)
             actx:shell("echo hello")
         end)
     end)
-end)
+end

@@ -57,8 +57,10 @@ impl RuntimeState {
         }
     }
 
-    pub(crate) fn reset_to_root(&mut self, root: ModeRef) {
+    pub(crate) fn install_root(&mut self, root: ModeRef, style: config::Style) {
+        self.selector = None;
         self.stack = vec![Self::root_frame(root)];
+        self.rendered = Self::empty_rendered(style);
     }
 
     pub(crate) fn clear_config_state(&mut self, style: config::Style) {
