@@ -7,13 +7,6 @@ use tracing_subscriber::{fmt, prelude::*};
 /// Scenario-specific smoketest cases for UI/HUD validation.
 mod cases;
 mod cli;
-mod config;
-/// Error definitions and hint helpers used by smoketest.
-mod error;
-mod process;
-mod server_drive;
-/// Session management for launching and controlling hotki.
-mod session;
 /// Smoketest case registry and runner.
 mod suite;
 /// Repo-local temp path helpers.
@@ -25,6 +18,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::exit};
 
 use cli::{Cli, Commands};
 use error::print_hints;
+use hotki_app_session::{config, error, process};
 use warn_overlay::WARN_OVERLAY_STANDALONE_FLAG;
 
 /// Print a standardized heading for a smoketest section.

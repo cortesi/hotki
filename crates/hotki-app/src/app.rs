@@ -1,5 +1,9 @@
 //! App-level state and event handling for the Hotki UI.
-use std::path::PathBuf;
+use std::{
+    mem,
+    path::PathBuf,
+    sync::mpsc::{Receiver, TryRecvError},
+};
 
 use eframe::{App, CreationContext};
 use egui::Context;
@@ -14,6 +18,7 @@ use crate::{
     devtools::{FixtureRuntime, render_app_anchors},
     display::DisplayMetrics,
     fonts,
+    harness_control::{PresentationExpectation, PresentationRequest},
     health::RuntimeHealth,
     hud::Hud,
     notification::NotificationCenter,
@@ -106,6 +111,20 @@ pub struct HotkiApp {
     pub(crate) runtime_health: RuntimeHealth,
     /// Sorted server binding identifiers, when the runtime has reported them.
     pub(crate) server_bindings: Vec<String>,
+    /// App-local requests waiting for a specific UI state to be painted.
+    pub(crate) harness_requests: Option<Receiver<PresentationRequest>>,
+    /// Presentation requests that have not yet survived one complete rendered frame.
+    pending_presentations: Vec<PendingPresentation>,
+    /// Monotonic UI frame counter used by presentation barriers.
+    rendered_frame: u64,
+}
+
+/// One presentation request being evaluated on the UI thread.
+struct PendingPresentation {
+    /// Request and acknowledgement sender supplied by the control listener.
+    request: PresentationRequest,
+    /// First rendered frame where the expected state matched.
+    matched_frame: Option<u64>,
 }
 
 /// Inputs required to bootstrap the UI application and runtime.
@@ -132,6 +151,8 @@ pub struct AppBootstrap {
     pub devmcp: DevMcp,
     /// Fixture runtime state shared with the early MCP handler.
     pub fixture_runtime: FixtureRuntime,
+    /// Optional local harness presentation request channel.
+    pub harness_requests: Option<Receiver<PresentationRequest>>,
 }
 
 impl App for HotkiApp {
@@ -150,6 +171,7 @@ impl App for HotkiApp {
                 UiEvent::Message(message) => self.handle_message(ctx, message),
             }
         }
+        self.receive_presentation_requests();
 
         let notification_stack = self.notifications.stack_aliases();
         self.fixture_runtime.update_diagnostics(
@@ -172,6 +194,7 @@ impl App for HotkiApp {
         self.details
             .render(ctx, self.notifications.backlog(), &self.devmcp);
         self.permissions.render(ctx, &self.devmcp);
+        self.acknowledge_presentations(ctx);
     }
 
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
@@ -247,6 +270,65 @@ impl HotkiApp {
             fixture_runtime,
             runtime_health,
             server_bindings: Vec::new(),
+            harness_requests: bootstrap.harness_requests,
+            pending_presentations: Vec::new(),
+            rendered_frame: 0,
+        }
+    }
+
+    /// Drain newly submitted harness barriers without blocking the UI thread.
+    fn receive_presentation_requests(&mut self) {
+        let Some(requests) = self.harness_requests.as_ref() else {
+            return;
+        };
+        loop {
+            match requests.try_recv() {
+                Ok(request) => self.pending_presentations.push(PendingPresentation {
+                    request,
+                    matched_frame: None,
+                }),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.harness_requests = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Acknowledge barriers only after matching state has completed a prior rendered frame.
+    fn acknowledge_presentations(&mut self, ctx: &Context) {
+        self.rendered_frame = self.rendered_frame.saturating_add(1);
+        let frame = self.rendered_frame;
+        let mut pending = Vec::new();
+        for mut barrier in mem::take(&mut self.pending_presentations) {
+            if !self.presentation_matches(&barrier.request.expectation) {
+                barrier.matched_frame = None;
+                pending.push(barrier);
+                continue;
+            }
+            if barrier
+                .matched_frame
+                .is_some_and(|matched_frame| matched_frame < frame)
+            {
+                if let Err(error) = barrier.request.rendered.send(()) {
+                    tracing::debug!(?error, "presentation barrier client disconnected");
+                }
+                continue;
+            }
+            barrier.matched_frame = Some(frame);
+            pending.push(barrier);
+            ctx.request_repaint();
+        }
+        self.pending_presentations = pending;
+    }
+
+    /// Test one harness expectation against current UI-thread presentation state.
+    fn presentation_matches(&self, expectation: &PresentationExpectation) -> bool {
+        match expectation {
+            PresentationExpectation::Hud => self.hud.is_visible(),
+            PresentationExpectation::Selector(query) => self.selector.query() == Some(query),
+            PresentationExpectation::Notification(kind) => self.notifications.contains_kind(*kind),
         }
     }
 

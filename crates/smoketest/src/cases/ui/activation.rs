@@ -3,14 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hotki_app_session::{
+    server_drive::{DriverError, ServerDriver},
+    windows::OwnedWindows,
+};
 use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use tracing::debug;
 
-use super::{ACTIVATION_IDENT, window_inspection::collect_hotki_windows};
+use super::ACTIVATION_IDENT;
 use crate::{
     config,
     error::{Error, Result},
-    server_drive::{DriverError, ServerDriver},
 };
 
 /// Result payload describing an activation attempt.
@@ -211,7 +214,7 @@ impl BindingWatcher {
         if !visible_snapshot {
             return Ok(false);
         }
-        Ok(!collect_hotki_windows(self.hud_pid)?.is_empty())
+        Ok(!OwnedWindows::new(self.hud_pid as u32).list()?.is_empty())
     }
 }
 

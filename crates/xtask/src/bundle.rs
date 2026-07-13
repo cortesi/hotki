@@ -191,6 +191,38 @@ pub fn bundle_release_default(root_dir: &Path) -> Result<PathBuf> {
     build_bundle(root_dir, &BundleSpec::from(&BundleArgs::default()))
 }
 
+/// Verify the files and executable permissions required from a release bundle readback.
+pub fn verify_release_bundle(path: &Path) -> Result<()> {
+    if !path.is_dir() {
+        return Err(Error::Io {
+            path: path.to_path_buf(),
+            source: io_not_found("release bundle directory is missing"),
+        });
+    }
+    let contents = path.join("Contents");
+    let plist = contents.join("Info.plist");
+    if fs::read(&plist)
+        .map_err(|source| Error::Io {
+            path: plist.clone(),
+            source,
+        })?
+        .is_empty()
+    {
+        return Err(Error::Io {
+            path: plist,
+            source: IoError::new(ErrorKind::InvalidData, "Info.plist is empty"),
+        });
+    }
+    for executable in [APP_BIN_NAME, CLI_BIN_NAME] {
+        verify_executable(&contents.join("MacOS").join(executable))?;
+    }
+    ensure_file_exists(
+        &contents
+            .join("Resources")
+            .join(format!("{APP_BIN_NAME}.icns")),
+    )
+}
+
 /// Build a debug `.app` bundle (dev identifiers + icon).
 pub fn bundle_dev(root_dir: &Path, args: &BundleDevArgs) -> Result<()> {
     let app_dir = build_bundle(root_dir, &BundleSpec::from(args))?;
@@ -382,6 +414,24 @@ fn chmod_executable(path: &Path) -> Result<()> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Require a regular file with at least one executable bit set.
+fn verify_executable(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(Error::Io {
+            path: path.to_path_buf(),
+            source: IoError::new(
+                ErrorKind::PermissionDenied,
+                "bundle executable is missing execute permission",
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Write a UTF-8 file.

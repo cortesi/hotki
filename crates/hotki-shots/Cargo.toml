@@ -6,9 +6,5 @@ publish = false
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
-core-foundation = { workspace = true }
-core-graphics = { workspace = true }
+hotki-app-session = { version = "0.1.0", path = "../smoketest" }
 hotki-protocol = { path = "../hotki-protocol" }
-hotki-server = { path = "../hotki-server" }
-mac-keycode = { path = "../mac-keycode" }
-tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

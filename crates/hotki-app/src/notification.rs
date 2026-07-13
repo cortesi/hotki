@@ -343,6 +343,11 @@ pub struct NotificationCenter {
 }
 
 impl NotificationCenter {
+    /// Whether a live notification of this kind is scheduled for presentation.
+    pub(crate) fn contains_kind(&self, kind: NotifyKind) -> bool {
+        self.items.iter().any(|item| item.kind == kind)
+    }
+
     /// Initialize a new notification center with defaults from `cfg`.
     pub fn new(cfg: &NotifyConfig) -> Self {
         Self {

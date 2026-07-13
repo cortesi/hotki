@@ -1,7 +1,12 @@
 [package]
-name = "smoketest"
+name = "hotki-app-session"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+[[bin]]
+name = "smoketest"
+path = "src/main.rs"
 
 [features]
 default = []
@@ -29,3 +34,4 @@ serde = { workspace = true, features = ["derive"] }
 core-graphics = { workspace = true }
 core-foundation = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
+socket2 = "0.6.4"

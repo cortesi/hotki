@@ -1,4 +1,12 @@
-use std::cmp::Ordering;
+use std::{
+    cmp::Ordering,
+    ffi::{OsStr, OsString},
+    fs, io,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 
 use core_foundation::{
     array::CFArray,
@@ -20,50 +28,187 @@ use objc2_app_kit::NSScreen;
 use objc2_foundation::MainThreadMarker;
 use serde::Serialize;
 
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    process::spawn_managed,
+};
 
 /// Serializable summary of a Hotki-owned window observation.
 #[derive(Clone, Serialize)]
-pub(super) struct WindowSnapshot {
+pub struct WindowSnapshot {
     /// Owning process identifier.
-    pub(super) pid: i32,
+    pub pid: i32,
     /// Window identifier within the process.
-    pub(super) id: u32,
+    pub id: u32,
     /// Observed window title.
-    pub(super) title: String,
+    pub title: String,
     /// Window layer as reported by CoreGraphics.
-    pub(super) layer: i32,
+    pub layer: i32,
     /// Whether the window was reported on-screen.
-    pub(super) is_on_screen: bool,
+    pub is_on_screen: bool,
     /// Window bounds origin X in CoreGraphics global coordinates.
-    pub(super) x: f32,
+    pub x: f32,
     /// Window bounds origin Y in CoreGraphics global coordinates.
-    pub(super) y: f32,
+    pub y: f32,
     /// Window width.
-    pub(super) width: f32,
+    pub width: f32,
     /// Window height.
-    pub(super) height: f32,
+    pub height: f32,
     /// Display identifier derived from window bounds, when available.
-    pub(super) display_id: Option<u32>,
+    pub display_id: Option<u32>,
 }
 
 impl WindowSnapshot {
     /// Right edge in CoreGraphics global coordinates.
-    pub(super) fn max_x(&self) -> f32 {
+    pub fn max_x(&self) -> f32 {
         self.x + self.width
     }
 
     /// Lower edge in CoreGraphics global coordinates.
-    pub(super) fn max_y(&self) -> f32 {
+    pub fn max_y(&self) -> f32 {
         self.y + self.height
+    }
+
+    /// Capture this exact window into a PNG file within the remaining run budget.
+    pub fn capture_png(&self, path: &Path, remaining: Duration) -> Result<()> {
+        let current = self.require_current()?;
+        let mut command = Command::new("screencapture");
+        command.args([
+            OsStr::new("-x"),
+            OsStr::new("-o"),
+            OsStr::new("-l"),
+            OsString::from(current.id.to_string()).as_os_str(),
+            path.as_os_str(),
+        ]);
+        let mut capture = spawn_managed(command)?;
+        let wait_result = capture.wait_with_budget(remaining);
+        let (status, forced) = match wait_result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                remove_rejected_capture(path);
+                return Err(error);
+            }
+        };
+        if forced {
+            remove_rejected_capture(path);
+            return Err(Error::InvalidState(format!(
+                "screencapture exceeded the remaining run budget for pid {} window {}",
+                current.pid, current.id
+            )));
+        }
+        if !status.success() {
+            return Err(Error::InvalidState(format!(
+                "screencapture failed for pid {} window {} with {status}",
+                current.pid, current.id
+            )));
+        }
+        if !path.is_file() {
+            return Err(Error::InvalidState(format!(
+                "screencapture did not create {}",
+                path.display()
+            )));
+        }
+        if let Err(error) = self.require_current() {
+            remove_rejected_capture(path);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Re-read CoreGraphics state and require this PID/title/window identity to remain current.
+    fn require_current(&self) -> Result<Self> {
+        collect_hotki_windows(self.pid)?
+            .into_iter()
+            .find(|window| window.id == self.id && window.title == self.title)
+            .ok_or_else(|| {
+                Error::InvalidState(format!(
+                    "pid {} no longer owns visible window {} titled '{}'",
+                    self.pid, self.id, self.title
+                ))
+            })
+    }
+}
+
+/// Remove a capture rejected by process or window-ownership validation.
+fn remove_rejected_capture(path: &Path) {
+    if let Err(error) = fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::debug!(?error, path = %path.display(), "failed to remove rejected capture");
+    }
+}
+
+/// Native windows restricted to one owned app process.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnedWindows {
+    /// Process identifier that every lookup must match.
+    pid: i32,
+}
+
+impl OwnedWindows {
+    /// Scope all subsequent window operations to `pid`.
+    pub fn new(pid: u32) -> Self {
+        Self { pid: pid as i32 }
+    }
+
+    /// Return every visible window owned by this process.
+    pub fn list(self) -> Result<Vec<WindowSnapshot>> {
+        collect_hotki_windows(self.pid)
+    }
+
+    /// Return notification-like windows owned by this process.
+    pub fn notifications(self) -> Result<Vec<WindowSnapshot>> {
+        collect_notification_windows(self.pid)
+    }
+
+    /// Find one visible child-owned window with an exact title.
+    pub fn find_title(self, title: &str) -> Result<Option<WindowSnapshot>> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|window| window.title == title))
+    }
+
+    /// Wait until a child-owned window with an exact title is visible.
+    pub fn wait_for_title(self, title: &str, timeout_ms: u64) -> Result<WindowSnapshot> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if let Some(window) = self.find_title(title)? {
+                return Ok(window);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(Error::InvalidState(format!(
+                    "pid {} did not expose window '{title}' within {timeout_ms} ms",
+                    self.pid
+                )));
+            };
+            thread::sleep(remaining.min(Duration::from_millis(30)));
+        }
+    }
+
+    /// Wait until no child-owned window has the exact title.
+    pub fn wait_until_closed(self, title: &str, timeout_ms: u64) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if self.find_title(title)?.is_none() {
+                return Ok(());
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(Error::InvalidState(format!(
+                    "pid {} still exposed window '{title}' after {timeout_ms} ms",
+                    self.pid
+                )));
+            };
+            thread::sleep(remaining.min(Duration::from_millis(30)));
+        }
     }
 }
 
 /// Lightweight description of a display's bounds in CoreGraphics global coordinates.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct DisplayFrame {
+pub struct DisplayFrame {
     /// Display identifier.
-    pub(super) id: u32,
+    pub id: u32,
     /// Origin X coordinate.
     x: f32,
     /// Origin Y coordinate.
@@ -79,7 +224,7 @@ pub(super) struct DisplayFrame {
 }
 
 /// Collect visible Hotki-owned windows belonging to the active session.
-pub(super) fn collect_hotki_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
+fn collect_hotki_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
     let displays = enumerate_displays()?;
     let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
     let windows: CFArray = copy_window_info(options, kCGNullWindowID)
@@ -138,7 +283,7 @@ pub(super) fn collect_hotki_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
 }
 
 /// Collect notification-window candidates for the active Hotki session.
-pub(super) fn collect_notification_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
+fn collect_notification_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
     let displays = enumerate_displays()?;
     let windows = collect_hotki_windows(pid)?;
     Ok(windows
@@ -148,7 +293,7 @@ pub(super) fn collect_notification_windows(pid: i32) -> Result<Vec<WindowSnapsho
 }
 
 /// Enumerate active displays and produce simple bounding frames.
-pub(super) fn enumerate_displays() -> Result<Vec<DisplayFrame>> {
+pub fn enumerate_displays() -> Result<Vec<DisplayFrame>> {
     let mut frames = Vec::new();
     if let Ok(active) = CGDisplay::active_displays() {
         for id in active {
@@ -183,32 +328,32 @@ fn display_frame(display: CGDisplay) -> DisplayFrame {
 
 impl DisplayFrame {
     /// Top edge.
-    pub(super) fn y(self) -> f32 {
+    pub fn y(self) -> f32 {
         self.y
     }
 
     /// Width.
-    pub(super) fn width(self) -> f32 {
+    pub fn width(self) -> f32 {
         self.width
     }
 
     /// Height.
-    pub(super) fn height(self) -> f32 {
+    pub fn height(self) -> f32 {
         self.height
     }
 
     /// Visible top edge.
-    pub(super) fn visible_y(self) -> f32 {
+    pub fn visible_y(self) -> f32 {
         self.visible_y
     }
 
     /// Visible height.
-    pub(super) fn visible_height(self) -> f32 {
+    pub fn visible_height(self) -> f32 {
         self.visible_height
     }
 
     /// Right edge.
-    pub(super) fn max_x(self) -> f32 {
+    pub fn max_x(self) -> f32 {
         self.x + self.width
     }
 }
@@ -258,7 +403,7 @@ fn same_display_frame(a: &DisplayFrame, b: &DisplayFrame) -> bool {
 }
 
 /// Resolve the display identifier containing the currently focused window.
-pub(super) fn focused_display_id(displays: &[DisplayFrame]) -> Option<u32> {
+pub fn focused_display_id(displays: &[DisplayFrame]) -> Option<u32> {
     let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
     let windows: CFArray = copy_window_info(options, kCGNullWindowID)?;
     let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };

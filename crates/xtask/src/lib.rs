@@ -3,6 +3,8 @@
 
 use clap::{Parser, Subcommand};
 
+/// Atomic publication helpers shared by install and screenshot tasks.
+mod artifact;
 /// `.app` bundle build tasks.
 mod bundle;
 /// Utilities for running external commands.

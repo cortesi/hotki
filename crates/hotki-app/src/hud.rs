@@ -57,6 +57,11 @@ struct HudViewModel {
 }
 
 impl Hud {
+    /// Whether the HUD has state scheduled for visible presentation.
+    pub(crate) fn is_visible(&self) -> bool {
+        self.visible
+    }
+
     /// Create a new HUD instance from configuration.
     pub fn new(cfg: &HudStyle) -> Self {
         Self {

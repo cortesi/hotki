@@ -98,6 +98,11 @@ struct SelectorRenderAssets {
 }
 
 impl SelectorWindow {
+    /// Current visible selector query, when the selector has active state.
+    pub(crate) fn query(&self) -> Option<&str> {
+        self.state.as_ref().map(|snapshot| snapshot.query.as_str())
+    }
+
     /// Create a new selector window instance.
     pub fn new(style: &SelectorStyle) -> Self {
         Self {

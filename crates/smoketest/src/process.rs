@@ -1,8 +1,10 @@
 //! Process management utilities for smoketests.
 use std::{
     collections::HashSet,
-    process::{Child, Command},
-    sync::OnceLock,
+    process::{Child, Command, ExitStatus},
+    sync::{OnceLock, mpsc},
+    thread,
+    time::Duration,
 };
 
 use parking_lot::Mutex;
@@ -59,11 +61,73 @@ impl ManagedChild {
     /// Terminate the child and wait for it to exit.
     pub fn kill_and_wait(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
-            child.kill().map_err(Error::Io)?;
-            child.wait().map_err(Error::Io)?;
+            let kill_result = child.kill();
+            let wait_result = child.wait();
+            unregister_pid(self.pid);
+            kill_result.map_err(Error::Io)?;
+            wait_result.map_err(Error::Io)?;
+            return Ok(());
         }
         unregister_pid(self.pid);
         Ok(())
+    }
+
+    /// Wait up to `remaining` for exit, then force termination and reap the child.
+    pub fn wait_with_budget(&mut self, remaining: Duration) -> Result<(ExitStatus, bool)> {
+        let mut child = self.child.take().ok_or_else(|| {
+            Error::InvalidState(format!("child process {} is no longer owned", self.pid))
+        })?;
+        let (tx_status, rx_status) = mpsc::sync_channel(1);
+        let waiter = thread::Builder::new()
+            .name(format!("hotki-child-wait-{}", self.pid))
+            .spawn(move || {
+                if let Err(error) = tx_status.send(child.wait()) {
+                    tracing::debug!(?error, "child wait receiver disconnected");
+                }
+            });
+        if let Err(error) = waiter {
+            force_reap_pid(self.pid);
+            unregister_pid(self.pid);
+            return Err(Error::Io(error));
+        }
+
+        let result = match rx_status.recv_timeout(remaining) {
+            Ok(status) => status.map(|status| (status, false)).map_err(Error::Io),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                unsafe {
+                    let _ = libc::kill(self.pid as libc::pid_t, libc::SIGKILL);
+                }
+                match rx_status.recv() {
+                    Ok(status) => status.map(|status| (status, true)).map_err(Error::Io),
+                    Err(error) => {
+                        force_reap_pid(self.pid);
+                        Err(Error::InvalidState(format!(
+                            "child process {} waiter disconnected after forced termination: \
+                             {error}",
+                            self.pid
+                        )))
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                force_reap_pid(self.pid);
+                Err(Error::InvalidState(format!(
+                    "child process {} waiter disconnected",
+                    self.pid
+                )))
+            }
+        };
+        unregister_pid(self.pid);
+        result
+    }
+}
+
+/// Force a process to exit and reap it when its owned `Child` waiter was lost.
+fn force_reap_pid(pid: i32) {
+    unsafe {
+        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        let mut status = 0;
+        let _ = libc::waitpid(pid as libc::pid_t, &mut status, 0);
     }
 }
 
@@ -95,5 +159,30 @@ pub fn build_hotki_app() -> Result<()> {
         Err(Error::SpawnFailed(format!(
             "cargo build -p hotki-app --bin hotki-app exited with {status}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Stdio;
+
+    use super::*;
+
+    #[test]
+    fn exhausted_wait_budget_forces_and_reaps_child() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "read _"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = spawn_managed(command).expect("spawn blocking child");
+
+        let (_status, forced) = child
+            .wait_with_budget(Duration::ZERO)
+            .expect("force and reap child");
+
+        assert!(forced);
+        assert!(!registry().lock().contains(&child.pid));
     }
 }

@@ -2,22 +2,20 @@
 
 /// Activation polling and HUD-ready detection helpers.
 mod activation;
-/// CoreGraphics window and display inspection helpers.
-mod window_inspection;
 
 use std::{cmp::Ordering, fs, thread, time::Instant};
 
+use hotki_app_session::{
+    session::{HotkiSession, HotkiSessionConfig},
+    windows::{self as window_inspection, OwnedWindows, WindowSnapshot},
+};
 use hotki_protocol::{MsgToUI, Toggle};
 use tracing::{debug, info};
 
-use self::{
-    activation::{ActivationOutcome, BindingWatcher},
-    window_inspection::{WindowSnapshot, collect_hotki_windows, collect_notification_windows},
-};
+use self::activation::{ActivationOutcome, BindingWatcher};
 use crate::{
     config,
     error::{Error, Result},
-    session::{HotkiSession, HotkiSessionConfig},
     suite::{CaseCtx, LOG_TARGET, sanitize_slug},
 };
 
@@ -139,12 +137,12 @@ fn wait_for_notification_windows(pid: i32, timeout_ms: u64) -> Result<Vec<Window
     let start = Instant::now();
     let timeout = config::ms(timeout_ms);
     loop {
-        let windows = collect_notification_windows(pid)?;
+        let windows = OwnedWindows::new(pid as u32).notifications()?;
         if !windows.is_empty() {
             return Ok(windows);
         }
         if start.elapsed() >= timeout {
-            let all_windows = collect_hotki_windows(pid)?;
+            let all_windows = OwnedWindows::new(pid as u32).list()?;
             return Err(Error::InvalidState(format!(
                 "no notification window candidates; hotki windows: {}",
                 describe_windows(&all_windows)
@@ -503,7 +501,7 @@ where
             })?;
         }
 
-        let hud_windows = collect_hotki_windows(state_ref.session.pid() as i32)?;
+        let hud_windows = state_ref.session.windows().list()?;
 
         state_ref.time_to_hud_ms = activation.hud_visible_ms();
         state_ref.hud_activation = Some(activation);
@@ -596,7 +594,7 @@ fn verify_display_alignment(state: &mut UiCaseState) -> Result<()> {
     let hud_windows = if let Some(windows) = state.hud_windows.clone() {
         windows
     } else {
-        let windows = collect_hotki_windows(state.session.pid() as i32)?;
+        let windows = state.session.windows().list()?;
         state.hud_windows = Some(windows.clone());
         windows
     };

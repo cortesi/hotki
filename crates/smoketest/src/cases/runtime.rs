@@ -2,12 +2,12 @@
 
 use std::fs;
 
+use hotki_app_session::session::{HotkiSession, HotkiSessionConfig};
 use tracing::debug;
 
 use super::ui::wait_for_notification_window;
 use crate::{
     error::{Error, Result},
-    session::{HotkiSession, HotkiSessionConfig},
     suite::CaseCtx,
 };
 

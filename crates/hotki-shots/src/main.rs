@@ -1,27 +1,40 @@
-//! Capture Hotki HUD and notification screenshots from a running app instance.
+//! Capture the checked-in Hotki UI gallery through an owned app session.
 
 use std::{
-    cmp, env,
-    ffi::{OsStr, OsString},
-    fs, io,
+    env, fs,
     path::{Path, PathBuf},
-    process::{self, Child, Command},
-    thread,
-    time::{Duration, Instant},
+    process::ExitCode,
+    time::Duration,
 };
 
 use clap::Parser;
-use core_foundation::{
-    array::CFArray,
-    base::{CFType, TCFType},
-    dictionary::CFDictionary,
-    number::CFNumber,
-    string::CFString,
+use hotki_app_session::{
+    config::RunBudget,
+    error::{Error, Result},
+    session::{HotkiSession, HotkiSessionConfig},
+    windows::{OwnedWindows, WindowSnapshot},
 };
-use core_graphics::window::{
-    copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
-    kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
-};
+use hotki_protocol::{MsgToUI, NotifyKind};
+
+/// Checked-in behavior fixture used to render the gallery.
+const DEFAULT_CONFIG_PATH: &str = "crates/hotki-shots/fixtures/config.luau";
+/// Window title used by the HUD viewport.
+const HUD_TITLE: &str = "Hotki HUD";
+/// Window title used by notification viewports.
+const NOTIFICATION_TITLE: &str = "Hotki Notification";
+/// Window title used by the selector viewport.
+const SELECTOR_TITLE: &str = "Hotki Selector";
+
+/// One notification gallery capture requested from the fixture.
+#[derive(Clone, Copy)]
+struct NotificationShot {
+    /// Bound key that creates the notification.
+    ident: &'static str,
+    /// Output filename without extension.
+    name: &'static str,
+    /// Protocol kind expected from the server.
+    kind: NotifyKind,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -30,425 +43,265 @@ use core_graphics::window::{
     version
 )]
 struct Cli {
-    /// Output directory for PNG files
+    /// Output directory for PNG files.
     #[arg(long)]
     dir: PathBuf,
-    /// Hotki config to drive while capturing screenshots
+    /// Hotki config to drive while capturing screenshots.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Timeout in milliseconds for HUD readiness and waits
+    /// Total wall-clock budget in milliseconds for the complete capture session.
     #[arg(long, default_value_t = 10_000)]
     timeout: u64,
-    /// Enable logging for the spawned hotki process
+    /// Enable logging for the spawned Hotki process.
     #[arg(long, default_value_t = false)]
     logs: bool,
 }
 
-const DEFAULT_CONFIG_PATH: &str = "crates/hotki-shots/fixtures/config.luau";
-
-fn resolve_hotki_app_bin() -> Option<PathBuf> {
-    if let Some(path) =
-        existing_env_path("HOTKI_APP_BIN").or_else(|| existing_env_path("HOTKI_BIN"))
-    {
-        return Some(path);
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("hotki-shots: ERROR: {error}");
+            ExitCode::FAILURE
+        }
     }
-    env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hotki-app")))
-        .filter(|p| p.exists())
 }
 
-fn existing_env_path(var: &str) -> Option<PathBuf> {
-    env::var(var)
-        .ok()
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
+/// Drive the screenshot fixture through semantic server events and PID-owned windows.
+fn run(cli: Cli) -> Result<()> {
+    let config_path = resolve_config_path(cli.config.as_deref())?;
+    fs::create_dir_all(&cli.dir)?;
+    let run_budget = RunBudget::new(cli.timeout);
+    let mut session = HotkiSession::spawn(
+        HotkiSessionConfig::from_env()?
+            .with_config(config_path)
+            .with_logs(cli.logs),
+        run_budget,
+    )?;
+    let windows = session.windows();
+
+    show_hud(&mut session, windows, run_budget)?;
+    capture_title(windows, HUD_TITLE, &cli.dir, "hud", run_budget)?;
+
+    session
+        .driver_mut()
+        .inject_key("n", remaining_ms(run_budget, "opening notification menu")?)
+        .map_err(Error::from)?;
+    session
+        .driver_mut()
+        .wait_for_idents(
+            &["s", "i", "w", "e", "c", "p"],
+            remaining_ms(run_budget, "notification bindings")?,
+        )
+        .map_err(Error::from)?;
+
+    for shot in [
+        NotificationShot {
+            ident: "s",
+            name: "notify_success",
+            kind: NotifyKind::Success,
+        },
+        NotificationShot {
+            ident: "i",
+            name: "notify_info",
+            kind: NotifyKind::Info,
+        },
+        NotificationShot {
+            ident: "w",
+            name: "notify_warning",
+            kind: NotifyKind::Warn,
+        },
+        NotificationShot {
+            ident: "e",
+            name: "notify_error",
+            kind: NotifyKind::Error,
+        },
+    ] {
+        capture_notification(&mut session, windows, &cli.dir, shot, run_budget)?;
+    }
+
+    capture_selector(&mut session, windows, &cli.dir, run_budget)?;
+    session.shutdown()?;
+    println!("screenshots: OK (dir={})", cli.dir.display());
+    Ok(())
 }
 
-fn resolve_config_path(config: Option<&Path>) -> io::Result<PathBuf> {
-    let cwd = env::current_dir()?;
+/// Resolve and validate the behavior fixture path.
+fn resolve_config_path(config: Option<&Path>) -> Result<PathBuf> {
+    let current_dir = env::current_dir()?;
     let path = match config {
         Some(path) if path.is_absolute() => path.to_path_buf(),
-        Some(path) => cwd.join(path),
-        None => cwd.join(DEFAULT_CONFIG_PATH),
+        Some(path) => current_dir.join(path),
+        None => current_dir.join(DEFAULT_CONFIG_PATH),
     };
-    if !path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("config not found: {}", path.display()),
-        ));
+    if !path.is_file() {
+        return Err(Error::InvalidState(format!(
+            "config not found: {}",
+            path.display()
+        )));
     }
     Ok(path)
 }
 
-fn spawn_hotki_app(bin: &Path, cfg: &Path, logs: bool) -> io::Result<Child> {
-    let mut cmd = Command::new(bin);
-    if logs {
-        // Respect parent's RUST_LOG if set; otherwise default to info for server logs
-        if env::var_os("RUST_LOG").is_none() {
-            cmd.env("RUST_LOG", "info");
-        }
+/// Activate the HUD and require both a visible protocol snapshot and PID-owned window.
+fn show_hud(session: &mut HotkiSession, windows: OwnedWindows, budget: RunBudget) -> Result<()> {
+    let driver = session.driver_mut();
+    driver
+        .wait_for_idents(&["shift+cmd+0"], remaining_ms(budget, "HUD binding")?)
+        .map_err(Error::from)?;
+    let cursor = driver.event_cursor().map_err(Error::from)?;
+    driver
+        .inject_key("shift+cmd+0", remaining_ms(budget, "HUD activation")?)
+        .map_err(Error::from)?;
+    driver
+        .wait_for_message_since(
+            cursor,
+            remaining_ms(budget, "visible HUD event")?,
+            |message| matches!(message, MsgToUI::HudUpdate { hud, .. } if hud.visible),
+        )
+        .map_err(Error::from)?;
+    windows.wait_for_title(HUD_TITLE, remaining_ms(budget, "HUD window")?)?;
+    session.wait_for_hud_frame()?;
+    Ok(())
+}
+
+/// Capture one notification kind and wait for its explicit clear event and window removal.
+fn capture_notification(
+    session: &mut HotkiSession,
+    windows: OwnedWindows,
+    output_dir: &Path,
+    shot: NotificationShot,
+    budget: RunBudget,
+) -> Result<()> {
+    let cursor = session.driver_mut().event_cursor().map_err(Error::from)?;
+    session
+        .driver_mut()
+        .inject_key(shot.ident, remaining_ms(budget, "notification activation")?)
+        .map_err(Error::from)?;
+    session
+        .driver_mut()
+        .wait_for_message_since(
+            cursor,
+            remaining_ms(budget, "notification event")?,
+            |message| {
+            matches!(message, MsgToUI::Notify { kind: observed, .. } if *observed == shot.kind)
+            },
+        )
+        .map_err(Error::from)?;
+    session.wait_for_notification_frame(shot.kind)?;
+    capture_title(windows, NOTIFICATION_TITLE, output_dir, shot.name, budget)?;
+
+    let cursor = session.driver_mut().event_cursor().map_err(Error::from)?;
+    session
+        .driver_mut()
+        .inject_key("c", remaining_ms(budget, "notification clear")?)
+        .map_err(Error::from)?;
+    session
+        .driver_mut()
+        .wait_for_message_since(
+            cursor,
+            remaining_ms(budget, "notification clear event")?,
+            |message| matches!(message, MsgToUI::ClearNotifications),
+        )
+        .map_err(Error::from)?;
+    windows.wait_until_closed(
+        NOTIFICATION_TITLE,
+        remaining_ms(budget, "notification window close")?,
+    )
+}
+
+/// Open, query, capture, and close the selector through its protocol snapshots.
+fn capture_selector(
+    session: &mut HotkiSession,
+    windows: OwnedWindows,
+    output_dir: &Path,
+    budget: RunBudget,
+) -> Result<()> {
+    wait_for_selector_query(session, "p", "", budget)?;
+    let mut query = String::new();
+    for ident in ["c", "a", "l"] {
+        query.push_str(ident);
+        wait_for_selector_query(session, ident, &query, budget)?;
     }
-    cmd.arg("--config").arg(cfg);
-    cmd.spawn()
+    session.wait_for_selector_frame(&query)?;
+    capture_title(windows, SELECTOR_TITLE, output_dir, "selector", budget)?;
+
+    let cursor = session.driver_mut().event_cursor().map_err(Error::from)?;
+    session
+        .driver_mut()
+        .inject_key("esc", remaining_ms(budget, "selector close")?)
+        .map_err(Error::from)?;
+    session
+        .driver_mut()
+        .wait_for_message_since(
+            cursor,
+            remaining_ms(budget, "selector close event")?,
+            |message| matches!(message, MsgToUI::SelectorHide),
+        )
+        .map_err(Error::from)?;
+    windows.wait_until_closed(
+        SELECTOR_TITLE,
+        remaining_ms(budget, "selector window close")?,
+    )
 }
 
-const KEY_PRESS_DURATION_MS: u64 = 60;
-const CONNECT_RETRY_INTERVAL_MS: u64 = 100;
-const HUD_POLL_INTERVAL_MS: u64 = 200;
-const INJECT_WINDOW_CHECK_MS: u64 = 600;
-const NOTIFICATION_SETTLE_MS: u64 = 120;
-const CHORD_GAP_MS: u64 = 160;
-const SELECTOR_SETTLE_MS: u64 = 250;
-
-fn kill_child(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-fn wait_for_hud(rt: &tokio::runtime::Runtime, sock: &str, hotki_pid: u32, timeout_ms: u64) -> bool {
-    // Connect client with retry
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut client = loop {
-        let res = rt.block_on(async {
-            hotki_server::Client::new_with_socket(sock)
-                .with_connect_only()
-                .connect()
-                .await
-        });
-        match res {
-            Ok(c) => break c,
-            Err(_) => {
-                if Instant::now() >= deadline {
-                    return false;
-                }
-                thread::sleep(Duration::from_millis(CONNECT_RETRY_INTERVAL_MS));
-                continue;
-            }
-        }
-    };
-
-    if let Ok(conn) = client.connection() {
-        // Send activation chord a few times while we wait
-        inject_key(rt, conn, "shift+cmd+0");
-        let poll = Duration::from_millis(HUD_POLL_INTERVAL_MS);
-        while Instant::now() < deadline {
-            let left = deadline.saturating_duration_since(Instant::now());
-            let chunk = cmp::min(left, poll);
-            match rt.block_on(async { tokio::time::timeout(chunk, conn.recv_event()).await }) {
-                Ok(Ok(hotki_protocol::MsgToUI::HudUpdate { hud, .. })) => {
-                    if hud.visible {
-                        return true;
-                    }
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(_)) | Err(_) => {}
-            }
-            if find_window_by_pid_title(hotki_pid, "Hotki HUD").is_some() {
-                return true;
-            }
-            inject_key(rt, conn, "shift+cmd+0");
-        }
-    }
-    false
-}
-
-fn inject_key(rt: &tokio::runtime::Runtime, conn: &mut hotki_server::Connection, ident: &str) {
-    let ident = mac_keycode::Chord::parse(ident)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| ident.to_string());
-    let _ = rt.block_on(async { conn.inject_key_down(&ident).await });
-    thread::sleep(Duration::from_millis(KEY_PRESS_DURATION_MS));
-    let _ = rt.block_on(async { conn.inject_key_up(&ident).await });
-}
-
-fn capture_window_by_id(pid: u32, title: &str, dir: &Path, name: &str) -> bool {
-    let Some(win_id) = find_window_by_pid_title(pid, title).or_else(|| find_window_by_title(title))
-    else {
-        eprintln!(
-            "WARN: window not found for capture (pid={}, title={})",
-            pid, title
-        );
-        return false;
-    };
-
-    let sanitized = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let path = dir.join(format!("{}.png", sanitized));
-
-    // Capture by window id
-    let status = Command::new("screencapture")
-        .args([
-            OsStr::new("-x"),
-            OsStr::new("-o"),
-            OsStr::new("-l"),
-            OsString::from(win_id.to_string()).as_os_str(),
-            path.as_os_str(),
-        ])
-        .status();
-    if matches!(status, Ok(s) if s.success()) {
-        return true;
-    }
-
-    eprintln!(
-        "WARN: screencapture failed (pid={}, title={}, window_id={})",
-        pid, title, win_id
-    );
-    false
-}
-
-fn capture_window_after_wait(
-    pid: u32,
-    title: &str,
-    dir: &Path,
-    name: &str,
-    timeout_ms: u64,
-) -> bool {
-    if !wait_for_window_by_pid_title(pid, title, timeout_ms) {
-        eprintln!(
-            "WARN: window not ready for capture (pid={}, title={})",
-            pid, title
-        );
-        return false;
-    }
-    capture_window_by_id(pid, title, dir, name)
-}
-
-fn wait_for_window_by_pid_title(pid: u32, title: &str, timeout_ms: u64) -> bool {
-    wait_for_window_state_by_pid_title(pid, title, true, timeout_ms)
-}
-
-fn wait_for_no_window_by_pid_title(pid: u32, title: &str, timeout_ms: u64) -> bool {
-    wait_for_window_state_by_pid_title(pid, title, false, timeout_ms)
-}
-
-fn wait_for_window_state_by_pid_title(
-    pid: u32,
-    title: &str,
-    should_exist: bool,
-    timeout_ms: u64,
-) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if find_window_by_pid_title(pid, title).is_some() == should_exist {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-fn inject_until_window(
-    rt: &tokio::runtime::Runtime,
-    conn: &mut hotki_server::Connection,
-    pid: u32,
-    window_title: &str,
+/// Inject one selector key and wait until the server publishes the expected query.
+fn wait_for_selector_query(
+    session: &mut HotkiSession,
     ident: &str,
-    timeout_ms: u64,
-) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        inject_key(rt, conn, ident);
-        if wait_for_window_by_pid_title(pid, window_title, INJECT_WINDOW_CHECK_MS) {
-            return true;
-        }
-    }
-    false
+    expected_query: &str,
+    budget: RunBudget,
+) -> Result<()> {
+    let cursor = session.driver_mut().event_cursor().map_err(Error::from)?;
+    session
+        .driver_mut()
+        .inject_key(ident, remaining_ms(budget, "selector input")?)
+        .map_err(Error::from)?;
+    session
+        .driver_mut()
+        .wait_for_message_since(
+            cursor,
+            remaining_ms(budget, "selector query event")?,
+            |message| {
+                matches!(
+                    message,
+                    MsgToUI::SelectorUpdate(snapshot) if snapshot.query == expected_query
+                )
+            },
+        )
+        .map_err(Error::from)?;
+    Ok(())
 }
 
-fn main() {
-    let cli = Cli::parse();
-
-    let hotki_app_bin = match resolve_hotki_app_bin() {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "ERROR: could not locate 'hotki-app' binary (set HOTKI_APP_BIN or cargo build -p hotki-app --bin hotki-app)"
-            );
-            process::exit(2);
-        }
-    };
-
-    let cfg_path = match resolve_config_path(cli.config.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("ERROR: unable to resolve config: {}", e);
-            process::exit(2);
-        }
-    };
-
-    let mut child = match spawn_hotki_app(&hotki_app_bin, &cfg_path, cli.logs) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("ERROR: failed to spawn hotki-app: {}", e);
-            process::exit(2);
-        }
-    };
-    let hotki_pid = child.id();
-    let sock = hotki_server::socket_path_for_pid(hotki_pid);
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("ERROR: failed to create Tokio runtime: {}", e);
-            kill_child(&mut child);
-            process::exit(2);
-        }
-    };
-
-    if !wait_for_hud(&rt, &sock, hotki_pid, cli.timeout) {
-        kill_child(&mut child);
-        eprintln!("ERROR: HUD did not appear within {} ms", cli.timeout);
-        process::exit(2);
-    }
-
-    let _ = fs::create_dir_all(&cli.dir);
-    let mut client = match rt.block_on(async {
-        hotki_server::Client::new_with_socket(&sock)
-            .with_connect_only()
-            .connect()
-            .await
-    }) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("ERROR: failed to connect to server: {}", e);
-            kill_child(&mut child);
-            process::exit(2);
-        }
-    };
-    let conn = match client.connection() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("ERROR: failed to get connection: {}", e);
-            kill_child(&mut child);
-            process::exit(2);
-        }
-    };
-
-    // Capture HUD first
-    let mut failed = Vec::new();
-    let hud_ok = capture_window_after_wait(hotki_pid, "Hotki HUD", &cli.dir, "hud", cli.timeout);
-    if !hud_ok {
-        failed.push("hud");
-    }
-
-    // Enter the screenshot fixture's notification submenu, then capture each kind.
-    inject_key(&rt, conn, "n");
-    let gap = Duration::from_millis(CHORD_GAP_MS);
-    thread::sleep(gap);
-    for (k, name) in [
-        ("s", "notify_success"),
-        ("i", "notify_info"),
-        ("w", "notify_warning"),
-        ("e", "notify_error"),
-    ] {
-        inject_key(&rt, conn, k);
-        if wait_for_window_by_pid_title(hotki_pid, "Hotki Notification", cli.timeout) {
-            thread::sleep(Duration::from_millis(NOTIFICATION_SETTLE_MS));
-            let ok = capture_window_by_id(hotki_pid, "Hotki Notification", &cli.dir, name);
-            if !ok {
-                failed.push(name);
-            }
-        } else {
-            failed.push(name);
-        }
-        inject_key(&rt, conn, "c");
-        let _ = wait_for_no_window_by_pid_title(hotki_pid, "Hotki Notification", cli.timeout);
-    }
-
-    // Selector capture: open selector demo from the fixture submenu, type a query, and screenshot.
-    if inject_until_window(&rt, conn, hotki_pid, "Hotki Selector", "p", cli.timeout) {
-        for k in ["c", "a", "l"] {
-            inject_key(&rt, conn, k);
-        }
-        thread::sleep(Duration::from_millis(SELECTOR_SETTLE_MS));
-        let ok = capture_window_by_id(hotki_pid, "Hotki Selector", &cli.dir, "selector");
-        if !ok {
-            failed.push("selector");
-        }
-        inject_key(&rt, conn, "esc");
-    } else {
-        failed.push("selector");
-    }
-
-    // Exit HUD and shutdown server
-    inject_key(&rt, conn, "shift+cmd+0");
-    let _ = rt.block_on(async move { client.shutdown_server().await });
-    kill_child(&mut child);
-
-    if !failed.is_empty() {
-        eprintln!(
-            "ERROR: failed to capture screenshots: {}",
-            failed.join(", ")
-        );
-        process::exit(1);
-    }
-
-    println!(
-        "screenshots: OK (hud_seen={}, dir={})",
-        hud_ok,
-        cli.dir.display()
-    );
+/// Capture an exact PID-owned titled window to a deterministic gallery filename.
+fn capture_title(
+    windows: OwnedWindows,
+    title: &str,
+    output_dir: &Path,
+    name: &str,
+    budget: RunBudget,
+) -> Result<WindowSnapshot> {
+    let window = windows.wait_for_title(title, remaining_ms(budget, "window capture")?)?;
+    window.capture_png(
+        &output_dir.join(format!("{name}.png")),
+        remaining(budget, "screencapture")?,
+    )?;
+    Ok(window)
 }
 
-fn find_window_by_pid_title(pid: u32, title: &str) -> Option<u32> {
-    find_window_impl(Some(pid as i32), title)
+/// Return the shared session's remaining whole-millisecond allowance.
+fn remaining_ms(budget: RunBudget, operation: &str) -> Result<u64> {
+    let remaining = remaining(budget, operation)?;
+    let millis = remaining.as_millis().try_into().unwrap_or(u64::MAX);
+    Ok(millis.max(1))
 }
 
-fn find_window_by_title(title: &str) -> Option<u32> {
-    find_window_impl(None, title)
-}
-
-fn find_window_impl(pid: Option<i32>, title: &str) -> Option<u32> {
-    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
-    let arr: CFArray = copy_window_info(options, kCGNullWindowID)?;
-    let key_owner_pid = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
-    let key_name = unsafe { CFString::wrap_under_get_rule(kCGWindowName) };
-    let key_number = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
-
-    for raw in arr.iter() {
-        let dict_ptr = *raw;
-        let dict: CFDictionary<CFString, CFType> =
-            unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
-        let Some(owner_pid) = dict_value_i32(&dict, &key_owner_pid) else {
-            continue;
-        };
-        if let Some(pid) = pid
-            && owner_pid != pid
-        {
-            continue;
-        }
-        let name = dict_value_string(&dict, &key_name).unwrap_or_default();
-        if name != title {
-            continue;
-        }
-        return dict_value_u32(&dict, &key_number);
-    }
-
-    None
-}
-
-fn dict_value_string(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<String> {
-    dict.find(key)
-        .and_then(|v| v.downcast::<CFString>())
-        .map(|s| s.to_string())
-}
-
-fn dict_value_i32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i32> {
-    dict.find(key)
-        .and_then(|v| v.downcast::<CFNumber>())
-        .and_then(|n: CFNumber| n.to_i64())
-        .map(|n| n as i32)
-}
-
-fn dict_value_u32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u32> {
-    dict_value_i32(dict, key).map(|v| v as u32)
+/// Return the shared session's remaining duration.
+fn remaining(budget: RunBudget, operation: &str) -> Result<Duration> {
+    budget.remaining().ok_or_else(|| {
+        Error::InvalidState(format!(
+            "screenshot run budget exhausted during {operation} ({} ms total)",
+            budget.total_ms()
+        ))
+    })
 }

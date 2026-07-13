@@ -25,6 +25,7 @@ mod devtools;
 /// Display geometry helpers.
 mod display;
 mod fonts;
+mod harness_control;
 mod health;
 mod hud;
 mod logs;
@@ -83,6 +84,10 @@ struct Cli {
     /// Disable the physical keyboard event tap for RPC-driven harnesses.
     #[arg(long, hide = true)]
     disable_event_tap: bool,
+
+    /// App-owned one-shot control socket for local process harnesses.
+    #[arg(long, value_name = "PATH", hide = true)]
+    harness_control_socket: Option<PathBuf>,
 
     /// Enable the embedded eguidev MCP runtime.
     #[arg(long, hide = true)]
@@ -166,6 +171,22 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
     let initial_style = initial_style_for_config(&config_path);
     let (tx, rx) = ui_delivery_channel();
     let (tx_ctrl, rx_ctrl) = tokio_mpsc::unbounded_channel();
+    let (harness_task, harness_requests) = cli
+        .harness_control_socket
+        .as_deref()
+        .map(|path| {
+            harness_control::spawn(path, tx_ctrl.clone()).unwrap_or_else(|error| {
+                eprintln!(
+                    "failed to start harness control socket at {}: {error}",
+                    path.display()
+                );
+                process::exit(1);
+            })
+        })
+        .map_or((None, None), |(task, requests)| {
+            (Some(task), Some(requests))
+        });
+    let _harness_task = harness_task;
 
     let (devmcp, fixture_runtime) =
         match devtools::build_devmcp(cli.dev_mcp, tx.clone(), tx_ctrl.clone()) {
@@ -211,6 +232,7 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
                     dumpworld,
                     devmcp: devmcp.clone(),
                     fixture_runtime,
+                    harness_requests,
                 },
             )))
         }),
