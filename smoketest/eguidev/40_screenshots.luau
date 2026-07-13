@@ -13,6 +13,7 @@ expect("permissions.root", { viewport = "permissions", visible = true })
 fixture("hotki.hud")
 expect("hud.panel", { viewport = "hud", visible = true })
 
+fixture("hotki.hud.demo")
 fixture("hotki.selector")
 expect("selector.panel", { viewport = "selector", visible = true })
 

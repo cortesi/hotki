@@ -11,6 +11,9 @@ local function wait_for_notification(title: string, text: string)
     return details
 end
 
+fixture("hotki.hud")
+fixture("hotki.hud.demo")
+fixture("hotki.selector")
 fixture("hotki.selector.query")
 local selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.query", function(widget)
@@ -23,6 +26,9 @@ fixture("hotki.selector.confirmed")
 local confirmed = wait_for_notification("Selector", "Beta:b")
 assert(confirmed:widget_get("details.notification.0.kind"):state().value_text == "info")
 
+fixture("hotki.hud")
+fixture("hotki.hud.demo")
+fixture("hotki.selector")
 fixture("hotki.selector.query")
 selector = viewport({ name = "selector" })
 selector:wait_for_widget("selector.query", function(widget)

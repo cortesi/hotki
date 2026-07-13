@@ -12,8 +12,8 @@ use eguidev::{
     name_viewport,
 };
 use hotki_protocol::{
-    DisplayFrame, DisplaysSnapshot, HudRow, HudState, MsgToUI, NotifyKind, NotifyPos, Style,
-    Toggle, rpc::InjectKind,
+    DisplayFrame, DisplaysSnapshot, HudRow, HudState, Mode, MsgToUI, NotifyKind, NotifyPos, Style,
+    Toggle,
 };
 use mac_keycode::Chord;
 use permissions::{PermissionState, PermissionsStatus};
@@ -233,6 +233,8 @@ enum HotkiFixture {
     NotificationTruncated,
     /// Server-driven HUD fixture.
     Hud,
+    /// Server-driven Demo submenu fixture.
+    HudDemo,
     /// Direct tall HUD fixture.
     HudTall,
     /// Server-driven mini HUD fixture.
@@ -347,6 +349,11 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
         "Runtime/server lane: open the demo HUD through server key injection.",
     ),
     FixtureDef::new(
+        HotkiFixture::HudDemo,
+        "hotki.hud.demo",
+        "Runtime/server lane: enter the Demo submenu through server key injection.",
+    ),
+    FixtureDef::new(
         HotkiFixture::HudTall,
         "hotki.hud.tall",
         "UI-thread lane: render a tall HUD that should fit without clipping.",
@@ -354,7 +361,7 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
     FixtureDef::new(
         HotkiFixture::HudMini,
         "hotki.hud.mini",
-        "Runtime/server lane: enter the demo mini HUD submenu through server key injection.",
+        "UI-thread lane: render the deterministic mini HUD style.",
     ),
     FixtureDef::new(
         HotkiFixture::Selector,
@@ -412,18 +419,46 @@ impl HotkiFixture {
             Self::NotificationVariants
             | Self::NotificationLeftVariants
             | Self::NotificationTruncated => app_ready(spec),
-            Self::Hud => runtime_ready(spec).anchor_in("hud.panel", viewport_sel("hud")),
+            Self::Hud => runtime_ready(spec)
+                .anchor_value_in(
+                    "hud.row.0.chord",
+                    WidgetValue::Text("d".to_string()),
+                    viewport_sel("hud"),
+                )
+                .anchor_in("hud.panel", viewport_sel("hud")),
+            Self::HudDemo => runtime_ready(spec)
+                .precondition_value_in(
+                    "hud.row.0.chord",
+                    WidgetValue::Text("d".to_string()),
+                    viewport_sel("hud"),
+                )
+                .anchor_value_in(
+                    "hud.row.0.chord",
+                    WidgetValue::Text("n".to_string()),
+                    viewport_sel("hud"),
+                ),
             Self::HudTall => app_ready(spec).anchor_in("hud.row.21.desc", viewport_sel("hud")),
-            Self::HudMini => runtime_ready(spec)
+            Self::HudMini => app_ready(spec)
                 .anchor_value_in(
                     "hud.mode",
                     WidgetValue::Text("mini".to_string()),
                     viewport_sel("hud"),
                 )
                 .anchor_in("hud.mini.title", viewport_sel("hud")),
-            Self::Selector | Self::SelectorQuery => {
-                runtime_ready(spec).anchor_in("selector.panel", viewport_sel("selector"))
-            }
+            Self::Selector => runtime_ready(spec)
+                .precondition_value_in(
+                    "hud.row.0.chord",
+                    WidgetValue::Text("n".to_string()),
+                    viewport_sel("hud"),
+                )
+                .anchor_in("selector.panel", viewport_sel("selector")),
+            Self::SelectorQuery => runtime_ready(spec)
+                .precondition_in("selector.panel", viewport_sel("selector"))
+                .anchor_value_in(
+                    "selector.item.0.label",
+                    WidgetValue::Text("Beta".to_string()),
+                    viewport_sel("selector"),
+                ),
             Self::SelectorConfirmed | Self::SelectorCanceled => runtime_ready(spec)
                 .precondition_in("selector.panel", viewport_sel("selector"))
                 .anchor_in("details.notification.0.title", viewport_sel("details")),
@@ -608,8 +643,11 @@ impl FixtureBridge {
             }
             HotkiFixture::Hud => {
                 self.clear_transient_ui()?;
-                self.inject_key_quiet("escape")?;
+                self.send_control(ControlMsg::Reload)?;
                 self.inject_key("cmd+shift+0")?;
+            }
+            HotkiFixture::HudDemo => {
+                self.inject_key("d")?;
             }
             HotkiFixture::HudTall => {
                 self.clear_transient_ui()?;
@@ -617,18 +655,14 @@ impl FixtureBridge {
             }
             HotkiFixture::HudMini => {
                 self.clear_transient_ui()?;
-                self.inject_key_quiet("escape")?;
-                self.inject_keys(["cmd+shift+0", "t", "m"])?;
+                self.send_fixture_hud(Mode::Mini, "Mini", Vec::new())?;
             }
             HotkiFixture::Selector => {
                 self.clear_transient_ui()?;
-                self.inject_key_quiet("escape")?;
-                self.inject_keys(["cmd+shift+0", "t", "s"])?;
+                self.inject_key("s")?;
             }
             HotkiFixture::SelectorQuery => {
-                self.clear_transient_ui()?;
-                self.inject_key_quiet("escape")?;
-                self.inject_keys(["cmd+shift+0", "t", "s", "b"])?;
+                self.inject_key("b")?;
             }
             HotkiFixture::SelectorConfirmed => {
                 self.inject_key("return")?;
@@ -681,6 +715,23 @@ impl FixtureBridge {
             kind: NotifyKind::Warn,
             title: "Tall Notification".to_string(),
             text: "This notification body is intentionally long. ".repeat(80),
+        })
+    }
+
+    /// Render one deterministic HUD variant through the production UI message path.
+    fn send_fixture_hud(&self, mode: Mode, title: &str, rows: Vec<HudRow>) -> Result<(), String> {
+        let mut style = Style::default();
+        style.hud.mode = mode;
+        self.send_ui_message(MsgToUI::HudUpdate {
+            hud: Box::new(HudState {
+                visible: true,
+                rows,
+                depth: 1,
+                breadcrumbs: vec![title.to_string()],
+                style,
+                capture: false,
+            }),
+            displays: DisplaysSnapshot::default(),
         })
     }
 
@@ -772,33 +823,12 @@ impl FixtureBridge {
         self.inject_key_with_reporting(ident, true)
     }
 
-    /// Attempt a cleanup key press without turning an unbound key into a UI notification.
-    fn inject_key_quiet(&self, ident: &str) -> Result<(), String> {
-        self.inject_key_with_reporting(ident, false)
-    }
-
     /// Inject a complete key press through the runtime/server lane.
     fn inject_key_with_reporting(&self, ident: &str, report_errors: bool) -> Result<(), String> {
         self.send_control(ControlMsg::InjectKey {
             ident: ident.to_string(),
-            kind: InjectKind::Down,
-            repeat: false,
             report_errors,
-        })?;
-        self.send_control(ControlMsg::InjectKey {
-            ident: ident.to_string(),
-            kind: InjectKind::Up,
-            repeat: false,
-            report_errors: false,
         })
-    }
-
-    /// Inject a sequence of complete key presses through the runtime/server lane.
-    fn inject_keys<const N: usize>(&self, idents: [&str; N]) -> Result<(), String> {
-        for ident in idents {
-            self.inject_key(ident)?;
-        }
-        Ok(())
     }
 
     /// Send a runtime control message.

@@ -38,12 +38,12 @@ return {
 }
 ```
 
-The style API surface is defined by [`hotki_core.d.luau`](./crates/config/luau/hotki_core.d.luau)
-and [`hotki_style.d.luau`](./crates/config/luau/hotki_style.d.luau):
+The style API surface is defined by
+[`hotki_style.d.luau`](./crates/config/luau/hotki_style.d.luau):
 
 ```bash
 hotki api --surface style
 ```
 
 `style.luau` is intentionally standalone. It has style value types, but it does not have config
-globals such as `hotki`, `action`, or behavior imports.
+globals such as `hotki` or behavior imports.

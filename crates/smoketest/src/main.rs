@@ -73,7 +73,7 @@ fn runner_config(cli: &Cli) -> suite::RunnerConfig<'_> {
     suite::RunnerConfig {
         quiet: cli.quiet,
         warn_overlay: !cli.no_warn,
-        base_timeout_ms: cli.timeout,
+        run_budget_ms: cli.run_budget_ms,
         fail_fast: !cli.no_fail_fast,
         overlay_info: cli.info.as_deref(),
     }
@@ -102,6 +102,11 @@ fn main() {
     let cli = Cli::parse();
 
     init_tracing_from_cli(&cli);
+
+    if matches!(&cli.command, Commands::List) {
+        suite::print_case_catalog();
+        return;
+    }
 
     build_hotki_or_exit(&cli);
 
@@ -132,7 +137,7 @@ fn build_hotki_or_exit(cli: &Cli) {
     if !cli.quiet {
         heading("Building hotki-app");
     }
-    if let Err(e) = process::build_hotki_app_quiet() {
+    if let Err(e) = process::build_hotki_app() {
         eprintln!("Failed to build 'hotki-app' binary: {}", e);
         eprintln!("Try: cargo build -p hotki-app --bin hotki-app");
         exit(1);
@@ -166,9 +171,10 @@ fn dispatch_command_once(cli: &Cli) {
             }
         }
         Commands::Seq { tests } => {
-            let slugs: Vec<&str> = tests.iter().map(|test| test.slug()).collect();
+            let slugs: Vec<&str> = tests.iter().map(String::as_str).collect();
             run_cases(cli, &slugs);
         }
+        Commands::List => suite::print_case_catalog(),
         _ => {
             // Commands without a case_info entry are handled here or are errors.
         }

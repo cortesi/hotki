@@ -4,7 +4,7 @@ use logging as logshared;
 use tracing::debug;
 
 use crate::{
-    config,
+    config::RunBudget,
     error::{Error, Result},
     process::{self, ManagedChild},
     server_drive::ServerDriver,
@@ -57,7 +57,7 @@ pub struct HotkiSession {
 
 impl HotkiSession {
     /// Spawn a hotki app process according to the supplied configuration.
-    pub fn spawn(config: HotkiSessionConfig) -> Result<Self> {
+    pub fn spawn(config: HotkiSessionConfig, run_budget: RunBudget) -> Result<Self> {
         let HotkiSessionConfig {
             binary_path,
             config_path,
@@ -75,7 +75,13 @@ impl HotkiSession {
 
         let mut child = process::spawn_managed(cmd)?;
         let mut driver = ServerDriver::new(socket_path_for_pid(child.pid as u32))?;
-        if let Err(err) = driver.ensure_ready(config::DEFAULTS.timeout_ms) {
+        let readiness_ms = run_budget.remaining_ms().ok_or_else(|| {
+            Error::InvalidState(format!(
+                "run budget exhausted before server readiness ({} ms total)",
+                run_budget.total_ms()
+            ))
+        })?;
+        if let Err(err) = driver.ensure_ready(readiness_ms) {
             if let Err(kill_err) = child.kill_and_wait() {
                 debug!(
                     ?kill_err,
@@ -139,15 +145,8 @@ pub fn socket_path_for_pid(pid: u32) -> String {
     hotki_server::socket_path_for_pid(pid)
 }
 
-/// Resolve the hotki app binary path from env overrides or the current executable dir.
+/// Resolve the Cargo-built hotki app beside the current smoketest executable.
 fn resolve_hotki_app_binary() -> Result<PathBuf> {
-    if let Ok(path) = env::var("HOTKI_APP_BIN").or_else(|_| env::var("HOTKI_BIN")) {
-        let candidate = PathBuf::from(path);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
     let inferred = env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("hotki-app")))
@@ -159,6 +158,8 @@ fn resolve_hotki_app_binary() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_RUN_BUDGET_MS;
+
     #[test]
     fn spawn_initializes_server_driver() -> Result<()> {
         let config = match HotkiSessionConfig::from_env() {
@@ -166,7 +167,7 @@ mod tests {
             Err(Error::HotkiAppBinNotFound) => return Ok(()),
             Err(other) => return Err(other),
         };
-        let mut session = HotkiSession::spawn(config)?;
+        let mut session = HotkiSession::spawn(config, RunBudget::new(DEFAULT_RUN_BUDGET_MS))?;
 
         session.driver_mut().check_alive()?;
 

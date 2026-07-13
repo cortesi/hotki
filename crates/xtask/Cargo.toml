@@ -12,3 +12,5 @@ workspace = true
 clap = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 config = { path = "../config" }
+toml = "1.1.2"
+serde_json.workspace = true

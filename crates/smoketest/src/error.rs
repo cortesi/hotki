@@ -8,9 +8,7 @@ use crate::server_drive::DriverError;
 #[derive(Error, Debug)]
 pub enum Error {
     /// The hotki app binary could not be found.
-    #[error(
-        "could not locate 'hotki-app' binary (set HOTKI_APP_BIN or `cargo build -p hotki-app --bin hotki-app`)"
-    )]
+    #[error("could not locate the Cargo-built 'hotki-app' binary beside the smoketest executable")]
     HotkiAppBinNotFound,
 
     /// Failed to spawn a process.
@@ -45,12 +43,12 @@ pub fn print_hints(err: &Error) {
     match err {
         Error::HotkiAppBinNotFound => {
             eprintln!(
-                "hint: set HOTKI_APP_BIN to an existing binary or run: cargo build -p hotki-app --bin hotki-app"
+                "hint: run the smoketest through Cargo so it builds the matching hotki-app profile"
             );
         }
         Error::HudNotVisible { .. } => {
             eprintln!("hint: we inject the activation chord via RPC");
-            eprintln!("      check that the server started (use --logs) and bindings are ready");
+            eprintln!("      check that the server started (use --debug) and bindings are ready");
             eprintln!("      also ensure Accessibility is granted for best reliability");
         }
         Error::SpawnFailed(_) | Error::Io(_) | Error::InvalidState(_) => {

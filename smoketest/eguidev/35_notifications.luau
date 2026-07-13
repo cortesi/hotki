@@ -57,6 +57,7 @@ local function wait_for_live_viewport(live_id: string)
         end)
         return ok
     end)
+    viewport({ name = live_id }):wait_for_settle()
 end
 
 local function assert_card_geometry(live_id: string, expected_side: string)

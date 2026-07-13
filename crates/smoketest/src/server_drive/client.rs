@@ -159,7 +159,10 @@ impl ServerDriver {
                     self.reset();
                 }
             }
-            thread::sleep(config::ms(config::RETRY.fast_delay_ms));
+            let Some(remaining) = deadline.remaining() else {
+                break;
+            };
+            thread::sleep(remaining.min(config::ms(config::RETRY.fast_delay_ms)));
         }
 
         Err(DriverError::InitTimeout {
@@ -179,21 +182,27 @@ impl ServerDriver {
     }
 
     /// Inject a single key press (down + up) via the production RPC API.
-    pub fn inject_key(&mut self, seq: &str) -> DriverResult<()> {
+    pub fn inject_key(&mut self, seq: &str, timeout_ms: u64) -> DriverResult<()> {
         let ident = canonicalize_ident(seq);
-        let gate_ms = config::BINDING_GATES.default_ms;
+        let deadline = Deadline::from_timeout(timeout_ms);
         let mut targets = BTreeSet::new();
         targets.insert(ident.clone());
 
-        self.wait_for_hud_keys(&targets, gate_ms)?;
+        let remaining_ms = deadline
+            .remaining_ms()
+            .ok_or_else(|| DriverError::BindingTimeout {
+                ident: ident.clone(),
+                timeout_ms: deadline.timeout_ms(),
+            })?;
+        self.wait_for_hud_keys(&targets, remaining_ms)?;
 
-        let deadline = Deadline::from_timeout(gate_ms);
         loop {
             let baseline = self.events.latest_hud_event_id();
             match self.inject_key_event(&ident, InjectKind::Down, false) {
                 Ok(()) => {
-                    let hud_wait_ms = config::INPUT_DELAYS.retry_delay_ms.max(10);
-                    let _ = self.wait_for_hud_progress_since(baseline, hud_wait_ms)?;
+                    self.drain_events()?;
+                    let current = self.events.latest_hud_event_id();
+                    debug!(?baseline, ?current, "injected_key_hud_progress");
                     break;
                 }
                 Err(err) if is_key_not_bound(&err) => {
@@ -517,28 +526,6 @@ impl ServerDriver {
             ident: missing.join(", "),
             timeout_ms,
         })
-    }
-
-    /// Wait for the HUD snapshot to advance past the provided event baseline.
-    fn wait_for_hud_progress_since(
-        &mut self,
-        baseline: Option<u64>,
-        timeout_ms: u64,
-    ) -> DriverResult<bool> {
-        let deadline = Deadline::from_timeout(timeout_ms);
-        loop {
-            self.drain_events()?;
-            let current_id = self.events.latest_hud_event_id();
-            let advanced =
-                matches!((baseline, current_id), (_, Some(current)) if Some(current) != baseline);
-            if advanced {
-                return Ok(true);
-            }
-            if deadline.expired() {
-                return Ok(false);
-            }
-            let _ = self.wait_for_server_event(deadline)?;
-        }
     }
 }
 

@@ -98,14 +98,10 @@ enum LocalControl {
 enum ServerControl {
     /// Reload from disk using the configured config path.
     Reload,
-    /// Inject a synthetic key event through the connected server.
+    /// Inject one complete key press through the connected server.
     InjectKey {
         /// Key chord identifier, for example `shift+cmd+0`.
         ident: String,
-        /// Key event kind.
-        kind: InjectKind,
-        /// Whether this down event is a repeat.
-        repeat: bool,
         /// Whether failed injection should be surfaced to the user.
         report_errors: bool,
     },
@@ -130,13 +126,9 @@ impl ControlRoute {
             ControlMsg::Reload => Self::Server(ServerControl::Reload),
             ControlMsg::InjectKey {
                 ident,
-                kind,
-                repeat,
                 report_errors,
             } => Self::Server(ServerControl::InjectKey {
                 ident,
-                kind,
-                repeat,
                 report_errors,
             }),
             ControlMsg::OpenPermissionsHelp => Self::Local(LocalControl::OpenPermissionsHelp),
@@ -224,12 +216,15 @@ impl ConnectionDriver {
             }
             ServerControl::InjectKey {
                 ident,
-                kind,
-                repeat,
                 report_errors,
             } => {
-                self.inject_key(conn, &ident, kind, repeat, report_errors)
-                    .await;
+                if self
+                    .inject_key(conn, &ident, InjectKind::Down, false, report_errors)
+                    .await
+                {
+                    self.inject_key(conn, &ident, InjectKind::Up, false, false)
+                        .await;
+                }
             }
         }
     }
@@ -329,20 +324,24 @@ impl ConnectionDriver {
         kind: InjectKind,
         repeat: bool,
         report_errors: bool,
-    ) {
+    ) -> bool {
         let result = match (kind, repeat) {
             (InjectKind::Down, true) => conn.inject_key_repeat(ident).await,
             (InjectKind::Down, false) => conn.inject_key_down(ident).await,
             (InjectKind::Up, _) => conn.inject_key_up(ident).await,
         };
-        if let Err(err) = result
-            && report_errors
-        {
-            self.notify_local(
-                NotifyKind::Error,
-                "Devtools",
-                &format!("Failed to inject {ident}: {err}"),
-            );
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                if report_errors {
+                    self.notify_local(
+                        NotifyKind::Error,
+                        "Devtools",
+                        &format!("Failed to inject {ident}: {err}"),
+                    );
+                }
+                false
+            }
         }
     }
 
@@ -662,7 +661,7 @@ fn spawn_connect(
 
 #[cfg(test)]
 mod tests {
-    use hotki_protocol::{NotifyKind, rpc::InjectKind};
+    use hotki_protocol::NotifyKind;
     use permissions::PermissionState;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -697,14 +696,10 @@ mod tests {
         assert_eq!(
             ControlRoute::from_msg(ControlMsg::InjectKey {
                 ident: "shift+cmd+0".to_string(),
-                kind: InjectKind::Down,
-                repeat: false,
                 report_errors: true,
             }),
             ControlRoute::Server(ServerControl::InjectKey {
                 ident: "shift+cmd+0".to_string(),
-                kind: InjectKind::Down,
-                repeat: false,
                 report_errors: true,
             })
         );

@@ -1,6 +1,6 @@
 //! Command-line interface definitions for smoketest.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use logging::LogArgs;
 
 use crate::config;
@@ -29,9 +29,9 @@ pub struct Cli {
     #[arg(long)]
     pub info: Option<String>,
 
-    /// Default timeout for UI readiness and waits in milliseconds
-    #[arg(long, default_value_t = config::DEFAULTS.timeout_ms)]
-    pub timeout: u64,
+    /// Wall-clock budget for each case, including startup, waits, and cleanup
+    #[arg(long = "run-budget", default_value_t = config::DEFAULT_RUN_BUDGET_MS)]
+    pub run_budget_ms: u64,
 
     /// Repeat the selected tests this many times
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
@@ -42,35 +42,6 @@ pub struct Cli {
     pub command: Commands,
 }
 
-/// Named tests that can be run in sequence via `seq`.
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum SeqTest {
-    /// Verify full HUD appears and responds to keys
-    #[value(name = "hud")]
-    Hud,
-    /// Verify mini HUD appears and responds to keys
-    #[value(name = "mini")]
-    Mini,
-    /// Verify HUD placement on multi-display setups
-    #[value(name = "displays")]
-    Displays,
-    /// Verify notification window placement
-    #[value(name = "notifications")]
-    Notifications,
-}
-
-impl SeqTest {
-    /// Return the registry slug corresponding to this sequence entry.
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Hud => "hud",
-            Self::Mini => "mini",
-            Self::Displays => "displays",
-            Self::Notifications => "notifications",
-        }
-    }
-}
-
 /// CLI commands for the smoketest runner.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -78,14 +49,18 @@ pub enum Commands {
     #[command(name = "all")]
     All,
 
+    /// List registered smoketest cases
+    #[command(name = "list")]
+    List,
+
     /// Run a sequence of smoketests in order
     ///
     /// Example: smoketest seq hud mini displays
     #[command(name = "seq")]
     Seq {
         /// One or more test names to run in order
-        #[arg(value_enum, value_name = "TEST", num_args = 1..)]
-        tests: Vec<SeqTest>,
+        #[arg(value_name = "TEST", num_args = 1..)]
+        tests: Vec<String>,
     },
 
     /// Verify full HUD appears and responds to keys
@@ -113,7 +88,7 @@ impl Commands {
             Self::Mini => Some("mini"),
             Self::Displays => Some("displays"),
             Self::Notifications => Some("notifications"),
-            Self::All | Self::Seq { .. } => None,
+            Self::All | Self::List | Self::Seq { .. } => None,
         }
     }
 }

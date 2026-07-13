@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand};
 mod bundle;
 /// Utilities for running external commands.
 mod cmd;
+/// Eguidev launch-target validation.
+mod edev;
 /// Error and result types for `xtask`.
 mod error;
 /// macOS install task for Hotki.
@@ -15,6 +17,8 @@ mod install;
 mod luau;
 /// Screenshot generation tasks.
 mod screenshots;
+/// Complete repository test gate.
+mod test;
 /// Linting and formatting tasks.
 mod tidy;
 /// Workspace discovery and metadata helpers.
@@ -38,10 +42,14 @@ enum Xtask {
     Bundle(bundle::BundleArgs),
     /// Build a debug `.app` bundle for Hotki (dev icon + identifiers).
     BundleDev(bundle::BundleDevArgs),
+    /// Validate the checked-in Eguidev launch target.
+    Edev,
     /// Install Hotki to `/Applications` and link the CLI.
     Install(install::InstallArgs),
     /// Generate UI screenshots for the README gallery.
     Screenshots,
+    /// Run Luau validation, Rust tests, and native smoketests.
+    Test,
     /// Validate Luau API/docs, style files, and example configs.
     Luau,
     /// Run clippy fixes and format the workspace.
@@ -56,8 +64,10 @@ pub fn run() -> Result<()> {
     match cli.command {
         Xtask::Bundle(args) => bundle::bundle_release(&root_dir, &args),
         Xtask::BundleDev(args) => bundle::bundle_dev(&root_dir, &args),
+        Xtask::Edev => edev::validate(&root_dir),
         Xtask::Install(args) => install::install(&root_dir, &args),
         Xtask::Screenshots => screenshots::screenshots(&root_dir),
+        Xtask::Test => test::test(&root_dir),
         Xtask::Luau => luau::luau(&root_dir),
         Xtask::Tidy => tidy::tidy(&root_dir),
     }

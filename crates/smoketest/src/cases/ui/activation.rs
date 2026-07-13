@@ -6,7 +6,7 @@ use std::{
 use hotki_protocol::{MsgToUI, WorldStreamMsg};
 use tracing::debug;
 
-use super::ACTIVATION_IDENT;
+use super::{ACTIVATION_IDENT, window_inspection::collect_hotki_windows};
 use crate::{
     config,
     error::{Error, Result},
@@ -59,12 +59,15 @@ impl ActivationOutcome {
 }
 
 /// Observes HUD visibility while waiting for activation to settle.
-pub(super) struct BindingWatcher;
+pub(super) struct BindingWatcher {
+    /// Process that must own the visible HUD window.
+    hud_pid: i32,
+}
 
 impl BindingWatcher {
     /// Create a watcher scoped to the target HUD process id.
-    pub(super) fn new(_hud_pid: i32) -> Self {
-        Self
+    pub(super) fn new(hud_pid: i32) -> Self {
+        Self { hud_pid }
     }
 
     /// Attempt to activate the HUD and wait until the expected submenu bindings appear.
@@ -92,7 +95,6 @@ impl BindingWatcher {
         )?;
 
         while Instant::now() < deadline {
-            let mut hud_ready_via_event = false;
             match driver.drain_events() {
                 Ok(events) => {
                     for event in events {
@@ -111,9 +113,10 @@ impl BindingWatcher {
                                 if last_hud_event == Some(event.id) {
                                     continue;
                                 }
-                                metrics.record_hud_update();
-                                metrics.record_frontmost();
                                 last_hud_event = Some(event.id);
+                                if hud.visible {
+                                    metrics.record_hud_update();
+                                }
                                 if let Ok(Some(snapshot)) = driver.latest_hud() {
                                     debug!(
                                         hud_event_id = snapshot.event_id,
@@ -124,9 +127,6 @@ impl BindingWatcher {
                                         row_count = snapshot.hud.rows.len(),
                                         "hud_snapshot_state"
                                     );
-                                }
-                                if expected_nested.is_empty() {
-                                    hud_ready_via_event = true;
                                 }
                             }
                             MsgToUI::World(WorldStreamMsg::FocusChanged(_)) => {
@@ -140,12 +140,7 @@ impl BindingWatcher {
                 Err(err) => return Err(Error::from(err)),
             }
 
-            if hud_ready_via_event {
-                return Ok(metrics.into_outcome());
-            }
-
             if self.hud_visible(driver)? {
-                metrics.record_hud_update();
                 metrics.record_frontmost();
 
                 if expected_nested.is_empty() {
@@ -153,8 +148,7 @@ impl BindingWatcher {
                 }
 
                 if let Some(remaining_ms) = remaining_ms(deadline) {
-                    let nested_timeout = remaining_ms.min(config::BINDING_GATES.default_ms);
-                    match driver.wait_for_idents(expected_nested, nested_timeout) {
+                    match driver.wait_for_idents(expected_nested, remaining_ms) {
                         Ok(()) => return Ok(metrics.into_outcome()),
                         Err(DriverError::BindingTimeout { .. }) => {
                             last_attempt = None;
@@ -177,7 +171,10 @@ impl BindingWatcher {
                 )?;
             }
 
-            thread::sleep(poll_interval);
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            thread::sleep(remaining.min(poll_interval));
         }
 
         Err(Error::HudNotVisible { timeout_ms })
@@ -197,7 +194,10 @@ impl BindingWatcher {
             timeout_ms: total_timeout_ms,
         })?;
         driver.wait_for_idents(&[activation_ident], remaining)?;
-        driver.inject_key(activation_ident)?;
+        let remaining = remaining_ms(deadline).ok_or(Error::HudNotVisible {
+            timeout_ms: total_timeout_ms,
+        })?;
+        driver.inject_key(activation_ident, remaining)?;
         metrics.record_activation();
         *last_attempt = Some(Instant::now());
         Ok(())
@@ -205,7 +205,13 @@ impl BindingWatcher {
 
     /// Check whether the HUD window is visible on the active space.
     fn hud_visible(&self, driver: &ServerDriver) -> Result<bool> {
-        Ok(driver.latest_hud()?.is_some())
+        let visible_snapshot = driver
+            .latest_hud()?
+            .is_some_and(|snapshot| snapshot.hud.visible);
+        if !visible_snapshot {
+            return Ok(false);
+        }
+        Ok(!collect_hotki_windows(self.hud_pid)?.is_empty())
     }
 }
 

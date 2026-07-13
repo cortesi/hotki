@@ -37,10 +37,31 @@ details:widget_get("details.config.reload"):click()
 details:widget_get("details.tab.logs"):click()
 details:wait_for_widget_visible("details.logs.clear")
 assert(details:widget_get("details.active_tab"):state().value_text == "logs")
+local rows_before_clear = tonumber(string.match(
+    details:widget_get("details.logs.count"):state().value_text,
+    "^(%d+)"
+))
+assert(rows_before_clear ~= nil and rows_before_clear > 0, "logs fixture should contain rows")
+local messages_before_clear = {}
+for index = 0, (rows_before_clear :: number) - 1 do
+    local row_id = "details.log." .. tostring(index) .. ".message"
+    local message = details:widget_get(row_id):state().value_text
+    messages_before_clear[message] = true
+end
 details:widget_get("details.logs.clear"):click()
 details:wait_for_widget("details.logs.count", function(widget)
-    return string.find(widget.value_text, "0 log rows", 1, true) ~= nil
+    local rows_after_clear = tonumber(string.match(widget.value_text, "^(%d+)"))
+    return rows_after_clear ~= nil and rows_after_clear < (rows_before_clear :: number)
 end)
+local rows_after_clear = tonumber(string.match(
+    details:widget_get("details.logs.count"):state().value_text,
+    "^(%d+)"
+)) :: number
+for index = 0, rows_after_clear - 1 do
+    local row_id = "details.log." .. tostring(index) .. ".message"
+    local message = details:widget_get(row_id):state().value_text
+    assert(not messages_before_clear[message], "clear should remove every pre-existing log row")
+end
 
 details:widget_get("details.tab.about"):click()
 details:wait_for_widget("details.about.name", function(widget)

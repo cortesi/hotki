@@ -1,16 +1,30 @@
-# Smoketest Runner (relay + UI only)
+# Smoketest Runner
 
-Window-operation scenarios have been removed alongside the built-in macOS
-window ops. The smoketest crate now exercises:
+The smoketest crate exercises the shipped HUD, mini HUD, display placement, and notification paths
+through a synthetic RPC-driven app session. The live case registry is the source of truth; list it
+with:
 
-- Repeat throughput (`repeat-relay`, `repeat-shell`, `repeat-volume`).
-- UI demos (`ui.demo.standard`, `ui.demo.mini`) that exercise HUD + notification styling.
+```bash
+cargo run --bin smoketest -- list
+```
 
 ## Running Smoketests
 
 ```bash
-cargo run --manifest-path crates/smoketest/Cargo.toml -- all
+cargo run --bin smoketest -- all
 ```
 
-Use `seq` to run specific slugs (e.g. `repeat-shell ui.demo.standard`). Pass
-`--logs` to surface tracing output during a run.
+Use `seq` to run selected cases in order, for example:
+
+```bash
+cargo run --bin smoketest -- seq hud notifications
+```
+
+Pass `--debug` or `--trace` before the subcommand to increase tracing output.
+
+`--run-budget` sets the complete wall-clock allowance for each case, including app startup, RPC
+readiness, actions, waits, and cleanup. For a slower machine or cold launch:
+
+```bash
+cargo run --bin smoketest -- --run-budget 30000 all
+```

@@ -9,10 +9,11 @@ use std::{
 };
 
 use serde::Serialize;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     cases,
+    config::RunBudget,
     error::{Error, Result, print_hints},
     process,
     warn_overlay::OverlaySession,
@@ -36,25 +37,10 @@ pub fn case_by_slug(slug: &str) -> Option<&'static CaseEntry> {
     CASES.iter().find(|entry| entry.name == slug)
 }
 
-/// Configured time budget for a smoketest case.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Budget {
-    /// Maximum milliseconds expected in the setup stage.
-    pub setup_ms: u64,
-    /// Maximum milliseconds expected in the action stage.
-    pub action_ms: u64,
-    /// Maximum milliseconds expected while waiting for the case to settle.
-    pub settle_ms: u64,
-}
-
-impl Budget {
-    /// Construct a budget from setup/action/settle millisecond values.
-    pub const fn new(setup_ms: u64, action_ms: u64, settle_ms: u64) -> Self {
-        Self {
-            setup_ms,
-            action_ms,
-            settle_ms,
-        }
+/// Print the live smoketest case catalog in registry order.
+pub fn print_case_catalog() {
+    for entry in CASES {
+        println!("{:<14} {}", entry.name, entry.info.unwrap_or(""));
     }
 }
 
@@ -64,10 +50,6 @@ pub struct CaseEntry {
     pub name: &'static str,
     /// Optional description surfaced in headings and overlay text.
     pub info: Option<&'static str>,
-    /// Additional watchdog headroom appended to the base timeout.
-    pub extra_timeout_ms: u64,
-    /// Expected timing budget for each stage.
-    pub budget: Budget,
     /// Function pointer invoked to execute the case.
     pub run: fn(&mut CaseCtx<'_>) -> Result<()>,
 }
@@ -77,17 +59,9 @@ impl CaseEntry {
     pub const fn new(
         name: &'static str,
         info: Option<&'static str>,
-        extra_timeout_ms: u64,
-        budget: Budget,
         run: fn(&mut CaseCtx<'_>) -> Result<()>,
     ) -> Self {
-        Self {
-            name,
-            info,
-            extra_timeout_ms,
-            budget,
-            run,
-        }
+        Self { name, info, run }
     }
 }
 
@@ -140,16 +114,35 @@ pub struct CaseCtx<'a> {
     scratch_dir: PathBuf,
     /// Optional stage timings recorded during execution.
     durations: StageDurationsOptional,
+    /// Shared absolute deadline for this case and all nested waits.
+    run_budget: RunBudget,
 }
 
 impl<'a> CaseCtx<'a> {
     /// Construct a new case context with the provided identifiers.
-    pub fn new(name: &'a str, scratch_dir: PathBuf) -> Self {
+    pub fn new(name: &'a str, scratch_dir: PathBuf, run_budget: RunBudget) -> Self {
         Self {
             name,
             scratch_dir,
             durations: StageDurationsOptional::default(),
+            run_budget,
         }
+    }
+
+    /// Return the shared absolute run budget.
+    pub fn run_budget(&self) -> RunBudget {
+        self.run_budget
+    }
+
+    /// Return the remaining case allowance or fail once it is exhausted.
+    pub fn remaining_ms(&self) -> Result<u64> {
+        self.run_budget.remaining_ms().ok_or_else(|| {
+            Error::InvalidState(format!(
+                "smoketest case {} exhausted its {} ms run budget",
+                self.name,
+                self.run_budget.total_ms()
+            ))
+        })
     }
 
     /// Execute the provided stage closure and capture its elapsed duration.
@@ -215,8 +208,8 @@ pub struct RunnerConfig<'a> {
     pub quiet: bool,
     /// Whether to show the hands-off overlay while running cases.
     pub warn_overlay: bool,
-    /// Base timeout used for each case before per-entry adjustments.
-    pub base_timeout_ms: u64,
+    /// Wall-clock budget shared by each case and all of its nested waits.
+    pub run_budget_ms: u64,
     /// Stop after the first failure when set.
     pub fail_fast: bool,
     /// Optional overlay text displayed below the case name.
@@ -343,18 +336,10 @@ fn execute_case(
     config: &RunnerConfig<'_>,
     case_dir: PathBuf,
 ) -> CaseExecution {
-    let budget_total = entry
-        .budget
-        .setup_ms
-        .saturating_add(entry.budget.action_ms)
-        .saturating_add(entry.budget.settle_ms);
-    let timeout_ms = budget_total
-        .saturating_add(config.base_timeout_ms)
-        .saturating_add(entry.extra_timeout_ms);
-
+    let run_budget = RunBudget::new(config.run_budget_ms);
     let start = Instant::now();
-    let exec_result = run_with_watchdog(entry.name, timeout_ms, move || {
-        let mut ctx = CaseCtx::new(entry.name, case_dir);
+    let exec_result = run_with_watchdog(entry.name, run_budget, move || {
+        let mut ctx = CaseCtx::new(entry.name, case_dir, run_budget);
         let result = (entry.run)(&mut ctx);
         (ctx, result)
     });
@@ -363,10 +348,19 @@ fn execute_case(
     match exec_result {
         Ok((ctx, run_result)) => {
             let durations = ctx.into_durations();
-            log_case_timing(entry, &durations);
+            log_case_timing(entry, &durations, run_budget);
+            let primary_error = run_result.err().or_else(|| {
+                run_budget.is_expired().then(|| {
+                    Error::InvalidState(format!(
+                        "smoketest case {} exhausted its {} ms run budget",
+                        entry.name,
+                        run_budget.total_ms()
+                    ))
+                })
+            });
             CaseExecution {
                 elapsed,
-                primary_error: run_result.err(),
+                primary_error,
             }
         }
         Err(abort) => CaseExecution {
@@ -377,14 +371,13 @@ fn execute_case(
 }
 
 /// Emit a structured log entry summarizing configured budgets and observed durations for a case.
-fn log_case_timing(entry: &CaseEntry, durations: &StageDurationsOptional) {
+fn log_case_timing(entry: &CaseEntry, durations: &StageDurationsOptional, run_budget: RunBudget) {
     info!(
         target: LOG_TARGET,
         event = "stage_timings",
         case = entry.name,
-        setup_budget_ms = entry.budget.setup_ms,
-        action_budget_ms = entry.budget.action_ms,
-        settle_budget_ms = entry.budget.settle_ms,
+        run_budget_ms = run_budget.total_ms(),
+        run_elapsed_ms = run_budget.elapsed().as_millis() as u64,
         setup_ms = durations.setup_ms,
         action_ms = durations.action_ms,
         settle_ms = durations.settle_ms
@@ -450,43 +443,43 @@ fn panic_message(payload: &(dyn Any + Send + 'static)) -> String {
     }
 }
 
-/// Run `f` on the current thread while a watchdog enforces the deadline.
-fn run_with_watchdog<F, T>(name: &str, timeout_ms: u64, f: F) -> StdResult<T, WatchdogAbort>
+/// Run `f` while a watchdog terminates owned processes at the shared deadline.
+fn run_with_watchdog<F, T>(name: &str, run_budget: RunBudget, f: F) -> StdResult<T, WatchdogAbort>
 where
     F: FnOnce() -> T,
 {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        thread,
-        time::Instant,
-    };
+    use std::{sync::mpsc, thread};
 
-    let canceled = Arc::new(AtomicBool::new(false));
-    let watchdog_flag = Arc::clone(&canceled);
+    let (cancel_tx, cancel_rx) = mpsc::channel();
     let name_owned = name.to_string();
     let watchdog = thread::spawn(move || {
-        let start = Instant::now();
-        loop {
-            if watchdog_flag.load(Ordering::SeqCst) {
-                return;
-            }
-            if start.elapsed() >= Duration::from_millis(timeout_ms) {
-                eprintln!(
-                    "ERROR: smoketest watchdog timeout ({} ms) in {} — force exiting",
-                    timeout_ms, name_owned
-                );
-                process::kill_all();
-                exit(2);
-            }
-            thread::sleep(Duration::from_millis(25));
+        let Some(remaining) = run_budget.remaining() else {
+            eprintln!(
+                "ERROR: smoketest run budget exhausted ({} ms) in {} — stopping owned processes",
+                run_budget.total_ms(),
+                name_owned
+            );
+            process::kill_all();
+            exit(2);
+        };
+        if cancel_rx.recv_timeout(remaining).is_err() {
+            eprintln!(
+                "ERROR: smoketest run budget exhausted ({} ms) in {} — stopping owned processes",
+                run_budget.total_ms(),
+                name_owned
+            );
+            process::kill_all();
+            exit(2);
         }
     });
 
     let value = panic::catch_unwind(AssertUnwindSafe(f));
-    canceled.store(true, Ordering::SeqCst);
+    if cancel_tx.send(()).is_err() {
+        debug!(
+            case = name,
+            "watchdog already completed before cancellation"
+        );
+    }
     if watchdog.join().is_err() {
         // Watchdog thread panicked; treat it as best-effort cleanup.
     }
@@ -516,37 +509,26 @@ fn create_case_dir(root: &Path, index: usize, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Additional watchdog slack for cases (milliseconds).
-const EXTRA_TIMEOUT: u64 = 3_000;
-
 /// Registry of smoketest cases focused on UI/HUD validation.
 static CASES: &[CaseEntry] = &[
     CaseEntry::new(
         "hud",
         Some("Verify full HUD appears and responds to keys."),
-        EXTRA_TIMEOUT,
-        Budget::new(800, 2000, 1200),
         cases::hud,
     ),
     CaseEntry::new(
         "mini",
         Some("Verify mini HUD appears and responds to keys."),
-        EXTRA_TIMEOUT,
-        Budget::new(800, 2000, 1200),
         cases::mini,
     ),
     CaseEntry::new(
         "displays",
         Some("Verify HUD placement on multi-display setups."),
-        EXTRA_TIMEOUT,
-        Budget::new(800, 2000, 1200),
         cases::displays,
     ),
     CaseEntry::new(
         "notifications",
         Some("Verify notification window placement."),
-        EXTRA_TIMEOUT,
-        Budget::new(800, 2000, 1200),
         cases::notifications,
     ),
 ];

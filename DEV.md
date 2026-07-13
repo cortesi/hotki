@@ -11,6 +11,10 @@
 - Run `cargo xtask luau` after changing config declarations, examples, or marked Markdown Luau
   fences. It validates top-level examples, nested `config.luau` graphs, and complete documentation
   entries; helper modules are checked through their entry graph rather than as roots.
+- Run `cargo xtask edev` after changing `.edev.toml` or the app's package, binary, feature, flags,
+  or fixture config. `cargo xtask tidy` includes the same check.
+- Run `cargo xtask test` for the automated gate: Luau validation, Rust tests, and the native
+  smoketest.
 - For UI‑path changes, run: `cargo run --bin smoketest -- all`.
 
 ## Eguidev Automation
@@ -26,7 +30,7 @@ edev smoke
 edev mcp
 ```
 
-The eguidev launch command builds `hotki` with `--features devtools` and runs
+The eguidev launch command builds `hotki-app` with `--features devtools` and runs
 the checked-in `examples/eguidev-demo.luau` config with `--disable-event-tap`.
 Style is loaded from an optional `style.luau` sibling of the active config; keep eguidev fixtures
 aligned with that split when adding style-sensitive checks.
@@ -38,6 +42,7 @@ eguidev's egui plugin; no app-side wiring is required.
 
 Details has tab-specific fixtures for ordinary-window inspection:
 `hotki.details.config`, `hotki.details.logs`, and `hotki.details.about`.
+Use `edev fixtures` for the complete inventory generated from the app's live fixture catalog.
 
 Treat `edev smoke` as a local macOS automation suite for now. Do not add it to
 CI until a macOS runner has `edev` and the required windowing permissions

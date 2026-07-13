@@ -1,18 +1,63 @@
 //! Configuration constants and defaults for smoketests.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Default test-wide tunables.
+/// Default wall-clock budget for one smoketest case.
+pub const DEFAULT_RUN_BUDGET_MS: u64 = 10_000;
+
+/// One monotonic deadline shared by a case, its waits, and its watchdog.
 #[derive(Debug, Clone, Copy)]
-pub struct Defaults {
-    /// Default timeout for UI readiness and waits in milliseconds.
-    pub timeout_ms: u64,
+pub struct RunBudget {
+    /// Instant when budget accounting began.
+    started_at: Instant,
+    /// Absolute instant when the run must stop.
+    deadline: Instant,
+    /// Configured wall-clock allowance in milliseconds.
+    total_ms: u64,
 }
 
-/// Default timeout settings.
-pub const DEFAULTS: Defaults = Defaults { timeout_ms: 3000 };
+impl RunBudget {
+    /// Start a run budget with the supplied total allowance.
+    pub fn new(total_ms: u64) -> Self {
+        let started_at = Instant::now();
+        Self {
+            started_at,
+            deadline: started_at + Duration::from_millis(total_ms),
+            total_ms,
+        }
+    }
 
-/// Delay between theme switches to make transitions visible (milliseconds).
+    /// Configured wall-clock allowance in milliseconds.
+    pub fn total_ms(self) -> u64 {
+        self.total_ms
+    }
+
+    /// Elapsed time since budget accounting began.
+    pub fn elapsed(self) -> Duration {
+        self.started_at.elapsed()
+    }
+
+    /// Remaining duration, or `None` when the budget is exhausted.
+    pub fn remaining(self) -> Option<Duration> {
+        self.deadline.checked_duration_since(Instant::now())
+    }
+
+    /// Remaining whole-millisecond allowance, rounded up to keep sub-millisecond time usable.
+    pub fn remaining_ms(self) -> Option<u64> {
+        let remaining = self.remaining()?;
+        if remaining.is_zero() {
+            return None;
+        }
+        let millis = remaining.as_millis().try_into().unwrap_or(u64::MAX);
+        Some(millis.max(1))
+    }
+
+    /// Whether the configured deadline has elapsed.
+    pub fn is_expired(self) -> bool {
+        Instant::now() >= self.deadline
+    }
+}
+
 /// Input-event pacing constants.
 #[derive(Debug, Clone, Copy)]
 pub struct InputDelays {
@@ -38,16 +83,6 @@ pub struct Retry {
 /// Default connection retry pacing.
 pub const RETRY: Retry = Retry { fast_delay_ms: 50 };
 
-/// Canonical RPC binding gate timings.
-#[derive(Debug, Clone, Copy)]
-pub struct BindingGates {
-    /// Default binding readiness gate for non-raise tests (RPC mode).
-    pub default_ms: u64,
-}
-
-/// Default RPC readiness gate tunables.
-pub const BINDING_GATES: BindingGates = BindingGates { default_ms: 500 };
-
 /// Warn overlay tuning.
 #[derive(Debug, Clone, Copy)]
 pub struct WarnOverlayConfig {
@@ -69,4 +104,22 @@ pub const WARN_OVERLAY: WarnOverlayConfig = WarnOverlayConfig {
 /// Convert milliseconds to `Duration`.
 pub const fn ms(millis: u64) -> Duration {
     Duration::from_millis(millis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_budget_has_no_remaining_milliseconds() {
+        let now = Instant::now();
+        let budget = RunBudget {
+            started_at: now,
+            deadline: now,
+            total_ms: 1,
+        };
+
+        assert_eq!(budget.remaining_ms(), None);
+        assert!(budget.is_expired());
+    }
 }

@@ -1,19 +1,13 @@
 //! Process management utilities for smoketests.
 use std::{
     collections::HashSet,
-    fs,
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::OnceLock,
-    thread,
-    time::{Duration, Instant, SystemTime},
 };
 
 use parking_lot::Mutex;
 
-use crate::{
-    config,
-    error::{Error, Result},
-};
+use crate::error::{Error, Result};
 
 /// Global registry of helper process IDs for best-effort cleanup.
 static PROCESS_REGISTRY: OnceLock<Mutex<HashSet<i32>>> = OnceLock::new();
@@ -87,50 +81,19 @@ pub fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     Ok(ManagedChild::new(child))
 }
 
-/// Build the hotki app binary quietly.
-/// Output is suppressed to avoid interleaved cargo logs.
-pub fn build_hotki_app_quiet() -> Result<()> {
-    // First check if the binary already exists and is recent
-    if let Ok(metadata) = fs::metadata("target/debug/hotki-app")
-        && let Ok(modified) = metadata.modified()
-        && let Ok(elapsed) = SystemTime::now().duration_since(modified)
-        && elapsed.as_secs() < 60
-    {
-        // If binary was built in the last 60 seconds, skip rebuild
-        return Ok(());
+/// Ask Cargo to build the current hotki app and report its diagnostics directly.
+pub fn build_hotki_app() -> Result<()> {
+    let mut command = Command::new("cargo");
+    command.args(["build", "-p", "hotki-app", "--bin", "hotki-app"]);
+    if !cfg!(debug_assertions) {
+        command.arg("--release");
     }
-
-    let mut child = Command::new("cargo")
-        .args(["build", "-q", "-p", "hotki-app", "--bin", "hotki-app"])
-        .env("CARGO_TERM_COLOR", "never")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(Error::Io)?;
-
-    // Wait for up to 60 seconds
-    let timeout = Duration::from_secs(60);
-    let start = Instant::now();
-
-    loop {
-        match child.try_wait().map_err(Error::Io)? {
-            Some(status) => {
-                if !status.success() {
-                    return Err(Error::SpawnFailed(
-                        "Failed to build hotki-app binary".to_string(),
-                    ));
-                }
-                return Ok(());
-            }
-            None => {
-                if start.elapsed() > timeout {
-                    if let Err(_e) = child.kill() {}
-                    return Err(Error::SpawnFailed(
-                        "Build timeout: cargo build took too long".to_string(),
-                    ));
-                }
-                thread::sleep(Duration::from_millis(config::INPUT_DELAYS.retry_delay_ms));
-            }
-        }
+    let status = command.status().map_err(Error::Io)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::SpawnFailed(format!(
+            "cargo build -p hotki-app --bin hotki-app exited with {status}"
+        )))
     }
 }

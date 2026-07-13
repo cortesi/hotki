@@ -5,10 +5,13 @@ use std::{iter::empty, path::Path};
 use crate::{
     Result,
     cmd::{OutputMode, run_status},
+    edev,
 };
 
 /// Run workspace lint and format checks.
 pub fn tidy(root_dir: &Path) -> Result<()> {
+    edev::validate(root_dir)?;
+
     println!("==> cargo machete");
     run_status(
         root_dir,

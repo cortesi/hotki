@@ -135,9 +135,9 @@ end
 }
 
 /// Poll CoreGraphics until a notification window is visible.
-fn wait_for_notification_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
+fn wait_for_notification_windows(pid: i32, timeout_ms: u64) -> Result<Vec<WindowSnapshot>> {
     let start = Instant::now();
-    let timeout = config::ms(config::DEFAULTS.timeout_ms);
+    let timeout = config::ms(timeout_ms);
     loop {
         let windows = collect_notification_windows(pid)?;
         if !windows.is_empty() {
@@ -150,7 +150,10 @@ fn wait_for_notification_windows(pid: i32) -> Result<Vec<WindowSnapshot>> {
                 describe_windows(&all_windows)
             )));
         }
-        thread::sleep(config::ms(config::INPUT_DELAYS.retry_delay_ms));
+        let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
+            continue;
+        };
+        thread::sleep(remaining.min(config::ms(config::INPUT_DELAYS.retry_delay_ms)));
     }
 }
 
@@ -290,30 +293,31 @@ pub fn notifications(ctx: &mut CaseCtx<'_>) -> Result<()> {
             HotkiSessionConfig::from_env()?
                 .with_config(&config_path)
                 .with_logs(true),
+            ctx.run_budget(),
         )?;
         session = Some(spawned);
         Ok(())
     })?;
 
-    ctx.action(|_| {
+    ctx.action(|ctx| {
         let session_ref = session.as_mut().ok_or_else(|| {
             Error::InvalidState("notification case state missing during action".into())
         })?;
-        let gate_ms = config::BINDING_GATES.default_ms * 2;
         {
             let driver = session_ref.driver_mut();
-            driver.ensure_ready(1_000)?;
-            driver.wait_for_idents(&[NOTIFICATION_IDENT], gate_ms)?;
+            driver.ensure_ready(ctx.remaining_ms()?)?;
+            driver.wait_for_idents(&[NOTIFICATION_IDENT], ctx.remaining_ms()?)?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(NOTIFICATION_IDENT)?;
+            driver.inject_key(NOTIFICATION_IDENT, ctx.remaining_ms()?)?;
             driver.wait_for_message_since(
                 cursor,
-                gate_ms,
+                ctx.remaining_ms()?,
                 |msg| matches!(msg, MsgToUI::Notify { title, .. } if title == "Shell command"),
             )?;
         }
 
-        let mut windows = wait_for_notification_windows(session_ref.pid() as i32)?;
+        let mut windows =
+            wait_for_notification_windows(session_ref.pid() as i32, ctx.remaining_ms()?)?;
         windows.sort_by(|a, b| b.max_y().partial_cmp(&a.max_y()).unwrap_or(Ordering::Equal));
         let topmost = windows.first().ok_or_else(|| {
             Error::InvalidState("no notification window candidates were visible".into())
@@ -407,6 +411,7 @@ where
             HotkiSessionConfig::from_env()?
                 .with_config(&config_path)
                 .with_logs(spec.with_logs),
+            ctx.run_budget(),
         )?;
 
         state = Some(UiCaseState {
@@ -420,20 +425,24 @@ where
         Ok(())
     })?;
 
-    ctx.action(|_| {
+    ctx.action(|ctx| {
         let state_ref = state
             .as_mut()
             .ok_or_else(|| Error::InvalidState("ui case state missing during action".into()))?;
 
         {
             let driver = state_ref.session.driver_mut();
-            driver.ensure_ready(1_000)?;
+            driver.ensure_ready(ctx.remaining_ms()?)?;
         }
-        let gate_ms = config::BINDING_GATES.default_ms * 2;
         let watcher = BindingWatcher::new(state_ref.session.pid() as i32);
         let activation = {
             let driver = state_ref.session.driver_mut();
-            watcher.activate_until_ready(driver, ACTIVATION_IDENT, &[UI_DEMO_ACTIVATE], gate_ms)?
+            watcher.activate_until_ready(
+                driver,
+                ACTIVATION_IDENT,
+                &[UI_DEMO_ACTIVATE],
+                ctx.remaining_ms()?,
+            )?
         };
         if !activation.focus_event_seen() {
             info!(
@@ -445,42 +454,42 @@ where
 
         {
             let driver = state_ref.session.driver_mut();
-            driver.inject_key(UI_DEMO_ACTIVATE)?;
-            driver.wait_for_idents(&["n", "d", "s"], gate_ms)?;
+            driver.inject_key(UI_DEMO_ACTIVATE, ctx.remaining_ms()?)?;
+            driver.wait_for_idents(&["n", "d", "s"], ctx.remaining_ms()?)?;
         }
 
         {
             let driver = state_ref.session.driver_mut();
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_NOTIFY)?;
+            driver.inject_key(UI_DEMO_NOTIFY, ctx.remaining_ms()?)?;
             driver.wait_for_message_since(
                 cursor,
-                gate_ms,
+                ctx.remaining_ms()?,
                 |msg| matches!(msg, MsgToUI::Notify { title, .. } if title == "Shell command"),
             )?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_DETAILS)?;
-            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+            driver.inject_key(UI_DEMO_DETAILS, ctx.remaining_ms()?)?;
+            driver.wait_for_message_since(cursor, ctx.remaining_ms()?, |msg| {
                 matches!(msg, MsgToUI::ShowDetails(Toggle::On))
             })?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_SELECTOR)?;
-            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+            driver.inject_key(UI_DEMO_SELECTOR, ctx.remaining_ms()?)?;
+            driver.wait_for_message_since(cursor, ctx.remaining_ms()?, |msg| {
                 matches!(msg, MsgToUI::SelectorUpdate(snapshot) if snapshot.title == "Pick Demo")
             })?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_SELECTOR_QUERY)?;
+            driver.inject_key(UI_DEMO_SELECTOR_QUERY, ctx.remaining_ms()?)?;
             driver.wait_for_message_since(
                 cursor,
-                gate_ms,
+                ctx.remaining_ms()?,
                 |msg| matches!(msg, MsgToUI::SelectorUpdate(snapshot) if snapshot.query == "a"),
             )?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_SELECTOR_SELECT)?;
-            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+            driver.inject_key(UI_DEMO_SELECTOR_SELECT, ctx.remaining_ms()?)?;
+            driver.wait_for_message_since(cursor, ctx.remaining_ms()?, |msg| {
                 matches!(msg, MsgToUI::SelectorHide)
             })?;
-            driver.wait_for_message_since(cursor, gate_ms, |msg| {
+            driver.wait_for_message_since(cursor, ctx.remaining_ms()?, |msg| {
                 matches!(
                     msg,
                     MsgToUI::Notify { title, text, .. }
@@ -497,7 +506,10 @@ where
 
         after_activation(state_ref)?;
 
-        state_ref.session.driver_mut().inject_key(UI_DEMO_EXIT)?;
+        state_ref
+            .session
+            .driver_mut()
+            .inject_key(UI_DEMO_EXIT, ctx.remaining_ms()?)?;
         Ok(())
     })?;
 

@@ -23,6 +23,7 @@ assert(hud:widget_get("hud.row.0.chord"):state().value_text == "d")
 assert(hud:widget_get("hud.row.0.is_mode"):state().value_text == "true")
 assert(hud:widget_get("hud.row.0.tag"):state().value_text ~= "")
 
+fixture("hotki.hud.demo")
 fixture("hotki.hud.mini")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
@@ -61,6 +62,8 @@ for index = 0, 21 do
     assert(measure.ellipsis == false, desc.id .. " text should not ellipsize")
 end
 
+fixture("hotki.hud")
+fixture("hotki.hud.demo")
 fixture("hotki.selector")
 root_vp:wait_for_widget("app.server.connected", function(widget)
     return widget.value_text == "true"
