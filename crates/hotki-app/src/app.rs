@@ -21,6 +21,7 @@ use crate::{
     runtime::{self, ControlMsg},
     selector::SelectorWindow,
     tray,
+    ui_delivery::{UiDeliveryRx, UiDeliveryTx},
 };
 
 /// Commands local to the UI process that are not part of the protocol stream.
@@ -52,7 +53,7 @@ pub enum UiEvent {
 /// Top-level UI application state and channels.
 pub struct HotkiApp {
     /// Receiver for events from the runtime thread.
-    pub(crate) rx: tokio_mpsc::UnboundedReceiver<UiEvent>,
+    pub(crate) rx: UiDeliveryRx,
     /// Tray icon handle, kept to maintain tray lifetime.
     pub(crate) _tray: Option<TrayIcon>,
     /// Heads-up display for key hints.
@@ -82,9 +83,9 @@ pub struct HotkiApp {
 /// Inputs required to bootstrap the UI application and runtime.
 pub struct AppBootstrap {
     /// Receiver for background runtime events.
-    pub rx: tokio_mpsc::UnboundedReceiver<UiEvent>,
+    pub rx: UiDeliveryRx,
     /// Sender for local UI events.
-    pub tx_ui: tokio_mpsc::UnboundedSender<UiEvent>,
+    pub tx_ui: UiDeliveryTx,
     /// Sender for runtime control messages.
     pub tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     /// Receiver for runtime control messages.
@@ -115,7 +116,7 @@ impl App for HotkiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
-        while let Ok(event) = self.rx.try_recv() {
+        while let Some(event) = self.rx.try_recv() {
             match event {
                 UiEvent::Command(command) => self.handle_command(ctx, command),
                 UiEvent::Message(message) => self.handle_message(ctx, message),
@@ -127,6 +128,7 @@ impl App for HotkiApp {
             self.server_connected,
             &self.server_bindings,
             &notification_stack,
+            self.rx.stats(),
         );
         render_app_anchors(
             &self.devmcp,

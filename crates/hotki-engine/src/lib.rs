@@ -17,8 +17,8 @@
 //! World Read Path
 //! - The engine reads focus/window state exclusively from `hotki-world`.
 //! - There is no FocusWatcher and no CoreGraphics/AX fallback path.
-//! - Actions call `world.hint_refresh()` to nudge refresh but operate on the
-//!   cached world context; dispatch paths are free of synchronous focus reads.
+//! - Dispatch waits for a fresh world generation before selecting contextual
+//!   bindings; other actions operate on the event-maintained focus cache.
 //! - Early startup policy: if the world snapshot is empty, focus-driven
 //!   actions are a no-op with a debug log.
 //! - Repeat/relay targets follow the world-backed PID cache and hand off
@@ -27,17 +27,17 @@
 //! Concurrency and Lock Ordering
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
 //!   inversions, follow this order when multiple guards are needed:
-//!   1) `config: Mutex<Option<DynamicConfig>>`, 2) `runtime: Mutex<RuntimeState>`,
-//!   3) `binding_manager: Mutex<KeyBindingManager>`. Avoid holding a write
-//!      guard across any call that can block or `await`.
+//!   1) `config_transaction`, 2) `config: Mutex<Option<DynamicConfig>>`,
+//!   3) `runtime: Mutex<RuntimeState>`, 4) `binding_manager: Mutex<KeyBindingManager>`.
+//!      Avoid holding a write guard across any call that can block or `await`.
 //! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
 //!   Never hold this guard across an `.await`. Clone/copy values out and drop
 //!   the guard before awaiting.
 //! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
 //!   not be awaited while any of the async engine mutexes are held. Acquire,
 //!   compute, drop guards, then perform async work.
-//! - `set_config_path` acquires a write guard, replaces the config, drops the guard,
-//!   then triggers a rebind. Do not re-enter config while a write guard is held.
+//! - Config installation prepares a candidate before taking active-state locks, then
+//!   commits config, runtime, bindings, path, and UI snapshot together.
 //! - Selector opening resolves items under `config`, drops that guard, installs selector
 //!   state under `runtime`, then publishes UI after guards are released.
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -269,7 +269,7 @@ pub struct Engine {
     config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
     /// Cached focus snapshot from World events.
     focus_ctx: Arc<Mutex<Option<hotki_protocol::FocusSnapshot>>>,
-    /// If true, hint world refresh on dispatch; else trust cached context.
+    /// If true, refresh world state before dispatch; else trust cached context.
     sync_on_dispatch: bool,
     /// Last displays snapshot sent to the UI.
     display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
@@ -283,6 +283,8 @@ pub struct Engine {
     repeater: Repeater,
     /// Repeater for Luau action closures created by `ctx:until_keyup`.
     action_repeater: Ticker,
+    /// Serializes candidate preparation and committed refreshes.
+    config_transaction: Arc<tokio::sync::Mutex<()>>,
     /// World view for focus and display tracking.
     world: Arc<dyn WorldView>,
 }
@@ -346,6 +348,7 @@ impl Engine {
             selector_notify,
             repeater,
             action_repeater,
+            config_transaction: Arc::new(tokio::sync::Mutex::new(())),
             world,
         };
         engine.spawn_world_focus_subscription();
@@ -371,14 +374,7 @@ impl Engine {
 
     /// Load and install a dynamic configuration from `path`.
     pub async fn set_config_path(&self, path: PathBuf) -> Result<()> {
-        {
-            let mut g = self.config_path.write().await;
-            *g = Some(path.clone());
-        }
-        // LOCK ORDER: config (write) must be released before rebind_current_context.
-        self.install_config(&path, ConfigInstall::ResetFocus)
-            .await?;
-        self.rebind_current_context().await
+        self.install_config(&path, ConfigInstall::ResetFocus).await
     }
 
     /// Load config from `path` into runtime state.
@@ -386,19 +382,9 @@ impl Engine {
     /// `ConfigInstall::ResetFocus` also resets HUD visibility and focus for a fresh install.
     /// `ConfigInstall::KeepFocus` only replaces the mode stack root (config reload).
     pub(crate) async fn install_config(&self, path: &Path, mode: ConfigInstall) -> Result<()> {
-        let dyn_cfg = dyn_engine::load_dynamic_config(path).map_err(|e| Error::Msg(e.pretty()))?;
-        let root = dyn_cfg.root();
-        let style = dyn_cfg.base_style();
-        self.action_repeater.clear_async().await;
-        let mut config = self.config.lock().await;
-        let mut rt = self.runtime.lock().await;
-        if matches!(mode, ConfigInstall::ResetFocus) {
-            rt.hud_visible = false;
-            rt.focus = self.current_focus_info();
-        }
-        rt.install_root(root, style);
-        *config = Some(dyn_cfg);
-        Ok(())
+        let _transaction = self.config_transaction.lock().await;
+        let prepared = self.prepare_config(path, mode).await?;
+        self.commit_config(prepared).await
     }
 
     /// Get the current depth (0 = root) if state is initialized.

@@ -13,10 +13,10 @@ use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{
-    app::UiEvent,
     logs,
     permissions::{PermissionsStatus, check_permissions},
     runtime::ControlMsg,
+    ui_delivery::UiDeliveryTx,
 };
 
 /// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
@@ -147,7 +147,7 @@ impl ConnectionDriver {
     pub(crate) fn new(
         config_path: PathBuf,
         server_log_filter: Option<String>,
-        tx_keys: mpsc::UnboundedSender<UiEvent>,
+        tx_keys: UiDeliveryTx,
         egui_ctx: egui::Context,
         rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
         server_event_tap_enabled: bool,
@@ -669,7 +669,9 @@ mod tests {
         ConnectionDriver, ConnectionState, ControlOutcome, ControlRoute, LocalControl,
         ServerControl,
     };
-    use crate::{permissions::PermissionsStatus, runtime::ControlMsg};
+    use crate::{
+        permissions::PermissionsStatus, runtime::ControlMsg, ui_delivery::ui_delivery_channel,
+    };
 
     #[test]
     fn control_route_separates_local_server_and_shutdown_messages() {
@@ -742,7 +744,7 @@ mod tests {
 
     #[test]
     fn permission_status_retries_when_disconnected_and_ready() {
-        let (tx_ui, rx_ui) = unbounded_channel();
+        let (tx_ui, rx_ui) = ui_delivery_channel();
         let (_tx_ctrl, rx_ctrl) = unbounded_channel();
         let ctx = egui::Context::default();
         let mut driver =
@@ -768,7 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_control_without_connection_is_queued_retry() {
-        let (tx_ui, _rx_ui) = unbounded_channel();
+        let (tx_ui, _rx_ui) = ui_delivery_channel();
         let (_tx_ctrl, rx_ctrl) = unbounded_channel();
         let ctx = egui::Context::default();
         let mut driver = ConnectionDriver::new(

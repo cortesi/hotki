@@ -12,10 +12,11 @@ mac-keycode = { path = "../mac-keycode" }
 mac-hotkey = { path = "../mac-hotkey" }
 hotki-world = { path = "../hotki-world" }
 
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util", "process", "io-util"] }
 tracing = { workspace = true }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
 relaykey = { path = "../relaykey" }
 parking_lot = { workspace = true }
 nucleo = "0.5.0"
+libc.workspace = true

@@ -86,8 +86,7 @@ pub async fn snapshot_for_key(world: &dyn WorldView, key: WindowKey) -> Option<F
 
 /// Resolve the currently focused snapshot from the world state, if any.
 pub async fn focused_snapshot(world: &dyn WorldView) -> Option<FocusSnapshot> {
-    let key = world.focused().await?;
-    snapshot_for_key(world, key).await
+    world.focus_snapshot().await
 }
 
 /// Context describing the current focus selection accompanying focus events.
@@ -160,6 +159,9 @@ pub trait WorldView: Send + Sync {
     /// Retrieve the currently focused window key, if any.
     async fn focused(&self) -> Option<WindowKey>;
 
+    /// Retrieve the semantic snapshot of the currently focused window, if any.
+    async fn focus_snapshot(&self) -> Option<FocusSnapshot>;
+
     /// Fetch current capability and permission information.
     async fn capabilities(&self) -> Capabilities;
 
@@ -169,6 +171,6 @@ pub trait WorldView: Send + Sync {
     /// Retrieve the tracked display geometry snapshot.
     async fn displays(&self) -> DisplaysSnapshot;
 
-    /// Hint that external state likely changed and should be refreshed quickly.
-    fn hint_refresh(&self);
+    /// Wait until a refresh begun after this call has updated the world state.
+    async fn refresh(&self);
 }

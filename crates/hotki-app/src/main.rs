@@ -37,10 +37,15 @@ mod permissions;
 mod runtime;
 mod selector;
 mod tray;
+/// Bounded delivery from background work to the UI thread.
+mod ui_delivery;
 
 use config::{load_dynamic_config, resolve_config_path};
 
-use crate::app::{AppBootstrap, HotkiApp, UiEvent};
+use crate::{
+    app::{AppBootstrap, HotkiApp},
+    ui_delivery::ui_delivery_channel,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "hotki-app", about = "Hotki macOS app runtime", version)]
@@ -158,7 +163,7 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
         }
     };
     let initial_style = initial_style_for_config(&config_path);
-    let (tx, rx) = tokio_mpsc::unbounded_channel::<UiEvent>();
+    let (tx, rx) = ui_delivery_channel();
     let (tx_ctrl, rx_ctrl) = tokio_mpsc::unbounded_channel();
 
     let (devmcp, fixture_runtime) =

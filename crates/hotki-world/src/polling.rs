@@ -6,7 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::{sync::Notify, task, time};
+use async_trait::async_trait;
+use tokio::{
+    sync::{Notify, watch},
+    task, time,
+};
 
 use crate::{
     FocusSnapshot, WindowKey, WorldCfg, WorldWindow,
@@ -36,6 +40,7 @@ impl PollingWorld {
     async fn run_poll_loop(core: Weak<WorldCore>, cfg: WorldCfg, poll_tuner: Arc<PollTuner>) {
         let mut interval_ms = cfg.poll_ms_min.max(50);
         loop {
+            let refresh_generation = poll_tuner.requested_generation();
             let start = Instant::now();
             let platform = Self::capture_platform_snapshot().await;
             let elapsed = start.elapsed().as_millis() as u64;
@@ -43,6 +48,7 @@ impl PollingWorld {
                 break;
             };
             Self::poll_once_core(&core, platform, elapsed, interval_ms);
+            poll_tuner.complete_refresh(refresh_generation);
             interval_ms = poll_tuner.next_interval(interval_ms);
             drop(core);
             let notified = poll_tuner.wake.notified();
@@ -81,13 +87,15 @@ impl PollingWorld {
     }
 }
 
+#[async_trait]
 impl CoreWorldView for PollingWorld {
     fn core(&self) -> &Arc<WorldCore> {
         &self.core
     }
 
-    fn hint_refresh_impl(&self) {
-        self.poll_tuner.reset();
+    async fn refresh_impl(&self) {
+        let generation = self.poll_tuner.request_refresh();
+        self.poll_tuner.wait_for_refresh(generation).await;
     }
 }
 
@@ -96,6 +104,8 @@ struct PollTuner {
     min_ms: u64,
     max_ms: u64,
     next_ms: AtomicU64,
+    requested_generation: AtomicU64,
+    completed_generation: watch::Sender<u64>,
     wake: Notify,
 }
 
@@ -106,6 +116,8 @@ impl PollTuner {
             min_ms: clamped_min,
             max_ms,
             next_ms: AtomicU64::new(0),
+            requested_generation: AtomicU64::new(0),
+            completed_generation: watch::channel(0).0,
             wake: Notify::new(),
         }
     }
@@ -123,6 +135,35 @@ impl PollTuner {
     fn reset(&self) {
         self.next_ms.store(self.min_ms, AtomicOrdering::SeqCst);
         self.wake.notify_one();
+    }
+
+    fn request_refresh(&self) -> u64 {
+        let generation = self
+            .requested_generation
+            .fetch_add(1, AtomicOrdering::SeqCst)
+            + 1;
+        self.reset();
+        generation
+    }
+
+    fn requested_generation(&self) -> u64 {
+        self.requested_generation.load(AtomicOrdering::SeqCst)
+    }
+
+    fn complete_refresh(&self, generation: u64) {
+        let _previous_generation = self.completed_generation.send_replace(generation);
+    }
+
+    async fn wait_for_refresh(&self, generation: u64) {
+        let mut completed = self.completed_generation.subscribe();
+        loop {
+            if *completed.borrow_and_update() >= generation {
+                return;
+            }
+            if completed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     fn consume_hint(&self) -> Option<u64> {

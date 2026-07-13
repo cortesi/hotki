@@ -7,11 +7,12 @@
 use std::{
     cmp,
     collections::HashMap,
-    env,
-    process::Command,
+    env, io,
+    os::unix::process::CommandExt,
+    process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -19,7 +20,13 @@ use config::NotifyKind;
 use hotki_protocol::FocusSnapshot;
 use mac_keycode::Chord;
 use parking_lot::Mutex;
-use tokio::time::Duration;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+    task::JoinHandle,
+    time::Duration,
+};
+use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::{notification::NotificationDispatcher, relay::RelayHandler, ticker::Ticker};
@@ -31,6 +38,17 @@ struct ShellNotification {
     text: String,
 }
 
+fn shell_failure(notify: ShellNotify, text: String) -> Option<ShellNotification> {
+    if matches!(notify, ShellNotify::Silent) {
+        return None;
+    }
+    Some(ShellNotification {
+        kind: NotifyKind::Warn,
+        title: "Shell command".to_string(),
+        text,
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ShellNotify {
     Configured {
@@ -40,62 +58,197 @@ enum ShellNotify {
     Silent,
 }
 
-/// Run a command using the user's shell, returning an optional notification.
-/// This function is blocking and intended to be called inside `spawn_blocking`.
-fn run_shell_blocking(
+/// Maximum combined stdout and stderr retained for a shell notification.
+const SHELL_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+const SHELL_STREAM_LIMIT_BYTES: usize = SHELL_OUTPUT_LIMIT_BYTES / 2;
+
+struct CapturedStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+async fn read_bounded(mut reader: impl AsyncRead + Unpin) -> io::Result<CapturedStream> {
+    let mut bytes = Vec::with_capacity(SHELL_STREAM_LIMIT_BYTES);
+    let mut truncated = false;
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = SHELL_STREAM_LIMIT_BYTES.saturating_sub(bytes.len());
+        let retained = remaining.min(read);
+        bytes.extend_from_slice(&chunk[..retained]);
+        truncated |= retained < read;
+    }
+    Ok(CapturedStream { bytes, truncated })
+}
+
+fn trim_shell_output(stdout: CapturedStream, stderr: CapturedStream) -> String {
+    let mut combined = String::new();
+    let out = String::from_utf8_lossy(&stdout.bytes);
+    let err = String::from_utf8_lossy(&stderr.bytes);
+    if !out.is_empty() {
+        combined.push_str(&out);
+    }
+    if !err.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(&err);
+    }
+
+    let lines: Vec<&str> = combined.lines().collect();
+    let first_nonblank = lines.iter().position(|line| !line.trim().is_empty());
+    let last_nonblank = lines.iter().rposition(|line| !line.trim().is_empty());
+    let mut output = match (first_nonblank, last_nonblank) {
+        (Some(start), Some(end)) if start <= end => lines[start..=end].join("\n"),
+        _ => String::new(),
+    };
+    if stdout.truncated || stderr.truncated {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str("[output truncated]");
+    }
+    output
+}
+
+fn kill_process_group(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else {
+        tracing::warn!(pid, "shell child pid exceeded process identifier range");
+        return;
+    };
+    // SAFETY: the child was spawned as the leader of its own process group, and
+    // a negative PID targets that group without borrowing any Rust memory.
+    let result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+        tracing::warn!(pid, error = %io::Error::last_os_error(), "failed to kill shell process group");
+    }
+}
+
+async fn collect_stream(task: Option<JoinHandle<io::Result<CapturedStream>>>) -> CapturedStream {
+    match task {
+        Some(task) => match task.await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "failed to read shell output");
+                CapturedStream {
+                    bytes: Vec::new(),
+                    truncated: false,
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "shell output reader task failed");
+                CapturedStream {
+                    bytes: Vec::new(),
+                    truncated: false,
+                }
+            }
+        },
+        None => CapturedStream {
+            bytes: Vec::new(),
+            truncated: false,
+        },
+    }
+}
+
+/// Run a command in an owned process group with bounded output capture.
+async fn run_shell(
     command: &str,
-    ok_notify: NotifyKind,
-    err_notify: NotifyKind,
+    notify: ShellNotify,
+    state: &ShellRunState,
 ) -> Option<ShellNotification> {
     tracing::info!("Executing shell command: {}", command);
     let shell_path: String = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    match Command::new(&shell_path).arg("-lc").arg(command).output() {
-        Ok(output) => {
-            // Unify stdout and stderr into a single message
-            let mut combined = String::new();
-            let out = String::from_utf8_lossy(&output.stdout);
-            let err = String::from_utf8_lossy(&output.stderr);
-            if !out.is_empty() {
-                combined.push_str(&out);
+    let capture_output = !matches!(notify, ShellNotify::Silent)
+        && !matches!(
+            notify,
+            ShellNotify::Configured {
+                ok_notify: NotifyKind::Ignore,
+                err_notify: NotifyKind::Ignore,
             }
-            if !err.is_empty() {
-                if !combined.is_empty() && !combined.ends_with('\n') {
-                    combined.push('\n');
-                }
-                combined.push_str(&err);
-            }
+        );
+    let mut command_builder = Command::new(&shell_path);
+    command_builder.arg("-lc").arg(command).kill_on_drop(true);
+    command_builder
+        .as_std_mut()
+        .process_group(0)
+        .stdout(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
 
-            // Trim blank lines at the start and end
-            let combined = {
-                let lines: Vec<&str> = combined.lines().collect();
-                let first_nonblank = lines.iter().position(|l| !l.trim().is_empty());
-                let last_nonblank = lines.iter().rposition(|l| !l.trim().is_empty());
-                match (first_nonblank, last_nonblank) {
-                    (Some(s), Some(e)) if s <= e => lines[s..=e].join("\n"),
-                    _ => String::new(),
-                }
-            };
-
-            // Choose notification type based on exit status
-            let notify_type = if output.status.success() {
-                ok_notify
-            } else {
-                err_notify
-            };
-
-            match notify_type {
-                NotifyKind::Ignore => None,
-                kind => Some(ShellNotification {
-                    kind,
-                    title: "Shell command".to_string(),
-                    text: combined,
-                }),
-            }
+    let mut child = match command_builder.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return shell_failure(notify, format!("Failed to execute: {err}"));
         }
-        Err(e) => Some(ShellNotification {
-            kind: NotifyKind::Warn,
+    };
+    let Some(pid) = child.id() else {
+        return shell_failure(
+            notify,
+            "Failed to obtain child process identifier".to_string(),
+        );
+    };
+    state.pid.store(pid, Ordering::SeqCst);
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|stdout| tokio::spawn(read_bounded(stdout)));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_bounded(stderr)));
+
+    let status = tokio::select! {
+        status = child.wait() => {
+            kill_process_group(pid);
+            Some(status)
+        },
+        () = state.cancel.cancelled() => {
+            kill_process_group(pid);
+            let _ = child.wait().await;
+            None
+        }
+    };
+    state.pid.store(0, Ordering::SeqCst);
+    let stdout = collect_stream(stdout_task).await;
+    let stderr = collect_stream(stderr_task).await;
+    if state.cancel.is_cancelled() {
+        return None;
+    }
+    let status = status?;
+    let status = match status {
+        Ok(status) => status,
+        Err(err) => {
+            return shell_failure(notify, format!("Failed to wait for command: {err}"));
+        }
+    };
+    let (ok_notify, err_notify) = match notify {
+        ShellNotify::Configured {
+            ok_notify,
+            err_notify,
+        } => (ok_notify, err_notify),
+        ShellNotify::Silent => return None,
+    };
+    let kind = if status.success() {
+        ok_notify
+    } else {
+        err_notify
+    };
+    match kind {
+        NotifyKind::Ignore => None,
+        kind => Some(ShellNotification {
+            kind,
             title: "Shell command".to_string(),
-            text: format!("Failed to execute: {}", e),
+            text: trim_shell_output(stdout, stderr),
         }),
     }
 }
@@ -147,6 +300,39 @@ struct ShellRunState {
     gate: tokio::sync::Mutex<()>,
     /// Fast flag used to skip scheduling a repeat while a run is in-flight.
     running: AtomicBool,
+    /// Cancels the running process group and suppresses its notification.
+    cancel: CancellationToken,
+    /// Current owned task; at most one shell command runs per binding id.
+    task: Mutex<Option<JoinHandle<()>>>,
+    /// Process-group leader while a command is running.
+    pid: AtomicU32,
+    /// Whether key release cancels the current child process.
+    cancel_on_release: bool,
+}
+
+impl ShellRunState {
+    fn set_task(&self, task: JoinHandle<()>) {
+        if let Some(previous) = self.task.lock().replace(task) {
+            debug_assert!(previous.is_finished());
+        }
+    }
+
+    async fn stop(&self) {
+        self.cancel.cancel();
+        let task = self.task.lock().take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+
+    fn abort(&self) {
+        self.cancel.cancel();
+        let _ = self.task.lock().take();
+        let pid = self.pid.swap(0, Ordering::SeqCst);
+        if pid != 0 {
+            kill_process_group(pid);
+        }
+    }
 }
 
 fn spawn_shell_run(
@@ -157,44 +343,18 @@ fn spawn_shell_run(
     notify: ShellNotify,
     repeat_id: Option<String>,
 ) {
-    tokio::spawn(async move {
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
         let _guard = state.gate.lock().await;
-        let notify_result = tokio::task::spawn_blocking(move || match notify {
-            ShellNotify::Configured {
-                ok_notify,
-                err_notify,
-            } => run_shell_blocking(&command, ok_notify, err_notify),
-            ShellNotify::Silent => {
-                let _ = run_shell_blocking(&command, NotifyKind::Ignore, NotifyKind::Ignore);
-                None
-            }
-        })
-        .await;
-
-        match notify_result {
-            Ok(Some(notification)) => {
-                if let Err(err) = notifier.send_notification(
-                    notification.kind,
-                    notification.title,
-                    notification.text,
-                ) {
-                    tracing::warn!("Failed to deliver shell notification: {}", err);
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!("Shell task join error: {}", err);
-                if let Err(send_err) = notifier.send_notification(
-                    NotifyKind::Warn,
-                    "Shell command".to_string(),
-                    "Execution task failed".to_string(),
-                ) {
-                    tracing::warn!("Failed to deliver shell notification: {}", send_err);
-                }
-            }
+        if let Some(notification) = run_shell(&command, notify, state.as_ref()).await
+            && let Err(err) =
+                notifier.send_notification(notification.kind, notification.title, notification.text)
+        {
+            tracing::warn!("Failed to deliver shell notification: {}", err);
         }
 
-        if let Some(id) = repeat_id
+        if !state.cancel.is_cancelled()
+            && let Some(id) = repeat_id
             && let Some(cb) = on_shell_repeat.lock().as_ref()
         {
             cb(&id);
@@ -203,6 +363,7 @@ fn spawn_shell_run(
 
         state.running.store(false, Ordering::SeqCst);
     });
+    task_state.set_task(task);
 }
 
 /// Callback type for observing relay repeat ticks (used by tests/tools).
@@ -261,7 +422,7 @@ impl Repeater {
     }
 
     /// Get or create the per-id shell run state.
-    fn shell_state(&self, id: &str) -> Arc<ShellRunState> {
+    fn shell_state(&self, id: &str, cancel_on_release: bool) -> Arc<ShellRunState> {
         let mut map = self.shell_states.lock();
         if let Some(s) = map.get(id) {
             return s.clone();
@@ -269,6 +430,10 @@ impl Repeater {
         let state = Arc::new(ShellRunState {
             gate: tokio::sync::Mutex::new(()),
             running: AtomicBool::new(false),
+            cancel: CancellationToken::new(),
+            task: Mutex::new(None),
+            pid: AtomicU32::new(0),
+            cancel_on_release,
         });
         map.insert(id.to_string(), state.clone());
         state
@@ -347,23 +512,25 @@ impl Repeater {
     /// Runs the first action immediately and schedules repeats if provided.
     pub fn start(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
         self.ticker.abort(&id);
-        let _ = self.shell_states.lock().remove(&id);
+        if let Some(state) = self.shell_states.lock().remove(&id) {
+            state.abort();
+        }
 
-        self.start_initial_exec(&id, &exec);
+        self.start_initial_exec(&id, &exec, repeat.is_some());
 
         if repeat.is_some() {
             self.spawn_exec_repeater(id, exec, repeat);
         }
     }
 
-    fn start_initial_exec(&self, id: &str, exec: &ExecSpec) {
+    fn start_initial_exec(&self, id: &str, exec: &ExecSpec, cancel_on_release: bool) {
         match exec {
             ExecSpec::Shell {
                 command,
                 ok_notify,
                 err_notify,
             } => {
-                let state = self.shell_state(id);
+                let state = self.shell_state(id, cancel_on_release);
                 state.running.store(true, Ordering::SeqCst);
                 self.spawn_shell_run(
                     state,
@@ -395,7 +562,7 @@ impl Repeater {
 
     fn spawn_shell_repeat_loop(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
         let id_for_log = id.clone();
-        let state = self.shell_state(&id);
+        let state = self.shell_state(&id, true);
         let notifier = self.notifier.clone();
         let on_shell_repeat = self.on_shell_repeat.clone();
         self.spawn_repeat_loop(id, repeat, move || {
@@ -465,7 +632,13 @@ impl Repeater {
     /// Stop any software repeats for `id`.
     pub async fn stop(&self, id: &str) {
         self.ticker.stop(id).await;
-        let _ = self.shell_states.lock().remove(id);
+        let state = self.shell_states.lock().get(id).cloned();
+        if let Some(state) = state
+            && state.cancel_on_release
+        {
+            self.shell_states.lock().remove(id);
+            state.stop().await;
+        }
     }
 
     /// Returns true if the ticker is currently running for `id`.
@@ -476,19 +649,33 @@ impl Repeater {
     /// Stop all tickers asynchronously and wait for completion.
     pub async fn clear_async(&self) {
         self.ticker.clear_async().await;
-        self.shell_states.lock().clear();
+        let states: Vec<_> = self
+            .shell_states
+            .lock()
+            .drain()
+            .map(|(_, state)| state)
+            .collect();
+        for state in &states {
+            state.cancel.cancel();
+        }
+        for state in states {
+            state.stop().await;
+        }
     }
 
     /// Abort all repeat tasks during synchronous owner teardown.
     pub(crate) fn abort_all(&self) {
         self.ticker.abort_all();
-        self.shell_states.lock().clear();
+        for state in self.shell_states.lock().drain().map(|(_, state)| state) {
+            state.abort();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
+        io::Cursor,
         sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
         time::{Duration as StdDuration, Instant},
     };
@@ -499,6 +686,122 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn shell_output_capture_is_bounded_and_marks_truncation() {
+        let input = vec![b'x'; SHELL_STREAM_LIMIT_BYTES + 4096];
+        let capture = read_bounded(Cursor::new(input))
+            .await
+            .expect("read capture");
+
+        assert_eq!(capture.bytes.len(), SHELL_STREAM_LIMIT_BYTES);
+        assert!(capture.truncated);
+        let output = trim_shell_output(
+            capture,
+            CapturedStream {
+                bytes: Vec::new(),
+                truncated: false,
+            },
+        );
+        assert!(output.ends_with("[output truncated]"));
+    }
+
+    #[tokio::test]
+    async fn stopping_shell_action_terminates_owned_process_group() {
+        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
+        let relay = crate::RelayHandler::new_with_enabled(false);
+        let (tx, _rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+
+        repeater.start(
+            "owned-shell".to_string(),
+            ExecSpec::Shell {
+                command: "sleep 30".to_string(),
+                ok_notify: NotifyKind::Ignore,
+                err_notify: NotifyKind::Ignore,
+            },
+            Some(RepeatSpec::default()),
+        );
+        let state = repeater.shell_state("owned-shell", true);
+        let pid = loop {
+            let pid = state.pid.load(Ordering::SeqCst);
+            if pid != 0 {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        // SAFETY: signal zero only probes the process identifier and does not
+        // affect the child or access Rust memory.
+        assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, 0);
+        repeater.stop("owned-shell").await;
+        // SAFETY: this repeats the non-mutating process-existence probe above.
+        assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[tokio::test]
+    async fn clearing_repeater_terminates_one_shot_process_group() {
+        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
+        let relay = crate::RelayHandler::new_with_enabled(false);
+        let (tx, _rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+
+        repeater.start(
+            "one-shot-shell".to_string(),
+            ExecSpec::Shell {
+                command: "sleep 30".to_string(),
+                ok_notify: NotifyKind::Ignore,
+                err_notify: NotifyKind::Ignore,
+            },
+            None,
+        );
+        let state = repeater.shell_state("one-shot-shell", false);
+        let pid = loop {
+            let pid = state.pid.load(Ordering::SeqCst);
+            if pid != 0 {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        repeater.clear_async().await;
+        // SAFETY: signal zero only probes the process group and does not affect it.
+        assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[tokio::test]
+    async fn configured_shell_action_delivers_captured_output() {
+        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
+        let relay = crate::RelayHandler::new_with_enabled(false);
+        let (tx, mut rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+
+        repeater.start(
+            "captured-shell".to_string(),
+            ExecSpec::Shell {
+                command: "echo notify".to_string(),
+                ok_notify: NotifyKind::Info,
+                err_notify: NotifyKind::Warn,
+            },
+            None,
+        );
+
+        repeater.stop("captured-shell").await;
+        let message = rx.recv().await.expect("shell notification");
+        assert!(matches!(
+            message,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == "notify"
+        ));
+    }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn shell_first_run_coalesces_then_unblocks_repeats() {
@@ -532,7 +835,7 @@ mod tests {
         );
 
         // After ~150ms the first repeat tick would have fired; ensure it was coalesced
-        let state = repeater.shell_state("shell-coalesce");
+        let state = repeater.shell_state("shell-coalesce", true);
         let gate_guard = state.gate.lock().await;
         tokio::task::yield_now().await; // let ticker + initial run tasks start and register timers
         advance(Duration::from_millis(150)).await;

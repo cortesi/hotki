@@ -21,6 +21,15 @@ pub(crate) struct RuntimeState {
     pub(crate) selector: Option<SelectorState>,
 }
 
+/// Cloneable portion of runtime state used to roll back a failed refresh.
+#[derive(Clone)]
+pub(crate) struct RuntimeCheckpoint {
+    hud_visible: bool,
+    stack: Vec<ModeFrame>,
+    focus: FocusInfo,
+    rendered: RenderedState,
+}
+
 impl RuntimeState {
     pub(crate) fn empty() -> Self {
         Self {
@@ -39,6 +48,22 @@ impl RuntimeState {
             style,
             capture: false,
         }
+    }
+
+    pub(crate) fn checkpoint(&self) -> RuntimeCheckpoint {
+        RuntimeCheckpoint {
+            hud_visible: self.hud_visible,
+            stack: self.stack.clone(),
+            focus: self.focus.clone(),
+            rendered: self.rendered.clone(),
+        }
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: RuntimeCheckpoint) {
+        self.hud_visible = checkpoint.hud_visible;
+        self.stack = checkpoint.stack;
+        self.focus = checkpoint.focus;
+        self.rendered = checkpoint.rendered;
     }
 
     pub(crate) fn root_frame(closure: ModeRef) -> ModeFrame {

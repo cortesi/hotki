@@ -4,8 +4,8 @@
 //! - `hotki-world` is authoritative for window/focus state. The service
 //!   ensures a single forwarder instance per server and relays `WorldEvent`s
 //!   to the UI stream, with snapshot-on-reconnect semantics.
-//! - There are no CoreGraphics/AX focus fallbacks in the engine; actions rely
-//!   on the world cache and nudge refresh via `hint_refresh()`.
+//! - There are no CoreGraphics/AX focus fallbacks in the engine; physical
+//!   dispatch waits for a world refresh before resolving contextual bindings.
 //!
 //! # Locking Strategy
 //!
@@ -156,7 +156,7 @@ impl HotkeyService {
 
         let engine = self.engine().await;
         match engine
-            .dispatch_ident(&req.ident, inject_kind_to_event(req.kind), req.repeat)
+            .dispatch_injected(&req.ident, inject_kind_to_event(req.kind), req.repeat)
             .await
         {
             Ok(true) => Ok(Value::Boolean(true)),

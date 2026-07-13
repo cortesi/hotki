@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::{
     DisplaysSnapshot, WorldEvent, WorldWindow,
     state::{CoreWorldView, WorldCore},
@@ -45,10 +47,11 @@ impl Default for TestWorld {
     }
 }
 
+#[async_trait]
 impl CoreWorldView for TestWorld {
     fn core(&self) -> &Arc<WorldCore> {
         &self.core
     }
 
-    fn hint_refresh_impl(&self) {}
+    async fn refresh_impl(&self) {}
 }

@@ -2,24 +2,24 @@ use std::{path::PathBuf, process};
 
 use egui::Context;
 use hotki_protocol::{MsgToUI, NotifyKind};
-use tokio::{
-    sync::mpsc,
-    time::{Duration, sleep},
-};
+use tokio::time::{Duration, sleep};
 
-use crate::app::{UiCommand, UiEvent};
+use crate::{
+    app::{UiCommand, UiEvent},
+    ui_delivery::{UiDeliveryOutcome, UiDeliveryTx},
+};
 
 /// Minimal UI event sink that owns repaint requests and channel forwarding.
 pub(super) struct UiSink {
     /// Sender for UI-thread events.
-    tx_keys: mpsc::UnboundedSender<UiEvent>,
+    tx_keys: UiDeliveryTx,
     /// Egui context used for repaint and root-viewport commands.
     egui_ctx: Context,
 }
 
 impl UiSink {
     /// Build a sink for the UI channel and egui context.
-    pub(super) fn new(tx_keys: mpsc::UnboundedSender<UiEvent>, egui_ctx: Context) -> Self {
+    pub(super) fn new(tx_keys: UiDeliveryTx, egui_ctx: Context) -> Self {
         Self { tx_keys, egui_ctx }
     }
 
@@ -81,9 +81,16 @@ impl UiSink {
 
     /// Forward a UI event and immediately request a repaint.
     fn emit(&self, event: UiEvent) {
-        if self.tx_keys.send(event).is_err() {
-            tracing::warn!("failed to forward UI event");
-        }
         self.egui_ctx.request_repaint();
+        match self.tx_keys.send(event) {
+            Ok(UiDeliveryOutcome::Queued) => {}
+            Ok(UiDeliveryOutcome::Coalesced) => {
+                tracing::trace!("coalesced superseded UI snapshot");
+            }
+            Ok(UiDeliveryOutcome::DroppedLogFull) => {
+                tracing::trace!("dropped UI log because bounded lane is full");
+            }
+            Err(error) => tracing::warn!("failed to forward UI event: {error}"),
+        }
     }
 }

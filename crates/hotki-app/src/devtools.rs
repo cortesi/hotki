@@ -25,6 +25,7 @@ use crate::{
     details::DetailsTab,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
+    ui_delivery::{UiDeliveryStats, UiDeliveryTx},
 };
 
 #[derive(Clone, Default)]
@@ -62,12 +63,14 @@ impl FixtureRuntime {
         server_connected: bool,
         server_bindings: &[String],
         notification_stack: &[NotificationStackAlias],
+        delivery_stats: UiDeliveryStats,
     ) {
         if let Ok(mut diagnostics) = self.diagnostics.lock() {
             *diagnostics = HotkiDiagnostics::from_app_state(
                 server_connected,
                 server_bindings,
                 notification_stack,
+                delivery_stats,
             );
         }
     }
@@ -101,6 +104,8 @@ struct HotkiDiagnostics {
     server_bindings: Vec<String>,
     /// Live notification stack aliases, newest first.
     notifications: Vec<NotificationDiagnostic>,
+    /// UI delivery pressure counters.
+    delivery_stats: UiDeliveryStats,
 }
 
 impl HotkiDiagnostics {
@@ -109,6 +114,7 @@ impl HotkiDiagnostics {
         server_connected: bool,
         server_bindings: &[String],
         notification_stack: &[NotificationStackAlias],
+        delivery_stats: UiDeliveryStats,
     ) -> Self {
         Self {
             server_connected,
@@ -117,6 +123,7 @@ impl HotkiDiagnostics {
                 .iter()
                 .map(NotificationDiagnostic::from)
                 .collect(),
+            delivery_stats,
         }
     }
 
@@ -136,6 +143,10 @@ impl HotkiDiagnostics {
             "notifications": {
                 "live_count": self.notifications.len(),
                 "items": notifications,
+            },
+            "delivery": {
+                "dropped_logs": self.delivery_stats.dropped_logs,
+                "coalesced_snapshots": self.delivery_stats.coalesced_snapshots,
             },
         })
     }
@@ -180,7 +191,7 @@ impl NotificationDiagnostic {
 /// Build the DevMCP handle for this run.
 pub fn build_devmcp(
     enable_runtime: bool,
-    tx_ui: UnboundedSender<UiEvent>,
+    tx_ui: UiDeliveryTx,
     tx_ctrl: UnboundedSender<ControlMsg>,
 ) -> Result<(DevMcp, FixtureRuntime), String> {
     let fixture_runtime = FixtureRuntime::default();
@@ -557,7 +568,7 @@ fn tall_hud_display_snapshot() -> DisplaysSnapshot {
 #[derive(Clone)]
 struct FixtureBridge {
     /// Sender for UI-thread events.
-    tx_ui: UnboundedSender<UiEvent>,
+    tx_ui: UiDeliveryTx,
     /// Sender for runtime/server control events.
     tx_ctrl: UnboundedSender<ControlMsg>,
     /// Runtime state used after eframe provides its egui context.
@@ -808,6 +819,7 @@ impl FixtureBridge {
     fn send_ui_command(&self, command: UiCommand) -> Result<(), String> {
         self.tx_ui
             .send(UiEvent::Command(command))
+            .map(|_| ())
             .map_err(|err| format!("failed to send UI command: {err}"))
     }
 
@@ -815,6 +827,7 @@ impl FixtureBridge {
     fn send_ui_message(&self, message: MsgToUI) -> Result<(), String> {
         self.tx_ui
             .send(UiEvent::Message(message))
+            .map(|_| ())
             .map_err(|err| format!("failed to send UI message: {err}"))
     }
 

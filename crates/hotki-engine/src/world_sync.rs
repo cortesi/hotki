@@ -134,6 +134,12 @@ impl Engine {
         self.rebind_current_context().await
     }
 
+    pub(crate) async fn refresh_world_focus(&self) -> Result<()> {
+        self.world.refresh().await;
+        let focus = hotki_world::focused_snapshot(self.world.as_ref()).await;
+        self.apply_world_focus_snapshot(focus).await
+    }
+
     async fn handle_focus_change_event(&self, world: Arc<dyn WorldView>, change: FocusChange) {
         let focus = hotki_world::focus_snapshot_for_change(world.as_ref(), &change).await;
 

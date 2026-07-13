@@ -9,7 +9,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem},
 };
 
-use crate::{app::UiEvent, runtime::ControlMsg};
+use crate::{app::UiEvent, runtime::ControlMsg, ui_delivery::UiDeliveryTx};
 
 /// Embed tray icon PNG: orange for dev builds, white for production.
 static TRAY_ICON_PNG: &[u8] = if cfg!(debug_assertions) {
@@ -87,7 +87,7 @@ fn append_menu_item(menu: &Menu, item: &MenuItem) {
 
 /// Dispatch one tray action onto the runtime control channel or the UI channel.
 fn dispatch_tray_action(
-    tx: &tokio_mpsc::UnboundedSender<UiEvent>,
+    tx: &UiDeliveryTx,
     tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
     action: TrayAction,
 ) {
@@ -115,7 +115,7 @@ fn dispatch_tray_action(
 
 /// Build the tray icon and spawn listeners for tray and menu events.
 pub fn build_tray_and_listeners(
-    tx: &tokio_mpsc::UnboundedSender<UiEvent>,
+    tx: &UiDeliveryTx,
     tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
     egui_ctx: &Context,
 ) -> Option<TrayIcon> {
@@ -153,13 +153,13 @@ pub fn build_tray_and_listeners(
                         ..
                     } | TrayIconEvent::DoubleClick { .. }
                 ) {
+                    egui_ctx.request_repaint();
                     if tx
                         .send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
                         .is_err()
                     {
                         tracing::warn!("failed to send ShowDetails event: UI channel closed");
                     }
-                    egui_ctx.request_repaint();
                 }
             }
         });
@@ -173,8 +173,8 @@ pub fn build_tray_and_listeners(
             let menu_rx = MenuEvent::receiver();
             while let Ok(ev) = menu_rx.recv() {
                 if let Some(action) = actions.get(&ev.id).cloned() {
-                    dispatch_tray_action(&tx, &tx_ctrl, action);
                     egui_ctx.request_repaint();
+                    dispatch_tray_action(&tx, &tx_ctrl, action);
                 }
             }
         });

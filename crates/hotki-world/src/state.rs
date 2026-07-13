@@ -28,6 +28,7 @@ impl WorldCore {
 struct WorldStateData {
     snapshot: Vec<WorldWindow>,
     focused: Option<WindowKey>,
+    focus: Option<FocusSnapshot>,
     displays: DisplaysSnapshot,
     capabilities: Capabilities,
     status: WorldStatus,
@@ -45,6 +46,10 @@ impl WorldState {
 
     pub(crate) fn focused(&self) -> Option<WindowKey> {
         self.data.read().focused
+    }
+
+    pub(crate) fn focus_snapshot(&self) -> Option<FocusSnapshot> {
+        self.data.read().focus.clone()
     }
 
     pub(crate) fn capabilities(&self) -> Capabilities {
@@ -72,15 +77,16 @@ impl WorldState {
             data.displays = update.displays;
         }
 
-        let focus_changed = if data.focused != update.focused {
-            data.focused = update.focused;
+        let focus_changed = if data.focused != update.focused || data.focus != update.focus {
             Some(FocusChange {
                 key: update.focused,
-                focus: update.focus,
+                focus: update.focus.clone(),
             })
         } else {
             None
         };
+        data.focused = update.focused;
+        data.focus = update.focus;
 
         if data.snapshot != update.snapshot {
             data.snapshot = update.snapshot;
@@ -104,21 +110,19 @@ impl WorldState {
         snapshot: Vec<WorldWindow>,
         focused: Option<WindowKey>,
     ) -> Option<FocusChange> {
-        let prev_focus = {
+        let change = focus_change_for_snapshot(&snapshot, focused);
+        let changed = {
             let mut data = self.data.write();
-            let prev = data.focused;
-            data.snapshot = snapshot.clone();
+            let changed = data.focused != change.key || data.focus != change.focus;
+            data.snapshot = snapshot;
             data.focused = focused;
+            data.focus = change.focus.clone();
             data.status.windows_count = data.snapshot.len();
             data.status.focused = focused;
-            prev
+            changed
         };
 
-        if prev_focus == focused {
-            return None;
-        }
-
-        Some(focus_change_for_snapshot(&snapshot, focused))
+        changed.then_some(change)
     }
 
     pub(crate) fn set_displays(&self, displays: DisplaysSnapshot) {
@@ -150,10 +154,11 @@ impl WorldPollChanges {
     }
 }
 
+#[async_trait]
 pub(crate) trait CoreWorldView {
     fn core(&self) -> &Arc<WorldCore>;
 
-    fn hint_refresh_impl(&self);
+    async fn refresh_impl(&self);
 }
 
 #[async_trait]
@@ -181,6 +186,10 @@ where
         self.core().state.focused()
     }
 
+    async fn focus_snapshot(&self) -> Option<FocusSnapshot> {
+        self.core().state.focus_snapshot()
+    }
+
     async fn capabilities(&self) -> Capabilities {
         self.core().state.capabilities()
     }
@@ -193,8 +202,8 @@ where
         self.core().state.displays()
     }
 
-    fn hint_refresh(&self) {
-        self.hint_refresh_impl();
+    async fn refresh(&self) {
+        self.refresh_impl().await;
     }
 }
 

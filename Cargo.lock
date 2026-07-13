@@ -2885,6 +2885,7 @@ dependencies = [
  "config",
  "hotki-protocol",
  "hotki-world",
+ "libc",
  "mac-hotkey",
  "mac-keycode",
  "nucleo",
@@ -3801,17 +3802,13 @@ dependencies = [
 
 [[package]]
 name = "mrpc"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f84bbc74954bac7119396736ac220c334055566ff738e80f31b7931a8dab1d4"
+version = "0.0.7"
 dependencies = [
  "async-trait",
  "bytes",
- "rmp",
  "rmpv",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 

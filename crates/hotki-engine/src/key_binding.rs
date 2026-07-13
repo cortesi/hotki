@@ -93,13 +93,21 @@ impl KeyBindingManager {
         // 2) Register added/changed keys
         // 3) Keep existing keys as-is
 
+        let mut removed = Vec::new();
         for ident in removed_keys.iter().chain(replaced_keys.iter()) {
-            self.unregister_binding(ident)?;
+            match self.unregister_binding(ident) {
+                Ok(Some(binding)) => removed.push((ident.clone(), binding)),
+                Ok(None) => {}
+                Err(error) => {
+                    self.restore_bindings(removed);
+                    return Err(error);
+                }
+            }
         }
 
         for ident in added_keys.iter().chain(replaced_keys.iter()) {
             if let Some(chord) = desired.get(ident) {
-                self.register_binding(ident, chord)?;
+                self.register_binding(ident, chord);
             }
         }
 
@@ -174,7 +182,7 @@ impl KeyBindingManager {
             })
     }
 
-    fn register_binding(&mut self, ident: &str, chord: &Chord) -> Result<()> {
+    fn register_binding(&mut self, ident: &str, chord: &Chord) {
         let id = self.api.intercept(chord.clone());
         self.bindings.insert(
             ident.to_string(),
@@ -185,16 +193,22 @@ impl KeyBindingManager {
         );
         self.idents_by_id.insert(id, ident.to_string());
         trace!("Registered key: {} with id {}", ident, id);
-        Ok(())
     }
 
-    fn unregister_binding(&mut self, ident: &str) -> Result<()> {
-        let Some(binding) = self.bindings.remove(ident) else {
-            return Ok(());
+    fn unregister_binding(&mut self, ident: &str) -> Result<Option<BindingRegistration>> {
+        let Some(binding) = self.bindings.get(ident).cloned() else {
+            return Ok(None);
         };
         self.api.unregister(binding.id)?;
+        self.bindings.remove(ident);
         self.idents_by_id.remove(&binding.id);
         trace!("Unregistered key: {} (id {})", ident, binding.id);
-        Ok(())
+        Ok(Some(binding))
+    }
+
+    fn restore_bindings(&mut self, bindings: Vec<(String, BindingRegistration)>) {
+        for (ident, binding) in bindings {
+            self.register_binding(&ident, &binding.chord);
+        }
     }
 }

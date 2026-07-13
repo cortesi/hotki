@@ -1,13 +1,24 @@
-use std::time::{Duration, Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use config::script::engine as dyn_engine;
-use hotki_protocol::HudState;
+use hotki_protocol::{DisplaysSnapshot, HudState, MsgToUI};
 use mac_keycode::Chord;
 
 use crate::{
-    Engine, Result,
+    ConfigInstall, Engine, Error, Result,
     runtime::{FocusInfo, RuntimeState},
 };
+
+pub(crate) struct PreparedConfig {
+    path: PathBuf,
+    config: dyn_engine::DynamicConfig,
+    runtime: RuntimeState,
+    plan: RefreshPlan,
+    displays: DisplaysSnapshot,
+}
 
 #[derive(Debug)]
 pub(crate) struct RefreshPlan {
@@ -150,42 +161,148 @@ pub(crate) fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::
 }
 
 impl Engine {
-    pub(crate) async fn rebind_and_refresh(&self, focus: &FocusInfo) -> Result<()> {
-        tracing::debug!("start app={} title={}", focus.app, focus.title);
-
-        let plan = {
-            let mut cfg_guard = self.config.lock().await;
-            let mut rt = self.runtime.lock().await;
-            build_refresh_plan(&mut rt, cfg_guard.as_mut(), focus)
-        };
-
-        for message in plan.errors {
-            self.notifier.send_error("Config", message)?;
-        }
-
-        for effect in plan.warnings {
-            if let dyn_engine::Effect::Notify { kind, title, body } = effect {
-                self.notifier.send_notification(kind, title, body)?;
+    pub(crate) async fn prepare_config(
+        &self,
+        path: &Path,
+        mode: ConfigInstall,
+    ) -> Result<PreparedConfig> {
+        let mut config =
+            dyn_engine::load_dynamic_config(path).map_err(|error| Error::Msg(error.pretty()))?;
+        let (hud_visible, focus) = match mode {
+            ConfigInstall::ResetFocus => (false, self.current_focus_info()),
+            ConfigInstall::KeepFocus => {
+                let runtime = self.runtime.lock().await;
+                (runtime.hud_visible, runtime.focus.clone())
             }
-        }
-
-        let start = Instant::now();
-        let key_count = plan.key_pairs.len();
-        let bindings_changed = {
-            let mut manager = self.binding_manager.lock().await;
-            manager.set_capture_all(plan.capture_all);
-            manager.update_bindings(plan.key_pairs)?
         };
+        let mut runtime = RuntimeState::empty();
+        runtime.hud_visible = hud_visible;
+        runtime.focus = focus.clone();
+        runtime.install_root(config.root(), config.base_style());
+        let plan = build_refresh_plan(&mut runtime, Some(&mut config), &focus);
+        if !plan.errors.is_empty() {
+            return Err(Error::Msg(plan.errors.join("\n")));
+        }
+        let displays = self.world.displays().await;
+        Ok(PreparedConfig {
+            path: path.to_path_buf(),
+            config,
+            runtime,
+            plan,
+            displays,
+        })
+    }
+
+    pub(crate) async fn commit_config(&self, prepared: PreparedConfig) -> Result<()> {
+        let PreparedConfig {
+            path,
+            config,
+            runtime,
+            plan,
+            displays,
+        } = prepared;
+        let RefreshPlan {
+            warnings,
+            errors,
+            key_pairs,
+            capture_all,
+            hud,
+        } = plan;
+
+        let mut config_guard = self.config.lock().await;
+        let mut runtime_guard = self.runtime.lock().await;
+        let mut manager = self.binding_manager.lock().await;
+        let mut path_guard = self.config_path.write().await;
+        let mut display_guard = self.display_snapshot.lock().await;
+        let permit = self.notifier.reserve_ui()?;
+        let bindings_changed = manager.update_bindings(key_pairs)?;
+        manager.set_capture_all(capture_all);
+
+        *config_guard = Some(config);
+        *runtime_guard = runtime;
+        *path_guard = Some(path);
+        *display_guard = displays.clone();
+        permit.send(MsgToUI::HudUpdate {
+            hud: Box::new(hud),
+            displays,
+        });
+
+        drop(display_guard);
+        drop(path_guard);
+        drop(manager);
+        drop(runtime_guard);
+        drop(config_guard);
+
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
             self.repeater.clear_async().await;
             self.action_repeater.clear_async().await;
             self.relay.stop_all();
         }
+        self.deliver_refresh_diagnostics(errors, warnings);
+        Ok(())
+    }
 
-        let displays_snapshot = self.world.displays().await;
-        self.publish_hud_with_displays(plan.hud, displays_snapshot)
-            .await?;
+    pub(crate) async fn rebind_and_refresh(&self, focus: &FocusInfo) -> Result<()> {
+        let _transaction = self.config_transaction.lock().await;
+        tracing::debug!("start app={} title={}", focus.app, focus.title);
+        let start = Instant::now();
+        let displays = self.world.displays().await;
+        let mut config_guard = self.config.lock().await;
+        let mut runtime_guard = self.runtime.lock().await;
+        let mut manager = self.binding_manager.lock().await;
+        let mut display_guard = self.display_snapshot.lock().await;
+        let permit = self.notifier.reserve_ui()?;
+        let checkpoint = runtime_guard.checkpoint();
+        let rollback = checkpoint.clone();
+        let rollback_focus = runtime_guard.focus.clone();
+        let selector_active = runtime_guard.selector.is_some();
+        let plan = build_refresh_plan(&mut runtime_guard, config_guard.as_mut(), focus);
+        let RefreshPlan {
+            warnings,
+            errors,
+            key_pairs,
+            capture_all,
+            hud,
+        } = plan;
+        let key_count = key_pairs.len();
+        let bindings_changed = match manager.update_bindings(key_pairs) {
+            Ok(changed) => changed,
+            Err(error) => {
+                runtime_guard.restore(checkpoint);
+                if !selector_active && let Some(config) = config_guard.as_mut() {
+                    let restored =
+                        build_refresh_plan(&mut runtime_guard, Some(config), &rollback_focus);
+                    if !restored.errors.is_empty() {
+                        tracing::error!(
+                            errors = ?restored.errors,
+                            "refresh_rollback_render_failed"
+                        );
+                        runtime_guard.restore(rollback);
+                    }
+                }
+                return Err(error);
+            }
+        };
+        manager.set_capture_all(capture_all);
+        *display_guard = displays.clone();
+        permit.send(MsgToUI::HudUpdate {
+            hud: Box::new(hud),
+            displays,
+        });
+
+        drop(display_guard);
+        drop(manager);
+        drop(runtime_guard);
+        drop(config_guard);
+
+        if bindings_changed {
+            tracing::debug!("bindings updated, clearing repeater + relay");
+            self.repeater.clear_async().await;
+            self.action_repeater.clear_async().await;
+            self.relay.stop_all();
+        }
+        self.deliver_refresh_diagnostics(errors, warnings);
 
         let elapsed = start.elapsed();
         if elapsed > Duration::from_millis(crate::BIND_UPDATE_WARN_MS) {
@@ -203,5 +320,365 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    fn deliver_refresh_diagnostics(&self, errors: Vec<String>, warnings: Vec<dyn_engine::Effect>) {
+        for message in errors {
+            if let Err(error) = self.notifier.send_error("Config", message) {
+                tracing::warn!(?error, "refresh_error_delivery_failed");
+            }
+        }
+        for effect in warnings {
+            if let dyn_engine::Effect::Notify { kind, title, body } = effect
+                && let Err(error) = self.notifier.send_notification(kind, title, body)
+            {
+                tracing::warn!(?error, "refresh_warning_delivery_failed");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process,
+        sync::{
+            Arc,
+            atomic::{AtomicU32, AtomicUsize, Ordering},
+        },
+    };
+
+    use hotki_protocol::MsgToUI;
+    use hotki_world::TestWorld;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::deps::{CaptureGuard, HotkeyApi, MockHotkeyApi};
+
+    struct FailingUnregisterApi {
+        next_id: AtomicU32,
+        unregisters: AtomicUsize,
+        fail_on: usize,
+    }
+
+    impl FailingUnregisterApi {
+        fn new(fail_on: usize) -> Self {
+            Self {
+                next_id: AtomicU32::new(2000),
+                unregisters: AtomicUsize::new(0),
+                fail_on,
+            }
+        }
+    }
+
+    impl HotkeyApi for FailingUnregisterApi {
+        fn intercept(&self, _chord: mac_keycode::Chord) -> u32 {
+            self.next_id.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        fn unregister(&self, _id: u32) -> Result<()> {
+            let call = self.unregisters.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_on {
+                Err(Error::Msg("injected unregister failure".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn capture_all(&self) -> CaptureGuard {
+            CaptureGuard::Fake
+        }
+    }
+
+    struct ActiveSnapshot {
+        path: Option<PathBuf>,
+        style: config::Style,
+        bindings: Vec<(String, mac_keycode::Chord)>,
+        focus: FocusInfo,
+        hud: HudState,
+        displays: DisplaysSnapshot,
+    }
+
+    async fn active_snapshot(engine: &Engine) -> ActiveSnapshot {
+        let (style, focus, hud) = {
+            let runtime = engine.runtime.lock().await;
+            (
+                runtime.rendered.style.clone(),
+                runtime.focus.clone(),
+                hud_state_for_ui_from_state(&runtime),
+            )
+        };
+        ActiveSnapshot {
+            path: engine.config_path.read().await.clone(),
+            style,
+            bindings: engine.bindings_snapshot().await,
+            focus,
+            hud,
+            displays: engine.display_snapshot.lock().await.clone(),
+        }
+    }
+
+    async fn assert_snapshot(engine: &Engine, expected: &ActiveSnapshot) {
+        let actual = active_snapshot(engine).await;
+        assert_eq!(actual.path, expected.path);
+        assert_eq!(actual.style, expected.style);
+        assert_eq!(actual.bindings, expected.bindings);
+        assert_eq!(actual.focus, expected.focus);
+        assert_eq!(actual.hud, expected.hud);
+        assert_eq!(actual.displays, expected.displays);
+    }
+
+    fn config_source(label: &str) -> String {
+        format!(
+            r#"
+            local a = hotki.actions
+            return function(menu)
+              menu:bind("a", "active", a.notify("info", "Active", "{label}"))
+              menu:bind("r", "reload", a.reload_config)
+            end
+            "#
+        )
+    }
+
+    fn replacement_source() -> &'static str {
+        r#"
+        local a = hotki.actions
+        return function(menu)
+          menu:bind("b", "replacement", a.notify("info", "Active", "B"))
+        end
+        "#
+    }
+
+    fn contextual_source() -> &'static str {
+        r#"
+        local a = hotki.actions
+        return function(menu, ctx)
+          if ctx:app_matches("Candidate") then
+            menu:bind("b", "candidate", a.notify("info", "Active", "B"))
+          else
+            menu:bind("a", "active", a.notify("info", "Active", "A"))
+            menu:bind("r", "reload", a.reload_config)
+          end
+        end
+        "#
+    }
+
+    fn write_config(name: &str, source: &str, color: &str) -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!("config-transaction-{name}-{}-{id}", process::id()));
+        fs::create_dir_all(&directory).expect("create config directory");
+        fs::write(
+            directory.join("style.luau"),
+            format!(r##"return {{ hud = {{ bg = "{color}" }} }}"##),
+        )
+        .expect("write style");
+        let path = directory.join("config.luau");
+        fs::write(&path, source).expect("write config");
+        path
+    }
+
+    fn remove_config(path: &Path) {
+        if let Some(directory) = path.parent() {
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+
+    async fn engine_with_api(
+        api: Arc<dyn HotkeyApi>,
+        capacity: usize,
+    ) -> (Engine, mpsc::Sender<MsgToUI>, mpsc::Receiver<MsgToUI>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let engine =
+            Engine::new_with_api_and_world(api, tx.clone(), false, Arc::new(TestWorld::new()));
+        (engine, tx, rx)
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<MsgToUI>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    async fn dispatch_notification(engine: &Engine, rx: &mut mpsc::Receiver<MsgToUI>) -> String {
+        let id = engine
+            .resolve_id_for_ident("a")
+            .await
+            .expect("active callback binding");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch active callback");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("release active callback");
+        let mut text = None;
+        while let Ok(message) = rx.try_recv() {
+            if let MsgToUI::Notify {
+                title, text: body, ..
+            } = message
+                && title == "Active"
+            {
+                text = Some(body);
+            }
+        }
+        text.expect("active callback notification")
+    }
+
+    #[tokio::test]
+    async fn invalid_new_path_preserves_active_config_and_reload_target() {
+        let path_a = write_config("invalid-a", &config_source("A"), "#112233");
+        let path_b = write_config("invalid-b", "return 42", "#445566");
+        let (engine, _tx, mut rx) = engine_with_api(Arc::new(MockHotkeyApi::new()), 32).await;
+        engine
+            .set_config_path(path_a.clone())
+            .await
+            .expect("install A");
+        drain(&mut rx);
+        let active = active_snapshot(&engine).await;
+
+        assert!(engine.set_config_path(path_b.clone()).await.is_err());
+
+        assert_snapshot(&engine, &active).await;
+        assert!(rx.try_recv().is_err());
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A");
+
+        fs::write(&path_a, config_source("A reloaded")).expect("rewrite A");
+        let reload = engine
+            .resolve_id_for_ident("r")
+            .await
+            .expect("reload binding");
+        engine
+            .dispatch(reload, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("reload A");
+        engine
+            .dispatch(reload, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("release reload");
+        drain(&mut rx);
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A reloaded");
+
+        remove_config(&path_a);
+        remove_config(&path_b);
+    }
+
+    #[tokio::test]
+    async fn binding_failure_rolls_back_candidate_config() {
+        let path_a = write_config("binding-a", &config_source("A"), "#112233");
+        let path_b = write_config("binding-b", replacement_source(), "#445566");
+        let (engine, _tx, mut rx) =
+            engine_with_api(Arc::new(FailingUnregisterApi::new(2)), 32).await;
+        engine
+            .set_config_path(path_a.clone())
+            .await
+            .expect("install A");
+        drain(&mut rx);
+        let active = active_snapshot(&engine).await;
+        let replacement_style = dyn_engine::load_dynamic_config(&path_b)
+            .expect("load replacement style")
+            .base_style();
+        assert_ne!(active.style, replacement_style);
+
+        assert!(engine.set_config_path(path_b.clone()).await.is_err());
+
+        assert_snapshot(&engine, &active).await;
+        assert!(rx.try_recv().is_err());
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A");
+
+        remove_config(&path_a);
+        remove_config(&path_b);
+    }
+
+    #[tokio::test]
+    async fn ui_reservation_failure_preserves_active_config() {
+        let path_a = write_config("ui-a", &config_source("A"), "#112233");
+        let path_b = write_config("ui-b", replacement_source(), "#445566");
+        let (engine, tx, mut rx) = engine_with_api(Arc::new(MockHotkeyApi::new()), 2).await;
+        engine
+            .set_config_path(path_a.clone())
+            .await
+            .expect("install A");
+        drain(&mut rx);
+        let active = active_snapshot(&engine).await;
+        let replacement_style = dyn_engine::load_dynamic_config(&path_b)
+            .expect("load replacement style")
+            .base_style();
+        assert_ne!(active.style, replacement_style);
+        tx.try_send(MsgToUI::ClearNotifications)
+            .expect("fill UI channel");
+        tx.try_send(MsgToUI::ClearNotifications)
+            .expect("fill final UI channel slot");
+
+        assert!(engine.set_config_path(path_b.clone()).await.is_err());
+
+        assert_snapshot(&engine, &active).await;
+        assert!(matches!(rx.try_recv(), Ok(MsgToUI::ClearNotifications)));
+        assert!(matches!(rx.try_recv(), Ok(MsgToUI::ClearNotifications)));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A");
+
+        remove_config(&path_a);
+        remove_config(&path_b);
+    }
+
+    #[tokio::test]
+    async fn rebind_full_ui_lane_preserves_active_generation() {
+        let path = write_config("rebind-ui", contextual_source(), "#112233");
+        let (engine, tx, mut rx) = engine_with_api(Arc::new(MockHotkeyApi::new()), 2).await;
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("install A");
+        drain(&mut rx);
+        let active = active_snapshot(&engine).await;
+        tx.try_send(MsgToUI::ClearNotifications)
+            .expect("fill UI channel");
+        tx.try_send(MsgToUI::ClearNotifications)
+            .expect("fill final UI channel slot");
+        let candidate = FocusInfo {
+            app: "Candidate".to_string(),
+            title: "B".to_string(),
+            pid: 2,
+        };
+
+        assert!(engine.rebind_and_refresh(&candidate).await.is_err());
+
+        assert_snapshot(&engine, &active).await;
+        assert!(matches!(rx.try_recv(), Ok(MsgToUI::ClearNotifications)));
+        assert!(matches!(rx.try_recv(), Ok(MsgToUI::ClearNotifications)));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A");
+
+        remove_config(&path);
+    }
+
+    #[tokio::test]
+    async fn rebind_unregister_failure_restores_runtime_and_callbacks() {
+        let path = write_config("rebind-binding", contextual_source(), "#112233");
+        let (engine, _tx, mut rx) =
+            engine_with_api(Arc::new(FailingUnregisterApi::new(2)), 32).await;
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("install A");
+        drain(&mut rx);
+        let active = active_snapshot(&engine).await;
+        let candidate = FocusInfo {
+            app: "Candidate".to_string(),
+            title: "B".to_string(),
+            pid: 2,
+        };
+
+        assert!(engine.rebind_and_refresh(&candidate).await.is_err());
+
+        assert_snapshot(&engine, &active).await;
+        assert!(rx.try_recv().is_err());
+        assert_eq!(dispatch_notification(&engine, &mut rx).await, "A");
+
+        remove_config(&path);
     }
 }

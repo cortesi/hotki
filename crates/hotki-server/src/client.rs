@@ -123,19 +123,12 @@ impl Client {
         self.connection.is_some()
     }
 
-    /// Disconnect from the server and optionally stop it
-    pub async fn disconnect(&mut self, stop_server: bool) -> Result<()> {
-        // Shutdown the connection
-        if let Some(mut connection) = self.connection.take() {
-            info!("Shutting down connection");
-            connection.shutdown().await?;
+    /// Disconnect this client without stopping the shared server.
+    pub async fn disconnect(&mut self) -> Result<()> {
+        if let Some(connection) = self.connection.take() {
+            info!("Disconnecting client connection");
+            connection.close().await?;
         }
-
-        // Stop the server if requested and we spawned it
-        if stop_server {
-            self.managed_server.stop_server().await?;
-        }
-
         Ok(())
     }
 
@@ -172,12 +165,81 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    use std::process;
+    use std::{
+        fs,
+        io::Read,
+        os::unix::net::UnixListener,
+        path::PathBuf,
+        process, thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use mrpc::{Message, Response, Value};
 
     use super::*;
 
     fn count_flag(args: &[String], flag: &str) -> usize {
         args.iter().filter(|a| a.as_str() == flag).count()
+    }
+
+    #[tokio::test]
+    async fn disconnecting_one_client_leaves_shared_server_for_another() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let tmp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+        fs::create_dir_all(&tmp_dir).expect("create repository tmp directory");
+        let tmp_dir = tmp_dir.canonicalize().expect("canonical repository tmp");
+        let socket_path = tmp_dir.join(format!("c{}-{unique:x}.sock", process::id()));
+        let listener = UnixListener::bind(&socket_path).expect("bind shared test socket");
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().expect("accept first client");
+            let (mut second, _) = listener.accept().expect("accept second client");
+            let mut byte = [0_u8; 1];
+            assert_eq!(first.read(&mut byte).expect("read first disconnect"), 0);
+
+            let Message::Request(request) =
+                Message::decode(&mut second).expect("decode second-client shutdown")
+            else {
+                panic!("expected shutdown request");
+            };
+            assert_eq!(
+                request.method,
+                hotki_protocol::rpc::HotkeyMethod::Shutdown.as_str()
+            );
+            Message::Response(Response {
+                id: request.id,
+                result: Ok(Value::Boolean(true)),
+            })
+            .encode(&mut second)
+            .expect("encode shutdown response");
+        });
+
+        let path = socket_path.to_str().expect("utf8 socket");
+        let mut first = Client::new()
+            .with_connect_only()
+            .with_socket_path(path)
+            .connect()
+            .await
+            .expect("connect first client");
+        let mut second = Client::new()
+            .with_connect_only()
+            .with_socket_path(path)
+            .connect()
+            .await
+            .expect("connect second client");
+
+        first.disconnect().await.expect("disconnect first client");
+        assert!(!first.is_connected());
+        assert!(second.is_connected());
+        second
+            .shutdown_server()
+            .await
+            .expect("second client shutdown");
+
+        server.join().expect("shared server thread");
+        let _ = fs::remove_file(socket_path);
     }
 
     #[test]

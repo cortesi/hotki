@@ -32,7 +32,7 @@ core-foundation = "0.10.1"
 core-graphics = "0.25.0"
 eframe = "0.35"
 egui = "0.35"
-mrpc = "0.0.6"
+mrpc = { path = "../mrpc" }
 objc2 = "0.6.3"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"

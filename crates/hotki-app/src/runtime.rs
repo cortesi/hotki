@@ -8,7 +8,9 @@ use hotki_protocol::NotifyKind;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::{app::UiEvent, connection_driver::ConnectionDriver, permissions::PermissionsStatus};
+use crate::{
+    connection_driver::ConnectionDriver, permissions::PermissionsStatus, ui_delivery::UiDeliveryTx,
+};
 
 /// Control messages routed to the runtime event loop.
 #[derive(Debug)]
@@ -42,7 +44,7 @@ pub enum ControlMsg {
 /// Start background key runtime and server connection driver on a dedicated thread.
 pub fn spawn_key_runtime(
     config_path: &Path,
-    tx_keys: &mpsc::UnboundedSender<UiEvent>,
+    tx_keys: &UiDeliveryTx,
     egui_ctx: &Context,
     rx_ctrl: mpsc::UnboundedReceiver<ControlMsg>,
     server_log_filter: Option<String>,

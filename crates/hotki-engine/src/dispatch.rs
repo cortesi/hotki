@@ -7,10 +7,15 @@ use tracing::{trace, warn};
 use crate::{DispatchResult, Engine, HeldBinding, Result, selector_controller::SelectorController};
 
 impl Engine {
-    async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: &str) -> Result<()> {
+    async fn handle_key_event(
+        &self,
+        chord: &mac_keycode::Chord,
+        identifier: &str,
+        refresh_world: bool,
+    ) -> Result<()> {
         let start = Instant::now();
-        if self.sync_on_dispatch {
-            self.world.hint_refresh();
+        if refresh_world && self.sync_on_dispatch {
+            self.refresh_world_focus().await?;
         }
         let focus = self.current_focus_info();
 
@@ -142,7 +147,7 @@ impl Engine {
             }
         };
 
-        self.dispatch_resolved(binding.identifier, binding.chord, kind, repeat)
+        self.dispatch_resolved(binding.identifier, binding.chord, kind, repeat, true)
             .await
     }
 
@@ -174,8 +179,11 @@ impl Engine {
         Some(binding)
     }
 
-    /// Dispatch a hotkey event by identifier, returning false when the binding is absent.
-    pub async fn dispatch_ident(
+    /// Inject a hotkey event by identifier using the event-maintained focus cache.
+    ///
+    /// Synthetic callers do not wait for a platform focus capture. Physical input
+    /// should use [`Self::dispatch`], which establishes a fresh focus generation.
+    pub async fn dispatch_injected(
         &self,
         ident: &str,
         kind: mac_hotkey::EventKind,
@@ -184,7 +192,7 @@ impl Engine {
         let Some(chord) = self.binding_manager.lock().await.chord_for_ident(ident) else {
             return Ok(false);
         };
-        self.dispatch_resolved(ident.to_string(), chord, kind, repeat)
+        self.dispatch_resolved(ident.to_string(), chord, kind, repeat, false)
             .await?;
         Ok(true)
     }
@@ -195,6 +203,7 @@ impl Engine {
         chord: Chord,
         kind: mac_hotkey::EventKind,
         repeat: bool,
+        refresh_world: bool,
     ) -> Result<()> {
         trace!("Key event: {} {:?} (repeat: {})", ident, kind, repeat);
 
@@ -202,7 +211,9 @@ impl Engine {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
                     if self.runtime.lock().await.selector.is_some() {
-                        if let Err(error) = self.handle_key_event(&chord, &ident).await {
+                        if let Err(error) =
+                            self.handle_key_event(&chord, &ident, refresh_world).await
+                        {
                             warn!("Key handler failed: {}", error);
                             return Err(error);
                         }
@@ -218,7 +229,7 @@ impl Engine {
 
                 self.key_tracker.on_key_down(&ident);
 
-                if let Err(error) = self.handle_key_event(&chord, &ident).await {
+                if let Err(error) = self.handle_key_event(&chord, &ident, refresh_world).await {
                     warn!("Key handler failed: {}", error);
                     return Err(error);
                 }
@@ -241,13 +252,15 @@ impl Engine {
 mod tests {
     use std::{
         collections::HashSet,
+        fs,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
     };
 
-    use hotki_world::TestWorld;
+    use hotki_protocol::MsgToUI;
+    use hotki_world::{TestWorld, WindowKey, WorldWindow};
     use mac_keycode::Key;
     use tokio::sync::mpsc;
 
@@ -347,5 +360,83 @@ mod tests {
         assert!(!engine.repeater.is_ticking("a"));
         assert_eq!(poster.ups.load(Ordering::SeqCst), 1);
         assert!(!engine.held_bindings.lock().contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn dispatch_refreshes_focus_before_resolving_contextual_binding() {
+        let world = Arc::new(TestWorld::new());
+        world.set_snapshot(
+            vec![WorldWindow {
+                app: "Old".into(),
+                title: "First".into(),
+                pid: 1,
+                id: 1,
+                display_id: None,
+                focused: true,
+            }],
+            Some(WindowKey { pid: 1, id: 1 }),
+        );
+        let (tx, mut rx) = mpsc::channel(128);
+        let engine = Engine::build(
+            Arc::new(MockHotkeyApi::new()),
+            tx,
+            false,
+            true,
+            world.clone(),
+        );
+        engine
+            .refresh_world_focus()
+            .await
+            .expect("seed focus context");
+
+        let path = crate::test_support::write_test_config(
+            r#"
+            local a = hotki.actions
+            return function(menu, ctx)
+                if ctx:app_matches("New") then
+                    menu:bind("a", "new", a.notify("info", "Dispatch", "new"))
+                else
+                    menu:bind("a", "old", a.notify("info", "Dispatch", "old"))
+                end
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+        let id = engine
+            .resolve_id_for_ident("a")
+            .await
+            .expect("registered binding");
+        while rx.try_recv().is_ok() {}
+
+        world.set_snapshot(
+            vec![WorldWindow {
+                app: "New".into(),
+                title: "Second".into(),
+                pid: 2,
+                id: 2,
+                display_id: None,
+                focused: true,
+            }],
+            Some(WindowKey { pid: 2, id: 2 }),
+        );
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch key down");
+
+        assert!(
+            crate::test_support::recv_until(&mut rx, 200, |message| matches!(
+                message,
+                MsgToUI::Notify { title, text, .. }
+                    if title == "Dispatch" && text == "new"
+            ))
+            .await,
+            "dispatch should use the focus state refreshed in the same call"
+        );
+
+        let _ignored = fs::remove_file(path);
     }
 }

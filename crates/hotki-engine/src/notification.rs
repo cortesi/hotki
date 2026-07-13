@@ -1,5 +1,5 @@
 use hotki_protocol::{DisplaysSnapshot, MsgToUI, NotifyKind};
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Permit, Sender};
 
 use crate::{Error, Result};
 
@@ -27,6 +27,11 @@ impl NotificationDispatcher {
                 displays,
             })
             .map_err(|_| Error::ChannelClosed)
+    }
+
+    /// Reserve capacity for a UI message without publishing it yet.
+    pub(crate) fn reserve_ui(&self) -> Result<Permit<'_, MsgToUI>> {
+        self.tx.try_reserve().map_err(|_| Error::ChannelClosed)
     }
 
     /// Send a notification with the given kind, title, and text.

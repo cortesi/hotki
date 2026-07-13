@@ -9,7 +9,7 @@ mod server;
 mod service;
 mod value;
 
-pub use client::Connection;
+pub use client::{Connection, DeliveryStats};
 pub(crate) use server::IPCServer;
 
 /// Shared idle timer state exposed to both the Tao event loop and IPC service.
