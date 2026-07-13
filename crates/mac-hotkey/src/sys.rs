@@ -12,7 +12,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::c_void,
     process, ptr,
     sync::{
@@ -28,7 +28,7 @@ use core_foundation::{
 };
 use core_graphics::event::{self as cge, CallbackResult};
 use crossbeam_channel::Sender;
-use mac_keycode::{Key, Modifier};
+use mac_keycode::{Chord, Key, Modifier};
 use parking_lot::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -51,14 +51,61 @@ struct TapAction {
     intercept: bool,
 }
 
+/// Logical registration accepted by one physical key press.
+#[derive(Debug)]
+struct LogicalPress {
+    id: u32,
+    hotkey: Chord,
+}
+
+/// Decision retained from physical key-down until its paired key-up.
+#[derive(Debug)]
+struct PressRecord {
+    logical: Option<LogicalPress>,
+    intercept: bool,
+}
+
+impl PressRecord {
+    /// Recreate an event from the registration accepted at physical key-down.
+    fn action(&self, kind: EventKind, repeat: bool, emit_logical: bool) -> TapAction {
+        TapAction {
+            event: if emit_logical {
+                self.logical.as_ref().map(|logical| Event {
+                    id: logical.id,
+                    hotkey: logical.hotkey.clone(),
+                    kind,
+                    repeat,
+                })
+            } else {
+                None
+            },
+            intercept: self.intercept,
+        }
+    }
+}
+
 fn classify_tap_event(
     inner: &crate::Inner,
     code: Key,
     mods: &HashSet<Modifier>,
     kind: EventKind,
     is_repeat: bool,
-    held_intercepts: &mut HashSet<Key>,
+    presses: &mut HashMap<Key, PressRecord>,
 ) -> TapAction {
+    if matches!(kind, EventKind::KeyUp) {
+        return presses.remove(&code).map_or(
+            TapAction {
+                event: None,
+                intercept: false,
+            },
+            |press| press.action(EventKind::KeyUp, false, true),
+        );
+    }
+
+    if let Some(press) = presses.get(&code) {
+        return press.action(EventKind::KeyDown, is_repeat, inner.suspend == 0);
+    }
+
     let matched = crate::match_event(inner, code, mods);
     let matched_intercept = matched.as_ref().map(|(_, reg)| reg.intercept);
     let suspended = inner.suspend > 0;
@@ -70,36 +117,21 @@ fn classify_tap_event(
         decision.emit = matched.is_some();
     }
 
-    match kind {
-        EventKind::KeyDown => {
-            if decision.intercept && !is_repeat {
-                held_intercepts.insert(code);
-            } else if is_repeat && held_intercepts.contains(&code) {
-                decision.intercept = true;
-            }
-        }
-        EventKind::KeyUp => {
-            if held_intercepts.remove(&code) {
-                decision.intercept = true;
-            }
-        }
-    }
-
-    let event = if decision.emit {
-        matched.map(|(id, reg)| Event {
+    let logical = if decision.emit {
+        matched.map(|(id, reg)| LogicalPress {
             id,
             hotkey: reg.hotkey,
-            kind,
-            repeat: is_repeat,
         })
     } else {
         None
     };
-
-    TapAction {
-        event,
+    let press = PressRecord {
+        logical,
         intercept: decision.intercept,
-    }
+    };
+    let action = press.action(EventKind::KeyDown, is_repeat, true);
+    presses.insert(code, press);
+    action
 }
 
 // Shared control handle to stop the run loop from other threads.
@@ -145,7 +177,7 @@ pub fn run_event_loop(
 
     debug!("creating_event_tap");
     let tap_port_ptr_cb = tap_port_ptr.clone();
-    let held_intercepts: RefCell<HashSet<Key>> = RefCell::new(HashSet::new());
+    let presses: RefCell<HashMap<Key, PressRecord>> = RefCell::new(HashMap::new());
     let tap = match cge::CGEventTap::new(
         cge::CGEventTapLocation::HID,
         cge::CGEventTapPlacement::HeadInsertEventTap,
@@ -158,14 +190,6 @@ pub fn run_event_loop(
             if user_tag == crate::HOTK_TAG || src_pid == process::id() {
                 trace!(src_pid, user_tag, "ignoring_synthetic_event");
                 return CallbackResult::Keep;
-            }
-
-            {
-                let inner = inner_state.load();
-                if inner.suspend > 0 {
-                    trace!("tap_suspended_skipping_event");
-                    return CallbackResult::Keep;
-                }
             }
 
             match etype {
@@ -196,14 +220,14 @@ pub fn run_event_loop(
 
                         let action = {
                             let inner = inner_state.load();
-                            let mut held = held_intercepts.borrow_mut();
+                            let mut presses = presses.borrow_mut();
                             classify_tap_event(
                                 inner.as_ref(),
                                 code,
                                 &mods,
                                 kind,
                                 is_repeat,
-                                &mut held,
+                                &mut presses,
                             )
                         };
 
@@ -285,12 +309,12 @@ pub fn run_event_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use mac_keycode::{Key, Modifier};
 
-    use super::classify_tap_event;
-    use crate::{EventKind, test_register};
+    use super::{TapAction, classify_tap_event};
+    use crate::{EventKind, Inner, test_register};
 
     fn simulate(suspended: bool, matched: bool, intercept: bool) -> crate::policy::Decision {
         let matched_intercept = if matched { Some(intercept) } else { None };
@@ -328,6 +352,15 @@ mod tests {
         (inner, modifiers, id)
     }
 
+    fn assert_event(action: &TapAction, id: u32, kind: EventKind, repeat: bool) {
+        let event = action.event.as_ref().expect("logical event");
+        assert_eq!(event.id, id);
+        assert_eq!(event.hotkey.key, Key::H);
+        assert_eq!(event.hotkey.modifiers, HashSet::from([Modifier::Control]));
+        assert_eq!(event.kind, kind);
+        assert_eq!(event.repeat, repeat);
+    }
+
     #[test]
     fn end_to_end_match_then_emit_shape() {
         let (inner, mods, _id) = registered_inner(true);
@@ -338,34 +371,282 @@ mod tests {
     }
 
     #[test]
-    fn tap_decision_tracks_intercepted_repeat_and_keyup() {
-        let (inner, mods, id) = registered_inner(true);
-        let mut held = HashSet::new();
+    fn tap_repeat_uses_original_press_identity() {
+        let (mut inner, mods, id) = registered_inner(true);
+        let mut presses = HashMap::new();
 
-        let down = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyDown, false, &mut held);
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
         assert!(down.intercept);
-        assert_eq!(down.event.as_ref().map(|event| event.id), Some(id));
-        assert!(held.contains(&Key::H));
+        assert_event(&down, id, EventKind::KeyDown, false);
+        assert!(presses.contains_key(&Key::H));
 
-        let repeat = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyDown, true, &mut held);
+        assert!(inner.unregister(id));
+        let repeat = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyDown,
+            true,
+            &mut presses,
+        );
         assert!(repeat.intercept);
-        assert_eq!(repeat.event.as_ref().map(|event| event.repeat), Some(true));
+        assert_event(&repeat, id, EventKind::KeyDown, true);
+        assert!(presses.contains_key(&Key::H));
 
-        let up = classify_tap_event(&inner, Key::H, &mods, EventKind::KeyUp, false, &mut held);
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
         assert!(up.intercept);
-        assert!(!held.contains(&Key::H));
+        assert_event(&up, id, EventKind::KeyUp, false);
+        assert!(!presses.contains_key(&Key::H));
     }
 
     #[test]
-    fn tap_decision_capture_intercepts_unmatched_without_emit() {
-        let (mut inner, mods, _id) = registered_inner(false);
+    fn tap_duplicate_down_cannot_replace_original_press() {
+        let (mut inner, mods, id) = registered_inner(true);
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert!(down.intercept);
+        assert_event(&down, id, EventKind::KeyDown, false);
+
+        assert!(inner.unregister(id));
+        let replacement_id = test_register(
+            &mut inner,
+            mac_keycode::Chord {
+                key: Key::H,
+                modifiers: mods.clone(),
+            },
+            false,
+        );
+        let duplicate = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert!(duplicate.intercept);
+        assert_event(&duplicate, id, EventKind::KeyDown, false);
+        assert_ne!(
+            duplicate.event.as_ref().map(|event| event.id),
+            Some(replacement_id)
+        );
+
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert_event(&up, id, EventKind::KeyUp, false);
+    }
+
+    #[test]
+    fn tap_release_uses_press_modifiers() {
+        let (inner, mods, id) = registered_inner(true);
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert_event(&down, id, EventKind::KeyDown, false);
+
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert_event(&up, id, EventKind::KeyUp, false);
+    }
+
+    #[test]
+    fn tap_release_survives_unregister_while_held() {
+        let (mut inner, mods, id) = registered_inner(true);
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert_event(&down, id, EventKind::KeyDown, false);
+        assert!(inner.unregister(id));
+
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert_event(&up, id, EventKind::KeyUp, false);
+    }
+
+    #[test]
+    fn tap_release_survives_suspend_while_held() {
+        let (mut inner, mods, id) = registered_inner(true);
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert_event(&down, id, EventKind::KeyDown, false);
+        inner.suspend = 1;
+
+        let repeat = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyDown,
+            true,
+            &mut presses,
+        );
+        assert!(repeat.intercept);
+        assert!(repeat.event.is_none());
+
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert_event(&up, id, EventKind::KeyUp, false);
+    }
+
+    #[test]
+    fn tap_capture_decision_lasts_for_unmatched_press() {
+        let mut inner = Inner {
+            capture_all: 1,
+            ..Inner::default()
+        };
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::J,
+            &HashSet::new(),
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert!(down.intercept);
+        assert!(down.event.is_none());
+
+        inner.capture_all = 0;
+        let up = classify_tap_event(
+            &inner,
+            Key::J,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert!(up.event.is_none());
+    }
+
+    #[test]
+    fn tap_capture_interception_lasts_for_matched_press() {
+        let (mut inner, mods, id) = registered_inner(false);
         inner.capture_all = 1;
-        let mut held = HashSet::new();
+        let mut presses = HashMap::new();
 
-        let action =
-            classify_tap_event(&inner, Key::J, &mods, EventKind::KeyDown, false, &mut held);
+        let down = classify_tap_event(
+            &inner,
+            Key::H,
+            &mods,
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert!(down.intercept);
+        assert_event(&down, id, EventKind::KeyDown, false);
 
-        assert!(action.intercept);
-        assert!(action.event.is_none());
+        inner.capture_all = 0;
+        let up = classify_tap_event(
+            &inner,
+            Key::H,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(up.intercept);
+        assert_event(&up, id, EventKind::KeyUp, false);
+    }
+
+    #[test]
+    fn tap_capture_does_not_adopt_an_existing_press() {
+        let mut inner = Inner::default();
+        let mut presses = HashMap::new();
+
+        let down = classify_tap_event(
+            &inner,
+            Key::J,
+            &HashSet::new(),
+            EventKind::KeyDown,
+            false,
+            &mut presses,
+        );
+        assert!(!down.intercept);
+        assert!(down.event.is_none());
+
+        inner.capture_all = 1;
+        let up = classify_tap_event(
+            &inner,
+            Key::J,
+            &HashSet::new(),
+            EventKind::KeyUp,
+            false,
+            &mut presses,
+        );
+        assert!(!up.intercept);
+        assert!(up.event.is_none());
     }
 }

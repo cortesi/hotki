@@ -40,10 +40,6 @@ enum ShellNotify {
     Silent,
 }
 
-/// Maximum time to wait for a repeater task to acknowledge cancellation.
-/// See repeater and ticker docs for semantics.
-pub const STOP_WAIT_TIMEOUT_MS: u64 = 50;
-
 /// Run a command using the user's shell, returning an optional notification.
 /// This function is blocking and intended to be called inside `spawn_blocking`.
 fn run_shell_blocking(
@@ -151,6 +147,62 @@ struct ShellRunState {
     gate: tokio::sync::Mutex<()>,
     /// Fast flag used to skip scheduling a repeat while a run is in-flight.
     running: AtomicBool,
+}
+
+fn spawn_shell_run(
+    notifier: NotificationDispatcher,
+    on_shell_repeat: Arc<Mutex<Option<OnShellRepeat>>>,
+    state: Arc<ShellRunState>,
+    command: String,
+    notify: ShellNotify,
+    repeat_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let _guard = state.gate.lock().await;
+        let notify_result = tokio::task::spawn_blocking(move || match notify {
+            ShellNotify::Configured {
+                ok_notify,
+                err_notify,
+            } => run_shell_blocking(&command, ok_notify, err_notify),
+            ShellNotify::Silent => {
+                let _ = run_shell_blocking(&command, NotifyKind::Ignore, NotifyKind::Ignore);
+                None
+            }
+        })
+        .await;
+
+        match notify_result {
+            Ok(Some(notification)) => {
+                if let Err(err) = notifier.send_notification(
+                    notification.kind,
+                    notification.title,
+                    notification.text,
+                ) {
+                    tracing::warn!("Failed to deliver shell notification: {}", err);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!("Shell task join error: {}", err);
+                if let Err(send_err) = notifier.send_notification(
+                    NotifyKind::Warn,
+                    "Shell command".to_string(),
+                    "Execution task failed".to_string(),
+                ) {
+                    tracing::warn!("Failed to deliver shell notification: {}", send_err);
+                }
+            }
+        }
+
+        if let Some(id) = repeat_id
+            && let Some(cb) = on_shell_repeat.lock().as_ref()
+        {
+            cb(&id);
+            trace!("repeater_shell_run_done" = %id);
+        }
+
+        state.running.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Callback type for observing relay repeat ticks (used by tests/tools).
@@ -262,54 +314,14 @@ impl Repeater {
         notify: ShellNotify,
         repeat_id: Option<String>,
     ) {
-        let notifier = self.notifier.clone();
-        let on_shell_repeat = self.on_shell_repeat.clone();
-        tokio::spawn(async move {
-            let _guard = state.gate.lock().await;
-            let notify_result = tokio::task::spawn_blocking(move || match notify {
-                ShellNotify::Configured {
-                    ok_notify,
-                    err_notify,
-                } => run_shell_blocking(&command, ok_notify, err_notify),
-                ShellNotify::Silent => {
-                    let _ = run_shell_blocking(&command, NotifyKind::Ignore, NotifyKind::Ignore);
-                    None
-                }
-            })
-            .await;
-
-            match notify_result {
-                Ok(Some(notification)) => {
-                    if let Err(err) = notifier.send_notification(
-                        notification.kind,
-                        notification.title,
-                        notification.text,
-                    ) {
-                        tracing::warn!("Failed to deliver shell notification: {}", err);
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::warn!("Shell task join error: {}", err);
-                    if let Err(send_err) = notifier.send_notification(
-                        NotifyKind::Warn,
-                        "Shell command".to_string(),
-                        "Execution task failed".to_string(),
-                    ) {
-                        tracing::warn!("Failed to deliver shell notification: {}", send_err);
-                    }
-                }
-            }
-
-            if let Some(id) = repeat_id
-                && let Some(cb) = on_shell_repeat.lock().as_ref()
-            {
-                cb(&id);
-                trace!("repeater_shell_run_done" = %id);
-            }
-
-            state.running.store(false, Ordering::SeqCst);
-        });
+        spawn_shell_run(
+            self.notifier.clone(),
+            self.on_shell_repeat.clone(),
+            state,
+            command,
+            notify,
+            repeat_id,
+        );
     }
 
     /// Optional: install a relay repeat callback for instrumentation/testing.
@@ -330,9 +342,12 @@ impl Repeater {
         *self.on_shell_repeat.lock() = Some(cb);
     }
 
-    /// Start execution for a binding id. Runs the first action immediately and schedules repeats if provided.
+    /// Start execution for a binding id.
+    ///
+    /// Runs the first action immediately and schedules repeats if provided.
     pub fn start(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
-        self.stop(&id); // replace if exists
+        self.ticker.abort(&id);
+        let _ = self.shell_states.lock().remove(&id);
 
         self.start_initial_exec(&id, &exec);
 
@@ -381,13 +396,16 @@ impl Repeater {
     fn spawn_shell_repeat_loop(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
         let id_for_log = id.clone();
         let state = self.shell_state(&id);
-        let repeater = self.clone();
+        let notifier = self.notifier.clone();
+        let on_shell_repeat = self.on_shell_repeat.clone();
         self.spawn_repeat_loop(id, repeat, move || {
             if state.running.swap(true, Ordering::SeqCst) {
                 trace!("repeater_shell_tick_skip_running" = %id_for_log);
                 return;
             }
-            repeater.spawn_shell_run(
+            spawn_shell_run(
+                notifier.clone(),
+                on_shell_repeat.clone(),
                 state.clone(),
                 command.clone(),
                 ShellNotify::Silent,
@@ -440,21 +458,13 @@ impl Repeater {
     }
 
     /// Mark OS-level repeat seen for id; stop software ticker repeats
-    pub fn note_os_repeat(&self, id: &str) {
-        self.ticker.stop_sync(id);
+    pub async fn note_os_repeat(&self, id: &str) {
+        self.ticker.stop(id).await;
     }
 
     /// Stop any software repeats for `id`.
-    pub fn stop(&self, id: &str) {
-        self.ticker.stop(id);
-        // Best-effort cleanup of per-id shell state
-        let _ = self.shell_states.lock().remove(id);
-    }
-
-    /// Stop and wait briefly for repeats for `id` to finish.
-    pub fn stop_sync(&self, id: &str) {
-        self.ticker.stop_sync(id);
-        // Best-effort cleanup of per-id shell state
+    pub async fn stop(&self, id: &str) {
+        self.ticker.stop(id).await;
         let _ = self.shell_states.lock().remove(id);
     }
 
@@ -463,9 +473,16 @@ impl Repeater {
         self.ticker.is_active(id)
     }
 
-    /// Stop all tickers asynchronously and wait briefly for completion.
+    /// Stop all tickers asynchronously and wait for completion.
     pub async fn clear_async(&self) {
         self.ticker.clear_async().await;
+        self.shell_states.lock().clear();
+    }
+
+    /// Abort all repeat tasks during synchronous owner teardown.
+    pub(crate) fn abort_all(&self) {
+        self.ticker.abort_all();
+        self.shell_states.lock().clear();
     }
 }
 
@@ -548,7 +565,7 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let repeats = shell_count.load(AtomicOrdering::SeqCst);
-        repeater.stop_sync("shell-coalesce");
+        repeater.stop("shell-coalesce").await;
         assert!(
             repeats >= 1,
             "At least one shell repeat should run after the first run completes",

@@ -55,6 +55,7 @@ mod loop_wake;
 mod managed_server;
 mod process;
 mod server;
+mod shutdown;
 
 mod util;
 

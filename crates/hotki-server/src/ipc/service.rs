@@ -46,6 +46,7 @@ use super::{IdleTimerSnapshot, IdleTimerState};
 use crate::{
     error::RpcErrorCode,
     loop_wake::{self, WakeEvent},
+    shutdown::{ShutdownCoordinator, ShutdownReason},
 };
 
 /// IPC service that handles hotkey manager operations
@@ -59,8 +60,8 @@ pub struct HotkeyService {
     events: EventPipeline,
     /// Shared idle timer state for status reporting.
     idle_state: Arc<IdleTimerState>,
-    /// Notify handle for server shutdown.
-    shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Shared idempotent shutdown transition.
+    shutdown: ShutdownCoordinator,
     /// Active per-hotkey worker pool.
     workers: WorkerPool,
 }
@@ -68,28 +69,27 @@ pub struct HotkeyService {
 impl HotkeyService {
     pub fn new(
         manager: Arc<mac_hotkey::Manager>,
-        shutdown: Arc<AtomicBool>,
-        shutdown_notify: Arc<tokio::sync::Notify>,
+        shutdown: ShutdownCoordinator,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
         Self {
             engine: Arc::new(OnceCell::new()),
             manager,
-            events: EventPipeline::new(shutdown),
+            events: EventPipeline::new(shutdown.flag()),
             idle_state,
-            shutdown_notify,
+            shutdown,
             workers: WorkerPool::new(),
         }
     }
 
     /// Expose the shutdown flag for coordinated server shutdown.
     pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
-        self.events.shutdown_flag()
+        self.shutdown.flag()
     }
 
-    /// Expose the shutdown notify handle.
-    pub(crate) fn shutdown_notify(&self) -> Arc<tokio::sync::Notify> {
-        self.shutdown_notify.clone()
+    /// Expose the shared shutdown coordinator.
+    pub(crate) fn shutdown(&self) -> ShutdownCoordinator {
+        self.shutdown.clone()
     }
 
     async fn engine(&self) -> &Engine {
@@ -116,10 +116,8 @@ impl HotkeyService {
 
     async fn handle_shutdown_request(&self) -> StdResult<Value, RpcError> {
         info!("Shutdown request received");
-        self.shutdown_flag().store(true, Ordering::SeqCst);
-        let _ = loop_wake::post_user_event(WakeEvent::Shutdown);
+        self.shutdown.request(ShutdownReason::Rpc);
         self.events.clear_for_shutdown().await;
-        self.shutdown_notify.notify_waiters();
         Ok(Value::Boolean(true))
     }
 
@@ -267,7 +265,7 @@ fn unknown_method(method: &str) -> RpcError {
 #[async_trait]
 impl MrpcConnection for HotkeyService {
     async fn connected(&self, client: RpcSender) -> StdResult<(), RpcError> {
-        if self.shutdown_flag().load(Ordering::SeqCst) {
+        if self.shutdown.is_requested() {
             // Refuse new connections during shutdown
             return Err(typed_err(
                 RpcErrorCode::ShuttingDown,
@@ -328,7 +326,8 @@ impl HotkeyService {
     /// Dispatches a hotkey event to the appropriate per-ID worker task.
     /// If no worker task exists for the given ID, one is spawned.
     pub(crate) fn dispatch_event_to_worker(&self, ev: mac_hotkey::Event) {
-        let event_for_recovery = ev.clone();
+        let id = ev.id;
+        let kind = ev.kind;
         let engine = self.engine.clone();
         let manager = self.manager.clone();
         let event_tx = self.events.sender();
@@ -341,54 +340,41 @@ impl HotkeyService {
                 shutdown.clone(),
             )
         });
-        self.handle_worker_dispatch_result(result, event_for_recovery);
+        self.handle_worker_dispatch_result(result, id, kind);
     }
 
-    fn handle_worker_dispatch_result(&self, result: DispatchResult, ev: mac_hotkey::Event) {
+    fn handle_worker_dispatch_result(
+        &self,
+        result: DispatchResult,
+        id: u32,
+        kind: mac_hotkey::EventKind,
+    ) {
         match result {
             DispatchResult::Queued => {}
             DispatchResult::QueueClosed => {
                 warn!(
                     target: "hotki_server::ipc::service",
-                    id = ev.id,
-                    kind = ?ev.kind,
-                    "worker queue closed before hotkey event could be dispatched"
+                    id,
+                    kind = ?kind,
+                    "replacement worker closed before hotkey event could be dispatched"
                 );
             }
             DispatchResult::QueueFull => {
                 warn!(
                     target: "hotki_server::ipc::service",
-                    id = ev.id,
-                    kind = ?ev.kind,
+                    id,
+                    kind = ?kind,
                     "worker queue full before hotkey event could be dispatched"
                 );
-                if should_force_release_on_queue_full(ev.kind) {
-                    self.force_key_release_cleanup(ev.id);
-                }
             }
-        }
-    }
-
-    fn force_key_release_cleanup(&self, id: u32) {
-        let engine = self.engine.clone();
-        let manager = self.manager.clone();
-        let event_tx = self.events.sender();
-        tokio::spawn(async move {
-            let engine = engine
-                .get_or_init(|| async { Engine::new(manager, event_tx) })
-                .await;
-            if let Err(err) = engine
-                .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
-                .await
-            {
+            DispatchResult::ReleaseQueued => {
                 warn!(
                     target: "hotki_server::ipc::service",
                     id,
-                    "forced key release cleanup failed: {}",
-                    err
-                );
+                    "worker queue saturated; retained ordered key release"
+                )
             }
-        });
+        }
     }
 
     /// Start the hotkey event dispatcher
@@ -414,10 +400,6 @@ impl HotkeyService {
     }
 }
 
-fn should_force_release_on_queue_full(kind: mac_hotkey::EventKind) -> bool {
-    matches!(kind, mac_hotkey::EventKind::KeyUp)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,15 +410,5 @@ mod tests {
             panic!("expected service error");
         };
         assert_eq!(service.name, RpcErrorCode::MethodNotFound.to_string());
-    }
-
-    #[test]
-    fn only_key_up_forces_cleanup_after_queue_full() {
-        assert!(should_force_release_on_queue_full(
-            mac_hotkey::EventKind::KeyUp
-        ));
-        assert!(!should_force_release_on_queue_full(
-            mac_hotkey::EventKind::KeyDown
-        ));
     }
 }

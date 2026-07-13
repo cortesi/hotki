@@ -6,10 +6,13 @@ pub struct Decision {
 
 /// Classify how the tap should handle a given event.
 ///
-/// - If suspended, nothing is emitted or intercepted.
+/// - If suspended, a new press is neither emitted nor intercepted.
 /// - If not matched, nothing is emitted or intercepted.
-/// - If matched, always emit to the client (including OS auto-repeat KeyDown).
-///   Interception is controlled by registration regardless of repeat.
+/// - If matched, emit the new key-down to the client. Interception is controlled
+///   by the registration.
+///
+/// Repeat and key-up policy comes from the press record retained by the event-tap
+/// classifier rather than being rematched here.
 pub fn classify(suspended: bool, matched_intercept: Option<bool>) -> Decision {
     if suspended {
         return Decision {

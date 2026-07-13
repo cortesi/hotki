@@ -82,11 +82,6 @@ impl EventPipeline {
         self.event_tx.clone()
     }
 
-    /// Return the shutdown flag.
-    pub(super) fn shutdown_flag(&self) -> Arc<AtomicBool> {
-        self.shutdown.clone()
-    }
-
     /// Return the number of connected clients.
     pub(super) async fn client_count(&self) -> usize {
         self.registry.count().await

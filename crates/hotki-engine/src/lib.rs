@@ -45,8 +45,9 @@
 /// Test support utilities exported for the test suite.
 pub mod test_support;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 mod actions;
@@ -134,8 +135,111 @@ use relay::RelayHandler;
 use repeater::Repeater;
 pub use repeater::{OnRelayRepeat, RepeatSpec};
 use ticker::Ticker;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::runtime::{FocusInfo, RuntimeState};
+
+#[derive(Clone)]
+struct HeldBinding {
+    identifier: String,
+    chord: mac_keycode::Chord,
+}
+
+struct EngineLifecycle {
+    cancel: CancellationToken,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl EngineLifecycle {
+    fn new() -> Self {
+        Self {
+            cancel: CancellationToken::new(),
+            tasks: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn shutdown(&self) {
+        self.cancel.cancel();
+        for task in self.tasks.lock().drain(..) {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for EngineLifecycle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[derive(Clone)]
+enum EngineLifecycleHandle {
+    Owner(Arc<EngineLifecycle>),
+    Task(Weak<EngineLifecycle>),
+}
+
+impl EngineLifecycleHandle {
+    fn new() -> Self {
+        Self::Owner(Arc::new(EngineLifecycle::new()))
+    }
+
+    fn for_background(&self) -> Self {
+        match self {
+            Self::Owner(lifecycle) => Self::Task(Arc::downgrade(lifecycle)),
+            Self::Task(lifecycle) => Self::Task(lifecycle.clone()),
+        }
+    }
+
+    fn cancellation_token(&self) -> Option<CancellationToken> {
+        match self {
+            Self::Owner(lifecycle) => Some(lifecycle.cancel.clone()),
+            Self::Task(lifecycle) => lifecycle
+                .upgrade()
+                .map(|lifecycle| lifecycle.cancel.clone()),
+        }
+    }
+
+    fn register(&self, task: JoinHandle<()>) {
+        let Self::Owner(lifecycle) = self else {
+            task.abort();
+            return;
+        };
+        if lifecycle.cancel.is_cancelled() {
+            task.abort();
+        } else {
+            lifecycle.tasks.lock().push(task);
+        }
+    }
+
+    fn is_last_owner(&self) -> bool {
+        matches!(self, Self::Owner(lifecycle) if Arc::strong_count(lifecycle) == 1)
+    }
+
+    fn shutdown(&self) {
+        if let Self::Owner(lifecycle) = self {
+            lifecycle.shutdown();
+        }
+    }
+
+    #[cfg(test)]
+    fn weak(&self) -> Weak<EngineLifecycle> {
+        match self {
+            Self::Owner(lifecycle) => Arc::downgrade(lifecycle),
+            Self::Task(lifecycle) => lifecycle.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn task_count(&self) -> usize {
+        match self {
+            Self::Owner(lifecycle) => lifecycle.tasks.lock().len(),
+            Self::Task(lifecycle) => lifecycle
+                .upgrade()
+                .map_or(0, |lifecycle| lifecycle.tasks.lock().len()),
+        }
+    }
+}
 
 /// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
 ///
@@ -149,12 +253,16 @@ use crate::runtime::{FocusInfo, RuntimeState};
 /// lookup. Do not hold this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
+    /// Owner for background work spawned by this engine.
+    lifecycle: EngineLifecycleHandle,
     /// Stack-based runtime state (mode stack + focus + rendered style).
     runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     /// Key binding manager
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
+    /// Binding identities retained until their matching registration ID is released.
+    held_bindings: Arc<Mutex<HashMap<u32, HeldBinding>>>,
     /// Configuration
     config: Arc<tokio::sync::Mutex<Option<dyn_engine::DynamicConfig>>>,
     /// Optional path used for `ctx:reload_config()`.
@@ -223,9 +331,11 @@ impl Engine {
         let config_arc = Arc::new(tokio::sync::Mutex::new(None));
 
         let engine = Self {
+            lifecycle: EngineLifecycleHandle::new(),
             runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::empty())),
             binding_manager: binding_manager_arc,
             key_tracker: KeyStateTracker::new(),
+            held_bindings: Arc::new(Mutex::new(HashMap::new())),
             config: config_arc,
             config_path: Arc::new(tokio::sync::RwLock::new(None)),
             focus_ctx,
@@ -241,6 +351,22 @@ impl Engine {
         engine.spawn_world_focus_subscription();
         engine.spawn_selector_notify_task();
         engine
+    }
+
+    fn clone_for_background(&self) -> Self {
+        let mut engine = self.clone();
+        engine.lifecycle = self.lifecycle.for_background();
+        engine
+    }
+
+    fn background_cancellation_token(&self) -> CancellationToken {
+        self.lifecycle
+            .cancellation_token()
+            .expect("engine lifecycle must exist while spawning background work")
+    }
+
+    fn register_background_task(&self, task: JoinHandle<()>) {
+        self.lifecycle.register(task);
     }
 
     /// Load and install a dynamic configuration from `path`.
@@ -288,6 +414,17 @@ impl Engine {
     /// Diagnostics: world status snapshot (counts, timings, permissions).
     pub async fn world_status(&self) -> hotki_world::WorldStatus {
         self.world.status().await
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if self.lifecycle.is_last_owner() {
+            self.lifecycle.shutdown();
+            self.repeater.abort_all();
+            self.action_repeater.abort_all();
+            self.relay.stop_all();
+        }
     }
 }
 

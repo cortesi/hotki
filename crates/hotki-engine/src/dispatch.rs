@@ -4,7 +4,7 @@ use config::script::engine as dyn_engine;
 use mac_keycode::Chord;
 use tracing::{trace, warn};
 
-use crate::{DispatchResult, Engine, Result, selector_controller::SelectorController};
+use crate::{DispatchResult, Engine, HeldBinding, Result, selector_controller::SelectorController};
 
 impl Engine {
     async fn handle_key_event(&self, chord: &mac_keycode::Chord, identifier: &str) -> Result<()> {
@@ -113,19 +113,19 @@ impl Engine {
         Ok(Some(result.with_stay(binding.flags.stay)))
     }
 
-    fn handle_key_up(&self, identifier: &str) {
+    async fn handle_key_up(&self, identifier: &str) {
         let pid = self.current_focus_info().pid;
-        self.action_repeater.stop_sync(identifier);
-        self.repeater.stop_sync(identifier);
+        self.action_repeater.stop(identifier).await;
+        self.repeater.stop(identifier).await;
         if self.relay.stop_relay(identifier, pid) {
             tracing::debug!("Stopped relay for {}", identifier);
         }
     }
 
-    fn handle_repeat(&self, identifier: &str) {
+    async fn handle_repeat(&self, identifier: &str) {
         if self.relay.repeat_relay(identifier) {
             if self.repeater.is_ticking(identifier) {
-                self.repeater.note_os_repeat(identifier);
+                self.repeater.note_os_repeat(identifier).await;
             }
             tracing::debug!("Repeated relay for {}", identifier);
         }
@@ -134,15 +134,44 @@ impl Engine {
     /// Dispatch a hotkey event by id, handling all lookups and callback execution internally.
     /// This reduces the server's knowledge about engine internals and avoids repeated async locking.
     pub async fn dispatch(&self, id: u32, kind: mac_hotkey::EventKind, repeat: bool) -> Result<()> {
-        let (ident, chord) = match self.binding_manager.lock().await.resolve(id) {
-            Some((i, c)) => (i, c),
+        let binding = match self.resolve_dispatch_binding(id, kind, repeat).await {
+            Some(binding) => binding,
             None => {
                 trace!("Dispatch called with unregistered id: {}", id);
                 return Ok(());
             }
         };
 
-        self.dispatch_resolved(ident, chord, kind, repeat).await
+        self.dispatch_resolved(binding.identifier, binding.chord, kind, repeat)
+            .await
+    }
+
+    async fn resolve_dispatch_binding(
+        &self,
+        id: u32,
+        kind: mac_hotkey::EventKind,
+        repeat: bool,
+    ) -> Option<HeldBinding> {
+        match kind {
+            mac_hotkey::EventKind::KeyUp => {
+                if let Some(binding) = self.held_bindings.lock().remove(&id) {
+                    return Some(binding);
+                }
+            }
+            mac_hotkey::EventKind::KeyDown if repeat => {
+                if let Some(binding) = self.held_bindings.lock().get(&id).cloned() {
+                    return Some(binding);
+                }
+            }
+            mac_hotkey::EventKind::KeyDown => {}
+        }
+
+        let (identifier, chord) = self.binding_manager.lock().await.resolve(id)?;
+        let binding = HeldBinding { identifier, chord };
+        if matches!(kind, mac_hotkey::EventKind::KeyDown) {
+            self.held_bindings.lock().insert(id, binding.clone());
+        }
+        Some(binding)
     }
 
     /// Dispatch a hotkey event by identifier, returning false when the binding is absent.
@@ -182,7 +211,7 @@ impl Engine {
                     if self.key_tracker.is_down(&ident)
                         && self.key_tracker.is_repeat_allowed(&ident)
                     {
-                        self.handle_repeat(&ident);
+                        self.handle_repeat(&ident).await;
                     }
                     return Ok(());
                 }
@@ -196,7 +225,7 @@ impl Engine {
             }
             mac_hotkey::EventKind::KeyUp => {
                 self.key_tracker.on_key_up(&ident);
-                self.handle_key_up(&ident);
+                self.handle_key_up(&ident).await;
             }
         }
         Ok(())
@@ -205,5 +234,118 @@ impl Engine {
     /// Resolve a registration id for an identifier (e.g., "cmd+k"). Intended for diagnostics/tests.
     pub async fn resolve_id_for_ident(&self, ident: &str) -> Option<u32> {
         self.binding_manager.lock().await.id_for_ident(ident)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use hotki_world::TestWorld;
+    use mac_keycode::Key;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::{
+        deps::MockHotkeyApi,
+        notification::NotificationDispatcher,
+        relay::{RelayHandler, RelayPoster},
+        repeater::{ExecSpec, RepeatSpec, Repeater},
+    };
+
+    #[derive(Default)]
+    struct CountingPoster {
+        downs: AtomicUsize,
+        ups: AtomicUsize,
+    }
+
+    impl RelayPoster for CountingPoster {
+        fn key_down(&self, _chord: &Chord, _is_repeat: bool) -> relaykey::Result<()> {
+            self.downs.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn key_up(&self, _chord: &Chord) -> relaykey::Result<()> {
+            self.ups.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn chord(key: Key) -> Chord {
+        Chord {
+            key,
+            modifiers: HashSet::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn key_up_uses_identity_retained_before_unregister() {
+        let (tx, _rx) = mpsc::channel(16);
+        let world = Arc::new(TestWorld::new());
+        let mut engine = Engine::new_with_api_and_world(
+            Arc::new(MockHotkeyApi::new()),
+            tx.clone(),
+            false,
+            world,
+        );
+        let poster = Arc::new(CountingPoster::default());
+        let relay = RelayHandler::new_with_poster(Some(poster.clone()));
+        engine.relay = relay.clone();
+        engine.repeater = Repeater::new_with_ctx(
+            engine.focus_ctx.clone(),
+            relay,
+            NotificationDispatcher::new(tx),
+        );
+
+        let input = chord(Key::A);
+        let id = {
+            let mut manager = engine.binding_manager.lock().await;
+            manager
+                .update_bindings(vec![("a".to_string(), input)])
+                .expect("register binding");
+            manager.id_for_ident("a").expect("registered id")
+        };
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch key down");
+
+        engine.repeater.start(
+            "a".to_string(),
+            ExecSpec::Relay {
+                chord: chord(Key::B),
+            },
+            Some(RepeatSpec {
+                initial_delay_ms: Some(100),
+                interval_ms: Some(100),
+            }),
+        );
+        assert!(engine.key_tracker.is_down("a"));
+        assert!(engine.repeater.is_ticking("a"));
+        assert_eq!(poster.downs.load(Ordering::SeqCst), 1);
+
+        engine
+            .binding_manager
+            .lock()
+            .await
+            .update_bindings(Vec::new())
+            .expect("unregister binding");
+        assert!(engine.binding_manager.lock().await.resolve(id).is_none());
+
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("dispatch retained key up");
+
+        assert!(!engine.key_tracker.is_down("a"));
+        assert!(!engine.repeater.is_ticking("a"));
+        assert_eq!(poster.ups.load(Ordering::SeqCst), 1);
+        assert!(!engine.held_bindings.lock().contains_key(&id));
     }
 }

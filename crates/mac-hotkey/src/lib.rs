@@ -12,10 +12,11 @@
 //! - Modifiers are matched using only SHIFT, CONTROL, ALT, and META; other
 //!   modifier bits are ignored for the purposes of hotkey matching.
 //! - Interception: when a registration sets [`RegisterOptions::intercept`] to
-//!   `true`, matching key down/up (including epeats) are swallowed by the tap
+//!   `true`, matching key down/up (including repeats) are swallowed by the tap
 //!   and not delivered to the focused app. While [`Manager::suspend`] is
-//!   active, no interception occurs. Some system-reserved shortcuts may not be
-//!   interceptable.
+//!   active, new presses are not intercepted. A press intercepted before
+//!   suspension remains intercepted through repeat and release so it cannot leak
+//!   a partial keystroke. Some system-reserved shortcuts may not be interceptable.
 //!
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -272,10 +273,12 @@ impl Manager {
         n
     }
 
-    /// Temporarily suspends event delivery until the returned guard is dropped.
+    /// Temporarily suspends new event delivery until the returned guard is dropped.
     ///
-    /// Nested guards are supported. While suspended, input is still processed
-    /// by the system; only hotkey matching and event delivery are paused.
+    /// Nested guards are supported. While suspended, new input is still processed
+    /// by the system without hotkey matching or delivery. A press accepted before
+    /// suspension retains its interception decision, suppresses repeat delivery,
+    /// and still emits its paired key-up so consumers can release logical state.
     pub fn suspend(&self) -> SuspendGuard {
         let _g = self.write_lock.lock();
         let mut inner = self.inner.load().as_ref().clone();

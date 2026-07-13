@@ -1,70 +1,81 @@
 //! Ticker for scheduling repeated actions with cancellation support.
 //!
-//! Provides a task scheduling system that runs callbacks after an initial delay
-//! and then on regular intervals. Supports immediate cancellation and bounded
-//! wait times for task completion.
+//! Provides owned tasks that run callbacks after an initial delay and then on
+//! regular intervals. Async stop paths await graceful cancellation; synchronous
+//! replacement and last-owner cleanup abort tasks after cancelling them.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        mpsc::{Receiver, channel},
-    },
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
-use tokio::time::{self, MissedTickBehavior};
+use tokio::{
+    task::JoinHandle,
+    time::{self, MissedTickBehavior},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
-use crate::repeater::STOP_WAIT_TIMEOUT_MS;
-
 struct TickerEntry {
     token: CancellationToken,
-    handle: tokio::task::JoinHandle<()>,
-    done_rx: Receiver<()>,
+    handle: JoinHandle<()>,
 }
 
-/// Minimal ticker core: schedules a closure after an initial delay and then on each interval tick.
-/// Supports cancellation and a short stop_sync wait for completion.
+#[derive(Default)]
+struct TickerInner {
+    entries: Mutex<HashMap<String, TickerEntry>>,
+}
+
+impl TickerInner {
+    fn drain(&self) -> Vec<TickerEntry> {
+        self.entries
+            .lock()
+            .drain()
+            .map(|(_, entry)| entry)
+            .collect()
+    }
+}
+
+impl Drop for TickerInner {
+    fn drop(&mut self) {
+        for entry in self.entries.get_mut().drain().map(|(_, entry)| entry) {
+            entry.token.cancel();
+            entry.handle.abort();
+        }
+    }
+}
+
+/// Schedules repeat callbacks and owns their worker tasks.
 #[derive(Clone, Default)]
 pub struct Ticker {
-    entries: Arc<Mutex<HashMap<String, TickerEntry>>>,
+    inner: Arc<TickerInner>,
 }
 
 impl Ticker {
     /// Check if a ticker is active for the given id.
     pub fn is_active(&self, id: &str) -> bool {
-        self.entries.lock().contains_key(id)
+        self.inner.entries.lock().contains_key(id)
     }
 
-    /// Start or replace a ticker for `id` with given timings and on_tick closure.
+    /// Start or replace a ticker for `id` with given timings and on-tick closure.
     pub fn start<F>(&self, id: String, initial: Duration, interval: Duration, mut on_tick: F)
     where
         F: FnMut() + Send + 'static,
     {
-        // Replace any existing ticker for this id
-        self.stop(&id);
+        self.abort(&id);
 
         let token = CancellationToken::new();
         let cancel = token.clone();
         let id_for_log = id.clone();
-        let (done_tx, done_rx) = channel::<()>();
-
-        let fut = async move {
+        let handle = tokio::spawn(async move {
             trace!(
                 "ticker_start" = %id_for_log,
                 init_ms = initial.as_millis(),
                 int_ms = interval.as_millis()
             );
 
-            // Initial delay with cancellation
             tokio::select! {
                 _ = time::sleep(initial) => {}
                 _ = cancel.cancelled() => {
                     trace!("ticker_cancelled_initial" = %id_for_log);
-                    let _ = done_tx.send(());
                     return;
                 }
             }
@@ -75,60 +86,131 @@ impl Ticker {
                 tokio::select! {
                     _ = cancel.cancelled() => {
                         trace!("ticker_cancelled" = %id_for_log);
-                        let _ = done_tx.send(());
                         return;
                     }
-                    _ = ticker.tick() => {
-                        on_tick();
-                    }
+                    _ = ticker.tick() => on_tick(),
                 }
             }
-        };
+        });
 
-        let handle = tokio::spawn(fut);
-        let entry = TickerEntry {
-            token,
-            handle,
-            done_rx,
-        };
-        self.entries.lock().insert(id, entry);
+        self.inner
+            .entries
+            .lock()
+            .insert(id, TickerEntry { token, handle });
     }
 
-    /// Stop a ticker if present (non-blocking).
-    pub fn stop(&self, id: &str) {
-        if let Some(entry) = self.entries.lock().remove(id) {
+    /// Cancel a ticker and wait for its task to finish.
+    pub async fn stop(&self, id: &str) {
+        let entry = self.inner.entries.lock().remove(id);
+        if let Some(entry) = entry {
             entry.token.cancel();
-            // Don't abort the handle, let it cancel gracefully via the token
+            if let Err(error) = entry.handle.await {
+                tracing::warn!(?error, %id, "ticker_task_failed");
+            }
             trace!("ticker_stop" = %id);
         }
     }
 
-    /// Stop a ticker if present and wait briefly for completion signal (blocking).
-    pub fn stop_sync(&self, id: &str) {
-        if let Some(entry) = self.entries.lock().remove(id) {
+    /// Cancel and abort a ticker when the caller cannot await task completion.
+    pub(crate) fn abort(&self, id: &str) {
+        if let Some(entry) = self.inner.entries.lock().remove(id) {
             entry.token.cancel();
-            let deadline = Duration::from_millis(STOP_WAIT_TIMEOUT_MS);
-            let _ = entry.done_rx.recv_timeout(deadline);
-            trace!("ticker_stop_sync" = %id);
+            entry.handle.abort();
+            trace!("ticker_abort" = %id);
         }
     }
 
-    /// Cancel and wait for all tickers to finish (async).
-    pub async fn clear_async(&self) {
-        let entries: Vec<TickerEntry> = {
-            let mut map = self.entries.lock();
-            map.drain().map(|(_, e)| e).collect()
-        };
-
-        // Cancel all tokens first
-        for e in &entries {
-            e.token.cancel();
+    /// Cancel and abort every ticker when the caller cannot await completion.
+    pub(crate) fn abort_all(&self) {
+        for entry in self.inner.drain() {
+            entry.token.cancel();
+            entry.handle.abort();
         }
+        trace!("ticker_abort_all");
+    }
 
-        // Await each handle with a timeout
-        for e in entries {
-            let _ = time::timeout(Duration::from_millis(STOP_WAIT_TIMEOUT_MS), e.handle).await;
+    /// Cancel all tickers and wait for their tasks to finish.
+    pub async fn clear_async(&self) {
+        let entries = self.inner.drain();
+        for entry in &entries {
+            entry.token.cancel();
+        }
+        for entry in entries {
+            if let Err(error) = entry.handle.await {
+                tracing::warn!(?error, "ticker_task_failed_during_clear");
+            }
         }
         trace!("ticker_clear_async");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tokio::time::advance;
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stop_awaits_task_and_prevents_ticks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = Ticker::default();
+        let observed = ticks.clone();
+        ticker.start(
+            "held".to_string(),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        tokio::task::yield_now().await;
+
+        ticker.stop("held").await;
+        advance(Duration::from_secs(1)).await;
+
+        assert_eq!(ticks.load(Ordering::SeqCst), 0);
+        assert!(!ticker.is_active("held"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn dropping_clone_does_not_cancel_task() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = Ticker::default();
+        let remaining = ticker.clone();
+        let observed = ticks.clone();
+        ticker.start(
+            "held".to_string(),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        tokio::task::yield_now().await;
+
+        drop(ticker);
+        advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(ticks.load(Ordering::SeqCst), 1);
+        remaining.clear_async().await;
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn dropping_last_handle_releases_inner_state() {
+        let ticker = Ticker::default();
+        let inner = Arc::downgrade(&ticker.inner);
+        ticker.start(
+            "held".to_string(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            || {},
+        );
+
+        drop(ticker);
+
+        assert!(inner.upgrade().is_none());
     }
 }

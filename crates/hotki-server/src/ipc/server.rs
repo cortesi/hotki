@@ -8,10 +8,7 @@ use std::{
         net::UnixStream,
     },
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 
 use mrpc::Server as MrpcServer;
@@ -19,7 +16,7 @@ use tokio::select;
 use tracing::{debug, trace};
 
 use super::{IdleTimerState, service::HotkeyService};
-use crate::{Error, Result, util};
+use crate::{Error, Result, shutdown::ShutdownCoordinator, util};
 
 /// IPC server
 pub struct IPCServer {
@@ -32,11 +29,10 @@ impl IPCServer {
     pub fn new(
         socket_path: impl Into<String>,
         manager: mac_hotkey::Manager,
-        shutdown: Arc<AtomicBool>,
-        shutdown_notify: Arc<tokio::sync::Notify>,
+        shutdown: ShutdownCoordinator,
         idle_state: Arc<IdleTimerState>,
     ) -> Self {
-        let service = HotkeyService::new(Arc::new(manager), shutdown, shutdown_notify, idle_state);
+        let service = HotkeyService::new(Arc::new(manager), shutdown, idle_state);
 
         Self {
             socket_path: socket_path.into(),
@@ -86,18 +82,12 @@ impl IPCServer {
 
         // Run the server until shutdown is requested. Dropping the run future
         // will close the listener and active connections gracefully.
-        let shutdown = self.service.shutdown_flag();
-        let shutdown_notify = self.service.shutdown_notify();
+        let shutdown = self.service.shutdown();
         select! {
             res = server.run() => {
                 res.map_err(|e| Error::Ipc(format!("Server error: {}", e)))?;
             }
-            _ = async {
-                if shutdown.load(Ordering::SeqCst) {
-                    return;
-                }
-                shutdown_notify.notified().await;
-            } => {
+            _ = shutdown.wait() => {
                 debug!("Shutdown flag set; stopping MRPC server");
                 // server.run() future is dropped here, closing the socket and tasks
             }

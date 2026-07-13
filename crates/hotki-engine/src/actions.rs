@@ -177,7 +177,7 @@ impl Engine {
 
         let (initial, interval) = self.repeater.effective_timings(repeat_spec(repeat));
         let id = identifier.to_string();
-        let engine = self.clone();
+        let engine = self.clone_for_background();
         let running = Arc::new(AtomicBool::new(false));
         self.action_repeater.start(id.clone(), initial, interval, {
             let running = running.clone();
@@ -204,7 +204,7 @@ impl Engine {
                     };
                     running.store(false, Ordering::SeqCst);
                     if stop {
-                        engine.action_repeater.stop(&id);
+                        engine.action_repeater.stop(&id).await;
                     }
                 });
             }

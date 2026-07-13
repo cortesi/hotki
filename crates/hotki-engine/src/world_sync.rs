@@ -14,10 +14,16 @@ impl Engine {
 
     pub(crate) fn spawn_world_focus_subscription(&self) {
         let world = self.world.clone();
-        let engine = self.clone();
-        tokio::spawn(async move {
+        let engine = self.clone_for_background();
+        let cancel = self.background_cancellation_token();
+        let task = tokio::spawn(async move {
             loop {
-                let (mut cursor, seed) = hotki_world::subscribe_with_snapshot(world.as_ref()).await;
+                let (mut cursor, seed) = tokio::select! {
+                    () = cancel.cancelled() => return,
+                    subscription = hotki_world::subscribe_with_snapshot(world.as_ref()) => {
+                        subscription
+                    }
+                };
                 if let Err(err) = engine.apply_world_focus_snapshot(seed).await {
                     warn!("World focus seed apply failed: {}", err);
                 }
@@ -26,7 +32,11 @@ impl Engine {
                 loop {
                     let deadline =
                         tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
-                    match world.next_event_until(&mut cursor, deadline).await {
+                    let event = tokio::select! {
+                        () = cancel.cancelled() => return,
+                        event = world.next_event_until(&mut cursor, deadline) => event,
+                    };
+                    match event {
                         Some(event) => {
                             if cursor.lost_count > last_lost {
                                 warn!(
@@ -37,12 +47,9 @@ impl Engine {
                             }
                             last_lost = cursor.lost_count;
                             if let hotki_world::WorldEvent::FocusChanged(change) = event {
-                                Self::handle_focus_change_event(
-                                    engine.clone(),
-                                    world.clone(),
-                                    change,
-                                )
-                                .await;
+                                engine
+                                    .handle_focus_change_event(world.clone(), change)
+                                    .await;
                             }
                             if let Err(err) = engine.refresh_displays_if_changed(&world).await {
                                 warn!("Display refresh after world event failed: {}", err);
@@ -61,19 +68,25 @@ impl Engine {
                 }
             }
         });
+        self.register_background_task(task);
     }
 
     pub(crate) fn spawn_selector_notify_task(&self) {
-        let engine = self.clone();
+        let engine = self.clone_for_background();
         let notify = self.selector_notify.clone();
-        tokio::spawn(async move {
+        let cancel = self.background_cancellation_token();
+        let task = tokio::spawn(async move {
             loop {
-                notify.notified().await;
+                tokio::select! {
+                    () = cancel.cancelled() => return,
+                    () = notify.notified() => {}
+                }
                 if let Err(err) = engine.on_selector_notify().await {
                     warn!("Selector notify tick failed: {}", err);
                 }
             }
         });
+        self.register_background_task(task);
     }
 
     async fn on_selector_notify(&self) -> Result<()> {
@@ -121,19 +134,15 @@ impl Engine {
         self.rebind_current_context().await
     }
 
-    async fn handle_focus_change_event(
-        engine: Self,
-        world: Arc<dyn WorldView>,
-        change: FocusChange,
-    ) {
+    async fn handle_focus_change_event(&self, world: Arc<dyn WorldView>, change: FocusChange) {
         let focus = hotki_world::focus_snapshot_for_change(world.as_ref(), &change).await;
 
         if let Some(focus) = focus {
-            if let Err(err) = engine.apply_world_focus_snapshot(Some(focus)).await {
+            if let Err(err) = self.apply_world_focus_snapshot(Some(focus)).await {
                 warn!("World focus update failed: {}", err);
             }
         } else if change.key.is_none() {
-            if let Err(err) = engine.apply_world_focus_snapshot(None).await {
+            if let Err(err) = self.apply_world_focus_snapshot(None).await {
                 warn!("World focus clear failed: {}", err);
             }
         } else {
@@ -271,5 +280,26 @@ mod tests {
         assert_eq!(focus.pid, 2);
         assert_eq!(focus.app, "New");
         assert_eq!(focus.title, "Second");
+    }
+
+    #[tokio::test]
+    async fn background_tasks_release_with_last_engine_owner() {
+        let world = Arc::new(TestWorld::new());
+        let (tx, _rx) = mpsc::channel(16);
+        let engine =
+            Engine::new_with_api_and_world(Arc::new(MockHotkeyApi::new()), tx, false, world);
+        let lifecycle = engine.lifecycle.weak();
+        let cancellation = engine.background_cancellation_token();
+        let remaining = engine.clone();
+
+        assert_eq!(engine.lifecycle.task_count(), 2);
+        drop(engine);
+        assert!(lifecycle.upgrade().is_some());
+        assert!(!cancellation.is_cancelled());
+
+        drop(remaining);
+
+        assert!(lifecycle.upgrade().is_none());
+        assert!(cancellation.is_cancelled());
     }
 }

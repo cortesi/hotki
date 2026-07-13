@@ -1,9 +1,6 @@
 use std::{
     io, mem, ptr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -19,19 +16,29 @@ use crate::{
     Error, Result, default_socket_path,
     ipc::{IPCServer, IdleTimerState},
     loop_wake::{self, WakeEvent},
+    shutdown::{ShutdownCoordinator, ShutdownReason},
 };
 
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
 
+/// Request coordinated shutdown once an armed idle deadline has elapsed.
+fn request_idle_shutdown_if_due(
+    shutdown: &ShutdownCoordinator,
+    deadline: Instant,
+    now: Instant,
+) -> bool {
+    if now < deadline {
+        return false;
+    }
+    shutdown.request(ShutdownReason::IdleExpired);
+    true
+}
+
 /// Spawns a background thread that monitors a parent process PID.
 /// When the parent process exits, it requests server shutdown.
 /// If shutdown is requested by other means, the thread terminates gracefully.
-fn spawn_parent_watcher(
-    ppid: libc::pid_t,
-    shutdown: Arc<AtomicBool>,
-    shutdown_notify: Arc<tokio::sync::Notify>,
-) -> JoinHandle<()> {
+fn spawn_parent_watcher(ppid: libc::pid_t, shutdown: ShutdownCoordinator) -> JoinHandle<()> {
     thread::spawn(move || {
         // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
         unsafe {
@@ -58,7 +65,7 @@ fn spawn_parent_watcher(
                     // Wait for the event to fire in a loop with a timeout to allow cooperative shutdown.
                     let mut fallback = false;
                     loop {
-                        if shutdown.load(Ordering::SeqCst) {
+                        if shutdown.is_requested() {
                             break;
                         }
                         let timeout = libc::timespec {
@@ -76,9 +83,7 @@ fn spawn_parent_watcher(
                         );
                         if res > 0 {
                             // Parent exited; request shutdown.
-                            shutdown.store(true, Ordering::SeqCst);
-                            shutdown_notify.notify_waiters();
-                            let _ = loop_wake::post_user_event(WakeEvent::Shutdown);
+                            shutdown.request(ShutdownReason::ParentExited);
                             break;
                         } else if res < 0 {
                             let err = io::Error::last_os_error().raw_os_error();
@@ -101,16 +106,14 @@ fn spawn_parent_watcher(
 
         // Fallback: poll with kill(ppid, 0) at short intervals.
         loop {
-            if shutdown.load(Ordering::SeqCst) {
+            if shutdown.is_requested() {
                 break;
             }
             // kill == 0 -> process exists; ESRCH -> doesn't exist
             let alive = unsafe { libc::kill(ppid, 0) } == 0
                 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
             if !alive {
-                shutdown.store(true, Ordering::SeqCst);
-                shutdown_notify.notify_waiters();
-                let _ = loop_wake::post_user_event(WakeEvent::Shutdown);
+                shutdown.request(ShutdownReason::ParentExited);
                 break;
             }
             thread::sleep(Duration::from_millis(100));
@@ -192,8 +195,6 @@ impl Server {
         // Create the tao event loop (must be on main thread for macOS)
         let mut event_loop = EventLoopBuilder::<WakeEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
-        // Keep a clone for posting wakeups from other threads
-        let proxy_for_ipc = proxy.clone();
         loop_wake::set_main_proxy(proxy);
 
         // Set activation policy to Accessory to prevent dock icon
@@ -209,20 +210,16 @@ impl Server {
         debug!("mac_hotkey::Manager created successfully");
 
         // Create shutdown coordination
-        let shutdown_requested = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown = ShutdownCoordinator::new();
         let idle_state = Arc::new(IdleTimerState::new(self.idle_timeout_secs));
-        // Create the IPC server; pass shutdown flag so RPC can trigger exit
+        // Create the IPC server with the coordinator used by RPC shutdown.
         let ipc_server = IPCServer::new(
             &self.socket_path,
             manager,
-            shutdown_requested.clone(),
-            shutdown_notify.clone(),
+            shutdown.clone(),
             idle_state.clone(),
         );
-        let shutdown_requested_clone = shutdown_requested.clone();
-        let shutdown_notify_clone = shutdown_notify.clone();
-        let ipc_wakeup = proxy_for_ipc;
+        let shutdown_for_ipc = shutdown.clone();
 
         // Spawn IPC server in background thread
         let server_thread = thread::spawn(move || {
@@ -234,10 +231,7 @@ impl Server {
                 Ok(rt) => rt,
                 Err(e) => {
                     error!("Failed to create tokio runtime: {}", e);
-                    shutdown_requested_clone.store(true, Ordering::SeqCst);
-                    shutdown_notify_clone.notify_waiters();
-                    // Wake the Tao loop to observe shutdown
-                    let _ = ipc_wakeup.send_event(WakeEvent::Shutdown);
+                    shutdown_for_ipc.request(ShutdownReason::IpcRuntimeFailed);
                     return;
                 }
             };
@@ -250,6 +244,7 @@ impl Server {
                     error!("IPC server error: {}", e);
                 }
             });
+            shutdown_for_ipc.request(ShutdownReason::IpcStopped);
 
             info!("IPC server thread ending");
         });
@@ -259,11 +254,7 @@ impl Server {
         // the backend die as soon as the frontend goes away for any reason.
         let mut parent_watcher_thread = None;
         if let Some(ppid) = self.parent_pid {
-            parent_watcher_thread = Some(spawn_parent_watcher(
-                ppid,
-                shutdown_requested.clone(),
-                shutdown_notify,
-            ));
+            parent_watcher_thread = Some(spawn_parent_watcher(ppid, shutdown.clone()));
         }
 
         // NSWorkspace observer installation is triggered post-handshake via UserEvent
@@ -287,8 +278,28 @@ impl Server {
             // Default to waiting until the next concrete event.
             *control_flow = ControlFlow::Wait;
 
+            if matches!(event, Event::LoopDestroyed) {
+                shutdown.request(ShutdownReason::EventLoopDestroyed);
+                if let Some(h) = parent_watcher_thread.take()
+                    && let Err(e) = h.join()
+                {
+                    error!("Parent watcher thread join failed: {:?}", e);
+                }
+                if let Some(h) = server_thread.take() {
+                    if let Err(e) = h.join() {
+                        error!("IPC server thread join failed: {:?}", e);
+                    } else {
+                        info!("Shutdown complete");
+                    }
+                } else {
+                    info!("Shutdown complete");
+                }
+                idle_state_for_loop.disarm();
+                return;
+            }
+
             // Check for shutdown
-            if shutdown_requested.load(Ordering::SeqCst) {
+            if shutdown.is_requested() {
                 if !shutdown_logged {
                     // Log once when we first observe the transition to shutdown.
                     tracing::debug!("Shutdown requested, exiting event loop");
@@ -313,7 +324,7 @@ impl Server {
                         *control_flow = ControlFlow::WaitUntil(when);
                     }
                     Some(when) => {
-                        if Instant::now() >= when {
+                        if request_idle_shutdown_if_due(&shutdown, when, Instant::now()) {
                             info!(
                                 "Idle timeout reached ({}s since client disconnect), shutting down",
                                 self.idle_timeout_secs
@@ -351,25 +362,6 @@ impl Server {
                     client_disconnected = true;
                 }
                 Event::UserEvent(WakeEvent::Shutdown) => {}
-                Event::LoopDestroyed => {
-                    // Join the parent watcher thread
-                    if let Some(h) = parent_watcher_thread.take()
-                        && let Err(e) = h.join()
-                    {
-                        error!("Parent watcher thread join failed: {:?}", e);
-                    }
-                    // Join the IPC server thread and emit a single success line.
-                    if let Some(h) = server_thread.take() {
-                        if let Err(e) = h.join() {
-                            error!("IPC server thread join failed: {:?}", e);
-                        } else {
-                            info!("Shutdown complete");
-                        }
-                    } else {
-                        info!("Shutdown complete");
-                    }
-                    idle_state_for_loop.disarm();
-                }
                 _ => {
                     // Log other events at trace level for debugging
                     trace!("Event loop received: {:?}", event);
@@ -410,22 +402,32 @@ mod tests {
     }
 
     #[test]
+    fn idle_expiry_requests_shutdown_before_event_loop_exit() {
+        let shutdown = ShutdownCoordinator::new();
+        let now = Instant::now();
+
+        assert!(!request_idle_shutdown_if_due(
+            &shutdown,
+            now + Duration::from_secs(1),
+            now
+        ));
+        assert!(!shutdown.is_requested());
+        assert!(request_idle_shutdown_if_due(&shutdown, now, now));
+        assert!(shutdown.is_requested());
+    }
+
+    #[test]
     fn test_spawn_parent_watcher_shutdown_cooperation() {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown = ShutdownCoordinator::new();
 
         // Spawn watching our own process ID (which is definitely alive)
-        let handle = spawn_parent_watcher(
-            process::id() as libc::pid_t,
-            shutdown.clone(),
-            shutdown_notify,
-        );
+        let handle = spawn_parent_watcher(process::id() as libc::pid_t, shutdown.clone());
 
         // Sleep briefly to let the thread start
         thread::sleep(Duration::from_millis(50));
 
         // Request shutdown and see if the thread exits cooperatively!
-        shutdown.store(true, Ordering::SeqCst);
+        shutdown.request(ShutdownReason::Test);
 
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
