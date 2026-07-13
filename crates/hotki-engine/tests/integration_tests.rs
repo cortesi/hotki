@@ -9,12 +9,13 @@ use std::{
     time::{Duration, Instant as StdInstant},
 };
 
-use hotki_engine::test_support::{
+use hotki_protocol::MsgToUI;
+use tokio::time::{advance, timeout};
+
+use crate::test_support::{
     capture_all_active, create_test_engine_with_relay, recv_until, run_engine_test,
     run_engine_test_paused, set_on_relay_repeat, set_world_focus, write_test_config,
 };
-use hotki_protocol::MsgToUI;
-use tokio::time::{advance, timeout};
 
 #[test]
 fn focus_change_triggers_rerender() {
@@ -599,7 +600,7 @@ fn unbound_key_up_is_noop() {
     });
 }
 
-async fn dispatch_ident(engine: &hotki_engine::Engine, ident: &str) {
+async fn dispatch_ident(engine: &crate::Engine, ident: &str) {
     let id = engine
         .resolve_id_for_ident(ident)
         .await

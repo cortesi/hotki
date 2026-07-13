@@ -1,6 +1,4 @@
-//! Test support utilities for hotki-engine integration/unit tests.
-//! These helpers are public to avoid dead_code warnings and are lightweight.
-//! They are intended for use by the test suite only.
+//! Test support utilities for hotki-engine integration and unit tests.
 
 use std::{
     fs,
@@ -20,14 +18,6 @@ use tokio::{
     sync::mpsc,
     time::{Instant, sleep},
 };
-
-/// Create a low-latency `hotki_world` configuration suitable for tests.
-pub fn fast_world_cfg() -> hotki_world::WorldCfg {
-    hotki_world::WorldCfg {
-        poll_ms_min: 1,
-        poll_ms_max: 10,
-    }
-}
 
 /// Run an asynchronous engine test body on a dedicated runtime.
 ///
@@ -66,28 +56,6 @@ where
     }
 }
 
-/// Receive an error notification with a specific `title` within `timeout_ms`.
-pub async fn recv_error_with_title(
-    rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>,
-    title: &str,
-    timeout_ms: u64,
-) -> bool {
-    let want = title.to_string();
-    tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-        while let Some(msg) = rx.recv().await {
-            if let MsgToUI::Notify { kind, title, .. } = msg
-                && matches!(kind, hotki_protocol::NotifyKind::Error)
-                && title == want
-            {
-                return true;
-            }
-        }
-        false
-    })
-    .await
-    .unwrap_or(false)
-}
-
 /// Construct a test engine with default mock components and optional relay support.
 pub async fn create_test_engine_with_relay(
     relay_enabled: bool,
@@ -97,11 +65,6 @@ pub async fn create_test_engine_with_relay(
     let world = Arc::new(TestWorld::new());
     let engine = crate::Engine::new_with_api_and_world(api, tx, relay_enabled, world.clone());
     (engine, rx, world)
-}
-
-/// Construct a test engine with relay disabled (common default).
-pub async fn create_test_engine() -> (crate::Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {
-    create_test_engine_with_relay(false).await
 }
 
 /// Seed the world focus to a specific window and wait for it to be observed.

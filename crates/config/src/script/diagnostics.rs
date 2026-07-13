@@ -92,18 +92,6 @@ pub fn config_script_error<'s>(
     }
 }
 
-/// Attach a source location and excerpt to a validation error at `offset`.
-pub fn config_error_at_offset(path: &Path, source: &str, offset: usize, message: String) -> Error {
-    let (line, col) = line_col_at(source, offset);
-    Error::Validation {
-        path: Some(path.to_path_buf()),
-        line: Some(line),
-        col: Some(col),
-        message,
-        excerpt: Some(excerpt_at(source, line, col)),
-    }
-}
-
 /// Convert structured checker diagnostics into the stable config error shape.
 pub fn config_type_error(
     path: &Path,
@@ -196,19 +184,6 @@ fn config_source_excerpt(
                     .map(|source| excerpt_at(source.as_ref(), line, col))
             }),
     }
-}
-
-/// Convert a byte offset into 1-based line and column coordinates.
-fn line_col_at(source: &str, offset: usize) -> (usize, usize) {
-    let clamped = offset.min(source.len());
-    let prefix = &source[..clamped];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let col = prefix
-        .rsplit_once('\n')
-        .map_or(prefix.chars().count() + 1, |(_, tail)| {
-            tail.chars().count() + 1
-        });
-    (line, col)
 }
 
 /// Render checker diagnostics using user-source line numbers instead of prelude offsets.

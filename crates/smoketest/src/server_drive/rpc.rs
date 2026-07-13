@@ -106,8 +106,8 @@ impl<'a> ServerRpc<'a> {
 /// Convert a server crate error into a driver error.
 fn server_error(err: hotki_server::Error) -> DriverError {
     match err {
-        hotki_server::Error::Rpc { code, message, .. } => {
-            DriverError::ServerRpcFailure { code, message }
+        hotki_server::Error::Rpc { failure, .. } => {
+            DriverError::ServerRpcFailure { failure: *failure }
         }
         other => DriverError::ServerFailure {
             message: other.to_string(),
@@ -117,7 +117,7 @@ fn server_error(err: hotki_server::Error) -> DriverError {
 
 #[cfg(test)]
 mod tests {
-    use hotki_server::RpcErrorCode;
+    use hotki_protocol::rpc::{RpcErrorCode, RpcFailure};
 
     use super::*;
 
@@ -125,16 +125,16 @@ mod tests {
     fn server_error_preserves_typed_rpc_code() {
         let err = hotki_server::Error::Rpc {
             method: "inject_key_down".to_string(),
-            code: RpcErrorCode::KeyNotBound,
-            message: "missing".to_string(),
+            failure: Box::new(
+                RpcFailure::new(RpcErrorCode::KeyNotBound, "missing").with_ident("cmd+k"),
+            ),
         };
 
         assert!(matches!(
             server_error(err),
-            DriverError::ServerRpcFailure {
-                code: RpcErrorCode::KeyNotBound,
-                ..
-            }
+            DriverError::ServerRpcFailure { failure }
+                if failure.code == RpcErrorCode::KeyNotBound
+                    && failure.payload.fields.ident.as_deref() == Some("cmd+k")
         ));
     }
 }

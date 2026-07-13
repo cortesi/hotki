@@ -1,4 +1,4 @@
-use config::script::engine::{ModeCtx, ModeFrame, ModeId, ModeRef, RenderedState};
+use config::runtime::{ConfigRuntime, ModeCtx, ModeId, ModeRef, ModeStack, RenderedState};
 use mac_keycode::Chord;
 
 use crate::selector::SelectorState;
@@ -15,7 +15,7 @@ pub(crate) struct FocusInfo {
 #[derive(Debug)]
 pub(crate) struct RuntimeState {
     pub(crate) hud_visible: bool,
-    pub(crate) stack: Vec<ModeFrame>,
+    pub(crate) stack: ModeStack,
     pub(crate) focus: FocusInfo,
     pub(crate) rendered: RenderedState,
     pub(crate) selector: Option<SelectorState>,
@@ -25,7 +25,7 @@ pub(crate) struct RuntimeState {
 #[derive(Clone)]
 pub(crate) struct RuntimeCheckpoint {
     hud_visible: bool,
-    stack: Vec<ModeFrame>,
+    stack: ModeStack,
     focus: FocusInfo,
     rendered: RenderedState,
 }
@@ -34,7 +34,7 @@ impl RuntimeState {
     pub(crate) fn empty() -> Self {
         Self {
             hud_visible: false,
-            stack: Vec::new(),
+            stack: ModeStack::default(),
             focus: FocusInfo::default(),
             rendered: Self::empty_rendered(config::Style::default()),
             selector: None,
@@ -66,26 +66,10 @@ impl RuntimeState {
         self.rendered = checkpoint.rendered;
     }
 
-    pub(crate) fn root_frame(closure: ModeRef) -> ModeFrame {
-        ModeFrame {
-            title: "root".to_string(),
-            closure,
-            entered_via: None,
-            rendered: Vec::new(),
-            capture: false,
-        }
-    }
-
-    pub(crate) fn ensure_root(&mut self, root: ModeRef) {
-        if self.stack.is_empty() {
-            self.stack.push(Self::root_frame(root));
-        }
-    }
-
-    pub(crate) fn install_root(&mut self, root: ModeRef, style: config::Style) {
+    pub(crate) fn install_config(&mut self, config: &ConfigRuntime) {
         self.selector = None;
-        self.stack = vec![Self::root_frame(root)];
-        self.rendered = Self::empty_rendered(style);
+        config.reset_stack(&mut self.stack);
+        self.rendered = Self::empty_rendered(config.style());
     }
 
     pub(crate) fn clear_config_state(&mut self, style: config::Style) {
@@ -96,7 +80,7 @@ impl RuntimeState {
     }
 
     pub(crate) fn depth(&self) -> usize {
-        self.stack.len().saturating_sub(1)
+        self.stack.depth()
     }
 
     /// Push a child mode frame and make the HUD visible.
@@ -108,13 +92,7 @@ impl RuntimeState {
         capture: bool,
     ) {
         self.hud_visible = true;
-        self.stack.push(ModeFrame {
-            title,
-            closure,
-            entered_via,
-            rendered: Vec::new(),
-            capture,
-        });
+        self.stack.push(title, closure, entered_via, capture);
     }
 }
 

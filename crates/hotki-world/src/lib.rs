@@ -19,7 +19,9 @@ mod geometry;
 mod platform;
 mod polling;
 mod state;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_support;
+#[cfg(any(test, feature = "test-utils"))]
 mod test_world;
 mod types;
 
@@ -29,6 +31,7 @@ pub use events::EventCursor;
 pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot, FocusSnapshot};
 pub use permissions::{PermissionState, PermissionsStatus as Capabilities};
 use polling::PollingWorld;
+#[cfg(any(test, feature = "test-utils"))]
 pub use test_world::TestWorld;
 pub use types::{
     FocusChange, WindowKey, WorldCfg, WorldEvent, WorldStatus, WorldView, WorldWindow,
@@ -46,3 +49,7 @@ impl World {
         PollingWorld::spawn(cfg)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/basic.rs"]
+mod integration_tests;

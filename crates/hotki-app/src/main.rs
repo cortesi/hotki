@@ -41,7 +41,7 @@ mod tray;
 /// Bounded delivery from background work to the UI thread.
 mod ui_delivery;
 
-use config::{load_dynamic_config, resolve_config_path};
+use config::{StyleResolver, resolve_config_path};
 
 use crate::{
     app::{AppBootstrap, HotkiApp},
@@ -219,12 +219,11 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
 
 /// Render the root config style once so UI-local startup notices match user configuration.
 fn initial_style_for_config(config_path: &Path) -> hotki_protocol::Style {
-    let cfg = match load_dynamic_config(config_path) {
-        Ok(cfg) => cfg,
+    match StyleResolver::from_config_path(config_path).and_then(|resolver| resolver.resolve()) {
+        Ok(resolved) => resolved.style,
         Err(err) => {
             error!("failed to load initial UI style: {}", err.pretty());
-            return hotki_protocol::Style::default();
+            hotki_protocol::Style::default()
         }
-    };
-    cfg.base_style()
+    }
 }

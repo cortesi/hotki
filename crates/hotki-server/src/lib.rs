@@ -60,7 +60,7 @@ mod shutdown;
 mod util;
 
 pub use client::Client;
-pub use error::{Error, Result, RpcErrorCode};
+pub use error::{Error, Result};
 pub use ipc::{Connection, DeliveryStats, rpc::WorldSnapshotLite};
 pub use server::Server;
 

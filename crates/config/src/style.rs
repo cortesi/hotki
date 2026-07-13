@@ -63,6 +63,34 @@ pub struct ResolvedStyle {
     pub provenance: StyleProvenance,
 }
 
+/// Style candidate retaining the exact override source until validation finishes.
+pub struct StyleCandidate {
+    /// Embedded default style to overlay.
+    default: Style,
+    /// Override path and source, when an override exists.
+    pub(crate) override_source: Option<(PathBuf, String)>,
+}
+
+impl StyleCandidate {
+    /// Evaluate the retained override exactly once and produce the resolved style.
+    pub(crate) fn resolve(self) -> Result<ResolvedStyle, Error> {
+        let Some((path, source)) = self.override_source else {
+            return Ok(ResolvedStyle {
+                style: self.default,
+                provenance: StyleProvenance::DefaultOnly,
+            });
+        };
+        let overlay = eval_style_source(&source, &path)?;
+        let provenance_path = fs::canonicalize(&path).unwrap_or(path);
+        Ok(ResolvedStyle {
+            style: overlay_raw(self.default, &overlay),
+            provenance: StyleProvenance::Override {
+                path: provenance_path,
+            },
+        })
+    }
+}
+
 /// Resolver for Hotki's embedded default style and optional sibling override.
 #[derive(Clone, Debug)]
 pub struct StyleResolver {
@@ -100,13 +128,24 @@ impl StyleResolver {
 
     /// Resolve the effective style by merging `style.luau` over the default when it exists.
     pub fn resolve(&self) -> Result<ResolvedStyle, Error> {
+        self.read_candidate()?.resolve()
+    }
+
+    /// Read an effective style candidate without evaluating its override.
+    pub(crate) fn read_candidate(&self) -> Result<StyleCandidate, Error> {
         let Some(path) = &self.override_path else {
-            return Ok(self.default_result());
+            return Ok(StyleCandidate {
+                default: self.default.clone(),
+                override_source: None,
+            });
         };
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(self.default_result());
+                return Ok(StyleCandidate {
+                    default: self.default.clone(),
+                    override_source: None,
+                });
             }
             Err(error) => {
                 return Err(Error::Read {
@@ -115,22 +154,10 @@ impl StyleResolver {
                 });
             }
         };
-        let overlay = eval_style_source(&source, path)?;
-        let provenance_path = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        Ok(ResolvedStyle {
-            style: overlay_raw(self.default.clone(), &overlay),
-            provenance: StyleProvenance::Override {
-                path: provenance_path,
-            },
+        Ok(StyleCandidate {
+            default: self.default.clone(),
+            override_source: Some((path.clone(), source)),
         })
-    }
-
-    /// Return the default-only result.
-    fn default_result(&self) -> ResolvedStyle {
-        ResolvedStyle {
-            style: self.default.clone(),
-            provenance: StyleProvenance::DefaultOnly,
-        }
     }
 }
 

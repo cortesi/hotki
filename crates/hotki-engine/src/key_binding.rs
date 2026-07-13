@@ -148,6 +148,7 @@ impl KeyBindingManager {
         Some((ident, binding.chord.clone()))
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_all_active(&self) -> bool {
         self.capture_all_active
     }

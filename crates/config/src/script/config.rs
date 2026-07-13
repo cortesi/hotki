@@ -27,7 +27,7 @@ pub const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
 
 /// A loaded Luau configuration consisting of a root mode plus the runtime.
-pub struct DynamicConfig {
+pub struct LoadedConfig {
     /// Root mode renderer returned by the entry module.
     pub(crate) root: ModeRef,
     /// Resolved base style loaded from the embedded default and optional sibling override.
@@ -50,24 +50,21 @@ pub struct DynamicConfig {
     pub(crate) validation_gas: u64,
 }
 
-impl DynamicConfig {
+impl LoadedConfig {
     /// Root mode closure for this config.
-    pub fn root(&self) -> ModeRef {
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> ModeRef {
         self.root.clone()
     }
 
     /// Return the resolved base style.
-    pub fn base_style(&self) -> Style {
+    #[cfg(test)]
+    pub(crate) fn base_style(&self) -> Style {
         self.base_style.clone()
     }
 
-    /// Return the source of the resolved base style.
-    pub fn style_provenance(&self) -> &StyleProvenance {
-        &self.style_provenance
-    }
-
     /// Return the resolved style and its provenance.
-    pub fn resolved_style(&self) -> crate::ResolvedStyle {
+    pub(crate) fn resolved_style(&self) -> crate::ResolvedStyle {
         crate::ResolvedStyle {
             style: self.base_style.clone(),
             provenance: self.style_provenance.clone(),
@@ -120,7 +117,7 @@ impl DynamicConfig {
     }
 }
 
-impl Drop for DynamicConfig {
+impl Drop for LoadedConfig {
     fn drop(&mut self) {
         drop(CallbackRegistry::synchronize(
             &self.callbacks,

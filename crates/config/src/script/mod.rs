@@ -5,39 +5,38 @@ mod apps;
 /// Retained callback ownership and call-context plumbing.
 mod callback;
 /// Loaded config state and source tracking.
-mod config;
-pub(crate) mod diagnostics;
-pub mod engine;
+pub mod config;
+pub mod diagnostics;
 /// Handler execution bridge.
-mod handler;
+pub mod handler;
 mod host_args;
 mod host_hotki;
 mod host_parse;
 mod host_runtime;
-pub(crate) mod host_userdata;
-mod loader;
+pub mod host_userdata;
+pub mod loader;
 /// Checked and cached filesystem module source.
 mod module_source;
-mod render;
+pub mod render;
 /// Selector parsing and runtime types.
-mod selector;
+pub mod selector;
 /// Shared runtime data types.
-mod types;
+pub mod types;
 /// Small synchronization and locking helpers.
 mod util;
 
 #[cfg(test)]
 mod test_script;
 
-pub(crate) use config::DynamicConfig;
+pub use config::LoadedConfig;
 #[cfg(test)]
-pub(crate) use loader::load_dynamic_config_from_string;
+pub use loader::load_dynamic_config_from_string;
 #[cfg(test)]
-pub(crate) use render::render_stack;
+pub use render::render_stack;
 #[cfg(test)]
-pub(crate) use selector::SelectorItems;
-pub(crate) use selector::{SelectorConfig, SelectorData, SelectorItem};
-pub(crate) use types::{
+pub use selector::SelectorItems;
+pub use selector::{SelectorConfig, SelectorData, SelectorItem};
+pub use types::{
     ActionCtx, ActionRepeatPermission, Binding, BindingFlags, BindingKind, Effect, HandlerRef,
     ModeCtx, ModeFrame, ModeRef, NavRequest, RenderedState, RepeatSpec, SourcePos,
 };

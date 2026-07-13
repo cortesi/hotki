@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use config::script::engine as dyn_engine;
+use config::runtime as dyn_engine;
 use mac_keycode::Chord;
 
 use crate::{
@@ -229,8 +229,7 @@ impl Engine {
                     terminal: true,
                 });
             };
-            match dyn_engine::execute_handler_with_permission(
-                cfg,
+            match cfg.execute_handler_with_permission(
                 &action,
                 &ctx,
                 dyn_engine::ActionRepeatPermission::RepeatedAction,
@@ -430,25 +429,19 @@ impl Engine {
                 DispatchResult::EnteredMode
             }
             dyn_engine::NavRequest::Pop => {
-                if rt.stack.len() > 1 {
-                    rt.stack.pop();
-                }
-                if rt.stack.len() <= 1 {
+                rt.stack.pop();
+                if rt.stack.depth() == 0 {
                     rt.hud_visible = false;
                 }
                 DispatchResult::Navigation
             }
             dyn_engine::NavRequest::Exit => {
-                if rt.stack.len() > 1 {
-                    rt.stack.truncate(1);
-                }
+                rt.stack.reset_to_root();
                 rt.hud_visible = false;
                 DispatchResult::Navigation
             }
             dyn_engine::NavRequest::ShowRoot => {
-                if rt.stack.len() > 1 {
-                    rt.stack.truncate(1);
-                }
+                rt.stack.reset_to_root();
                 rt.hud_visible = true;
                 DispatchResult::Navigation
             }

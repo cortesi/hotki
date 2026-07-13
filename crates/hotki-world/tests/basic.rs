@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use hotki_world::{
+use crate::{
     FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow,
     focus_snapshot_for_change, focused_snapshot,
 };

@@ -31,7 +31,7 @@ use std::{
 use async_trait::async_trait;
 use events::EventPipeline;
 use hotki_engine::Engine;
-use hotki_protocol::rpc::{HotkeyMethod, ServerStatusLite};
+use hotki_protocol::rpc::{HotkeyMethod, RpcErrorCode, RpcFailure, ServerStatusLite};
 use mrpc::{Connection as MrpcConnection, RpcError, RpcSender, Value};
 pub(crate) use rpc::dec_inject_key_param;
 use rpc::{
@@ -44,7 +44,6 @@ use workers::{DispatchResult, WorkerPool, WorkerRuntime};
 
 use super::{IdleTimerSnapshot, IdleTimerState};
 use crate::{
-    error::RpcErrorCode,
     loop_wake::{self, WakeEvent},
     shutdown::{ShutdownCoordinator, ShutdownReason},
 };
@@ -130,10 +129,10 @@ impl HotkeyService {
         )?;
         let engine = self.engine().await;
         if let Err(err) = engine.set_config_path(PathBuf::from(raw_path)).await {
-            return Err(typed_err(
+            return Err(typed_err(RpcFailure::new(
                 RpcErrorCode::EngineSetConfig,
-                &[("message", Value::String(err.to_string().into()))],
-            ));
+                err.to_string(),
+            )));
         }
         Ok(Value::Boolean(true))
     }
@@ -141,8 +140,12 @@ impl HotkeyService {
     async fn handle_inject_key(&self, params: &[Value]) -> StdResult<Value, RpcError> {
         if params.is_empty() {
             return Err(typed_err(
-                RpcErrorCode::MissingParams,
-                &[("expected", Value::String("inject request".into()))],
+                RpcFailure::new(
+                    RpcErrorCode::MissingParams,
+                    "inject_key requires an inject request",
+                )
+                .with_method(HotkeyMethod::InjectKey.as_str())
+                .with_expected("inject request"),
             ));
         }
         let req = dec_inject_key_param(&params[0])?;
@@ -166,9 +169,9 @@ impl HotkeyService {
                     "InjectKey: ident not bound: {}",
                     req.ident
                 );
+                let message = format!("key is not bound: {}", req.ident);
                 Err(typed_err(
-                    RpcErrorCode::KeyNotBound,
-                    &[("ident", Value::String(req.ident.into()))],
+                    RpcFailure::new(RpcErrorCode::KeyNotBound, message).with_ident(req.ident),
                 ))
             }
             Err(err) => {
@@ -178,10 +181,10 @@ impl HotkeyService {
                     req.ident,
                     err
                 );
-                Err(typed_err(
+                Err(typed_err(RpcFailure::new(
                     RpcErrorCode::EngineDispatch,
-                    &[("message", Value::String(err.to_string().into()))],
-                ))
+                    err.to_string(),
+                )))
             }
         }
     }
@@ -219,21 +222,13 @@ impl HotkeyService {
         let displays = world.displays().await;
         let focused_app = hotki_world::focused_snapshot(world.as_ref()).await;
         let payload = build_snapshot_payload(displays, focused_app);
-        enc_world_snapshot(&payload).map_err(|err| {
-            typed_err(
-                RpcErrorCode::InvalidType,
-                &[("message", Value::String(err.to_string().into()))],
-            )
-        })
+        enc_world_snapshot(&payload)
+            .map_err(|err| typed_err(RpcFailure::new(RpcErrorCode::InvalidType, err.to_string())))
     }
 
     async fn handle_get_server_status(&self) -> StdResult<Value, RpcError> {
-        enc_server_status(&self.snapshot_server_status().await).map_err(|err| {
-            typed_err(
-                RpcErrorCode::InvalidType,
-                &[("message", Value::String(err.to_string().into()))],
-            )
-        })
+        enc_server_status(&self.snapshot_server_status().await)
+            .map_err(|err| typed_err(RpcFailure::new(RpcErrorCode::InvalidType, err.to_string())))
     }
 
     async fn route_request(
@@ -257,8 +252,11 @@ impl HotkeyService {
 fn unknown_method(method: &str) -> RpcError {
     warn!("Unknown method: {}", method);
     typed_err(
-        RpcErrorCode::MethodNotFound,
-        &[("method", Value::String(method.into()))],
+        RpcFailure::new(
+            RpcErrorCode::MethodNotFound,
+            format!("method '{method}' not found"),
+        )
+        .with_method(method),
     )
 }
 
@@ -267,10 +265,10 @@ impl MrpcConnection for HotkeyService {
     async fn connected(&self, client: RpcSender) -> StdResult<(), RpcError> {
         if self.shutdown.is_requested() {
             // Refuse new connections during shutdown
-            return Err(typed_err(
+            return Err(typed_err(RpcFailure::new(
                 RpcErrorCode::ShuttingDown,
-                &[("message", Value::String("Server is shutting down".into()))],
-            ));
+                "server is shutting down",
+            )));
         }
         debug!("Client connected via MRPC");
 
@@ -409,6 +407,9 @@ mod tests {
         let RpcError::Service(service) = unknown_method("bogus") else {
             panic!("expected service error");
         };
-        assert_eq!(service.name, RpcErrorCode::MethodNotFound.to_string());
+        let failure = hotki_protocol::rpc::decode_rpc_failure(&service).expect("decode failure");
+        assert_eq!(failure.code, RpcErrorCode::MethodNotFound);
+        assert_eq!(failure.payload.message, "method 'bogus' not found");
+        assert_eq!(failure.payload.fields.method.as_deref(), Some("bogus"));
     }
 }

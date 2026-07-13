@@ -7,7 +7,7 @@ use ruau::vm::ScriptError;
 use tracing::warn;
 
 use super::{
-    Binding, BindingKind, DynamicConfig, Effect, ModeCtx, ModeFrame, RenderedState, diagnostics,
+    Binding, BindingKind, Effect, LoadedConfig, ModeCtx, ModeFrame, RenderedState, diagnostics,
     types::{HudRow, SourcePos},
 };
 use crate::{Error, NotifyKind, Style, error::excerpt_at};
@@ -32,7 +32,7 @@ struct ModeView {
 
 /// Render the full mode stack, applying empty/orphan truncation and producing HUD rows.
 pub fn render_stack(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     stack: &mut Vec<ModeFrame>,
     ctx: &ModeCtx,
     base_style: &Style,
@@ -44,7 +44,7 @@ pub fn render_stack(
 
 /// Render the full mode stack without managing the retained VM heap boundary.
 fn render_stack_inner(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     stack: &mut Vec<ModeFrame>,
     ctx: &ModeCtx,
     base_style: &Style,
@@ -98,7 +98,7 @@ fn render_stack_inner(
 
 /// Render one mode frame and collect duplicate-chord warnings.
 fn render_mode(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     frame: &ModeFrame,
     ctx: &ModeCtx,
 ) -> Result<(ModeView, Vec<Effect>), Error> {
@@ -107,7 +107,7 @@ fn render_mode(
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
 
-    let options = DynamicConfig::entry_options();
+    let options = LoadedConfig::entry_options();
     let mut context = cfg.callback_context();
     let step = cfg
         .runtime
@@ -144,7 +144,7 @@ fn render_mode(
 }
 
 /// Keep the first binding for each chord and surface warnings for duplicates.
-fn dedup_mode_bindings(cfg: &DynamicConfig, bindings: &[Binding]) -> (Vec<Binding>, Vec<Effect>) {
+fn dedup_mode_bindings(cfg: &LoadedConfig, bindings: &[Binding]) -> (Vec<Binding>, Vec<Effect>) {
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(bindings.len());
     let mut warnings = Vec::new();
@@ -228,7 +228,7 @@ fn build_hud_rows(bindings: &[(Chord, Binding)]) -> Vec<HudRow> {
 }
 
 /// Render the excerpt for a binding source position when its source is cached.
-fn excerpt_for(cfg: &DynamicConfig, pos: &SourcePos) -> Option<String> {
+fn excerpt_for(cfg: &LoadedConfig, pos: &SourcePos) -> Option<String> {
     let path = pos.path.as_ref()?;
     let line = pos.line?;
     let col = pos.col.unwrap_or(1);

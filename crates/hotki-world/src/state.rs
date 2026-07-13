@@ -105,6 +105,7 @@ impl WorldState {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_snapshot(
         &self,
         snapshot: Vec<WorldWindow>,
@@ -125,6 +126,7 @@ impl WorldState {
         changed.then_some(change)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_displays(&self, displays: DisplaysSnapshot) {
         self.data.write().displays = displays;
     }
@@ -207,6 +209,7 @@ where
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 fn focus_change_for_snapshot(snapshot: &[WorldWindow], focused: Option<WindowKey>) -> FocusChange {
     let Some(key) = focused else {
         return FocusChange::default();

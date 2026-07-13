@@ -18,7 +18,7 @@ use ruau::{
 };
 
 use super::{
-    DynamicConfig, ModeCtx, ModeRef,
+    LoadedConfig, ModeCtx, ModeRef,
     config::SourceMap,
     diagnostics,
     host_hotki::build_hotki_module,
@@ -27,10 +27,19 @@ use super::{
     module_source::ConfigModuleSource,
     util::lock_unpoisoned,
 };
-use crate::{Error, StyleResolver, error::excerpt_at};
+use crate::{Error, ResolvedStyle, StyleResolver, error::excerpt_at};
 
 /// Load a Luau config from a file at `path`.
-pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
+pub fn load_dynamic_config(path: &Path) -> Result<LoadedConfig, Error> {
+    let resolved_style = StyleResolver::from_config_path(path)?.resolve()?;
+    load_dynamic_config_with_style(path, resolved_style)
+}
+
+/// Load a filesystem config with a style already resolved for the same candidate.
+pub fn load_dynamic_config_with_style(
+    path: &Path,
+    resolved_style: ResolvedStyle,
+) -> Result<LoadedConfig, Error> {
     if path.extension() != Some(OsStr::new("luau")) {
         return Err(Error::Read {
             path: Some(path.to_path_buf()),
@@ -47,7 +56,7 @@ pub fn load_dynamic_config(path: &Path) -> Result<DynamicConfig, Error> {
         message: err.to_string(),
     })?;
 
-    load_dynamic_config_from_string(&source, Some(path))
+    load_dynamic_config_from_string_with_style(&source, Some(path), resolved_style)
 }
 
 /// Executable entry artifact for filesystem and in-memory configs.
@@ -59,22 +68,30 @@ enum RootProgram {
 }
 
 /// Load a Luau config from source text and an optional origin path.
+#[cfg(test)]
 pub fn load_dynamic_config_from_string(
     source: &str,
     path: Option<PathBuf>,
-) -> Result<DynamicConfig, Error> {
-    let sources = Arc::new(Mutex::new(HashMap::new()));
-    let source_key = path.clone().unwrap_or_else(|| PathBuf::from("<memory>"));
-    lock_unpoisoned(&sources).insert(source_key, Arc::from(source.to_string().into_boxed_str()));
-
-    let applications = ApplicationCache::default();
+) -> Result<LoadedConfig, Error> {
     let resolved_style = match path.as_deref() {
         Some(path) => StyleResolver::from_config_path(path)?.resolve()?,
         None => StyleResolver::default_only()?.resolve()?,
     };
+    load_dynamic_config_from_string_with_style(source, path, resolved_style)
+}
 
-    let applications = Arc::new(Mutex::new(applications));
-    let callbacks = DynamicConfig::callback_registry();
+/// Load config source with its already-resolved style.
+fn load_dynamic_config_from_string_with_style(
+    source: &str,
+    path: Option<PathBuf>,
+    resolved_style: ResolvedStyle,
+) -> Result<LoadedConfig, Error> {
+    let sources = Arc::new(Mutex::new(HashMap::new()));
+    let source_key = path.clone().unwrap_or_else(|| PathBuf::from("<memory>"));
+    lock_unpoisoned(&sources).insert(source_key, Arc::from(source.to_string().into_boxed_str()));
+
+    let applications = Arc::new(Mutex::new(ApplicationCache::default()));
+    let callbacks = LoadedConfig::callback_registry();
     let module = build_hotki_module(applications)
         .map_err(|err| diagnostics::config_validation(path.clone(), err))?;
     let (surface, program, module_source, module_count) = if let Some(path) = path.as_deref() {
@@ -104,7 +121,7 @@ pub fn load_dynamic_config_from_string(
     }
     .map_err(|err| diagnostics::config_retained_error(path.clone(), &err))?;
     let mut context = super::callback::CallbackContext::new(Arc::clone(&callbacks));
-    let options = DynamicConfig::entry_options();
+    let options = LoadedConfig::entry_options();
     let mut script_error = None;
     let mut root = None;
     let mut invalid_root = false;
@@ -155,7 +172,7 @@ pub fn load_dynamic_config_from_string(
     validate_root(&mut runtime, &callbacks, &root, path.as_deref(), &sources)?;
     let validation_gas = runtime.gas_spent();
 
-    Ok(DynamicConfig {
+    Ok(LoadedConfig {
         root,
         base_style: resolved_style.style,
         style_provenance: resolved_style.provenance,
@@ -322,7 +339,7 @@ fn validate_root(
         depth: 0,
     };
     let mut script_error = None;
-    let options = DynamicConfig::entry_options();
+    let options = LoadedConfig::entry_options();
     let mut context = super::callback::CallbackContext::new(Arc::clone(callbacks));
     let step = runtime.step_with_context(&mut context, &options, |scope| {
         let builder = mode_builder_userdata(scope, builder.clone())?;

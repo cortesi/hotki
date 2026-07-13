@@ -12,8 +12,8 @@ mod tests {
     use crate::{
         Action, Error, Style, load_dynamic_config,
         script::{
-            ActionRepeatPermission, Binding, BindingKind, DynamicConfig, Effect, ModeCtx,
-            ModeFrame, NavRequest, RenderedState, RepeatSpec, SelectorItems,
+            ActionRepeatPermission, Binding, BindingKind, Effect, LoadedConfig, ModeCtx, ModeFrame,
+            NavRequest, RenderedState, RepeatSpec, SelectorItems,
             config::{SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT},
             handler::{execute_handler, execute_handler_with_permission, execute_selector_handler},
             load_dynamic_config_from_string, render_stack,
@@ -43,7 +43,7 @@ mod tests {
         }
     }
 
-    fn root_frame(cfg: &DynamicConfig) -> ModeFrame {
+    fn root_frame(cfg: &LoadedConfig) -> ModeFrame {
         ModeFrame {
             title: "root".to_string(),
             closure: cfg.root(),
@@ -1271,7 +1271,7 @@ end
     }
 
     fn assert_handler_execs(
-        cfg: &mut DynamicConfig,
+        cfg: &mut LoadedConfig,
         rendered: &RenderedState,
         ident: &str,
         ctx: &ModeCtx,

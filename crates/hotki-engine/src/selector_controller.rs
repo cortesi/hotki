@@ -1,6 +1,6 @@
 use std::{result, sync::Arc};
 
-use config::script::engine as dyn_engine;
+use config::runtime as dyn_engine;
 
 use crate::{
     Engine, Result,
@@ -64,7 +64,7 @@ impl<'a> SelectorController<'a> {
                 tracing::trace!("No dynamic config loaded; ignoring selector");
                 return Ok(false);
             };
-            match config.resolve_items(cfg, &ctx) {
+            match cfg.resolve_selector_items(&config, &ctx) {
                 Ok(items) => items,
                 Err(err) => {
                     self.engine.notifier.send_error("Selector", err.pretty())?;
@@ -195,19 +195,18 @@ fn close_selector(
 
 /// Execute the close handler described by a terminal selector event.
 fn execute_selector_close(
-    cfg: &mut dyn_engine::DynamicConfig,
+    cfg: &mut dyn_engine::ConfigRuntime,
     close: &SelectorClose,
 ) -> result::Result<dyn_engine::HandlerResult, config::Error> {
     match &close.terminal {
-        SelectorTerminal::Select(selection) => dyn_engine::execute_selector_handler(
-            cfg,
-            &close.config.on_select,
+        SelectorTerminal::Select(selection) => cfg.execute_selector_selection(
+            &close.config,
             &close.ctx,
             &selection.item,
             &selection.query,
         ),
-        SelectorTerminal::Cancel => match close.config.on_cancel.as_ref() {
-            Some(handler) => dyn_engine::execute_handler(cfg, handler, &close.ctx),
+        SelectorTerminal::Cancel => match cfg.execute_selector_cancel(&close.config, &close.ctx)? {
+            Some(result) => Ok(result),
             None => Ok(selector_noop_result()),
         },
     }

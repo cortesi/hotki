@@ -2,7 +2,7 @@
 
 use ruau::vm::{Function, RuntimeError, Scope, ScopedValue, StashedValue, Table};
 
-use super::{DynamicConfig, HandlerRef, ModeCtx, callback::CallbackRef, diagnostics};
+use super::{HandlerRef, LoadedConfig, ModeCtx, callback::CallbackRef, diagnostics};
 
 /// Opaque selector item payload stashed in the config VM.
 #[derive(Debug, Clone, Default)]
@@ -162,7 +162,18 @@ pub struct SelectorItem {
     /// Optional secondary text shown below the label.
     pub sublabel: Option<String>,
     /// Arbitrary auxiliary data passed to the callback on selection.
-    pub data: SelectorData,
+    pub(crate) data: SelectorData,
+}
+
+impl SelectorItem {
+    /// Construct a display-only selector item without callback data.
+    pub fn display(label: impl Into<String>, sublabel: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            sublabel,
+            data: SelectorData::default(),
+        }
+    }
 }
 
 /// Item source for a selector.
@@ -186,20 +197,20 @@ pub struct SelectorConfig {
     /// Placeholder text shown in the empty input field.
     pub placeholder: String,
     /// Item source for the selector.
-    pub items: SelectorItems,
+    pub(crate) items: SelectorItems,
     /// Callback invoked on selection.
-    pub on_select: HandlerRef,
+    pub(crate) on_select: HandlerRef,
     /// Optional callback invoked on cancel.
-    pub on_cancel: Option<HandlerRef>,
+    pub(crate) on_cancel: Option<HandlerRef>,
     /// Maximum number of items to display at once.
     pub max_visible: usize,
 }
 
 impl SelectorConfig {
     /// Resolve items for this selector, evaluating a provider function when needed.
-    pub fn resolve_items(
+    pub(crate) fn resolve_items(
         &self,
-        cfg: &mut DynamicConfig,
+        cfg: &mut LoadedConfig,
         ctx: &ModeCtx,
     ) -> Result<Vec<SelectorItem>, crate::Error> {
         self.resolve_items_inner(cfg, ctx)
@@ -208,7 +219,7 @@ impl SelectorConfig {
     /// Resolve items without managing the retained VM heap boundary.
     fn resolve_items_inner(
         &self,
-        cfg: &mut DynamicConfig,
+        cfg: &mut LoadedConfig,
         ctx: &ModeCtx,
     ) -> Result<Vec<SelectorItem>, crate::Error> {
         match &self.items {
@@ -218,7 +229,7 @@ impl SelectorConfig {
                 let mut script_error = None;
                 let path = cfg.path.clone();
                 let sources = cfg.sources.clone();
-                let options = DynamicConfig::entry_options();
+                let options = LoadedConfig::entry_options();
                 let mut context = cfg.callback_context();
                 let step = cfg
                     .runtime

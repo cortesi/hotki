@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "World service: window state snapshot + events for Hotki"
 license = "MIT"
+autotests = false
 
 [features]
 test-utils = []

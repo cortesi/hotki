@@ -2,7 +2,7 @@
 
 use std::{fmt, sync::Arc};
 
-use config::script::engine::{SelectorConfig, SelectorItem};
+use config::runtime::{SelectorConfig, SelectorItem};
 use hotki_protocol::{SelectorItemSnapshot, SelectorSnapshot};
 use mac_keycode::{Chord, Key, Modifier};
 use nucleo::{
@@ -618,11 +618,7 @@ mod tests {
     }
 
     fn mk_item(label: &str) -> SelectorItem {
-        SelectorItem {
-            label: label.to_string(),
-            sublabel: None,
-            data: Default::default(),
-        }
+        SelectorItem::display(label, None)
     }
 
     fn test_matcher(items: Vec<&str>) -> SelectorMatcher {

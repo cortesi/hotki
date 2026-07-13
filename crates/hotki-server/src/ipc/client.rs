@@ -13,7 +13,7 @@ use hotki_protocol::{
     MsgToUI,
     rpc::{
         HotkeyMethod, HotkeyNotification, InjectKeyReq, InjectKind, ServerStatusLite,
-        WorldSnapshotLite,
+        WorldSnapshotLite, decode_rpc_failure,
     },
 };
 use mrpc::{Client as MrpcClient, Connection as MrpcConnection, RpcError, RpcSender, Value};
@@ -25,7 +25,7 @@ use tokio::sync::{
 };
 use tracing::{debug, error, info, trace};
 
-use crate::{Error, Result, error::RpcErrorCode, ipc::value};
+use crate::{Error, Result, ipc::value};
 
 const CLIENT_EVENT_CAPACITY: usize = 256;
 
@@ -463,29 +463,20 @@ impl Connection {
 /// Convert an MRPC request failure into the server crate's error shape.
 fn request_error(method: HotkeyMethod, err: RpcError) -> Error {
     match err {
-        RpcError::Service(service) => match RpcErrorCode::from_service_name(&service.name) {
-            Some(code) => Error::Rpc {
+        RpcError::Service(service) => match decode_rpc_failure(&service) {
+            Ok(failure) => Error::Rpc {
                 method: method.as_str().to_string(),
-                code,
-                message: service_value_message(&service.value),
+                failure: Box::new(failure),
             },
-            None => Error::Ipc(format!(
+            Err(decode_error) => Error::Ipc(format!(
                 "{} request failed: service error {}: {}",
                 method.as_str(),
                 service.name,
-                service_value_message(&service.value)
+                decode_error
             )),
         },
         other => Error::Ipc(format!("{} request failed: {}", method.as_str(), other)),
     }
-}
-
-/// Render the service error payload without exposing MessagePack debug noise for strings.
-fn service_value_message(value: &Value) -> String {
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 /// Client-side connection handler for receiving events
@@ -570,6 +561,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use hotki_protocol::rpc::{RpcErrorCode, RpcFailure, encode_rpc_failure};
     use mrpc::{Message, Response};
 
     use super::*;
@@ -580,6 +572,22 @@ mod tests {
             target: "test".to_string(),
             message: format!("log {index}"),
         }
+    }
+
+    #[test]
+    fn request_error_preserves_typed_failure() {
+        let expected = RpcFailure::new(RpcErrorCode::KeyNotBound, "key is not bound: cmd+k")
+            .with_ident("cmd+k");
+        let error = request_error(
+            HotkeyMethod::InjectKey,
+            encode_rpc_failure(expected.clone()),
+        );
+
+        assert!(matches!(
+            error,
+            Error::Rpc { method, failure }
+                if method == HotkeyMethod::InjectKey.as_str() && *failure == expected
+        ));
     }
 
     #[tokio::test]

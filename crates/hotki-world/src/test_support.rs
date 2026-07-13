@@ -1,6 +1,6 @@
 //! Minimal test support utilities for `hotki-world` consumers.
 
-use std::{future::Future, sync::OnceLock, time::Duration};
+use std::{future::Future, sync::OnceLock};
 
 use parking_lot::Mutex;
 use tokio::runtime::Builder;
@@ -33,7 +33,7 @@ where
     impl Drop for RuntimeGuard {
         fn drop(&mut self) {
             if let Some(rt) = self.0.take() {
-                rt.shutdown_timeout(Duration::from_millis(50));
+                rt.shutdown_background();
             }
         }
     }

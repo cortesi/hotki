@@ -8,8 +8,8 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{
-    LuauApiSurface, check_luau_config, default_style_source, load_dynamic_config,
-    luau_api_markdown, luau_api_text, resolve_config_path,
+    LuauApiSurface, StyleResolver, check_luau_config, default_style_source, luau_api_markdown,
+    luau_api_text, resolve_config_path,
 };
 use tracing_subscriber::{fmt, prelude::*};
 
@@ -147,7 +147,7 @@ fn run_check_command(path: Option<&str>, cli_config: Option<&Path>, dump: bool) 
         }
     };
     if dump {
-        dump_config_style(&resolved);
+        dump_resolved_style(&report.resolved_style);
     } else {
         println!("OK (modules: {}, style: {})", report.modules, report.style);
     }
@@ -177,16 +177,21 @@ fn resolve_cli_config_path(path: Option<&str>, cli_config: Option<&Path>) -> Pat
 
 /// Dump the resolved style for a validated config.
 fn dump_config_style(resolved: &Path) {
-    match load_dynamic_config(resolved) {
-        Ok(cfg) => match serde_json::to_string_pretty(&cfg.resolved_style()) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("Failed to serialize style: {e}");
-                process::exit(1);
-            }
-        },
+    match StyleResolver::from_config_path(resolved).and_then(|resolver| resolver.resolve()) {
+        Ok(style) => dump_resolved_style(&style),
         Err(e) => {
             eprintln!("{}", e.pretty());
+            process::exit(1);
+        }
+    }
+}
+
+/// Serialize one resolved style as pretty JSON.
+fn dump_resolved_style(style: &config::ResolvedStyle) {
+    match serde_json::to_string_pretty(style) {
+        Ok(json) => println!("{json}"),
+        Err(e) => {
+            eprintln!("Failed to serialize style: {e}");
             process::exit(1);
         }
     }

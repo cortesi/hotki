@@ -490,7 +490,8 @@ impl Repeater {
     }
 
     /// Optional: install a relay repeat callback for instrumentation/testing.
-    pub fn set_on_relay_repeat(&self, cb: OnRelayRepeat) {
+    #[cfg(test)]
+    pub(crate) fn set_on_relay_repeat(&self, cb: OnRelayRepeat) {
         *self.on_relay_repeat.lock() = Some(cb);
     }
 

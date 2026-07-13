@@ -1,8 +1,7 @@
 use ruau::vm::ScriptError;
 
 use super::{
-    ActionCtx, ActionRepeatPermission, DynamicConfig, HandlerRef, ModeCtx, SelectorItem,
-    diagnostics,
+    ActionCtx, ActionRepeatPermission, HandlerRef, LoadedConfig, ModeCtx, SelectorItem, diagnostics,
 };
 use crate::Error;
 
@@ -23,7 +22,7 @@ fn collect_handler_result(action_ctx: &ActionCtx) -> HandlerResult {
 
 /// Execute a handler closure and collect its queued effects.
 pub fn execute_handler(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
 ) -> Result<HandlerResult, Error> {
@@ -32,7 +31,7 @@ pub fn execute_handler(
 
 /// Execute a handler closure with an explicit repeat permission policy.
 pub fn execute_handler_with_permission(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
     repeat: ActionRepeatPermission,
@@ -42,7 +41,7 @@ pub fn execute_handler_with_permission(
 
 /// Execute a handler closure without managing the retained VM heap boundary.
 fn execute_handler_inner(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
     repeat: ActionRepeatPermission,
@@ -52,7 +51,7 @@ fn execute_handler_inner(
     let path = cfg.path.clone();
     let sources = cfg.sources.clone();
 
-    let options = DynamicConfig::entry_options();
+    let options = LoadedConfig::entry_options();
     let mut context = cfg.callback_context();
     let step = cfg
         .runtime
@@ -92,7 +91,7 @@ fn execute_handler_inner(
 
 /// Execute a selector handler closure with `(ctx, item, query)` arguments.
 pub fn execute_selector_handler(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
     item: &SelectorItem,
@@ -103,7 +102,7 @@ pub fn execute_selector_handler(
 
 /// Execute a selector handler without managing the retained VM heap boundary.
 fn execute_selector_handler_inner(
-    cfg: &mut DynamicConfig,
+    cfg: &mut LoadedConfig,
     handler: &HandlerRef,
     ctx: &ModeCtx,
     item: &SelectorItem,
@@ -115,7 +114,7 @@ fn execute_selector_handler_inner(
     let sources = cfg.sources.clone();
     let query = query.to_string();
 
-    let options = DynamicConfig::entry_options();
+    let options = LoadedConfig::entry_options();
     let mut context = cfg.callback_context();
     let step = cfg
         .runtime

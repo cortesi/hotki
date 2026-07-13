@@ -1,21 +1,16 @@
 use hotki_protocol::{
     FocusSnapshot, MsgToUI,
-    rpc::{InjectKeyReq, InjectKind, WorldSnapshotLite},
+    rpc::{
+        InjectKeyReq, InjectKind, RpcErrorCode, RpcFailure, WorldSnapshotLite, encode_rpc_failure,
+    },
 };
-use mrpc::{RpcError, ServiceError, Value};
+use mrpc::{RpcError, Value};
 
 use crate::ipc::value;
 
-/// Construct a typed `RpcError::Service` with a stable name and structured fields.
-pub(super) fn typed_err(code: crate::error::RpcErrorCode, fields: &[(&str, Value)]) -> RpcError {
-    let map = fields
-        .iter()
-        .map(|(key, value)| (Value::String((*key).into()), value.clone()))
-        .collect();
-    RpcError::Service(ServiceError {
-        name: code.to_string(),
-        value: Value::Map(map),
-    })
+/// Encode a protocol-owned typed failure for MRPC.
+pub(super) fn typed_err(failure: RpcFailure) -> RpcError {
+    encode_rpc_failure(failure)
 }
 
 /// Extract a required UTF-8 string parameter from an MRPC request.
@@ -23,35 +18,33 @@ pub(super) fn string_param(
     params: &[Value],
     method: &str,
     expected: &str,
-    missing_code: crate::error::RpcErrorCode,
+    missing_code: RpcErrorCode,
 ) -> Result<String, RpcError> {
     let Some(value) = params.first() else {
         return Err(typed_err(
-            missing_code,
-            &[
-                ("method", Value::String(method.into())),
-                ("expected", Value::String(expected.into())),
-            ],
+            RpcFailure::new(missing_code, format!("{method} requires {expected}"))
+                .with_method(method)
+                .with_expected(expected),
         ));
     };
 
     match value {
         Value::String(raw) => raw.as_str().map(|value| value.to_string()).ok_or_else(|| {
+            let expected = format!("UTF-8 string {expected}");
             typed_err(
-                crate::error::RpcErrorCode::InvalidType,
-                &[(
-                    "expected",
-                    Value::String(format!("utf8 string {}", expected).into()),
-                )],
+                RpcFailure::new(RpcErrorCode::InvalidType, format!("expected {expected}"))
+                    .with_method(method)
+                    .with_expected(expected),
             )
         }),
-        _ => Err(typed_err(
-            crate::error::RpcErrorCode::InvalidType,
-            &[(
-                "expected",
-                Value::String(format!("string {}", expected).into()),
-            )],
-        )),
+        _ => {
+            let expected = format!("string {expected}");
+            Err(typed_err(
+                RpcFailure::new(RpcErrorCode::InvalidType, format!("expected {expected}"))
+                    .with_method(method)
+                    .with_expected(expected),
+            ))
+        }
     }
 }
 
@@ -90,14 +83,14 @@ pub(super) fn enc_world_snapshot(snapshot: &WorldSnapshotLite) -> crate::Result<
 pub(crate) fn dec_inject_key_param(value: &Value) -> Result<InjectKeyReq, RpcError> {
     match value {
         Value::Binary(bytes) => rmp_serde::from_slice::<InjectKeyReq>(bytes).map_err(|err| {
-            typed_err(
-                crate::error::RpcErrorCode::InvalidConfig,
-                &[("message", Value::String(err.to_string().into()))],
-            )
+            typed_err(RpcFailure::new(
+                RpcErrorCode::InvalidConfig,
+                format!("invalid inject request: {err}"),
+            ))
         }),
         _ => Err(typed_err(
-            crate::error::RpcErrorCode::InvalidType,
-            &[("expected", Value::String("binary msgpack".into()))],
+            RpcFailure::new(RpcErrorCode::InvalidType, "expected binary MessagePack")
+                .with_expected("binary MessagePack"),
         )),
     }
 }

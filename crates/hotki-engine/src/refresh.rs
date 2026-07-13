@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use config::script::engine as dyn_engine;
+use config::runtime as dyn_engine;
 use hotki_protocol::{DisplaysSnapshot, HudState, MsgToUI};
 use mac_keycode::Chord;
 
@@ -14,7 +14,7 @@ use crate::{
 
 pub(crate) struct PreparedConfig {
     path: PathBuf,
-    config: dyn_engine::DynamicConfig,
+    config: dyn_engine::ConfigRuntime,
     runtime: RuntimeState,
     plan: RefreshPlan,
     displays: DisplaysSnapshot,
@@ -31,7 +31,7 @@ pub(crate) struct RefreshPlan {
 
 pub(crate) fn build_refresh_plan(
     rt: &mut RuntimeState,
-    cfg: Option<&mut dyn_engine::DynamicConfig>,
+    cfg: Option<&mut dyn_engine::ConfigRuntime>,
     focus: &FocusInfo,
 ) -> RefreshPlan {
     rt.focus = focus.clone();
@@ -53,10 +53,9 @@ pub(crate) fn build_refresh_plan(
 
 fn build_loaded_refresh_plan(
     rt: &mut RuntimeState,
-    cfg: &mut dyn_engine::DynamicConfig,
+    cfg: &mut dyn_engine::ConfigRuntime,
 ) -> RefreshPlan {
-    rt.ensure_root(cfg.root());
-    let base_style = cfg.base_style();
+    cfg.ensure_stack(&mut rt.stack);
 
     if rt.selector.is_some() {
         let key_pairs = crate::selector::selector_capture_chords()
@@ -72,7 +71,7 @@ fn build_loaded_refresh_plan(
         };
     }
 
-    let (warnings, errors) = render_stack_with_recovery(rt, cfg, &base_style);
+    let (warnings, errors) = render_stack_with_recovery(rt, cfg);
     let mut key_pairs = rt
         .rendered
         .bindings
@@ -92,10 +91,9 @@ fn build_loaded_refresh_plan(
 
 fn render_stack_with_recovery(
     rt: &mut RuntimeState,
-    cfg: &mut dyn_engine::DynamicConfig,
-    base_style: &config::Style,
+    cfg: &mut dyn_engine::ConfigRuntime,
 ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
-    RenderRecovery::default().render(rt, cfg, base_style)
+    RenderRecovery::default().render(rt, cfg)
 }
 
 /// Render stack recovery policy used after render failures.
@@ -110,21 +108,20 @@ impl RenderRecovery {
     fn render(
         mut self,
         rt: &mut RuntimeState,
-        cfg: &mut dyn_engine::DynamicConfig,
-        base_style: &config::Style,
+        cfg: &mut dyn_engine::ConfigRuntime,
     ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
         let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
-        if let Some(warnings) = self.try_render(rt, cfg, &ctx, base_style) {
+        if let Some(warnings) = self.try_render(rt, cfg, &ctx) {
             return (warnings, self.errors);
         }
 
-        rt.stack.truncate(1);
+        rt.stack.reset_to_root();
         ctx.depth = 0;
-        if let Some(warnings) = self.try_render(rt, cfg, &ctx, base_style) {
+        if let Some(warnings) = self.try_render(rt, cfg, &ctx) {
             return (warnings, self.errors);
         }
 
-        rt.rendered = RuntimeState::empty_rendered(base_style.clone());
+        rt.rendered = RuntimeState::empty_rendered(cfg.style());
         (Vec::new(), self.errors)
     }
 
@@ -132,13 +129,12 @@ impl RenderRecovery {
     fn try_render(
         &mut self,
         rt: &mut RuntimeState,
-        cfg: &mut dyn_engine::DynamicConfig,
+        cfg: &mut dyn_engine::ConfigRuntime,
         ctx: &dyn_engine::ModeCtx,
-        base_style: &config::Style,
     ) -> Option<Vec<dyn_engine::Effect>> {
-        match dyn_engine::render_stack(cfg, &mut rt.stack, ctx, base_style) {
+        match cfg.render(&mut rt.stack, ctx) {
             Ok(output) => {
-                rt.rendered = output.rendered;
+                rt.rendered = output.state;
                 Some(output.warnings)
             }
             Err(err) => {
@@ -154,7 +150,7 @@ pub(crate) fn hud_state_for_ui_from_state(rt: &RuntimeState) -> hotki_protocol::
         visible: rt.hud_visible,
         rows: rt.rendered.hud_rows.clone(),
         depth: rt.depth(),
-        breadcrumbs: rt.stack.iter().skip(1).map(|f| f.title.clone()).collect(),
+        breadcrumbs: rt.stack.breadcrumbs(),
         style: rt.rendered.style.clone(),
         capture: rt.hud_visible && rt.rendered.capture,
     }
@@ -167,7 +163,7 @@ impl Engine {
         mode: ConfigInstall,
     ) -> Result<PreparedConfig> {
         let mut config =
-            dyn_engine::load_dynamic_config(path).map_err(|error| Error::Msg(error.pretty()))?;
+            dyn_engine::ConfigRuntime::load(path).map_err(|error| Error::Msg(error.pretty()))?;
         let (hud_visible, focus) = match mode {
             ConfigInstall::ResetFocus => (false, self.current_focus_info()),
             ConfigInstall::KeepFocus => {
@@ -178,7 +174,7 @@ impl Engine {
         let mut runtime = RuntimeState::empty();
         runtime.hud_visible = hud_visible;
         runtime.focus = focus.clone();
-        runtime.install_root(config.root(), config.base_style());
+        runtime.install_config(&config);
         let plan = build_refresh_plan(&mut runtime, Some(&mut config), &focus);
         if !plan.errors.is_empty() {
             return Err(Error::Msg(plan.errors.join("\n")));
@@ -578,9 +574,9 @@ mod tests {
             .expect("install A");
         drain(&mut rx);
         let active = active_snapshot(&engine).await;
-        let replacement_style = dyn_engine::load_dynamic_config(&path_b)
+        let replacement_style = dyn_engine::ConfigRuntime::load(&path_b)
             .expect("load replacement style")
-            .base_style();
+            .style();
         assert_ne!(active.style, replacement_style);
 
         assert!(engine.set_config_path(path_b.clone()).await.is_err());
@@ -604,9 +600,9 @@ mod tests {
             .expect("install A");
         drain(&mut rx);
         let active = active_snapshot(&engine).await;
-        let replacement_style = dyn_engine::load_dynamic_config(&path_b)
+        let replacement_style = dyn_engine::ConfigRuntime::load(&path_b)
             .expect("load replacement style")
-            .base_style();
+            .style();
         assert_ne!(active.style, replacement_style);
         tx.try_send(MsgToUI::ClearNotifications)
             .expect("fill UI channel");

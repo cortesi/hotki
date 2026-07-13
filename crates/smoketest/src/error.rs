@@ -105,9 +105,10 @@ pub fn print_hints(err: &Error) {
                         message
                     );
                 }
-                DriverError::ServerRpcFailure { code, message } => {
+                DriverError::ServerRpcFailure { failure } => {
                     eprintln!(
-                        "      server RPC returned {code}; inspect hotki logs for context: {message}"
+                        "      server RPC returned {}; inspect hotki logs for context: {}",
+                        failure.code, failure.payload.message
                     );
                 }
             }

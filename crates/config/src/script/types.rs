@@ -85,11 +85,6 @@ impl ModeRef {
         })
     }
 
-    /// Return the stable identity of this mode closure.
-    pub fn id(&self) -> ModeId {
-        self.id
-    }
-
     /// Return the default title declared for this mode, if any.
     pub fn default_title(&self) -> Option<&str> {
         self.default_title.as_deref()
@@ -388,11 +383,18 @@ pub struct Binding {
     /// Mode identity when `kind` is [`BindingKind::Mode`].
     pub mode_id: Option<ModeId>,
     /// Execution and visibility flags.
-    pub flags: BindingFlags,
+    pub(crate) flags: BindingFlags,
     /// True when entering the bound mode should enable capture-all.
     pub mode_capture: bool,
     /// Source position of the binding declaration for diagnostics.
-    pub pos: Option<SourcePos>,
+    pub(crate) pos: Option<SourcePos>,
+}
+
+impl Binding {
+    /// Whether this binding suppresses the engine's automatic mode exit.
+    pub fn stays_in_mode(&self) -> bool {
+        self.flags.stay
+    }
 }
 
 /// A stack frame representing an active mode.

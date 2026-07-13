@@ -1,7 +1,6 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::Result;
 
@@ -13,6 +12,7 @@ pub(crate) enum CaptureGuard {
         _guard: mac_hotkey::CaptureGuard,
     },
     /// No-op guard used by tests.
+    #[cfg(test)]
     Fake,
 }
 
@@ -48,16 +48,19 @@ impl HotkeyApi for RealHotkeyApi {
 }
 
 /// Mock API for tests that avoids OS interaction.
+#[cfg(test)]
 pub(crate) struct MockHotkeyApi {
     next_id: AtomicU32,
 }
 
+#[cfg(test)]
 impl Default for MockHotkeyApi {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl MockHotkeyApi {
     /// Create a new mock hotkey API.
     pub fn new() -> Self {
@@ -67,6 +70,7 @@ impl MockHotkeyApi {
     }
 }
 
+#[cfg(test)]
 impl HotkeyApi for MockHotkeyApi {
     fn intercept(&self, _chord: mac_keycode::Chord) -> u32 {
         self.next_id.fetch_add(1, Ordering::SeqCst) + 1

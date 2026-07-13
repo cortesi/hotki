@@ -181,9 +181,6 @@ module 'late' is outside the checked config graph
 module source is sealed after config entry evaluation
 ```
 
-`hotki.root` was removed. The checker reports a targeted migration message: return the renderer
-from `config.luau`.
-
 ## Documentation Fence Convention
 
 Complete standalone entries use `<!-- hotki-luau: config -->` immediately before a `luau` fence.

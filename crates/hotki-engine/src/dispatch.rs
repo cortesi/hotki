@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use config::script::engine as dyn_engine;
+use config::runtime as dyn_engine;
 use mac_keycode::Chord;
 use tracing::{trace, warn};
 
@@ -43,7 +43,9 @@ impl Engine {
 
         let (binding, ctx) = {
             let rt = self.runtime.lock().await;
-            let Some(binding) = dyn_engine::resolve_binding(&rt.rendered, chord).cloned() else {
+            let Some(binding) =
+                dyn_engine::ConfigRuntime::resolve_binding(&rt.rendered, chord).cloned()
+            else {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
@@ -82,6 +84,7 @@ impl Engine {
         binding: dyn_engine::Binding,
         ctx: dyn_engine::ModeCtx,
     ) -> Result<Option<DispatchResult>> {
+        let stays_in_mode = binding.stays_in_mode();
         let result = match binding.kind {
             dyn_engine::BindingKind::Mode(mode) => {
                 let mut rt = self.runtime.lock().await;
@@ -100,7 +103,7 @@ impl Engine {
                         trace!("No dynamic config loaded; ignoring handler");
                         return Ok(None);
                     };
-                    match dyn_engine::execute_handler(cfg, &handler, &ctx) {
+                    match cfg.execute_handler(&handler, &ctx) {
                         Ok(result) => result,
                         Err(err) => {
                             self.notifier.send_error("Handler", err.pretty())?;
@@ -115,7 +118,7 @@ impl Engine {
             }
         };
 
-        Ok(Some(result.with_stay(binding.flags.stay)))
+        Ok(Some(result.with_stay(stays_in_mode)))
     }
 
     async fn handle_key_up(&self, identifier: &str) {

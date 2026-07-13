@@ -10,7 +10,7 @@
 //!
 //! This crate is macOS-only by design. It exposes a minimal, documented API:
 //! - [`Engine`]: the primary type you construct and drive
-//! - [`RepeatSpec`], [`OnRelayRepeat`]: instrumentation hooks
+//! - [`RepeatSpec`]: repeat timing overrides
 //!
 //! All other modules are crate-private implementation details.
 //!
@@ -27,7 +27,7 @@
 //! Concurrency and Lock Ordering
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
 //!   inversions, follow this order when multiple guards are needed:
-//!   1) `config_transaction`, 2) `config: Mutex<Option<DynamicConfig>>`,
+//!   1) `config_transaction`, 2) `config: Mutex<Option<ConfigRuntime>>`,
 //!   3) `runtime: Mutex<RuntimeState>`, 4) `binding_manager: Mutex<KeyBindingManager>`.
 //!      Avoid holding a write guard across any call that can block or `await`.
 //! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
@@ -42,8 +42,8 @@
 //!   state under `runtime`, then publishes UI after guards are released.
 #![warn(unsafe_op_in_unsafe_fn)]
 
-/// Test support utilities exported for the test suite.
-pub mod test_support;
+#[cfg(test)]
+mod test_support;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -65,6 +65,10 @@ mod selector;
 mod selector_controller;
 mod ticker;
 mod world_sync;
+
+#[cfg(test)]
+#[path = "../tests/integration_tests.rs"]
+mod integration_tests;
 
 // Timing constants for warning thresholds
 pub(crate) const BIND_UPDATE_WARN_MS: u64 = 10;
@@ -122,7 +126,7 @@ impl DispatchResult {
     }
 }
 
-use config::script::engine as dyn_engine;
+use config::runtime as dyn_engine;
 use deps::RealHotkeyApi;
 pub use error::{Error, Result};
 use hotki_protocol::{DisplaysSnapshot, MsgToUI};
@@ -132,8 +136,10 @@ use key_state::KeyStateTracker;
 use notification::NotificationDispatcher;
 use parking_lot::Mutex;
 use relay::RelayHandler;
+#[cfg(test)]
+pub(crate) use repeater::OnRelayRepeat;
+pub use repeater::RepeatSpec;
 use repeater::Repeater;
-pub use repeater::{OnRelayRepeat, RepeatSpec};
 use ticker::Ticker;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -264,7 +270,7 @@ pub struct Engine {
     /// Binding identities retained until their matching registration ID is released.
     held_bindings: Arc<Mutex<HashMap<u32, HeldBinding>>>,
     /// Configuration
-    config: Arc<tokio::sync::Mutex<Option<dyn_engine::DynamicConfig>>>,
+    config: Arc<tokio::sync::Mutex<Option<dyn_engine::ConfigRuntime>>>,
     /// Optional path used for `ctx:reload_config()`.
     config_path: Arc<tokio::sync::RwLock<Option<PathBuf>>>,
     /// Cached focus snapshot from World events.
@@ -303,8 +309,8 @@ impl Engine {
         Self::build(api, event_tx, true, true, world)
     }
 
-    /// Custom constructor for tests and advanced scenarios.
-    /// Allows injecting a `HotkeyApi`, relay enable flag, and an explicit world view.
+    /// Construct an engine around test-owned platform and world adapters.
+    #[cfg(test)]
     pub(crate) fn new_with_api_and_world(
         api: Arc<dyn deps::HotkeyApi>,
         event_tx: tokio::sync::mpsc::Sender<MsgToUI>,

@@ -12,9 +12,12 @@ mod docs;
 mod error;
 mod mode;
 mod raw;
-pub mod script;
+mod script;
 mod style;
 mod types;
+
+/// Engine-facing retained configuration runtime.
+pub mod runtime;
 
 #[cfg(test)]
 mod test_merge;
@@ -26,7 +29,8 @@ pub use docs::{LuauApiSurface, luau_api, luau_api_markdown, luau_api_surface, lu
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
 pub use mode::{Action, ShellModifiers, ShellSpec};
-pub use script::engine::{DynamicConfig, load_dynamic_config};
+#[cfg(test)]
+pub(crate) use script::loader::load_dynamic_config;
 pub use style::{
     Hud, Notify, ResolvedStyle, STYLE_FILE_NAME, Selector, Style, StyleProvenance, StyleResolver,
     default_style, default_style_source,

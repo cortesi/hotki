@@ -1,5 +1,6 @@
-use std::{io::Error as IoError, result::Result as StdResult, str::FromStr};
+use std::{io::Error as IoError, result::Result as StdResult};
 
+use hotki_protocol::rpc::RpcFailure;
 use thiserror::Error;
 
 /// The main error type for hotki-server operations (crate-internal)
@@ -23,14 +24,12 @@ pub enum Error {
     },
 
     /// Typed error returned by an RPC service method.
-    #[error("{method} request failed: service error {code}: {message}")]
+    #[error("{method} request failed: {failure}")]
     Rpc {
         /// RPC method that returned the error.
         method: String,
-        /// Stable service error code.
-        code: RpcErrorCode,
-        /// Human-readable service error payload.
-        message: String,
+        /// Typed service error including readable and structured data.
+        failure: Box<RpcFailure>,
     },
 
     /// IO-related errors
@@ -61,75 +60,5 @@ impl From<rmp_serde::decode::Error> for Error {
 impl From<mac_hotkey::Error> for Error {
     fn from(err: mac_hotkey::Error) -> Self {
         Error::HotkeyOperation(err.to_string())
-    }
-}
-
-/// Stable RPC error codes surfaced via MRPC `ServiceError.name`.
-///
-/// Use `to_string()` (Display) to produce the canonical code string.
-#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RpcErrorCode {
-    /// Server is shutting down and cannot accept the request.
-    #[error("ShuttingDown")]
-    ShuttingDown,
-    /// Required request parameters were missing.
-    #[error("MissingParams")]
-    MissingParams,
-    /// Request parameter or payload type was invalid.
-    #[error("InvalidType")]
-    InvalidType,
-    /// Requested config update was invalid.
-    #[error("InvalidConfig")]
-    InvalidConfig,
-    /// Requested RPC method is unknown.
-    #[error("MethodNotFound")]
-    MethodNotFound,
-    /// Engine rejected a config update.
-    #[error("EngineSetConfig")]
-    EngineSetConfig,
-    /// Requested key identifier is not currently bound.
-    #[error("KeyNotBound")]
-    KeyNotBound,
-    /// Engine dispatch failed while handling a key injection.
-    #[error("EngineDispatch")]
-    EngineDispatch,
-}
-
-impl RpcErrorCode {
-    /// Parse the stable MRPC service-error name into a typed code.
-    pub fn from_service_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "ShuttingDown" => Self::ShuttingDown,
-            "MissingParams" => Self::MissingParams,
-            "InvalidType" => Self::InvalidType,
-            "InvalidConfig" => Self::InvalidConfig,
-            "MethodNotFound" => Self::MethodNotFound,
-            "EngineSetConfig" => Self::EngineSetConfig,
-            "KeyNotBound" => Self::KeyNotBound,
-            "EngineDispatch" => Self::EngineDispatch,
-            _ => return None,
-        })
-    }
-}
-
-impl FromStr for RpcErrorCode {
-    type Err = ();
-
-    fn from_str(name: &str) -> StdResult<Self, Self::Err> {
-        Self::from_service_name(name).ok_or(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RpcErrorCode;
-
-    #[test]
-    fn rpc_error_code_parses_stable_service_names() {
-        assert_eq!(
-            RpcErrorCode::from_service_name("KeyNotBound"),
-            Some(RpcErrorCode::KeyNotBound)
-        );
-        assert_eq!(RpcErrorCode::from_service_name("Other"), None);
     }
 }

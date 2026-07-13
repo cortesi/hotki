@@ -2,8 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use hotki_protocol::{DisplaysSnapshot, MsgToUI, rpc::ServerStatusLite};
-use hotki_server::RpcErrorCode;
+use hotki_protocol::{
+    DisplaysSnapshot, MsgToUI,
+    rpc::{RpcErrorCode, RpcFailure, ServerStatusLite},
+};
 use thiserror::Error;
 
 /// Result alias for server driver operations.
@@ -95,12 +97,10 @@ pub enum DriverError {
         message: String,
     },
     /// Server RPC returned a stable typed service error code.
-    #[error("server command failed with {code}: {message}")]
+    #[error("server command failed: {failure}")]
     ServerRpcFailure {
-        /// Stable server-side RPC error code.
-        code: RpcErrorCode,
-        /// Human-readable error message from the service payload.
-        message: String,
+        /// Typed server-side RPC failure.
+        failure: RpcFailure,
     },
     /// Waiting for a binding to appear timed out.
     #[error("timed out after {timeout_ms} ms waiting for binding '{ident}'")]
@@ -138,8 +138,8 @@ pub(super) fn describe_init_error(err: &DriverError) -> String {
     match err {
         DriverError::Connect { message, .. }
         | DriverError::Runtime { message }
-        | DriverError::ServerFailure { message }
-        | DriverError::ServerRpcFailure { message, .. } => message.clone(),
+        | DriverError::ServerFailure { message } => message.clone(),
+        DriverError::ServerRpcFailure { failure } => failure.payload.message.clone(),
         DriverError::EventStreamTimeout { .. } => err.to_string(),
         other => other.to_string(),
     }
@@ -156,10 +156,8 @@ pub(super) fn canonicalize_ident(raw: &str) -> String {
 pub(super) fn is_key_not_bound(err: &DriverError) -> bool {
     matches!(
         err,
-        DriverError::ServerRpcFailure {
-            code: RpcErrorCode::KeyNotBound,
-            ..
-        }
+        DriverError::ServerRpcFailure { failure }
+            if failure.code == RpcErrorCode::KeyNotBound
     )
 }
 
@@ -210,10 +208,13 @@ mod tests {
     #[test]
     fn missing_binding_detection_uses_rpc_code() {
         let err = DriverError::ServerRpcFailure {
-            code: RpcErrorCode::KeyNotBound,
-            message: "missing".to_string(),
+            failure: RpcFailure::new(RpcErrorCode::KeyNotBound, "missing").with_ident("cmd+k"),
         };
         assert!(is_key_not_bound(&err));
+        let DriverError::ServerRpcFailure { failure } = &err else {
+            panic!("expected RPC failure");
+        };
+        assert_eq!(failure.payload.fields.ident.as_deref(), Some("cmd+k"));
         assert!(!is_key_not_bound(&DriverError::ServerFailure {
             message: "service error KeyNotBound".to_string(),
         }));
