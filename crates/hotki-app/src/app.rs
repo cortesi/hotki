@@ -4,17 +4,17 @@ use std::path::PathBuf;
 use eframe::{App, CreationContext};
 use egui::Context;
 use eguidev::DevMcp;
-use hotki_protocol::{MsgToUI, Style, Toggle};
+use hotki_protocol::{DisplaysSnapshot, HudState, MsgToUI, NotifyConfig, Style, Toggle};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
-use tray_icon::TrayIcon;
 
 use crate::{
     details::{Details, DetailsTab},
     devtools::{FixtureRuntime, render_app_anchors},
     display::DisplayMetrics,
     fonts,
+    health::RuntimeHealth,
     hud::Hud,
     notification::NotificationCenter,
     permissions::{PermissionsHelp, PermissionsStatus},
@@ -28,18 +28,38 @@ use crate::{
 pub enum UiCommand {
     /// Request a graceful shutdown of all UI and background tasks.
     Shutdown,
-    /// Update the config path displayed in Details.
-    SetConfigPath(Option<PathBuf>),
     /// Show the permissions helper window.
     ShowPermissionsHelp,
+    /// Hide the permissions helper window.
+    HidePermissionsHelp,
     /// Show the Details window with a specific tab selected.
     ShowDetailsTab(DetailsTab),
-    /// Update whether the server/runtime lane is connected.
-    SetServerConnected(bool),
+    /// Replace the complete UI-visible runtime health snapshot.
+    SetRuntimeHealth(RuntimeHealth),
     /// Update the server binding identifiers visible to devtools.
     SetServerBindings(Vec<String>),
     /// Override permission status for deterministic devtools fixtures.
     SetPermissionStatusOverride(Option<PermissionsStatus>),
+    /// Override notification presentation for deterministic devtools fixtures.
+    SetNotificationPresentationOverride(Option<Box<NotificationPresentation>>),
+    /// Override HUD presentation for deterministic devtools fixtures.
+    SetHudPresentationOverride(Option<Box<HudPresentation>>),
+}
+
+/// Notification presentation fixed by one deterministic devtools fixture.
+pub struct NotificationPresentation {
+    /// Notification configuration applied to fixture items.
+    pub(crate) config: NotifyConfig,
+    /// Synthetic display state used to measure and place fixture items.
+    pub(crate) displays: DisplaysSnapshot,
+}
+
+/// HUD presentation fixed by one deterministic devtools fixture.
+pub struct HudPresentation {
+    /// Complete HUD state applied by the fixture.
+    pub(crate) hud: Box<HudState>,
+    /// Synthetic display state used to place the fixture HUD.
+    pub(crate) displays: DisplaysSnapshot,
 }
 
 /// Events sent from the background runtime to the UI thread.
@@ -54,8 +74,8 @@ pub enum UiEvent {
 pub struct HotkiApp {
     /// Receiver for events from the runtime thread.
     pub(crate) rx: UiDeliveryRx,
-    /// Tray icon handle, kept to maintain tray lifetime.
-    pub(crate) _tray: Option<TrayIcon>,
+    /// Tray icon and its live health rows.
+    pub(crate) tray: Option<tray::Tray>,
     /// Heads-up display for key hints.
     pub(crate) hud: Hud,
     /// Interactive selector popup.
@@ -70,12 +90,20 @@ pub struct HotkiApp {
     pub(crate) shutdown_in_progress: bool,
     /// Cached display metrics for HUD/notification placement.
     pub(crate) display_metrics: DisplayMetrics,
+    /// Latest production notification configuration from the runtime.
+    pub(crate) runtime_notify_config: NotifyConfig,
+    /// Whether a devtools fixture owns notification presentation.
+    pub(crate) notification_presentation_overridden: bool,
+    /// Latest complete production HUD state from the runtime.
+    pub(crate) runtime_hud_state: Option<Box<HudState>>,
+    /// Whether a devtools fixture owns HUD presentation.
+    pub(crate) hud_presentation_overridden: bool,
     /// Developer automation instrumentation handle.
     pub(crate) devmcp: DevMcp,
     /// Shared fixture and diagnostic state for developer automation.
     pub(crate) fixture_runtime: FixtureRuntime,
-    /// Whether the server/runtime lane is connected.
-    pub(crate) server_connected: bool,
+    /// Complete health state shared by every normal UI surface.
+    pub(crate) runtime_health: RuntimeHealth,
     /// Sorted server binding identifiers, when the runtime has reported them.
     pub(crate) server_bindings: Vec<String>,
 }
@@ -125,7 +153,7 @@ impl App for HotkiApp {
 
         let notification_stack = self.notifications.stack_aliases();
         self.fixture_runtime.update_diagnostics(
-            self.server_connected,
+            &self.runtime_health,
             &self.server_bindings,
             &notification_stack,
             self.rx.stats(),
@@ -133,7 +161,7 @@ impl App for HotkiApp {
         render_app_anchors(
             &self.devmcp,
             ctx,
-            self.server_connected,
+            &self.runtime_health,
             &self.server_bindings,
             &notification_stack,
         );
@@ -176,12 +204,18 @@ impl HotkiApp {
             bootstrap.dumpworld,
         );
 
-        let tray_icon =
-            tray::build_tray_and_listeners(&bootstrap.tx_ui, &bootstrap.tx_ctrl, &cc.egui_ctx);
+        let runtime_health = RuntimeHealth::connecting(bootstrap.config_path.clone());
+        let tray = tray::build_tray_and_listeners(
+            &bootstrap.tx_ui,
+            &bootstrap.tx_ctrl,
+            &cc.egui_ctx,
+            &runtime_health,
+        );
 
-        let mut notifications = NotificationCenter::new(&bootstrap.initial_style.notify);
+        let runtime_notify_config = bootstrap.initial_style.notify.clone();
+        let mut notifications = NotificationCenter::new(&runtime_notify_config);
         let mut details = Details::new(bootstrap.initial_style.notify.theme.clone());
-        details.set_config_path(Some(bootstrap.config_path.clone()));
+        details.set_runtime_health(runtime_health.clone());
         details.set_control_sender(bootstrap.tx_ctrl.clone());
 
         let mut permissions = PermissionsHelp::new();
@@ -197,7 +231,7 @@ impl HotkiApp {
 
         Self {
             rx: bootstrap.rx,
-            _tray: tray_icon,
+            tray,
             hud,
             selector,
             notifications,
@@ -205,9 +239,13 @@ impl HotkiApp {
             permissions,
             shutdown_in_progress: false,
             display_metrics: metrics,
+            runtime_notify_config,
+            notification_presentation_overridden: false,
+            runtime_hud_state: None,
+            hud_presentation_overridden: false,
             devmcp: bootstrap.devmcp,
             fixture_runtime,
-            server_connected: false,
+            runtime_health,
             server_bindings: Vec::new(),
         }
     }
@@ -222,26 +260,33 @@ impl HotkiApp {
                 self.notifications.clear_all(ctx, &self.devmcp);
                 self.details.hide();
                 self.permissions.hide();
-                self._tray = None;
+                self.tray = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            UiCommand::SetConfigPath(path) => {
-                self.details.set_config_path(path);
             }
             UiCommand::ShowPermissionsHelp => {
                 self.permissions.show();
             }
+            UiCommand::HidePermissionsHelp => {
+                self.permissions.hide();
+            }
             UiCommand::ShowDetailsTab(tab) => {
                 self.details.show_tab(tab);
             }
-            UiCommand::SetServerConnected(connected) => {
-                self.server_connected = connected;
+            UiCommand::SetRuntimeHealth(health) => {
+                self.runtime_health = health;
+                self.apply_runtime_health();
             }
             UiCommand::SetServerBindings(bindings) => {
                 self.server_bindings = bindings;
             }
             UiCommand::SetPermissionStatusOverride(status) => {
                 self.permissions.set_status_override(status);
+            }
+            UiCommand::SetNotificationPresentationOverride(presentation) => {
+                self.set_notification_presentation_override(presentation);
+            }
+            UiCommand::SetHudPresentationOverride(presentation) => {
+                self.set_hud_presentation_override(presentation);
             }
         }
         ctx.request_repaint();
@@ -254,14 +299,17 @@ impl HotkiApp {
                 self.display_metrics = DisplayMetrics::from_snapshot(&displays);
                 self.sync_display_metrics();
 
-                self.hud.set_style(hud.style.hud.clone());
-                self.hud
-                    .set_state(hud.rows.clone(), hud.visible, hud.breadcrumbs.clone());
-
                 self.selector.set_style(hud.style.selector.clone());
 
-                self.notifications.reconfigure(&hud.style.notify);
+                self.runtime_notify_config = hud.style.notify.clone();
+                if !self.notification_presentation_overridden {
+                    self.notifications.reconfigure(&self.runtime_notify_config);
+                }
                 self.details.update_theme(hud.style.notify.theme.clone());
+                self.runtime_hud_state = Some(hud);
+                if !self.hud_presentation_overridden {
+                    self.apply_runtime_hud_state();
+                }
             }
             MsgToUI::SelectorUpdate(selector) => {
                 self.selector.set_state(selector);
@@ -291,9 +339,68 @@ impl HotkiApp {
     /// Propagate the cached display metrics to HUD, notifications, and details.
     fn sync_display_metrics(&mut self) {
         let metrics = self.display_metrics.clone();
-        self.hud.set_display_metrics(metrics.clone());
+        if !self.hud_presentation_overridden {
+            self.hud.set_display_metrics(metrics.clone());
+        }
         self.selector.set_display_metrics(metrics.clone());
-        self.notifications.set_display_metrics(metrics.clone());
+        if !self.notification_presentation_overridden {
+            self.notifications.set_display_metrics(metrics.clone());
+        }
         self.details.set_display_metrics(metrics);
+    }
+
+    /// Apply or clear deterministic notification presentation owned by devtools.
+    fn set_notification_presentation_override(
+        &mut self,
+        presentation: Option<Box<NotificationPresentation>>,
+    ) {
+        if let Some(presentation) = presentation {
+            self.notification_presentation_overridden = true;
+            self.notifications.reconfigure(&presentation.config);
+            self.notifications
+                .set_display_metrics(DisplayMetrics::from_snapshot(&presentation.displays));
+        } else {
+            self.notification_presentation_overridden = false;
+            self.notifications.reconfigure(&self.runtime_notify_config);
+            self.notifications
+                .set_display_metrics(self.display_metrics.clone());
+        }
+    }
+
+    /// Apply or clear deterministic HUD presentation owned by devtools.
+    fn set_hud_presentation_override(&mut self, presentation: Option<Box<HudPresentation>>) {
+        if let Some(presentation) = presentation {
+            self.hud_presentation_overridden = true;
+            self.hud.set_style(presentation.hud.style.hud.clone());
+            self.hud.set_state(
+                presentation.hud.rows.clone(),
+                presentation.hud.visible,
+                presentation.hud.breadcrumbs.clone(),
+            );
+            self.hud
+                .set_display_metrics(DisplayMetrics::from_snapshot(&presentation.displays));
+        } else {
+            self.hud_presentation_overridden = false;
+            self.hud.set_display_metrics(self.display_metrics.clone());
+            self.apply_runtime_hud_state();
+        }
+    }
+
+    /// Restore the latest production HUD state after fixture ownership ends.
+    fn apply_runtime_hud_state(&mut self) {
+        let Some(hud) = self.runtime_hud_state.as_ref() else {
+            return;
+        };
+        self.hud.set_style(hud.style.hud.clone());
+        self.hud
+            .set_state(hud.rows.clone(), hud.visible, hud.breadcrumbs.clone());
+    }
+
+    /// Propagate one runtime-health snapshot to every normal UI surface.
+    fn apply_runtime_health(&mut self) {
+        self.details.set_runtime_health(self.runtime_health.clone());
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_runtime_health(&self.runtime_health);
+        }
     }
 }

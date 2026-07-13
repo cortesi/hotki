@@ -1,11 +1,9 @@
-use std::{path::PathBuf, process};
-
 use egui::Context;
 use hotki_protocol::{MsgToUI, NotifyKind};
-use tokio::time::{Duration, sleep};
 
 use crate::{
     app::{UiCommand, UiEvent},
+    health::RuntimeHealth,
     ui_delivery::{UiDeliveryOutcome, UiDeliveryTx},
 };
 
@@ -42,19 +40,14 @@ impl UiSink {
         });
     }
 
-    /// Update the config path shown by the UI.
-    pub(super) fn set_config_path(&self, path: Option<PathBuf>) {
-        self.send_command(UiCommand::SetConfigPath(path));
-    }
-
     /// Ask the UI to show the permissions helper.
     pub(super) fn show_permissions_help(&self) {
         self.send_command(UiCommand::ShowPermissionsHelp);
     }
 
-    /// Update the UI-visible server connection readiness state.
-    pub(super) fn set_server_connected(&self, connected: bool) {
-        self.send_command(UiCommand::SetServerConnected(connected));
+    /// Replace the complete UI-visible runtime health snapshot.
+    pub(super) fn set_runtime_health(&self, health: RuntimeHealth) {
+        self.send_command(UiCommand::SetRuntimeHealth(health));
     }
 
     /// Update the UI-visible server binding list.
@@ -62,16 +55,9 @@ impl UiSink {
         self.send_command(UiCommand::SetServerBindings(bindings));
     }
 
-    /// Ask the UI to shut down and close the root viewport.
-    pub(super) fn trigger_graceful_shutdown(&self, fallback_ms: u64) {
+    /// Ask the UI to shut down after the runtime has finished its owned work.
+    pub(super) fn finish_shutdown(&self) {
         self.send_command(UiCommand::Shutdown);
-        self.egui_ctx
-            .send_viewport_cmd(egui::ViewportCommand::Close);
-        self.request_repaint();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(fallback_ms)).await;
-            process::exit(0);
-        });
     }
 
     /// Request a repaint without sending a new event.

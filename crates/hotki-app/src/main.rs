@@ -25,6 +25,7 @@ mod devtools;
 /// Display geometry helpers.
 mod display;
 mod fonts;
+mod health;
 mod hud;
 mod logs;
 mod notification;

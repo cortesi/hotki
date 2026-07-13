@@ -9,7 +9,8 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::{
-    connection_driver::ConnectionDriver, permissions::PermissionsStatus, ui_delivery::UiDeliveryTx,
+    connection_driver::ConnectionDriver, permissions::PermissionObservation,
+    ui_delivery::UiDeliveryTx,
 };
 
 /// Control messages routed to the runtime event loop.
@@ -37,8 +38,8 @@ pub enum ControlMsg {
         /// Notice body text.
         text: String,
     },
-    /// Current macOS permission status as observed by the UI.
-    PermissionsChanged(PermissionsStatus),
+    /// Current permission status and whether devtools supplied it.
+    PermissionsChanged(PermissionObservation),
 }
 
 /// Start background key runtime and server connection driver on a dedicated thread.

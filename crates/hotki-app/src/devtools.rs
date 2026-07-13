@@ -21,8 +21,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    app::{UiCommand, UiEvent},
+    app::{HudPresentation, NotificationPresentation, UiCommand, UiEvent},
     details::DetailsTab,
+    health::RuntimeHealth,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
     ui_delivery::{UiDeliveryStats, UiDeliveryTx},
@@ -60,14 +61,14 @@ impl FixtureRuntime {
     /// Update the app diagnostic snapshot from the UI thread.
     pub fn update_diagnostics(
         &self,
-        server_connected: bool,
+        runtime_health: &RuntimeHealth,
         server_bindings: &[String],
         notification_stack: &[NotificationStackAlias],
         delivery_stats: UiDeliveryStats,
     ) {
         if let Ok(mut diagnostics) = self.diagnostics.lock() {
             *diagnostics = HotkiDiagnostics::from_app_state(
-                server_connected,
+                runtime_health,
                 server_bindings,
                 notification_stack,
                 delivery_stats,
@@ -98,8 +99,8 @@ impl FixtureRuntime {
 #[derive(Clone, Default)]
 /// App state exposed through `diagnostic("hotki.state")`.
 struct HotkiDiagnostics {
-    /// Whether the runtime/server lane is connected.
-    server_connected: bool,
+    /// Complete runtime health shared with normal UI surfaces.
+    runtime_health: RuntimeHealth,
     /// Sorted server binding identifiers reported by the runtime.
     server_bindings: Vec<String>,
     /// Live notification stack aliases, newest first.
@@ -111,13 +112,13 @@ struct HotkiDiagnostics {
 impl HotkiDiagnostics {
     /// Build a diagnostic snapshot from the currently rendered app state.
     fn from_app_state(
-        server_connected: bool,
+        runtime_health: &RuntimeHealth,
         server_bindings: &[String],
         notification_stack: &[NotificationStackAlias],
         delivery_stats: UiDeliveryStats,
     ) -> Self {
         Self {
-            server_connected,
+            runtime_health: runtime_health.clone(),
             server_bindings: server_bindings.to_vec(),
             notifications: notification_stack
                 .iter()
@@ -136,9 +137,28 @@ impl HotkiDiagnostics {
             .collect::<Vec<_>>();
         json!({
             "server": {
-                "connected": self.server_connected,
+                "connected": self.runtime_health.server_connected(),
                 "binding_count": self.server_bindings.len(),
                 "bindings": self.server_bindings,
+            },
+            "runtime": {
+                "phase": self.runtime_health.phase.label(),
+                "connection": self.runtime_health.connection.label(),
+                "active_config": self.runtime_health.active_config,
+                "pending_config": self.runtime_health.pending_config,
+                "permissions": {
+                    "accessibility": permission_state_label(
+                        self.runtime_health.permissions.accessibility,
+                    ),
+                    "input_monitoring": permission_state_label(
+                        self.runtime_health.permissions.input_monitoring,
+                    ),
+                    "screen_recording": permission_state_label(
+                        self.runtime_health.permissions.screen_recording,
+                    ),
+                },
+                "retry": self.runtime_health.retry.label(),
+                "message": self.runtime_health.message,
             },
             "notifications": {
                 "live_count": self.notifications.len(),
@@ -149,6 +169,15 @@ impl HotkiDiagnostics {
                 "coalesced_snapshots": self.delivery_stats.coalesced_snapshots,
             },
         })
+    }
+}
+
+/// Stable diagnostic label for one permission state.
+fn permission_state_label(state: PermissionState) -> &'static str {
+    match state {
+        PermissionState::Granted => "granted",
+        PermissionState::Denied => "denied",
+        PermissionState::Unknown => "unknown",
     }
 }
 
@@ -234,6 +263,10 @@ enum HotkiFixture {
     PermissionsNoneGranted,
     /// Permissions fixture with mixed grant state.
     PermissionsMixed,
+    /// Hidden permission observer fixture with required grants missing.
+    PermissionsHiddenMissing,
+    /// Hidden permission observer fixture with required grants restored.
+    PermissionsHiddenRecovered,
     /// Single notification plus Details history fixture.
     Notifications,
     /// Default-right notification variants fixture.
@@ -335,6 +368,16 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
         "UI-thread lane: open Permissions with Accessibility granted and Input Monitoring missing.",
     ),
     FixtureDef::new(
+        HotkiFixture::PermissionsHiddenMissing,
+        "hotki.permissions.hidden_missing",
+        "UI-thread lane: observe missing permissions while the helper remains hidden.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::PermissionsHiddenRecovered,
+        "hotki.permissions.hidden_recovered",
+        "UI-thread lane: observe restored permissions while the helper remains hidden.",
+    ),
+    FixtureDef::new(
         HotkiFixture::Notifications,
         "hotki.notifications",
         "UI-thread lane: create a deterministic notification and open Details history.",
@@ -424,6 +467,8 @@ impl HotkiFixture {
             Self::PermissionsAllGranted => permission_status_spec(spec, true, true),
             Self::PermissionsNoneGranted => permission_status_spec(spec, false, false),
             Self::PermissionsMixed => permission_status_spec(spec, true, false),
+            Self::PermissionsHiddenMissing => hidden_permission_status_spec(spec, false, false),
+            Self::PermissionsHiddenRecovered => hidden_permission_status_spec(spec, true, true),
             Self::Notifications => {
                 app_ready(spec).anchor_in("details.notification.0.title", viewport_sel("details"))
             }
@@ -529,6 +574,28 @@ fn permission_status_spec(
         )
 }
 
+/// Build a hidden Permissions observer fixture with root health anchors.
+fn hidden_permission_status_spec(
+    spec: FixtureSpec,
+    accessibility: bool,
+    input_monitoring: bool,
+) -> FixtureSpec {
+    runtime_ready(spec)
+        .anchor_value(
+            "app.runtime.permissions.accessibility",
+            WidgetValue::Text(permission_fixture_label(accessibility).to_string()),
+        )
+        .anchor_value(
+            "app.runtime.permissions.input_monitoring",
+            WidgetValue::Text(permission_fixture_label(input_monitoring).to_string()),
+        )
+}
+
+/// Exact permission label expected from a deterministic fixture override.
+fn permission_fixture_label(granted: bool) -> &'static str {
+    if granted { "granted" } else { "denied" }
+}
+
 /// Build a checked semantic viewport selector for a hard-coded Hotki viewport.
 fn viewport_sel(name: &'static str) -> ViewportSel {
     ViewportSel::name(name).expect("hard-coded hotki viewport name is valid")
@@ -629,6 +696,16 @@ impl FixtureBridge {
                 self.clear_transient_ui()?;
                 self.set_permission_override(true, false)?;
                 self.send_ui_command(UiCommand::ShowPermissionsHelp)?;
+            }
+            HotkiFixture::PermissionsHiddenMissing => {
+                self.clear_transient_ui()?;
+                self.send_ui_command(UiCommand::HidePermissionsHelp)?;
+                self.set_permission_override(false, false)?;
+            }
+            HotkiFixture::PermissionsHiddenRecovered => {
+                self.clear_transient_ui()?;
+                self.send_ui_command(UiCommand::HidePermissionsHelp)?;
+                self.set_permission_override(true, true)?;
             }
             HotkiFixture::Notifications => {
                 self.clear_transient_ui()?;
@@ -733,17 +810,19 @@ impl FixtureBridge {
     fn send_fixture_hud(&self, mode: Mode, title: &str, rows: Vec<HudRow>) -> Result<(), String> {
         let mut style = Style::default();
         style.hud.mode = mode;
-        self.send_ui_message(MsgToUI::HudUpdate {
-            hud: Box::new(HudState {
-                visible: true,
-                rows,
-                depth: 1,
-                breadcrumbs: vec![title.to_string()],
-                style,
-                capture: false,
-            }),
-            displays: DisplaysSnapshot::default(),
-        })
+        self.send_ui_command(UiCommand::SetHudPresentationOverride(Some(Box::new(
+            HudPresentation {
+                hud: Box::new(HudState {
+                    visible: true,
+                    rows,
+                    depth: 1,
+                    breadcrumbs: vec![title.to_string()],
+                    style,
+                    capture: false,
+                }),
+                displays: DisplaysSnapshot::default(),
+            },
+        ))))
     }
 
     /// Reconfigure notification placement through the production HUD update path.
@@ -752,34 +831,28 @@ impl FixtureBridge {
         pos: NotifyPos,
         displays: DisplaysSnapshot,
     ) -> Result<(), String> {
-        let mut style = Style::default();
-        style.notify.pos = pos;
-        self.send_ui_message(MsgToUI::HudUpdate {
-            hud: Box::new(HudState {
-                visible: false,
-                rows: Vec::new(),
-                depth: 0,
-                breadcrumbs: Vec::new(),
-                style,
-                capture: false,
-            }),
-            displays,
-        })
+        let mut config = Style::default().notify;
+        config.pos = pos;
+        self.send_ui_command(UiCommand::SetNotificationPresentationOverride(Some(
+            Box::new(NotificationPresentation { config, displays }),
+        )))
     }
 
     /// Render a tall HUD through the same UI update path used by the runtime.
     fn send_tall_hud(&self) -> Result<(), String> {
-        self.send_ui_message(MsgToUI::HudUpdate {
-            hud: Box::new(HudState {
-                visible: true,
-                rows: tall_hud_rows()?,
-                depth: 1,
-                breadcrumbs: vec!["Tall HUD".to_string()],
-                style: Style::default(),
-                capture: false,
-            }),
-            displays: tall_hud_display_snapshot(),
-        })
+        self.send_ui_command(UiCommand::SetHudPresentationOverride(Some(Box::new(
+            HudPresentation {
+                hud: Box::new(HudState {
+                    visible: true,
+                    rows: tall_hud_rows()?,
+                    depth: 1,
+                    breadcrumbs: vec!["Tall HUD".to_string()],
+                    style: Style::default(),
+                    capture: false,
+                }),
+                displays: tall_hud_display_snapshot(),
+            },
+        ))))
     }
 
     /// Clear UI-local transient state before applying a fixture.
@@ -787,6 +860,8 @@ impl FixtureBridge {
         self.send_ui_message(MsgToUI::SelectorHide)?;
         self.send_ui_message(MsgToUI::ClearNotifications)?;
         self.send_ui_command(UiCommand::SetPermissionStatusOverride(None))?;
+        self.send_ui_command(UiCommand::SetNotificationPresentationOverride(None))?;
+        self.send_ui_command(UiCommand::SetHudPresentationOverride(None))?;
         self.send_ui_message(MsgToUI::ShowDetails(Toggle::Off))
     }
 
@@ -914,7 +989,7 @@ pub fn viewport_frame<R>(
 pub fn render_app_anchors(
     devmcp: &DevMcp,
     ctx: &Context,
-    server_connected: bool,
+    runtime_health: &RuntimeHealth,
     server_bindings: &[String],
     notification_stack: &[NotificationStackAlias],
 ) {
@@ -929,7 +1004,31 @@ pub fn render_app_anchors(
             readiness_anchor(
                 ui,
                 "app.server.connected",
-                WidgetValue::Bool(server_connected),
+                WidgetValue::Bool(runtime_health.server_connected()),
+            );
+            readiness_anchor(
+                ui,
+                "app.runtime.phase",
+                WidgetValue::Text(runtime_health.phase.label().to_string()),
+            );
+            readiness_anchor(
+                ui,
+                "app.runtime.permissions.accessibility",
+                WidgetValue::Text(
+                    permission_state_label(runtime_health.permissions.accessibility).to_string(),
+                ),
+            );
+            readiness_anchor(
+                ui,
+                "app.runtime.permissions.input_monitoring",
+                WidgetValue::Text(
+                    permission_state_label(runtime_health.permissions.input_monitoring).to_string(),
+                ),
+            );
+            readiness_anchor(
+                ui,
+                "app.runtime.retry",
+                WidgetValue::Text(runtime_health.retry.label().to_string()),
             );
             readiness_anchor(
                 ui,

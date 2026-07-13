@@ -7,14 +7,16 @@ use hotki_protocol::{NotifyKind, ipc::heartbeat, rpc::InjectKind};
 use hotki_server::{Client, Result as ServerResult};
 use tokio::{
     sync::{mpsc, oneshot},
+    task::JoinHandle,
     time::{Duration, Instant as TokioInstant, Sleep, sleep},
 };
 use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{
+    health::{ConnectionStatus, RetryState, RuntimeHealth, RuntimePhase},
     logs,
-    permissions::{PermissionsStatus, check_permissions},
+    permissions::{PermissionObservation, PermissionsStatus, check_permissions},
     runtime::ControlMsg,
     ui_delivery::UiDeliveryTx,
 };
@@ -33,23 +35,12 @@ pub struct ConnectionDriver {
     server_event_tap_enabled: bool,
     /// Whether to log periodic world snapshots.
     dumpworld: bool,
-    /// Current server connection lifecycle.
-    state: ConnectionState,
+    /// Complete app/runtime health published atomically to every UI surface.
+    health: RuntimeHealth,
+    /// Deterministic permission state supplied by devtools, when active.
+    permission_override: Option<PermissionsStatus>,
     /// Server-bound controls received before a connection is ready.
     pending_controls: VecDeque<ServerControl>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Server connection lifecycle visible to control routing.
-enum ConnectionState {
-    /// No server connection has been attempted yet, or the previous one ended.
-    Disconnected,
-    /// Initial connect is in progress.
-    Connecting,
-    /// Connected and ready to send server-bound control messages.
-    Connected,
-    /// Shutdown has been requested.
-    ShuttingDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +50,8 @@ enum ControlOutcome {
     Continue,
     /// Retry the server connection.
     RetryConnect,
+    /// Pause an in-flight connection until required permissions are granted.
+    PauseConnect,
     /// Stop the current driver loop.
     Stop,
 }
@@ -72,6 +65,11 @@ impl ControlOutcome {
     /// Whether the caller should retry the server connection.
     fn should_retry(self) -> bool {
         matches!(self, Self::RetryConnect)
+    }
+
+    /// Whether an in-flight connect task must be canceled.
+    fn should_pause_connect(self) -> bool {
+        matches!(self, Self::PauseConnect)
     }
 }
 
@@ -90,7 +88,7 @@ enum LocalControl {
         text: String,
     },
     /// Current permission status observed by the UI.
-    PermissionsChanged(PermissionsStatus),
+    PermissionsChanged(PermissionObservation),
 }
 
 /// Server-bound control command.
@@ -153,33 +151,91 @@ impl ConnectionDriver {
         server_event_tap_enabled: bool,
         dumpworld: bool,
     ) -> Self {
-        Self {
+        let permissions = check_permissions();
+        let mut health = RuntimeHealth::connecting(config_path.clone());
+        health.permissions = permissions;
+        let driver = Self {
             config_path,
             server_log_filter,
             ui: UiSink::new(tx_keys, egui_ctx),
             rx_ctrl,
             server_event_tap_enabled,
             dumpworld,
-            state: ConnectionState::Disconnected,
+            health,
+            permission_override: None,
             pending_controls: VecDeque::new(),
-        }
+        };
+        driver.ui.set_runtime_health(driver.health.clone());
+        driver
     }
 
-    /// Update connection lifecycle state when it changes.
-    fn set_state(&mut self, state: ConnectionState) {
-        if self.state != state {
-            debug!(previous = ?self.state, next = ?state, "connection state changed");
-            self.state = state;
-            let connected = matches!(state, ConnectionState::Connected);
-            self.ui.set_server_connected(connected);
-            if !connected {
-                self.ui.set_server_bindings(Vec::new());
-            }
+    /// Publish the complete health snapshot after a state transition.
+    fn publish_health(&self) {
+        self.ui.set_runtime_health(self.health.clone());
+    }
+
+    /// Record a connection failure that can be retried.
+    fn mark_disconnected(&mut self, message: impl Into<String>) {
+        self.health.phase = RuntimePhase::Disconnected;
+        self.health.connection = ConnectionStatus::Disconnected;
+        self.health.retry = RetryState::Available;
+        self.health.message = Some(message.into());
+        self.ui.set_server_bindings(Vec::new());
+        self.publish_health();
+    }
+
+    /// Begin the first connection or a reconnect attempt.
+    fn mark_connecting(&mut self) {
+        let retrying = self.health.phase == RuntimePhase::Retrying
+            || self.health.retry == RetryState::Available
+            || self.health.message.is_some();
+        self.health.phase = if retrying {
+            RuntimePhase::Retrying
+        } else {
+            RuntimePhase::Connecting
+        };
+        self.health.connection = ConnectionStatus::Connecting;
+        self.health.pending_config = Some(self.config_path.clone());
+        self.health.retry = RetryState::InProgress;
+        self.health.message = None;
+        self.publish_health();
+    }
+
+    /// Record that required macOS permissions are still missing.
+    fn mark_waiting_for_permissions(&mut self) {
+        self.health.phase = RuntimePhase::WaitingPermissions;
+        if !self.health.server_connected() {
+            self.health.connection = ConnectionStatus::Disconnected;
         }
+        self.health.retry = RetryState::Available;
+        self.health.message =
+            Some("Grant Accessibility and Input Monitoring to continue.".to_string());
+        self.publish_health();
+    }
+
+    /// Record an acknowledged active config and ready server.
+    fn mark_ready(&mut self) {
+        self.health.phase = RuntimePhase::Ready;
+        self.health.connection = ConnectionStatus::Connected;
+        self.health.active_config = Some(self.config_path.clone());
+        self.health.pending_config = None;
+        self.health.retry = RetryState::Idle;
+        self.health.message = None;
+        self.publish_health();
+    }
+
+    /// Record a rejected config while keeping any prior active config explicit.
+    fn mark_invalid_config(&mut self, message: impl Into<String>) {
+        self.health.phase = RuntimePhase::InvalidConfig;
+        self.health.connection = ConnectionStatus::Connected;
+        self.health.pending_config = Some(self.config_path.clone());
+        self.health.retry = RetryState::Available;
+        self.health.message = Some(message.into());
+        self.publish_health();
     }
 
     /// Handle control messages that do not require a connected server.
-    fn handle_local_control(&self, control: LocalControl) -> ControlOutcome {
+    fn handle_local_control(&mut self, control: LocalControl) -> ControlOutcome {
         match control {
             LocalControl::OpenPermissionsHelp => {
                 self.ui.show_permissions_help();
@@ -189,15 +245,41 @@ impl ConnectionDriver {
                 self.notify_local(kind, &title, &text);
                 ControlOutcome::Continue
             }
-            LocalControl::PermissionsChanged(status) => {
-                if self.required_permissions_granted(status)
-                    && matches!(
-                        self.state,
-                        ConnectionState::Disconnected | ConnectionState::Connecting
-                    )
+            LocalControl::PermissionsChanged(observation) => {
+                let status = observation.status();
+                self.permission_override = observation.is_overridden().then_some(status);
+                self.health.permissions = status;
+                if !Self::observed_permissions_granted(status) {
+                    if self.health.server_connected()
+                        && self.health.phase == RuntimePhase::InvalidConfig
+                    {
+                        self.publish_health();
+                    } else {
+                        self.mark_waiting_for_permissions();
+                    }
+                    if self.server_event_tap_enabled && !self.health.server_connected() {
+                        ControlOutcome::PauseConnect
+                    } else {
+                        ControlOutcome::Continue
+                    }
+                } else if self.health.server_connected()
+                    && self.health.phase == RuntimePhase::WaitingPermissions
                 {
+                    self.mark_ready();
+                    ControlOutcome::Continue
+                } else if matches!(
+                    self.health.phase,
+                    RuntimePhase::Disconnected
+                        | RuntimePhase::Connecting
+                        | RuntimePhase::WaitingPermissions
+                ) {
+                    self.health.phase = RuntimePhase::Retrying;
+                    self.health.retry = RetryState::InProgress;
+                    self.health.message = None;
+                    self.publish_health();
                     ControlOutcome::RetryConnect
                 } else {
+                    self.publish_health();
                     ControlOutcome::Continue
                 }
             }
@@ -206,13 +288,15 @@ impl ConnectionDriver {
 
     /// Handle control messages that require an active server connection.
     async fn handle_server_control(
-        &self,
+        &mut self,
         conn: &mut hotki_server::Connection,
         control: ServerControl,
     ) {
         match control {
             ServerControl::Reload => {
-                self.reload_config(conn).await;
+                if !self.event_tap_permissions_missing() {
+                    self.reload_config(conn).await;
+                }
             }
             ServerControl::InjectKey {
                 ident,
@@ -243,23 +327,43 @@ impl ConnectionDriver {
                     ControlOutcome::Continue
                 } else {
                     self.pending_controls.push_back(control);
+                    self.health.phase = RuntimePhase::Retrying;
+                    self.health.pending_config = Some(self.config_path.clone());
+                    self.health.retry = RetryState::InProgress;
+                    self.health.message = None;
+                    self.publish_health();
                     ControlOutcome::RetryConnect
                 }
             }
             ControlRoute::Shutdown => {
                 self.begin_shutdown();
                 if let Some(conn) = conn {
-                    conn.shutdown().await.ok();
+                    match conn.shutdown().await {
+                        Ok(()) => info!("server acknowledged shutdown"),
+                        Err(err) => warn!("server shutdown was not acknowledged: {err}"),
+                    }
                 }
                 ControlOutcome::Stop
             }
         }
     }
 
-    /// Trigger UI shutdown and record lifecycle state.
+    /// Record shutdown before waiting for owned runtime work to finish.
     fn begin_shutdown(&mut self) {
-        self.set_state(ConnectionState::ShuttingDown);
-        self.ui.trigger_graceful_shutdown(750);
+        self.health.phase = RuntimePhase::ShuttingDown;
+        self.health.connection = if self.health.server_connected() {
+            ConnectionStatus::Closing
+        } else {
+            ConnectionStatus::Disconnected
+        };
+        self.health.retry = RetryState::Idle;
+        self.health.message = None;
+        self.publish_health();
+    }
+
+    /// Close the UI after server and connection work has finished.
+    fn finish_shutdown(&self) {
+        self.ui.finish_shutdown();
     }
 
     /// Drain server-bound controls queued while connecting.
@@ -282,16 +386,26 @@ impl ConnectionDriver {
 
     /// Whether the current permission snapshot allows the server event tap to start.
     fn required_permissions_granted(&self, perms: PermissionsStatus) -> bool {
-        !self.server_event_tap_enabled || (perms.accessibility_ok() && perms.input_ok())
+        !self.server_event_tap_enabled || Self::observed_permissions_granted(perms)
+    }
+
+    /// Whether the latest observation contains both permissions used by hotkeys.
+    fn observed_permissions_granted(perms: PermissionsStatus) -> bool {
+        perms.accessibility_ok() && perms.input_ok()
     }
 
     /// Show permission guidance and keep the server from being spawned without required grants.
-    fn event_tap_permissions_missing(&self) -> bool {
-        let perms = check_permissions();
+    fn event_tap_permissions_missing(&mut self) -> bool {
+        let perms = self.permission_override.unwrap_or_else(check_permissions);
+        if self.health.permissions != perms {
+            self.health.permissions = perms;
+            self.publish_health();
+        }
         if self.required_permissions_granted(perms) {
             return false;
         }
 
+        self.mark_waiting_for_permissions();
         self.ui.show_permissions_help();
         self.notify_local(
             NotifyKind::Error,
@@ -302,17 +416,44 @@ impl ConnectionDriver {
     }
 
     /// Reload the current config path on the server and notify the UI.
-    async fn reload_config(&self, conn: &mut hotki_server::Connection) {
+    async fn reload_config(&mut self, conn: &mut hotki_server::Connection) {
+        self.health.phase = RuntimePhase::Retrying;
+        self.health.connection = ConnectionStatus::Connected;
+        self.health.pending_config = Some(self.config_path.clone());
+        self.health.retry = RetryState::InProgress;
+        self.health.message = None;
+        self.publish_health();
+
+        match self.activate_config(conn).await {
+            Ok(()) => {
+                self.notify_local(NotifyKind::Success, "Config", "Reloaded successfully");
+                self.refresh_server_bindings(conn).await;
+            }
+            Err(err) => {
+                self.notify_local(NotifyKind::Error, "Config", &err.to_string());
+            }
+        }
+    }
+
+    /// Ask the server to activate the configured path and publish the exact outcome.
+    async fn activate_config(
+        &mut self,
+        conn: &mut hotki_server::Connection,
+    ) -> hotki_server::Result<()> {
         match conn
             .set_config_path(self.config_path.to_string_lossy().as_ref())
             .await
         {
             Ok(()) => {
-                self.notify_local(NotifyKind::Success, "Config", "Reloaded successfully");
-                self.ui.set_config_path(Some(self.config_path.clone()));
-                self.refresh_server_bindings(conn).await;
+                self.mark_ready();
+                Ok(())
             }
-            Err(err) => self.notify_local(NotifyKind::Error, "Config", &err.to_string()),
+            Err(err) => {
+                let message = err.to_string();
+                error!(error = %err, "server rejected config candidate");
+                self.mark_invalid_config(message);
+                Err(err)
+            }
         }
     }
 
@@ -391,30 +532,34 @@ impl ConnectionDriver {
     /// Connect to the server, draining any queued control messages after connect.
     pub(crate) async fn connect(&mut self) -> Option<Client> {
         if self.event_tap_permissions_missing() {
-            self.set_state(ConnectionState::Disconnected);
             return None;
         }
 
-        let mut rx_conn_ready = spawn_connect(
+        self.mark_connecting();
+        let mut connect_task = spawn_connect(
             self.server_log_filter.clone(),
             self.server_event_tap_enabled,
         );
-        self.set_state(ConnectionState::Connecting);
-        let mut client = self.wait_for_connected_client(&mut rx_conn_ready).await?;
+        let mut client = self.wait_for_connected_client(&mut connect_task).await?;
+
+        if self.event_tap_permissions_missing() {
+            return None;
+        }
 
         let conn = match client.connection() {
             Ok(conn) => conn,
             Err(err) => {
                 error!("Failed to get client connection: {}", err);
-                self.set_state(ConnectionState::Disconnected);
+                self.mark_disconnected(format!("Failed to open server connection: {err}"));
                 return None;
             }
         };
-        self.send_initial_config(conn).await?;
-        self.refresh_server_bindings(conn).await;
-        self.set_state(ConnectionState::Connected);
-        self.ui.set_config_path(Some(self.config_path.clone()));
-        info!("Config path sent to server engine");
+        if let Err(err) = self.activate_config(conn).await {
+            self.notify_local(NotifyKind::Error, "Config", &err.to_string());
+        } else {
+            self.refresh_server_bindings(conn).await;
+            info!("Config path sent to server engine");
+        }
 
         self.drain_pending_controls(conn).await;
 
@@ -424,7 +569,7 @@ impl ConnectionDriver {
     /// Run the connection lifecycle until shutdown.
     pub(crate) async fn run(&mut self) {
         loop {
-            if matches!(self.state, ConnectionState::ShuttingDown) {
+            if self.health.phase == RuntimePhase::ShuttingDown {
                 break;
             }
 
@@ -433,13 +578,17 @@ impl ConnectionDriver {
                 continue;
             }
 
-            if matches!(self.state, ConnectionState::ShuttingDown) {
+            if self.health.phase == RuntimePhase::ShuttingDown {
                 break;
             }
 
             if !self.wait_for_retry_signal().await {
                 break;
             }
+        }
+
+        if self.health.phase == RuntimePhase::ShuttingDown {
+            self.finish_shutdown();
         }
     }
 
@@ -460,14 +609,19 @@ impl ConnectionDriver {
     /// Wait for the background connect task while still accepting local controls.
     async fn wait_for_connected_client(
         &mut self,
-        rx_conn_ready: &mut oneshot::Receiver<ServerResult<Client>>,
+        connect_task: &mut ConnectTask,
     ) -> Option<Client> {
         loop {
             tokio::select! {
                 biased;
-                res = &mut *rx_conn_ready => return self.handle_connect_result(res),
+                res = &mut connect_task.result => {
+                    connect_task.join().await;
+                    return self.handle_connect_result(res);
+                }
                 Some(msg) = self.rx_ctrl.recv() => {
-                    if self.route_control_msg(None, msg).await.should_stop() {
+                    let outcome = self.route_control_msg(None, msg).await;
+                    if outcome.should_stop() || outcome.should_pause_connect() {
+                        connect_task.cancel().await;
                         return None;
                     }
                 }
@@ -489,28 +643,17 @@ impl ConnectionDriver {
                     "Connection",
                     &format!("Failed to start hotkey server: {err}"),
                 );
-                self.set_state(ConnectionState::Disconnected);
+                self.mark_disconnected(format!("Failed to start hotkey server: {err}"));
                 None
             }
             Err(_) => {
                 error!("Connect task canceled before reporting a result");
-                self.set_state(ConnectionState::Disconnected);
+                if self.health.phase != RuntimePhase::ShuttingDown {
+                    self.mark_disconnected("Server connection attempt was canceled");
+                }
                 None
             }
         }
-    }
-
-    /// Send the active config path to the connected server.
-    async fn send_initial_config(&mut self, conn: &mut hotki_server::Connection) -> Option<()> {
-        if let Err(err) = conn
-            .set_config_path(self.config_path.to_string_lossy().as_ref())
-            .await
-        {
-            error!("Failed to set config path on server: {}", err);
-            self.set_state(ConnectionState::Disconnected);
-            return None;
-        }
-        Some(())
     }
 
     /// Refresh UI-visible server binding diagnostics.
@@ -527,11 +670,10 @@ impl ConnectionDriver {
             Ok(conn) => conn,
             Err(err) => {
                 error!("Failed to get client connection: {}", err);
-                self.set_state(ConnectionState::Disconnected);
+                self.mark_disconnected(format!("Failed to open server connection: {err}"));
                 return;
             }
         };
-        self.set_state(ConnectionState::Connected);
 
         let hb_timer: Sleep = sleep(heartbeat::timeout());
         tokio::pin!(hb_timer);
@@ -549,8 +691,8 @@ impl ConnectionDriver {
             }
         }
         info!("Exiting key loop");
-        if self.state != ConnectionState::ShuttingDown {
-            self.set_state(ConnectionState::Disconnected);
+        if self.health.phase != RuntimePhase::ShuttingDown {
+            self.mark_disconnected("Server connection lost; reconnecting");
         }
     }
 
@@ -638,13 +780,35 @@ impl ConnectionDriver {
     }
 }
 
-/// Spawn a background connect task and return a oneshot receiver for its result.
-fn spawn_connect(
-    log_filter: Option<String>,
-    server_event_tap_enabled: bool,
-) -> oneshot::Receiver<ServerResult<Client>> {
+/// Owned asynchronous server-connect attempt.
+struct ConnectTask {
+    /// Delivers the connection attempt's typed result.
+    result: oneshot::Receiver<ServerResult<Client>>,
+    /// Owned task that must finish or be canceled before shutdown proceeds.
+    handle: JoinHandle<()>,
+}
+
+impl ConnectTask {
+    /// Wait for the task to finish after its result becomes available.
+    async fn join(&mut self) {
+        if let Err(err) = (&mut self.handle).await
+            && !err.is_cancelled()
+        {
+            warn!("server connect task failed: {err}");
+        }
+    }
+
+    /// Cancel an in-flight connect and wait until it has stopped.
+    async fn cancel(&mut self) {
+        self.handle.abort();
+        self.join().await;
+    }
+}
+
+/// Spawn an owned background connect task.
+fn spawn_connect(log_filter: Option<String>, server_event_tap_enabled: bool) -> ConnectTask {
     let (tx_conn_ready, rx) = oneshot::channel::<ServerResult<Client>>();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut client = Client::new()
             .with_auto_spawn_server()
             .with_server_event_tap_enabled(server_event_tap_enabled);
@@ -656,21 +820,26 @@ fn spawn_connect(
             tracing::warn!("connect-ready channel closed before send");
         }
     });
-    rx
+    ConnectTask { result: rx, handle }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future;
+
     use hotki_protocol::NotifyKind;
     use permissions::PermissionState;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::{mpsc::unbounded_channel, oneshot};
 
     use super::{
-        ConnectionDriver, ConnectionState, ControlOutcome, ControlRoute, LocalControl,
-        ServerControl,
+        ConnectTask, ConnectionDriver, ControlOutcome, ControlRoute, LocalControl, ServerControl,
     };
     use crate::{
-        permissions::PermissionsStatus, runtime::ControlMsg, ui_delivery::ui_delivery_channel,
+        app::{UiCommand, UiEvent},
+        health::{ConnectionStatus, RetryState, RuntimePhase},
+        permissions::{PermissionObservation, PermissionsStatus},
+        runtime::ControlMsg,
+        ui_delivery::{UiDeliveryRx, ui_delivery_channel},
     };
 
     #[test]
@@ -715,8 +884,12 @@ mod tests {
             screen_recording: PermissionState::Denied,
         };
         assert_eq!(
-            ControlRoute::from_msg(ControlMsg::PermissionsChanged(status)),
-            ControlRoute::Local(LocalControl::PermissionsChanged(status))
+            ControlRoute::from_msg(ControlMsg::PermissionsChanged(
+                PermissionObservation::system(status),
+            )),
+            ControlRoute::Local(LocalControl::PermissionsChanged(
+                PermissionObservation::system(status),
+            ))
         );
     }
 
@@ -724,22 +897,14 @@ mod tests {
     fn control_outcome_names_loop_exit_decision() {
         assert!(!ControlOutcome::Continue.should_stop());
         assert!(!ControlOutcome::RetryConnect.should_stop());
+        assert!(!ControlOutcome::PauseConnect.should_stop());
         assert!(ControlOutcome::Stop.should_stop());
         assert!(!ControlOutcome::Continue.should_retry());
         assert!(ControlOutcome::RetryConnect.should_retry());
+        assert!(!ControlOutcome::PauseConnect.should_retry());
         assert!(!ControlOutcome::Stop.should_retry());
-    }
-
-    #[test]
-    fn connection_state_covers_runtime_lifecycle() {
-        let states = [
-            ConnectionState::Disconnected,
-            ConnectionState::Connecting,
-            ConnectionState::Connected,
-            ConnectionState::ShuttingDown,
-        ];
-
-        assert_eq!(states.len(), 4);
+        assert!(!ControlOutcome::Continue.should_pause_connect());
+        assert!(ControlOutcome::PauseConnect.should_pause_connect());
     }
 
     #[test]
@@ -757,15 +922,59 @@ mod tests {
             screen_recording: PermissionState::Denied,
         };
         assert_eq!(
-            driver.handle_local_control(LocalControl::PermissionsChanged(ready)),
+            driver.handle_local_control(LocalControl::PermissionsChanged(
+                PermissionObservation::system(ready),
+            )),
             ControlOutcome::RetryConnect
         );
 
-        driver.set_state(ConnectionState::Connected);
+        driver.health.phase = RuntimePhase::Ready;
+        driver.health.connection = ConnectionStatus::Connected;
+        driver.health.retry = RetryState::Idle;
         assert_eq!(
-            driver.handle_local_control(LocalControl::PermissionsChanged(ready)),
+            driver.handle_local_control(LocalControl::PermissionsChanged(
+                PermissionObservation::system(ready),
+            )),
             ControlOutcome::Continue
         );
+    }
+
+    #[test]
+    fn permission_loss_pauses_connect_and_fixture_override_has_explicit_lifetime() {
+        let (tx_ui, _rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let ctx = egui::Context::default();
+        let mut driver =
+            ConnectionDriver::new("config.luau".into(), None, tx_ui, ctx, rx_ctrl, true, false);
+        let denied = PermissionsStatus {
+            accessibility: PermissionState::Denied,
+            input_monitoring: PermissionState::Denied,
+            screen_recording: PermissionState::Denied,
+        };
+        let ready = PermissionsStatus {
+            accessibility: PermissionState::Granted,
+            input_monitoring: PermissionState::Granted,
+            screen_recording: PermissionState::Denied,
+        };
+        driver.health.phase = RuntimePhase::Connecting;
+        driver.health.connection = ConnectionStatus::Connecting;
+
+        assert_eq!(
+            driver.handle_local_control(LocalControl::PermissionsChanged(
+                PermissionObservation::devtools(denied),
+            )),
+            ControlOutcome::PauseConnect
+        );
+        assert_eq!(driver.permission_override, Some(denied));
+        assert_eq!(driver.health.phase, RuntimePhase::WaitingPermissions);
+
+        assert_eq!(
+            driver.handle_local_control(LocalControl::PermissionsChanged(
+                PermissionObservation::system(ready),
+            )),
+            ControlOutcome::RetryConnect
+        );
+        assert_eq!(driver.permission_override, None);
     }
 
     #[tokio::test]
@@ -787,5 +996,82 @@ mod tests {
 
         assert_eq!(outcome, ControlOutcome::RetryConnect);
         assert_eq!(driver.pending_controls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_ui_only_after_driver_finishes() {
+        let (tx_ui, rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let ctx = egui::Context::default();
+        let mut driver = ConnectionDriver::new(
+            "config.luau".into(),
+            None,
+            tx_ui,
+            ctx,
+            rx_ctrl,
+            false,
+            false,
+        );
+
+        let outcome = driver.route_control_msg(None, ControlMsg::Shutdown).await;
+
+        assert_eq!(outcome, ControlOutcome::Stop);
+        assert_eq!(driver.health.phase, RuntimePhase::ShuttingDown);
+        assert!(!drain_for_shutdown(&rx_ui));
+
+        driver.finish_shutdown();
+
+        assert!(drain_for_shutdown(&rx_ui));
+    }
+
+    #[test]
+    fn invalid_candidate_preserves_active_config_and_exposes_retry() {
+        let (tx_ui, _rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let ctx = egui::Context::default();
+        let mut driver = ConnectionDriver::new(
+            "candidate.luau".into(),
+            None,
+            tx_ui,
+            ctx,
+            rx_ctrl,
+            false,
+            false,
+        );
+        driver.health.active_config = Some("active.luau".into());
+
+        driver.mark_invalid_config("candidate rejected");
+
+        assert_eq!(driver.health.phase, RuntimePhase::InvalidConfig);
+        assert_eq!(driver.health.connection, ConnectionStatus::Connected);
+        assert_eq!(driver.health.active_config, Some("active.luau".into()));
+        assert_eq!(driver.health.pending_config, Some("candidate.luau".into()));
+        assert_eq!(driver.health.retry, RetryState::Available);
+        assert_eq!(driver.health.message.as_deref(), Some("candidate rejected"));
+    }
+
+    #[tokio::test]
+    async fn cancel_connect_task_waits_for_owned_task() {
+        let (result_tx, result) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _result_tx = result_tx;
+            started_tx.send(()).expect("signal task start");
+            future::pending::<()>().await;
+        });
+        started_rx.await.expect("connect task started");
+        let mut task = ConnectTask { result, handle };
+
+        task.cancel().await;
+
+        assert!(task.handle.is_finished());
+    }
+
+    fn drain_for_shutdown(rx: &UiDeliveryRx) -> bool {
+        let mut found = false;
+        while let Some(event) = rx.try_recv() {
+            found |= matches!(event, UiEvent::Command(UiCommand::Shutdown));
+        }
+        found
     }
 }

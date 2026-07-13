@@ -9,7 +9,12 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem},
 };
 
-use crate::{app::UiEvent, runtime::ControlMsg, ui_delivery::UiDeliveryTx};
+use crate::{
+    app::UiEvent,
+    health::{RetryState, RuntimeHealth, RuntimePhase},
+    runtime::ControlMsg,
+    ui_delivery::UiDeliveryTx,
+};
 
 /// Embed tray icon PNG: orange for dev builds, white for production.
 static TRAY_ICON_PNG: &[u8] = if cfg!(debug_assertions) {
@@ -46,9 +51,84 @@ enum TrayAction {
     Quit,
 }
 
+/// Live tray icon and the menu rows that present runtime health.
+pub struct Tray {
+    /// Native tray icon handle.
+    icon: TrayIcon,
+    /// Disabled status row for the aggregate runtime phase.
+    phase: MenuItem,
+    /// Disabled status row for server connection state.
+    connection: MenuItem,
+    /// Disabled status row for the installed config.
+    active_config: MenuItem,
+    /// Disabled status row for the uncommitted config candidate.
+    pending_config: MenuItem,
+    /// Disabled status row for macOS permissions.
+    permissions: MenuItem,
+    /// Disabled status row for retry availability.
+    retry: MenuItem,
+    /// Existing action whose label follows retry availability.
+    reload: MenuItem,
+}
+
+impl Tray {
+    /// Update all tray health rows and the native tooltip from one snapshot.
+    pub(crate) fn set_runtime_health(&self, health: &RuntimeHealth) {
+        self.phase
+            .set_text(format!("Status: {}", health.phase.display_label()));
+        self.connection
+            .set_text(format!("Server: {}", health.connection.display_label()));
+        self.active_config
+            .set_text(format!("Active config: {}", health.active_config_label()));
+        self.pending_config
+            .set_text(format!("Pending config: {}", health.pending_config_label()));
+        self.permissions
+            .set_text(format!("Permissions: {}", health.permissions_label()));
+        self.retry
+            .set_text(format!("Retry: {}", health.retry.display_label()));
+        self.reload
+            .set_text(if matches!(health.retry, RetryState::Available) {
+                "Retry"
+            } else {
+                "Reload Config"
+            });
+        self.reload
+            .set_enabled(!matches!(health.phase, RuntimePhase::ShuttingDown));
+
+        let tooltip = format!("Hotki — {}", health.phase.display_label());
+        if let Err(error) = self.icon.set_tooltip(Some(tooltip)) {
+            tracing::warn!("failed to update tray tooltip: {error}");
+        }
+    }
+}
+
+/// Menu rows retained after insertion so their text can update in place.
+struct TrayRows {
+    /// Aggregate runtime phase.
+    phase: MenuItem,
+    /// Server connection state.
+    connection: MenuItem,
+    /// Installed config path.
+    active_config: MenuItem,
+    /// Pending candidate path.
+    pending_config: MenuItem,
+    /// Current macOS permissions.
+    permissions: MenuItem,
+    /// Current retry state.
+    retry: MenuItem,
+    /// Config reload or retry action.
+    reload: MenuItem,
+}
+
 /// Build the tray menu and an id-to-action lookup table.
-fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
+fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>, TrayRows) {
     let menu = Menu::new();
+    let phase = MenuItem::new("Status: Disconnected", false, None);
+    let connection = MenuItem::new("Server: Disconnected", false, None);
+    let active_config = MenuItem::new("Active config: None", false, None);
+    let pending_config = MenuItem::new("Pending config: None", false, None);
+    let permissions = MenuItem::new("Permissions: unknown", false, None);
+    let retry = MenuItem::new("Retry: Not needed", false, None);
     let show_window = MenuItem::new("Open Hotki", true, None);
     let reload = MenuItem::new("Reload Config", true, None);
     let help = MenuItem::new("Permissions…", true, None);
@@ -56,12 +136,30 @@ fn build_menu() -> (Menu, HashMap<MenuId, TrayAction>) {
 
     let mut actions = HashMap::new();
     register_base_actions(&mut actions, &show_window, &reload, &help, &quit);
+    append_menu_item(&menu, &phase);
+    append_menu_item(&menu, &connection);
+    append_menu_item(&menu, &active_config);
+    append_menu_item(&menu, &pending_config);
+    append_menu_item(&menu, &permissions);
+    append_menu_item(&menu, &retry);
     append_menu_item(&menu, &show_window);
     append_menu_item(&menu, &reload);
     append_menu_item(&menu, &help);
     append_menu_item(&menu, &quit);
 
-    (menu, actions)
+    (
+        menu,
+        actions,
+        TrayRows {
+            phase,
+            connection,
+            active_config,
+            pending_config,
+            permissions,
+            retry,
+            reload,
+        },
+    )
 }
 
 /// Register fixed tray menu actions.
@@ -118,10 +216,11 @@ pub fn build_tray_and_listeners(
     tx: &UiDeliveryTx,
     tx_ctrl: &tokio_mpsc::UnboundedSender<ControlMsg>,
     egui_ctx: &Context,
-) -> Option<TrayIcon> {
-    let (menu, actions) = build_menu();
+    health: &RuntimeHealth,
+) -> Option<Tray> {
+    let (menu, actions, rows) = build_menu();
 
-    let tray_icon_opt: Option<TrayIcon> = {
+    let tray_icon = {
         let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false);
@@ -139,8 +238,21 @@ pub fn build_tray_and_listeners(
             }
         }
     };
+    let tray = tray_icon.map(|icon| Tray {
+        icon,
+        phase: rows.phase,
+        connection: rows.connection,
+        active_config: rows.active_config,
+        pending_config: rows.pending_config,
+        permissions: rows.permissions,
+        retry: rows.retry,
+        reload: rows.reload,
+    });
+    if let Some(tray) = tray.as_ref() {
+        tray.set_runtime_health(health);
+    }
 
-    if tray_icon_opt.is_some() {
+    if tray.is_some() {
         let tx = tx.clone();
         let egui_ctx = egui_ctx.clone();
         thread::spawn(move || {
@@ -165,7 +277,7 @@ pub fn build_tray_and_listeners(
         });
     }
 
-    if tray_icon_opt.is_some() {
+    if tray.is_some() {
         let tx = tx.clone();
         let tx_ctrl = tx_ctrl.clone();
         let egui_ctx = egui_ctx.clone();
@@ -179,5 +291,5 @@ pub fn build_tray_and_listeners(
             }
         });
     }
-    tray_icon_opt
+    tray
 }

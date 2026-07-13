@@ -6,10 +6,49 @@ use egui::{
 };
 use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
 use hotki_protocol::NotifyKind;
+use objc2_app_kit::NSApplication;
+use objc2_foundation::MainThreadMarker;
 pub use permissions::PermissionsStatus;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{devtools, runtime::ControlMsg};
+
+/// One permission snapshot together with the authority that produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionObservation {
+    /// Observed permission values.
+    status: PermissionsStatus,
+    /// Whether deterministic devtools state replaced the macOS observation.
+    overridden: bool,
+}
+
+impl PermissionObservation {
+    /// Build a permission observation read from macOS.
+    pub(crate) fn system(status: PermissionsStatus) -> Self {
+        Self {
+            status,
+            overridden: false,
+        }
+    }
+
+    /// Build a permission observation supplied by deterministic devtools state.
+    pub(crate) fn devtools(status: PermissionsStatus) -> Self {
+        Self {
+            status,
+            overridden: true,
+        }
+    }
+
+    /// Return the observed permission values.
+    pub(crate) fn status(self) -> PermissionsStatus {
+        self.status
+    }
+
+    /// Whether this observation came from a deterministic devtools override.
+    pub(crate) fn is_overridden(self) -> bool {
+        self.overridden
+    }
+}
 
 #[derive(Clone, Copy)]
 /// Static content and action for one permission section.
@@ -52,10 +91,16 @@ pub struct PermissionsHelp {
     tx_ctrl: Option<UnboundedSender<ControlMsg>>,
     /// Deterministic permission status used by devtools fixtures.
     status_override: Option<PermissionsStatus>,
+    /// Latest permission status observed from macOS or a devtools override.
+    current_status: PermissionsStatus,
+    /// Whether the observer must refresh on the next app frame.
+    observation_pending: bool,
+    /// Whether AppKit reported Hotki active on the previous frame.
+    app_was_active: bool,
     /// Recorded opener intents while `status_override` is active.
     open_intents: PermissionOpenIntents,
-    /// Last permission status reported to the runtime control loop.
-    last_reported_status: Option<PermissionsStatus>,
+    /// Last permission observation reported to the runtime control loop.
+    last_reported_status: Option<PermissionObservation>,
 }
 
 impl PermissionsHelp {
@@ -67,6 +112,9 @@ impl PermissionsHelp {
             id: ViewportId::from_hash_of("hotki_permissions"),
             tx_ctrl: None,
             status_override: None,
+            current_status: PermissionsStatus::default(),
+            observation_pending: true,
+            app_was_active: false,
             open_intents: PermissionOpenIntents::default(),
             last_reported_status: None,
         }
@@ -94,11 +142,13 @@ impl PermissionsHelp {
         self.status_override = status;
         self.open_intents = PermissionOpenIntents::default();
         self.last_reported_status = None;
-        self.show();
+        self.observation_pending = true;
     }
 
-    /// Render the permissions help viewport; manages visibility and UI content.
+    /// Observe permission changes and render the help viewport when visible.
     pub fn render(&mut self, ctx: &Context, devmcp: &DevMcp) {
+        self.observe_status(app_is_active(), self.visible);
+
         if !self.visible {
             ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
             return;
@@ -127,28 +177,42 @@ impl PermissionsHelp {
                     self.want_focus = false;
                 }
 
-                let status = self.status();
-                self.report_status_if_changed(status);
+                let status = self.current_status;
                 self.render_body(vp_ui, &status);
             });
         });
     }
 
-    /// Current permission status, using a devtools fixture override when present.
-    fn status(&self) -> PermissionsStatus {
-        self.status_override.unwrap_or_else(check_permissions)
+    /// Refresh status initially, after activation/override changes, or while help is visible.
+    fn observe_status(&mut self, app_active: bool, help_visible: bool) {
+        let reactivated = app_active && !self.app_was_active;
+        self.app_was_active = app_active;
+        if !self.observation_pending && !reactivated && !help_visible {
+            return;
+        }
+
+        self.observation_pending = false;
+        let observation = match self.status_override {
+            Some(status) => PermissionObservation::devtools(status),
+            None => PermissionObservation::system(check_permissions()),
+        };
+        self.current_status = observation.status();
+        self.report_status_if_changed(observation);
     }
 
     /// Notify the runtime when macOS permission status changes.
-    fn report_status_if_changed(&mut self, status: PermissionsStatus) {
-        if self.last_reported_status == Some(status) {
+    fn report_status_if_changed(&mut self, observation: PermissionObservation) {
+        if self.last_reported_status == Some(observation) {
             return;
         }
-        self.last_reported_status = Some(status);
+        self.last_reported_status = Some(observation);
         let Some(tx) = self.tx_ctrl.as_ref() else {
             return;
         };
-        if tx.send(ControlMsg::PermissionsChanged(status)).is_err() {
+        if tx
+            .send(ControlMsg::PermissionsChanged(observation))
+            .is_err()
+        {
             tracing::warn!("failed to send permissions status change");
         }
     }
@@ -326,6 +390,11 @@ pub fn check_permissions() -> PermissionsStatus {
     ::permissions::check_permissions()
 }
 
+/// Return whether AppKit currently considers Hotki the active application.
+fn app_is_active() -> bool {
+    MainThreadMarker::new().is_some_and(|mtm| NSApplication::sharedApplication(mtm).isActive())
+}
+
 /// Open macOS Accessibility settings in System Settings.
 fn open_accessibility_settings() {
     if Command::new("open")
@@ -345,5 +414,68 @@ fn open_input_monitoring_settings() {
         .is_err()
     {
         tracing::warn!("failed to open Input Monitoring settings");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use permissions::PermissionState;
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    /// Build a deterministic permission snapshot for observer tests.
+    fn status(granted: bool) -> PermissionsStatus {
+        PermissionsStatus {
+            accessibility: PermissionState::from(granted),
+            input_monitoring: PermissionState::from(granted),
+            screen_recording: PermissionState::Unknown,
+        }
+    }
+
+    #[test]
+    fn hidden_override_drives_permission_observer() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut help = PermissionsHelp::new();
+        help.set_control_sender(tx);
+        help.set_status_override(Some(status(false)));
+
+        assert!(!help.visible);
+        help.observe_status(false, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControlMsg::PermissionsChanged(current))
+                if current.status() == status(false) && current.is_overridden()
+        ));
+
+        help.observe_status(false, false);
+        assert!(rx.try_recv().is_err());
+
+        help.set_status_override(Some(status(true)));
+        help.observe_status(false, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControlMsg::PermissionsChanged(current))
+                if current.status() == status(true) && current.is_overridden()
+        ));
+    }
+
+    #[test]
+    fn clearing_override_reports_system_provenance_even_when_status_matches() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut help = PermissionsHelp::new();
+        help.set_control_sender(tx);
+        help.set_status_override(Some(status(false)));
+        help.observe_status(false, false);
+        let _ = rx.try_recv().expect("override observation");
+
+        help.set_status_override(None);
+        help.current_status = status(false);
+        help.report_status_if_changed(PermissionObservation::system(status(false)));
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControlMsg::PermissionsChanged(current)) if !current.is_overridden()
+        ));
     }
 }

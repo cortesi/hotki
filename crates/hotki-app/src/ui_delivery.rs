@@ -10,7 +10,7 @@ use std::{
 };
 
 use hotki_protocol::MsgToUI;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use crate::app::{UiCommand, UiEvent};
 
@@ -66,8 +66,8 @@ struct PendingSnapshots {
     heartbeat: Option<SequencedUiEvent>,
     /// Latest world snapshot.
     world: Option<SequencedUiEvent>,
-    /// Latest connection-health state.
-    connection_health: Option<SequencedUiEvent>,
+    /// Latest complete runtime-health state.
+    runtime_health: Option<SequencedUiEvent>,
     /// Latest server-binding health state.
     binding_health: Option<SequencedUiEvent>,
     /// Latest permission-health state.
@@ -84,7 +84,7 @@ impl PendingSnapshots {
             }
             UiEvent::Message(MsgToUI::Heartbeat(_)) => &mut self.heartbeat,
             UiEvent::Message(MsgToUI::World(_)) => &mut self.world,
-            UiEvent::Command(UiCommand::SetServerConnected(_)) => &mut self.connection_health,
+            UiEvent::Command(UiCommand::SetRuntimeHealth(_)) => &mut self.runtime_health,
             UiEvent::Command(UiCommand::SetServerBindings(_)) => &mut self.binding_health,
             UiEvent::Command(UiCommand::SetPermissionStatusOverride(_)) => {
                 &mut self.permission_health
@@ -99,7 +99,7 @@ impl PendingSnapshots {
         [
             self.hud.as_ref(),
             self.selector.as_ref(),
-            self.connection_health.as_ref(),
+            self.runtime_health.as_ref(),
             self.binding_health.as_ref(),
             self.permission_health.as_ref(),
             self.heartbeat.as_ref(),
@@ -111,12 +111,28 @@ impl PendingSnapshots {
         .min()
     }
 
+    /// Return the number of retained snapshot classes.
+    fn len(&self) -> usize {
+        [
+            self.hud.as_ref(),
+            self.selector.as_ref(),
+            self.runtime_health.as_ref(),
+            self.binding_health.as_ref(),
+            self.permission_health.as_ref(),
+            self.heartbeat.as_ref(),
+            self.world.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .count()
+    }
+
     /// Remove the snapshot at `sequence`.
     fn take(&mut self, sequence: u64) -> Option<UiEvent> {
         for slot in [
             &mut self.hud,
             &mut self.selector,
-            &mut self.connection_health,
+            &mut self.runtime_health,
             &mut self.binding_health,
             &mut self.permission_health,
             &mut self.heartbeat,
@@ -187,21 +203,43 @@ impl UiDeliveryTx {
             Err(entry) => entry,
         };
 
+        let pending_count = state.snapshots.len();
         if matches!(&entry.event, UiEvent::Message(MsgToUI::Log { .. }))
-            && state.ordered.len() >= UI_ORDERED_CAPACITY
+            && state.ordered.len() + pending_count >= UI_ORDERED_CAPACITY
         {
             state.stats.dropped_logs += 1;
             return Ok(UiDeliveryOutcome::DroppedLogFull);
         }
 
+        while let Some(sequence) = state.snapshots.next_sequence() {
+            self.wait_for_ordered_space(&mut state)?;
+            let snapshot = state
+                .snapshots
+                .take(sequence)
+                .expect("next snapshot sequence remains present while locked");
+            state.ordered.push_back(SequencedUiEvent {
+                sequence,
+                event: snapshot,
+            });
+        }
+
+        self.wait_for_ordered_space(&mut state)?;
+        state.ordered.push_back(entry);
+        Ok(UiDeliveryOutcome::Queued)
+    }
+
+    /// Wait until one causally ordered event can be retained.
+    fn wait_for_ordered_space(
+        &self,
+        state: &mut MutexGuard<'_, UiDeliveryState>,
+    ) -> Result<(), UiDeliveryClosed> {
         while state.ordered.len() >= UI_ORDERED_CAPACITY {
             if !self.shared.receiver_open.load(Ordering::Acquire) {
                 return Err(UiDeliveryClosed);
             }
-            self.shared.space_ready.wait(&mut state);
+            self.shared.space_ready.wait(state);
         }
-        state.ordered.push_back(entry);
-        Ok(UiDeliveryOutcome::Queued)
+        Ok(())
     }
 }
 
@@ -287,6 +325,31 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Some(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+        ));
+    }
+
+    #[test]
+    fn ordered_event_is_a_snapshot_coalescing_barrier() {
+        let (tx, rx) = ui_delivery_channel();
+        tx.send(UiEvent::Message(MsgToUI::SelectorHide))
+            .expect("queue first selector state");
+        tx.send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+            .expect("queue ordered control");
+        tx.send(UiEvent::Message(MsgToUI::SelectorHide))
+            .expect("queue selector state after barrier");
+
+        assert_eq!(rx.stats().coalesced_snapshots, 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::SelectorHide))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::SelectorHide))
         ));
     }
 

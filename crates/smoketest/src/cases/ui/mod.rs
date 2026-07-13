@@ -157,6 +157,11 @@ fn wait_for_notification_windows(pid: i32, timeout_ms: u64) -> Result<Vec<Window
     }
 }
 
+/// Wait until the active Hotki session owns a visible native notification window.
+pub fn wait_for_notification_window(pid: i32, timeout_ms: u64) -> Result<()> {
+    wait_for_notification_windows(pid, timeout_ms).map(|_| ())
+}
+
 /// Verify a notification candidate is aligned to the active display's top-right edge.
 fn verify_notification_window(window: &WindowSnapshot) -> Result<()> {
     let displays = window_inspection::enumerate_displays()?;

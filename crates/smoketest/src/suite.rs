@@ -531,4 +531,14 @@ static CASES: &[CaseEntry] = &[
         Some("Verify notification window placement."),
         cases::notifications,
     ),
+    CaseEntry::new(
+        "config-activation",
+        Some("Verify invalid startup config visibility and corrected activation."),
+        cases::config_activation,
+    ),
+    CaseEntry::new(
+        "reconnect",
+        Some("Verify the app reconnects after its server exits."),
+        cases::reconnect,
+    ),
 ];

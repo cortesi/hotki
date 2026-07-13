@@ -78,6 +78,14 @@ pub enum Commands {
     /// Verify notification window placement
     #[command(name = "notifications")]
     Notifications,
+
+    /// Verify invalid startup config visibility and corrected activation
+    #[command(name = "config-activation")]
+    ConfigActivation,
+
+    /// Verify the app reconnects after its server exits
+    #[command(name = "reconnect")]
+    Reconnect,
 }
 
 impl Commands {
@@ -88,6 +96,8 @@ impl Commands {
             Self::Mini => Some("mini"),
             Self::Displays => Some("displays"),
             Self::Notifications => Some("notifications"),
+            Self::ConfigActivation => Some("config-activation"),
+            Self::Reconnect => Some("reconnect"),
             Self::All | Self::List | Self::Seq { .. } => None,
         }
     }

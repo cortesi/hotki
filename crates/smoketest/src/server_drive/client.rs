@@ -1,6 +1,6 @@
 //! Stateful synchronous driver for the production server connection.
 
-use std::{collections::BTreeSet, mem, thread};
+use std::{collections::BTreeSet, mem, path::Path, thread};
 
 use hotki_protocol::{MsgToUI, rpc::InjectKind};
 use hotki_server::Client;
@@ -179,6 +179,15 @@ impl ServerDriver {
         let result = self.shutdown_server();
         self.reset();
         result
+    }
+
+    /// Activate a configuration candidate through the production RPC API.
+    pub fn activate_config(&mut self, path: &Path) -> DriverResult<()> {
+        self.require_connection()?;
+        self.rpc()?
+            .set_config_path(path.to_string_lossy().as_ref())?;
+        self.drain_events()?;
+        Ok(())
     }
 
     /// Inject a single key press (down + up) via the production RPC API.

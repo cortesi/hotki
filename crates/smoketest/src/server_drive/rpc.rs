@@ -45,6 +45,13 @@ impl<'a> ServerRpc<'a> {
             .map_err(server_error)
     }
 
+    /// Ask the server to activate a configuration candidate.
+    pub(super) fn set_config_path(&mut self, path: &str) -> DriverResult<()> {
+        self.runtime
+            .block_on(self.conn.set_config_path(path))
+            .map_err(server_error)
+    }
+
     /// Inject one key event through the production RPC API.
     pub(super) fn inject_key(
         &mut self,

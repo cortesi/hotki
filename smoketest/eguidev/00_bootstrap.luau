@@ -18,6 +18,8 @@ local expected = {
     ["hotki.permissions.all_granted"] = false,
     ["hotki.permissions.none_granted"] = false,
     ["hotki.permissions.mixed"] = false,
+    ["hotki.permissions.hidden_missing"] = false,
+    ["hotki.permissions.hidden_recovered"] = false,
 }
 
 for _, fixture_info in ipairs(fixtures()) do

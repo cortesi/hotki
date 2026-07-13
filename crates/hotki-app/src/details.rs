@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     devtools,
     display::{DisplayBounds, DisplayMetrics, WindowGeometry},
+    health::{RetryState, RuntimeHealth, RuntimePhase},
     logs::{self, LogEntry, Side},
     notification::BacklogEntry,
     nswindow,
@@ -123,6 +124,8 @@ pub struct Details {
     config_contents: String,
     /// Last config read error (if any) for inline display.
     config_error: Option<String>,
+    /// Runtime health rendered above every details tab.
+    runtime_health: RuntimeHealth,
     /// Control channel to background runtime.
     tx_ctrl: Option<UnboundedSender<ControlMsg>>,
     /// Generation for the cached log rows.
@@ -147,6 +150,7 @@ impl Details {
             config_path: None,
             config_contents: String::new(),
             config_error: None,
+            runtime_health: RuntimeHealth::default(),
             tx_ctrl: None,
             log_generation: u64::MAX,
             log_rows: Vec::new(),
@@ -217,9 +221,18 @@ impl Details {
     }
 
     /// Set the config file path shown in the Config tab and load.
-    pub fn set_config_path(&mut self, path: Option<PathBuf>) {
+    fn set_config_path(&mut self, path: Option<PathBuf>) {
         self.config_path = path;
         self.reload_config_contents();
+    }
+
+    /// Replace the runtime snapshot and follow its active or pending config.
+    pub(crate) fn set_runtime_health(&mut self, health: RuntimeHealth) {
+        let displayed_config = health.displayed_config().map(PathBuf::from);
+        self.runtime_health = health;
+        if self.config_path != displayed_config {
+            self.set_config_path(displayed_config);
+        }
     }
 
     /// Reload the config file contents into memory for display.
@@ -347,6 +360,13 @@ impl Details {
     fn render_contents(&mut self, ui: &mut egui::Ui, backlog: &[BacklogEntry]) {
         ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
             ui.add_space(DETAILS_PAD);
+            let retry_clicked = Self::render_runtime_health(ui, &self.runtime_health);
+            if retry_clicked {
+                self.send_reload();
+            }
+            ui.add_space(CONTROL_GAP);
+            ui.dev_separator("details.separator.health");
+            ui.add_space(CONTROL_GAP);
             self.render_tab_bar(ui);
             devtools::value_anchor(
                 ui,
@@ -358,6 +378,66 @@ impl Details {
             self.render_active_tab(ui, backlog);
             ui.add_space(DETAILS_PAD);
         });
+    }
+
+    /// Render the shared runtime health and return whether retry was requested.
+    fn render_runtime_health(ui: &mut egui::Ui, health: &RuntimeHealth) -> bool {
+        let mut retry_clicked = false;
+        container(ui, "details.health", |ui| {
+            ui.horizontal(|ui| {
+                ui.dev_label(
+                    "details.health.phase",
+                    RichText::new(health.phase.display_label())
+                        .strong()
+                        .color(health_color(health.phase)),
+                );
+                ui.dev_label(
+                    "details.health.connection",
+                    format!("Server: {}", health.connection.display_label()),
+                );
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    if matches!(health.retry, RetryState::Available) {
+                        retry_clicked = ui.dev_button("details.health.retry", "Retry").clicked();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.dev_label(
+                "details.health.active_config",
+                format!(
+                    "Active config: {}",
+                    health
+                        .active_config
+                        .as_ref()
+                        .map_or_else(|| "None".to_string(), |path| path.display().to_string())
+                ),
+            );
+            ui.dev_label(
+                "details.health.pending_config",
+                format!(
+                    "Pending config: {}",
+                    health
+                        .pending_config
+                        .as_ref()
+                        .map_or_else(|| "None".to_string(), |path| path.display().to_string())
+                ),
+            );
+            ui.dev_label(
+                "details.health.permissions",
+                format!("Permissions: {}", health.permissions_label()),
+            );
+            ui.dev_label(
+                "details.health.retry_state",
+                format!("Retry: {}", health.retry.display_label()),
+            );
+            if let Some(message) = health.message.as_deref() {
+                ui.dev_label(
+                    "details.health.message",
+                    RichText::new(message).color(health_color(health.phase)),
+                );
+            }
+        });
+        retry_clicked
     }
 
     /// Render the Details tab selector row.
@@ -685,6 +765,18 @@ fn render_empty_state(ui: &mut egui::Ui, id: &'static str, text: &'static str) {
 fn kind_color(theme: &NotifyTheme, kind: NotifyKind) -> Color32 {
     let (r, g, b) = theme.style_for(kind).title_fg;
     Color32::from_rgb(r, g, b)
+}
+
+/// Status color shared by the phase label and its current context message.
+fn health_color(phase: RuntimePhase) -> Color32 {
+    match phase {
+        RuntimePhase::Ready => Color32::from_rgb(64, 201, 99),
+        RuntimePhase::Connecting | RuntimePhase::Retrying => Color32::from_rgb(220, 160, 47),
+        RuntimePhase::ShuttingDown => Color32::GRAY,
+        RuntimePhase::Disconnected
+        | RuntimePhase::InvalidConfig
+        | RuntimePhase::WaitingPermissions => Color32::from_rgb(220, 50, 47),
+    }
 }
 
 /// Human-readable label for a notification kind.
