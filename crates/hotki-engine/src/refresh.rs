@@ -34,7 +34,7 @@ pub(crate) fn build_refresh_plan(
     cfg: Option<&mut dyn_engine::ConfigRuntime>,
     focus: &Option<hotki_protocol::FocusSnapshot>,
 ) -> RefreshPlan {
-    rt.focus = focus.clone();
+    rt.focus = rt.context_window(focus);
 
     match cfg {
         Some(cfg) => build_loaded_refresh_plan(rt, cfg),
@@ -174,6 +174,9 @@ impl Engine {
         let mut runtime = RuntimeState::empty();
         runtime.hud_visible = hud_visible;
         runtime.focus = focus.clone();
+        if hud_visible {
+            runtime.start_session(focus.clone());
+        }
         runtime.install_config(&config);
         let plan = build_refresh_plan(&mut runtime, Some(&mut config), &focus);
         if !plan.errors.is_empty() {

@@ -201,6 +201,65 @@ fn mode_entry_and_pop_updates_depth() {
 }
 
 #[test]
+fn menu_session_keeps_opening_window_until_exit() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let path = write_test_config(
+            r#"
+            return function(menu, ctx)
+              menu:submenu("a", "open", function(root)
+                root:submenu("w", "window", function(window_menu)
+                  window_menu:bind("u", "use window", function(action_ctx)
+                    local window = action_ctx.window
+                    if window == nil then error("menu session lost its window") end
+                    action_ctx:notify("info", "Menu window", tostring(window.id))
+                  end)
+                end)
+              end)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set menu-session config");
+
+        set_world_focus_window(world.as_ref(), "Opening", "First", 11, 101).await;
+        wait_for_focus_id(&engine, 101).await;
+        drain_ui(&mut rx);
+
+        dispatch_ident(&engine, "a").await;
+        set_world_focus_window(world.as_ref(), "Hotki", "HUD", 22, 202).await;
+        wait_for_focus_id(&engine, 202).await;
+        dispatch_ident(&engine, "w").await;
+        dispatch_ident(&engine, "u").await;
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Menu window")
+                .await
+                .as_deref(),
+            Some("101"),
+            "the complete menu session should retain its opening window",
+        );
+
+        set_world_focus_window(world.as_ref(), "Next", "Second", 33, 303).await;
+        wait_for_focus_id(&engine, 303).await;
+        drain_ui(&mut rx);
+        dispatch_ident(&engine, "a").await;
+        dispatch_ident(&engine, "w").await;
+        dispatch_ident(&engine, "u").await;
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Menu window")
+                .await
+                .as_deref(),
+            Some("303"),
+            "a new menu session should capture the latest focused window",
+        );
+
+        let _ignored = fs::remove_file(path);
+    });
+}
+
+#[test]
 fn repeat_relay_ticks() {
     run_engine_test_paused(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
@@ -760,6 +819,22 @@ async fn dispatch_ident(engine: &crate::Engine, ident: &str) {
         .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
         .await
         .unwrap_or_else(|err| panic!("dispatch {ident}: {err}"));
+}
+
+async fn wait_for_focus_id(engine: &crate::Engine, expected: u32) {
+    timeout(Duration::from_millis(200), async {
+        loop {
+            if engine
+                .current_focus_snapshot()
+                .is_some_and(|focus| focus.id == expected)
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("engine should observe focus window {expected}"));
 }
 
 fn drain_ui(rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>) {

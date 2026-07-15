@@ -19,6 +19,8 @@
 //! - There is no FocusWatcher and no CoreGraphics/AX fallback path.
 //! - Dispatch waits for a fresh world generation before selecting contextual
 //!   bindings; other actions operate on the event-maintained focus cache.
+//! - A transient mode-stack session pins its opening window while live focus
+//!   continues updating for the next session.
 //! - Early startup policy: if the world snapshot is empty, focus-driven
 //!   actions are a no-op with a debug log.
 //! - Focused relays use the global HID path. Application-name relays resolve

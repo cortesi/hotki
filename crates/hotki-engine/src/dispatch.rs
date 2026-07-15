@@ -46,7 +46,7 @@ impl Engine {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
-            let ctx = crate::runtime::mode_ctx(&focus, rt.hud_visible, rt.depth());
+            let ctx = rt.mode_ctx(&focus);
             (binding, ctx)
         };
 
@@ -82,6 +82,7 @@ impl Engine {
                     mode,
                     binding.mode_id.map(|id| (binding.chord, id)),
                     binding.mode_capture,
+                    ctx.window,
                 );
                 DispatchResult::EnteredMode
             }

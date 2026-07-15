@@ -130,7 +130,10 @@ fields override only the corresponding default.
 `ModeContext` and `ActionContext` expose `window`, `hud`, and `depth`. `window` is either `nil` or
 an immutable `WindowContext` with `id`, `pid`, `app`, `title`, optional `display_id`,
 `app_matches(pattern)`, and `title_matches(pattern)`. All fields describe the same window captured
-for the activation; this is a snapshot, not a live handle. No focused window is a normal state.
+for the activation; this is a snapshot, not a live handle. Opening a transient menu starts a menu
+session, and every nested renderer and action retains that opening window until the menu exits.
+Focus changes caused by Hotki's HUD therefore do not replace the target. Outside a menu session,
+each activation captures the current focused window. No focused window is a normal state.
 `ActionContext` also exposes the effect methods mirrored by `hotki.actions`; use it directly for
 composite or conditional behavior.
 
@@ -225,8 +228,9 @@ static list or a provider function. String lists and records shaped as
 callbacks receive `ActionContext`.
 
 The provider and terminal callbacks retain the window that opened the selector. Their `hud` and
-`depth` values reflect selector close time. After the selector closes, Hotki rebinds using the
-window captured for the closing key activation.
+`depth` values reflect selector close time. If the selector returns to an existing menu session,
+Hotki keeps that menu's opening window; otherwise it rebinds using the window captured for the
+closing key activation.
 
 <!-- hotki-luau: fragment -->
 ```luau

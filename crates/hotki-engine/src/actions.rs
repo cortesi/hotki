@@ -135,7 +135,9 @@ impl Engine {
                 let outcome = match &action {
                     config::Action::Relay(spec) => self.apply_relay(identifier, spec, run).await?,
                     _ => EffectApplication {
-                        result: self.apply_action(identifier, &action, None).await?,
+                        result: self
+                            .apply_action(identifier, &action, None, ctx.window.clone())
+                            .await?,
                         terminal: false,
                     },
                 };
@@ -146,7 +148,7 @@ impl Engine {
                 self.notifier.send_notification(kind, title, body)?;
             }
             dyn_engine::Effect::Nav(nav) => {
-                applied.combine_result(self.apply_nav_request(nav).await);
+                applied.combine_result(self.apply_nav_request(nav, ctx.window.clone()).await);
             }
             dyn_engine::Effect::Select(config) => {
                 if SelectorController::new(self).open(config, ctx).await? {
@@ -260,6 +262,7 @@ impl Engine {
         identifier: &str,
         action: &config::Action,
         repeat: Option<dyn_engine::RepeatSpec>,
+        opening_window: Option<hotki_protocol::FocusSnapshot>,
     ) -> Result<DispatchResult> {
         self.key_tracker.set_repeat_allowed(identifier, false);
 
@@ -283,13 +286,17 @@ impl Engine {
                 .apply_relay(identifier, spec, EffectRun::OneShot)
                 .await?
                 .result),
-            config::Action::Pop => Ok(self.apply_nav_request(dyn_engine::NavRequest::Pop).await),
-            config::Action::Exit => Ok(self.apply_nav_request(dyn_engine::NavRequest::Exit).await),
+            config::Action::Pop => Ok(self
+                .apply_nav_request(dyn_engine::NavRequest::Pop, opening_window)
+                .await),
+            config::Action::Exit => Ok(self
+                .apply_nav_request(dyn_engine::NavRequest::Exit, opening_window)
+                .await),
             config::Action::ShowRoot => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::ShowRoot)
+                .apply_nav_request(dyn_engine::NavRequest::ShowRoot, opening_window)
                 .await),
             config::Action::HideHud => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::HideHud)
+                .apply_nav_request(dyn_engine::NavRequest::HideHud, opening_window)
                 .await),
             config::Action::ReloadConfig => {
                 if let Err(err) = self.reload_dynamic_config().await {
@@ -477,30 +484,37 @@ impl Engine {
         self.start_process_action(identifier, apple_script_process(script), repeat);
     }
 
-    pub(crate) async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchResult {
+    pub(crate) async fn apply_nav_request(
+        &self,
+        nav: dyn_engine::NavRequest,
+        opening_window: Option<hotki_protocol::FocusSnapshot>,
+    ) -> DispatchResult {
         let mut rt = self.runtime.lock().await;
         match nav {
             dyn_engine::NavRequest::Push { mode, title } => {
                 let title = title
                     .or_else(|| mode.default_title().map(|t| t.to_string()))
                     .unwrap_or_else(|| "mode".to_string());
-                rt.push_mode(title, mode, None, false);
+                rt.push_mode(title, mode, None, false, opening_window);
                 DispatchResult::EnteredMode
             }
             dyn_engine::NavRequest::Pop => {
                 rt.stack.pop();
                 if rt.stack.depth() == 0 {
                     rt.hud_visible = false;
+                    rt.end_session();
                 }
                 DispatchResult::Navigation
             }
             dyn_engine::NavRequest::Exit => {
                 rt.stack.reset_to_root();
                 rt.hud_visible = false;
+                rt.end_session();
                 DispatchResult::Navigation
             }
             dyn_engine::NavRequest::ShowRoot => {
                 rt.stack.reset_to_root();
+                rt.start_session(opening_window);
                 rt.hud_visible = true;
                 DispatchResult::Navigation
             }
@@ -512,7 +526,9 @@ impl Engine {
     }
 
     pub(crate) async fn auto_exit(&self) {
-        let _ = self.apply_nav_request(dyn_engine::NavRequest::Exit).await;
+        let _ = self
+            .apply_nav_request(dyn_engine::NavRequest::Exit, None)
+            .await;
     }
 
     async fn reload_dynamic_config(&self) -> Result<()> {
@@ -702,9 +718,8 @@ mod tests {
             ok_notify: NotifyKind::Info,
             err_notify: NotifyKind::Warn,
         });
-
         engine
-            .apply_action("pwd", &action, None)
+            .apply_action("pwd", &action, None, None)
             .await
             .expect("start direct exec");
         let message = rx.recv().await.expect("pwd notification");
