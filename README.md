@@ -10,7 +10,7 @@ Features:
 - Global hotkeys and nested HUD menus.
 - Luau config with typed API docs.
 - App and custom-item selectors.
-- Shell, open, relay, media, and volume actions.
+- Direct process, shell, open, focused/targeted relay, and volume actions.
 - Native notifications and style overlays.
 
 ```bash
@@ -58,21 +58,31 @@ Minimal `config.luau`:
 <!-- hotki-luau: config -->
 ```luau
 local a = hotki.actions
-local GLOBAL = { global = true, hidden = true }
 
 return function(menu, ctx)
+    local global = menu:with({ global = true, hidden = true })
     if ctx.hud then
-        menu:bind("esc", "Back", a.pop, GLOBAL)
+        global:bind("esc", "Back", a.pop)
     end
 
     menu:submenu("shift+cmd+0", "Main", function(root)
         root:bind("r", "Reload", a.reload_config)
-        root:bind("a", "Run Application", a.select({
-            items = hotki.applications,
-            on_select = function(select_ctx, item)
-                select_ctx:open(item.data.path)
-            end,
-        }))
+        root:bind("a", "Run Application", a.launch_application())
     end, { capture = true })
 end
 ```
+
+Use `a.exec({ program = "/absolute/path", args = { ... } })` for literal process arguments.
+Keep `a.shell(command)` for intentional shell language such as pipelines and expansion;
+`a.launch_application()` and `menu:with(defaults)` cover common selector and option boilerplate.
+
+Target a running application without activating it by exact AppKit localized name:
+
+<!-- hotki-luau: fragment -->
+```luau
+local youtube_music = a.relay_to_app("YouTube Music")
+root:bind("p", "YouTube Music Play/Pause", youtube_music("space"))
+```
+
+Targeted relays fail closed with a warning when the exact name is missing or ambiguous. They use
+ordinary application shortcuts, so browser extensions such as Vimium may need a site exclusion.

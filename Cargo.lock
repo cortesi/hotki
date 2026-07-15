@@ -1750,6 +1750,7 @@ dependencies = [
  "base64",
  "core-foundation 0.9.4",
  "core-graphics 0.23.2",
+ "dispatch2",
  "egui",
  "eguidev",
  "foreign-types",
@@ -2978,10 +2979,13 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "hotki-protocol",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "parking_lot",
  "permissions",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3824,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc"
-version = "0.0.7"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",

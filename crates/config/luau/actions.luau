@@ -1,3 +1,50 @@
+local function relay(spec)
+    return function(ctx)
+        ctx:relay(spec)
+    end
+end
+
+local function relay_to_app(app_name)
+    return function(spec)
+        return function(ctx)
+            ctx:relay_to_app(app_name, spec)
+        end
+    end
+end
+
+local function strip_plus(value)
+    while value:sub(1, 1) == "+" do
+        value = value:sub(2)
+    end
+    while value:sub(-1) == "+" do
+        value = value:sub(1, -2)
+    end
+    return value
+end
+
+local function launch_application(options)
+    local options = options or {}
+    return function(ctx)
+        ctx:select({
+            title = options.title or "Run Application",
+            placeholder = options.placeholder or "Search apps...",
+            items = hotki.applications,
+            max_visible = options.max_visible,
+            on_select = function(select_ctx, item, query)
+                select_ctx:open(item.data.path)
+            end,
+        })
+    end
+end
+
+local function relay_with(prefix)
+    local prefix = strip_plus(prefix)
+    return function(spec)
+        local spec = strip_plus(spec)
+        return relay(prefix .. "+" .. spec)
+    end
+end
+
 local actions = {
     pop = function(ctx)
         ctx:pop()
@@ -35,16 +82,20 @@ local actions = {
             ctx:shell(cmd, opts)
         end
     end,
+    exec = function(spec)
+        return function(ctx)
+            ctx:exec(spec)
+        end
+    end,
     open = function(target)
         return function(ctx)
             ctx:open(target)
         end
     end,
-    relay = function(spec)
-        return function(ctx)
-            ctx:relay(spec)
-        end
-    end,
+    relay = relay,
+    relay_to_app = relay_to_app,
+    relay_with = relay_with,
+    launch_application = launch_application,
     show_details = function(toggle)
         return function(ctx)
             ctx:show_details(toggle)

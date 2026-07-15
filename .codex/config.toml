@@ -1,0 +1,3 @@
+[mcp_servers.eguidev]
+command = "edev"
+args = ["mcp"]

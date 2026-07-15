@@ -1,20 +1,18 @@
--- A compact facsimile of cortesi's yabai + wezterm + spotify config.
+-- A compact facsimile of cortesi's yabai + wezterm + YouTube Music config.
 
 local a = hotki.actions
+local r = hotki.renderers
+local WEZTERM = "/opt/homebrew/bin/wezterm"
 local yabai = require("./actions")
-local music_commands = require("./data/music")
 local wezterm = require("./apps/wezterm")
 local obsidian = require("./apps/obsidian")
-
-local GLOBAL = { global = true, hidden = true }
-local STAY = { stay = true }
-local CAPTURE = { capture = true }
+local youtube_music = a.relay_to_app("YouTube Music")
 
 local function bind_space_switches(menu)
     for space = 1, 9 do
-        menu:bind("cmd+" .. tostring(space), tostring(space), yabai.focus_space(space), GLOBAL)
+        menu:bind("cmd+" .. tostring(space), tostring(space), yabai.focus_space(space))
     end
-    menu:bind("cmd+0", "10", yabai.focus_space(10), GLOBAL)
+    menu:bind("cmd+0", "10", yabai.focus_space(10))
 end
 
 local function bind_move_to_space(menu)
@@ -37,42 +35,53 @@ local function bind_window_menu(menu)
                 0
             ))
         end
+        local stay = cols:with({ stay = true })
+        stay:bind("l", "left", yabai.move_cell(3, 1, 1, 0))
+        stay:bind("h", "right", yabai.move_cell(3, 1, -1, 0))
+    end)
+    menu:submenu("g", "3x3 Grid", function(grid)
+        local stay = grid:with({ stay = true })
+        stay:bind("l", "left", yabai.move_cell(3, 3, 1, 0))
+        stay:bind("h", "right", yabai.move_cell(3, 3, -1, 0))
+        stay:bind("k", "up", yabai.move_cell(3, 3, 0, -1))
+        stay:bind("j", "down", yabai.move_cell(3, 3, 0, 1))
     end)
     menu:submenu("s", "move to space", bind_move_to_space)
-    menu:bind("f", "fullscreen", a.shell("yabai -m window --toggle zoom-fullscreen"))
-    menu:bind("n", "native fullscreen", a.shell("yabai -m window --toggle native-fullscreen"))
+    menu:bind("f", "fullscreen", yabai.toggle_window("zoom-fullscreen"))
+    menu:bind("n", "native fullscreen", yabai.toggle_window("native-fullscreen"))
+    menu:bind("u", "set u scratchpad", yabai.set_scratchpad("web2"))
+    menu:bind("y", "set y scratchpad", yabai.set_scratchpad("web"))
 end
 
-return function(menu, ctx)
-    menu:bind("shift+cmd+p", "Run Application", a.select({
-        placeholder = "Search apps...",
-        items = hotki.applications,
-        on_select = function(select_ctx, item)
-            select_ctx:open(item.data.path)
-        end,
-    }))
-    bind_space_switches(menu)
+local function base(menu: MenuBuilder, ctx: ModeContext)
+    local global = menu:with({ global = true, hidden = true })
 
-    menu:bind("cmd+return", "wezterm window", a.shell(
-        "/opt/homebrew/bin/wezterm cli spawn --new-window"
-    ), GLOBAL)
-    menu:bind("shift+cmd+y", "y scratchpad", a.shell("yabai -m window --toggle web"), GLOBAL)
-    menu:bind("shift+cmd+u", "u scratchpad", a.shell("yabai -m window --toggle web2"), GLOBAL)
+    menu:bind("shift+cmd+p", "Run Application", a.launch_application())
+    bind_space_switches(global)
+
+    global:bind("cmd+return", "wezterm window", a.exec({
+        program = WEZTERM, args = { "cli", "spawn", "--new-window" },
+    }))
+    global:bind("shift+cmd+y", "y scratchpad", yabai.toggle_window("web"))
+    global:bind("shift+cmd+u", "u scratchpad", yabai.toggle_window("web2"))
 
     if ctx.hud then
-        menu:bind("esc", "Exit", a.exit, GLOBAL)
-        menu:bind("left", "Pop", a.pop, GLOBAL)
+        global:bind("esc", "Exit", a.exit)
+        global:bind("left", "Pop", a.pop)
     end
 
     menu:submenu("shift+cmd+m", "music", function(music)
-        music:bind("k", "vol up", a.hold(a.change_volume(5)), STAY)
-        music:bind("j", "vol down", a.hold(a.change_volume(-5)), STAY)
-        for _, command in music_commands do
-            music:bind(command.chord, command.desc, a.shell(command.command))
-        end
+        local music_stay = music:with({ stay = true })
+        music_stay:bind("k", "vol up", a.hold(a.change_volume(5)))
+        music_stay:bind("j", "vol down", a.hold(a.change_volume(-5)))
+        music:bind("l", "next >>", youtube_music("j"))
+        music:bind("h", "<< prev", youtube_music("k"))
+        music:bind("p", "play/pause", youtube_music("space"))
+        music:bind("=", "like", youtube_music("shift+="))
+        music:bind("-", "dislike", youtube_music("shift+-"))
         music:bind("m", "mute", a.mute("toggle"))
-        music:bind("shift+cmd+m", "exit", a.exit, GLOBAL)
-    end, CAPTURE)
+        music:bind("shift+cmd+m", "exit", a.exit, { global = true, hidden = true })
+    end, { capture = true })
 
     menu:submenu("shift+cmd+space", "activate", function(root)
         root:submenu("h", "hotki", function(hotki_menu)
@@ -81,15 +90,26 @@ return function(menu, ctx)
             hotki_menu:bind("r", "Reload Config", a.reload_config)
             hotki_menu:bind("o", "Show Root Keys", a.show_root)
         end)
+        root:submenu("g", "go", function(go)
+            go:bind("u", "u scratchpad", yabai.toggle_window("web2"))
+            go:bind("y", "y scratchpad", yabai.toggle_window("web"))
+        end)
         root:submenu("w", "window", bind_window_menu)
-        root:bind("shift+cmd+space", "exit", a.exit, GLOBAL)
-    end, CAPTURE)
-
-    if ctx:app_matches("WezTerm") then
-        wezterm(menu)
-    elseif ctx:app_matches("Brave") then
-        menu:bind("shift+cmd+b", "bookmarks", a.relay("shift+cmd+b"))
-    elseif ctx:app_matches("Obsidian") then
-        obsidian(menu)
-    end
+        root:bind("shift+cmd+space", "exit", a.exit, { global = true, hidden = true })
+    end, { capture = true })
 end
+
+local function brave(menu: MenuBuilder, _ctx: ModeContext)
+    menu:submenu("shift+cmd+j", "brave", function(app_menu)
+        app_menu:submenu("b", "bookmarks", function(bookmarks)
+            bookmarks:bind("b", "toggle bar", a.relay("shift+cmd+b"))
+        end)
+    end)
+end
+
+return r.combine(
+    base,
+    r.when_app("WezTerm", wezterm),
+    r.when_app_matches("Brave", brave),
+    r.when_app("Obsidian", obsidian)
+)

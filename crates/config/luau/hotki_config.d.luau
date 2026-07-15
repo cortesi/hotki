@@ -65,7 +65,22 @@ type SelectorSpec<T> = {
     read max_visible: number?,
 }
 
+type LaunchApplicationOptions = {
+    read title: string?,
+    read placeholder: string?,
+    read max_visible: number?,
+}
+
+type ExecSpec = {
+    read program: string,
+    read args: { read [number]: string }?,
+    read cwd: string?,
+    read ok_notify: NotifyKind?,
+    read err_notify: NotifyKind?,
+}
+
 type MenuBuilder = {
+    with: (self: MenuBuilder, defaults: BindingOptions) -> MenuBuilder,
     bind: (
         self: MenuBuilder,
         chord: string,
@@ -85,6 +100,12 @@ type MenuBuilder = {
 
 type ModeRenderer = (menu: MenuBuilder, ctx: ModeContext) -> ()
 
+type Renderers = {
+    combine: (...ModeRenderer) -> ModeRenderer,
+    when_app: (app: string, renderer: ModeRenderer) -> ModeRenderer,
+    when_app_matches: (pattern: string, renderer: ModeRenderer) -> ModeRenderer,
+}
+
 type ActionContext = {
     app: string,
     title: string,
@@ -103,8 +124,10 @@ type ActionContext = {
     reload_config: (self: ActionContext) -> (),
     clear_notifications: (self: ActionContext) -> (),
     shell: (self: ActionContext, cmd: string, opts: ShellOptions?) -> (),
+    exec: (self: ActionContext, spec: ExecSpec) -> (),
     open: (self: ActionContext, target: string) -> (),
     relay: (self: ActionContext, spec: string) -> (),
+    relay_to_app: (self: ActionContext, app_name: string, spec: string) -> (),
     show_details: (self: ActionContext, toggle: Toggle) -> (),
     set_volume: (self: ActionContext, level: number) -> (),
     change_volume: (self: ActionContext, delta: number) -> (),
@@ -124,8 +147,12 @@ type Actions = {
     notify: (kind: NotifyKind, title: string, body: string) -> Action,
     push: (render: ModeRenderer, title: string?) -> Action,
     shell: (cmd: string, opts: ShellOptions?) -> Action,
+    exec: (spec: ExecSpec) -> Action,
     open: (target: string) -> Action,
     relay: (spec: string) -> Action,
+    relay_to_app: (app_name: string) -> (spec: string) -> Action,
+    relay_with: (prefix: string) -> (spec: string) -> Action,
+    launch_application: (options: LaunchApplicationOptions?) -> Action,
     show_details: (toggle: Toggle) -> Action,
     set_volume: (level: number) -> Action,
     change_volume: (delta: number) -> Action,
@@ -136,5 +163,6 @@ type Actions = {
 
 declare hotki: {
     actions: Actions,
+    renderers: Renderers,
     applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>,
 }

@@ -13,12 +13,52 @@ use core_graphics::{
         kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
     },
 };
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+use objc2_foundation::NSString;
 use permissions::{accessibility_ok, input_monitoring_ok, screen_recording_ok};
 
 use crate::{
-    Capabilities, DisplayFrame, DisplaysSnapshot,
+    ApplicationResolution, Capabilities, DisplayFrame, DisplaysSnapshot,
     geometry::{display_for_rect, gather_displays},
+    types::{RunningApplication, resolve_application},
 };
+
+/// Resolve a running application by exact AppKit localized name.
+///
+/// The installed AppKit binding permits these calls on background threads. Its
+/// running-application list is maintained by the process's main run loop, so
+/// callers rely on Hotki's active tao loop for launch and termination freshness.
+pub(crate) fn resolve_running_application(app_name: &str) -> ApplicationResolution {
+    let applications = NSWorkspace::sharedWorkspace().runningApplications();
+    let applications: Vec<_> = applications
+        .iter()
+        .map(|application| RunningApplication {
+            name: localized_application_name(&application),
+            pid: application.processIdentifier(),
+            terminated: application.isTerminated(),
+        })
+        .collect();
+    let matching_pids: Vec<_> = applications
+        .iter()
+        .filter(|application| application.name.as_deref() == Some(app_name))
+        .map(|application| application.pid)
+        .collect();
+    tracing::trace!(
+        app_name,
+        ?matching_pids,
+        "resolved_running_application_name"
+    );
+    resolve_application(&applications, app_name)
+}
+
+fn localized_application_name(application: &NSRunningApplication) -> Option<String> {
+    let name = application.localizedName()?;
+    Some(localized_name(&name))
+}
+
+fn localized_name(name: &NSString) -> String {
+    name.to_string()
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PlatformWindow {

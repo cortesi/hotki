@@ -4,7 +4,7 @@
 //!
 //! The Hotki Engine crate coordinates side effects for hotkeys:
 //! - executes shell commands (first-run + repeats)
-//! - relays key chords to the focused app
+//! - relays key chords to the focused app or one exact running application
 //! - manages repeat timing and focus/context updates
 //! - emits HUD/notification messages to the UI layer
 //!
@@ -21,8 +21,8 @@
 //!   bindings; other actions operate on the event-maintained focus cache.
 //! - Early startup policy: if the world snapshot is empty, focus-driven
 //!   actions are a no-op with a debug log.
-//! - Repeat/relay targets follow the world-backed PID cache and hand off
-//!   seamlessly when focus changes.
+//! - Focused relays use the global HID path. Application-name relays resolve
+//!   once at gesture start and remain pinned through repeat and key-up.
 //!
 //! Concurrency and Lock Ordering
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
@@ -30,7 +30,7 @@
 //!   1) `config_transaction`, 2) `config: Mutex<Option<ConfigRuntime>>`,
 //!   3) `runtime: Mutex<RuntimeState>`, 4) `binding_manager: Mutex<KeyBindingManager>`.
 //!      Avoid holding a write guard across any call that can block or `await`.
-//! - `focus_ctx` uses `parking_lot::Mutex` for synchronous PID access by Repeater.
+//! - `focus_ctx` uses `parking_lot::Mutex` for the event-maintained focus cache.
 //!   Never hold this guard across an `.await`. Clone/copy values out and drop
 //!   the guard before awaiting.
 //! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
@@ -72,7 +72,7 @@ mod integration_tests;
 
 // Timing constants for warning thresholds
 pub(crate) const BIND_UPDATE_WARN_MS: u64 = 10;
-const KEY_PROC_WARN_MS: u64 = 5;
+const KEY_DISPATCH_WARN_MS: u64 = 100;
 
 /// Post-dispatch behavior requested by a binding or action.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -255,8 +255,8 @@ impl EngineLifecycleHandle {
 /// # Focus Context
 ///
 /// The engine caches world focus snapshots in `focus_ctx`.
-/// This uses `parking_lot::Mutex` for fast, synchronous access by the Repeater's PID
-/// lookup. Do not hold this guard across `.await` points.
+/// This uses `parking_lot::Mutex` for fast, synchronous focus reads. Do not hold
+/// this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
     /// Owner for background work spawned by this engine.
@@ -279,7 +279,7 @@ pub struct Engine {
     sync_on_dispatch: bool,
     /// Last displays snapshot sent to the UI.
     display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
-    /// Key relay handler for forwarding keys to focused app.
+    /// Key relay handler for destination-pinned gestures.
     relay: RelayHandler,
     /// Notification dispatcher for UI messages.
     notifier: NotificationDispatcher,
@@ -334,7 +334,7 @@ impl Engine {
         let relay = RelayHandler::new_with_enabled(relay_enabled);
         let notifier = NotificationDispatcher::new(event_tx);
         let selector_notify = Arc::new(tokio::sync::Notify::new());
-        let repeater = Repeater::new_with_ctx(focus_ctx.clone(), relay.clone(), notifier.clone());
+        let repeater = Repeater::new(notifier.clone());
         let action_repeater = Ticker::default();
         let config_arc = Arc::new(tokio::sync::Mutex::new(None));
 

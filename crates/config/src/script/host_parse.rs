@@ -39,6 +39,17 @@ pub(super) struct BindingOptionsSpec {
     stay: Option<bool>,
 }
 
+impl BindingOptionsSpec {
+    /// Overlay explicit fields on inherited binding defaults.
+    pub(super) fn merged_with(&self, explicit: Option<&Self>) -> Self {
+        Self {
+            hidden: explicit.and_then(|options| options.hidden).or(self.hidden),
+            global: explicit.and_then(|options| options.global).or(self.global),
+            stay: explicit.and_then(|options| options.stay).or(self.stay),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Submenu-specific binding options parsed from Luau tables.

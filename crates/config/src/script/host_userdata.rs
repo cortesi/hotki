@@ -22,13 +22,15 @@ use super::{
     selector,
     util::lock_unpoisoned,
 };
-use crate::{Action, NotifyKind, ShellModifiers, ShellSpec, Toggle};
+use crate::{Action, ExecSpec, NotifyKind, RelaySpec, ShellModifiers, ShellSpec, Toggle};
 
 /// Luau userdata used to build one rendered mode.
 #[derive(Clone, Debug)]
 pub struct ModeBuilder {
     /// Shared mutable builder state populated by Luau methods.
     state: Arc<Mutex<ModeBuildState>>,
+    /// Binding defaults inherited by this view and its derived views.
+    defaults: BindingOptionsSpec,
 }
 
 /// Mutable contents collected by a `ModeBuilder`.
@@ -57,6 +59,7 @@ impl ModeBuilder {
         };
         Self {
             state: Arc::new(Mutex::new(state)),
+            defaults: BindingOptionsSpec::default(),
         }
     }
 
@@ -98,8 +101,13 @@ pub(super) fn mode_builder_type() -> HostType {
     HostTypeBuilder::<ModeBuilder>::new("ModeBuilder")
         .method_raw("bind", mode_builder_bind)
         .method_raw("submenu", mode_builder_submenu)
+        .method_raw("with", mode_builder_with)
         .method_raw("capture", mode_builder_capture)
-        .declaration("declare class ModeBuilder\nend\n")
+        .declaration(
+            "declare class ModeBuilder\n\
+    with: (self: ModeBuilder, defaults: BindingOptions) -> ModeBuilder\n\
+end\n",
+        )
         .build()
 }
 
@@ -153,8 +161,10 @@ pub(super) fn action_context_type() -> HostType {
             this.0.push_effect(Effect::Exec(Action::ClearNotifications))
         })
         .method_raw("shell", action_context_shell)
+        .method_raw("exec", action_context_exec)
         .method_raw("open", action_context_open)
         .method_raw("relay", action_context_relay)
+        .method_raw("relay_to_app", action_context_relay_to_app)
         .method_raw("show_details", action_context_show_details)
         .method_raw("set_volume", action_context_set_volume)
         .method_raw("change_volume", action_context_change_volume)
@@ -171,7 +181,8 @@ fn binding_from_handler<'s>(
     chord: &str,
     desc: String,
     action: Function<'s>,
-    options: Option<BindingOptionsSpec>,
+    defaults: &BindingOptionsSpec,
+    options: Option<&BindingOptionsSpec>,
 ) -> Result<Binding, RuntimeError> {
     let chord = parse_chord(chord)?;
     let pos = current_source_pos(scope);
@@ -184,7 +195,7 @@ fn binding_from_handler<'s>(
         mode_capture: false,
         pos,
     };
-    apply_binding_options(&mut binding, options);
+    apply_binding_options(&mut binding, Some(defaults.merged_with(options)));
     Ok(binding)
 }
 
@@ -194,7 +205,8 @@ fn binding_from_mode<'s>(
     chord: &str,
     title: String,
     render: Function<'s>,
-    options: Option<SubmenuOptionsSpec>,
+    defaults: &BindingOptionsSpec,
+    options: Option<&SubmenuOptionsSpec>,
 ) -> Result<Binding, RuntimeError> {
     let chord = parse_chord(chord)?;
     let mode = ModeRef::from_function(scope, render, Some(title.clone()))?;
@@ -208,11 +220,9 @@ fn binding_from_mode<'s>(
         mode_capture: false,
         pos,
     };
-    let binding_opts = options.as_ref().map(|opts| opts.binding.clone());
-    apply_binding_options(&mut binding, binding_opts);
-    if let Some(options) = options {
-        binding.mode_capture = options.capture.unwrap_or(false);
-    }
+    let binding_opts = options.map(|opts| &opts.binding);
+    apply_binding_options(&mut binding, Some(defaults.merged_with(binding_opts)));
+    binding.mode_capture = options.and_then(|opts| opts.capture).unwrap_or(false);
     Ok(binding)
 }
 
@@ -242,7 +252,8 @@ fn mode_builder_bind<'s>(
     args.finish("menu:bind")?;
 
     let options = parse_optional::<BindingOptionsSpec>(scope, opts)?;
-    let binding = binding_from_handler(scope, &chord, desc, action, options)?;
+    let defaults = receiver.borrow::<ModeBuilder>(scope)?.defaults.clone();
+    let binding = binding_from_handler(scope, &chord, desc, action, &defaults, options.as_ref())?;
     receiver
         .borrow_mut::<ModeBuilder>(scope)?
         .state
@@ -266,7 +277,8 @@ fn mode_builder_submenu<'s>(
     let opts = args.optional();
     args.finish("menu:submenu")?;
     let options = parse_optional::<SubmenuOptionsSpec>(scope, opts)?;
-    let binding = binding_from_mode(scope, &chord, title, render, options)?;
+    let defaults = receiver.borrow::<ModeBuilder>(scope)?.defaults.clone();
+    let binding = binding_from_mode(scope, &chord, title, render, &defaults, options.as_ref())?;
     receiver
         .borrow_mut::<ModeBuilder>(scope)?
         .state
@@ -275,6 +287,27 @@ fn mode_builder_submenu<'s>(
         .bindings
         .push(binding);
     Ok(MultiValue::new())
+}
+
+/// Implement `menu:with` by deriving an immutable view over shared state.
+fn mode_builder_with<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let defaults = args.serde::<BindingOptionsSpec>(scope, "menu:with defaults")?;
+    args.finish("menu:with")?;
+
+    let builder = receiver.borrow::<ModeBuilder>(scope)?;
+    let derived = ModeBuilder {
+        state: Arc::clone(&builder.state),
+        defaults: builder.defaults.merged_with(Some(&defaults)),
+    };
+    drop(builder);
+
+    let value = scope.create_userdata(derived)?;
+    Ok(MultiValue::from_values(vec![ScopedValue::Userdata(value)]))
 }
 
 /// Implement `menu:capture`.
@@ -329,6 +362,18 @@ fn action_context_shell<'s>(
     Ok(MultiValue::new())
 }
 
+/// Implement `ctx:exec` with a strict direct-process specification.
+fn action_context_exec<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let spec = args.serde::<ExecSpec>(scope, "ctx:exec spec")?;
+    args.finish("ctx:exec")?;
+    push_exec(scope, receiver, Action::Exec(spec))
+}
+
 /// Implement `ctx:push`.
 fn action_context_push<'s>(
     scope: &Scope<'s>,
@@ -371,7 +416,29 @@ fn action_context_relay<'s>(
     let mut args = HostArgs::new(args);
     let spec = args.string(scope, "ctx:relay spec")?;
     args.finish("ctx:relay")?;
-    push_exec(scope, receiver, Action::Relay(spec))
+    push_exec(scope, receiver, Action::Relay(RelaySpec::focused(spec)))
+}
+
+/// Implement `ctx:relay_to_app`.
+fn action_context_relay_to_app<'s>(
+    scope: &Scope<'s>,
+    receiver: Userdata<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let mut args = HostArgs::new(args);
+    let app_name = args.string(scope, "ctx:relay_to_app app_name")?;
+    let spec = args.string(scope, "ctx:relay_to_app spec")?;
+    args.finish("ctx:relay_to_app")?;
+    if app_name.is_empty() {
+        return Err(RuntimeError::runtime(
+            "ctx:relay_to_app app_name must not be empty",
+        ));
+    }
+    push_exec(
+        scope,
+        receiver,
+        Action::Relay(RelaySpec::application(app_name, spec)),
+    )
 }
 
 /// Implement `ctx:show_details`.

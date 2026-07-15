@@ -216,4 +216,18 @@ mod tests {
         assert_eq!(from_spec("pgup"), Some(Key::PageUp));
         assert_eq!(from_spec("kpenter"), Some(Key::KeypadEnter));
     }
+
+    #[test]
+    fn media_key_roundtrip_and_aliases() {
+        for (spec, key) in [
+            ("volumeup", Key::VolumeUp),
+            ("volumedown", Key::VolumeDown),
+            ("mute", Key::Mute),
+        ] {
+            assert_eq!(from_spec(spec), Some(key));
+            assert_eq!(from_spec(&spec.to_ascii_uppercase()), Some(key));
+            assert_eq!(to_spec(key), spec);
+            assert_roundtrip(key);
+        }
+    }
 }

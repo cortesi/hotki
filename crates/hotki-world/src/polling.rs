@@ -93,6 +93,10 @@ impl CoreWorldView for PollingWorld {
         &self.core
     }
 
+    fn resolve_application_impl(&self, app_name: &str) -> crate::ApplicationResolution {
+        crate::platform::resolve_running_application(app_name)
+    }
+
     async fn refresh_impl(&self) {
         let generation = self.poll_tuner.request_refresh();
         self.poll_tuner.wait_for_refresh(generation).await;

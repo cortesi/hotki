@@ -32,10 +32,10 @@ pub use hotki_protocol::{DisplayFrame, DisplaysSnapshot, FocusSnapshot};
 pub use permissions::{PermissionState, PermissionsStatus as Capabilities};
 use polling::PollingWorld;
 #[cfg(any(test, feature = "test-utils"))]
-pub use test_world::TestWorld;
+pub use test_world::{TestApplication, TestWorld};
 pub use types::{
-    FocusChange, WindowKey, WorldCfg, WorldEvent, WorldStatus, WorldView, WorldWindow,
-    focus_snapshot, focus_snapshot_for_change, focused_snapshot, snapshot_for_key,
+    ApplicationResolution, FocusChange, WindowKey, WorldCfg, WorldEvent, WorldStatus, WorldView,
+    WorldWindow, focus_snapshot, focus_snapshot_for_change, focused_snapshot, snapshot_for_key,
     subscribe_with_snapshot,
 };
 

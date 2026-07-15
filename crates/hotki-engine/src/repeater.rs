@@ -1,14 +1,15 @@
-//! Unified repeat system for shell commands and key relays.
+//! Repeat system for owned processes.
 //!
 //! Manages the execution and repetition of actions triggered by hotkeys,
-//! including both shell command execution and key relay forwarding.
-//! Provides configurable timing and cancellation support.
+//! including both direct and shell-backed process execution. Provides
+//! configurable timing and cancellation support.
 
 use std::{
     cmp,
     collections::HashMap,
     env, io,
     os::unix::process::CommandExt,
+    path::{Component, Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -17,8 +18,6 @@ use std::{
 };
 
 use config::NotifyKind;
-use hotki_protocol::FocusSnapshot;
-use mac_keycode::Chord;
 use parking_lot::Mutex;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -29,28 +28,36 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
-use crate::{notification::NotificationDispatcher, relay::RelayHandler, ticker::Ticker};
+use crate::{notification::NotificationDispatcher, ticker::Ticker};
 
 #[derive(Debug, Clone)]
-struct ShellNotification {
+struct ProcessNotification {
     kind: NotifyKind,
     title: String,
     text: String,
 }
 
-fn shell_failure(notify: ShellNotify, text: String) -> Option<ShellNotification> {
-    if matches!(notify, ShellNotify::Silent) {
-        return None;
+fn process_failure(
+    spec: &ProcessSpec,
+    notify: ProcessNotify,
+    text: String,
+) -> Option<ProcessNotification> {
+    let kind = match notify {
+        ProcessNotify::Configured { err_notify, .. } => err_notify,
+        ProcessNotify::Silent => return None,
+    };
+    match kind {
+        NotifyKind::Ignore => None,
+        kind => Some(ProcessNotification {
+            kind,
+            title: spec.title.to_string(),
+            text,
+        }),
     }
-    Some(ShellNotification {
-        kind: NotifyKind::Warn,
-        title: "Shell command".to_string(),
-        text,
-    })
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ShellNotify {
+enum ProcessNotify {
     Configured {
         ok_notify: NotifyKind,
         err_notify: NotifyKind,
@@ -58,9 +65,9 @@ enum ShellNotify {
     Silent,
 }
 
-/// Maximum combined stdout and stderr retained for a shell notification.
-const SHELL_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
-const SHELL_STREAM_LIMIT_BYTES: usize = SHELL_OUTPUT_LIMIT_BYTES / 2;
+/// Maximum combined stdout and stderr retained for a process notification.
+const PROCESS_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+const PROCESS_STREAM_LIMIT_BYTES: usize = PROCESS_OUTPUT_LIMIT_BYTES / 2;
 
 struct CapturedStream {
     bytes: Vec<u8>,
@@ -68,7 +75,7 @@ struct CapturedStream {
 }
 
 async fn read_bounded(mut reader: impl AsyncRead + Unpin) -> io::Result<CapturedStream> {
-    let mut bytes = Vec::with_capacity(SHELL_STREAM_LIMIT_BYTES);
+    let mut bytes = Vec::with_capacity(PROCESS_STREAM_LIMIT_BYTES);
     let mut truncated = false;
     let mut chunk = [0_u8; 4096];
     loop {
@@ -76,7 +83,7 @@ async fn read_bounded(mut reader: impl AsyncRead + Unpin) -> io::Result<Captured
         if read == 0 {
             break;
         }
-        let remaining = SHELL_STREAM_LIMIT_BYTES.saturating_sub(bytes.len());
+        let remaining = PROCESS_STREAM_LIMIT_BYTES.saturating_sub(bytes.len());
         let retained = remaining.min(read);
         bytes.extend_from_slice(&chunk[..retained]);
         truncated |= retained < read;
@@ -84,7 +91,7 @@ async fn read_bounded(mut reader: impl AsyncRead + Unpin) -> io::Result<Captured
     Ok(CapturedStream { bytes, truncated })
 }
 
-fn trim_shell_output(stdout: CapturedStream, stderr: CapturedStream) -> String {
+fn trim_process_output(stdout: CapturedStream, stderr: CapturedStream) -> String {
     let mut combined = String::new();
     let out = String::from_utf8_lossy(&stdout.bytes);
     let err = String::from_utf8_lossy(&stderr.bytes);
@@ -116,14 +123,14 @@ fn trim_shell_output(stdout: CapturedStream, stderr: CapturedStream) -> String {
 
 fn kill_process_group(pid: u32) {
     let Ok(pid) = i32::try_from(pid) else {
-        tracing::warn!(pid, "shell child pid exceeded process identifier range");
+        tracing::warn!(pid, "process child pid exceeded process identifier range");
         return;
     };
     // SAFETY: the child was spawned as the leader of its own process group, and
     // a negative PID targets that group without borrowing any Rust memory.
     let result = unsafe { libc::kill(-pid, libc::SIGKILL) };
     if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-        tracing::warn!(pid, error = %io::Error::last_os_error(), "failed to kill shell process group");
+        tracing::warn!(pid, error = %io::Error::last_os_error(), "failed to kill process group");
     }
 }
 
@@ -132,14 +139,14 @@ async fn collect_stream(task: Option<JoinHandle<io::Result<CapturedStream>>>) ->
         Some(task) => match task.await {
             Ok(Ok(stream)) => stream,
             Ok(Err(err)) => {
-                tracing::warn!(error = %err, "failed to read shell output");
+                tracing::warn!(error = %err, "failed to read process output");
                 CapturedStream {
                     bytes: Vec::new(),
                     truncated: false,
                 }
             }
             Err(err) => {
-                tracing::warn!(error = %err, "shell output reader task failed");
+                tracing::warn!(error = %err, "process output reader task failed");
                 CapturedStream {
                     bytes: Vec::new(),
                     truncated: false,
@@ -153,24 +160,46 @@ async fn collect_stream(task: Option<JoinHandle<io::Result<CapturedStream>>>) ->
     }
 }
 
-/// Run a command in an owned process group with bounded output capture.
-async fn run_shell(
-    command: &str,
-    notify: ShellNotify,
-    state: &ShellRunState,
-) -> Option<ShellNotification> {
-    tracing::info!("Executing shell command: {}", command);
-    let shell_path: String = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let capture_output = !matches!(notify, ShellNotify::Silent)
+/// Return the inherited PATH in a diagnostic-safe display form.
+fn effective_path() -> String {
+    env::var_os("PATH")
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unset>".to_string())
+}
+
+fn is_bare_program(program: &str) -> bool {
+    let mut components = Path::new(program).components();
+    !program.is_empty()
+        && !program.contains('/')
+        && matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
+}
+
+/// Run one process in an owned process group with bounded output capture.
+async fn run_process(
+    spec: &ProcessSpec,
+    notify: ProcessNotify,
+    state: &ProcessRunState,
+) -> Option<ProcessNotification> {
+    tracing::info!(
+        program = %spec.program,
+        args = ?spec.args,
+        cwd = ?spec.cwd,
+        "Executing process",
+    );
+    let capture_output = !matches!(notify, ProcessNotify::Silent)
         && !matches!(
             notify,
-            ShellNotify::Configured {
+            ProcessNotify::Configured {
                 ok_notify: NotifyKind::Ignore,
                 err_notify: NotifyKind::Ignore,
             }
         );
-    let mut command_builder = Command::new(&shell_path);
-    command_builder.arg("-lc").arg(command).kill_on_drop(true);
+    let mut command_builder = Command::new(&spec.program);
+    command_builder.args(&spec.args).kill_on_drop(true);
+    if let Some(cwd) = &spec.cwd {
+        command_builder.current_dir(cwd);
+    }
     command_builder
         .as_std_mut()
         .process_group(0)
@@ -188,11 +217,25 @@ async fn run_shell(
     let mut child = match command_builder.spawn() {
         Ok(child) => child,
         Err(err) => {
-            return shell_failure(notify, format!("Failed to execute: {err}"));
+            let cwd_is_directory = spec.cwd.as_deref().is_none_or(Path::is_dir);
+            let path = if err.kind() == io::ErrorKind::NotFound
+                && is_bare_program(&spec.program)
+                && cwd_is_directory
+            {
+                format!("; effective PATH={}", effective_path())
+            } else {
+                String::new()
+            };
+            return process_failure(
+                spec,
+                notify,
+                format!("Failed to execute {}: {err}{path}", spec.program),
+            );
         }
     };
     let Some(pid) = child.id() else {
-        return shell_failure(
+        return process_failure(
+            spec,
             notify,
             "Failed to obtain child process identifier".to_string(),
         );
@@ -228,15 +271,15 @@ async fn run_shell(
     let status = match status {
         Ok(status) => status,
         Err(err) => {
-            return shell_failure(notify, format!("Failed to wait for command: {err}"));
+            return process_failure(spec, notify, format!("Failed to wait for process: {err}"));
         }
     };
     let (ok_notify, err_notify) = match notify {
-        ShellNotify::Configured {
+        ProcessNotify::Configured {
             ok_notify,
             err_notify,
         } => (ok_notify, err_notify),
-        ShellNotify::Silent => return None,
+        ProcessNotify::Silent => return None,
     };
     let kind = if status.success() {
         ok_notify
@@ -245,10 +288,10 @@ async fn run_shell(
     };
     match kind {
         NotifyKind::Ignore => None,
-        kind => Some(ShellNotification {
+        kind => Some(ProcessNotification {
             kind,
-            title: "Shell command".to_string(),
-            text: trim_shell_output(stdout, stderr),
+            title: spec.title.to_string(),
+            text: trim_process_output(stdout, stderr),
         }),
     }
 }
@@ -264,17 +307,55 @@ const REPEAT_DEFAULT_MIN_INTERVAL_MS: u64 = 150;
 const SYS_INITIAL_DELAY_MS: u64 = 250; // Initial delay before first repeat
 const SYS_INTERVAL_MS: u64 = 33; // ~30 repeats per second
 
-/// What to execute (first run is immediate; repeats are driven by the repeater)
+/// Direct process specification shared by shell and `exec` actions.
 #[derive(Clone)]
-pub enum ExecSpec {
-    Shell {
-        command: String,
+pub(crate) struct ProcessSpec {
+    /// Program path or bare program name.
+    pub(crate) program: String,
+    /// Literal process arguments.
+    pub(crate) args: Vec<String>,
+    /// Optional process working directory.
+    pub(crate) cwd: Option<PathBuf>,
+    /// Notification type for successful exit.
+    pub(crate) ok_notify: NotifyKind,
+    /// Notification type for error exit.
+    pub(crate) err_notify: NotifyKind,
+    /// Notification title for this process class.
+    pub(crate) title: &'static str,
+}
+
+impl ProcessSpec {
+    /// Construct a process specification with an explicit notification title.
+    pub(crate) fn new(
+        program: impl Into<String>,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
         ok_notify: NotifyKind,
         err_notify: NotifyKind,
-    },
-    Relay {
-        chord: Chord,
-    },
+        title: &'static str,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            cwd,
+            ok_notify,
+            err_notify,
+            title,
+        }
+    }
+
+    /// Construct the shell-language process using the inherited shell choice.
+    pub(crate) fn shell(command: String, ok_notify: NotifyKind, err_notify: NotifyKind) -> Self {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        Self::new(
+            shell,
+            vec!["-lc".to_string(), command],
+            None,
+            ok_notify,
+            err_notify,
+            "Shell command",
+        )
+    }
 }
 
 /// Optional repeat configuration overrides
@@ -286,23 +367,23 @@ pub struct RepeatSpec {
     pub interval_ms: Option<u64>,
 }
 
-/// Per-id state to serialize shell command execution and coalesce repeats.
+/// Per-id state to serialize process execution and coalesce repeats.
 ///
 /// Semantics:
-/// - The first shell run for an id starts immediately and sets `running = true`.
+/// - The first process run for an id starts immediately and sets `running = true`.
 /// - While `running` is true, any scheduled repeat ticks are skipped (coalesced).
 /// - When the first run (or any repeat run) completes, `running` is set back to false,
-///   allowing the next tick to execute. This guarantees that at most one shell
-///   command is in-flight per id, and that the first blocking run effectively
+///   allowing the next tick to execute. This guarantees that at most one process
+///   is in-flight per id, and that the first blocking run effectively
 ///   defers the start of repeating until it finishes.
-struct ShellRunState {
+struct ProcessRunState {
     /// Async mutex to serialize execution across initial run and repeats.
     gate: tokio::sync::Mutex<()>,
     /// Fast flag used to skip scheduling a repeat while a run is in-flight.
     running: AtomicBool,
     /// Cancels the running process group and suppresses its notification.
     cancel: CancellationToken,
-    /// Current owned task; at most one shell command runs per binding id.
+    /// Current owned task; at most one process runs per binding id.
     task: Mutex<Option<JoinHandle<()>>>,
     /// Process-group leader while a command is running.
     pid: AtomicU32,
@@ -310,7 +391,7 @@ struct ShellRunState {
     cancel_on_release: bool,
 }
 
-impl ShellRunState {
+impl ProcessRunState {
     fn set_task(&self, task: JoinHandle<()>) {
         if let Some(previous) = self.task.lock().replace(task) {
             debug_assert!(previous.is_finished());
@@ -335,99 +416,107 @@ impl ShellRunState {
     }
 }
 
-fn spawn_shell_run(
+struct ProcessRunContext {
     notifier: NotificationDispatcher,
-    on_shell_repeat: Arc<Mutex<Option<OnShellRepeat>>>,
-    state: Arc<ShellRunState>,
-    command: String,
-    notify: ShellNotify,
-    repeat_id: Option<String>,
-) {
-    let task_state = state.clone();
-    let task = tokio::spawn(async move {
-        let _guard = state.gate.lock().await;
-        if let Some(notification) = run_shell(&command, notify, state.as_ref()).await
-            && let Err(err) =
-                notifier.send_notification(notification.kind, notification.title, notification.text)
-        {
-            tracing::warn!("Failed to deliver shell notification: {}", err);
-        }
+    on_process_repeat: Arc<Mutex<Option<OnProcessRepeat>>>,
+    process_states: Arc<Mutex<HashMap<String, Arc<ProcessRunState>>>>,
+}
 
-        if !state.cancel.is_cancelled()
-            && let Some(id) = repeat_id
-            && let Some(cb) = on_shell_repeat.lock().as_ref()
-        {
-            cb(&id);
-            trace!("repeater_shell_run_done" = %id);
-        }
+impl ProcessRunContext {
+    fn spawn(
+        &self,
+        state: Arc<ProcessRunState>,
+        spec: ProcessSpec,
+        notify: ProcessNotify,
+        repeat_id: Option<String>,
+        state_id: String,
+    ) {
+        let task_state = state.clone();
+        let notifier = self.notifier.clone();
+        let on_process_repeat = self.on_process_repeat.clone();
+        let process_states = self.process_states.clone();
+        let task = tokio::spawn(async move {
+            let _guard = state.gate.lock().await;
+            let notification = run_process(&spec, notify, state.as_ref()).await;
+            state.task.lock().take();
+            state.running.store(false, Ordering::SeqCst);
 
-        state.running.store(false, Ordering::SeqCst);
-    });
-    task_state.set_task(task);
+            if repeat_id.is_none() && !state.cancel_on_release {
+                let mut states = process_states.lock();
+                if states
+                    .get(&state_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &state))
+                {
+                    states.remove(&state_id);
+                }
+            }
+
+            if let Some(notification) = notification
+                && let Err(err) = notifier.send_notification(
+                    notification.kind,
+                    notification.title,
+                    notification.text,
+                )
+            {
+                tracing::warn!("Failed to deliver process notification: {}", err);
+            }
+
+            if !state.cancel.is_cancelled()
+                && let Some(id) = repeat_id
+                && let Some(cb) = on_process_repeat.lock().as_ref()
+            {
+                cb(&id);
+                trace!("repeater_process_run_done" = %id);
+            }
+        });
+        task_state.set_task(task);
+    }
 }
 
 /// Callback type for observing relay repeat ticks (used by tests/tools).
 pub type OnRelayRepeat = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Callback type for observing shell repeat ticks (used by tests/tools).
-pub type OnShellRepeat = Arc<dyn Fn(&str) + Send + Sync>;
+/// Callback type for observing process repeat ticks (used by tests/tools).
+pub(crate) type OnProcessRepeat = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Unified repeater that runs first-run immediately and then repeats while held
 #[derive(Clone)]
 pub struct Repeater {
     sys_initial: Duration,
     sys_interval: Duration,
-    /// Focus snapshot providing the current target PID.
-    focus_ctx: Arc<Mutex<Option<FocusSnapshot>>>,
-    relay: RelayHandler,
     notifier: NotificationDispatcher,
     ticker: Ticker,
     /// Optional callback for relay repeat instrumentation.
     on_relay_repeat: Arc<Mutex<Option<OnRelayRepeat>>>,
-    /// Optional callback for shell repeat instrumentation.
-    on_shell_repeat: Arc<Mutex<Option<OnShellRepeat>>>,
-    /// Per-id state for shell execution serialization.
-    shell_states: Arc<Mutex<HashMap<String, Arc<ShellRunState>>>>,
+    /// Optional callback for process repeat instrumentation.
+    on_process_repeat: Arc<Mutex<Option<OnProcessRepeat>>>,
+    /// Per-id state for process execution serialization.
+    process_states: Arc<Mutex<HashMap<String, Arc<ProcessRunState>>>>,
 }
 
 impl Repeater {
-    /// Create a repeater backed by a focus context (world-derived).
-    pub fn new_with_ctx(
-        focus_ctx: Arc<Mutex<Option<FocusSnapshot>>>,
-        relay: RelayHandler,
-        notifier: NotificationDispatcher,
-    ) -> Self {
+    /// Create a process repeater.
+    pub fn new(notifier: NotificationDispatcher) -> Self {
         let sys_initial = Duration::from_millis(SYS_INITIAL_DELAY_MS);
         let sys_interval = Duration::from_millis(SYS_INTERVAL_MS);
         Self {
             sys_initial,
             sys_interval,
-            focus_ctx,
-            relay,
             notifier,
             ticker: Ticker::default(),
             on_relay_repeat: Arc::new(Mutex::new(None)),
-            on_shell_repeat: Arc::new(Mutex::new(None)),
-            shell_states: Arc::new(Mutex::new(HashMap::new())),
+            on_process_repeat: Arc::new(Mutex::new(None)),
+            process_states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Get the current focused PID, or -1 if unknown.
-    fn current_pid(&self) -> i32 {
-        self.focus_ctx
-            .lock()
-            .as_ref()
-            .map(|focus| focus.pid)
-            .unwrap_or(-1)
-    }
-
-    /// Get or create the per-id shell run state.
-    fn shell_state(&self, id: &str, cancel_on_release: bool) -> Arc<ShellRunState> {
-        let mut map = self.shell_states.lock();
+    /// Get or create the per-id process run state.
+    fn process_state(&self, id: &str, cancel_on_release: bool) -> Arc<ProcessRunState> {
+        let mut map = self.process_states.lock();
         if let Some(s) = map.get(id) {
             return s.clone();
         }
-        let state = Arc::new(ShellRunState {
+        let state = Arc::new(ProcessRunState {
             gate: tokio::sync::Mutex::new(()),
             running: AtomicBool::new(false),
             cancel: CancellationToken::new(),
@@ -472,21 +561,20 @@ impl Repeater {
         self.ticker.start(id, initial_delay, interval, tick);
     }
 
-    fn spawn_shell_run(
+    fn spawn_process_run(
         &self,
-        state: Arc<ShellRunState>,
-        command: String,
-        notify: ShellNotify,
+        state: Arc<ProcessRunState>,
+        spec: ProcessSpec,
+        notify: ProcessNotify,
         repeat_id: Option<String>,
+        state_id: String,
     ) {
-        spawn_shell_run(
-            self.notifier.clone(),
-            self.on_shell_repeat.clone(),
-            state,
-            command,
-            notify,
-            repeat_id,
-        );
+        ProcessRunContext {
+            notifier: self.notifier.clone(),
+            on_process_repeat: self.on_process_repeat.clone(),
+            process_states: self.process_states.clone(),
+        }
+        .spawn(state, spec, notify, repeat_id, state_id);
     }
 
     /// Optional: install a relay repeat callback for instrumentation/testing.
@@ -502,126 +590,63 @@ impl Repeater {
         }
     }
 
-    /// Optional: install a shell repeat callback for instrumentation/testing.
+    /// Optional: install a process repeat callback for instrumentation/testing.
     #[cfg(test)]
-    fn set_on_shell_repeat(&self, cb: OnShellRepeat) {
-        *self.on_shell_repeat.lock() = Some(cb);
+    fn set_on_process_repeat(&self, cb: OnProcessRepeat) {
+        *self.on_process_repeat.lock() = Some(cb);
     }
 
     /// Start execution for a binding id.
     ///
     /// Runs the first action immediately and schedules repeats if provided.
-    pub fn start(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
+    pub fn start(&self, id: String, process: ProcessSpec, repeat: Option<RepeatSpec>) {
         self.ticker.abort(&id);
-        if let Some(state) = self.shell_states.lock().remove(&id) {
+        if let Some(state) = self.process_states.lock().remove(&id) {
             state.abort();
         }
 
-        self.start_initial_exec(&id, &exec, repeat.is_some());
+        self.start_initial_process(&id, &process, repeat.is_some());
 
         if repeat.is_some() {
-            self.spawn_exec_repeater(id, exec, repeat);
+            self.spawn_process_repeat_loop(id, process, repeat);
         }
     }
 
-    fn start_initial_exec(&self, id: &str, exec: &ExecSpec, cancel_on_release: bool) {
-        match exec {
-            ExecSpec::Shell {
-                command,
-                ok_notify,
-                err_notify,
-            } => {
-                let state = self.shell_state(id, cancel_on_release);
-                state.running.store(true, Ordering::SeqCst);
-                self.spawn_shell_run(
-                    state,
-                    command.clone(),
-                    ShellNotify::Configured {
-                        ok_notify: *ok_notify,
-                        err_notify: *err_notify,
-                    },
-                    None,
-                );
-            }
-            ExecSpec::Relay { chord } => {
-                let pid = self.current_pid();
-                self.relay
-                    .start_relay(id.to_string(), chord.clone(), pid, false);
-            }
-        }
+    fn start_initial_process(&self, id: &str, spec: &ProcessSpec, cancel_on_release: bool) {
+        let state = self.process_state(id, cancel_on_release);
+        state.running.store(true, Ordering::SeqCst);
+        self.spawn_process_run(
+            state,
+            spec.clone(),
+            ProcessNotify::Configured {
+                ok_notify: spec.ok_notify,
+                err_notify: spec.err_notify,
+            },
+            None,
+            id.to_string(),
+        );
     }
 
-    fn spawn_exec_repeater(&self, id: String, exec: ExecSpec, repeat: Option<RepeatSpec>) {
-        match exec {
-            ExecSpec::Shell { command, .. } => self.spawn_shell_repeat_loop(id, command, repeat),
-            ExecSpec::Relay { chord } => {
-                let initial_pid = self.current_pid();
-                self.spawn_relay_repeat_loop(id, chord, initial_pid, repeat);
-            }
-        }
-    }
-
-    fn spawn_shell_repeat_loop(&self, id: String, command: String, repeat: Option<RepeatSpec>) {
+    fn spawn_process_repeat_loop(&self, id: String, spec: ProcessSpec, repeat: Option<RepeatSpec>) {
         let id_for_log = id.clone();
-        let state = self.shell_state(&id, true);
-        let notifier = self.notifier.clone();
-        let on_shell_repeat = self.on_shell_repeat.clone();
+        let state = self.process_state(&id, true);
+        let process_runner = ProcessRunContext {
+            notifier: self.notifier.clone(),
+            on_process_repeat: self.on_process_repeat.clone(),
+            process_states: self.process_states.clone(),
+        };
         self.spawn_repeat_loop(id, repeat, move || {
             if state.running.swap(true, Ordering::SeqCst) {
-                trace!("repeater_shell_tick_skip_running" = %id_for_log);
+                trace!("repeater_process_tick_skip_running" = %id_for_log);
                 return;
             }
-            spawn_shell_run(
-                notifier.clone(),
-                on_shell_repeat.clone(),
+            process_runner.spawn(
                 state.clone(),
-                command.clone(),
-                ShellNotify::Silent,
+                spec.clone(),
+                ProcessNotify::Silent,
                 Some(id_for_log.clone()),
+                id_for_log.clone(),
             );
-        });
-    }
-
-    fn spawn_relay_repeat_loop(
-        &self,
-        id: String,
-        chord: Chord,
-        initial_pid: i32,
-        repeat: Option<RepeatSpec>,
-    ) {
-        let relay = self.relay.clone();
-        let focus_ctx = self.focus_ctx.clone();
-        let id_for_log = id.clone();
-        let ch = chord;
-
-        let mut last_pid = initial_pid;
-        let on_relay_repeat = self.on_relay_repeat.clone();
-        let running_flag = Arc::new(AtomicBool::new(false));
-        let repeat_running = running_flag;
-        self.spawn_repeat_loop(id, repeat, move || {
-            let pid = focus_ctx
-                .lock()
-                .as_ref()
-                .map(|focus| focus.pid)
-                .unwrap_or(-1);
-            if pid != -1 && pid != last_pid {
-                relay.stop_relay(&id_for_log, last_pid);
-                relay.start_relay(id_for_log.clone(), ch.clone(), pid, false);
-                last_pid = pid;
-                return;
-            }
-            if pid != -1 {
-                if repeat_running.swap(true, Ordering::SeqCst) {
-                    trace!("repeater_relay_tick_skip_running" = %id_for_log);
-                    return;
-                }
-                if relay.repeat_relay(&id_for_log)
-                    && let Some(cb) = on_relay_repeat.lock().as_ref()
-                {
-                    cb(&id_for_log);
-                }
-                repeat_running.store(false, Ordering::SeqCst);
-            }
         });
     }
 
@@ -633,11 +658,10 @@ impl Repeater {
     /// Stop any software repeats for `id`.
     pub async fn stop(&self, id: &str) {
         self.ticker.stop(id).await;
-        let state = self.shell_states.lock().get(id).cloned();
+        let state = self.process_states.lock().remove(id);
         if let Some(state) = state
             && state.cancel_on_release
         {
-            self.shell_states.lock().remove(id);
             state.stop().await;
         }
     }
@@ -651,7 +675,7 @@ impl Repeater {
     pub async fn clear_async(&self) {
         self.ticker.clear_async().await;
         let states: Vec<_> = self
-            .shell_states
+            .process_states
             .lock()
             .drain()
             .map(|(_, state)| state)
@@ -667,7 +691,7 @@ impl Repeater {
     /// Abort all repeat tasks during synchronous owner teardown.
     pub(crate) fn abort_all(&self) {
         self.ticker.abort_all();
-        for state in self.shell_states.lock().drain().map(|(_, state)| state) {
+        for state in self.process_states.lock().drain().map(|(_, state)| state) {
             state.abort();
         }
     }
@@ -689,15 +713,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn shell_output_capture_is_bounded_and_marks_truncation() {
-        let input = vec![b'x'; SHELL_STREAM_LIMIT_BYTES + 4096];
+    async fn process_output_capture_is_bounded_and_marks_truncation() {
+        let input = vec![b'x'; PROCESS_STREAM_LIMIT_BYTES + 4096];
         let capture = read_bounded(Cursor::new(input))
             .await
             .expect("read capture");
 
-        assert_eq!(capture.bytes.len(), SHELL_STREAM_LIMIT_BYTES);
+        assert_eq!(capture.bytes.len(), PROCESS_STREAM_LIMIT_BYTES);
         assert!(capture.truncated);
-        let output = trim_shell_output(
+        let output = trim_process_output(
             capture,
             CapturedStream {
                 bytes: Vec::new(),
@@ -708,23 +732,224 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stopping_shell_action_terminates_owned_process_group() {
-        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
-        let relay = crate::RelayHandler::new_with_enabled(false);
+    async fn direct_arguments_shell_language_and_non_utf8_output_share_runner() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new(notifier);
+
+        repeater.start(
+            "literal-args".to_string(),
+            ProcessSpec::new(
+                "printf",
+                vec![
+                    "%s %s".to_string(),
+                    "left right".to_string(),
+                    "tail".to_string(),
+                ],
+                None,
+                NotifyKind::Info,
+                NotifyKind::Warn,
+                "Process",
+            ),
+            None,
+        );
+        let literal = rx.recv().await.expect("literal process notification");
+        assert!(matches!(
+            literal,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == "left right tail"
+        ));
+
+        repeater.start(
+            "shell-language".to_string(),
+            ProcessSpec::shell(
+                "value=right; printf '%s\\n' \"$value\" > /dev/null; printf 'left\\nright' | tr '[:lower:]' '[:upper:]' && printf '!'".to_string(),
+                NotifyKind::Info,
+                NotifyKind::Warn,
+            ),
+            None,
+        );
+        let shell = rx.recv().await.expect("shell process notification");
+        assert!(matches!(
+            shell,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == "LEFT\nRIGHT!"
+        ));
+
+        repeater.start(
+            "non-utf8".to_string(),
+            ProcessSpec::new(
+                "/bin/sh",
+                vec!["-c".to_string(), "printf '\\377'".to_string()],
+                None,
+                NotifyKind::Info,
+                NotifyKind::Warn,
+                "Process",
+            ),
+            None,
+        );
+        let non_utf8 = rx.recv().await.expect("non-UTF-8 process notification");
+        assert!(matches!(
+            non_utf8,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == "�"
+        ));
+    }
+
+    #[tokio::test]
+    async fn process_notifications_bound_output_and_report_spawn_context() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new(notifier);
+
+        let large = "x".repeat(PROCESS_STREAM_LIMIT_BYTES + 1);
+        repeater.start(
+            "large-output".to_string(),
+            ProcessSpec::new(
+                "/usr/bin/printf",
+                vec!["%s".to_string(), large],
+                None,
+                NotifyKind::Info,
+                NotifyKind::Warn,
+                "Process",
+            ),
+            None,
+        );
+        let large = rx.recv().await.expect("large-output notification");
+        assert!(matches!(
+            large,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text.ends_with("[output truncated]")
+        ));
+
+        repeater.start(
+            "missing-program".to_string(),
+            ProcessSpec::new(
+                "hotki-program-that-does-not-exist",
+                Vec::new(),
+                None,
+                NotifyKind::Ignore,
+                NotifyKind::Info,
+                "Process",
+            ),
+            None,
+        );
+        let missing = rx.recv().await.expect("missing-program notification");
+        assert!(
+            matches!(
+                &missing,
+                hotki_protocol::MsgToUI::Notify {
+                    kind: NotifyKind::Info,
+                    text,
+                    ..
+                } if text.contains("effective PATH=")
+            ),
+            "unexpected missing-program notification: {missing:?}"
+        );
+
+        repeater.start(
+            "inherited-path".to_string(),
+            ProcessSpec::new(
+                "/bin/sh",
+                vec!["-c".to_string(), "printf '%s' \"$PATH\"".to_string()],
+                None,
+                NotifyKind::Info,
+                NotifyKind::Warn,
+                "Process",
+            ),
+            None,
+        );
+        let inherited_path = rx.recv().await.expect("inherited PATH notification");
+        let expected_path = env::var("PATH").unwrap_or_default();
+        assert!(matches!(
+            inherited_path,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == expected_path
+        ));
+
+        repeater.start(
+            "invalid-cwd".to_string(),
+            ProcessSpec::new(
+                "true",
+                Vec::new(),
+                Some(PathBuf::from("/definitely/missing/hotki-directory")),
+                NotifyKind::Ignore,
+                NotifyKind::Info,
+                "Process",
+            ),
+            None,
+        );
+        let invalid_cwd = rx.recv().await.expect("invalid-cwd notification");
+        assert!(matches!(
+            invalid_cwd,
+            hotki_protocol::MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if !text.contains("effective PATH=")
+        ));
+    }
+
+    #[tokio::test]
+    async fn one_shot_process_state_is_removed_after_completion() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new(notifier);
+
+        repeater.start(
+            "one-shot-state".to_string(),
+            ProcessSpec::new(
+                "/usr/bin/true",
+                Vec::new(),
+                None,
+                NotifyKind::Info,
+                NotifyKind::Warn,
+                "Process",
+            ),
+            None,
+        );
+
+        let _ = rx.recv().await.expect("one-shot notification");
+        tokio::task::yield_now().await;
+        assert!(
+            !repeater
+                .process_states
+                .lock()
+                .contains_key("one-shot-state")
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_process_action_terminates_owned_process_group() {
         let (tx, _rx) = mpsc::channel(16);
         let notifier = crate::notification::NotificationDispatcher::new(tx);
-        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+        let repeater = Repeater::new(notifier);
 
         repeater.start(
             "owned-shell".to_string(),
-            ExecSpec::Shell {
-                command: "sleep 30".to_string(),
-                ok_notify: NotifyKind::Ignore,
-                err_notify: NotifyKind::Ignore,
-            },
+            ProcessSpec::shell(
+                "sleep 30".to_string(),
+                NotifyKind::Ignore,
+                NotifyKind::Ignore,
+            ),
             Some(RepeatSpec::default()),
         );
-        let state = repeater.shell_state("owned-shell", true);
+        let state = repeater.process_state("owned-shell", true);
         let pid = loop {
             let pid = state.pid.load(Ordering::SeqCst);
             if pid != 0 {
@@ -744,22 +969,20 @@ mod tests {
 
     #[tokio::test]
     async fn clearing_repeater_terminates_one_shot_process_group() {
-        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
-        let relay = crate::RelayHandler::new_with_enabled(false);
         let (tx, _rx) = mpsc::channel(16);
         let notifier = crate::notification::NotificationDispatcher::new(tx);
-        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+        let repeater = Repeater::new(notifier);
 
         repeater.start(
             "one-shot-shell".to_string(),
-            ExecSpec::Shell {
-                command: "sleep 30".to_string(),
-                ok_notify: NotifyKind::Ignore,
-                err_notify: NotifyKind::Ignore,
-            },
+            ProcessSpec::shell(
+                "sleep 30".to_string(),
+                NotifyKind::Ignore,
+                NotifyKind::Ignore,
+            ),
             None,
         );
-        let state = repeater.shell_state("one-shot-shell", false);
+        let state = repeater.process_state("one-shot-shell", false);
         let pid = loop {
             let pid = state.pid.load(Ordering::SeqCst);
             if pid != 0 {
@@ -775,25 +998,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_shell_action_delivers_captured_output() {
-        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
-        let relay = crate::RelayHandler::new_with_enabled(false);
+    async fn configured_process_action_delivers_captured_output() {
         let (tx, mut rx) = mpsc::channel(16);
         let notifier = crate::notification::NotificationDispatcher::new(tx);
-        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+        let repeater = Repeater::new(notifier);
 
         repeater.start(
             "captured-shell".to_string(),
-            ExecSpec::Shell {
-                command: "echo notify".to_string(),
-                ok_notify: NotifyKind::Info,
-                err_notify: NotifyKind::Warn,
-            },
+            ProcessSpec::shell(
+                "echo notify".to_string(),
+                NotifyKind::Info,
+                NotifyKind::Warn,
+            ),
             None,
         );
 
         repeater.stop("captured-shell").await;
-        let message = rx.recv().await.expect("shell notification");
+        let message = rx.recv().await.expect("process notification");
         assert!(matches!(
             message,
             hotki_protocol::MsgToUI::Notify {
@@ -805,30 +1026,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn shell_first_run_coalesces_then_unblocks_repeats() {
-        let focus_ctx = Arc::new(Mutex::new(None::<FocusSnapshot>));
-        let relay = crate::RelayHandler::new_with_enabled(false);
+    async fn process_first_run_coalesces_then_unblocks_repeats() {
         let (tx, _rx) = mpsc::channel(16);
         let notifier = crate::notification::NotificationDispatcher::new(tx);
-        let repeater = Repeater::new_with_ctx(focus_ctx, relay, notifier);
+        let repeater = Repeater::new(notifier);
 
-        let shell_count = Arc::new(AtomicUsize::new(0));
-        let shell_count2 = shell_count.clone();
-        repeater.set_on_shell_repeat(Arc::new(move |_id| {
-            shell_count2.fetch_add(1, AtomicOrdering::SeqCst);
+        let process_count = Arc::new(AtomicUsize::new(0));
+        let process_count2 = process_count.clone();
+        repeater.set_on_process_repeat(Arc::new(move |_id| {
+            process_count2.fetch_add(1, AtomicOrdering::SeqCst);
         }));
 
         // Use a fast command, but hold the per-id gate so the initial run overlaps
         // the first repeat tick without relying on real time.
-        let cmd = "true".to_string();
+        let process = ProcessSpec::new(
+            "/usr/bin/true",
+            Vec::new(),
+            None,
+            config::NotifyKind::Ignore,
+            config::NotifyKind::Ignore,
+            "Process",
+        );
 
         repeater.start(
             "shell-coalesce".to_string(),
-            ExecSpec::Shell {
-                command: cmd,
-                ok_notify: config::NotifyKind::Ignore,
-                err_notify: config::NotifyKind::Ignore,
-            },
+            process,
             Some(RepeatSpec {
                 initial_delay_ms: Some(100),
                 interval_ms: Some(100),
@@ -836,13 +1058,13 @@ mod tests {
         );
 
         // After ~150ms the first repeat tick would have fired; ensure it was coalesced
-        let state = repeater.shell_state("shell-coalesce", true);
+        let state = repeater.process_state("shell-coalesce", true);
         let gate_guard = state.gate.lock().await;
         tokio::task::yield_now().await; // let ticker + initial run tasks start and register timers
         advance(Duration::from_millis(150)).await;
         sleep(Duration::from_millis(0)).await; // yield so ticker task observes time advance
         assert_eq!(
-            shell_count.load(AtomicOrdering::SeqCst),
+            process_count.load(AtomicOrdering::SeqCst),
             0,
             "No shell repeats during the first blocking run",
         );
@@ -863,12 +1085,12 @@ mod tests {
         // Advance far enough for the next repeat ticks to execute after initial completion.
         advance(Duration::from_millis(250)).await;
         let real_start_repeat = Instant::now();
-        while shell_count.load(AtomicOrdering::SeqCst) == 0
+        while process_count.load(AtomicOrdering::SeqCst) == 0
             && real_start_repeat.elapsed() < StdDuration::from_secs(1)
         {
             tokio::task::yield_now().await;
         }
-        let repeats = shell_count.load(AtomicOrdering::SeqCst);
+        let repeats = process_count.load(AtomicOrdering::SeqCst);
         repeater.stop("shell-coalesce").await;
         assert!(
             repeats >= 1,

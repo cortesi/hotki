@@ -160,6 +160,8 @@ impl WorldPollChanges {
 pub(crate) trait CoreWorldView {
     fn core(&self) -> &Arc<WorldCore>;
 
+    fn resolve_application_impl(&self, app_name: &str) -> crate::ApplicationResolution;
+
     async fn refresh_impl(&self);
 }
 
@@ -198,6 +200,10 @@ where
 
     async fn status(&self) -> WorldStatus {
         self.core().state.status()
+    }
+
+    async fn resolve_application(&self, app_name: &str) -> crate::ApplicationResolution {
+        self.resolve_application_impl(app_name)
     }
 
     async fn displays(&self) -> DisplaysSnapshot {

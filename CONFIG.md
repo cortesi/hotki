@@ -16,26 +16,22 @@ flow or several ordered effects.
 <!-- hotki-luau: config -->
 ```luau
 local a = hotki.actions
-local GLOBAL = { global = true, hidden = true }
 
 return function(menu, ctx)
+    local global = menu:with({ global = true, hidden = true })
     if ctx.hud then
-        menu:bind("esc", "Back", a.pop, GLOBAL)
+        global:bind("esc", "Back", a.pop)
     end
 
     menu:submenu("shift+cmd+0", "Main", function(root)
         root:bind("r", "Reload", a.reload_config)
-        root:bind("a", "Run Application", a.select({
-            title = "Run Application",
-            placeholder = "Search apps...",
-            items = hotki.applications,
-            on_select = function(select_ctx, item)
-                select_ctx:open(item.data.path)
-            end,
-        }))
+        root:bind("a", "Run Application", a.launch_application())
         root:bind("n", "Report", function(action_ctx)
             action_ctx:notify("info", "Hotki", "Starting work")
-            action_ctx:shell("open https://example.com")
+            action_ctx:exec({
+                program = "/usr/bin/open",
+                args = { "https://example.com" },
+            })
         end)
     end, { capture = true })
 end
@@ -54,19 +50,67 @@ functions accepted by `menu:bind`:
 ```luau
 local a = hotki.actions
 
+local stay = menu:with({ stay = true })
+
 menu:bind("p", "Pop", a.pop)
 menu:bind("s", "Shell", a.shell("open -a Finder"))
-menu:bind("v", "Volume up", a.hold(a.change_volume(5)), { stay = true })
+stay:bind("v", "Volume up", a.hold(a.change_volume(5)))
+stay:bind("b", "Volume down", a.hold(a.change_volume(-5)))
 menu:bind("m", "Mute", a.mute("toggle"))
+menu:bind("u", "Unmute", a.mute("off"))
+menu:bind("0", "Set volume 50%", a.set_volume(50))
 menu:bind("d", "Details", a.show_details("toggle"))
 ```
 
 The table covers `pop`, `exit`, `show_root`, `hide_hud`, `reload_config`,
-`clear_notifications`, `stay`, `notify`, `push`, `shell`, `open`, `relay`, `show_details`,
-`set_volume`, `change_volume`, `mute`, `hold`, and `select`.
+`clear_notifications`, `stay`, `notify`, `push`, `shell`, `exec`, `open`, `relay`,
+`relay_to_app`, `relay_with`, `launch_application`, `show_details`, `set_volume`,
+`change_volume`, `mute`, `hold`, and `select`.
+
+Wrap `change_volume` in `a.hold` for a held control; it defaults to a 250 ms initial delay and a
+150 ms minimum interval. `set_volume` sets an exact level, `change_volume` applies exact deltas,
+and `mute("on")`/`mute("off")` preserve explicit mute state control.
 
 Direct closures remain the composition mechanism. Effects queue while a handler runs and execute
 in source order after it returns.
+
+`a.exec(spec)` and `ctx:exec(spec)` start a program directly with literal arguments. Use an
+absolute program path for tools installed outside the standard GUI application environment, and
+use `cwd` for a directory relative to the config entry. `a.shell(command, options?)` and
+`ctx:shell(command, options?)` remain the escape hatch for shell syntax such as pipelines,
+expansion, and conditionals. Hotki owns the complete process group: cancellation stops every child,
+and children may not outlive a normally completed parent process.
+
+### Targeted relays
+
+`a.relay(spec)` and `ctx:relay(spec)` deliver an ordinary chord through the global HID stream to
+the focused application. Use `a.relay_to_app(app_name)` or
+`ctx:relay_to_app(app_name, spec)` to deliver in the background without activating the target:
+
+<!-- hotki-luau: fragment -->
+```luau
+local youtube_music = hotki.actions.relay_to_app("YouTube Music")
+
+menu:bind("p", "Play/Pause", youtube_music("space"))
+```
+
+`app_name` is an exact, case-sensitive AppKit localized name of a running application. It is not a
+bundle ID. By contrast, `ctx.app`, `when_app`, and `app_matches` use the CoreGraphics window-owner
+name. Those names normally agree, but localization or application metadata can make them diverge;
+copying `ctx.app` into `relay_to_app` can therefore produce a not-running warning.
+
+Hotki resolves the name when the gesture starts and pins that process through repeat and key-up.
+It never launches or activates the application and never falls back to the focused application.
+For modified chords, process-scoped delivery carries modifier flags on the main key but does not
+send separate modifier transitions to the background application.
+No matching process produces `Application "NAME" is not running`; multiple distinct matching
+processes produce `Application "NAME" is ambiguous: N running matches`. Both warnings are
+fail-closed and post no key event.
+
+Targeted relays send ordinary application keys, not global media keys. Browser extensions and site
+shortcut policy still apply: for example, disable Vimium for
+`music.youtube.com` when it intercepts a YouTube Music chord. Keep `relay_with` for focused prefix
+composition; destination selection stays explicit in `relay_to_app`.
 
 ## Menu and Context
 
@@ -74,9 +118,13 @@ A `ModeRenderer` receives `(menu, ctx)` and builds bindings in order:
 
 - `menu:bind(chord, desc, action, opts?)`
 - `menu:submenu(chord, title, render, opts?)`
+- `menu:with(defaults)`
 - `menu:capture()`
 
 Binding options are `global`, `hidden`, and `stay`. Submenu options add `capture`.
+`with` returns a derived builder sharing the same ordered output. Its defaults apply to bindings on
+that view, including submenu entry bindings, but do not propagate into submenu contents; explicit
+fields override only the corresponding default.
 
 `ModeContext` and `ActionContext` expose `app`, `title`, `pid`, `hud`, `depth`,
 `app_matches(pattern)`, and `title_matches(pattern)`. `ActionContext` also exposes the effect
@@ -93,6 +141,24 @@ menu:bind("n", "Conditional notification", function(ctx)
 end)
 ```
 
+`hotki.renderers` provides pure composition for application-specific modules. `combine` invokes
+every renderer in source order, `when_app` uses exact equality, and `when_app_matches` uses the
+same regular-expression matching as `ModeContext:app_matches`:
+
+<!-- hotki-luau: fragment -->
+```luau
+local r = hotki.renderers
+local finder = require("./apps/finder")
+
+return r.combine(
+    function(menu, _ctx)
+        menu:bind("r", "Reload", hotki.actions.reload_config)
+    end,
+    r.when_app("Finder", finder),
+    r.when_app_matches("Brave", require("./apps/brave"))
+)
+```
+
 ## Modules
 
 Filesystem-backed configs may use ordinary `require` with an explicit relative request. A module
@@ -103,7 +169,7 @@ can return any normal Luau value: a renderer, action factory, helper table, or d
 -- apps/finder.luau
 local a = hotki.actions
 
-return function(menu: MenuBuilder)
+return function(menu, _ctx)
     menu:bind("n", "New Finder window", a.relay("cmd+n"))
 end
 ```
@@ -135,7 +201,17 @@ active.
 
 ## Selectors
 
-Selectors accept a static list or a provider function. String lists and records shaped as
+`a.launch_application(options?)` is the common application selector. It supplies
+`hotki.applications`, opens the selected application path, and defaults its title and placeholder
+to `Run Application` and `Search apps...`:
+
+<!-- hotki-luau: fragment -->
+```luau
+menu:bind("a", "Run Application", hotki.actions.launch_application())
+```
+
+Use `a.select(spec)` when a selector needs a different provider or callback. Selectors accept a
+static list or a provider function. String lists and records shaped as
 `{ label, sublabel?, data }` are supported. Providers receive `ModeContext`; selection and cancel
 callbacks receive `ActionContext`.
 

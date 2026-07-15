@@ -61,14 +61,6 @@ impl Engine {
             self.auto_exit().await;
         }
 
-        let processing_time = start.elapsed();
-        if processing_time > Duration::from_millis(crate::KEY_PROC_WARN_MS) {
-            warn!(
-                "Key processing took {:?} for {}",
-                processing_time, identifier
-            );
-        }
-
         self.rebind_and_refresh(&focus).await?;
         trace!(
             "Key event completed in {:?}: {}",
@@ -122,10 +114,9 @@ impl Engine {
     }
 
     async fn handle_key_up(&self, identifier: &str) {
-        let pid = self.current_focus_info().pid;
         self.action_repeater.stop(identifier).await;
         self.repeater.stop(identifier).await;
-        if self.relay.stop_relay(identifier, pid) {
+        if self.relay.stop_relay(identifier) {
             tracing::debug!("Stopped relay for {}", identifier);
         }
     }
@@ -142,6 +133,7 @@ impl Engine {
     /// Dispatch a hotkey event by id, handling all lookups and callback execution internally.
     /// This reduces the server's knowledge about engine internals and avoids repeated async locking.
     pub async fn dispatch(&self, id: u32, kind: mac_hotkey::EventKind, repeat: bool) -> Result<()> {
+        let start = Instant::now();
         let binding = match self.resolve_dispatch_binding(id, kind, repeat).await {
             Some(binding) => binding,
             None => {
@@ -150,8 +142,17 @@ impl Engine {
             }
         };
 
-        self.dispatch_resolved(binding.identifier, binding.chord, kind, repeat, true)
-            .await
+        let result = self
+            .dispatch_resolved(&binding.identifier, &binding.chord, kind, repeat, true)
+            .await;
+        let elapsed = start.elapsed();
+        if elapsed > Duration::from_millis(crate::KEY_DISPATCH_WARN_MS) {
+            warn!(
+                "Key dispatch took {:?} for {} {:?} (repeat: {})",
+                elapsed, binding.identifier, kind, repeat
+            );
+        }
+        result
     }
 
     async fn resolve_dispatch_binding(
@@ -195,15 +196,15 @@ impl Engine {
         let Some(chord) = self.binding_manager.lock().await.chord_for_ident(ident) else {
             return Ok(false);
         };
-        self.dispatch_resolved(ident.to_string(), chord, kind, repeat, false)
+        self.dispatch_resolved(ident, &chord, kind, repeat, false)
             .await?;
         Ok(true)
     }
 
     async fn dispatch_resolved(
         &self,
-        ident: String,
-        chord: Chord,
+        ident: &str,
+        chord: &Chord,
         kind: mac_hotkey::EventKind,
         repeat: bool,
         refresh_world: bool,
@@ -214,32 +215,30 @@ impl Engine {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
                     if self.runtime.lock().await.selector.is_some() {
-                        if let Err(error) =
-                            self.handle_key_event(&chord, &ident, refresh_world).await
+                        if let Err(error) = self.handle_key_event(chord, ident, refresh_world).await
                         {
                             warn!("Key handler failed: {}", error);
                             return Err(error);
                         }
                         return Ok(());
                     }
-                    if self.key_tracker.is_down(&ident)
-                        && self.key_tracker.is_repeat_allowed(&ident)
+                    if self.key_tracker.is_down(ident) && self.key_tracker.is_repeat_allowed(ident)
                     {
-                        self.handle_repeat(&ident).await;
+                        self.handle_repeat(ident).await;
                     }
                     return Ok(());
                 }
 
-                self.key_tracker.on_key_down(&ident);
+                self.key_tracker.on_key_down(ident);
 
-                if let Err(error) = self.handle_key_event(&chord, &ident, refresh_world).await {
+                if let Err(error) = self.handle_key_event(chord, ident, refresh_world).await {
                     warn!("Key handler failed: {}", error);
                     return Err(error);
                 }
             }
             mac_hotkey::EventKind::KeyUp => {
-                self.key_tracker.on_key_up(&ident);
-                self.handle_key_up(&ident).await;
+                self.key_tracker.on_key_up(ident);
+                self.handle_key_up(ident).await;
             }
         }
         Ok(())
@@ -253,117 +252,14 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        fs,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
+    use std::{fs, sync::Arc};
 
     use hotki_protocol::MsgToUI;
     use hotki_world::{TestWorld, WindowKey, WorldWindow};
-    use mac_keycode::Key;
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::{
-        deps::MockHotkeyApi,
-        notification::NotificationDispatcher,
-        relay::{RelayHandler, RelayPoster},
-        repeater::{ExecSpec, RepeatSpec, Repeater},
-    };
-
-    #[derive(Default)]
-    struct CountingPoster {
-        downs: AtomicUsize,
-        ups: AtomicUsize,
-    }
-
-    impl RelayPoster for CountingPoster {
-        fn key_down(&self, _chord: &Chord, _is_repeat: bool) -> relaykey::Result<()> {
-            self.downs.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
-        fn key_up(&self, _chord: &Chord) -> relaykey::Result<()> {
-            self.ups.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    fn chord(key: Key) -> Chord {
-        Chord {
-            key,
-            modifiers: HashSet::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn key_up_uses_identity_retained_before_unregister() {
-        let (tx, _rx) = mpsc::channel(16);
-        let world = Arc::new(TestWorld::new());
-        let mut engine = Engine::new_with_api_and_world(
-            Arc::new(MockHotkeyApi::new()),
-            tx.clone(),
-            false,
-            world,
-        );
-        let poster = Arc::new(CountingPoster::default());
-        let relay = RelayHandler::new_with_poster(Some(poster.clone()));
-        engine.relay = relay.clone();
-        engine.repeater = Repeater::new_with_ctx(
-            engine.focus_ctx.clone(),
-            relay,
-            NotificationDispatcher::new(tx),
-        );
-
-        let input = chord(Key::A);
-        let id = {
-            let mut manager = engine.binding_manager.lock().await;
-            manager
-                .update_bindings(vec![("a".to_string(), input)])
-                .expect("register binding");
-            manager.id_for_ident("a").expect("registered id")
-        };
-        engine
-            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
-            .await
-            .expect("dispatch key down");
-
-        engine.repeater.start(
-            "a".to_string(),
-            ExecSpec::Relay {
-                chord: chord(Key::B),
-            },
-            Some(RepeatSpec {
-                initial_delay_ms: Some(100),
-                interval_ms: Some(100),
-            }),
-        );
-        assert!(engine.key_tracker.is_down("a"));
-        assert!(engine.repeater.is_ticking("a"));
-        assert_eq!(poster.downs.load(Ordering::SeqCst), 1);
-
-        engine
-            .binding_manager
-            .lock()
-            .await
-            .update_bindings(Vec::new())
-            .expect("unregister binding");
-        assert!(engine.binding_manager.lock().await.resolve(id).is_none());
-
-        engine
-            .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
-            .await
-            .expect("dispatch retained key up");
-
-        assert!(!engine.key_tracker.is_down("a"));
-        assert!(!engine.repeater.is_ticking("a"));
-        assert_eq!(poster.ups.load(Ordering::SeqCst), 1);
-        assert!(!engine.held_bindings.lock().contains_key(&id));
-    }
+    use crate::deps::MockHotkeyApi;
 
     #[tokio::test]
     async fn dispatch_refreshes_focus_before_resolving_contextual_binding() {

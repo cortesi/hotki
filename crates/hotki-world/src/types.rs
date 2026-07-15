@@ -4,6 +4,49 @@ use tokio::time::Instant as TokioInstant;
 
 use crate::{Capabilities, DisplaysSnapshot, EventCursor, FocusSnapshot};
 
+/// Result of resolving one exact running application name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplicationResolution {
+    /// Exactly one running process has the requested localized name.
+    Found(i32),
+    /// No running process has the requested localized name.
+    NotRunning,
+    /// Multiple distinct running processes have the requested localized name.
+    Ambiguous(usize),
+}
+
+/// Minimal running-application record used by platform and deterministic worlds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunningApplication {
+    pub(crate) name: Option<String>,
+    pub(crate) pid: i32,
+    pub(crate) terminated: bool,
+}
+
+/// Resolve an exact localized name from a running-application snapshot.
+pub(crate) fn resolve_application(
+    applications: &[RunningApplication],
+    app_name: &str,
+) -> ApplicationResolution {
+    let mut pids: Vec<_> = applications
+        .iter()
+        .filter(|application| {
+            !application.terminated
+                && application.pid > 0
+                && application.name.as_deref() == Some(app_name)
+        })
+        .map(|application| application.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+
+    match pids.as_slice() {
+        [] => ApplicationResolution::NotRunning,
+        [pid] => ApplicationResolution::Found(*pid),
+        pids => ApplicationResolution::Ambiguous(pids.len()),
+    }
+}
+
 /// Unique key for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WindowKey {
@@ -167,6 +210,9 @@ pub trait WorldView: Send + Sync {
 
     /// Fetch comprehensive world status diagnostics.
     async fn status(&self) -> WorldStatus;
+
+    /// Resolve one exact AppKit localized name to a running process.
+    async fn resolve_application(&self, app_name: &str) -> ApplicationResolution;
 
     /// Retrieve the tracked display geometry snapshot.
     async fn displays(&self) -> DisplaysSnapshot;

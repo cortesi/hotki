@@ -158,6 +158,49 @@ mod tests {
     }
 
     #[test]
+    fn cortesi_application_routes_render_one_expected_menu_each() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/cortesi/config.luau");
+        let mut config = load_dynamic_config(&path).expect("load Cortesi config");
+        let style = config.base_style();
+
+        for (app, route, child_chords) in [
+            ("WezTerm", "wezterm", ["r", "s", "t"].as_slice()),
+            ("Brave", "brave", ["b"].as_slice()),
+            ("Obsidian", "obsidian", ["c", "f", "s", "u", "w"].as_slice()),
+        ] {
+            let ctx = base_ctx(app, false, 0);
+            let mut stack = vec![root_frame(&config)];
+            let rendered = render_stack(&mut config, &mut stack, &ctx, &style)
+                .expect("render Cortesi application route");
+            let route_bindings: Vec<_> = rendered
+                .rendered
+                .bindings
+                .iter()
+                .filter(|(_, binding)| {
+                    matches!(binding.desc.as_str(), "wezterm" | "brave" | "obsidian")
+                })
+                .collect();
+            assert_eq!(route_bindings.len(), 1, "unexpected routes for {app}");
+            let route_binding = &route_bindings[0].1;
+            assert_eq!(route_binding.desc, route);
+            push_mode(&mut stack, route_binding);
+
+            let child = render_stack(&mut config, &mut stack, &ctx, &style)
+                .expect("render Cortesi application submenu");
+            for chord in child_chords {
+                assert!(
+                    child
+                        .rendered
+                        .bindings
+                        .iter()
+                        .any(|(candidate, _)| candidate == &Chord::parse(chord).unwrap()),
+                    "missing {chord} in {app} route"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn path_backed_runtime_errors_report_root_file_excerpt() {
         let root = test_dir("root-runtime-error");
         let root_path = root.join("hotki.luau");
@@ -323,6 +366,91 @@ end
             }
         ));
         assert_eq!(find_binding(&out.rendered, "a").desc, "first");
+    }
+
+    #[test]
+    fn menu_with_merges_defaults_without_mutating_shared_order() {
+        let source = r#"
+return function(menu, ctx)
+    local inherited = menu:with({ hidden = true, global = true, stay = true })
+    inherited:bind("a", "overrides", function(actx)
+    end, { hidden = false, stay = false })
+    inherited:submenu("b", "child", function(child, inner)
+        child:bind("x", "child binding", function(actx)
+        end)
+    end, { hidden = false, global = false, capture = true })
+    local nested = inherited:with({ stay = false })
+    nested:bind("c", "nested", function(actx)
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load cfg");
+        let base_style = cfg.base_style();
+        let mut stack = vec![root_frame(&cfg)];
+        let root = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", false, 0),
+            &base_style,
+        )
+        .expect("render root");
+
+        let a = find_binding(&root.rendered, "a");
+        assert!(!a.flags.hidden);
+        assert!(a.flags.global);
+        assert!(!a.flags.stay);
+
+        let b = find_binding(&root.rendered, "b").clone();
+        assert!(!b.flags.hidden);
+        assert!(!b.flags.global);
+        assert!(b.flags.stay);
+        assert!(b.mode_capture);
+
+        let c = find_binding(&root.rendered, "c");
+        assert!(c.flags.hidden);
+        assert!(c.flags.global);
+        assert!(!c.flags.stay);
+
+        push_mode(&mut stack, &b);
+        let child = render_stack(
+            &mut cfg,
+            &mut stack,
+            &base_ctx("TestApp", true, 1),
+            &base_style,
+        )
+        .expect("render child");
+        let x = find_binding(&child.rendered, "x");
+        assert!(!x.flags.hidden);
+        assert!(!x.flags.global);
+        assert!(!x.flags.stay);
+        assert!(child.rendered.capture);
+    }
+
+    #[test]
+    fn menu_with_preserves_unknown_field_and_receiver_diagnostics() {
+        for source in [
+            r#"
+return function(menu, ctx)
+    menu:with({ repeat = true })
+end
+"#,
+            r#"
+return function(menu, ctx)
+    local value = {}
+    value:with({ stay = true })
+end
+"#,
+        ] {
+            let err = match load_dynamic_config_from_string(source, None) {
+                Ok(_) => panic!("invalid menu:with use should fail"),
+                Err(err) => err,
+            };
+            let pretty = err.pretty();
+            assert!(
+                pretty.contains("with") || pretty.contains("repeat"),
+                "{pretty}"
+            );
+        }
     }
 
     #[test]
@@ -596,6 +724,241 @@ end
             panic!("expected static selector items");
         };
         assert_eq!(items[0].label, "after");
+    }
+
+    #[test]
+    fn new_action_helpers_preserve_capture_and_direct_call_parity() {
+        let source = r#"
+local a = hotki.actions
+local exec_options = {
+    program = "printf",
+    args = { "%s", "before" },
+    ok_notify = "success",
+}
+local exec_action = a.exec(exec_options)
+exec_options.args[2] = "after"
+local with_separator = a.relay_with("cmd+shift++")
+local without_separator = a.relay_with("cmd+shift")
+local youtube_music = a.relay_to_app("YouTube Music")
+local launch_options = {
+    title = "Apps",
+    placeholder = "Find apps",
+    max_visible = 4,
+}
+local launch_action = a.launch_application(launch_options)
+launch_options.title = "Changed"
+
+return function(menu, ctx)
+    menu:bind("a", "exec helper", exec_action)
+    menu:bind("shift+a", "exec direct", function(c)
+        c:exec({
+            program = "printf",
+            args = { "%s", "after" },
+            ok_notify = "success",
+        })
+    end)
+    menu:bind("b", "relay helper", with_separator("6"))
+    menu:bind("shift+b", "relay direct", function(c) c:relay("cmd+shift+6") end)
+    menu:bind("c", "relay helper without separator", without_separator("++7"))
+    menu:bind("d", "launch", launch_action)
+    menu:bind("e", "targeted relay helper", youtube_music("shift+="))
+    menu:bind("shift+e", "targeted relay direct", function(c)
+        c:relay_to_app("YouTube Music", "shift+=")
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load action helpers");
+        let style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render helpers");
+
+        let BindingKind::Handler(exec_helper) = find_binding(&out.rendered, "a").kind.clone()
+        else {
+            panic!("expected exec helper handler");
+        };
+        let BindingKind::Handler(exec_direct) = find_binding(&out.rendered, "shift+a").kind.clone()
+        else {
+            panic!("expected direct exec handler");
+        };
+        let helper = execute_handler(&mut cfg, &exec_helper, &ctx).expect("run exec helper");
+        let direct = execute_handler(&mut cfg, &exec_direct, &ctx).expect("run direct exec");
+        assert_eq!(
+            format!("{:?}", helper.effects),
+            format!("{:?}", direct.effects)
+        );
+        match &helper.effects[0] {
+            Effect::Exec(Action::Exec(spec)) => {
+                assert_eq!(spec.program, "printf");
+                assert_eq!(spec.args.as_ref().expect("args"), &["%s", "after"]);
+                assert_eq!(spec.ok_notify, crate::NotifyKind::Success);
+                assert_eq!(spec.err_notify, crate::NotifyKind::Warn);
+            }
+            other => panic!("unexpected exec effect: {other:?}"),
+        }
+
+        for (helper_chord, expected) in [("b", "cmd+shift+6"), ("c", "cmd+shift+7")] {
+            let BindingKind::Handler(handler) =
+                find_binding(&out.rendered, helper_chord).kind.clone()
+            else {
+                panic!("expected relay helper handler");
+            };
+            let result = execute_handler(&mut cfg, &handler, &ctx).expect("run relay helper");
+            assert!(matches!(
+                &result.effects[0],
+                Effect::Exec(Action::Relay(spec))
+                    if spec == &crate::RelaySpec::focused(expected)
+            ));
+        }
+
+        for chord in ["e", "shift+e"] {
+            let BindingKind::Handler(handler) = find_binding(&out.rendered, chord).kind.clone()
+            else {
+                panic!("expected targeted relay handler");
+            };
+            let result = execute_handler(&mut cfg, &handler, &ctx).expect("run targeted relay");
+            assert!(matches!(
+                &result.effects[0],
+                Effect::Exec(Action::Relay(spec))
+                    if spec == &crate::RelaySpec::application("YouTube Music", "shift+=")
+            ));
+        }
+
+        let BindingKind::Handler(launch) = find_binding(&out.rendered, "d").kind.clone() else {
+            panic!("expected launcher handler");
+        };
+        let result = execute_handler(&mut cfg, &launch, &ctx).expect("run launcher");
+        let Effect::Select(selector) = &result.effects[0] else {
+            panic!("expected selector effect: {:?}", result.effects);
+        };
+        assert_eq!(selector.title, "Changed");
+        assert_eq!(selector.placeholder, "Find apps");
+        assert_eq!(selector.max_visible, 4);
+        assert!(matches!(selector.items, SelectorItems::Provider(_)));
+    }
+
+    #[test]
+    fn targeted_relay_rejects_an_empty_application_name() {
+        let source = r#"
+return function(menu, ctx)
+    menu:bind("a", "bad target", function(c)
+        c:relay_to_app("", "space")
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load config");
+        let style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render config");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "a").kind.clone() else {
+            panic!("expected handler");
+        };
+
+        let error = execute_handler(&mut cfg, &handler, &ctx).expect_err("empty name rejected");
+        assert!(error.pretty().contains("app_name must not be empty"));
+    }
+
+    #[test]
+    fn renderer_helpers_are_ordered_contextual_and_immutable() {
+        let source = r#"
+local r = hotki.renderers
+if pcall(function() r.combine = function() end end) then
+    error("renderers table accepted mutation")
+end
+
+local function base(menu, ctx)
+    menu:bind("a", "base", function(c) end)
+end
+
+return r.combine(
+    base,
+    r.when_app("Finder", function(menu, ctx)
+        menu:bind("b", "exact", function(c) end)
+    end),
+    r.when_app_matches("Find", function(menu, ctx)
+        menu:bind("b", "regex", function(c) end)
+    end)
+)
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load renderers");
+        let style = cfg.base_style();
+        let mut stack = vec![root_frame(&cfg)];
+        let finder = render_stack(&mut cfg, &mut stack, &base_ctx("Finder", true, 0), &style)
+            .expect("render Finder");
+        assert_eq!(finder.rendered.bindings.len(), 2);
+        assert_eq!(finder.rendered.bindings[0].1.desc, "base");
+        assert_eq!(finder.rendered.bindings[1].1.desc, "exact");
+        assert_eq!(finder.warnings.len(), 1, "all matching routes should run");
+        assert!(finder.rendered.bindings[0].1.pos.is_some());
+
+        let other = render_stack(&mut cfg, &mut stack, &base_ctx("Safari", true, 0), &style)
+            .expect("rerender Safari");
+        assert_eq!(other.rendered.bindings.len(), 1);
+        assert_eq!(other.rendered.bindings[0].1.desc, "base");
+        assert!(other.warnings.is_empty());
+    }
+
+    #[test]
+    fn exec_parser_is_strict_and_effects_keep_source_order() {
+        let source = r#"
+return function(menu, ctx)
+    menu:bind("e", "exec", function(actx)
+        actx:exec({
+            program = "/usr/bin/printf",
+            args = { "%s", "hello" },
+            cwd = ".",
+            ok_notify = "success",
+            err_notify = "error",
+        })
+        actx:notify("info", "middle", "body")
+        actx:pop()
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load exec config");
+        let style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render exec config");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "e").kind.clone() else {
+            panic!("expected exec handler");
+        };
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute exec handler");
+        assert_eq!(result.effects.len(), 3);
+        match &result.effects[0] {
+            Effect::Exec(Action::Exec(spec)) => {
+                assert_eq!(spec.program, "/usr/bin/printf");
+                assert_eq!(spec.args.as_ref().expect("args"), &["%s", "hello"]);
+                assert_eq!(spec.cwd.as_deref(), Some("."));
+                assert_eq!(spec.ok_notify, crate::NotifyKind::Success);
+                assert_eq!(spec.err_notify, crate::NotifyKind::Error);
+            }
+            other => panic!("unexpected first effect: {other:?}"),
+        }
+        assert!(matches!(result.effects[1], Effect::Notify { .. }));
+        assert!(matches!(result.effects[2], Effect::Nav(_)));
+
+        let unknown = r#"
+return function(menu, ctx)
+    menu:bind("e", "exec", function(actx)
+        actx:exec({ program = "true", unknown = true })
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(unknown, None).expect("load unknown config");
+        let style = cfg.base_style();
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render unknown config");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "e").kind.clone() else {
+            panic!("expected unknown-field handler");
+        };
+        let error = execute_handler(&mut cfg, &handler, &ctx).expect_err("unknown field rejected");
+        assert!(
+            error.pretty().contains("unknown"),
+            "unexpected error: {}",
+            error.pretty()
+        );
     }
 
     #[test]

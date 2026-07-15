@@ -1,23 +1,14 @@
 local a = hotki.actions
 
-local GLOBAL = { global = true, hidden = true }
-local STAY = { stay = true }
-
 return function(menu, ctx)
     if ctx.hud then
-        menu:bind("esc", "Exit", a.exit, GLOBAL)
+        menu:bind("esc", "Exit", a.exit, { global = true, hidden = true })
     end
 
-    menu:bind("shift+cmd+p", "Run Application", a.select({
-        title = "Run Application",
-        placeholder = "Search apps...",
-        items = hotki.applications,
-        on_select = function(select_ctx, item)
-            select_ctx:open(item.data.path)
-        end,
-    }))
+    menu:bind("shift+cmd+p", "Run Application", a.launch_application())
 
     menu:submenu("shift+cmd+0", "Actions", function(actions)
+        local stay = actions:with({ stay = true })
         actions:bind("p", "Pop", a.pop)
         actions:bind("e", "Exit", a.exit)
         actions:bind("r", "Show Root", a.show_root)
@@ -29,30 +20,37 @@ return function(menu, ctx)
             ok_notify = "success",
             err_notify = "error",
         }))
+        actions:bind("i", "Direct process", a.exec({
+            program = "/usr/bin/printf",
+            args = { "direct execution" },
+            ok_notify = "info",
+        }))
         actions:bind("o", "Open", a.open("https://github.com/cortesi/hotki"))
         actions:bind("k", "Relay", a.relay("cmd+c"))
-        actions:bind("d", "Details", a.show_details("toggle"), STAY)
-        actions:bind("v", "Volume 50%", a.set_volume(50), STAY)
-        actions:bind("=", "Volume Up", a.change_volume(5), STAY)
-        actions:bind("-", "Volume Down", a.change_volume(-5), STAY)
-        actions:bind("m", "Mute", a.mute("toggle"), STAY)
+        actions:bind("y", "YouTube Music Play/Pause", a.relay_to_app("YouTube Music")("space"))
+        stay:bind("d", "Details", a.show_details("toggle"))
+        stay:bind("v", "Volume 50%", a.set_volume(50))
+        stay:bind("=", "Volume Up", a.change_volume(5))
+        stay:bind("-", "Volume Down", a.change_volume(-5))
+        stay:bind("m", "Mute", a.mute("toggle"))
+        stay:bind("[", "Unmute", a.mute("off"))
         actions:bind("t", "Stay", a.stay)
-        actions:bind("u", "Hold Volume Up", a.hold(a.change_volume(5), {
-            delay_ms = 250,
-            interval_ms = 100,
-        }), STAY)
+        stay:bind("u", "Hold Volume Up", a.hold(a.change_volume(5)))
         actions:bind("x", "Composite Action", function(action_ctx)
             action_ctx:shell("echo composite")
             action_ctx:notify("info", "Composite", "Queued two ordered effects")
             action_ctx:stay()
         end)
         actions:bind("g", "Push Mode", a.push(function(child)
-            child:bind("esc", "Back", a.pop, GLOBAL)
+            child:bind("esc", "Back", a.pop, { global = true, hidden = true })
             child:bind("s", "Nested Shell", a.shell("echo nested"))
         end, "Pushed"))
     end, { capture = true })
 
     if ctx:app_matches("Finder") then
-        menu:bind("shift+cmd+f", "Finder Home", a.open("~"), GLOBAL)
+        menu:bind("shift+cmd+f", "Finder Applications", a.open("/Applications"), {
+            global = true,
+            hidden = true,
+        })
     end
 end

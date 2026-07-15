@@ -1,6 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use config::runtime as dyn_engine;
@@ -8,7 +12,7 @@ use mac_keycode::Chord;
 
 use crate::{
     DispatchResult, Engine, Result,
-    repeater::{ExecSpec, RepeatSpec},
+    repeater::{ProcessSpec, RepeatSpec},
     selector_controller::SelectorController,
 };
 
@@ -128,16 +132,15 @@ impl Engine {
         match effect {
             dyn_engine::Effect::Exec(action) => {
                 let terminal = matches!(action, config::Action::ReloadConfig);
-                let outcome = match run {
-                    EffectRun::RepeatedFirst | EffectRun::RepeatedTick
-                        if matches!(action, config::Action::Relay(_)) =>
-                    {
-                        self.apply_repeated_relay(identifier, &action, run)?
-                    }
-                    _ => self.apply_action(identifier, &action, None).await?,
+                let outcome = match &action {
+                    config::Action::Relay(spec) => self.apply_relay(identifier, spec, run).await?,
+                    _ => EffectApplication {
+                        result: self.apply_action(identifier, &action, None).await?,
+                        terminal: false,
+                    },
                 };
-                applied.combine_result(outcome);
-                applied.terminal = terminal;
+                applied.combine_result(outcome.result);
+                applied.terminal = terminal || outcome.terminal;
             }
             dyn_engine::Effect::Notify { kind, title, body } => {
                 self.notifier.send_notification(kind, title, body)?;
@@ -271,34 +274,15 @@ impl Engine {
                 );
                 Ok(DispatchResult::AutoExit)
             }
-            config::Action::Relay(spec) => {
-                let Some(target) = Chord::parse(spec) else {
-                    self.notifier
-                        .send_error("Relay", format!("Invalid relay chord string: {}", spec))?;
-                    return Ok(DispatchResult::AutoExit);
-                };
-
-                let repeat = repeat_spec(repeat);
-
-                if let Some(repeat) = repeat {
-                    let allow_os_repeat =
-                        repeat.initial_delay_ms.is_none() && repeat.interval_ms.is_none();
-                    self.key_tracker
-                        .set_repeat_allowed(identifier, allow_os_repeat);
-                    self.repeater.start(
-                        identifier.to_string(),
-                        ExecSpec::Relay { chord: target },
-                        Some(repeat),
-                    );
-                    return Ok(DispatchResult::AutoExit);
-                }
-
-                let pid = self.current_focus_info().pid;
-                self.relay
-                    .start_relay(identifier.to_string(), target, pid, false);
-                let _ = self.relay.stop_relay(identifier, pid);
+            config::Action::Exec(spec) => {
+                let process = self.direct_process_spec(spec).await;
+                self.start_process_action(identifier, process, repeat);
                 Ok(DispatchResult::AutoExit)
             }
+            config::Action::Relay(spec) => Ok(self
+                .apply_relay(identifier, spec, EffectRun::OneShot)
+                .await?
+                .result),
             config::Action::Pop => Ok(self.apply_nav_request(dyn_engine::NavRequest::Pop).await),
             config::Action::Exit => Ok(self.apply_nav_request(dyn_engine::NavRequest::Exit).await),
             config::Action::ShowRoot => Ok(self
@@ -324,11 +308,16 @@ impl Engine {
                 Ok(DispatchResult::AutoExit)
             }
             config::Action::Open(target) => {
-                self.start_shell_action(
+                self.start_process_action(
                     identifier,
-                    format!("open -- {}", shell_quote(target)),
-                    config::NotifyKind::Ignore,
-                    config::NotifyKind::Warn,
+                    ProcessSpec::new(
+                        "open",
+                        vec!["--".to_string(), target.clone()],
+                        None,
+                        config::NotifyKind::Ignore,
+                        config::NotifyKind::Warn,
+                        "Open",
+                    ),
                     repeat,
                 );
                 Ok(DispatchResult::AutoExit)
@@ -352,36 +341,80 @@ impl Engine {
         }
     }
 
-    /// Apply relay effects emitted by a repeated action closure.
-    fn apply_repeated_relay(
+    /// Apply one relay effect, resolving a process target only at gesture start.
+    async fn apply_relay(
         &self,
         identifier: &str,
-        action: &config::Action,
+        spec: &config::RelaySpec,
         run: EffectRun,
-    ) -> Result<DispatchResult> {
-        let config::Action::Relay(spec) = action else {
-            return Ok(DispatchResult::AutoExit);
-        };
-        let Some(target) = Chord::parse(spec) else {
-            self.notifier
-                .send_error("Relay", format!("Invalid relay chord string: {}", spec))?;
-            return Ok(DispatchResult::AutoExit);
+    ) -> Result<EffectApplication> {
+        let Some(chord) = Chord::parse(&spec.chord) else {
+            self.notifier.send_error(
+                "Relay",
+                format!("Invalid relay chord string: {}", spec.chord),
+            )?;
+            return Ok(EffectApplication {
+                result: DispatchResult::AutoExit,
+                terminal: true,
+            });
         };
 
         match run {
-            EffectRun::RepeatedFirst => {
-                let pid = self.current_focus_info().pid;
+            EffectRun::OneShot | EffectRun::RepeatedFirst => {
+                let Some(destination) = self.resolve_relay_destination(&spec.target).await? else {
+                    return Ok(EffectApplication {
+                        result: DispatchResult::AutoExit,
+                        terminal: true,
+                    });
+                };
                 self.relay
-                    .start_relay(identifier.to_string(), target, pid, false);
+                    .start_relay(identifier.to_string(), chord, destination, false);
+                if matches!(run, EffectRun::OneShot) {
+                    let _ = self.relay.stop_relay(identifier);
+                }
             }
             EffectRun::RepeatedTick => {
                 if self.relay.repeat_relay(identifier) {
                     self.repeater.note_relay_repeat(identifier);
                 }
             }
-            EffectRun::OneShot => {}
         }
-        Ok(DispatchResult::AutoExit)
+        Ok(EffectApplication::EMPTY)
+    }
+
+    /// Resolve a configured relay target without changing application state.
+    async fn resolve_relay_destination(
+        &self,
+        target: &config::RelayTarget,
+    ) -> Result<Option<relaykey::RelayDestination>> {
+        match target {
+            config::RelayTarget::Focused => Ok(Some(relaykey::RelayDestination::Hid)),
+            config::RelayTarget::ApplicationName(app_name) => {
+                match self.world.resolve_application(app_name).await {
+                    hotki_world::ApplicationResolution::Found(pid) => {
+                        Ok(Some(relaykey::RelayDestination::Process(pid)))
+                    }
+                    hotki_world::ApplicationResolution::NotRunning => {
+                        self.notifier.send_notification(
+                            config::NotifyKind::Warn,
+                            "Relay".to_string(),
+                            format!("Application \"{app_name}\" is not running"),
+                        )?;
+                        Ok(None)
+                    }
+                    hotki_world::ApplicationResolution::Ambiguous(count) => {
+                        self.notifier.send_notification(
+                            config::NotifyKind::Warn,
+                            "Relay".to_string(),
+                            format!(
+                                "Application \"{app_name}\" is ambiguous: {count} running matches"
+                            ),
+                        )?;
+                        Ok(None)
+                    }
+                }
+            }
+        }
     }
 
     fn start_shell_action(
@@ -392,15 +425,47 @@ impl Engine {
         err_notify: config::NotifyKind,
         repeat: Option<dyn_engine::RepeatSpec>,
     ) {
-        self.repeater.start(
-            identifier.to_string(),
-            ExecSpec::Shell {
-                command,
-                ok_notify,
-                err_notify,
-            },
-            repeat_spec(repeat),
+        self.start_process_action(
+            identifier,
+            ProcessSpec::shell(command, ok_notify, err_notify),
+            repeat,
         );
+    }
+
+    fn start_process_action(
+        &self,
+        identifier: &str,
+        process: ProcessSpec,
+        repeat: Option<dyn_engine::RepeatSpec>,
+    ) {
+        self.repeater
+            .start(identifier.to_string(), process, repeat_spec(repeat));
+    }
+
+    async fn direct_process_spec(&self, spec: &config::ExecSpec) -> ProcessSpec {
+        ProcessSpec::new(
+            spec.program.clone(),
+            spec.args.clone().unwrap_or_default(),
+            self.resolve_exec_cwd(spec.cwd.as_deref()).await,
+            spec.ok_notify,
+            spec.err_notify,
+            "Process",
+        )
+    }
+
+    async fn resolve_exec_cwd(&self, cwd: Option<&str>) -> Option<PathBuf> {
+        let cwd = cwd?;
+        let path = PathBuf::from(cwd);
+        if path.is_absolute() {
+            return Some(path);
+        }
+
+        let config_path = self.config_path.read().await.clone();
+        let base = config_path
+            .as_deref()
+            .map(config_entry_directory)
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        Some(base.join(path))
     }
 
     fn start_warn_apple_script(
@@ -409,13 +474,7 @@ impl Engine {
         script: String,
         repeat: Option<dyn_engine::RepeatSpec>,
     ) {
-        self.start_shell_action(
-            identifier,
-            apple_script_command(script),
-            config::NotifyKind::Ignore,
-            config::NotifyKind::Warn,
-            repeat,
-        );
+        self.start_process_action(identifier, apple_script_process(script), repeat);
     }
 
     pub(crate) async fn apply_nav_request(&self, nav: dyn_engine::NavRequest) -> DispatchResult {
@@ -475,12 +534,32 @@ fn repeat_spec(repeat: Option<dyn_engine::RepeatSpec>) -> Option<RepeatSpec> {
     })
 }
 
-fn apple_script_command(script: String) -> String {
-    format!("osascript -e '{}'", script.replace('\n', "' -e '"))
+fn apple_script_process(script: String) -> ProcessSpec {
+    let args = script
+        .split('\n')
+        .flat_map(|line| ["-e".to_string(), line.to_string()])
+        .collect();
+    ProcessSpec::new(
+        "/usr/bin/osascript",
+        args,
+        None,
+        config::NotifyKind::Ignore,
+        config::NotifyKind::Warn,
+        "Shell command",
+    )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+fn config_entry_directory(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
 }
 
 fn set_volume_script(level: u8) -> String {
@@ -501,5 +580,278 @@ fn mute_script(toggle: config::Toggle) -> String {
         config::Toggle::Toggle => {
             "set curMuted to output muted of (get volume settings)\nset volume output muted not curMuted".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        env, fs,
+        path::Path,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
+
+    use hotki_protocol::{MsgToUI, NotifyKind};
+    use hotki_world::{TestApplication, TestWorld};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::{
+        deps::MockHotkeyApi,
+        relay::{RelayHandler, RelayPoster},
+    };
+
+    #[derive(Default)]
+    struct RecordingPoster {
+        events: Mutex<Vec<(bool, relaykey::RelayDestination)>>,
+        chords: Mutex<Vec<Chord>>,
+    }
+
+    impl RecordingPoster {
+        fn events(&self) -> Vec<(bool, relaykey::RelayDestination)> {
+            self.events.lock().expect("recording poster lock").clone()
+        }
+
+        fn chords(&self) -> Vec<Chord> {
+            self.chords.lock().expect("recording chord lock").clone()
+        }
+    }
+
+    impl RelayPoster for RecordingPoster {
+        fn key_down(
+            &self,
+            chord: &Chord,
+            is_repeat: bool,
+            destination: relaykey::RelayDestination,
+        ) -> relaykey::Result<()> {
+            self.chords
+                .lock()
+                .expect("recording chord lock")
+                .push(chord.clone());
+            self.events
+                .lock()
+                .expect("recording poster lock")
+                .push((is_repeat, destination));
+            Ok(())
+        }
+
+        fn key_up(
+            &self,
+            chord: &Chord,
+            destination: relaykey::RelayDestination,
+        ) -> relaykey::Result<()> {
+            self.chords
+                .lock()
+                .expect("recording chord lock")
+                .push(chord.clone());
+            self.events
+                .lock()
+                .expect("recording poster lock")
+                .push((false, destination));
+            Ok(())
+        }
+    }
+
+    fn application(name: &str, pid: i32) -> TestApplication {
+        TestApplication {
+            name: Some(name.to_string()),
+            pid,
+            terminated: false,
+        }
+    }
+
+    fn relay_engine(
+        world: Arc<TestWorld>,
+    ) -> (Engine, Arc<RecordingPoster>, mpsc::Receiver<MsgToUI>) {
+        let (tx, rx) = mpsc::channel(16);
+        let mut engine =
+            Engine::new_with_api_and_world(Arc::new(MockHotkeyApi::new()), tx, false, world);
+        let poster = Arc::new(RecordingPoster::default());
+        engine.relay = RelayHandler::new_with_poster(Some(poster.clone()));
+        (engine, poster, rx)
+    }
+
+    #[tokio::test]
+    async fn direct_exec_resolves_relative_cwd_without_changing_engine_cwd() {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!("engine-exec-cwd-{id}"));
+        let child = root.join("child");
+        fs::create_dir_all(&child).expect("create exec cwd");
+        let config_path = root.join("config.luau");
+        fs::write(&config_path, "return function(menu, ctx) end").expect("write config path");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let engine = Engine::new_with_api_and_world(
+            Arc::new(MockHotkeyApi::new()),
+            tx,
+            false,
+            Arc::new(TestWorld::new()),
+        );
+        *engine.config_path.write().await = Some(config_path);
+        let before = env::current_dir().expect("read process cwd");
+        let action = config::Action::Exec(config::ExecSpec {
+            program: "/bin/pwd".to_string(),
+            args: None,
+            cwd: Some("child".to_string()),
+            ok_notify: NotifyKind::Info,
+            err_notify: NotifyKind::Warn,
+        });
+
+        engine
+            .apply_action("pwd", &action, None)
+            .await
+            .expect("start direct exec");
+        let message = rx.recv().await.expect("pwd notification");
+        let expected = fs::canonicalize(&child).expect("canonical child");
+        let expected = expected.to_string_lossy().into_owned();
+        assert!(matches!(
+            message,
+            MsgToUI::Notify {
+                kind: NotifyKind::Info,
+                text,
+                ..
+            } if text == expected
+        ));
+        assert_eq!(env::current_dir().expect("read process cwd"), before);
+        fs::remove_dir_all(root).expect("remove exec cwd");
+    }
+
+    #[tokio::test]
+    async fn targeted_relay_pins_process_across_repeat_and_release() {
+        let world = Arc::new(TestWorld::new());
+        world.set_running_applications(vec![application("YouTube Music", 71)]);
+        let (engine, poster, _rx) = relay_engine(world.clone());
+        let spec = config::RelaySpec::application("YouTube Music", "space");
+
+        let first = engine
+            .apply_relay("music", &spec, EffectRun::RepeatedFirst)
+            .await
+            .expect("start targeted relay");
+        assert!(!first.terminal);
+        world.set_running_applications(vec![application("YouTube Music", 72)]);
+        engine
+            .apply_relay("music", &spec, EffectRun::RepeatedTick)
+            .await
+            .expect("repeat targeted relay");
+        assert!(engine.relay.stop_relay("music"));
+
+        assert_eq!(
+            poster.events(),
+            vec![
+                (false, relaykey::RelayDestination::Process(71)),
+                (true, relaykey::RelayDestination::Process(71)),
+                (false, relaykey::RelayDestination::Process(71)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_and_ambiguous_targets_warn_once_and_post_nothing() {
+        for (applications, expected) in [
+            (
+                Vec::new(),
+                "Application \"YouTube Music\" is not running".to_string(),
+            ),
+            (
+                vec![
+                    application("YouTube Music", 71),
+                    application("YouTube Music", 72),
+                ],
+                "Application \"YouTube Music\" is ambiguous: 2 running matches".to_string(),
+            ),
+        ] {
+            let world = Arc::new(TestWorld::new());
+            world.set_running_applications(applications);
+            let (engine, poster, mut rx) = relay_engine(world.clone());
+            let spec = config::RelaySpec::application("YouTube Music", "space");
+
+            let first = engine
+                .apply_relay("music", &spec, EffectRun::RepeatedFirst)
+                .await
+                .expect("resolve targeted relay");
+            assert!(first.terminal);
+            world.set_running_applications(vec![application("YouTube Music", 73)]);
+            engine
+                .apply_relay("music", &spec, EffectRun::RepeatedTick)
+                .await
+                .expect("terminal tick is inert");
+
+            assert!(poster.events().is_empty());
+            let message = rx.try_recv().expect("warning notification");
+            assert!(matches!(
+                message,
+                MsgToUI::Notify {
+                    kind: NotifyKind::Warn,
+                    title,
+                    text,
+                    ..
+                } if title == "Relay" && text == expected
+            ));
+            assert!(rx.try_recv().is_err(), "warning emitted more than once");
+        }
+    }
+
+    #[tokio::test]
+    async fn focused_and_targeted_relays_share_invalid_chord_diagnostics() {
+        for spec in [
+            config::RelaySpec::focused("not-a-chord"),
+            config::RelaySpec::application("YouTube Music", "not-a-chord"),
+        ] {
+            let world = Arc::new(TestWorld::new());
+            world.set_running_applications(vec![application("YouTube Music", 71)]);
+            let (engine, poster, mut rx) = relay_engine(world);
+
+            let applied = engine
+                .apply_relay("music", &spec, EffectRun::RepeatedFirst)
+                .await
+                .expect("invalid relay result");
+
+            assert!(applied.terminal);
+            assert!(poster.events().is_empty());
+            assert!(matches!(
+                rx.try_recv().expect("invalid chord notification"),
+                MsgToUI::Notify { text, .. }
+                    if text == "Invalid relay chord string: not-a-chord"
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn targeted_relays_forward_modified_main_keys_to_the_process() {
+        let world = Arc::new(TestWorld::new());
+        world.set_running_applications(vec![application("YouTube Music", 71)]);
+        let (engine, poster, mut rx) = relay_engine(world);
+        let spec = config::RelaySpec::application("YouTube Music", "shift+=");
+
+        let applied = engine
+            .apply_relay("music", &spec, EffectRun::OneShot)
+            .await
+            .expect("modified targeted relay result");
+
+        assert!(!applied.terminal);
+        assert_eq!(
+            poster.events(),
+            vec![
+                (false, relaykey::RelayDestination::Process(71)),
+                (false, relaykey::RelayDestination::Process(71)),
+            ]
+        );
+        let chord = Chord::parse("shift+=").expect("modified chord");
+        assert_eq!(poster.chords(), vec![chord.clone(), chord]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn apple_script_process_preserves_each_script_line_as_an_argument() {
+        let process = apple_script_process("first\nsecond\n".to_string());
+
+        assert_eq!(process.program, "/usr/bin/osascript");
+        assert_eq!(process.args, vec!["-e", "first", "-e", "second", "-e", "",]);
     }
 }

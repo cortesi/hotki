@@ -11,9 +11,11 @@ use crate::Toggle;
 pub enum Action {
     /// Execute a shell command (optionally with modifiers)
     Shell(ShellSpec),
+    /// Execute a process directly without invoking a shell.
+    Exec(ExecSpec),
     /// Relay a keystroke (with optional modifiers) to the currently
     /// focused application. Example: relay("cmd+shift+n").
-    Relay(String),
+    Relay(RelaySpec),
     /// Return to the previous mode
     Pop,
     /// Pop all modes until the root mode is reached
@@ -36,6 +38,63 @@ pub enum Action {
     ChangeVolume(i8),
     /// Control mute state: on/off/toggle
     Mute(Toggle),
+}
+
+/// Configured target for a relayed key gesture.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RelayTarget {
+    /// Deliver through the HID event stream to the focused application.
+    Focused,
+    /// Resolve one exact AppKit localized application name at actuation time.
+    ApplicationName(String),
+}
+
+/// Chord and configured target for one relayed key gesture.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelaySpec {
+    /// Chord string parsed by the engine at actuation time.
+    pub chord: String,
+    /// Configured destination identity.
+    pub target: RelayTarget,
+}
+
+impl RelaySpec {
+    /// Construct a relay to the focused application.
+    pub fn focused(chord: impl Into<String>) -> Self {
+        Self {
+            chord: chord.into(),
+            target: RelayTarget::Focused,
+        }
+    }
+
+    /// Construct a relay to one exact AppKit localized application name.
+    pub fn application(app_name: impl Into<String>, chord: impl Into<String>) -> Self {
+        Self {
+            chord: chord.into(),
+            target: RelayTarget::ApplicationName(app_name.into()),
+        }
+    }
+}
+
+/// Specification for a direct process execution action.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecSpec {
+    /// Program path or bare program name resolved by the operating system.
+    pub program: String,
+    /// Literal arguments passed to the program, preserving element boundaries.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Optional working directory, relative to the config entry when relative.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Notification type for successful exit.
+    #[serde(default = "default_ok_notify")]
+    pub ok_notify: NotifyKind,
+    /// Notification type for error exit.
+    #[serde(default = "default_err_notify")]
+    pub err_notify: NotifyKind,
 }
 
 impl Action {

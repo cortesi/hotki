@@ -180,6 +180,71 @@ fn repeat_relay_ticks() {
 }
 
 #[test]
+fn hold_relay_ticks_and_stops_after_key_up() {
+    run_engine_test_paused(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+
+        let path = write_test_config(
+            r#"
+            local a = hotki.actions
+            return function(menu)
+              menu:bind("a", "relay", a.hold(a.relay("cmd+b")))
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |m| matches!(m, MsgToUI::HudUpdate { .. })).await;
+        drain_ui(&mut rx);
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let count2 = count.clone();
+        set_on_relay_repeat(
+            &engine,
+            Arc::new(move |_id| {
+                count2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+
+        let a = engine.resolve_id_for_ident("a").await.expect("id for a");
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("dispatch relay down");
+        tokio::task::yield_now().await;
+        advance(Duration::from_millis(500)).await;
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            count.load(Ordering::SeqCst) > 0,
+            "held relay should produce repeat ticks"
+        );
+
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("dispatch relay up");
+        let count_after_release = count.load(Ordering::SeqCst);
+        advance(Duration::from_millis(500)).await;
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            count_after_release,
+            "released relay should stop repeating"
+        );
+
+        let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
 fn repeat_change_volume_ticks() {
     run_engine_test_paused(async move {
         let (engine, mut rx, world) = create_test_engine_with_relay(false).await;

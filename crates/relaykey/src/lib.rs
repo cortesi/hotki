@@ -1,11 +1,14 @@
-//! Relays live KeyDown/KeyUp events to the focused macOS app.
+//! Relays live KeyDown/KeyUp events to macOS applications.
 //!
-//! A `RelayKey` posts KeyDown/KeyUp events to the focused macOS app.
+//! A `RelayKey` posts KeyDown/KeyUp events either through the global HID event
+//! stream or directly to one process.
 //! It forwards inputs directly, including explicit repeat KeyDowns provided
 //! by the caller.
 //!
 //! Events are posted directly; no wrapping or synthetic repeats. Invoke
-//! `on_key_down(chord, is_repeat)` and `on_key_up(chord)` as needed.
+//! [`RelayKey::key_down`] and [`RelayKey::key_up`] with the same destination for
+//! one complete gesture. Process destinations carry chord flags on the main key
+//! but do not post separate modifier transitions.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{collections::HashSet, sync::Arc};
@@ -20,14 +23,28 @@ use tracing::{info, trace, warn};
 mod error;
 pub use error::{Error, Result};
 
+/// Destination for one relayed key gesture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RelayDestination {
+    /// Post through the global HID event stream to the focused application.
+    Hid,
+    /// Post directly to one process without changing application focus.
+    Process(i32),
+}
+
 /// Abstraction for posting events to the system (overridable in tests).
 pub(crate) trait Poster: Send + Sync {
     /// Post a key down for `key`.
-    fn post_down(&self, key: &Chord, is_repeat: bool) -> Result<()>;
+    fn post_down(&self, key: &Chord, is_repeat: bool, destination: RelayDestination) -> Result<()>;
     /// Post a key up for `key`.
-    fn post_up(&self, key: &Chord) -> Result<()>;
-    /// Post modifier changes for `mods`.
-    fn post_modifiers(&self, _mods: &HashSet<Modifier>, _down: bool) -> Result<()> {
+    fn post_up(&self, key: &Chord, destination: RelayDestination) -> Result<()>;
+    /// Post HID modifier changes for `mods`.
+    fn post_modifiers(
+        &self,
+        _mods: &HashSet<Modifier>,
+        _down: bool,
+        _destination: RelayDestination,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -36,8 +53,8 @@ pub(crate) trait Poster: Send + Sync {
 struct MacPoster;
 
 impl MacPoster {
-    /// Build a raw keyboard event for a virtual keycode.
-    fn build_keycode_event(&self, keycode: u16, down: bool) -> Result<cge::CGEvent> {
+    /// Create the HID event source used for injected events.
+    fn event_source(&self) -> Result<CGEventSource> {
         let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
             Ok(s) => s,
             Err(_) => {
@@ -48,20 +65,24 @@ impl MacPoster {
                 return Err(Error::EventSource);
             }
         };
-        let e = match cge::CGEvent::new_keyboard_event(source, cge::CGKeyCode::from(keycode), down)
-        {
-            Ok(e) => e,
-            Err(_) => {
-                if !permissions::accessibility_ok() {
-                    warn!("accessibility_permission_missing_for_event_create");
-                    return Err(Error::PermissionDenied("Accessibility"));
+        Ok(source)
+    }
+
+    /// Build a raw keyboard event for a virtual keycode.
+    fn build_keycode_event(&self, keycode: u16, down: bool) -> Result<cge::CGEvent> {
+        let source = self.event_source()?;
+        let event =
+            match cge::CGEvent::new_keyboard_event(source, cge::CGKeyCode::from(keycode), down) {
+                Ok(event) => event,
+                Err(_) => {
+                    if !permissions::accessibility_ok() {
+                        warn!("accessibility_permission_missing_for_event_create");
+                        return Err(Error::PermissionDenied("Accessibility"));
+                    }
+                    return Err(Error::EventCreate);
                 }
-                return Err(Error::EventCreate);
-            }
-        };
-        // Tag injected events so the app's own event tap ignores them.
-        e.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
-        Ok(e)
+            };
+        Ok(event)
     }
 
     /// Build a keyboard event for a `Chord` including modifiers and repeat flag.
@@ -78,6 +99,27 @@ impl MacPoster {
         }
         Ok(e)
     }
+}
+
+/// Attach Hotki's event marker so its own event tap ignores injected events.
+fn tag_event(event: &cge::CGEvent) {
+    event.set_integer_value_field(cge::EventField::EVENT_SOURCE_USER_DATA, HOTK_TAG);
+}
+
+/// Post one event through the selected CoreGraphics delivery path.
+fn post_event(event: &cge::CGEvent, destination: RelayDestination) {
+    if needs_hotki_tag(destination) {
+        tag_event(event);
+    }
+    match destination {
+        RelayDestination::Hid => event.post(cge::CGEventTapLocation::HID),
+        RelayDestination::Process(pid) => event.post_to_pid(pid),
+    }
+}
+
+/// Whether an event needs Hotki's HID-loop marker.
+fn needs_hotki_tag(destination: RelayDestination) -> bool {
+    matches!(destination, RelayDestination::Hid)
 }
 
 /// Map a modifier set to virtual keycodes.
@@ -101,48 +143,54 @@ fn mod_keycodes(mods: &HashSet<Modifier>) -> Vec<u16> {
 }
 
 impl Poster for MacPoster {
-    fn post_down(&self, key: &Chord, is_repeat: bool) -> Result<()> {
+    fn post_down(&self, key: &Chord, is_repeat: bool, destination: RelayDestination) -> Result<()> {
         trace!(
             code = ?key.key,
             mods = ?key.modifiers,
             is_repeat,
             "post_down"
         );
-        let e = self.build_event(key, true, is_repeat)?;
-        e.post(cge::CGEventTapLocation::HID);
+        let event = self.build_event(key, true, is_repeat)?;
+        post_event(&event, destination);
         info!(
             code = ?key.key,
             mods = ?key.modifiers,
             is_repeat,
+            ?destination,
             "relayed_key_down"
         );
         Ok(())
     }
 
-    fn post_up(&self, key: &Chord) -> Result<()> {
+    fn post_up(&self, key: &Chord, destination: RelayDestination) -> Result<()> {
         trace!(code = ?key.key, mods = ?key.modifiers, "post_up");
-        let e = self.build_event(key, false, false)?;
-        e.post(cge::CGEventTapLocation::HID);
-        info!(code = ?key.key, mods = ?key.modifiers, "relayed_key_up");
+        let event = self.build_event(key, false, false)?;
+        post_event(&event, destination);
+        info!(code = ?key.key, mods = ?key.modifiers, ?destination, "relayed_key_up");
         Ok(())
     }
 
-    fn post_modifiers(&self, mods: &HashSet<Modifier>, down: bool) -> Result<()> {
+    fn post_modifiers(
+        &self,
+        mods: &HashSet<Modifier>,
+        down: bool,
+        destination: RelayDestination,
+    ) -> Result<()> {
         let mut codes = mod_keycodes(mods);
         if !down {
             // Release in reverse order
             codes.reverse();
         }
         for code in codes {
-            let e = self.build_keycode_event(code, down)?;
-            e.post(cge::CGEventTapLocation::HID);
+            let event = self.build_keycode_event(code, down)?;
+            post_event(&event, destination);
         }
         Ok(())
     }
 }
 
-/// Stateful relayer that forwards live key Down/Up events to the
-/// foreground application, ensuring only one relayed key is held at a time.
+/// Relayer that forwards live key-down, repeat, and key-up events to an explicit
+/// destination.
 #[derive(Clone)]
 pub struct RelayKey {
     /// Backend responsible for posting events to the OS.
@@ -171,20 +219,34 @@ impl RelayKey {
 
     // No release state to manage in pass-through mode.
 
-    /// Convenience for handling a key-down input.
-    pub fn key_down(&self, key: &Chord, is_repeat: bool) -> Result<()> {
-        trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, "on_key_down");
-        if !is_repeat && let Err(err) = self.poster.post_modifiers(&key.modifiers, true) {
+    /// Post a key-down or repeat input to `destination`.
+    pub fn key_down(
+        &self,
+        key: &Chord,
+        is_repeat: bool,
+        destination: RelayDestination,
+    ) -> Result<()> {
+        trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, ?destination, "on_key_down");
+        if !is_repeat
+            && matches!(destination, RelayDestination::Hid)
+            && let Err(err) = self
+                .poster
+                .post_modifiers(&key.modifiers, true, destination)
+        {
             warn!(?err, "post_modifiers_failed");
         }
-        self.poster.post_down(key, is_repeat)
+        self.poster.post_down(key, is_repeat, destination)
     }
 
-    /// Convenience for handling a key-up input.
-    pub fn key_up(&self, chord: &Chord) -> Result<()> {
-        trace!(code = ?chord.key, mods = ?chord.modifiers, "on_key_up");
-        let res = self.poster.post_up(chord);
-        if let Err(err) = self.poster.post_modifiers(&chord.modifiers, false) {
+    /// Post a key-up input to `destination`.
+    pub fn key_up(&self, chord: &Chord, destination: RelayDestination) -> Result<()> {
+        trace!(code = ?chord.key, mods = ?chord.modifiers, ?destination, "on_key_up");
+        let res = self.poster.post_up(chord, destination);
+        if matches!(destination, RelayDestination::Hid)
+            && let Err(err) = self
+                .poster
+                .post_modifiers(&chord.modifiers, false, destination)
+        {
             warn!(?err, "post_modifiers_failed");
         }
         res
@@ -195,7 +257,10 @@ impl RelayKey {
 mod tests {
     use std::{
         collections::HashSet,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use mac_keycode::Key;
@@ -217,11 +282,16 @@ mod tests {
     }
 
     impl Poster for CountingPoster {
-        fn post_down(&self, _key: &Chord, _is_repeat: bool) -> Result<()> {
+        fn post_down(
+            &self,
+            _key: &Chord,
+            _is_repeat: bool,
+            _destination: RelayDestination,
+        ) -> Result<()> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn post_up(&self, _key: &Chord) -> Result<()> {
+        fn post_up(&self, _key: &Chord, _destination: RelayDestination) -> Result<()> {
             self.1.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -238,8 +308,9 @@ mod tests {
     fn basic_down_up_no_repeat() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(&key(Key::A), false).unwrap();
-        rk.key_up(&key(Key::A)).unwrap();
+        rk.key_down(&key(Key::A), false, RelayDestination::Hid)
+            .unwrap();
+        rk.key_up(&key(Key::A), RelayDestination::Hid).unwrap();
         assert_eq!(poster.downs(), 1);
         assert_eq!(poster.ups(), 1);
     }
@@ -248,9 +319,11 @@ mod tests {
     fn switch_keys_up_then_down() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(&key(Key::A), false).unwrap();
-        rk.key_down(&key(Key::B), false).unwrap();
-        rk.key_up(&key(Key::B)).unwrap();
+        rk.key_down(&key(Key::A), false, RelayDestination::Hid)
+            .unwrap();
+        rk.key_down(&key(Key::B), false, RelayDestination::Hid)
+            .unwrap();
+        rk.key_up(&key(Key::B), RelayDestination::Hid).unwrap();
         // Pass-through: we post exactly what we're asked to.
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.ups(), 1);
@@ -260,7 +333,7 @@ mod tests {
     fn keyup_without_prior_down_posts_up() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_up(&key(Key::A)).unwrap();
+        rk.key_up(&key(Key::A), RelayDestination::Hid).unwrap();
         assert_eq!(poster.downs(), 0);
         assert_eq!(poster.ups(), 1);
     }
@@ -289,14 +362,19 @@ mod tests {
         }
     }
     impl Poster for TrackPoster {
-        fn post_down(&self, _key: &Chord, is_repeat: bool) -> Result<()> {
+        fn post_down(
+            &self,
+            _key: &Chord,
+            is_repeat: bool,
+            _destination: RelayDestination,
+        ) -> Result<()> {
             self.downs.fetch_add(1, Ordering::SeqCst);
             if is_repeat {
                 self.repeat_downs.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
         }
-        fn post_up(&self, _key: &Chord) -> Result<()> {
+        fn post_up(&self, _key: &Chord, _destination: RelayDestination) -> Result<()> {
             self.ups.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -310,12 +388,151 @@ mod tests {
             key: Key::RightArrow,
             modifiers: HashSet::new(),
         };
-        rk.key_down(&k, false).unwrap();
-        rk.key_down(&k, true).unwrap();
-        rk.key_up(&k).unwrap();
+        let destination = RelayDestination::Process(42);
+        rk.key_down(&k, false, destination).unwrap();
+        rk.key_down(&k, true, destination).unwrap();
+        rk.key_up(&k, destination).unwrap();
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.repeat_downs(), 1);
         assert_eq!(poster.ups(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Posted {
+        Modifiers(bool, RelayDestination),
+        Down(bool, RelayDestination),
+        Up(RelayDestination),
+    }
+
+    #[derive(Default)]
+    struct RecordingPoster(Mutex<Vec<Posted>>);
+
+    impl RecordingPoster {
+        fn events(&self) -> Vec<Posted> {
+            self.0.lock().expect("recording poster lock").clone()
+        }
+    }
+
+    impl Poster for RecordingPoster {
+        fn post_down(
+            &self,
+            _key: &Chord,
+            is_repeat: bool,
+            destination: RelayDestination,
+        ) -> Result<()> {
+            self.0
+                .lock()
+                .expect("recording poster lock")
+                .push(Posted::Down(is_repeat, destination));
+            Ok(())
+        }
+
+        fn post_up(&self, _key: &Chord, destination: RelayDestination) -> Result<()> {
+            self.0
+                .lock()
+                .expect("recording poster lock")
+                .push(Posted::Up(destination));
+            Ok(())
+        }
+
+        fn post_modifiers(
+            &self,
+            _mods: &HashSet<Modifier>,
+            down: bool,
+            destination: RelayDestination,
+        ) -> Result<()> {
+            self.0
+                .lock()
+                .expect("recording poster lock")
+                .push(Posted::Modifiers(down, destination));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn hid_destination_is_preserved_through_balanced_modified_gesture() {
+        let poster = Arc::new(RecordingPoster::default());
+        let relay = RelayKey::new_with_poster(poster.clone());
+        let destination = RelayDestination::Hid;
+        let chord = Chord {
+            key: Key::A,
+            modifiers: HashSet::from([Modifier::Command, Modifier::Shift]),
+        };
+
+        relay.key_down(&chord, false, destination).unwrap();
+        relay.key_down(&chord, true, destination).unwrap();
+        relay.key_up(&chord, destination).unwrap();
+
+        assert_eq!(
+            poster.events(),
+            vec![
+                Posted::Modifiers(true, destination),
+                Posted::Down(false, destination),
+                Posted::Down(true, destination),
+                Posted::Up(destination),
+                Posted::Modifiers(false, destination),
+            ]
+        );
+    }
+
+    #[test]
+    fn process_destination_posts_only_main_key_events() {
+        let poster = Arc::new(RecordingPoster::default());
+        let relay = RelayKey::new_with_poster(poster.clone());
+        let destination = RelayDestination::Process(731);
+        let chord = Chord {
+            key: Key::A,
+            modifiers: HashSet::from([Modifier::Shift]),
+        };
+
+        relay.key_down(&chord, false, destination).unwrap();
+        relay.key_down(&chord, true, destination).unwrap();
+        relay.key_up(&chord, destination).unwrap();
+
+        assert_eq!(
+            poster.events(),
+            vec![
+                Posted::Down(false, destination),
+                Posted::Down(true, destination),
+                Posted::Up(destination),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_hid_events_need_the_hotki_marker() {
+        assert!(needs_hotki_tag(RelayDestination::Hid));
+        assert!(!needs_hotki_tag(RelayDestination::Process(731)));
+    }
+
+    struct FailingPoster;
+
+    impl Poster for FailingPoster {
+        fn post_down(
+            &self,
+            _key: &Chord,
+            _is_repeat: bool,
+            _destination: RelayDestination,
+        ) -> Result<()> {
+            Err(Error::EventCreate)
+        }
+
+        fn post_up(&self, _key: &Chord, _destination: RelayDestination) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn posting_errors_are_returned_without_losing_release_path() {
+        let rk = RelayKey::new_with_poster(Arc::new(FailingPoster));
+        let chord = key(Key::A);
+
+        let destination = RelayDestination::Process(7);
+        assert_eq!(
+            rk.key_down(&chord, false, destination),
+            Err(Error::EventCreate)
+        );
+        assert_eq!(rk.key_up(&chord, destination), Ok(()));
     }
 
     #[test]

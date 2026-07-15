@@ -28,7 +28,7 @@ pub use check::{
 pub use docs::{LuauApiSurface, luau_api, luau_api_markdown, luau_api_surface, luau_api_text};
 pub use error::Error;
 pub use hotki_protocol::{NotifyKind, Toggle};
-pub use mode::{Action, ShellModifiers, ShellSpec};
+pub use mode::{Action, ExecSpec, RelaySpec, RelayTarget, ShellModifiers, ShellSpec};
 #[cfg(test)]
 pub(crate) use script::loader::load_dynamic_config;
 pub use style::{

@@ -118,8 +118,18 @@ mod tests {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("ActionContext"));
         assert!(filtered.contains("type ActionContext"));
         assert!(filtered.contains("shell: (self: ActionContext"));
+        assert!(filtered.contains("exec: (self: ActionContext"));
         assert!(filtered.contains("select: <T>(self: ActionContext"));
         assert!(!filtered.contains("declare hotki"));
+    }
+
+    #[test]
+    fn api_filter_menu_builder_keeps_derived_view_contract() {
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("MenuBuilder"));
+        assert!(filtered.contains("type MenuBuilder ="));
+        assert!(filtered.contains("with: (self: MenuBuilder"));
+        assert!(filtered.contains("submenu: ("));
+        assert!(!filtered.contains("type Style ="));
     }
 
     #[test]
@@ -140,6 +150,10 @@ mod tests {
             "reload_config: Action",
             "notify:",
             "shell:",
+            "exec:",
+            "relay_to_app:",
+            "relay_with:",
+            "launch_application:",
             "hold:",
             "select:",
         ] {
@@ -153,10 +167,24 @@ mod tests {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("hotki"));
         assert!(filtered.contains("declare hotki: {"));
         assert!(filtered.contains("actions: Actions"));
+        assert!(filtered.contains("renderers: Renderers"));
         assert!(
             filtered
                 .contains("applications: (ctx: ModeContext) -> SelectorItemList<ApplicationInfo>")
         );
+    }
+
+    #[test]
+    fn api_filter_renderers_returns_the_complete_helper_table() {
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("Renderers"));
+        assert!(filtered.starts_with("type Renderers = {"));
+        for member in ["combine:", "when_app:", "when_app_matches:"] {
+            assert!(
+                filtered.contains(member),
+                "missing Renderers member {member}"
+            );
+        }
+        assert!(!filtered.contains("type Style ="));
     }
 
     #[test]

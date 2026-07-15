@@ -125,4 +125,18 @@ mod tests {
         assert_eq!(c.key, Key::A);
         assert_eq!(c.to_string(), "a");
     }
+
+    #[test]
+    fn media_keys_are_modifier_free_canonical_chords() {
+        for (spec, key) in [
+            ("volumeup", Key::VolumeUp),
+            ("volumedown", Key::VolumeDown),
+            ("mute", Key::Mute),
+        ] {
+            let chord = Chord::parse(spec).expect("parse media chord");
+            assert!(chord.modifiers.is_empty());
+            assert_eq!(chord.key, key);
+            assert_eq!(chord.to_string(), spec);
+        }
+    }
 }
