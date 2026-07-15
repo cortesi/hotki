@@ -184,6 +184,7 @@ fn world_poll_update(platform: PlatformSnapshot) -> WorldPollUpdate {
         id: window.id,
     });
     let focus = platform.focused.as_ref().map(|window| FocusSnapshot {
+        id: window.id,
         app: window.app.clone(),
         title: window.title.clone(),
         pid: window.pid,

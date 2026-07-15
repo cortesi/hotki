@@ -7,8 +7,8 @@ use std::{
 
 use regex::Regex;
 use ruau::vm::{
-    FromLua, Function, HostType, HostTypeBuilder, MultiValue, RuntimeError, Scope, ScopedValue,
-    Userdata,
+    FromLua, Function, HostType, HostTypeBuilder, IntoLua, MultiValue, RuntimeError, Scope,
+    ScopedValue, Userdata,
 };
 
 use super::{
@@ -49,6 +49,16 @@ struct ModeContextUserData(ModeCtx);
 /// Luau userdata wrapper for action handler contexts.
 #[derive(Clone, Debug)]
 struct ActionContextUserData(ActionCtx);
+
+/// Luau userdata wrapper for an immutable focused-window snapshot.
+#[derive(Clone, Debug)]
+struct WindowContextUserData(hotki_protocol::FocusSnapshot);
+
+impl<'s> IntoLua<'s> for WindowContextUserData {
+    fn into_lua(self, scope: &Scope<'s>) -> Result<ScopedValue<'s>, RuntimeError> {
+        Ok(ScopedValue::Userdata(scope.create_userdata(self)?))
+    }
+}
 
 impl ModeBuilder {
     /// Create a mode builder seeded with inherited capture state.
@@ -114,35 +124,41 @@ end\n",
 /// Build the host userdata type definition for mode render contexts.
 pub(super) fn mode_context_type() -> HostType {
     HostTypeBuilder::<ModeContextUserData>::new("ModeContext")
-        .getter("app", |_, this| Ok(this.0.app.clone()))
-        .getter("title", |_, this| Ok(this.0.title.clone()))
-        .getter("pid", |_, this| Ok(this.0.pid))
+        .getter("window", |_, this| {
+            Ok(this.0.window.clone().map(WindowContextUserData))
+        })
         .getter("hud", |_, this| Ok(this.0.hud))
         .getter("depth", |_, this| Ok(this.0.depth))
+        .declaration("declare class ModeContext\nend\n")
+        .build()
+}
+
+/// Build the host userdata type definition for immutable focused-window snapshots.
+pub(super) fn window_context_type() -> HostType {
+    HostTypeBuilder::<WindowContextUserData>::new("WindowContext")
+        .getter("id", |_, this| Ok(f64::from(this.0.id)))
+        .getter("pid", |_, this| Ok(f64::from(this.0.pid)))
+        .getter("app", |_, this| Ok(this.0.app.clone()))
+        .getter("title", |_, this| Ok(this.0.title.clone()))
+        .getter("display_id", |_, this| Ok(this.0.display_id.map(f64::from)))
         .method("app_matches", |_, this, pattern: String| {
             regex_matches(&this.0.app, &pattern)
         })
         .method("title_matches", |_, this, pattern: String| {
             regex_matches(&this.0.title, &pattern)
         })
-        .declaration("declare class ModeContext\nend\n")
+        .declaration("declare class WindowContext\nend\n")
         .build()
 }
 
 /// Build the host userdata type definition for action handler contexts.
 pub(super) fn action_context_type() -> HostType {
     HostTypeBuilder::<ActionContextUserData>::new("ActionContext")
-        .getter("app", |_, this| Ok(this.0.app().to_string()))
-        .getter("title", |_, this| Ok(this.0.title().to_string()))
-        .getter("pid", |_, this| Ok(this.0.pid()))
+        .getter("window", |_, this| {
+            Ok(this.0.snapshot.window.clone().map(WindowContextUserData))
+        })
         .getter("hud", |_, this| Ok(this.0.hud()))
         .getter("depth", |_, this| Ok(this.0.depth()))
-        .method("app_matches", |_, this, pattern: String| {
-            regex_matches(this.0.app(), &pattern)
-        })
-        .method("title_matches", |_, this, pattern: String| {
-            regex_matches(this.0.title(), &pattern)
-        })
         .method_raw("notify", action_context_notify)
         .method("stay", |_, this, (): ()| this.0.set_stay())
         .method_raw("push", action_context_push)

@@ -4,7 +4,7 @@ use config::runtime as dyn_engine;
 
 use crate::{
     Engine, Result,
-    runtime::FocusInfo,
+    runtime::mode_ctx,
     selector::{SelectorEvent, SelectorSelection, SelectorState},
 };
 
@@ -79,7 +79,13 @@ impl<'a> SelectorController<'a> {
             let mut rt = self.engine.runtime.lock().await;
             let prev_hud_visible = rt.hud_visible;
             rt.hud_visible = false;
-            let mut selector = SelectorState::new(config, items, notify_cb, prev_hud_visible);
+            let mut selector = SelectorState::new(
+                config,
+                items,
+                notify_cb,
+                prev_hud_visible,
+                ctx.window.clone(),
+            );
             let _changed_ignored = selector.tick();
             let snapshot = selector.snapshot();
             rt.selector = Some(selector);
@@ -97,7 +103,7 @@ impl<'a> SelectorController<'a> {
         &self,
         chord: &mac_keycode::Chord,
         identifier: &str,
-        focus: &FocusInfo,
+        focus: &Option<hotki_protocol::FocusSnapshot>,
     ) -> Result<bool> {
         match self.selector_input(chord).await {
             SelectorInput::Inactive => Ok(false),
@@ -145,7 +151,7 @@ impl<'a> SelectorController<'a> {
     async fn complete_close(
         &self,
         identifier: &str,
-        focus: &FocusInfo,
+        focus: &Option<hotki_protocol::FocusSnapshot>,
         close: SelectorClose,
     ) -> Result<()> {
         self.engine
@@ -188,7 +194,7 @@ fn close_selector(
     rt.hud_visible = selector.prev_hud_visible;
     SelectorInput::Close(Box::new(SelectorClose {
         terminal,
-        ctx: rt.focus.mode_ctx(rt.hud_visible, rt.depth()),
+        ctx: mode_ctx(&selector.window, rt.hud_visible, rt.depth()),
         config: selector.config,
     }))
 }

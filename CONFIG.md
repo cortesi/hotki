@@ -95,9 +95,10 @@ menu:bind("p", "Play/Pause", youtube_music("space"))
 ```
 
 `app_name` is an exact, case-sensitive AppKit localized name of a running application. It is not a
-bundle ID. By contrast, `ctx.app`, `when_app`, and `app_matches` use the CoreGraphics window-owner
-name. Those names normally agree, but localization or application metadata can make them diverge;
-copying `ctx.app` into `relay_to_app` can therefore produce a not-running warning.
+bundle ID. By contrast, `ctx.window.app`, `when_app`, and `WindowContext:app_matches` use the
+CoreGraphics window-owner name. Those names normally agree, but localization or application
+metadata can make them diverge; copying `ctx.window.app` into `relay_to_app` can therefore produce
+a not-running warning. Handle `ctx.window == nil` before copying it.
 
 Hotki resolves the name when the gesture starts and pins that process through repeat and key-up.
 It never launches or activates the application and never falls back to the focused application.
@@ -126,24 +127,31 @@ Binding options are `global`, `hidden`, and `stay`. Submenu options add `capture
 that view, including submenu entry bindings, but do not propagate into submenu contents; explicit
 fields override only the corresponding default.
 
-`ModeContext` and `ActionContext` expose `app`, `title`, `pid`, `hud`, `depth`,
-`app_matches(pattern)`, and `title_matches(pattern)`. `ActionContext` also exposes the effect
-methods mirrored by `hotki.actions`; use it directly for composite or conditional behavior.
+`ModeContext` and `ActionContext` expose `window`, `hud`, and `depth`. `window` is either `nil` or
+an immutable `WindowContext` with `id`, `pid`, `app`, `title`, optional `display_id`,
+`app_matches(pattern)`, and `title_matches(pattern)`. All fields describe the same window captured
+for the activation; this is a snapshot, not a live handle. No focused window is a normal state.
+`ActionContext` also exposes the effect methods mirrored by `hotki.actions`; use it directly for
+composite or conditional behavior.
 
 <!-- hotki-luau: fragment -->
 ```luau
 menu:bind("n", "Conditional notification", function(ctx)
-    if ctx:app_matches("Finder") then
-        ctx:notify("info", "Finder", ctx.title)
+    local window = ctx.window
+    if window ~= nil and window:app_matches("Finder") then
+        ctx:notify("info", "Finder", window.title)
+    elseif window ~= nil then
+        ctx:notify("warn", "Other application", window.app)
     else
-        ctx:notify("warn", "Other application", ctx.app)
+        ctx:notify("warn", "Window", "No focused window is available")
     end
 end)
 ```
 
 `hotki.renderers` provides pure composition for application-specific modules. `combine` invokes
 every renderer in source order, `when_app` uses exact equality, and `when_app_matches` uses the
-same regular-expression matching as `ModeContext:app_matches`:
+same regular-expression matching as `WindowContext:app_matches`. Both application filters skip
+their renderer when `ctx.window == nil`:
 
 <!-- hotki-luau: fragment -->
 ```luau
@@ -179,7 +187,8 @@ end
 local finder = require("./apps/finder")
 
 return function(menu, ctx)
-    if ctx:app_matches("Finder") then
+    local window = ctx.window
+    if window ~= nil and window:app_matches("Finder") then
         finder(menu)
     end
 end
@@ -215,6 +224,10 @@ static list or a provider function. String lists and records shaped as
 `{ label, sublabel?, data }` are supported. Providers receive `ModeContext`; selection and cancel
 callbacks receive `ActionContext`.
 
+The provider and terminal callbacks retain the window that opened the selector. Their `hud` and
+`depth` values reflect selector close time. After the selector closes, Hotki rebinds using the
+window captured for the closing key activation.
+
 <!-- hotki-luau: fragment -->
 ```luau
 menu:bind("a", "Run Application", hotki.actions.select({
@@ -227,6 +240,28 @@ menu:bind("a", "Run Application", hotki.actions.select({
 
 Use explicit `SelectorItem<T>` or provider annotations when defining a reusable public generic
 helper; callback annotations are unnecessary in the common inline form.
+
+## Window-relative commands
+
+External tools that operate on the originating window must receive `ctx.window.id` explicitly.
+Do not rely on the ambient selected window: the HUD may own that state when the child process
+starts. If the captured window disappears, the tool reports the stale target; Hotki does not fall
+back to a different window.
+
+<!-- hotki-luau: fragment -->
+```luau
+menu:bind("f", "Toggle fullscreen", function(ctx)
+    local window = ctx.window
+    if window == nil then
+        ctx:notify("warn", "Window", "No focused window is available")
+        return
+    end
+    ctx:exec({
+        program = "/opt/homebrew/bin/yabai",
+        args = { "-m", "window", tostring(window.id), "--toggle", "zoom-fullscreen" },
+    })
+end)
+```
 
 ## Style
 

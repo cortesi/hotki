@@ -69,11 +69,16 @@ pub async fn create_test_engine_with_relay(
 
 /// Seed the world focus to a specific window and wait for it to be observed.
 pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32) {
+    set_world_focus_window(world, app, title, pid, 1).await;
+}
+
+/// Seed the world focus to a window with an explicit CoreGraphics identifier.
+pub async fn set_world_focus_window(world: &TestWorld, app: &str, title: &str, pid: i32, id: u32) {
     let window = WorldWindow {
         app: app.into(),
         title: title.into(),
         pid,
-        id: 1,
+        id,
         display_id: None,
         focused: true,
     };
@@ -82,6 +87,7 @@ pub async fn set_world_focus(world: &TestWorld, app: &str, title: &str, pid: i32
     world.push_event(WorldEvent::FocusChanged(FocusChange {
         key: Some(key),
         focus: Some(hotki_protocol::FocusSnapshot {
+            id: key.id,
             app: app.into(),
             title: title.into(),
             pid,

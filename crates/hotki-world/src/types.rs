@@ -89,6 +89,7 @@ impl WorldWindow {
 #[must_use]
 pub fn focus_snapshot(window: &WorldWindow) -> FocusSnapshot {
     FocusSnapshot {
+        id: window.id,
         app: window.app.clone(),
         title: window.title.clone(),
         pid: window.pid,

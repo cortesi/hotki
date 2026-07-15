@@ -332,9 +332,7 @@ fn validate_root(
 ) -> Result<(), Error> {
     let builder = ModeBuilder::new_for_render(false);
     let ctx = ModeCtx {
-        app: String::new(),
-        title: String::new(),
-        pid: 0,
+        window: None,
         hud: false,
         depth: 0,
     };

@@ -9,7 +9,7 @@ use mac_keycode::Chord;
 
 use crate::{
     ConfigInstall, Engine, Error, Result,
-    runtime::{FocusInfo, RuntimeState},
+    runtime::{RuntimeState, mode_ctx},
 };
 
 pub(crate) struct PreparedConfig {
@@ -32,7 +32,7 @@ pub(crate) struct RefreshPlan {
 pub(crate) fn build_refresh_plan(
     rt: &mut RuntimeState,
     cfg: Option<&mut dyn_engine::ConfigRuntime>,
-    focus: &FocusInfo,
+    focus: &Option<hotki_protocol::FocusSnapshot>,
 ) -> RefreshPlan {
     rt.focus = focus.clone();
 
@@ -110,7 +110,7 @@ impl RenderRecovery {
         rt: &mut RuntimeState,
         cfg: &mut dyn_engine::ConfigRuntime,
     ) -> (Vec<dyn_engine::Effect>, Vec<String>) {
-        let mut ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
+        let mut ctx = mode_ctx(&rt.focus, rt.hud_visible, rt.depth());
         if let Some(warnings) = self.try_render(rt, cfg, &ctx) {
             return (warnings, self.errors);
         }
@@ -165,7 +165,7 @@ impl Engine {
         let mut config =
             dyn_engine::ConfigRuntime::load(path).map_err(|error| Error::Msg(error.pretty()))?;
         let (hud_visible, focus) = match mode {
-            ConfigInstall::ResetFocus => (false, self.current_focus_info()),
+            ConfigInstall::ResetFocus => (false, self.current_focus_snapshot()),
             ConfigInstall::KeepFocus => {
                 let runtime = self.runtime.lock().await;
                 (runtime.hud_visible, runtime.focus.clone())
@@ -231,7 +231,7 @@ impl Engine {
 
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
-            self.repeater.clear_async().await;
+            self.repeater.stop_repeats_async().await;
             self.action_repeater.clear_async().await;
             self.relay.stop_all();
         }
@@ -239,9 +239,12 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) async fn rebind_and_refresh(&self, focus: &FocusInfo) -> Result<()> {
+    pub(crate) async fn rebind_and_refresh(
+        &self,
+        focus: &Option<hotki_protocol::FocusSnapshot>,
+    ) -> Result<()> {
         let _transaction = self.config_transaction.lock().await;
-        tracing::debug!("start app={} title={}", focus.app, focus.title);
+        tracing::debug!(focus = ?focus, "start context update");
         let start = Instant::now();
         let displays = self.world.displays().await;
         let mut config_guard = self.config.lock().await;
@@ -294,7 +297,7 @@ impl Engine {
 
         if bindings_changed {
             tracing::debug!("bindings updated, clearing repeater + relay");
-            self.repeater.clear_async().await;
+            self.repeater.stop_repeats_async().await;
             self.action_repeater.clear_async().await;
             self.relay.stop_all();
         }
@@ -346,7 +349,7 @@ mod tests {
         },
     };
 
-    use hotki_protocol::MsgToUI;
+    use hotki_protocol::{FocusSnapshot, MsgToUI};
     use hotki_world::TestWorld;
     use tokio::sync::mpsc;
 
@@ -392,7 +395,7 @@ mod tests {
         path: Option<PathBuf>,
         style: config::Style,
         bindings: Vec<(String, mac_keycode::Chord)>,
-        focus: FocusInfo,
+        focus: Option<FocusSnapshot>,
         hud: HudState,
         displays: DisplaysSnapshot,
     }
@@ -451,7 +454,8 @@ mod tests {
         r#"
         local a = hotki.actions
         return function(menu, ctx)
-          if ctx:app_matches("Candidate") then
+          local window = ctx.window
+          if window ~= nil and window:app_matches("Candidate") then
             menu:bind("b", "candidate", a.notify("info", "Active", "B"))
           else
             menu:bind("a", "active", a.notify("info", "Active", "A"))
@@ -635,11 +639,13 @@ mod tests {
             .expect("fill UI channel");
         tx.try_send(MsgToUI::ClearNotifications)
             .expect("fill final UI channel slot");
-        let candidate = FocusInfo {
+        let candidate = Some(FocusSnapshot {
+            id: 2,
             app: "Candidate".to_string(),
             title: "B".to_string(),
             pid: 2,
-        };
+            display_id: None,
+        });
 
         assert!(engine.rebind_and_refresh(&candidate).await.is_err());
 
@@ -663,11 +669,13 @@ mod tests {
             .expect("install A");
         drain(&mut rx);
         let active = active_snapshot(&engine).await;
-        let candidate = FocusInfo {
+        let candidate = Some(FocusSnapshot {
+            id: 2,
             app: "Candidate".to_string(),
             title: "B".to_string(),
             pid: 2,
-        };
+            display_id: None,
+        });
 
         assert!(engine.rebind_and_refresh(&candidate).await.is_err());
 

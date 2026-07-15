@@ -9,14 +9,16 @@ local renderers = {
     end,
     when_app = function(app, renderer)
         return function(menu, ctx)
-            if ctx.app == app then
+            local window = ctx.window
+            if window ~= nil and window.app == app then
                 renderer(menu, ctx)
             end
         end
     end,
     when_app_matches = function(pattern, renderer)
         return function(menu, ctx)
-            if ctx:app_matches(pattern) then
+            local window = ctx.window
+            if window ~= nil and window:app_matches(pattern) then
                 renderer(menu, ctx)
             end
         end

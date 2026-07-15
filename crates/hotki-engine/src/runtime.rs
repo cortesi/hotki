@@ -1,22 +1,15 @@
 use config::runtime::{ConfigRuntime, ModeCtx, ModeId, ModeRef, ModeStack, RenderedState};
+use hotki_protocol::FocusSnapshot;
 use mac_keycode::Chord;
 
 use crate::selector::SelectorState;
-
-/// Focus snapshot carried in runtime state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct FocusInfo {
-    pub(crate) app: String,
-    pub(crate) title: String,
-    pub(crate) pid: i32,
-}
 
 /// Stack-based runtime state for dynamic configuration.
 #[derive(Debug)]
 pub(crate) struct RuntimeState {
     pub(crate) hud_visible: bool,
     pub(crate) stack: ModeStack,
-    pub(crate) focus: FocusInfo,
+    pub(crate) focus: Option<FocusSnapshot>,
     pub(crate) rendered: RenderedState,
     pub(crate) selector: Option<SelectorState>,
 }
@@ -26,7 +19,7 @@ pub(crate) struct RuntimeState {
 pub(crate) struct RuntimeCheckpoint {
     hud_visible: bool,
     stack: ModeStack,
-    focus: FocusInfo,
+    focus: Option<FocusSnapshot>,
     rendered: RenderedState,
 }
 
@@ -35,7 +28,7 @@ impl RuntimeState {
         Self {
             hud_visible: false,
             stack: ModeStack::default(),
-            focus: FocusInfo::default(),
+            focus: None,
             rendered: Self::empty_rendered(config::Style::default()),
             selector: None,
         }
@@ -96,14 +89,10 @@ impl RuntimeState {
     }
 }
 
-impl FocusInfo {
-    pub(crate) fn mode_ctx(&self, hud: bool, depth: usize) -> ModeCtx {
-        ModeCtx {
-            app: self.app.clone(),
-            title: self.title.clone(),
-            pid: self.pid as i64,
-            hud,
-            depth: depth as i64,
-        }
+pub(crate) fn mode_ctx(window: &Option<FocusSnapshot>, hud: bool, depth: usize) -> ModeCtx {
+    ModeCtx {
+        window: window.clone(),
+        hud,
+        depth: depth as i64,
     }
 }

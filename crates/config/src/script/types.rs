@@ -130,21 +130,14 @@ impl SourcePos {
 
 /// Render-time context passed into mode closures.
 #[derive(Debug, Clone)]
-pub struct ContextSnapshot {
-    /// Focused application name.
-    pub app: String,
-    /// Focused window title.
-    pub title: String,
-    /// Focused process identifier.
-    pub pid: i64,
+pub struct ModeCtx {
+    /// Focused-window snapshot captured for this activation, if any.
+    pub window: Option<hotki_protocol::FocusSnapshot>,
     /// Whether the HUD is currently visible.
     pub hud: bool,
     /// Current stack depth (root = 0).
     pub depth: i64,
 }
-
-/// Render-time context passed into mode closures.
-pub type ModeCtx = ContextSnapshot;
 
 /// Effect emitted by handlers.
 #[derive(Debug, Clone)]
@@ -197,7 +190,7 @@ pub enum NavRequest {
 #[derive(Debug, Clone)]
 pub struct ActionCtx {
     /// Shared render snapshot also exposed to action handlers.
-    snapshot: ContextSnapshot,
+    pub(super) snapshot: ModeCtx,
     /// Shared mutable handler output state.
     shared: Arc<Mutex<ActionCtxShared>>,
     /// Whether this context may create an until-keyup loop.
@@ -230,7 +223,7 @@ pub enum ActionRepeatPermission {
 
 impl ActionCtx {
     /// Create a new handler context for a given focused app/window state.
-    pub(crate) fn new(snapshot: ContextSnapshot, repeat: ActionRepeatPermission) -> Self {
+    pub(crate) fn new(snapshot: ModeCtx, repeat: ActionRepeatPermission) -> Self {
         Self {
             snapshot,
             shared: Arc::new(Mutex::new(ActionCtxShared {
@@ -239,21 +232,6 @@ impl ActionCtx {
             })),
             repeat,
         }
-    }
-
-    /// Return the focused application name.
-    pub fn app(&self) -> &str {
-        &self.snapshot.app
-    }
-
-    /// Return the focused window title.
-    pub fn title(&self) -> &str {
-        &self.snapshot.title
-    }
-
-    /// Return the focused process identifier.
-    pub fn pid(&self) -> i64 {
-        self.snapshot.pid
     }
 
     /// Return whether the HUD is visible.

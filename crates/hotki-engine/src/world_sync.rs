@@ -157,11 +157,8 @@ impl Engine {
     }
 
     pub(crate) async fn rebind_current_context(&self) -> Result<()> {
-        let focus = self.current_focus_info();
-        debug!(
-            "Rebinding with context: app={}, title={}",
-            focus.app, focus.title
-        );
+        let focus = self.current_focus_snapshot();
+        debug!(focus = ?focus, "Rebinding with focused-window snapshot");
         self.rebind_and_refresh(&focus).await
     }
 
@@ -194,18 +191,8 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn current_focus_info(&self) -> FocusInfo {
-        if let Some(focus) = &*self.focus_ctx.lock() {
-            return FocusInfo {
-                app: focus.app.clone(),
-                title: focus.title.clone(),
-                pid: focus.pid,
-            };
-        }
-        FocusInfo {
-            pid: -1,
-            ..FocusInfo::default()
-        }
+    pub(crate) fn current_focus_snapshot(&self) -> Option<hotki_protocol::FocusSnapshot> {
+        self.focus_ctx.lock().clone()
     }
 }
 
@@ -243,7 +230,10 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(200), async {
             loop {
-                if engine.current_focus_info().pid == 1 {
+                if engine
+                    .current_focus_snapshot()
+                    .is_some_and(|focus| focus.pid == 1)
+                {
                     return;
                 }
                 tokio::task::yield_now().await;
@@ -255,6 +245,7 @@ mod tests {
         world.push_event(WorldEvent::FocusChanged(FocusChange {
             key: Some(WindowKey { pid: 1, id: 1 }),
             focus: Some(FocusSnapshot {
+                id: 1,
                 app: "Old".into(),
                 title: "First".into(),
                 pid: 1,
@@ -264,6 +255,7 @@ mod tests {
         world.push_event(WorldEvent::FocusChanged(FocusChange {
             key: Some(WindowKey { pid: 2, id: 2 }),
             focus: Some(FocusSnapshot {
+                id: 2,
                 app: "New".into(),
                 title: "Second".into(),
                 pid: 2,
@@ -273,7 +265,10 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(200), async {
             loop {
-                if engine.current_focus_info().pid == 2 {
+                if engine
+                    .current_focus_snapshot()
+                    .is_some_and(|focus| focus.pid == 2)
+                {
                     return;
                 }
                 tokio::task::yield_now().await;
@@ -282,10 +277,46 @@ mod tests {
         .await
         .expect("engine did not observe final focus event");
 
-        let focus = engine.current_focus_info();
-        assert_eq!(focus.pid, 2);
-        assert_eq!(focus.app, "New");
-        assert_eq!(focus.title, "Second");
+        let focus = engine
+            .current_focus_snapshot()
+            .expect("final focus snapshot");
+        assert_eq!(
+            focus,
+            FocusSnapshot {
+                id: 2,
+                app: "New".into(),
+                title: "Second".into(),
+                pid: 2,
+                display_id: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_cache_preserves_complete_snapshots_and_none() {
+        let world = Arc::new(TestWorld::new());
+        let (tx, _rx) = mpsc::channel(128);
+        let engine = Engine::build(Arc::new(MockHotkeyApi::new()), tx, false, false, world);
+        assert_eq!(engine.current_focus_snapshot(), None);
+
+        let focus = FocusSnapshot {
+            id: 77,
+            app: "Editor".into(),
+            title: "Notes".into(),
+            pid: 9,
+            display_id: Some(4),
+        };
+        engine
+            .apply_world_focus_snapshot(Some(focus.clone()))
+            .await
+            .expect("install focus snapshot");
+        assert_eq!(engine.current_focus_snapshot(), Some(focus));
+
+        engine
+            .apply_world_focus_snapshot(None)
+            .await
+            .expect("clear focus snapshot");
+        assert_eq!(engine.current_focus_snapshot(), None);
     }
 
     #[tokio::test]

@@ -18,14 +18,20 @@ type SelectorStringList = { read [number]: string }
 type SelectorItemProvider<T> = (ctx: ModeContext) -> SelectorItemList<T>
 type SelectorStringProvider = (ctx: ModeContext) -> SelectorStringList
 
-type ModeContext = {
+type WindowContext = {
+    id: number,
+    pid: number,
     app: string,
     title: string,
-    pid: number,
+    display_id: number?,
+    app_matches: (self: WindowContext, pattern: string) -> boolean,
+    title_matches: (self: WindowContext, pattern: string) -> boolean,
+}
+
+type ModeContext = {
+    window: WindowContext?,
     hud: boolean,
     depth: number,
-    app_matches: (self: ModeContext, pattern: string) -> boolean,
-    title_matches: (self: ModeContext, pattern: string) -> boolean,
 }
 
 type Action = (ctx: ActionContext) -> ()
@@ -107,13 +113,9 @@ type Renderers = {
 }
 
 type ActionContext = {
-    app: string,
-    title: string,
-    pid: number,
+    window: WindowContext?,
     hud: boolean,
     depth: number,
-    app_matches: (self: ActionContext, pattern: string) -> boolean,
-    title_matches: (self: ActionContext, pattern: string) -> boolean,
     notify: (self: ActionContext, kind: NotifyKind, title: string, body: string) -> (),
     stay: (self: ActionContext) -> (),
     push: (self: ActionContext, render: ModeRenderer, title: string?) -> (),

@@ -142,6 +142,24 @@ mod tests {
     }
 
     #[test]
+    fn api_filter_window_context_keeps_snapshot_contract() {
+        let filtered = luau_api_text(LuauApiSurface::Config, Some("WindowContext"));
+        assert!(filtered.contains("type WindowContext ="));
+        for member in [
+            "id: number",
+            "display_id: number?",
+            "app_matches:",
+            "title_matches:",
+        ] {
+            assert!(
+                filtered.contains(member),
+                "missing WindowContext member {member}"
+            );
+        }
+        assert!(!filtered.contains("type Style ="));
+    }
+
+    #[test]
     fn api_filter_actions_returns_the_complete_helper_table() {
         let filtered = luau_api_text(LuauApiSurface::Config, Some("Actions"));
         assert!(filtered.starts_with("type Actions = {"));

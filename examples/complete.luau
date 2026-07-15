@@ -47,7 +47,8 @@ return function(menu, ctx)
         end, "Pushed"))
     end, { capture = true })
 
-    if ctx:app_matches("Finder") then
+    local window = ctx.window
+    if window ~= nil and window:app_matches("Finder") then
         menu:bind("shift+cmd+f", "Finder Applications", a.open("/Applications"), {
             global = true,
             hidden = true,

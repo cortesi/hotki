@@ -31,6 +31,7 @@ async fn testworld_snapshot_and_focus() {
     assert_eq!(
         focused_snapshot(&world).await,
         Some(hotki_protocol::FocusSnapshot {
+            id: key.id,
             app: "TestApp".into(),
             title: "TestTitle".into(),
             pid: key.pid,

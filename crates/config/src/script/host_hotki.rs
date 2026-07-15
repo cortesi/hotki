@@ -37,6 +37,7 @@ pub(super) fn build_hotki_module(
         move |scope, args| hotki_applications(&applications, scope, args),
     );
     builder.declared_host_type(Arc::new(super::host_userdata::mode_builder_type()));
+    builder.declared_host_type(Arc::new(super::host_userdata::window_context_type()));
     builder.declared_host_type(Arc::new(super::host_userdata::mode_context_type()));
     builder.declared_host_type(Arc::new(super::host_userdata::action_context_type()));
     builder.build()

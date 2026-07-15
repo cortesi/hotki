@@ -35,9 +35,13 @@ mod tests {
 
     fn base_ctx(app: &str, hud: bool, depth: i64) -> ModeCtx {
         ModeCtx {
-            app: app.to_string(),
-            title: String::new(),
-            pid: 0,
+            window: Some(hotki_protocol::FocusSnapshot {
+                id: 7,
+                app: app.to_string(),
+                title: "Document".to_string(),
+                pid: 42,
+                display_id: Some(3),
+            }),
             hud,
             depth,
         }
@@ -487,7 +491,8 @@ end
     fn orphan_detection_pops_when_mode_identity_changes() {
         let source = r#"
 return function(menu, ctx)
-    if ctx:app_matches("A") then
+    local window = ctx.window
+    if window ~= nil and window:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
             child:bind("x", "x", function(actx)
                 actx:shell("true")
@@ -522,13 +527,14 @@ end
         let root_path = root.join("hotki.luau");
         let source = r#"
 return function(menu, ctx)
-    if ctx:app_matches("A") then
+    local window = ctx.window
+    if window ~= nil and window:app_matches("A") then
         menu:submenu("a", "child-a", function(child, inner)
             child:bind("x", "x", function(actx)
                 actx:shell("true")
             end)
         end)
-    elseif ctx:app_matches("B") then
+    elseif window ~= nil and window:app_matches("B") then
         menu:submenu("b", "child-b", function(child, inner)
             child:bind("y", "y", function(actx)
                 actx:shell("true")
@@ -900,6 +906,85 @@ return r.combine(
     }
 
     #[test]
+    fn window_context_exposes_one_snapshot_and_targets_exec_by_id() {
+        let source = r#"
+return function(menu, ctx)
+    local window = ctx.window
+    if window ~= nil then
+        if window.id ~= 7 then error("unexpected window id: " .. tostring(window.id)) end
+        if window.pid ~= 42 then error("unexpected window pid: " .. tostring(window.pid)) end
+        if window.app ~= "TestApp" then error("unexpected window app: " .. window.app) end
+        if window.title ~= "Document" or window.display_id ~= 3 then
+            error("unexpected window metadata")
+        end
+        if not window:app_matches("Test.*") or window:app_matches("Safari") then
+            error("unexpected application regex result")
+        end
+        if not window:title_matches("Doc.*") or window:title_matches("Other") then
+            error("unexpected title regex result")
+        end
+        menu:bind("w", "window", function(actx)
+            local captured = actx.window
+            if captured == nil or captured.id ~= window.id then
+                error("action lost activation window")
+            end
+            actx:exec({ program = "yabai", args = { tostring(captured.id) } })
+        end)
+    end
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load window config");
+        let style = cfg.base_style();
+        let ctx = base_ctx("TestApp", true, 0);
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render window config");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "w").kind.clone() else {
+            panic!("expected window handler");
+        };
+
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute window handler");
+        assert!(matches!(
+            &result.effects[..],
+            [Effect::Exec(Action::Exec(spec))]
+                if spec.program == "yabai" && spec.args.as_deref() == Some(&["7".to_string()][..])
+        ));
+    }
+
+    #[test]
+    fn nil_window_handler_queues_only_its_warning() {
+        let source = r#"
+return function(menu, ctx)
+    menu:bind("w", "window", function(actx)
+        if actx.window == nil then
+            actx:notify("warn", "Window", "No focused window is available")
+            return
+        end
+        actx:exec({ program = "must-not-run" })
+    end)
+end
+"#;
+        let mut cfg = load_dynamic_config_from_string(source, None).expect("load nil config");
+        let style = cfg.base_style();
+        let ctx = ModeCtx {
+            window: None,
+            hud: false,
+            depth: 0,
+        };
+        let mut stack = vec![root_frame(&cfg)];
+        let out = render_stack(&mut cfg, &mut stack, &ctx, &style).expect("render nil config");
+        let BindingKind::Handler(handler) = find_binding(&out.rendered, "w").kind.clone() else {
+            panic!("expected nil-window handler");
+        };
+
+        let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute nil handler");
+        assert!(matches!(
+            &result.effects[..],
+            [Effect::Notify { kind: crate::NotifyKind::Warn, title, body }]
+                if title == "Window" && body == "No focused window is available"
+        ));
+    }
+
+    #[test]
     fn exec_parser_is_strict_and_effects_keep_source_order() {
         let source = r#"
 return function(menu, ctx)
@@ -1207,7 +1292,9 @@ end
 return function(menu, ctx)
     menu:bind("r", "repeat", function(actx)
         actx:until_keyup(function(repeat_ctx)
-            repeat_ctx:shell("echo tick")
+            local window = repeat_ctx.window
+            if window == nil then error("repeat lost activation window") end
+            repeat_ctx:exec({ program = "tick", args = { tostring(window.id) } })
         end, {
             delay_ms = 125,
             interval_ms = 250,
@@ -1225,12 +1312,24 @@ end
         };
 
         let result = execute_handler(&mut cfg, &handler, &ctx).expect("execute handler");
-        let Effect::UntilKeyUp { repeat, .. } = &result.effects[0] else {
+        let Effect::UntilKeyUp { action, repeat } = &result.effects[0] else {
             panic!("expected until-keyup effect: {:?}", result.effects);
         };
         let repeat = (*repeat).expect("repeat spec");
         assert_eq!(repeat.delay_ms, Some(125));
         assert_eq!(repeat.interval_ms, Some(250));
+        let tick = execute_handler_with_permission(
+            &mut cfg,
+            action,
+            &ctx,
+            ActionRepeatPermission::RepeatedAction,
+        )
+        .expect("execute retained repeat action");
+        assert!(matches!(
+            &tick.effects[..],
+            [Effect::Exec(Action::Exec(spec))]
+                if spec.program == "tick" && spec.args.as_deref() == Some(&["7".to_string()][..])
+        ));
     }
 
     #[test]

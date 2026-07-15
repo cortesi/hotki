@@ -14,7 +14,8 @@ use tokio::time::{advance, timeout};
 
 use crate::test_support::{
     capture_all_active, create_test_engine_with_relay, recv_until, run_engine_test,
-    run_engine_test_paused, set_on_relay_repeat, set_world_focus, write_test_config,
+    run_engine_test_paused, set_on_relay_repeat, set_world_focus, set_world_focus_window,
+    write_test_config,
 };
 
 #[test]
@@ -25,7 +26,8 @@ fn focus_change_triggers_rerender() {
         let path = write_test_config(
             r#"
             return function(menu, ctx)
-              if ctx:app_matches("Safari") then
+              local window = ctx.window
+              if window ~= nil and window:app_matches("Safari") then
                 menu:bind("a", "a", function(actx)
                   actx:shell("true")
                 end)
@@ -61,6 +63,90 @@ fn focus_change_triggers_rerender() {
         );
 
         let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn selector_callback_keeps_opening_window_and_rebinds_with_closing_focus() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        set_world_focus_window(world.as_ref(), "Opening", "First", 11, 101).await;
+        timeout(Duration::from_millis(200), async {
+            loop {
+                if engine
+                    .current_focus_snapshot()
+                    .is_some_and(|focus| focus.id == 101)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("engine should observe opening focus");
+
+        let path = write_test_config(
+            r#"
+            return function(menu, ctx)
+              local window = ctx.window
+              if window ~= nil and window.id == 202 then
+                menu:bind("n", "new focus", function(actx) end)
+              else
+                menu:bind("a", "select", function(actx)
+                  actx:select({
+                    items = { "Only" },
+                    on_select = function(select_ctx, item, query)
+                      local opening = select_ctx.window
+                      if opening == nil then error("selector lost opening window") end
+                      select_ctx:notify("info", "Selector window", tostring(opening.id))
+                    end,
+                  })
+                end)
+              end
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set selector config");
+        while rx.try_recv().is_ok() {}
+
+        dispatch_ident(&engine, "a").await;
+        let opened = recv_selector_update(&mut rx, 500)
+            .await
+            .expect("selector should open");
+        assert_eq!(opened.items.len(), 1);
+
+        set_world_focus_window(world.as_ref(), "Closing", "Second", 22, 202).await;
+        timeout(Duration::from_millis(200), async {
+            loop {
+                if engine
+                    .current_focus_snapshot()
+                    .is_some_and(|focus| focus.id == 202)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("engine should observe closing focus");
+        dispatch_ident(&engine, "return").await;
+
+        assert_eq!(
+            recv_notify_text(&mut rx, 500, "Selector window")
+                .await
+                .as_deref(),
+            Some("101"),
+            "selector callback should retain the opening window",
+        );
+        assert!(
+            engine.resolve_id_for_ident("n").await.is_some(),
+            "selector close should rebind with the closing activation focus"
+        );
+
+        let _ignored = fs::remove_file(path);
     });
 }
 

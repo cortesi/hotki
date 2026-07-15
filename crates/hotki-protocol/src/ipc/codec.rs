@@ -155,6 +155,7 @@ mod tests {
             MsgToUI::Heartbeat(123456),
             MsgToUI::World(crate::WorldStreamMsg::FocusChanged(Some(
                 crate::FocusSnapshot {
+                    id: 7,
                     app: "X".into(),
                     title: "Y".into(),
                     pid: 1,

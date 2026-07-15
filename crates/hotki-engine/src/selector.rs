@@ -143,6 +143,7 @@ pub(crate) struct SelectorState {
     pub(crate) query: String,
     pub(crate) selected: u32,
     pub(crate) prev_hud_visible: bool,
+    pub(crate) window: Option<hotki_protocol::FocusSnapshot>,
 }
 
 impl fmt::Debug for SelectorState {
@@ -162,6 +163,7 @@ impl SelectorState {
         items: Vec<SelectorItem>,
         notify: Arc<dyn Fn() + Send + Sync>,
         prev_hud_visible: bool,
+        window: Option<hotki_protocol::FocusSnapshot>,
     ) -> Self {
         let mut matcher = SelectorMatcher::new(items, notify);
         matcher.update_pattern("");
@@ -171,6 +173,7 @@ impl SelectorState {
             query: String::new(),
             selected: 0,
             prev_hud_visible,
+            window,
         }
     }
 

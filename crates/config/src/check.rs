@@ -263,7 +263,9 @@ end
             root.join("apps/child.luau"),
             r#"
 return function(menu: MenuBuilder, ctx: ModeContext)
-    menu:bind("a", ctx.app, hotki.actions.pop)
+    local window = ctx.window
+    local label = if window ~= nil then window.app else "No focused window"
+    menu:bind("a", label, hotki.actions.pop)
 end
 "#,
         )
@@ -472,7 +474,7 @@ end
             root.join("config.luau"),
             r#"
 return function(menu, ctx)
-    local app: number = ctx.app
+    local window: number = ctx.window
 end
 "#,
         )
@@ -481,7 +483,7 @@ end
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
         assert!(pretty.contains("number"), "unexpected error: {pretty}");
-        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+        assert!(pretty.contains("ctx.window"), "unexpected error: {pretty}");
     }
 
     #[test]
@@ -512,7 +514,7 @@ end
             root.join("config.luau"),
             r#"
 local render: ModeRenderer = function(menu, ctx)
-    local app: number = ctx.app
+    local window: number = ctx.window
 end
 
 return render
@@ -523,7 +525,7 @@ return render
         let err = check_luau_config(&root.join("config.luau")).expect_err("check should fail");
         let pretty = err.pretty();
         assert!(pretty.contains("number"), "unexpected error: {pretty}");
-        assert!(pretty.contains("string"), "unexpected error: {pretty}");
+        assert!(pretty.contains("ctx.window"), "unexpected error: {pretty}");
     }
 
     #[test]
@@ -615,8 +617,10 @@ end
             root.join("config.luau"),
             r#"
 local function items(ctx: ModeContext): SelectorItemList<string>
+    local window = ctx.window
+    local app = if window ~= nil then window.app else "No focused window"
     return {
-        { label = ctx.app, data = ctx.app },
+        { label = app, data = app },
     }
 end
 
@@ -647,7 +651,9 @@ end
             root.join("config.luau"),
             r#"
 local function items(ctx: ModeContext): SelectorStringList
-    return { ctx.app, "Fallback" }
+    local window = ctx.window
+    local app = if window ~= nil then window.app else "No focused window"
+    return { app, "Fallback" }
 end
 
 local provider: SelectorStringProvider = items

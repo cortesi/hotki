@@ -144,7 +144,7 @@ use ticker::Ticker;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::{FocusInfo, RuntimeState};
+use crate::runtime::RuntimeState;
 
 #[derive(Clone)]
 struct HeldBinding {

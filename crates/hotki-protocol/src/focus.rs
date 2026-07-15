@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FocusSnapshot {
+    /// CoreGraphics identifier for the focused window.
+    pub id: u32,
     /// Application name (e.g., "Safari").
     pub app: String,
     /// Active window title for the focused app.

@@ -17,12 +17,9 @@ impl Engine {
         if refresh_world && self.sync_on_dispatch {
             self.refresh_world_focus().await?;
         }
-        let focus = self.current_focus_info();
+        let focus = self.current_focus_snapshot();
 
-        trace!(
-            "Key event received: {} (app: {}, title: {})",
-            identifier, focus.app, focus.title
-        );
+        trace!(identifier, focus = ?focus, "Key event received");
 
         if self.config.lock().await.is_none() {
             trace!("No dynamic config loaded; ignoring key");
@@ -49,7 +46,7 @@ impl Engine {
                 trace!("No binding for chord {}", chord);
                 return Ok(());
             };
-            let ctx = rt.focus.mode_ctx(rt.hud_visible, rt.depth());
+            let ctx = crate::runtime::mode_ctx(&focus, rt.hud_visible, rt.depth());
             (binding, ctx)
         };
 
@@ -292,8 +289,13 @@ mod tests {
             r#"
             local a = hotki.actions
             return function(menu, ctx)
-                if ctx:app_matches("New") then
-                    menu:bind("a", "new", a.notify("info", "Dispatch", "new"))
+                local window = ctx.window
+                if window ~= nil and window:app_matches("New") then
+                    menu:bind("a", "new", function(action_ctx)
+                        local captured = action_ctx.window
+                        if captured == nil then error("dispatch lost captured window") end
+                        action_ctx:notify("info", "Dispatch", tostring(captured.id))
+                    end)
                 else
                     menu:bind("a", "old", a.notify("info", "Dispatch", "old"))
                 end
@@ -330,7 +332,7 @@ mod tests {
             crate::test_support::recv_until(&mut rx, 200, |message| matches!(
                 message,
                 MsgToUI::Notify { title, text, .. }
-                    if title == "Dispatch" && text == "new"
+                    if title == "Dispatch" && text == "2"
             ))
             .await,
             "dispatch should use the focus state refreshed in the same call"

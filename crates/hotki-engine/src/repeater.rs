@@ -612,6 +612,24 @@ impl Repeater {
         }
     }
 
+    /// Stop all owned process groups and await their exit in tests.
+    #[cfg(test)]
+    async fn clear_async(&self) {
+        self.ticker.clear_async().await;
+        let states = self
+            .process_states
+            .lock()
+            .drain()
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>();
+        for state in &states {
+            state.cancel.cancel();
+        }
+        for state in states {
+            state.stop().await;
+        }
+    }
+
     fn start_initial_process(&self, id: &str, spec: &ProcessSpec, cancel_on_release: bool) {
         let state = self.process_state(id, cancel_on_release);
         state.running.store(true, Ordering::SeqCst);
@@ -671,18 +689,21 @@ impl Repeater {
         self.ticker.is_active(id)
     }
 
-    /// Stop all tickers asynchronously and wait for completion.
-    pub async fn clear_async(&self) {
+    /// Stop held process repeats while preserving independent one-shot commands.
+    pub async fn stop_repeats_async(&self) {
         self.ticker.clear_async().await;
-        let states: Vec<_> = self
-            .process_states
-            .lock()
-            .drain()
-            .map(|(_, state)| state)
-            .collect();
-        for state in &states {
-            state.cancel.cancel();
-        }
+        let states = {
+            let mut states = self.process_states.lock();
+            let repeated = states
+                .iter()
+                .filter(|&(_id, state)| state.cancel_on_release)
+                .map(|(id, _state)| id.clone())
+                .collect::<Vec<_>>();
+            repeated
+                .into_iter()
+                .filter_map(|id| states.remove(&id))
+                .collect::<Vec<_>>()
+        };
         for state in states {
             state.stop().await;
         }
@@ -976,7 +997,7 @@ mod tests {
         repeater.start(
             "one-shot-shell".to_string(),
             ProcessSpec::shell(
-                "sleep 30".to_string(),
+                "exec tail -f /dev/null".to_string(),
                 NotifyKind::Ignore,
                 NotifyKind::Ignore,
             ),
@@ -995,6 +1016,36 @@ mod tests {
         // SAFETY: signal zero only probes the process group and does not affect it.
         assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[tokio::test]
+    async fn stopping_repeats_preserves_one_shot_process_group() {
+        let (tx, _rx) = mpsc::channel(16);
+        let notifier = crate::notification::NotificationDispatcher::new(tx);
+        let repeater = Repeater::new(notifier);
+
+        repeater.start(
+            "one-shot-shell".to_string(),
+            ProcessSpec::shell(
+                "sleep 30".to_string(),
+                NotifyKind::Ignore,
+                NotifyKind::Ignore,
+            ),
+            None,
+        );
+        let state = repeater.process_state("one-shot-shell", false);
+        let pid = loop {
+            let pid = state.pid.load(Ordering::SeqCst);
+            if pid != 0 {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        repeater.stop_repeats_async().await;
+        // SAFETY: signal zero only probes the process group and does not affect it.
+        assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, 0);
+        repeater.clear_async().await;
     }
 
     #[tokio::test]
