@@ -1,7 +1,12 @@
 //! Heads-up display (HUD) rendering for key hints.
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    time::{Duration, Instant},
+};
+
 use egui::{CentralPanel, Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, vec2};
 use eguidev::{DevMcp, DevUiExt, WidgetValue, container};
-use hotki_protocol::{HudRow, HudRowStyle, HudStyle, Mode};
+use hotki_protocol::{HudRow, HudStyle, Mode};
 use mac_keycode::{Chord, Modifier};
 
 use crate::{
@@ -42,6 +47,8 @@ pub struct Hud {
     rows: Vec<HudRow>,
     /// Breadcrumb titles for the current mode stack.
     breadcrumbs: Vec<String>,
+    /// Transient physical press state keyed by canonical chord.
+    presses: HudPressState,
     /// Whether NSWindow style has been applied for the current HUD session.
     window_configured: bool,
 }
@@ -54,6 +61,133 @@ struct HudViewModel {
     mini_title: Option<String>,
     /// Measured content size for full HUD mode.
     content_size: Vec2,
+}
+
+/// One physical gesture retained through its minimum presentation duration.
+struct HudPressGesture {
+    /// Initial key-down time for this gesture.
+    down_at: Instant,
+    /// True until the matching key-up event arrives.
+    held: bool,
+}
+
+/// HUD-owned transient press state.
+#[derive(Default)]
+struct HudPressState {
+    /// Active gestures keyed by canonical chord specification.
+    gestures: HashMap<String, HudPressGesture>,
+}
+
+impl HudPressState {
+    /// Apply one ordered physical key-state event.
+    fn apply(&mut self, chord: &Chord, pressed: bool, now: Instant) {
+        let key = chord.to_string();
+        if pressed {
+            match self.gestures.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(HudPressGesture {
+                        down_at: now,
+                        held: true,
+                    });
+                }
+                Entry::Occupied(mut entry) if !entry.get().held => {
+                    entry.insert(HudPressGesture {
+                        down_at: now,
+                        held: true,
+                    });
+                }
+                Entry::Occupied(_) => {}
+            }
+        } else if let Some(gesture) = self.gestures.get_mut(&key) {
+            gesture.held = false;
+        }
+    }
+
+    /// Remove entries that no longer have an eligible row in an applied snapshot.
+    fn reconcile(&mut self, rows: &[HudRow], visible: bool, mode: Mode) {
+        if !visible || !matches!(mode, Mode::Hud) {
+            self.clear();
+            return;
+        }
+        self.gestures.retain(|key, _| {
+            rows.iter()
+                .any(|row| row.stay && row.chord.to_string() == *key)
+        });
+    }
+
+    /// Remove released gestures whose minimum duration has elapsed.
+    fn expire(&mut self, now: Instant, minimum: Duration) {
+        self.gestures
+            .retain(|_, gesture| gesture.held || now < gesture.down_at + minimum);
+    }
+
+    /// Return whether one row should render with its pressed palette.
+    fn is_active(&self, chord: &Chord, now: Instant, minimum: Duration) -> bool {
+        self.gestures
+            .get(&chord.to_string())
+            .is_some_and(|gesture| gesture.held || now < gesture.down_at + minimum)
+    }
+
+    /// Return the next released-gesture expiry after `now`.
+    fn next_deadline(&self, now: Instant, minimum: Duration) -> Option<Instant> {
+        self.gestures
+            .values()
+            .filter(|gesture| !gesture.held)
+            .map(|gesture| gesture.down_at + minimum)
+            .filter(|deadline| *deadline > now)
+            .min()
+    }
+
+    /// Discard every transient gesture.
+    fn clear(&mut self) {
+        self.gestures.clear();
+    }
+}
+
+/// Resolved colors for one HUD row render.
+#[derive(Clone, Copy)]
+struct HudRowPalette {
+    /// Optional full-width row fill.
+    bg: Option<(u8, u8, u8)>,
+    /// Description foreground color.
+    title_fg: (u8, u8, u8),
+    /// Non-modifier key foreground color.
+    key_fg: (u8, u8, u8),
+    /// Non-modifier key background color.
+    key_bg: (u8, u8, u8),
+    /// Modifier key foreground color.
+    mod_fg: (u8, u8, u8),
+    /// Modifier key background color.
+    mod_bg: (u8, u8, u8),
+    /// Submenu tag foreground color.
+    tag_fg: (u8, u8, u8),
+}
+
+impl HudRowPalette {
+    /// Resolve ordinary or pressed colors from the current HUD style.
+    fn resolve(style: &HudStyle, pressed: bool) -> Self {
+        if pressed {
+            Self {
+                bg: Some(style.pressed.bg),
+                title_fg: style.pressed.title_fg,
+                key_fg: style.pressed.key_fg,
+                key_bg: style.pressed.key_bg,
+                mod_fg: style.pressed.mod_fg,
+                mod_bg: style.pressed.mod_bg,
+                tag_fg: style.pressed.tag_fg,
+            }
+        } else {
+            Self {
+                bg: None,
+                title_fg: style.title_fg,
+                key_fg: style.key_fg,
+                key_bg: style.key_bg,
+                mod_fg: style.mod_fg,
+                mod_bg: style.mod_bg,
+                tag_fg: style.tag_fg,
+            }
+        }
+    }
 }
 
 impl Hud {
@@ -70,6 +204,7 @@ impl Hud {
             viewport: OverlayWindow::new("hotki_hud"),
             rows: Vec::new(),
             breadcrumbs: Vec::new(),
+            presses: HudPressState::default(),
             window_configured: false,
         }
     }
@@ -77,10 +212,23 @@ impl Hud {
     /// Update the HUD style in-place and clear cached placement when it changes.
     pub fn set_style(&mut self, cfg: HudStyle) {
         if self.cfg != cfg {
+            if !matches!(cfg.mode, Mode::Hud) {
+                self.presses.clear();
+            }
             self.cfg = cfg;
             self.viewport.reset_geometry();
             self.window_configured = false;
         }
+    }
+
+    /// Apply one ordered physical key-state event at a caller-supplied instant.
+    pub fn set_key_state(&mut self, chord: &Chord, pressed: bool, now: Instant) {
+        self.presses.apply(chord, pressed, now);
+    }
+
+    /// Clear every transient HUD press.
+    pub fn clear_key_state(&mut self) {
+        self.presses.clear();
     }
 
     /// Deterministic sort order for modifier tokens.
@@ -114,13 +262,13 @@ impl Hud {
         tokens
     }
 
-    /// Render rounded key token boxes for a chord, applying optional per-row style overrides.
+    /// Render rounded key token boxes for a chord.
     fn render_key_tokens(
         &self,
         ui: &mut egui::Ui,
         chord: &Chord,
         row_index: usize,
-        row_style: Option<&HudRowStyle>,
+        palette: HudRowPalette,
     ) {
         let tokens = self.tokens_for_chord(chord);
         let rounding = egui::CornerRadius::same(self.cfg.key_radius as u8);
@@ -135,13 +283,9 @@ impl Hud {
                 ui.add_space(KEY_PLUS_GAP);
             }
             let (fg, bg) = if *is_mod {
-                row_style
-                    .map(|s| (s.mod_fg, s.mod_bg))
-                    .unwrap_or((self.cfg.mod_fg, self.cfg.mod_bg))
+                (palette.mod_fg, palette.mod_bg)
             } else {
-                row_style
-                    .map(|s| (s.key_fg, s.key_bg))
-                    .unwrap_or((self.cfg.key_fg, self.cfg.key_bg))
+                (palette.key_fg, palette.key_bg)
             };
             let fill = Color32::from_rgb(bg.0, bg.1, bg.2);
             let stroke = visuals.widgets.inactive.bg_stroke;
@@ -157,6 +301,7 @@ impl Hud {
                 });
             frame.show(ui, |ui| {
                 let prev = ui.style().override_font_id.clone();
+                let prev_color = ui.style().visuals.override_text_color;
                 let fam = if *is_mod {
                     fonts::weight_family(self.cfg.mod_font_weight)
                 } else {
@@ -168,17 +313,27 @@ impl Hud {
                 style.visuals.override_text_color = Some(Color32::from_rgb(fg.0, fg.1, fg.2));
                 ui.dev_label(format!("hud.row.{row_index}.token.{i}"), tok.as_str());
                 ui.style_mut().override_font_id = prev;
+                ui.style_mut().visuals.override_text_color = prev_color;
             });
         }
     }
 
     /// Render all key rows for the HUD.
-    fn render_full_hud_rows(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, avail: Vec2) {
+    fn render_full_hud_rows(&self, ui: &mut egui::Ui, avail: Vec2, now: Instant) {
+        let minimum = Duration::from_millis(self.cfg.pressed.min_duration_ms);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = KEY_ROW_GAP;
             for (index, row) in self.rows.iter().enumerate() {
+                let pressed = self.presses.is_active(&row.chord, now, minimum);
+                let palette = HudRowPalette::resolve(&self.cfg, pressed);
                 container(ui, format!("hud.row.{index}"), |ui| {
-                    self.render_key_row(ui, hud_ctx, avail, index, row);
+                    let fill = palette
+                        .bg
+                        .map_or(Color32::TRANSPARENT, |(r, g, b)| Color32::from_rgb(r, g, b));
+                    Frame::new().fill(fill).show(ui, |ui| {
+                        ui.set_min_width((avail.x - 2.0 * HUD_PADDING_X).max(0.0));
+                        self.render_key_row(ui, avail, index, row, palette, pressed);
+                    });
                 });
             }
         });
@@ -188,19 +343,25 @@ impl Hud {
     fn render_key_row(
         &self,
         ui: &mut egui::Ui,
-        hud_ctx: &egui::Context,
         avail: Vec2,
         row_index: usize,
         row: &HudRow,
+        palette: HudRowPalette,
+        pressed: bool,
     ) {
-        render_row_metadata(ui, row_index, row);
+        let hud_ctx = ui.ctx().clone();
+        render_row_metadata(ui, row_index, row, pressed);
+        let previous_color = ui.style().visuals.override_text_color;
+        let (title_r, title_g, title_b) = palette.title_fg;
+        ui.style_mut().visuals.override_text_color =
+            Some(Color32::from_rgb(title_r, title_g, title_b));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            self.render_key_tokens(ui, &row.chord, row_index, row.style.as_ref());
+            self.render_key_tokens(ui, &row.chord, row_index, palette);
             ui.add_space(KEY_DESC_GAP);
             ui.dev_label(format!("hud.row.{row_index}.desc"), &row.desc);
             if row.is_mode {
-                let (token_boxes_w, _) = self.measure_token_boxes(hud_ctx, &row.chord);
+                let (token_boxes_w, _) = self.measure_token_boxes(&hud_ctx, &row.chord);
                 let desc_w = hud_ctx.fonts_mut(|f| {
                     f.layout_no_wrap(row.desc.clone(), self.title_font_id(), Color32::WHITE)
                         .size()
@@ -226,7 +387,7 @@ impl Hud {
                 let prev_font = ui.style().override_font_id.clone();
                 ui.style_mut().override_font_id = Some(self.tag_font_id());
                 let prev_color = ui.style().visuals.override_text_color;
-                let (tag_r, tag_g, tag_b) = row.style.map(|s| s.tag_fg).unwrap_or(self.cfg.tag_fg);
+                let (tag_r, tag_g, tag_b) = palette.tag_fg;
                 ui.style_mut().visuals.override_text_color =
                     Some(Color32::from_rgb(tag_r, tag_g, tag_b));
                 ui.dev_label(
@@ -237,12 +398,14 @@ impl Hud {
                 ui.style_mut().visuals.override_text_color = prev_color;
             }
         });
+        ui.style_mut().visuals.override_text_color = previous_color;
     }
 
     /// Update the current HUD state: rows, visibility, and breadcrumbs.
     pub fn set_state(&mut self, rows: Vec<HudRow>, visible: bool, breadcrumbs: Vec<String>) {
         self.rows = rows;
         self.breadcrumbs = breadcrumbs;
+        self.presses.reconcile(&self.rows, visible, self.cfg.mode);
         if visible && !self.visible {
             self.viewport.reset_geometry();
             self.window_configured = false;
@@ -257,6 +420,7 @@ impl Hud {
         self.visible = false;
         self.rows.clear();
         self.breadcrumbs.clear();
+        self.presses.clear();
         self.window_configured = false;
         self.viewport.hide(ctx);
     }
@@ -433,6 +597,12 @@ impl Hud {
             return;
         }
 
+        let now = Instant::now();
+        let minimum = Duration::from_millis(self.cfg.pressed.min_duration_ms);
+        self.presses.expire(now, minimum);
+        if let Some(deadline) = self.presses.next_deadline(now, minimum) {
+            ctx.request_repaint_after(deadline.saturating_duration_since(now));
+        }
         let model = self.view_model(ctx);
 
         // Only update window position if it changed
@@ -460,7 +630,7 @@ impl Hud {
                 frame = frame.fill(Color32::from_rgba_unmultiplied(r, g, b, a));
                 CentralPanel::default().frame(frame).show(vp_ui, |ui| {
                     container(ui, "hud.panel", |ui| {
-                        self.render_panel(ui, &hud_ctx, &model);
+                        self.render_panel(ui, &hud_ctx, &model, now);
                     });
                 });
             });
@@ -482,7 +652,13 @@ impl Hud {
     }
 
     /// Render either full or mini HUD content inside the HUD panel.
-    fn render_panel(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, model: &HudViewModel) {
+    fn render_panel(
+        &self,
+        ui: &mut egui::Ui,
+        hud_ctx: &egui::Context,
+        model: &HudViewModel,
+        now: Instant,
+    ) {
         self.render_metadata(ui, model);
         let style = ui.style_mut();
         style.override_font_id = Some(self.title_font_id());
@@ -492,7 +668,7 @@ impl Hud {
         if matches!(self.cfg.mode, Mode::Mini) {
             self.render_mini_hud(ui, hud_ctx, model.mini_title.as_deref());
         } else {
-            self.render_full_hud(ui, hud_ctx, model);
+            self.render_full_hud(ui, model, now);
         }
     }
 
@@ -552,7 +728,7 @@ impl Hud {
     }
 
     /// Render full HUD mode.
-    fn render_full_hud(&self, ui: &mut egui::Ui, hud_ctx: &egui::Context, model: &HudViewModel) {
+    fn render_full_hud(&self, ui: &mut egui::Ui, model: &HudViewModel, now: Instant) {
         let avail = ui.available_size();
         let extra_y = (avail.y - (model.content_size.y + 2.0 * HUD_PADDING_Y)).max(0.0);
         let top_margin = HUD_PADDING_Y + extra_y / 2.0;
@@ -560,7 +736,7 @@ impl Hud {
         ui.add_space(top_margin);
         ui.horizontal(|ui| {
             ui.add_space(HUD_PADDING_X);
-            self.render_full_hud_rows(ui, hud_ctx, avail);
+            self.render_full_hud_rows(ui, avail, now);
         });
     }
 
@@ -568,7 +744,7 @@ impl Hud {
 }
 
 /// Record row metadata without changing the visible row layout.
-fn render_row_metadata(ui: &egui::Ui, row_index: usize, row: &HudRow) {
+fn render_row_metadata(ui: &egui::Ui, row_index: usize, row: &HudRow, pressed: bool) {
     egui::Area::new(egui::Id::new(format!("hud.row.{row_index}.metadata")))
         .fixed_pos(Pos2::ZERO)
         .interactable(false)
@@ -582,6 +758,16 @@ fn render_row_metadata(ui: &egui::Ui, row_index: usize, row: &HudRow) {
                 ui,
                 format!("hud.row.{row_index}.is_mode"),
                 WidgetValue::Bool(row.is_mode),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.stay"),
+                WidgetValue::Bool(row.stay),
+            );
+            devtools::value_anchor(
+                ui,
+                format!("hud.row.{row_index}.pressed"),
+                WidgetValue::Bool(pressed),
             );
         });
 }
@@ -637,13 +823,17 @@ mod tests {
 
     fn test_rows(row_count: usize) -> Vec<HudRow> {
         (0..row_count)
-            .map(|index| HudRow {
-                chord: Chord::parse(test_chord(index)).expect("test chord should parse"),
-                desc: format!("Command row {index:02} with a representative description"),
-                is_mode: index % 3 == 0,
-                style: None,
-            })
+            .map(|index| test_row(test_chord(index), false, index % 3 == 0))
             .collect()
+    }
+
+    fn test_row(spec: &str, stay: bool, is_mode: bool) -> HudRow {
+        HudRow {
+            chord: Chord::parse(spec).expect("test chord should parse"),
+            desc: format!("Command {spec} with a representative description"),
+            is_mode,
+            stay,
+        }
     }
 
     fn test_chord(index: usize) -> &'static str {
@@ -662,10 +852,105 @@ mod tests {
         let mut used = Rect::NOTHING;
         drop(ctx.run_ui(raw_input(model.geometry.size), |ui| {
             ui.set_min_size(model.geometry.size);
-            hud.render_panel(ui, ctx, model);
+            hud.render_panel(ui, ctx, model, Instant::now());
             used = ui.min_rect();
         }));
         used
+    }
+
+    #[test]
+    fn quick_tap_remains_active_until_minimum_duration() {
+        let start = Instant::now();
+        let minimum = Duration::from_millis(120);
+        let chord = Chord::parse("a").expect("test chord");
+        let mut presses = HudPressState::default();
+
+        presses.apply(&chord, true, start);
+        presses.apply(&chord, false, start + Duration::from_millis(10));
+
+        assert!(presses.is_active(&chord, start + Duration::from_millis(119), minimum));
+        assert_eq!(presses.next_deadline(start, minimum), Some(start + minimum));
+        presses.expire(start + minimum, minimum);
+        assert!(!presses.is_active(&chord, start + minimum, minimum));
+    }
+
+    #[test]
+    fn held_and_zero_duration_gestures_follow_physical_release() {
+        let start = Instant::now();
+        let chord = Chord::parse("a").expect("test chord");
+        let mut presses = HudPressState::default();
+        let minimum = Duration::from_millis(120);
+
+        presses.apply(&chord, true, start);
+        assert!(presses.is_active(&chord, start + Duration::from_secs(1), minimum));
+        presses.apply(&chord, false, start + Duration::from_secs(1));
+        presses.expire(start + Duration::from_secs(1), minimum);
+        assert!(!presses.is_active(&chord, start + Duration::from_secs(1), minimum));
+
+        presses.apply(&chord, true, start);
+        presses.apply(&chord, false, start);
+        assert!(!presses.is_active(&chord, start, Duration::ZERO));
+    }
+
+    #[test]
+    fn duplicate_down_is_idempotent_and_second_gesture_reanchors() {
+        let start = Instant::now();
+        let chord = Chord::parse("a").expect("test chord");
+        let minimum = Duration::from_millis(120);
+        let mut duplicate = HudPressState::default();
+
+        duplicate.apply(&chord, true, start);
+        duplicate.apply(&chord, true, start + Duration::from_millis(50));
+        duplicate.apply(&chord, false, start + Duration::from_millis(60));
+        assert!(!duplicate.is_active(&chord, start + minimum, minimum));
+
+        let mut repeated = HudPressState::default();
+        repeated.apply(&chord, true, start);
+        repeated.apply(&chord, false, start + Duration::from_millis(10));
+        repeated.apply(&chord, true, start + Duration::from_millis(80));
+        repeated.apply(&chord, false, start + Duration::from_millis(90));
+        assert!(repeated.is_active(&chord, start + Duration::from_millis(199), minimum));
+        assert!(!repeated.is_active(&chord, start + Duration::from_millis(200), minimum));
+    }
+
+    #[test]
+    fn snapshot_and_session_boundaries_reconcile_press_state() {
+        let start = Instant::now();
+        let chord = Chord::parse("a").expect("test chord");
+        let minimum = Duration::from_millis(120);
+        let mut hud = Hud::new(&HudStyle::default());
+
+        hud.set_key_state(&chord, true, start);
+        hud.set_state(vec![test_row("a", true, false)], true, Vec::new());
+        assert!(hud.presses.is_active(&chord, start, minimum));
+
+        let mut reloaded = HudStyle::default();
+        reloaded.pressed.bg = (1, 2, 3);
+        hud.set_style(reloaded);
+        assert!(hud.presses.is_active(&chord, start, minimum));
+
+        hud.set_state(vec![test_row("a", false, false)], true, Vec::new());
+        assert!(!hud.presses.is_active(&chord, start, minimum));
+
+        hud.set_key_state(&chord, true, start);
+        hud.set_state(vec![test_row("b", true, false)], true, Vec::new());
+        assert!(!hud.presses.is_active(&chord, start, minimum));
+
+        hud.set_key_state(&chord, true, start);
+        hud.set_state(vec![test_row("a", true, false)], false, Vec::new());
+        assert!(!hud.presses.is_active(&chord, start, minimum));
+
+        hud.set_key_state(&chord, true, start);
+        let mini = HudStyle {
+            mode: Mode::Mini,
+            ..HudStyle::default()
+        };
+        hud.set_style(mini);
+        assert!(!hud.presses.is_active(&chord, start, minimum));
+
+        hud.set_key_state(&chord, true, start);
+        hud.clear_key_state();
+        assert!(!hud.presses.is_active(&chord, start, minimum));
     }
 
     #[test]

@@ -220,7 +220,7 @@ fn build_hud_rows(bindings: &[(Chord, Binding)]) -> Vec<HudRow> {
             chord: chord.clone(),
             desc: binding.desc.clone(),
             is_mode: matches!(binding.kind, BindingKind::Mode(_)),
-            style: None,
+            stay: binding.flags.stay,
         });
     }
 

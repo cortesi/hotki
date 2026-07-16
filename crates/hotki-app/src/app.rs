@@ -3,6 +3,7 @@ use std::{
     mem,
     path::PathBuf,
     sync::mpsc::{Receiver, TryRecvError},
+    time::Instant,
 };
 
 use eframe::{App, CreationContext};
@@ -15,7 +16,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::{
     details::{Details, DetailsTab},
-    devtools::{FixtureRuntime, render_app_anchors},
+    devtools::{FixtureRuntime, PreparedDevMcp, render_app_anchors},
     display::DisplayMetrics,
     fonts,
     harness_control::{PresentationExpectation, PresentationRequest},
@@ -147,8 +148,8 @@ pub struct AppBootstrap {
     pub server_event_tap_enabled: bool,
     /// Whether world snapshots should be periodically dumped to logs.
     pub dumpworld: bool,
-    /// Developer automation instrumentation handle.
-    pub devmcp: DevMcp,
+    /// Developer automation instrumentation awaiting UI-thread attachment.
+    pub prepared_devmcp: PreparedDevMcp,
     /// Fixture runtime state shared with the early MCP handler.
     pub fixture_runtime: FixtureRuntime,
     /// Optional local harness presentation request channel.
@@ -203,7 +204,9 @@ impl App for HotkiApp {
 impl HotkiApp {
     /// Construct the full UI app, spawn the runtime thread, and wire the tray.
     pub fn new(cc: &CreationContext<'_>, bootstrap: AppBootstrap) -> Self {
-        if let Some(mtm) = MainThreadMarker::new() {
+        if !bootstrap.prepared_devmcp.automation_owns_presentation()
+            && let Some(mtm) = MainThreadMarker::new()
+        {
             let app = NSApplication::sharedApplication(mtm);
             app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         }
@@ -252,6 +255,8 @@ impl HotkiApp {
         notifications.set_display_metrics(metrics.clone());
         details.set_display_metrics(metrics.clone());
 
+        let devmcp = bootstrap.prepared_devmcp.attach();
+
         Self {
             rx: bootstrap.rx,
             tray,
@@ -266,7 +271,7 @@ impl HotkiApp {
             notification_presentation_overridden: false,
             runtime_hud_state: None,
             hud_presentation_overridden: false,
-            devmcp: bootstrap.devmcp,
+            devmcp,
             fixture_runtime,
             runtime_health,
             server_bindings: Vec::new(),
@@ -393,6 +398,9 @@ impl HotkiApp {
                     self.apply_runtime_hud_state();
                 }
             }
+            MsgToUI::HudKeyState { chord, pressed } => {
+                self.hud.set_key_state(&chord, pressed, Instant::now());
+            }
             MsgToUI::SelectorUpdate(selector) => {
                 self.selector.set_state(selector);
             }
@@ -410,10 +418,7 @@ impl HotkiApp {
                 Toggle::Off => self.details.hide(),
                 Toggle::Toggle => self.details.toggle(),
             },
-            MsgToUI::HotkeyTriggered(_)
-            | MsgToUI::Log { .. }
-            | MsgToUI::Heartbeat(_)
-            | MsgToUI::World(_) => {}
+            MsgToUI::Log { .. } | MsgToUI::Heartbeat(_) | MsgToUI::World(_) => {}
         }
         ctx.request_repaint();
     }
@@ -451,6 +456,7 @@ impl HotkiApp {
 
     /// Apply or clear deterministic HUD presentation owned by devtools.
     fn set_hud_presentation_override(&mut self, presentation: Option<Box<HudPresentation>>) {
+        self.hud.clear_key_state();
         if let Some(presentation) = presentation {
             self.hud_presentation_overridden = true;
             self.hud.set_style(presentation.hud.style.hud.clone());
@@ -480,6 +486,9 @@ impl HotkiApp {
 
     /// Propagate one runtime-health snapshot to every normal UI surface.
     fn apply_runtime_health(&mut self) {
+        if !self.runtime_health.server_connected() {
+            self.hud.clear_key_state();
+        }
         self.details.set_runtime_health(self.runtime_health.clone());
         if let Some(tray) = self.tray.as_ref() {
             tray.set_runtime_health(&self.runtime_health);

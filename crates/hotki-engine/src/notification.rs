@@ -42,9 +42,14 @@ impl NotificationDispatcher {
             .map_err(|_| Error::ChannelClosed)
     }
 
-    /// Send an arbitrary UI message.
-    pub(crate) fn send_ui(&self, msg: MsgToUI) -> Result<()> {
+    /// Try to send an arbitrary UI message without waiting for capacity.
+    pub(crate) fn try_send_ui(&self, msg: MsgToUI) -> Result<()> {
         self.tx.try_send(msg).map_err(|_| Error::ChannelClosed)
+    }
+
+    /// Send an arbitrary UI message once channel capacity is available.
+    pub(crate) async fn send_ui(&self, msg: MsgToUI) -> Result<()> {
+        self.tx.send(msg).await.map_err(|_| Error::ChannelClosed)
     }
 
     /// Convenience helper to send an error notification.
@@ -65,5 +70,27 @@ fn log_notification(kind: NotifyKind, title: &str, text: &str) {
         NotifyKind::Info | NotifyKind::Ignore | NotifyKind::Success => {
             tracing::info!(target: "hotki::notification", notification = "display", kind = ?kind, title = %title, text = %text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hotki_protocol::MsgToUI;
+    use tokio::sync::mpsc;
+
+    use super::NotificationDispatcher;
+
+    #[tokio::test]
+    async fn reliable_send_waits_for_channel_capacity() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(MsgToUI::Heartbeat(1)).expect("fill channel");
+        let dispatcher = NotificationDispatcher::new(tx);
+        let send = tokio::spawn(async move { dispatcher.send_ui(MsgToUI::Heartbeat(2)).await });
+
+        tokio::task::yield_now().await;
+        assert!(!send.is_finished());
+        assert_eq!(rx.recv().await, Some(MsgToUI::Heartbeat(1)));
+        send.await.expect("send task").expect("reliable send");
+        assert_eq!(rx.recv().await, Some(MsgToUI::Heartbeat(2)));
     }
 }

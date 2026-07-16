@@ -372,6 +372,76 @@ mod tests {
     }
 
     #[test]
+    fn sibling_style_partially_overlays_pressed_hud_style() {
+        let root = test_dir("pressed-partial");
+        let style_path = root.join("style.luau");
+        fs::write(
+            &style_path,
+            r##"return { hud = { pressed = { bg = "#010203" } } }"##,
+        )
+        .expect("write style");
+
+        let defaults = StyleResolver::default_only()
+            .expect("default resolver")
+            .resolve()
+            .expect("default style")
+            .style
+            .hud
+            .pressed;
+        let pressed = StyleResolver::with_override_path(style_path)
+            .expect("resolver")
+            .resolve()
+            .expect("style")
+            .style
+            .hud
+            .pressed;
+
+        assert_eq!(pressed.bg, (1, 2, 3));
+        assert_eq!(pressed.min_duration_ms, defaults.min_duration_ms);
+        assert_eq!(pressed.key_bg, defaults.key_bg);
+    }
+
+    #[test]
+    fn zero_pressed_duration_is_accepted() {
+        let root = test_dir("pressed-zero");
+        let style_path = root.join("style.luau");
+        fs::write(
+            &style_path,
+            "return { hud = { pressed = { min_duration_ms = 0 } } }",
+        )
+        .expect("write style");
+
+        let resolved = StyleResolver::with_override_path(style_path)
+            .expect("resolver")
+            .resolve()
+            .expect("style");
+
+        assert_eq!(resolved.style.hud.pressed.min_duration_ms, 0);
+    }
+
+    #[test]
+    fn excessive_pressed_duration_is_rejected() {
+        let root = test_dir("pressed-excessive");
+        let style_path = root.join("style.luau");
+        fs::write(
+            &style_path,
+            "return { hud = { pressed = { min_duration_ms = 2001 } } }",
+        )
+        .expect("write style");
+
+        let error = StyleResolver::with_override_path(style_path)
+            .expect("resolver")
+            .resolve()
+            .expect_err("style should fail");
+
+        assert!(
+            error
+                .pretty()
+                .contains("hud.pressed.min_duration_ms must be between 0 and 2000")
+        );
+    }
+
+    #[test]
     fn explicit_config_path_resolves_sibling_style() {
         let root = test_dir("config-path-sibling");
         fs::write(

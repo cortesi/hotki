@@ -62,6 +62,18 @@ for index = 0, 21 do
     assert(measure.ellipsis == false, desc.id .. " text should not ellipsize")
 end
 
+fixture("hotki.hud.pressed")
+hud = viewport({ name = "hud" })
+hud:wait_for_widget("hud.row.0.pressed", function(widget)
+    return widget.value_text == "true"
+end)
+assert(hud:widget_get("hud.mode"):state().value_text == "hud")
+assert(hud:widget_get("hud.row.0.stay"):state().value_text == "true")
+assert(hud:widget_get("hud.row.0.chord"):state().value_text == "p")
+assert(hud:widget_get("hud.row.0.desc"):state().value_text == "Pressed stay command")
+layout_issues = hud:widget_get("hud.panel"):check_layout()
+assert(#layout_issues == 0, "pressed HUD panel should have no layout issues")
+
 fixture("hotki.hud")
 fixture("hotki.hud.demo")
 fixture("hotki.selector")

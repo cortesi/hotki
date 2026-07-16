@@ -3,22 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{display::DisplaysSnapshot, focus::FocusSnapshot, style::Style};
 
-/// Optional per-binding HUD style overrides after resolution.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct HudRowStyle {
-    /// Foreground color for non-modifier key tokens.
-    pub key_fg: (u8, u8, u8),
-    /// Background color for non-modifier key tokens.
-    pub key_bg: (u8, u8, u8),
-    /// Foreground color for modifier key tokens.
-    pub mod_fg: (u8, u8, u8),
-    /// Background color for modifier key tokens.
-    pub mod_bg: (u8, u8, u8),
-    /// Foreground color for the mode tag token.
-    pub tag_fg: (u8, u8, u8),
-}
-
 /// One HUD row entry produced by server-side rendering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -29,8 +13,8 @@ pub struct HudRow {
     pub desc: String,
     /// True when the binding enters a child mode.
     pub is_mode: bool,
-    /// Optional per-row style overrides.
-    pub style: Option<HudRowStyle>,
+    /// True when the binding declares stay-in-mode behavior.
+    pub stay: bool,
 }
 
 /// HUD snapshot pushed from the server to the UI.
@@ -119,8 +103,13 @@ pub enum WorldStreamMsg {
 /// Messages sent from the server to UI clients.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MsgToUI {
-    /// Asynchronous event sent when a hotkey is triggered.
-    HotkeyTriggered(String),
+    /// Physical press state for one visible stay-binding HUD row.
+    HudKeyState {
+        /// Chord identifying the HUD row.
+        chord: Chord,
+        /// True on initial key down and false on matching key up.
+        pressed: bool,
+    },
     /// HUD update containing the fully rendered state.
     HudUpdate {
         /// HUD state snapshot.

@@ -511,7 +511,9 @@ impl ConnectionDriver {
                 self.ui
                     .send_message(hotki_protocol::MsgToUI::ShowDetails(arg));
             }
-            hotki_protocol::MsgToUI::HotkeyTriggered(_) => {}
+            message @ hotki_protocol::MsgToUI::HudKeyState { .. } => {
+                self.ui.send_message(message);
+            }
             hotki_protocol::MsgToUI::Log {
                 level,
                 target,

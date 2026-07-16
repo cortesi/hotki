@@ -295,7 +295,8 @@ pub fn ui_delivery_channel() -> (UiDeliveryTx, UiDeliveryRx) {
 
 #[cfg(test)]
 mod tests {
-    use hotki_protocol::Toggle;
+    use hotki_protocol::{DisplaysSnapshot, HudRow, HudState, Style, Toggle};
+    use mac_keycode::Chord;
 
     use super::*;
 
@@ -304,6 +305,25 @@ mod tests {
             level: "info".to_string(),
             target: "test".to_string(),
             message: format!("log {index}"),
+        })
+    }
+
+    fn hud_update(chord: &Chord, desc: &str) -> UiEvent {
+        UiEvent::Message(MsgToUI::HudUpdate {
+            hud: Box::new(HudState {
+                visible: true,
+                rows: vec![HudRow {
+                    chord: chord.clone(),
+                    desc: desc.to_string(),
+                    is_mode: false,
+                    stay: true,
+                }],
+                depth: 1,
+                breadcrumbs: vec!["Mode".to_string()],
+                style: Style::default(),
+                capture: false,
+            }),
+            displays: DisplaysSnapshot::default(),
         })
     }
 
@@ -350,6 +370,43 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Some(UiEvent::Message(MsgToUI::SelectorHide))
+        ));
+    }
+
+    #[test]
+    fn key_states_remain_ordered_around_newer_hud_snapshot() {
+        let (tx, rx) = ui_delivery_channel();
+        let chord = Chord::parse("a").expect("test chord");
+        tx.send(UiEvent::Message(MsgToUI::HudKeyState {
+            chord: chord.clone(),
+            pressed: true,
+        }))
+        .expect("queue press");
+        tx.send(hud_update(&chord, "newer snapshot"))
+            .expect("queue newer HUD snapshot");
+        tx.send(UiEvent::Message(MsgToUI::HudKeyState {
+            chord: chord.clone(),
+            pressed: false,
+        }))
+        .expect("queue release");
+
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::HudKeyState {
+                chord: delivered,
+                pressed: true,
+            })) if delivered == chord
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::HudUpdate { .. }))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Some(UiEvent::Message(MsgToUI::HudKeyState {
+                chord: delivered,
+                pressed: false,
+            })) if delivered == chord
         ));
     }
 

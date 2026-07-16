@@ -45,9 +45,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        DisplaysSnapshot, FontWeight, HudRow, HudState, HudStyle, Mode, NotifyConfig, NotifyKind,
-        NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos, SelectorItemSnapshot,
-        SelectorSnapshot, SelectorStyle, Style, Toggle,
+        DisplaysSnapshot, FontWeight, HudPressedStyle, HudRow, HudState, HudStyle, Mode,
+        NotifyConfig, NotifyKind, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset, Pos,
+        SelectorItemSnapshot, SelectorSnapshot, SelectorStyle, Style, Toggle,
     };
 
     fn sample_style() -> Style {
@@ -86,6 +86,7 @@ mod tests {
                 key_pad_y: 6.0,
                 radius: 10.0,
                 tag_submenu: "…".to_string(),
+                pressed: HudPressedStyle::default(),
             },
             notify: NotifyConfig {
                 width: 400.0,
@@ -114,7 +115,7 @@ mod tests {
                 chord: Chord::parse("cmd+k").unwrap(),
                 desc: "Test".to_string(),
                 is_mode: false,
-                style: None,
+                stay: true,
             }],
             depth: 0,
             breadcrumbs: Vec::new(),
@@ -122,7 +123,10 @@ mod tests {
             capture: false,
         };
         let samples: Vec<MsgToUI> = vec![
-            MsgToUI::HotkeyTriggered("cmd-h".to_string()),
+            MsgToUI::HudKeyState {
+                chord: Chord::parse("cmd+k").unwrap(),
+                pressed: true,
+            },
             MsgToUI::HudUpdate {
                 hud: Box::new(hud),
                 displays: DisplaysSnapshot::default(),

@@ -1,6 +1,16 @@
 return {
     hud = {
         radius = 8,
+        pressed = {
+            min_duration_ms = 120,
+            bg = "#20295f",
+            title_fg = "#ffffff",
+            key_fg = "#ffffff",
+            key_bg = "#4653a4",
+            mod_fg = "#ffffff",
+            mod_bg = "#5a5768",
+            tag_fg = "#8fa8ff",
+        },
         pos = "center",
         offset = { x = 0, y = 0 },
         font_size = 14,

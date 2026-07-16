@@ -94,7 +94,7 @@ impl<'a> SelectorController<'a> {
 
         self.engine
             .notifier
-            .send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
+            .try_send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
         Ok(true)
     }
 
@@ -111,7 +111,7 @@ impl<'a> SelectorController<'a> {
             SelectorInput::Update(snapshot) => {
                 self.engine
                     .notifier
-                    .send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
+                    .try_send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
                 Ok(true)
             }
             SelectorInput::Close(close) => {
@@ -156,7 +156,7 @@ impl<'a> SelectorController<'a> {
     ) -> Result<()> {
         self.engine
             .notifier
-            .send_ui(hotki_protocol::MsgToUI::SelectorHide)?;
+            .try_send_ui(hotki_protocol::MsgToUI::SelectorHide)?;
 
         let result = {
             let mut cfg_guard = self.engine.config.lock().await;

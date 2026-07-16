@@ -7,6 +7,7 @@ local expected = {
     ["hotki.details.logs"] = false,
     ["hotki.details.about"] = false,
     ["hotki.hud"] = false,
+    ["hotki.hud.pressed"] = false,
     ["hotki.hud.mini"] = false,
     ["hotki.selector"] = false,
     ["hotki.selector.query"] = false,
@@ -50,6 +51,7 @@ end
 
 fixture("hotki.basic.default")
 local root_vp = root()
+assert(root_vp:state().title == "hotki-dev", "automation must use a distinct native identity")
 expect("app.ready", { viewport = "root", value_text_contains = "true" })
 local settle_report = root_vp:wait_for_settle()
 local saw_app_idle = false

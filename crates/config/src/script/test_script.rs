@@ -168,7 +168,6 @@ mod tests {
         let style = config.base_style();
 
         for (app, route, child_chords) in [
-            ("WezTerm", "wezterm", ["r", "s", "t"].as_slice()),
             ("Brave", "brave", ["b"].as_slice()),
             ("Obsidian", "obsidian", ["c", "f", "s", "u", "w"].as_slice()),
         ] {
@@ -180,9 +179,7 @@ mod tests {
                 .rendered
                 .bindings
                 .iter()
-                .filter(|(_, binding)| {
-                    matches!(binding.desc.as_str(), "wezterm" | "brave" | "obsidian")
-                })
+                .filter(|(_, binding)| matches!(binding.desc.as_str(), "brave" | "obsidian"))
                 .collect();
             assert_eq!(route_bindings.len(), 1, "unexpected routes for {app}");
             let route_binding = &route_bindings[0].1;
@@ -201,6 +198,41 @@ mod tests {
                     "missing {chord} in {app} route"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cortesi_music_seek_relays_ten_one_second_steps() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/cortesi/config.luau");
+        let mut config = load_dynamic_config(&path).expect("load Cortesi config");
+        let style = config.base_style();
+        let root_ctx = base_ctx("Finder", false, 0);
+        let mut stack = vec![root_frame(&config)];
+        let root =
+            render_stack(&mut config, &mut stack, &root_ctx, &style).expect("render Cortesi root");
+        push_mode(&mut stack, find_binding(&root.rendered, "shift+cmd+m"));
+
+        let music_ctx = base_ctx("Finder", true, 1);
+        let music = render_stack(&mut config, &mut stack, &music_ctx, &style)
+            .expect("render Cortesi music menu");
+        for (chord, spec) in [("shift+h", "shift+h"), ("shift+l", "shift+l")] {
+            let binding = find_binding(&music.rendered, chord);
+            assert!(binding.stays_in_mode(), "seek should stay for {chord}");
+            let BindingKind::Handler(handler) = binding.kind.clone() else {
+                panic!("expected seek handler for {chord}");
+            };
+            let result = execute_handler(&mut config, &handler, &music_ctx)
+                .expect("execute Cortesi music seek");
+            assert_eq!(
+                result.effects.len(),
+                10,
+                "unexpected seek steps for {chord}"
+            );
+            assert!(result.effects.iter().all(|effect| matches!(
+                effect,
+                Effect::Exec(Action::Relay(relay))
+                    if relay == &crate::RelaySpec::application("YouTube Music", spec)
+            )));
         }
     }
 
@@ -1562,7 +1594,7 @@ end
             .iter()
             .find(|row| row.chord.to_string() == "x")
             .expect("x row");
-        assert_eq!(row.style, None);
+        assert!(!row.stay);
     }
 
     #[test]

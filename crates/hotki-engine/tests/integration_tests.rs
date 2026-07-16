@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant as StdInstant},
 };
 
-use hotki_protocol::MsgToUI;
+use hotki_protocol::{Mode, MsgToUI};
 use tokio::time::{advance, timeout};
 
 use crate::test_support::{
@@ -386,6 +386,225 @@ fn hold_relay_ticks_and_stops_after_key_up() {
         );
 
         let _ignored = fs::remove_file(&path);
+    });
+}
+
+#[test]
+fn stay_hold_emits_one_press_pair_across_repeat() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let path = write_test_config(
+            r#"
+            local a = hotki.actions
+            return function(menu)
+              menu:submenu("cmd+k", "mode", function(child)
+                child:bind("a", "hold", a.hold(function(repeat_ctx) end), { stay = true })
+              end)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |message| {
+            matches!(message, MsgToUI::HudUpdate { .. })
+        })
+        .await;
+
+        dispatch_gesture(&engine, "cmd+k").await;
+        drain_ui(&mut rx);
+
+        let id = engine.resolve_id_for_ident("a").await.expect("id for a");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+            .await
+            .expect("initial key down");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyDown, true)
+            .await
+            .expect("repeat key down");
+        engine
+            .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("key up");
+
+        assert_eq!(
+            drain_hud_key_states(&mut rx),
+            vec![("a".to_string(), true), ("a".to_string(), false)]
+        );
+
+        let _ignored = fs::remove_file(path);
+    });
+}
+
+#[test]
+fn press_feedback_requires_visible_full_hud_stay_handler() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let path = write_test_config(
+            r#"
+            return function(menu)
+              menu:submenu("cmd+k", "mode", function(child)
+                child:bind("a", "stay", function(actx) end, { stay = true })
+                child:bind("h", "hidden", function(actx) end, { hidden = true, stay = true })
+                child:bind("r", "runtime stay", function(actx) actx:stay() end)
+                child:bind("n", "no stay", function(actx) end)
+                child:submenu("s", "submenu", function(grandchild) end, { stay = true })
+              end)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |message| {
+            matches!(message, MsgToUI::HudUpdate { .. })
+        })
+        .await;
+        dispatch_gesture(&engine, "cmd+k").await;
+        drain_ui(&mut rx);
+
+        dispatch_gesture(&engine, "h").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        dispatch_gesture(&engine, "r").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        engine.runtime.lock().await.rendered.style.hud.mode = Mode::Mini;
+        dispatch_gesture(&engine, "a").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        engine.runtime.lock().await.rendered.style.hud.mode = Mode::Hide;
+        dispatch_gesture(&engine, "a").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        dispatch_gesture(&engine, "n").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        dispatch_gesture(&engine, "cmd+k").await;
+        drain_ui(&mut rx);
+        dispatch_gesture(&engine, "s").await;
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        let _ignored = fs::remove_file(path);
+    });
+}
+
+#[test]
+fn handler_failure_and_injected_rebind_keep_press_pairs_matched() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let path = write_test_config(
+            r#"
+            return function(menu)
+              menu:submenu("cmd+k", "mode", function(child)
+                child:bind("a", "exit", function(actx) actx:exit() end, { stay = true })
+                child:bind("e", "error", function(actx) error("boom") end, { stay = true })
+              end)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |message| {
+            matches!(message, MsgToUI::HudUpdate { .. })
+        })
+        .await;
+        dispatch_gesture(&engine, "cmd+k").await;
+        drain_ui(&mut rx);
+
+        assert!(
+            engine
+                .dispatch_injected("e", mac_hotkey::EventKind::KeyDown, false)
+                .await
+                .expect("error key down")
+        );
+        assert!(
+            engine
+                .dispatch_injected("e", mac_hotkey::EventKind::KeyUp, false)
+                .await
+                .expect("error key up")
+        );
+        assert_eq!(
+            drain_hud_key_states(&mut rx),
+            vec![("e".to_string(), true), ("e".to_string(), false)]
+        );
+
+        assert!(
+            engine
+                .dispatch_injected("a", mac_hotkey::EventKind::KeyDown, false)
+                .await
+                .expect("exit key down")
+        );
+        assert!(
+            engine
+                .dispatch_injected("a", mac_hotkey::EventKind::KeyUp, false)
+                .await
+                .expect("retained exit key up")
+        );
+        assert_eq!(
+            drain_hud_key_states(&mut rx),
+            vec![("a".to_string(), true), ("a".to_string(), false)]
+        );
+
+        let _ignored = fs::remove_file(path);
+    });
+}
+
+#[test]
+fn selector_consumed_keys_do_not_emit_press_feedback() {
+    run_engine_test(async move {
+        let (engine, mut rx, world) = create_test_engine_with_relay(false).await;
+        let path = write_test_config(
+            r#"
+            return function(menu)
+              menu:submenu("cmd+k", "mode", function(child)
+                child:bind("p", "pick", function(actx)
+                  actx:select({
+                    items = { "Alpha" },
+                    on_select = function(select_ctx, item, query) end,
+                  })
+                end, { stay = true })
+              end)
+            end
+            "#,
+        );
+        engine
+            .set_config_path(path.clone())
+            .await
+            .expect("set config");
+        set_world_focus(world.as_ref(), "TestApp", "Window", 123).await;
+        let _ = recv_until(&mut rx, 200, |message| {
+            matches!(message, MsgToUI::HudUpdate { .. })
+        })
+        .await;
+        dispatch_gesture(&engine, "cmd+k").await;
+        drain_ui(&mut rx);
+        dispatch_gesture(&engine, "p").await;
+        let _ = recv_selector_update(&mut rx, 500)
+            .await
+            .expect("selector should open");
+        drain_ui(&mut rx);
+
+        let a = engine.resolve_id_for_ident("a").await.expect("captured a");
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyDown, true)
+            .await
+            .expect("selector repeat input");
+        engine
+            .dispatch(a, mac_hotkey::EventKind::KeyUp, false)
+            .await
+            .expect("selector input release");
+        assert!(drain_hud_key_states(&mut rx).is_empty());
+
+        let _ignored = fs::remove_file(path);
     });
 }
 
@@ -821,6 +1040,21 @@ async fn dispatch_ident(engine: &crate::Engine, ident: &str) {
         .unwrap_or_else(|err| panic!("dispatch {ident}: {err}"));
 }
 
+async fn dispatch_gesture(engine: &crate::Engine, ident: &str) {
+    let id = engine
+        .resolve_id_for_ident(ident)
+        .await
+        .unwrap_or_else(|| panic!("id for {ident}"));
+    engine
+        .dispatch(id, mac_hotkey::EventKind::KeyDown, false)
+        .await
+        .unwrap_or_else(|err| panic!("dispatch {ident} down: {err}"));
+    engine
+        .dispatch(id, mac_hotkey::EventKind::KeyUp, false)
+        .await
+        .unwrap_or_else(|err| panic!("dispatch {ident} up: {err}"));
+}
+
 async fn wait_for_focus_id(engine: &crate::Engine, expected: u32) {
     timeout(Duration::from_millis(200), async {
         loop {
@@ -839,6 +1073,16 @@ async fn wait_for_focus_id(engine: &crate::Engine, expected: u32) {
 
 fn drain_ui(rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>) {
     while rx.try_recv().is_ok() {}
+}
+
+fn drain_hud_key_states(rx: &mut tokio::sync::mpsc::Receiver<MsgToUI>) -> Vec<(String, bool)> {
+    let mut states = Vec::new();
+    while let Ok(message) = rx.try_recv() {
+        if let MsgToUI::HudKeyState { chord, pressed } = message {
+            states.push((chord.to_string(), pressed));
+        }
+    }
+    states
 }
 
 async fn recv_selector_update(

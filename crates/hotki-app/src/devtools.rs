@@ -217,12 +217,37 @@ impl NotificationDiagnostic {
     }
 }
 
-/// Build the DevMCP handle for this run.
+/// Inert DevMCP instrumentation prepared for UI-thread runtime attachment.
+pub struct PreparedDevMcp {
+    /// Instrumentation handle with Hotki fixtures and diagnostics installed.
+    devmcp: DevMcp,
+    /// Whether the embedded automation server should be attached.
+    enable_runtime: bool,
+}
+
+impl PreparedDevMcp {
+    /// Return whether an automation session owns macOS presentation for this run.
+    pub fn automation_owns_presentation(&self) -> bool {
+        self.enable_runtime
+    }
+
+    /// Attach the requested runtime after eframe has initialized AppKit.
+    pub fn attach(self) -> DevMcp {
+        attach_runtime(self.devmcp, self.enable_runtime)
+    }
+}
+
+/// Build the inert DevMCP handle for this run.
 pub fn build_devmcp(
     enable_runtime: bool,
     tx_ui: UiDeliveryTx,
     tx_ctrl: UnboundedSender<ControlMsg>,
-) -> Result<(DevMcp, FixtureRuntime), String> {
+) -> Result<(PreparedDevMcp, FixtureRuntime), String> {
+    #[cfg(not(feature = "devtools"))]
+    if enable_runtime {
+        return Err("--dev-mcp requires building hotki with --features devtools".to_string());
+    }
+
     let fixture_runtime = FixtureRuntime::default();
     let bridge = FixtureBridge {
         tx_ui,
@@ -239,7 +264,13 @@ pub fn build_devmcp(
         .expect("hard-coded hotki diagnostic name is unique")
         .on_idle_ui(move |_| idle_runtime.is_app_idle())
         .expect("hard-coded hotki idle provider is unique");
-    attach_runtime(devmcp, enable_runtime).map(|devmcp| (devmcp, fixture_runtime))
+    Ok((
+        PreparedDevMcp {
+            devmcp,
+            enable_runtime,
+        },
+        fixture_runtime,
+    ))
 }
 
 /// Stable fixture ids advertised through eguidev and dispatched by `FixtureBridge`.
@@ -281,6 +312,8 @@ enum HotkiFixture {
     HudDemo,
     /// Direct tall HUD fixture.
     HudTall,
+    /// Direct HUD fixture with one pressed stay row.
+    HudPressed,
     /// Server-driven mini HUD fixture.
     HudMini,
     /// Server-driven selector fixture.
@@ -413,6 +446,11 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
         "UI-thread lane: render a tall HUD that should fit without clipping.",
     ),
     FixtureDef::new(
+        HotkiFixture::HudPressed,
+        "hotki.hud.pressed",
+        "UI-thread lane: render a full HUD with one pressed stay row.",
+    ),
+    FixtureDef::new(
         HotkiFixture::HudMini,
         "hotki.hud.mini",
         "UI-thread lane: render the deterministic mini HUD style.",
@@ -494,6 +532,17 @@ impl HotkiFixture {
                     viewport_sel("hud"),
                 ),
             Self::HudTall => app_ready(spec).anchor_in("hud.row.21.desc", viewport_sel("hud")),
+            Self::HudPressed => app_ready(spec)
+                .anchor_value_in(
+                    "hud.row.0.stay",
+                    WidgetValue::Bool(true),
+                    viewport_sel("hud"),
+                )
+                .anchor_value_in(
+                    "hud.row.0.pressed",
+                    WidgetValue::Bool(true),
+                    viewport_sel("hud"),
+                ),
             Self::HudMini => app_ready(spec)
                 .anchor_value_in(
                     "hud.mode",
@@ -741,6 +790,10 @@ impl FixtureBridge {
                 self.clear_transient_ui()?;
                 self.send_tall_hud()?;
             }
+            HotkiFixture::HudPressed => {
+                self.clear_transient_ui()?;
+                self.send_pressed_hud()?;
+            }
             HotkiFixture::HudMini => {
                 self.clear_transient_ui()?;
                 self.send_fixture_hud(Mode::Mini, "Mini", Vec::new())?;
@@ -855,6 +908,25 @@ impl FixtureBridge {
         ))))
     }
 
+    /// Render one pressed stay row through the production UI message path.
+    fn send_pressed_hud(&self) -> Result<(), String> {
+        let chord = Chord::parse("p").ok_or_else(|| "invalid pressed HUD chord".to_string())?;
+        self.send_fixture_hud(
+            Mode::Hud,
+            "Pressed HUD",
+            vec![HudRow {
+                chord: chord.clone(),
+                desc: "Pressed stay command".to_string(),
+                is_mode: false,
+                stay: true,
+            }],
+        )?;
+        self.send_ui_message(MsgToUI::HudKeyState {
+            chord,
+            pressed: true,
+        })
+    }
+
     /// Clear UI-local transient state before applying a fixture.
     fn clear_transient_ui(&self) -> Result<(), String> {
         self.send_ui_message(MsgToUI::SelectorHide)?;
@@ -936,7 +1008,7 @@ fn tall_hud_rows() -> Result<Vec<HudRow>, String> {
                     .ok_or_else(|| format!("invalid tall HUD chord {index}"))?,
                 desc: format!("Tall HUD command {index:02} with enough text to measure"),
                 is_mode: index % 4 == 0,
-                style: None,
+                stay: false,
             })
         })
         .collect()
@@ -953,21 +1025,19 @@ fn tall_hud_chord(index: usize) -> &'static str {
 
 #[cfg(feature = "devtools")]
 /// Attach the native eguidev runtime when requested by the hidden devtools flag.
-fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> Result<DevMcp, String> {
+fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
     if enable_runtime {
-        Ok(eguidev_runtime::attach(devmcp))
+        eguidev_runtime::attach(devmcp)
     } else {
-        Ok(devmcp)
+        devmcp
     }
 }
 
 #[cfg(not(feature = "devtools"))]
-/// Reject runtime attachment when the binary was built without devtools support.
-fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> Result<DevMcp, String> {
-    if enable_runtime {
-        return Err("--dev-mcp requires building hotki with --features devtools".to_string());
-    }
-    Ok(devmcp)
+/// Return the inert handle after the runtime request was validated during preparation.
+fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
+    debug_assert!(!enable_runtime);
+    devmcp
 }
 
 /// Run an immediate viewport body under eguidev instrumentation.

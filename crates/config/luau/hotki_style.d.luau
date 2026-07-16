@@ -19,6 +19,17 @@ type HudMode = "hud" | "mini" | "hide"
 type HudPos = "center" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw"
 type NotifyPos = "left" | "right"
 
+type HudPressedStyle = {
+    min_duration_ms: number?,
+    bg: Color?,
+    title_fg: Color?,
+    key_fg: Color?,
+    key_bg: Color?,
+    mod_fg: Color?,
+    mod_bg: Color?,
+    tag_fg: Color?,
+}
+
 type HudStyle = {
     mode: HudMode?,
     pos: HudPos?,
@@ -43,6 +54,7 @@ type HudStyle = {
     key_pad_y: number?,
     radius: number?,
     tag_submenu: string?,
+    pressed: HudPressedStyle?,
 }
 
 type NotifyWindowStyle = {

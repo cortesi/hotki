@@ -306,12 +306,12 @@ impl Engine {
             }
             config::Action::ClearNotifications => {
                 self.notifier
-                    .send_ui(hotki_protocol::MsgToUI::ClearNotifications)?;
+                    .try_send_ui(hotki_protocol::MsgToUI::ClearNotifications)?;
                 Ok(DispatchResult::AutoExit)
             }
             config::Action::ShowDetails(arg) => {
                 self.notifier
-                    .send_ui(hotki_protocol::MsgToUI::ShowDetails(*arg))?;
+                    .try_send_ui(hotki_protocol::MsgToUI::ShowDetails(*arg))?;
                 Ok(DispatchResult::AutoExit)
             }
             config::Action::Open(target) => {

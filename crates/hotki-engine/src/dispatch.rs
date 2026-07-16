@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use config::runtime as dyn_engine;
+use hotki_protocol::{Mode, MsgToUI};
 use mac_keycode::Chord;
 use tracing::{trace, warn};
 
@@ -12,6 +13,7 @@ impl Engine {
         chord: &mac_keycode::Chord,
         identifier: &str,
         refresh_world: bool,
+        allow_press_feedback: bool,
     ) -> Result<()> {
         let start = Instant::now();
         if refresh_world && self.sync_on_dispatch {
@@ -38,7 +40,7 @@ impl Engine {
             return Ok(());
         }
 
-        let (binding, ctx) = {
+        let (binding, ctx, press_feedback) = {
             let rt = self.runtime.lock().await;
             let Some(binding) =
                 dyn_engine::ConfigRuntime::resolve_binding(&rt.rendered, chord).cloned()
@@ -47,8 +49,27 @@ impl Engine {
                 return Ok(());
             };
             let ctx = rt.mode_ctx(&focus);
-            (binding, ctx)
+            let press_feedback = allow_press_feedback
+                && rt.hud_visible
+                && matches!(rt.rendered.style.hud.mode, Mode::Hud)
+                && matches!(&binding.kind, dyn_engine::BindingKind::Handler(_))
+                && rt
+                    .rendered
+                    .hud_rows
+                    .iter()
+                    .any(|row| row.chord == *chord && row.stay);
+            (binding, ctx, press_feedback)
         };
+
+        if press_feedback {
+            match self.notifier.try_send_ui(MsgToUI::HudKeyState {
+                chord: chord.clone(),
+                pressed: true,
+            }) {
+                Ok(()) => self.key_tracker.mark_press_notified(identifier),
+                Err(error) => trace!(%error, %identifier, "HUD press event dropped"),
+            }
+        }
 
         let Some(result) = self.execute_binding(identifier, binding, ctx).await? else {
             return Ok(());
@@ -191,7 +212,16 @@ impl Engine {
         kind: mac_hotkey::EventKind,
         repeat: bool,
     ) -> Result<bool> {
-        let Some(chord) = self.binding_manager.lock().await.chord_for_ident(ident) else {
+        let retained = match kind {
+            mac_hotkey::EventKind::KeyUp => self.key_tracker.held_chord(ident),
+            mac_hotkey::EventKind::KeyDown if repeat => self.key_tracker.held_chord(ident),
+            mac_hotkey::EventKind::KeyDown => None,
+        };
+        let chord = if let Some(chord) = retained {
+            chord
+        } else if let Some(chord) = self.binding_manager.lock().await.chord_for_ident(ident) {
+            chord
+        } else {
             return Ok(false);
         };
         self.dispatch_resolved(ident, &chord, kind, repeat, false)
@@ -213,7 +243,9 @@ impl Engine {
             mac_hotkey::EventKind::KeyDown => {
                 if repeat {
                     if self.runtime.lock().await.selector.is_some() {
-                        if let Err(error) = self.handle_key_event(chord, ident, refresh_world).await
+                        if let Err(error) = self
+                            .handle_key_event(chord, ident, refresh_world, false)
+                            .await
                         {
                             warn!("Key handler failed: {}", error);
                             return Err(error);
@@ -227,16 +259,31 @@ impl Engine {
                     return Ok(());
                 }
 
-                self.key_tracker.on_key_down(ident);
+                let initial_down = self.key_tracker.on_key_down(ident, chord);
 
-                if let Err(error) = self.handle_key_event(chord, ident, refresh_world).await {
+                if let Err(error) = self
+                    .handle_key_event(chord, ident, refresh_world, initial_down)
+                    .await
+                {
                     warn!("Key handler failed: {}", error);
                     return Err(error);
                 }
             }
             mac_hotkey::EventKind::KeyUp => {
-                self.key_tracker.on_key_up(ident);
+                let released = self.key_tracker.on_key_up(ident);
                 self.handle_key_up(ident).await;
+                if let Some(released) = released
+                    && released.press_notified
+                    && let Err(error) = self
+                        .notifier
+                        .send_ui(MsgToUI::HudKeyState {
+                            chord: released.chord,
+                            pressed: false,
+                        })
+                        .await
+                {
+                    warn!(%error, %ident, "HUD release event could not be delivered");
+                }
             }
         }
         Ok(())

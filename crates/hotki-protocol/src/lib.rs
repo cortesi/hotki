@@ -17,12 +17,12 @@ mod ui;
 pub use display::{DisplayFrame, DisplaysSnapshot};
 pub use focus::FocusSnapshot;
 pub use style::{
-    FontWeight, HudStyle, Mode, NotifyConfig, NotifyPos, NotifyTheme, NotifyWindowStyle, Offset,
-    Pos, SelectorStyle, Style,
+    FontWeight, HudPressedStyle, HudStyle, Mode, NotifyConfig, NotifyPos, NotifyTheme,
+    NotifyWindowStyle, Offset, Pos, SelectorStyle, Style,
 };
 pub use ui::{
-    HudRow, HudRowStyle, HudState, MsgToUI, NotifyKind, SelectorItemSnapshot, SelectorSnapshot,
-    Toggle, WorldStreamMsg,
+    HudRow, HudState, MsgToUI, NotifyKind, SelectorItemSnapshot, SelectorSnapshot, Toggle,
+    WorldStreamMsg,
 };
 
 /// IPC-related helpers: channel aliases and message codec.

@@ -11,6 +11,8 @@ use super::{
 const NOTIFY_TIMEOUT_MIN_SECS: f32 = 0.1;
 /// Largest accepted notification auto-dismiss timeout.
 const NOTIFY_TIMEOUT_MAX_SECS: f32 = 3600.0;
+/// Largest accepted minimum duration for HUD press feedback.
+const HUD_PRESSED_MAX_DURATION_MS: u64 = 2000;
 
 // ===== FIELD WRAPPERS FOR OPTIONAL VALUES =====
 
@@ -229,6 +231,69 @@ fn validate_notify_timeout(timeout: f32) -> Result<(), String> {
 
 // ===== RAW HUD CONFIG =====
 
+/// Raw pressed-row HUD style with all optional fields for merging.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RawHudPressed {
+    /// Minimum visible press duration in milliseconds.
+    #[serde(default)]
+    pub min_duration_ms: Maybe<u64>,
+    /// Full-width row background color.
+    #[serde(default)]
+    pub bg: Maybe<String>,
+    /// Row description foreground color.
+    #[serde(default)]
+    pub title_fg: Maybe<String>,
+    /// Non-modifier key foreground color.
+    #[serde(default)]
+    pub key_fg: Maybe<String>,
+    /// Non-modifier key background color.
+    #[serde(default)]
+    pub key_bg: Maybe<String>,
+    /// Modifier key foreground color.
+    #[serde(default)]
+    pub mod_fg: Maybe<String>,
+    /// Modifier key background color.
+    #[serde(default)]
+    pub mod_bg: Maybe<String>,
+    /// Submenu tag foreground color.
+    #[serde(default)]
+    pub tag_fg: Maybe<String>,
+}
+
+impl RawHudPressed {
+    /// Convert to a resolved pressed-row style over the supplied base.
+    fn into_pressed_over(
+        self,
+        base: &hotki_protocol::HudPressedStyle,
+    ) -> hotki_protocol::HudPressedStyle {
+        hotki_protocol::HudPressedStyle {
+            min_duration_ms: maybe_or(self.min_duration_ms, base.min_duration_ms),
+            bg: color_or(self.bg.as_option().map(String::as_str), base.bg),
+            title_fg: color_or(self.title_fg.as_option().map(String::as_str), base.title_fg),
+            key_fg: color_or(self.key_fg.as_option().map(String::as_str), base.key_fg),
+            key_bg: color_or(self.key_bg.as_option().map(String::as_str), base.key_bg),
+            mod_fg: color_or(self.mod_fg.as_option().map(String::as_str), base.mod_fg),
+            mod_bg: color_or(self.mod_bg.as_option().map(String::as_str), base.mod_bg),
+            tag_fg: color_or(self.tag_fg.as_option().map(String::as_str), base.tag_fg),
+        }
+    }
+
+    /// Validate the pressed-row duration.
+    fn validate(&self) -> Result<(), String> {
+        if self
+            .min_duration_ms
+            .as_option()
+            .is_some_and(|duration| *duration > HUD_PRESSED_MAX_DURATION_MS)
+        {
+            return Err(format!(
+                "hud.pressed.min_duration_ms must be between 0 and {HUD_PRESSED_MAX_DURATION_MS}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Raw HUD config with all optional fields for conversion
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -302,6 +367,9 @@ pub struct RawHud {
     /// Tag submenu glyph.
     #[serde(default)]
     pub tag_submenu: Maybe<String>,
+    /// Pressed stay-binding row styling.
+    #[serde(default)]
+    pub pressed: Maybe<RawHudPressed>,
 }
 
 // ===== RAW SELECTOR STYLE =====
@@ -418,7 +486,20 @@ impl RawHud {
                 .tag_submenu
                 .into_option()
                 .unwrap_or_else(|| defaults.tag_submenu.clone()),
+            pressed: apply_optional_overlay(
+                self.pressed.into_option(),
+                &defaults.pressed,
+                RawHudPressed::into_pressed_over,
+            ),
         }
+    }
+
+    /// Validate nested HUD style values.
+    fn validate(&self) -> Result<(), String> {
+        if let Some(pressed) = self.pressed.as_option() {
+            pressed.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -440,6 +521,9 @@ pub struct RawStyle {
 impl RawStyle {
     /// Validate raw style values that cannot be represented safely at runtime.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(hud) = self.hud.as_option() {
+            hud.validate()?;
+        }
         if let Some(notify) = self.notify.as_option() {
             notify.validate()?;
         }
@@ -451,7 +535,7 @@ impl RawStyle {
 mod tests {
     use serde_json::json;
 
-    use super::{Maybe, RawHud, RawNotify, RawStyle};
+    use super::{HUD_PRESSED_MAX_DURATION_MS, Maybe, RawHud, RawHudPressed, RawNotify, RawStyle};
 
     #[test]
     fn raw_struct_accepts_bare_maybe_field_values() {
@@ -478,6 +562,38 @@ mod tests {
             notify: Maybe::Value(RawNotify {
                 timeout: Maybe::Value(0.0),
                 ..RawNotify::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        assert!(style.validate().is_err());
+    }
+
+    #[test]
+    fn raw_style_accepts_zero_pressed_duration() {
+        let style = RawStyle {
+            hud: Maybe::Value(RawHud {
+                pressed: Maybe::Value(RawHudPressed {
+                    min_duration_ms: Maybe::Value(0),
+                    ..RawHudPressed::default()
+                }),
+                ..RawHud::default()
+            }),
+            ..RawStyle::default()
+        };
+
+        assert_eq!(style.validate(), Ok(()));
+    }
+
+    #[test]
+    fn raw_style_rejects_excessive_pressed_duration() {
+        let style = RawStyle {
+            hud: Maybe::Value(RawHud {
+                pressed: Maybe::Value(RawHudPressed {
+                    min_duration_ms: Maybe::Value(HUD_PRESSED_MAX_DURATION_MS + 1),
+                    ..RawHudPressed::default()
+                }),
+                ..RawHud::default()
             }),
             ..RawStyle::default()
         };

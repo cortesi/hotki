@@ -101,7 +101,7 @@ impl Engine {
             sel.snapshot()
         };
         self.notifier
-            .send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
+            .try_send_ui(hotki_protocol::MsgToUI::SelectorUpdate(snapshot))?;
         Ok(())
     }
 

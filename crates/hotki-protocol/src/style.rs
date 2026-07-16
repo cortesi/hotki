@@ -201,6 +201,43 @@ impl Default for NotifyConfig {
     }
 }
 
+/// Style applied to one HUD row while its stay binding is pressed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HudPressedStyle {
+    /// Minimum time that a press remains visible after key down.
+    pub min_duration_ms: u64,
+    /// Full-width row background color.
+    pub bg: (u8, u8, u8),
+    /// Foreground color for the row description.
+    pub title_fg: (u8, u8, u8),
+    /// Foreground color for non-modifier key tokens.
+    pub key_fg: (u8, u8, u8),
+    /// Background color for non-modifier key tokens.
+    pub key_bg: (u8, u8, u8),
+    /// Foreground color for modifier key tokens.
+    pub mod_fg: (u8, u8, u8),
+    /// Background color for modifier key tokens.
+    pub mod_bg: (u8, u8, u8),
+    /// Foreground color for the sub-mode tag indicator.
+    pub tag_fg: (u8, u8, u8),
+}
+
+impl Default for HudPressedStyle {
+    fn default() -> Self {
+        Self {
+            min_duration_ms: 120,
+            bg: (32, 41, 95),
+            title_fg: (255, 255, 255),
+            key_fg: (255, 255, 255),
+            key_bg: (70, 83, 164),
+            mod_fg: (255, 255, 255),
+            mod_bg: (90, 87, 104),
+            tag_fg: (143, 168, 255),
+        }
+    }
+}
+
 /// HUD style configuration with parsed colors and typography settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -251,6 +288,8 @@ pub struct HudStyle {
     pub radius: f32,
     /// Text tag shown for sub-modes at the end of rows.
     pub tag_submenu: String,
+    /// Styling for a pressed stay-binding row.
+    pub pressed: HudPressedStyle,
 }
 
 impl Default for HudStyle {
@@ -279,6 +318,7 @@ impl Default for HudStyle {
             key_pad_y: 2.0,
             radius: 8.0,
             tag_submenu: "\u{f035f}".to_string(),
+            pressed: HudPressedStyle::default(),
         }
     }
 }

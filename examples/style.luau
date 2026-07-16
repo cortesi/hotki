@@ -22,6 +22,16 @@ return {
         key_radius = 4,
         key_pad_x = 8,
         key_pad_y = 4,
+        pressed = {
+            min_duration_ms = 120,
+            bg = "#16451f",
+            title_fg = "#ffffff",
+            key_fg = "#ffffff",
+            key_bg = "#1f6b2d",
+            mod_fg = "#ffffff",
+            mod_bg = "#3b6040",
+            tag_fg = "#80ff80",
+        },
     },
     notify = {
         width = 400,

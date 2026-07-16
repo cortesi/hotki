@@ -49,6 +49,11 @@ use crate::{
     ui_delivery::ui_delivery_channel,
 };
 
+/// Native identity used by normal Hotki launches.
+const APP_NAME: &str = "hotki";
+/// Native identity reserved for the eguidev automation process.
+const DEV_APP_NAME: &str = "hotki-dev";
+
 #[derive(Parser, Debug)]
 #[command(name = "hotki-app", about = "Hotki macOS app runtime", version)]
 /// Command-line interface for the `hotki-app` binary.
@@ -188,7 +193,7 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
         });
     let _harness_task = harness_task;
 
-    let (devmcp, fixture_runtime) =
+    let (prepared_devmcp, fixture_runtime) =
         match devtools::build_devmcp(cli.dev_mcp, tx.clone(), tx_ctrl.clone()) {
             Ok(devmcp) => devmcp,
             Err(message) => {
@@ -215,7 +220,7 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
     let dumpworld = cli.dumpworld;
 
     eframe::run_native(
-        "hotki",
+        native_app_name(cli.dev_mcp),
         options,
         Box::new(move |cc| {
             Ok(Box::new(HotkiApp::new(
@@ -230,13 +235,18 @@ fn run_ui_mode(cli: &Cli, server_filter: String) -> eframe::Result<()> {
                     server_log_filter: Some(server_filter.clone()),
                     server_event_tap_enabled,
                     dumpworld,
-                    devmcp: devmcp.clone(),
+                    prepared_devmcp,
                     fixture_runtime,
                     harness_requests,
                 },
             )))
         }),
     )
+}
+
+/// Keep automation window identity separate from the installed application.
+fn native_app_name(dev_mcp: bool) -> &'static str {
+    if dev_mcp { DEV_APP_NAME } else { APP_NAME }
 }
 
 /// Render the root config style once so UI-local startup notices match user configuration.
@@ -247,5 +257,16 @@ fn initial_style_for_config(config_path: &Path) -> hotki_protocol::Style {
             error!("failed to load initial UI style: {}", err.pretty());
             hotki_protocol::Style::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dev_mcp_uses_distinct_native_identity() {
+        assert_eq!(native_app_name(false), "hotki");
+        assert_eq!(native_app_name(true), "hotki-dev");
     }
 }

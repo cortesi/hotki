@@ -30,6 +30,10 @@ return {
         pos = "ne",
         bg = "#1a1a1a",
         key_bg = "#2a2a2a",
+        pressed = {
+            min_duration_ms = 120,
+            bg = "#20295f",
+        },
     },
     notify = {
         pos = "right",
@@ -47,3 +51,8 @@ hotki api --surface style
 
 `style.luau` is intentionally standalone. It has style value types, but it does not have config
 globals such as `hotki` or behavior imports.
+
+`hud.pressed` is a partial overlay for visible handler rows declared with `stay = true`. Its
+`min_duration_ms` keeps quick taps visible after release; `0` makes feedback follow only the
+physical held state. Values above 2000 ms are rejected. The section also accepts `bg`, `title_fg`,
+`key_fg`, `key_bg`, `mod_fg`, `mod_bg`, and `tag_fg` color overrides.
