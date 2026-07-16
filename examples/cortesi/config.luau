@@ -1,12 +1,19 @@
--- A compact facsimile of cortesi's yabai + wezterm + YouTube Music config.
+-- A compact facsimile of cortesi's yabai + YouTube Music config.
 
 local a = hotki.actions
 local r = hotki.renderers
-local WEZTERM = "/opt/homebrew/bin/wezterm"
 local yabai = require("./actions")
-local wezterm = require("./apps/wezterm")
 local obsidian = require("./apps/obsidian")
 local youtube_music = a.relay_to_app("YouTube Music")
+
+local function youtube_music_seek(spec: string)
+    local seek = youtube_music(spec)
+    return function(ctx)
+        for _ = 1, 10 do
+            seek(ctx)
+        end
+    end
+end
 
 local function bind_space_switches(menu)
     for space = 1, 9 do
@@ -59,9 +66,6 @@ local function base(menu: MenuBuilder, ctx: ModeContext)
     menu:bind("shift+cmd+p", "Run Application", a.launch_application())
     bind_space_switches(global)
 
-    global:bind("cmd+return", "wezterm window", a.exec({
-        program = WEZTERM, args = { "cli", "spawn", "--new-window" },
-    }))
     global:bind("shift+cmd+y", "y scratchpad", yabai.toggle_scratchpad("web"))
     global:bind("shift+cmd+u", "u scratchpad", yabai.toggle_scratchpad("web2"))
 
@@ -76,6 +80,8 @@ local function base(menu: MenuBuilder, ctx: ModeContext)
         music_stay:bind("j", "vol down", a.hold(a.change_volume(-5)))
         music:bind("l", "next >>", youtube_music("j"))
         music:bind("h", "<< prev", youtube_music("k"))
+        music_stay:bind("shift+l", "forward 10s", youtube_music_seek("shift+l"))
+        music_stay:bind("shift+h", "back 10s", youtube_music_seek("shift+h"))
         music:bind("p", "play/pause", youtube_music("space"))
         music:bind("=", "like", youtube_music("shift+="))
         music:bind("-", "dislike", youtube_music("shift+-"))
@@ -109,7 +115,6 @@ end
 
 return r.combine(
     base,
-    r.when_app("WezTerm", wezterm),
     r.when_app_matches("Brave", brave),
     r.when_app("Obsidian", obsidian)
 )
