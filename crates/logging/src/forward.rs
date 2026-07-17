@@ -2,7 +2,7 @@
 //!
 //! This module provides a small tracing [`Layer`] that forwards log events to the
 //! UI over the Hotki protocol when a sink is set. It is used by the server to
-//! relay its logs to connected clients for display in the Details window.
+//! relay its logs to connected clients for display in the diagnostic logs window.
 //!
 //! Usage:
 //! - Call [`set_sink`] with a `tokio::sync::mpsc::Sender<hotki_protocol::MsgToUI>`
@@ -76,7 +76,7 @@ where
                 let ctr = LOG_DROPS.get_or_init(|| AtomicU64::new(0));
                 let n = ctr.fetch_add(1, Ordering::SeqCst) + 1;
                 if n == 1 || n.is_multiple_of(1000) {
-                    // Throttled debug to avoid log storms; still visible in Details logs.
+                    // Throttled debug to avoid log storms; still visible in diagnostic logs.
                     tracing::debug!(count = n, "ui_log_drop");
                 }
             }

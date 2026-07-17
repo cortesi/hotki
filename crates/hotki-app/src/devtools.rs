@@ -1,8 +1,11 @@
 //! Developer automation hooks for eguidev instrumentation.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use egui::{Context, Sense};
@@ -22,8 +25,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     app::{HudPresentation, NotificationPresentation, UiCommand, UiEvent},
-    details::DetailsTab,
-    health::RuntimeHealth,
+    health::{ConnectionStatus, RetryState, RuntimeHealth, RuntimePhase},
+    logs,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
     ui_delivery::{UiDeliveryStats, UiDeliveryTx},
@@ -276,16 +279,20 @@ pub fn build_devmcp(
 /// Stable fixture ids advertised through eguidev and dispatched by `FixtureBridge`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkiFixture {
-    /// Baseline Details readiness fixture.
+    /// Baseline main-window readiness fixture.
     BasicDefault,
-    /// Details window fixture.
-    Details,
-    /// Details Config tab fixture.
-    DetailsConfig,
-    /// Details Logs tab fixture.
-    DetailsLogs,
-    /// Details About tab fixture.
-    DetailsAbout,
+    /// Ready main window with no recent activity.
+    MainReadyEmpty,
+    /// Ready main window with deterministic activity.
+    MainPopulated,
+    /// Main window waiting for required permissions.
+    MainPermissionRequired,
+    /// Main window showing invalid-config recovery.
+    MainInvalidConfig,
+    /// Dedicated logs window.
+    Logs,
+    /// Native tray About command.
+    TrayAbout,
     /// Permissions helper fixture.
     Permissions,
     /// Permissions fixture with all required grants present.
@@ -298,7 +305,7 @@ enum HotkiFixture {
     PermissionsHiddenMissing,
     /// Hidden permission observer fixture with required grants restored.
     PermissionsHiddenRecovered,
-    /// Single notification plus Details history fixture.
+    /// Single notification plus main-window activity fixture.
     Notifications,
     /// Default-right notification variants fixture.
     NotificationVariants,
@@ -358,27 +365,37 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
     FixtureDef::new(
         HotkiFixture::BasicDefault,
         "hotki.basic.default",
-        "UI-thread lane: open a clean Details window for baseline readiness.",
+        "UI-thread lane: open the ready main window for baseline readiness.",
     ),
     FixtureDef::new(
-        HotkiFixture::Details,
-        "hotki.details",
-        "UI-thread lane: open the Details window.",
+        HotkiFixture::MainReadyEmpty,
+        "hotki.main.ready_empty",
+        "UI-thread lane: open the ready main window with no activity.",
     ),
     FixtureDef::new(
-        HotkiFixture::DetailsConfig,
-        "hotki.details.config",
-        "UI-thread lane: open Details directly to the Config tab.",
+        HotkiFixture::MainPopulated,
+        "hotki.main.populated",
+        "UI-thread lane: open the ready main window with deterministic activity.",
     ),
     FixtureDef::new(
-        HotkiFixture::DetailsLogs,
-        "hotki.details.logs",
-        "UI-thread lane: open Details directly to the Logs tab.",
+        HotkiFixture::MainPermissionRequired,
+        "hotki.main.permission_required",
+        "UI-thread lane: open the main window while required permissions are missing.",
     ),
     FixtureDef::new(
-        HotkiFixture::DetailsAbout,
-        "hotki.details.about",
-        "UI-thread lane: open Details directly to the About tab.",
+        HotkiFixture::MainInvalidConfig,
+        "hotki.main.invalid_config",
+        "UI-thread lane: open the main window after a rejected configuration.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::Logs,
+        "hotki.logs",
+        "UI-thread lane: open the dedicated diagnostic logs window.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::TrayAbout,
+        "hotki.tray.about",
+        "UI-thread lane: invoke the tray's standard native About command.",
     ),
     FixtureDef::new(
         HotkiFixture::Permissions,
@@ -413,7 +430,7 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
     FixtureDef::new(
         HotkiFixture::Notifications,
         "hotki.notifications",
-        "UI-thread lane: create a deterministic notification and open Details history.",
+        "UI-thread lane: create a deterministic notification and open recent activity.",
     ),
     FixtureDef::new(
         HotkiFixture::NotificationVariants,
@@ -468,12 +485,12 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
     FixtureDef::new(
         HotkiFixture::SelectorConfirmed,
         "hotki.selector.confirmed",
-        "Runtime/server lane: confirm the currently open selector, then open Details history.",
+        "Runtime/server lane: confirm the selector, then open recent activity.",
     ),
     FixtureDef::new(
         HotkiFixture::SelectorCanceled,
         "hotki.selector.canceled",
-        "Runtime/server lane: cancel the currently open selector, then open Details history.",
+        "Runtime/server lane: cancel the selector, then open recent activity.",
     ),
 ];
 
@@ -490,15 +507,32 @@ impl HotkiFixture {
     fn spec(self, name: &'static str, description: &'static str) -> FixtureSpec {
         let spec = FixtureSpec::new(name, description);
         match self {
-            Self::BasicDefault => {
-                app_ready(spec).anchor_in("details.root", viewport_sel("details"))
+            Self::BasicDefault | Self::MainReadyEmpty => app_ready(spec)
+                .anchor_in("main.activity.empty", viewport_sel("main"))
+                .anchor_in("main.footer.logs", viewport_sel("main")),
+            Self::MainPopulated => app_ready(spec)
+                .anchor_in("main.activity.0.title", viewport_sel("main"))
+                .anchor_in("main.footer.primary", viewport_sel("main")),
+            Self::MainPermissionRequired => app_ready(spec)
+                .anchor_value_in(
+                    "main.notice.title",
+                    WidgetValue::Text("Hotki needs permission".to_string()),
+                    viewport_sel("main"),
+                )
+                .anchor_in("main.footer.primary", viewport_sel("main")),
+            Self::MainInvalidConfig => app_ready(spec)
+                .anchor_value_in(
+                    "main.notice.title",
+                    WidgetValue::Text("Hotki couldn't load the configuration".to_string()),
+                    viewport_sel("main"),
+                )
+                .anchor_in("main.footer.primary", viewport_sel("main")),
+            Self::Logs => app_ready(spec)
+                .anchor_in("logs.clear", viewport_sel("logs"))
+                .anchor_in("logs.0.message", viewport_sel("logs")),
+            Self::TrayAbout => {
+                app_ready(spec).anchor_value("app.about.opened", WidgetValue::Bool(true))
             }
-            Self::Details => {
-                app_ready(spec).anchor_in("details.tab.notifications", viewport_sel("details"))
-            }
-            Self::DetailsConfig => details_tab_spec(spec, "config", "details.config.reload"),
-            Self::DetailsLogs => details_tab_spec(spec, "logs", "details.logs.clear"),
-            Self::DetailsAbout => details_tab_spec(spec, "about", "details.about.name"),
             Self::Permissions => {
                 app_ready(spec).anchor_in("permissions.root", viewport_sel("permissions"))
             }
@@ -508,7 +542,7 @@ impl HotkiFixture {
             Self::PermissionsHiddenMissing => hidden_permission_status_spec(spec, false, false),
             Self::PermissionsHiddenRecovered => hidden_permission_status_spec(spec, true, true),
             Self::Notifications => {
-                app_ready(spec).anchor_in("details.notification.0.title", viewport_sel("details"))
+                app_ready(spec).anchor_in("main.activity.0.title", viewport_sel("main"))
             }
             Self::NotificationVariants
             | Self::NotificationLeftVariants
@@ -566,7 +600,7 @@ impl HotkiFixture {
                 ),
             Self::SelectorConfirmed | Self::SelectorCanceled => runtime_ready(spec)
                 .precondition_in("selector.panel", viewport_sel("selector"))
-                .anchor_in("details.notification.0.title", viewport_sel("details")),
+                .anchor_in("main.activity.0.title", viewport_sel("main")),
         }
     }
 }
@@ -591,17 +625,6 @@ fn runtime_ready(spec: FixtureSpec) -> FixtureSpec {
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
         .anchor_value("app.server.connected", WidgetValue::Bool(true))
-}
-
-/// Build a Details tab fixture with the shared active-tab anchor.
-fn details_tab_spec(spec: FixtureSpec, tab: &'static str, anchor: &'static str) -> FixtureSpec {
-    app_ready(spec)
-        .anchor_value_in(
-            "details.active_tab",
-            WidgetValue::Text(tab.to_string()),
-            viewport_sel("details"),
-        )
-        .anchor_in(anchor, viewport_sel("details"))
 }
 
 /// Build a Permissions fixture with deterministic grant-state anchors.
@@ -691,6 +714,28 @@ struct FixtureBridge {
     fixture_runtime: FixtureRuntime,
 }
 
+/// Required permissions granted for deterministic ready fixtures.
+fn granted_permissions() -> PermissionsStatus {
+    PermissionsStatus {
+        accessibility: PermissionState::Granted,
+        input_monitoring: PermissionState::Granted,
+        screen_recording: PermissionState::Denied,
+    }
+}
+
+/// Stable healthy runtime snapshot for main-window fixtures.
+fn ready_health() -> RuntimeHealth {
+    RuntimeHealth {
+        phase: RuntimePhase::Ready,
+        connection: ConnectionStatus::Connected,
+        active_config: Some(PathBuf::from("/Users/example/.hotki/config.luau")),
+        pending_config: None,
+        permissions: granted_permissions(),
+        retry: RetryState::Idle,
+        message: None,
+    }
+}
+
 impl FixtureBridge {
     /// Apply a named fixture through Hotki's existing event lanes.
     fn apply(&self, call: &FixtureCall) -> FixtureResult {
@@ -711,21 +756,79 @@ impl FixtureBridge {
     /// Dispatch one typed fixture onto the lane that owns the affected state.
     fn apply_fixture(&self, fixture: HotkiFixture) -> Result<(), String> {
         match fixture {
-            HotkiFixture::BasicDefault | HotkiFixture::Details => {
+            HotkiFixture::BasicDefault | HotkiFixture::MainReadyEmpty => {
                 self.clear_transient_ui()?;
-                self.show_details()?;
+                self.set_runtime_health(ready_health())?;
+                self.show_main_window()?;
             }
-            HotkiFixture::DetailsConfig => {
+            HotkiFixture::MainPopulated => {
                 self.clear_transient_ui()?;
-                self.show_details_tab(DetailsTab::Config)?;
+                self.set_runtime_health(ready_health())?;
+                self.send_ui_message(MsgToUI::Notify {
+                    kind: NotifyKind::Info,
+                    title: "Earlier activity".to_string(),
+                    text: "This row should follow the newest activity.".to_string(),
+                })?;
+                self.send_ui_message(MsgToUI::Notify {
+                    kind: NotifyKind::Success,
+                    title: "Config reloaded".to_string(),
+                    text: "The new configuration is active.".to_string(),
+                })?;
+                self.show_main_window()?;
             }
-            HotkiFixture::DetailsLogs => {
+            HotkiFixture::MainPermissionRequired => {
                 self.clear_transient_ui()?;
-                self.show_details_tab(DetailsTab::Logs)?;
+                self.set_runtime_health(RuntimeHealth {
+                    phase: RuntimePhase::WaitingPermissions,
+                    connection: ConnectionStatus::Disconnected,
+                    permissions: PermissionsStatus {
+                        accessibility: PermissionState::Denied,
+                        input_monitoring: PermissionState::Denied,
+                        screen_recording: PermissionState::Unknown,
+                    },
+                    retry: RetryState::Available,
+                    ..RuntimeHealth::default()
+                })?;
+                self.show_main_window()?;
             }
-            HotkiFixture::DetailsAbout => {
+            HotkiFixture::MainInvalidConfig => {
                 self.clear_transient_ui()?;
-                self.show_details_tab(DetailsTab::About)?;
+                self.set_runtime_health(RuntimeHealth {
+                    phase: RuntimePhase::InvalidConfig,
+                    connection: ConnectionStatus::Connected,
+                    active_config: Some(PathBuf::from("/Users/example/.hotki/previous.luau")),
+                    pending_config: Some(PathBuf::from(
+                        "/Users/example/.hotki/config-with-a-very-long-name-that-wraps.luau",
+                    )),
+                    permissions: granted_permissions(),
+                    retry: RetryState::Available,
+                    message: Some("Configuration validation failed".to_string()),
+                })?;
+                self.send_ui_message(MsgToUI::Notify {
+                    kind: NotifyKind::Error,
+                    title: "Configuration error".to_string(),
+                    text: "Could not load /Users/example/.hotki/config-with-a-very-long-name-that-wraps.luau: unexpected token near the end of the imported module.".to_string(),
+                })?;
+                self.show_main_window()?;
+            }
+            HotkiFixture::Logs => {
+                self.clear_transient_ui()?;
+                logs::clear();
+                logs::push_server(
+                    "INFO".to_string(),
+                    "hotki".to_string(),
+                    "configuration loaded".to_string(),
+                );
+                logs::push_server(
+                    "DEBUG".to_string(),
+                    "server".to_string(),
+                    "waiting for key events".to_string(),
+                );
+                self.send_ui_command(UiCommand::ShowLogs)?;
+            }
+            HotkiFixture::TrayAbout => {
+                self.clear_transient_ui()?;
+                self.send_ui_command(UiCommand::ShowAbout)?;
             }
             HotkiFixture::Permissions => {
                 self.clear_transient_ui()?;
@@ -758,13 +861,14 @@ impl FixtureBridge {
             }
             HotkiFixture::Notifications => {
                 self.clear_transient_ui()?;
+                self.set_runtime_health(ready_health())?;
                 self.reconfigure_notifications(NotifyPos::Right, DisplaysSnapshot::default())?;
                 self.send_ui_message(MsgToUI::Notify {
                     kind: NotifyKind::Info,
                     title: "Eguidev".to_string(),
                     text: "Deterministic notification fixture".to_string(),
                 })?;
-                self.show_details()?;
+                self.show_main_window()?;
             }
             HotkiFixture::NotificationVariants => {
                 self.clear_transient_ui()?;
@@ -807,11 +911,11 @@ impl FixtureBridge {
             }
             HotkiFixture::SelectorConfirmed => {
                 self.inject_key("return")?;
-                self.show_details()?;
+                self.show_main_window()?;
             }
             HotkiFixture::SelectorCanceled => {
                 self.inject_key("escape")?;
-                self.show_details()?;
+                self.show_main_window()?;
             }
         }
         Ok(())
@@ -934,17 +1038,19 @@ impl FixtureBridge {
         self.send_ui_command(UiCommand::SetPermissionStatusOverride(None))?;
         self.send_ui_command(UiCommand::SetNotificationPresentationOverride(None))?;
         self.send_ui_command(UiCommand::SetHudPresentationOverride(None))?;
-        self.send_ui_message(MsgToUI::ShowDetails(Toggle::Off))
+        self.send_ui_command(UiCommand::SetRuntimeHealthOverride(None))?;
+        self.send_ui_command(UiCommand::HideLogs)?;
+        self.send_ui_message(MsgToUI::ShowMainWindow(Toggle::Off))
     }
 
-    /// Open Details through the same UI event consumed by normal actions.
-    fn show_details(&self) -> Result<(), String> {
-        self.send_ui_message(MsgToUI::ShowDetails(Toggle::On))
+    /// Open the main window through the same event consumed by normal actions.
+    fn show_main_window(&self) -> Result<(), String> {
+        self.send_ui_message(MsgToUI::ShowMainWindow(Toggle::On))
     }
 
-    /// Open Details with a specific tab selected through the UI thread.
-    fn show_details_tab(&self, tab: DetailsTab) -> Result<(), String> {
-        self.send_ui_command(UiCommand::ShowDetailsTab(tab))
+    /// Replace the complete runtime snapshot through the production UI lane.
+    fn set_runtime_health(&self, health: RuntimeHealth) -> Result<(), String> {
+        self.send_ui_command(UiCommand::SetRuntimeHealthOverride(Some(Box::new(health))))
     }
 
     /// Override permission status for deterministic fixtures.
@@ -1062,6 +1168,7 @@ pub fn render_app_anchors(
     runtime_health: &RuntimeHealth,
     server_bindings: &[String],
     notification_stack: &[NotificationStackAlias],
+    about_panel_opened: bool,
 ) {
     if !devmcp.is_enabled() {
         return;
@@ -1071,6 +1178,11 @@ pub fn render_app_anchors(
         .fixed_pos(egui::Pos2::ZERO)
         .show(ctx, |ui| {
             readiness_anchor(ui, "app.ready", WidgetValue::Bool(true));
+            readiness_anchor(
+                ui,
+                "app.about.opened",
+                WidgetValue::Bool(about_panel_opened),
+            );
             readiness_anchor(
                 ui,
                 "app.server.connected",

@@ -1,4 +1,6 @@
 //! Font helpers and embedded faces.
+use hotki_protocol::FontWeight;
+
 /// Embedded 0xProto Nerd Font Mono (Regular).
 static PROTO_REGULAR_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -17,9 +19,13 @@ static PROTO_ITALIC_TTF: &[u8] = include_bytes!(concat!(
 
 /// Install the embedded fonts and set family mappings in the `egui` context.
 pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
+}
+
+/// Build Hotki's named font families without replacing normal proportional text.
+fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
 
-    // Register available faces
     fonts.font_data.insert(
         "Regular".to_owned(),
         egui::FontData::from_static(PROTO_REGULAR_TTF).into(),
@@ -33,7 +39,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         egui::FontData::from_static(PROTO_ITALIC_TTF).into(),
     );
 
-    // Map weight names to available font faces (we only have Regular and Bold)
     for name in ["Light", "Regular", "Medium"] {
         fonts.families.insert(
             egui::FontFamily::Name(name.into()),
@@ -50,25 +55,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         vec!["Italic".to_owned()],
     );
 
-    // Global families: prefix our fonts but preserve egui's default fallback chain
-    // so symbols/emoji can still resolve if not present in our face.
-    let mut prepend = |fam: egui::FontFamily| {
-        let mut v = fonts.families.get(&fam).cloned().unwrap_or_else(Vec::new);
-        // Prepend in priority order, avoiding duplicates if present
-        for name in ["Regular", "Bold", "Italic"].iter().rev() {
-            if let Some(pos) = v.iter().position(|s| s == *name) {
-                v.remove(pos);
-            }
-            v.insert(0, (*name).to_owned());
-        }
-        fonts.families.insert(fam, v);
-    };
-    prepend(egui::FontFamily::Proportional);
-    prepend(egui::FontFamily::Monospace);
-    ctx.set_fonts(fonts);
+    let monospace = fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default();
+    monospace.retain(|name| name != "Regular");
+    monospace.insert(0, "Regular".to_owned());
+    fonts
 }
-
-use hotki_protocol::FontWeight;
 
 /// Choose an `egui::FontFamily` name for a configuration weight.
 pub fn weight_family(w: FontWeight) -> egui::FontFamily {
@@ -86,4 +80,25 @@ pub fn weight_family(w: FontWeight) -> egui::FontFamily {
         }
         .into(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::font_definitions;
+
+    #[test]
+    fn ordinary_text_keeps_default_proportional_face() {
+        let fonts = font_definitions();
+        let proportional = fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .expect("default proportional family");
+        let monospace = fonts
+            .families
+            .get(&egui::FontFamily::Monospace)
+            .expect("default monospace family");
+
+        assert!(!proportional.iter().any(|name| name == "Regular"));
+        assert_eq!(monospace.first().map(String::as_str), Some("Regular"));
+    }
 }

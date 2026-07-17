@@ -7,8 +7,8 @@ return function(menu, ctx)
           err_notify = "warn",
         })
       end, { stay = true })
-      sub:bind("d", "Details", function(actx)
-        actx:show_details("on")
+      sub:bind("d", "Hotki", function(actx)
+        actx:show_main_window("on")
       end, { stay = true })
       sub:bind("s", "Selector", function(actx)
         actx:select({

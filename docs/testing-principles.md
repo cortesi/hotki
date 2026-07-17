@@ -10,8 +10,8 @@ binary, and the local eguidev automation scripts.
   engine behavior that can run without driving windows.
 - Use `cargo run --bin smoketest -- all` for end-to-end server and UI smoke
   coverage after UI-facing changes.
-- Use eguidev scripts for local inspection of egui-native viewports such as
-  Details and Permissions.
+- Use eguidev scripts for local inspection of egui-native viewports such as the
+  main window, logs, and Permissions.
 - Do not add direct CoreGraphics or Accessibility probes to individual test
   cases when an existing bridge or helper can expose the same state.
 

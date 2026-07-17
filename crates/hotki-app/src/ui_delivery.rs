@@ -334,7 +334,7 @@ mod tests {
             .expect("queue selector hide");
         tx.send(UiEvent::Message(MsgToUI::SelectorHide))
             .expect("coalesce selector hide");
-        tx.send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+        tx.send(UiEvent::Message(MsgToUI::ShowMainWindow(Toggle::On)))
             .expect("queue ordered control");
 
         assert_eq!(rx.stats().coalesced_snapshots, 1);
@@ -344,7 +344,7 @@ mod tests {
         ));
         assert!(matches!(
             rx.try_recv(),
-            Some(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+            Some(UiEvent::Message(MsgToUI::ShowMainWindow(Toggle::On)))
         ));
     }
 
@@ -353,7 +353,7 @@ mod tests {
         let (tx, rx) = ui_delivery_channel();
         tx.send(UiEvent::Message(MsgToUI::SelectorHide))
             .expect("queue first selector state");
-        tx.send(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+        tx.send(UiEvent::Message(MsgToUI::ShowMainWindow(Toggle::On)))
             .expect("queue ordered control");
         tx.send(UiEvent::Message(MsgToUI::SelectorHide))
             .expect("queue selector state after barrier");
@@ -365,7 +365,7 @@ mod tests {
         ));
         assert!(matches!(
             rx.try_recv(),
-            Some(UiEvent::Message(MsgToUI::ShowDetails(Toggle::On)))
+            Some(UiEvent::Message(MsgToUI::ShowMainWindow(Toggle::On)))
         ));
         assert!(matches!(
             rx.try_recv(),

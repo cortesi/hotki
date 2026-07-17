@@ -426,7 +426,11 @@ impl ConnectionDriver {
 
         match self.activate_config(conn).await {
             Ok(()) => {
-                self.notify_local(NotifyKind::Success, "Config", "Reloaded successfully");
+                self.notify_local(
+                    NotifyKind::Success,
+                    "Config reloaded",
+                    "The new configuration is active.",
+                );
                 self.refresh_server_bindings(conn).await;
             }
             Err(err) => {
@@ -507,9 +511,9 @@ impl ConnectionDriver {
             hotki_protocol::MsgToUI::SelectorHide => {
                 self.ui.send_message(hotki_protocol::MsgToUI::SelectorHide);
             }
-            hotki_protocol::MsgToUI::ShowDetails(arg) => {
+            hotki_protocol::MsgToUI::ShowMainWindow(arg) => {
                 self.ui
-                    .send_message(hotki_protocol::MsgToUI::ShowDetails(arg));
+                    .send_message(hotki_protocol::MsgToUI::ShowMainWindow(arg));
             }
             message @ hotki_protocol::MsgToUI::HudKeyState { .. } => {
                 self.ui.send_message(message);

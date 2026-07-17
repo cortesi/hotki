@@ -1,6 +1,7 @@
 //! Transient in-app notifications with stacking, animation, and theming.
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Local};
 use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob, vec2};
 use eguidev::{DevMcp, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full};
 use hotki_protocol::{
@@ -91,6 +92,8 @@ pub struct BacklogEntry {
     pub title: String,
     /// Notification body text.
     pub text: String,
+    /// Local time captured when the entry reached the backlog.
+    pub received_at: DateTime<Local>,
 }
 
 /// Root-viewport stack alias for one live notification.
@@ -532,6 +535,7 @@ impl NotificationCenter {
                 kind,
                 title: title.clone(),
                 text: text.clone(),
+                received_at: Local::now(),
             },
         );
         if self.backlog.len() > self.max_items {

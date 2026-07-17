@@ -1,8 +1,8 @@
 //! Runtime health shared by the connection driver and every UI surface.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use permissions::{PermissionState, PermissionsStatus};
+use permissions::PermissionsStatus;
 
 /// Coarse lifecycle phase for the app and its server runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,19 +36,6 @@ impl RuntimePhase {
             Self::ShuttingDown => "shutting_down",
         }
     }
-
-    /// Human-readable label for normal UI surfaces.
-    pub(crate) fn display_label(self) -> &'static str {
-        match self {
-            Self::Disconnected => "Disconnected",
-            Self::Connecting => "Connecting",
-            Self::InvalidConfig => "Invalid config",
-            Self::WaitingPermissions => "Waiting for permissions",
-            Self::Ready => "Ready",
-            Self::Retrying => "Retrying",
-            Self::ShuttingDown => "Shutting down",
-        }
-    }
 }
 
 /// Connection component of the atomic runtime-health snapshot.
@@ -75,16 +62,6 @@ impl ConnectionStatus {
             Self::Closing => "closing",
         }
     }
-
-    /// Human-readable label for normal UI surfaces.
-    pub(crate) fn display_label(self) -> &'static str {
-        match self {
-            Self::Disconnected => "Disconnected",
-            Self::Connecting => "Connecting",
-            Self::Connected => "Connected",
-            Self::Closing => "Closing",
-        }
-    }
 }
 
 /// Availability of a user-initiated retry.
@@ -99,6 +76,72 @@ pub enum RetryState {
     InProgress,
 }
 
+/// Semantic emphasis for a user-facing runtime notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeTone {
+    /// A connection or recovery transition is in progress.
+    Progress,
+    /// User action is required before Hotki can continue.
+    Attention,
+    /// Hotki could not complete the requested runtime operation.
+    Error,
+}
+
+impl NoticeTone {
+    /// Stable value exposed to UI automation.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Attention => "attention",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Compact notice shown only while Hotki is transitioning or needs attention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeNotice {
+    /// Strong primary copy shared by the main window and tray.
+    pub(crate) title: &'static str,
+    /// Optional explanation or next step.
+    pub(crate) detail: Option<String>,
+    /// Semantic emphasis for the notice mark.
+    pub(crate) tone: NoticeTone,
+    /// Whether the mark should animate as progress.
+    pub(crate) progress: bool,
+}
+
+/// Intent of the leading command in the main-window footer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryAction {
+    /// Reload the currently selected configuration.
+    ReloadConfig,
+    /// Open Hotki's required-permissions helper.
+    OpenPermissions,
+    /// Retry the failed startup or configuration operation.
+    TryAgain,
+}
+
+impl PrimaryAction {
+    /// Short verb phrase used by normal UI surfaces.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::ReloadConfig => "Reload Config",
+            Self::OpenPermissions => "Open Permissions",
+            Self::TryAgain => "Try Again",
+        }
+    }
+}
+
+/// Presentation-ready state shared by the main window and tray.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePresentation {
+    /// Optional transition or problem notice.
+    pub(crate) notice: Option<RuntimeNotice>,
+    /// Optional leading command for the main-window footer.
+    pub(crate) primary_action: Option<PrimaryAction>,
+}
+
 impl RetryState {
     /// Stable diagnostic label for this state.
     pub(crate) fn label(self) -> &'static str {
@@ -106,15 +149,6 @@ impl RetryState {
             Self::Idle => "idle",
             Self::Available => "available",
             Self::InProgress => "in_progress",
-        }
-    }
-
-    /// Human-readable label for normal UI surfaces.
-    pub(crate) fn display_label(self) -> &'static str {
-        match self {
-            Self::Idle => "Not needed",
-            Self::Available => "Available",
-            Self::InProgress => "In progress",
         }
     }
 }
@@ -169,60 +203,112 @@ impl RuntimeHealth {
         matches!(self.connection, ConnectionStatus::Connected)
     }
 
-    /// Compact label for Accessibility, Input Monitoring, and Screen Recording.
-    pub(crate) fn permissions_label(&self) -> String {
-        format!(
-            "Accessibility {}, Input Monitoring {}, Screen Recording {}",
-            permission_label(self.permissions.accessibility),
-            permission_label(self.permissions.input_monitoring),
-            permission_label(self.permissions.screen_recording),
-        )
+    /// Derive the complete user-facing presentation from one runtime snapshot.
+    pub(crate) fn presentation(&self) -> RuntimePresentation {
+        let (notice, primary_action) = match self.phase {
+            RuntimePhase::Ready => (None, Some(PrimaryAction::ReloadConfig)),
+            RuntimePhase::Connecting => (
+                Some(RuntimeNotice {
+                    title: "Starting Hotki…",
+                    detail: Some("Connecting and loading the configuration.".to_string()),
+                    tone: NoticeTone::Progress,
+                    progress: true,
+                }),
+                None,
+            ),
+            RuntimePhase::Retrying => (
+                Some(RuntimeNotice {
+                    title: "Trying again…",
+                    detail: Some("Reconnecting and reloading the configuration.".to_string()),
+                    tone: NoticeTone::Progress,
+                    progress: true,
+                }),
+                None,
+            ),
+            RuntimePhase::WaitingPermissions => (
+                Some(RuntimeNotice {
+                    title: "Hotki needs permission",
+                    detail: missing_required_permissions(self.permissions),
+                    tone: NoticeTone::Attention,
+                    progress: false,
+                }),
+                Some(PrimaryAction::OpenPermissions),
+            ),
+            RuntimePhase::InvalidConfig => (
+                Some(RuntimeNotice {
+                    title: "Hotki couldn't load the configuration",
+                    detail: Some(if self.active_config.is_some() {
+                        "The previous configuration is still active.".to_string()
+                    } else {
+                        "No configuration is currently active.".to_string()
+                    }),
+                    tone: NoticeTone::Error,
+                    progress: false,
+                }),
+                self.retry_action(),
+            ),
+            RuntimePhase::Disconnected => (
+                Some(RuntimeNotice {
+                    title: "Hotki isn't running",
+                    detail: None,
+                    tone: NoticeTone::Error,
+                    progress: false,
+                }),
+                self.retry_action(),
+            ),
+            RuntimePhase::ShuttingDown => (None, None),
+        };
+        RuntimePresentation {
+            notice,
+            primary_action,
+        }
     }
 
-    /// Config path to show in the editor, preferring an uncommitted candidate.
-    pub(crate) fn displayed_config(&self) -> Option<&Path> {
-        self.pending_config
-            .as_deref()
-            .or(self.active_config.as_deref())
-    }
-
-    /// Compact active-config label for constrained UI surfaces.
-    pub(crate) fn active_config_label(&self) -> String {
-        config_label(self.active_config.as_deref())
-    }
-
-    /// Compact pending-config label for constrained UI surfaces.
-    pub(crate) fn pending_config_label(&self) -> String {
-        config_label(self.pending_config.as_deref())
+    /// Return retry intent only while the failed operation is user-retryable.
+    fn retry_action(&self) -> Option<PrimaryAction> {
+        matches!(self.retry, RetryState::Available).then_some(PrimaryAction::TryAgain)
     }
 }
 
-/// Convert one permission value into a compact UI word.
-fn permission_label(state: PermissionState) -> &'static str {
-    match state {
-        PermissionState::Granted => "granted",
-        PermissionState::Denied => "denied",
-        PermissionState::Unknown => "unknown",
+/// Explain which required permissions still need user action.
+fn missing_required_permissions(status: PermissionsStatus) -> Option<String> {
+    let mut missing = Vec::with_capacity(2);
+    if !status.accessibility.is_granted() {
+        missing.push("Accessibility");
     }
-}
-
-/// Format a config path for tray-sized UI, retaining the full path as a fallback.
-fn config_label(path: Option<&Path>) -> String {
-    let Some(path) = path else {
-        return "None".to_string();
-    };
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map_or_else(|| path.display().to_string(), str::to_string)
+    if !status.input_monitoring.is_granted() {
+        missing.push("Input Monitoring");
+    }
+    match missing.as_slice() {
+        [] => None,
+        [permission] => Some(format!("Grant {permission} in System Settings.")),
+        [first, second] => Some(format!("Grant {first} and {second} in System Settings.")),
+        _ => unreachable!("Hotki has exactly two required permissions"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use permissions::{PermissionState, PermissionsStatus};
 
-    use super::{ConnectionStatus, RetryState, RuntimeHealth, RuntimePhase};
+    use super::{
+        ConnectionStatus, NoticeTone, PrimaryAction, RetryState, RuntimeHealth, RuntimePhase,
+    };
+
+    fn health_for_phase(phase: RuntimePhase) -> RuntimeHealth {
+        RuntimeHealth {
+            phase,
+            permissions: PermissionsStatus {
+                accessibility: PermissionState::Granted,
+                input_monitoring: PermissionState::Granted,
+                screen_recording: PermissionState::Denied,
+            },
+            retry: RetryState::Available,
+            ..RuntimeHealth::default()
+        }
+    }
 
     #[test]
     fn connecting_health_keeps_candidate_pending() {
@@ -232,27 +318,191 @@ mod tests {
         assert_eq!(health.connection, ConnectionStatus::Connecting);
         assert_eq!(health.active_config, None);
         assert_eq!(
-            health.displayed_config(),
-            Some(Path::new("/tmp/hotki.luau"))
+            health.pending_config,
+            Some(PathBuf::from("/tmp/hotki.luau"))
         );
         assert_eq!(health.retry, RetryState::InProgress);
         assert!(!health.server_connected());
     }
 
     #[test]
-    fn permission_label_preserves_each_capability() {
-        let health = RuntimeHealth {
-            permissions: PermissionsStatus {
-                accessibility: PermissionState::Granted,
-                input_monitoring: PermissionState::Denied,
-                screen_recording: PermissionState::Unknown,
-            },
-            ..RuntimeHealth::default()
-        };
+    fn every_runtime_phase_has_one_complete_presentation() {
+        let cases = [
+            (
+                RuntimePhase::Disconnected,
+                Some("Hotki isn't running"),
+                None,
+                Some(PrimaryAction::TryAgain),
+                Some(NoticeTone::Error),
+            ),
+            (
+                RuntimePhase::Connecting,
+                Some("Starting Hotki…"),
+                Some("Connecting and loading the configuration."),
+                None,
+                Some(NoticeTone::Progress),
+            ),
+            (
+                RuntimePhase::InvalidConfig,
+                Some("Hotki couldn't load the configuration"),
+                Some("No configuration is currently active."),
+                Some(PrimaryAction::TryAgain),
+                Some(NoticeTone::Error),
+            ),
+            (
+                RuntimePhase::WaitingPermissions,
+                Some("Hotki needs permission"),
+                None,
+                Some(PrimaryAction::OpenPermissions),
+                Some(NoticeTone::Attention),
+            ),
+            (
+                RuntimePhase::Ready,
+                None,
+                None,
+                Some(PrimaryAction::ReloadConfig),
+                None,
+            ),
+            (
+                RuntimePhase::Retrying,
+                Some("Trying again…"),
+                Some("Reconnecting and reloading the configuration."),
+                None,
+                Some(NoticeTone::Progress),
+            ),
+            (RuntimePhase::ShuttingDown, None, None, None, None),
+        ];
 
+        for (phase, title, detail, action, tone) in cases {
+            let presentation = health_for_phase(phase).presentation();
+            assert_eq!(
+                presentation.notice.as_ref().map(|notice| notice.title),
+                title
+            );
+            assert_eq!(
+                presentation
+                    .notice
+                    .as_ref()
+                    .and_then(|notice| notice.detail.as_deref()),
+                detail
+            );
+            assert_eq!(presentation.primary_action, action);
+            assert_eq!(presentation.notice.map(|notice| notice.tone), tone);
+        }
+    }
+
+    #[test]
+    fn required_permission_detail_names_only_missing_capabilities() {
+        let cases = [
+            (PermissionState::Granted, PermissionState::Granted, None),
+            (
+                PermissionState::Denied,
+                PermissionState::Granted,
+                Some("Grant Accessibility in System Settings."),
+            ),
+            (
+                PermissionState::Granted,
+                PermissionState::Denied,
+                Some("Grant Input Monitoring in System Settings."),
+            ),
+            (
+                PermissionState::Denied,
+                PermissionState::Denied,
+                Some("Grant Accessibility and Input Monitoring in System Settings."),
+            ),
+            (
+                PermissionState::Unknown,
+                PermissionState::Unknown,
+                Some("Grant Accessibility and Input Monitoring in System Settings."),
+            ),
+        ];
+
+        for (accessibility, input_monitoring, detail) in cases {
+            let mut health = health_for_phase(RuntimePhase::WaitingPermissions);
+            health.permissions.accessibility = accessibility;
+            health.permissions.input_monitoring = input_monitoring;
+            assert_eq!(
+                health
+                    .presentation()
+                    .notice
+                    .and_then(|notice| notice.detail)
+                    .as_deref(),
+                detail
+            );
+        }
+    }
+
+    #[test]
+    fn screen_recording_does_not_block_ready_presentation() {
+        for screen_recording in [
+            PermissionState::Granted,
+            PermissionState::Denied,
+            PermissionState::Unknown,
+        ] {
+            let mut health = health_for_phase(RuntimePhase::Ready);
+            health.permissions.screen_recording = screen_recording;
+            let presentation = health.presentation();
+            assert!(presentation.notice.is_none());
+            assert_eq!(
+                presentation.primary_action,
+                Some(PrimaryAction::ReloadConfig)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_config_explains_active_predecessor() {
+        let mut health = health_for_phase(RuntimePhase::InvalidConfig);
         assert_eq!(
-            health.permissions_label(),
-            "Accessibility granted, Input Monitoring denied, Screen Recording unknown"
+            health
+                .presentation()
+                .notice
+                .and_then(|notice| notice.detail),
+            Some("No configuration is currently active.".to_string())
+        );
+
+        health.active_config = Some(PathBuf::from("/tmp/previous.luau"));
+        assert_eq!(
+            health
+                .presentation()
+                .notice
+                .and_then(|notice| notice.detail),
+            Some("The previous configuration is still active.".to_string())
+        );
+    }
+
+    #[test]
+    fn retry_action_tracks_availability_without_changing_notice() {
+        for phase in [RuntimePhase::Disconnected, RuntimePhase::InvalidConfig] {
+            for (retry, action) in [
+                (RetryState::Idle, None),
+                (RetryState::Available, Some(PrimaryAction::TryAgain)),
+                (RetryState::InProgress, None),
+            ] {
+                let mut health = health_for_phase(phase);
+                health.retry = retry;
+                let presentation = health.presentation();
+                assert!(presentation.notice.is_some());
+                assert_eq!(presentation.primary_action, action);
+            }
+        }
+    }
+
+    #[test]
+    fn progress_flag_is_independent_from_notice_tone() {
+        assert!(
+            health_for_phase(RuntimePhase::Connecting)
+                .presentation()
+                .notice
+                .expect("connecting notice")
+                .progress
+        );
+        assert!(
+            !health_for_phase(RuntimePhase::WaitingPermissions)
+                .presentation()
+                .notice
+                .expect("permission notice")
+                .progress
         );
     }
 }

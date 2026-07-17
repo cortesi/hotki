@@ -34,14 +34,14 @@ The eguidev launch command builds `hotki-app` with `--features devtools` and run
 the checked-in `examples/eguidev-demo.luau` config with `--disable-event-tap`.
 Style is loaded from an optional `style.luau` sibling of the active config; keep eguidev fixtures
 aligned with that split when adding style-sensitive checks.
-Use eguidev input for egui-native windows such as Details and Permissions. HUD,
+Use eguidev input for egui-native windows such as the main window, logs, and Permissions. HUD,
 selector, and notifications are server-driven surfaces; drive those through
 fixtures/server actions and inspect the rendered widgets. Synthetic input
 (clicks, key presses, etc.) reaches immediate viewports automatically through
 eguidev's egui plugin; no app-side wiring is required.
 
-Details has tab-specific fixtures for ordinary-window inspection:
-`hotki.details.config`, `hotki.details.logs`, and `hotki.details.about`.
+The main window has state-specific fixtures for ready-empty, populated, permission-required, and
+invalid-config layouts. `hotki.logs` opens the dedicated diagnostic window.
 Use `edev fixtures` for the complete inventory generated from the app's live fixture catalog.
 
 Treat `edev smoke` as a local macOS automation suite for now. Do not add it to

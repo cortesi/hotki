@@ -12,7 +12,7 @@ const DEFAULT_FRAME: DisplayFrame = DisplayFrame {
     height: 900.0,
 };
 
-/// Snapshot of display geometry used for HUD, notification, and details placement.
+/// Snapshot of display geometry used for HUD, notification, and main-window placement.
 #[derive(Clone, Debug, Default)]
 pub struct DisplayMetrics {
     /// Active display selected for placement, if any.

@@ -2,10 +2,12 @@ configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
 local expected = {
     ["hotki.basic.default"] = false,
-    ["hotki.details"] = false,
-    ["hotki.details.config"] = false,
-    ["hotki.details.logs"] = false,
-    ["hotki.details.about"] = false,
+    ["hotki.main.ready_empty"] = false,
+    ["hotki.main.populated"] = false,
+    ["hotki.main.permission_required"] = false,
+    ["hotki.main.invalid_config"] = false,
+    ["hotki.logs"] = false,
+    ["hotki.tray.about"] = false,
     ["hotki.hud"] = false,
     ["hotki.hud.pressed"] = false,
     ["hotki.hud.mini"] = false,
@@ -64,8 +66,8 @@ end
 assert(saw_app_idle, "hotki should expose app_idle settle phase")
 assert_no_duplicate_widget_ids()
 
-local root_state = expect("details.root", { viewport = "details", visible = true })
-assert(root_state.visible, "details.root should be visible after baseline fixture")
+local root_state = expect("main.root", { viewport = "main", visible = true })
+assert(root_state.visible, "main.root should be visible after baseline fixture")
 
 return {
     app_ready = widget("app.ready", { viewport = "root" }):state().value_text,

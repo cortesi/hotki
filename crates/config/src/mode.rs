@@ -24,8 +24,8 @@ pub enum Action {
     ReloadConfig,
     /// Ask host to clear all on-screen notifications
     ClearNotifications,
-    /// Control the details window: on/off/toggle
-    ShowDetails(Toggle),
+    /// Control the main window: on/off/toggle
+    ShowMainWindow(Toggle),
     /// Open a path or URL via the system opener.
     Open(String),
     /// Clear to root and show HUD.

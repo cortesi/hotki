@@ -1,14 +1,14 @@
 configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
 local function wait_for_notification(title: string, text: string)
-    local details = viewport({ name = "details" })
-    details:wait_for_widget("details.notification.0.title", function(widget)
+    local main = viewport({ name = "main" })
+    main:wait_for_widget("main.activity.0.title", function(widget)
         return widget.value_text == title
     end)
-    details:wait_for_widget("details.notification.0.text", function(widget)
+    main:wait_for_widget("main.activity.0.text", function(widget)
         return string.find(widget.value_text, text, 1, true) ~= nil
     end)
-    return details
+    return main
 end
 
 fixture("hotki.hud")
@@ -24,7 +24,7 @@ selector:wait_for_widget("selector.item.0.label", function(widget)
 end)
 fixture("hotki.selector.confirmed")
 local confirmed = wait_for_notification("Selector", "Beta:b")
-assert(confirmed:widget_get("details.notification.0.kind"):state().value_text == "info")
+assert(confirmed:widget_get("main.activity.0.mark"):state().value_text == "info")
 
 fixture("hotki.hud")
 fixture("hotki.hud.demo")
@@ -36,7 +36,7 @@ selector:wait_for_widget("selector.query", function(widget)
 end)
 fixture("hotki.selector.canceled")
 local canceled = wait_for_notification("Selector", "cancel")
-assert(canceled:widget_get("details.notification.0.kind"):state().value_text == "warn")
+assert(canceled:widget_get("main.activity.0.mark"):state().value_text == "warn")
 
 return {
     confirmed = confirmed.id,

@@ -3,6 +3,8 @@ name = "hotki-app"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+description.workspace = true
+repository.workspace = true
 
 [lints]
 workspace = true
@@ -34,8 +36,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 tray-icon = "0.21.2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-egui_extras = "0.35"
 clap = { workspace = true, features = ["derive"] }
 parking_lot = { workspace = true }
 objc2-quartz-core = { workspace = true }
 mac-keycode = { path = "../mac-keycode" }
+chrono = "0.4.45"

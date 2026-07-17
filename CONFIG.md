@@ -59,12 +59,12 @@ stay:bind("b", "Volume down", a.hold(a.change_volume(-5)))
 menu:bind("m", "Mute", a.mute("toggle"))
 menu:bind("u", "Unmute", a.mute("off"))
 menu:bind("0", "Set volume 50%", a.set_volume(50))
-menu:bind("d", "Details", a.show_details("toggle"))
+menu:bind("d", "Hotki", a.show_main_window("toggle"))
 ```
 
 The table covers `pop`, `exit`, `show_root`, `hide_hud`, `reload_config`,
 `clear_notifications`, `stay`, `notify`, `push`, `shell`, `exec`, `open`, `relay`,
-`relay_to_app`, `relay_with`, `launch_application`, `show_details`, `set_volume`,
+`relay_to_app`, `relay_with`, `launch_application`, `show_main_window`, `set_volume`,
 `change_volume`, `mute`, `hold`, and `select`.
 
 Wrap `change_volume` in `a.hold` for a held control; it defaults to a 250 ms initial delay and a

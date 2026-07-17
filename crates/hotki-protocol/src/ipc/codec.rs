@@ -150,7 +150,7 @@ mod tests {
                 text: "Body".to_string(),
             },
             MsgToUI::ClearNotifications,
-            MsgToUI::ShowDetails(Toggle::Toggle),
+            MsgToUI::ShowMainWindow(Toggle::Toggle),
             MsgToUI::Log {
                 level: "info".into(),
                 target: "test".into(),

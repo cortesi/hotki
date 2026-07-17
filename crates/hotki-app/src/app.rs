@@ -15,13 +15,14 @@ use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::{
-    details::{Details, DetailsTab},
     devtools::{FixtureRuntime, PreparedDevMcp, render_app_anchors},
     display::DisplayMetrics,
     fonts,
     harness_control::{PresentationExpectation, PresentationRequest},
-    health::RuntimeHealth,
+    health::{PrimaryAction, RuntimeHealth},
     hud::Hud,
+    logs_window::LogsWindow,
+    main_window::{MainWindow, MainWindowCommand},
     notification::NotificationCenter,
     permissions::{PermissionsHelp, PermissionsStatus},
     runtime::{self, ControlMsg},
@@ -32,16 +33,24 @@ use crate::{
 
 /// Commands local to the UI process that are not part of the protocol stream.
 pub enum UiCommand {
+    /// Activate Hotki so accessory-owned windows rise above the focused app.
+    ActivateApp,
+    /// Activate Hotki and open the standard macOS About panel.
+    ShowAbout,
     /// Request a graceful shutdown of all UI and background tasks.
     Shutdown,
     /// Show the permissions helper window.
     ShowPermissionsHelp,
     /// Hide the permissions helper window.
     HidePermissionsHelp,
-    /// Show the Details window with a specific tab selected.
-    ShowDetailsTab(DetailsTab),
+    /// Show or raise the dedicated logs window.
+    ShowLogs,
+    /// Hide the dedicated logs window.
+    HideLogs,
     /// Replace the complete UI-visible runtime health snapshot.
     SetRuntimeHealth(RuntimeHealth),
+    /// Override runtime health presentation for deterministic devtools fixtures.
+    SetRuntimeHealthOverride(Option<Box<RuntimeHealth>>),
     /// Update the server binding identifiers visible to devtools.
     SetServerBindings(Vec<String>),
     /// Override permission status for deterministic devtools fixtures.
@@ -80,7 +89,7 @@ pub enum UiEvent {
 pub struct HotkiApp {
     /// Receiver for events from the runtime thread.
     pub(crate) rx: UiDeliveryRx,
-    /// Tray icon and its live health rows.
+    /// Tray icon and its live runtime notice.
     pub(crate) tray: Option<tray::Tray>,
     /// Heads-up display for key hints.
     pub(crate) hud: Hud,
@@ -88,8 +97,10 @@ pub struct HotkiApp {
     pub(crate) selector: SelectorWindow,
     /// In-app notifications manager.
     pub(crate) notifications: NotificationCenter,
-    /// Details window state.
-    pub(crate) details: Details,
+    /// Compact main overview window.
+    pub(crate) main_window: MainWindow,
+    /// Dedicated diagnostic log window.
+    pub(crate) logs_window: LogsWindow,
     /// Permissions helper window state.
     pub(crate) permissions: PermissionsHelp,
     /// True when a graceful shutdown is in progress; allows window close.
@@ -110,6 +121,12 @@ pub struct HotkiApp {
     pub(crate) fixture_runtime: FixtureRuntime,
     /// Complete health state shared by every normal UI surface.
     pub(crate) runtime_health: RuntimeHealth,
+    /// Fixture-owned health presentation, while deterministic UI state is active.
+    pub(crate) runtime_health_override: Option<Box<RuntimeHealth>>,
+    /// Whether the standard About panel has been requested on the UI thread.
+    pub(crate) about_panel_opened: bool,
+    /// Sender for user-initiated runtime commands.
+    pub(crate) tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     /// Sorted server binding identifiers, when the runtime has reported them.
     pub(crate) server_bindings: Vec<String>,
     /// App-local requests waiting for a specific UI state to be painted.
@@ -138,7 +155,7 @@ pub struct AppBootstrap {
     pub tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     /// Receiver for runtime control messages.
     pub rx_ctrl: tokio_mpsc::UnboundedReceiver<ControlMsg>,
-    /// Active config path to send to details and runtime.
+    /// Active config path to send to the runtime.
     pub config_path: PathBuf,
     /// Initial style used before the first server HUD update.
     pub initial_style: Style,
@@ -175,8 +192,12 @@ impl App for HotkiApp {
         self.receive_presentation_requests();
 
         let notification_stack = self.notifications.stack_aliases();
+        let presented_health = self
+            .runtime_health_override
+            .as_deref()
+            .unwrap_or(&self.runtime_health);
         self.fixture_runtime.update_diagnostics(
-            &self.runtime_health,
+            presented_health,
             &self.server_bindings,
             &notification_stack,
             self.rx.stats(),
@@ -184,16 +205,22 @@ impl App for HotkiApp {
         render_app_anchors(
             &self.devmcp,
             ctx,
-            &self.runtime_health,
+            presented_health,
             &self.server_bindings,
             &notification_stack,
+            self.about_panel_opened,
         );
         self.hud.render(ctx, &self.devmcp);
         self.selector.render(ctx, &self.devmcp);
         let notifications_animating = self.notifications.render(ctx, &self.devmcp);
         self.fixture_runtime.set_app_idle(!notifications_animating);
-        self.details
-            .render(ctx, self.notifications.backlog(), &self.devmcp);
+        if let Some(command) =
+            self.main_window
+                .render(ctx, self.notifications.backlog(), &self.devmcp)
+        {
+            self.handle_main_window_command(command);
+        }
+        self.logs_window.render(ctx, &self.devmcp);
         self.permissions.render(ctx, &self.devmcp);
         self.acknowledge_presentations(ctx);
     }
@@ -240,9 +267,9 @@ impl HotkiApp {
 
         let runtime_notify_config = bootstrap.initial_style.notify.clone();
         let mut notifications = NotificationCenter::new(&runtime_notify_config);
-        let mut details = Details::new(bootstrap.initial_style.notify.theme.clone());
-        details.set_runtime_health(runtime_health.clone());
-        details.set_control_sender(bootstrap.tx_ctrl.clone());
+        let mut main_window = MainWindow::new(bootstrap.initial_style.notify.theme.clone());
+        main_window.set_runtime_health(&runtime_health);
+        let logs_window = LogsWindow::new();
 
         let mut permissions = PermissionsHelp::new();
         permissions.set_control_sender(bootstrap.tx_ctrl.clone());
@@ -253,7 +280,7 @@ impl HotkiApp {
         hud.set_display_metrics(metrics.clone());
         selector.set_display_metrics(metrics.clone());
         notifications.set_display_metrics(metrics.clone());
-        details.set_display_metrics(metrics.clone());
+        main_window.set_display_metrics(metrics.clone());
 
         let devmcp = bootstrap.prepared_devmcp.attach();
 
@@ -263,7 +290,8 @@ impl HotkiApp {
             hud,
             selector,
             notifications,
-            details,
+            main_window,
+            logs_window,
             permissions,
             shutdown_in_progress: false,
             display_metrics: metrics,
@@ -274,6 +302,9 @@ impl HotkiApp {
             devmcp,
             fixture_runtime,
             runtime_health,
+            runtime_health_override: None,
+            about_panel_opened: false,
+            tx_ctrl: bootstrap.tx_ctrl,
             server_bindings: Vec::new(),
             harness_requests: bootstrap.harness_requests,
             pending_presentations: Vec::new(),
@@ -340,12 +371,17 @@ impl HotkiApp {
     /// Apply a local UI-only command emitted by the runtime or control layer.
     fn handle_command(&mut self, ctx: &Context, command: UiCommand) {
         match command {
+            UiCommand::ActivateApp => tray::activate_app(),
+            UiCommand::ShowAbout => {
+                self.about_panel_opened = tray::show_about_panel();
+            }
             UiCommand::Shutdown => {
                 self.shutdown_in_progress = true;
                 self.hud.hide(ctx);
                 self.selector.hide(ctx);
                 self.notifications.clear_all(ctx, &self.devmcp);
-                self.details.hide();
+                self.main_window.hide();
+                self.logs_window.hide();
                 self.permissions.hide();
                 self.tray = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -356,11 +392,18 @@ impl HotkiApp {
             UiCommand::HidePermissionsHelp => {
                 self.permissions.hide();
             }
-            UiCommand::ShowDetailsTab(tab) => {
-                self.details.show_tab(tab);
+            UiCommand::ShowLogs => {
+                self.logs_window.show();
+            }
+            UiCommand::HideLogs => {
+                self.logs_window.hide();
             }
             UiCommand::SetRuntimeHealth(health) => {
                 self.runtime_health = health;
+                self.apply_runtime_health();
+            }
+            UiCommand::SetRuntimeHealthOverride(health) => {
+                self.runtime_health_override = health;
                 self.apply_runtime_health();
             }
             UiCommand::SetServerBindings(bindings) => {
@@ -392,7 +435,8 @@ impl HotkiApp {
                 if !self.notification_presentation_overridden {
                     self.notifications.reconfigure(&self.runtime_notify_config);
                 }
-                self.details.update_theme(hud.style.notify.theme.clone());
+                self.main_window
+                    .update_theme(hud.style.notify.theme.clone());
                 self.runtime_hud_state = Some(hud);
                 if !self.hud_presentation_overridden {
                     self.apply_runtime_hud_state();
@@ -413,17 +457,17 @@ impl HotkiApp {
             MsgToUI::ClearNotifications => {
                 self.notifications.clear_all(ctx, &self.devmcp);
             }
-            MsgToUI::ShowDetails(toggle) => match toggle {
-                Toggle::On => self.details.show(),
-                Toggle::Off => self.details.hide(),
-                Toggle::Toggle => self.details.toggle(),
+            MsgToUI::ShowMainWindow(toggle) => match toggle {
+                Toggle::On => self.main_window.show(),
+                Toggle::Off => self.main_window.hide(),
+                Toggle::Toggle => self.main_window.toggle(),
             },
             MsgToUI::Log { .. } | MsgToUI::Heartbeat(_) | MsgToUI::World(_) => {}
         }
         ctx.request_repaint();
     }
 
-    /// Propagate the cached display metrics to HUD, notifications, and details.
+    /// Propagate cached display metrics to every display-relative UI surface.
     fn sync_display_metrics(&mut self) {
         let metrics = self.display_metrics.clone();
         if !self.hud_presentation_overridden {
@@ -433,7 +477,7 @@ impl HotkiApp {
         if !self.notification_presentation_overridden {
             self.notifications.set_display_metrics(metrics.clone());
         }
-        self.details.set_display_metrics(metrics);
+        self.main_window.set_display_metrics(metrics);
     }
 
     /// Apply or clear deterministic notification presentation owned by devtools.
@@ -486,12 +530,31 @@ impl HotkiApp {
 
     /// Propagate one runtime-health snapshot to every normal UI surface.
     fn apply_runtime_health(&mut self) {
-        if !self.runtime_health.server_connected() {
+        let health = self
+            .runtime_health_override
+            .as_deref()
+            .unwrap_or(&self.runtime_health);
+        if !health.server_connected() {
             self.hud.clear_key_state();
         }
-        self.details.set_runtime_health(self.runtime_health.clone());
+        self.main_window.set_runtime_health(health);
         if let Some(tray) = self.tray.as_ref() {
-            tray.set_runtime_health(&self.runtime_health);
+            tray.set_runtime_health(health);
+        }
+    }
+
+    /// Dispatch one command emitted by the main-window footer.
+    fn handle_main_window_command(&mut self, command: MainWindowCommand) {
+        match command {
+            MainWindowCommand::Primary(PrimaryAction::OpenPermissions) => {
+                self.permissions.show();
+            }
+            MainWindowCommand::Primary(PrimaryAction::ReloadConfig | PrimaryAction::TryAgain) => {
+                if let Err(error) = self.tx_ctrl.send(ControlMsg::Reload) {
+                    tracing::warn!(?error, "failed to send main-window reload");
+                }
+            }
+            MainWindowCommand::ShowLogs => self.logs_window.show(),
         }
     }
 }

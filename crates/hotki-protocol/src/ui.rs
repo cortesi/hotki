@@ -132,8 +132,8 @@ pub enum MsgToUI {
     },
     /// Clear notifications request for the UI.
     ClearNotifications,
-    /// Control the details window visibility.
-    ShowDetails(Toggle),
+    /// Control the main window visibility.
+    ShowMainWindow(Toggle),
     /// Streaming log message from the server.
     Log {
         /// Log level string (e.g., "info").

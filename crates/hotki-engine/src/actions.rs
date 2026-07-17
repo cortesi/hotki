@@ -309,9 +309,9 @@ impl Engine {
                     .try_send_ui(hotki_protocol::MsgToUI::ClearNotifications)?;
                 Ok(DispatchResult::AutoExit)
             }
-            config::Action::ShowDetails(arg) => {
+            config::Action::ShowMainWindow(arg) => {
                 self.notifier
-                    .try_send_ui(hotki_protocol::MsgToUI::ShowDetails(*arg))?;
+                    .try_send_ui(hotki_protocol::MsgToUI::ShowMainWindow(*arg))?;
                 Ok(DispatchResult::AutoExit)
             }
             config::Action::Open(target) => {

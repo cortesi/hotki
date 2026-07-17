@@ -4,8 +4,21 @@ local function assert_image_ref(image: any, label: string)
     assert(image.type == "image_ref", label .. " should return an image_ref")
 end
 
-fixture("hotki.details")
-expect("details.root", { viewport = "details", visible = true })
+fixture("hotki.main.ready_empty")
+expect("main.root", { viewport = "main", visible = true })
+expect("main.activity.empty", { viewport = "main", visible = true })
+
+fixture("hotki.main.populated")
+expect("main.activity.0.title", { viewport = "main", label = "Config reloaded" })
+
+fixture("hotki.main.permission_required")
+expect("main.notice.title", { viewport = "main", label = "Hotki needs permission" })
+
+fixture("hotki.main.invalid_config")
+expect("main.activity.0.title", { viewport = "main", label = "Configuration error" })
+
+fixture("hotki.logs")
+expect("logs.0.message", { viewport = "logs", visible = true })
 
 fixture("hotki.permissions.mixed")
 expect("permissions.root", { viewport = "permissions", visible = true })
@@ -28,4 +41,6 @@ assert_image_ref(screenshot_image, "root screenshot")
 
 return {
     image = screenshot_image,
+    main_states_checked = true,
+    logs_checked = true,
 }

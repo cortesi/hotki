@@ -19,8 +19,6 @@ use crate::logs::client_layer;
 mod app;
 /// MRPC connection driver for the UI runtime.
 mod connection_driver;
-/// Details window (notifications/config/logs/about).
-mod details;
 mod devtools;
 /// Display geometry helpers.
 mod display;
@@ -29,6 +27,8 @@ mod harness_control;
 mod health;
 mod hud;
 mod logs;
+mod logs_window;
+mod main_window;
 mod notification;
 mod nswindow;
 /// Shared viewport mechanics for overlay windows.

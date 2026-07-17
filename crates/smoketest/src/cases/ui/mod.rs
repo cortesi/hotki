@@ -28,8 +28,8 @@ const UI_DEMO_ACTIVATE: &str = "t";
 const UI_DEMO_NOTIFY: &str = "n";
 /// Direct global key used by the notification-focused smoke case.
 const NOTIFICATION_IDENT: &str = "shift+cmd+n";
-/// Key that opens the Details window.
-const UI_DEMO_DETAILS: &str = "d";
+/// Key that opens the main window.
+const UI_DEMO_MAIN: &str = "d";
 /// Key that opens the selector demo.
 const UI_DEMO_SELECTOR: &str = "s";
 /// Query key typed into the selector demo.
@@ -71,8 +71,8 @@ return function(menu, ctx)
       sub:bind("n", "Notify", function(actx)
         actx:shell("echo notify", { ok_notify = "info", err_notify = "warn" })
       end, { stay = true })
-      sub:bind("d", "Details", function(actx)
-        actx:show_details("on")
+      sub:bind("d", "Hotki", function(actx)
+        actx:show_main_window("on")
       end, { stay = true })
       sub:bind("s", "Selector", function(actx)
         actx:select({
@@ -471,9 +471,9 @@ where
                 |msg| matches!(msg, MsgToUI::Notify { title, .. } if title == "Shell command"),
             )?;
             let cursor = driver.event_cursor()?;
-            driver.inject_key(UI_DEMO_DETAILS, ctx.remaining_ms()?)?;
+            driver.inject_key(UI_DEMO_MAIN, ctx.remaining_ms()?)?;
             driver.wait_for_message_since(cursor, ctx.remaining_ms()?, |msg| {
-                matches!(msg, MsgToUI::ShowDetails(Toggle::On))
+                matches!(msg, MsgToUI::ShowMainWindow(Toggle::On))
             })?;
             let cursor = driver.event_cursor()?;
             driver.inject_key(UI_DEMO_SELECTOR, ctx.remaining_ms()?)?;

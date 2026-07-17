@@ -96,9 +96,9 @@ local actions = {
     relay_to_app = relay_to_app,
     relay_with = relay_with,
     launch_application = launch_application,
-    show_details = function(toggle)
+    show_main_window = function(toggle)
         return function(ctx)
-            ctx:show_details(toggle)
+            ctx:show_main_window(toggle)
         end
     end,
     set_volume = function(level)

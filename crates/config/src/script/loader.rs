@@ -223,7 +223,11 @@ fn prepare_filesystem_config(
             message: "config filename must be valid UTF-8".to_string(),
         })?;
     let entry_id = ModuleId::canonicalized(stem);
-    let filesystem: Arc<dyn SourceProvider> = Arc::new(Directory::new(root_dir));
+    let filesystem: Arc<dyn SourceProvider> =
+        Arc::new(Directory::new(root_dir).map_err(|error| Error::Read {
+            path: Some(root_dir.to_path_buf()),
+            message: error.to_string(),
+        })?);
     let module_source = Arc::new(ConfigModuleSource::new(
         filesystem,
         entry_id.clone(),

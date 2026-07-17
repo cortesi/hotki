@@ -181,7 +181,7 @@ pub(super) fn action_context_type() -> HostType {
         .method_raw("open", action_context_open)
         .method_raw("relay", action_context_relay)
         .method_raw("relay_to_app", action_context_relay_to_app)
-        .method_raw("show_details", action_context_show_details)
+        .method_raw("show_main_window", action_context_show_main_window)
         .method_raw("set_volume", action_context_set_volume)
         .method_raw("change_volume", action_context_change_volume)
         .method_raw("mute", action_context_mute)
@@ -457,16 +457,16 @@ fn action_context_relay_to_app<'s>(
     )
 }
 
-/// Implement `ctx:show_details`.
-fn action_context_show_details<'s>(
+/// Implement `ctx:show_main_window`.
+fn action_context_show_main_window<'s>(
     scope: &Scope<'s>,
     receiver: Userdata<'s>,
     args: MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let mut args = HostArgs::new(args);
-    let toggle = args.serde::<Toggle>(scope, "ctx:show_details toggle")?;
-    args.finish("ctx:show_details")?;
-    push_exec(scope, receiver, Action::ShowDetails(toggle))
+    let toggle = args.serde::<Toggle>(scope, "ctx:show_main_window toggle")?;
+    args.finish("ctx:show_main_window")?;
+    push_exec(scope, receiver, Action::ShowMainWindow(toggle))
 }
 
 /// Implement `ctx:set_volume`.
