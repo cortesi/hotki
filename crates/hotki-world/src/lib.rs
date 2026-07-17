@@ -35,8 +35,7 @@ use polling::PollingWorld;
 pub use test_world::{TestApplication, TestWorld};
 pub use types::{
     ApplicationResolution, FocusChange, WindowKey, WorldCfg, WorldEvent, WorldStatus, WorldView,
-    WorldWindow, focus_snapshot, focus_snapshot_for_change, focused_snapshot, snapshot_for_key,
-    subscribe_with_snapshot,
+    WorldWindow, focus_snapshot, subscribe_with_snapshot,
 };
 
 /// Public helpers to spawn world views.

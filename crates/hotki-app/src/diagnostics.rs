@@ -138,18 +138,18 @@ impl DiagnosticSnapshot {
                 "pid": (self.input.server_pid != 0).then_some(self.input.server_pid),
             },
             "runtime": {
-                "phase": self.runtime.phase.label(),
-                "connection": self.runtime.connection.label(),
+                "phase": self.runtime.phase().label(),
+                "connection": self.runtime.connection().label(),
                 "config": {
-                    "active": self.runtime.active_config.is_some(),
-                    "pending": self.runtime.pending_config.is_some(),
+                    "active": self.runtime.active_config().is_some(),
+                    "pending": self.runtime.pending_config().is_some(),
                 },
                 "permissions": {
                     "accessibility": permission_label(self.runtime.permissions.accessibility),
                     "input_monitoring": permission_label(self.runtime.permissions.input_monitoring),
                     "screen_recording": permission_label(self.runtime.permissions.screen_recording),
                 },
-                "retry": self.runtime.retry.label(),
+                "retry": self.runtime.retry().label(),
             },
             "input": {
                 "tap_mode": tap_mode_label(self.input.tap_mode),
@@ -208,11 +208,11 @@ impl DiagnosticSnapshot {
         writeln!(
             report,
             "runtime: phase={} connection={} active_config={} pending_config={} retry={}",
-            self.runtime.phase.label(),
-            self.runtime.connection.label(),
-            self.runtime.active_config.is_some(),
-            self.runtime.pending_config.is_some(),
-            self.runtime.retry.label(),
+            self.runtime.phase().label(),
+            self.runtime.connection().label(),
+            self.runtime.active_config().is_some(),
+            self.runtime.pending_config().is_some(),
+            self.runtime.retry().label(),
         )
         .expect("writing to String cannot fail");
         writeln!(

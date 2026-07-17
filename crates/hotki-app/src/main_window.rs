@@ -12,9 +12,7 @@ use hotki_protocol::{NotifyKind, NotifyTheme};
 use crate::{
     devtools,
     display::{DisplayBounds, DisplayMetrics, WindowGeometry},
-    health::{
-        NoticeTone, PrimaryAction, RuntimeHealth, RuntimeNotice, RuntimePhase, RuntimePresentation,
-    },
+    health::{NoticeTone, PrimaryAction, RuntimeHealth, RuntimeNotice, RuntimePresentation},
     notification::BacklogEntry,
     nswindow,
     overlay::OverlayWindow,
@@ -146,7 +144,7 @@ impl MainWindow {
     /// Replace the presentation model from one complete runtime snapshot.
     pub(crate) fn set_runtime_health(&mut self, health: &RuntimeHealth) {
         self.presentation = health.presentation();
-        if matches!(health.phase, RuntimePhase::ShuttingDown) {
+        if health.is_shutting_down() {
             self.hide();
         }
     }

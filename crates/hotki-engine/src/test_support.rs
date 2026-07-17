@@ -13,7 +13,7 @@ use std::{
 };
 
 use hotki_protocol::MsgToUI;
-use hotki_world::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow};
+use hotki_world::{TestWorld, WindowKey, WorldView, WorldWindow};
 use tokio::{
     sync::mpsc,
     time::{Instant, sleep},
@@ -45,7 +45,7 @@ where
 {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let snapshot = world.snapshot().await;
+        let snapshot = world.snapshot();
         if pred(&snapshot) {
             return true;
         }
@@ -84,16 +84,6 @@ pub async fn set_world_focus_window(world: &TestWorld, app: &str, title: &str, p
     };
     let key = WindowKey { pid, id: window.id };
     world.set_snapshot(vec![window], Some(key));
-    world.push_event(WorldEvent::FocusChanged(FocusChange {
-        key: Some(key),
-        focus: Some(hotki_protocol::FocusSnapshot {
-            id: key.id,
-            app: app.into(),
-            title: title.into(),
-            pid,
-            display_id: None,
-        }),
-    }));
 
     let ready = wait_snapshot_until(world, 200, |snap| {
         snap.iter().any(|w| w.pid == pid && w.focused)

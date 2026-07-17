@@ -1,24 +1,25 @@
 //! Relays live KeyDown/KeyUp events to macOS applications.
 //!
-//! A `RelayKey` posts KeyDown/KeyUp events either through the global HID event
-//! stream or directly to one process.
-//! It forwards inputs directly, including explicit repeat KeyDowns provided
-//! by the caller.
+//! A `RelayKey` owns complete keyed gestures posted either through the global
+//! HID event stream or directly to one process.
 //!
-//! Events are posted directly; no wrapping or synthetic repeats. Invoke
-//! [`RelayKey::key_down`] and [`RelayKey::key_up`] with the same destination for
-//! one complete gesture. Process destinations carry chord flags on the main key
-//! but do not post separate modifier transitions.
+//! Each gesture pins its chord and destination at [`RelayKey::begin`], forwards
+//! explicit repeats through [`RelayKey::repeat`], and balances the gesture through
+//! [`RelayKey::end`]. Process destinations carry chord flags on the main key but
+//! do not post separate modifier transitions.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
 
 use core_graphics::{
     event as cge,
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use mac_hotkey::HOTK_TAG;
-use mac_keycode::{Chord, Modifier};
+use mac_keycode::{Chord, Modifier, Scancode};
 use tracing::{info, trace, warn};
 mod error;
 pub use error::{Error, Result};
@@ -87,7 +88,7 @@ impl MacPoster {
 
     /// Build a keyboard event for a `Chord` including modifiers and repeat flag.
     fn build_event(&self, chord: &Chord, down: bool, is_repeat: bool) -> Result<cge::CGEvent> {
-        let e = self.build_keycode_event(chord.key as u16, down)?;
+        let e = self.build_keycode_event(Scancode::from(chord.key), down)?;
         // Apply modifier flags
         let bits: u64 = chord
             .modifiers
@@ -189,12 +190,49 @@ impl Poster for MacPoster {
     }
 }
 
-/// Relayer that forwards live key-down, repeat, and key-up events to an explicit
-/// destination.
+/// Chord and destination retained for one active keyed gesture.
+#[derive(Clone)]
+struct ActiveGesture {
+    /// Chord captured when the gesture began.
+    chord: Chord,
+    /// Delivery destination pinned when the gesture began.
+    destination: RelayDestination,
+}
+
+/// Last-owner gesture state and its optional system-event backend.
+struct RelayState {
+    /// Active gestures indexed by caller-supplied identity.
+    active: Mutex<HashMap<String, ActiveGesture>>,
+    /// Event backend, or `None` when relay posting is disabled.
+    poster: Option<Arc<dyn Poster>>,
+}
+
+impl RelayState {
+    /// Release and remove every active gesture.
+    fn release_all(&self) {
+        let mut active = self.active.lock().expect("relay state lock");
+        if let Some(poster) = &self.poster {
+            for (id, gesture) in active.drain() {
+                post_up(poster.as_ref(), &gesture.chord, gesture.destination);
+                trace!(?gesture.destination, id = %id, "relay_release_all");
+            }
+        } else {
+            active.clear();
+        }
+    }
+}
+
+impl Drop for RelayState {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+/// Relayer that owns keyed gestures and pins each one to its initial destination.
 #[derive(Clone)]
 pub struct RelayKey {
-    /// Backend responsible for posting events to the OS.
-    poster: Arc<dyn Poster>,
+    /// Last-owner state; dropping a clone does not release active gestures.
+    state: Arc<RelayState>,
 }
 
 impl Default for RelayKey {
@@ -204,52 +242,109 @@ impl Default for RelayKey {
 }
 
 impl RelayKey {
-    /// Create a new relayer with no held key and repeats disabled.
+    /// Create an enabled relayer with no active gestures.
     pub fn new() -> Self {
-        Self {
-            poster: Arc::new(MacPoster),
-        }
+        Self::with_poster(Some(Arc::new(MacPoster)))
+    }
+
+    /// Create a relayer that tracks gestures without posting system events.
+    pub fn disabled() -> Self {
+        Self::with_poster(None)
     }
 
     /// Test helper to inject a custom poster.
     #[cfg(test)]
     pub(crate) fn new_with_poster(poster: Arc<dyn Poster>) -> Self {
-        Self { poster }
+        Self::with_poster(Some(poster))
     }
 
-    // No release state to manage in pass-through mode.
-
-    /// Post a key-down or repeat input to `destination`.
-    pub fn key_down(
-        &self,
-        key: &Chord,
-        is_repeat: bool,
-        destination: RelayDestination,
-    ) -> Result<()> {
-        trace!(code = ?key.key, mods = ?key.modifiers, is_repeat, ?destination, "on_key_down");
-        if !is_repeat
-            && matches!(destination, RelayDestination::Hid)
-            && let Err(err) = self
-                .poster
-                .post_modifiers(&key.modifiers, true, destination)
-        {
-            warn!(?err, "post_modifiers_failed");
+    /// Construct a relayer around an optional posting backend.
+    fn with_poster(poster: Option<Arc<dyn Poster>>) -> Self {
+        Self {
+            state: Arc::new(RelayState {
+                active: Mutex::new(HashMap::new()),
+                poster,
+            }),
         }
-        self.poster.post_down(key, is_repeat, destination)
     }
 
-    /// Post a key-up input to `destination`.
-    pub fn key_up(&self, chord: &Chord, destination: RelayDestination) -> Result<()> {
-        trace!(code = ?chord.key, mods = ?chord.modifiers, ?destination, "on_key_up");
-        let res = self.poster.post_up(chord, destination);
-        if matches!(destination, RelayDestination::Hid)
-            && let Err(err) = self
-                .poster
-                .post_modifiers(&chord.modifiers, false, destination)
+    /// Begin a keyed gesture and pin its chord and destination.
+    pub fn begin(&self, id: String, chord: Chord, destination: RelayDestination) {
+        let mut active = self.state.active.lock().expect("relay state lock");
+        if let Some(previous) = active.remove(&id)
+            && let Some(poster) = &self.state.poster
         {
-            warn!(?err, "post_modifiers_failed");
+            post_up(poster.as_ref(), &previous.chord, previous.destination);
         }
-        res
+        if let Some(poster) = &self.state.poster {
+            post_down(poster.as_ref(), &chord, false, destination);
+        }
+        trace!(?destination, id = %id, "relay_begin");
+        active.insert(id, ActiveGesture { chord, destination });
+    }
+
+    /// Repeat the gesture identified by `id`.
+    pub fn repeat(&self, id: &str) -> bool {
+        let active = self.state.active.lock().expect("relay state lock");
+        if let Some(gesture) = active.get(id) {
+            if let Some(poster) = &self.state.poster {
+                post_down(poster.as_ref(), &gesture.chord, true, gesture.destination);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// End the gesture identified by `id`.
+    pub fn end(&self, id: &str) -> bool {
+        let gesture = self
+            .state
+            .active
+            .lock()
+            .expect("relay state lock")
+            .remove(id);
+        if let Some(gesture) = gesture {
+            if let Some(poster) = &self.state.poster {
+                post_up(poster.as_ref(), &gesture.chord, gesture.destination);
+            }
+            trace!(?gesture.destination, id = %id, "relay_end");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Release every active gesture using its pinned chord and destination.
+    pub fn release_all(&self) {
+        self.state.release_all();
+    }
+}
+
+/// Post one initial or repeated key-down with destination-specific modifiers.
+fn post_down(poster: &dyn Poster, chord: &Chord, is_repeat: bool, destination: RelayDestination) {
+    trace!(code = ?chord.key, mods = ?chord.modifiers, is_repeat, ?destination, "on_key_down");
+    if !is_repeat
+        && matches!(destination, RelayDestination::Hid)
+        && let Err(error) = poster.post_modifiers(&chord.modifiers, true, destination)
+    {
+        warn!(?error, "post_modifiers_failed");
+    }
+    if let Err(error) = poster.post_down(chord, is_repeat, destination) {
+        warn!(?error, "relay_down_failed");
+    }
+}
+
+/// Post one key-up and balance destination-specific modifiers.
+fn post_up(poster: &dyn Poster, chord: &Chord, destination: RelayDestination) {
+    trace!(code = ?chord.key, mods = ?chord.modifiers, ?destination, "on_key_up");
+    if let Err(error) = poster.post_up(chord, destination) {
+        warn!(?error, "relay_up_failed");
+    }
+    if matches!(destination, RelayDestination::Hid)
+        && let Err(error) = poster.post_modifiers(&chord.modifiers, false, destination)
+    {
+        warn!(?error, "post_modifiers_failed");
     }
 }
 
@@ -257,10 +352,7 @@ impl RelayKey {
 mod tests {
     use std::{
         collections::HashSet,
-        sync::{
-            Mutex,
-            atomic::{AtomicUsize, Ordering},
-        },
+        sync::atomic::{AtomicUsize, Ordering},
     };
 
     use mac_keycode::Key;
@@ -308,34 +400,32 @@ mod tests {
     fn basic_down_up_no_repeat() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(&key(Key::A), false, RelayDestination::Hid)
-            .unwrap();
-        rk.key_up(&key(Key::A), RelayDestination::Hid).unwrap();
+        rk.begin("a".to_string(), key(Key::A), RelayDestination::Hid);
+        assert!(rk.end("a"));
         assert_eq!(poster.downs(), 1);
         assert_eq!(poster.ups(), 1);
     }
 
     #[test]
-    fn switch_keys_up_then_down() {
+    fn multiple_gestures_release_independently() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_down(&key(Key::A), false, RelayDestination::Hid)
-            .unwrap();
-        rk.key_down(&key(Key::B), false, RelayDestination::Hid)
-            .unwrap();
-        rk.key_up(&key(Key::B), RelayDestination::Hid).unwrap();
-        // Pass-through: we post exactly what we're asked to.
+        rk.begin("a".to_string(), key(Key::A), RelayDestination::Hid);
+        rk.begin("b".to_string(), key(Key::B), RelayDestination::Hid);
+        assert!(rk.end("b"));
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.ups(), 1);
+        rk.release_all();
+        assert_eq!(poster.ups(), 2);
     }
 
     #[test]
-    fn keyup_without_prior_down_posts_up() {
+    fn ending_unknown_gesture_is_a_noop() {
         let poster = Arc::new(CountingPoster::new());
         let rk = RelayKey::new_with_poster(poster.clone());
-        rk.key_up(&key(Key::A), RelayDestination::Hid).unwrap();
+        assert!(!rk.end("missing"));
         assert_eq!(poster.downs(), 0);
-        assert_eq!(poster.ups(), 1);
+        assert_eq!(poster.ups(), 0);
     }
 
     struct TrackPoster {
@@ -389,9 +479,9 @@ mod tests {
             modifiers: HashSet::new(),
         };
         let destination = RelayDestination::Process(42);
-        rk.key_down(&k, false, destination).unwrap();
-        rk.key_down(&k, true, destination).unwrap();
-        rk.key_up(&k, destination).unwrap();
+        rk.begin("arrow".to_string(), k, destination);
+        assert!(rk.repeat("arrow"));
+        assert!(rk.end("arrow"));
         assert_eq!(poster.downs(), 2);
         assert_eq!(poster.repeat_downs(), 1);
         assert_eq!(poster.ups(), 1);
@@ -459,9 +549,9 @@ mod tests {
             modifiers: HashSet::from([Modifier::Command, Modifier::Shift]),
         };
 
-        relay.key_down(&chord, false, destination).unwrap();
-        relay.key_down(&chord, true, destination).unwrap();
-        relay.key_up(&chord, destination).unwrap();
+        relay.begin("modified".to_string(), chord, destination);
+        assert!(relay.repeat("modified"));
+        assert!(relay.end("modified"));
 
         assert_eq!(
             poster.events(),
@@ -485,9 +575,9 @@ mod tests {
             modifiers: HashSet::from([Modifier::Shift]),
         };
 
-        relay.key_down(&chord, false, destination).unwrap();
-        relay.key_down(&chord, true, destination).unwrap();
-        relay.key_up(&chord, destination).unwrap();
+        relay.begin("process".to_string(), chord, destination);
+        assert!(relay.repeat("process"));
+        assert!(relay.end("process"));
 
         assert_eq!(
             poster.events(),
@@ -500,12 +590,34 @@ mod tests {
     }
 
     #[test]
+    fn replacing_gesture_balances_previous_destination_first() {
+        let poster = Arc::new(RecordingPoster::default());
+        let relay = RelayKey::new_with_poster(poster.clone());
+        let first = RelayDestination::Process(1);
+        let second = RelayDestination::Process(2);
+
+        relay.begin("same".to_string(), key(Key::A), first);
+        relay.begin("same".to_string(), key(Key::B), second);
+        assert!(relay.end("same"));
+
+        assert_eq!(
+            poster.events(),
+            vec![
+                Posted::Down(false, first),
+                Posted::Up(first),
+                Posted::Down(false, second),
+                Posted::Up(second),
+            ]
+        );
+    }
+
+    #[test]
     fn only_hid_events_need_the_hotki_marker() {
         assert!(needs_hotki_tag(RelayDestination::Hid));
         assert!(!needs_hotki_tag(RelayDestination::Process(731)));
     }
 
-    struct FailingPoster;
+    struct FailingPoster(AtomicUsize);
 
     impl Poster for FailingPoster {
         fn post_down(
@@ -518,21 +630,90 @@ mod tests {
         }
 
         fn post_up(&self, _key: &Chord, _destination: RelayDestination) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
 
     #[test]
-    fn posting_errors_are_returned_without_losing_release_path() {
-        let rk = RelayKey::new_with_poster(Arc::new(FailingPoster));
+    fn failed_down_remains_releasable() {
+        let poster = Arc::new(FailingPoster(AtomicUsize::new(0)));
+        let rk = RelayKey::new_with_poster(poster.clone());
         let chord = key(Key::A);
 
         let destination = RelayDestination::Process(7);
-        assert_eq!(
-            rk.key_down(&chord, false, destination),
+        rk.begin("failed".to_string(), chord, destination);
+        assert!(rk.repeat("failed"));
+        assert!(rk.end("failed"));
+        assert_eq!(poster.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn disabled_relayer_tracks_complete_gestures() {
+        let relay = RelayKey::disabled();
+
+        relay.begin("disabled".to_string(), key(Key::A), RelayDestination::Hid);
+
+        assert!(relay.repeat("disabled"));
+        assert!(relay.end("disabled"));
+        assert!(!relay.repeat("disabled"));
+    }
+
+    #[test]
+    fn dropping_clone_does_not_release_active_gesture() {
+        let poster = Arc::new(CountingPoster::new());
+        let relay = RelayKey::new_with_poster(poster.clone());
+        relay.begin("a".to_string(), key(Key::A), RelayDestination::Hid);
+
+        drop(relay.clone());
+
+        assert_eq!(poster.ups(), 0);
+        assert!(relay.end("a"));
+        assert_eq!(poster.ups(), 1);
+    }
+
+    #[test]
+    fn dropping_last_handle_releases_all_gestures() {
+        let poster = Arc::new(CountingPoster::new());
+        let relay = RelayKey::new_with_poster(poster.clone());
+        relay.begin("a".to_string(), key(Key::A), RelayDestination::Hid);
+        relay.begin("b".to_string(), key(Key::B), RelayDestination::Hid);
+
+        drop(relay);
+
+        assert_eq!(poster.ups(), 2);
+    }
+
+    struct FailingUpPoster(AtomicUsize);
+
+    impl Poster for FailingUpPoster {
+        fn post_down(
+            &self,
+            _key: &Chord,
+            _is_repeat: bool,
+            _destination: RelayDestination,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn post_up(&self, _key: &Chord, _destination: RelayDestination) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Err(Error::EventCreate)
-        );
-        assert_eq!(rk.key_up(&chord, destination), Ok(()));
+        }
+    }
+
+    #[test]
+    fn release_all_attempts_every_gesture_after_posting_failure() {
+        let poster = Arc::new(FailingUpPoster(AtomicUsize::new(0)));
+        let relay = RelayKey::new_with_poster(poster.clone());
+        relay.begin("a".to_string(), key(Key::A), RelayDestination::Hid);
+        relay.begin("b".to_string(), key(Key::B), RelayDestination::Hid);
+
+        relay.release_all();
+
+        assert_eq!(poster.0.load(Ordering::SeqCst), 2);
+        assert!(!relay.end("a"));
+        assert!(!relay.end("b"));
     }
 
     #[test]

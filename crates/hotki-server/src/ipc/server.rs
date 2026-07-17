@@ -68,8 +68,8 @@ impl IPCServer {
         let service = self.service.clone();
         let server = MrpcServer::from_fn(move || service.clone());
 
-        // Start hotkey dispatcher early; focus watcher will be started
-        // on first set_mode via HotkeyService to avoid redundant installs.
+        // Start hotkey dispatch early. The shared event pipeline starts with the
+        // lazy engine when the first client connects.
         self.service.start_hotkey_dispatcher();
 
         // Listen on Unix socket
@@ -92,6 +92,7 @@ impl IPCServer {
                 // server.run() future is dropped here, closing the socket and tasks
             }
         }
+        self.service.stop_event_pipeline().await;
 
         Ok(())
     }

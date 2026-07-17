@@ -250,8 +250,8 @@ impl Key {
             Key::UpArrow => "UpArrow",
         }
     }
-    #[doc = r" Looks up a `Key` from a hardware virtual keycode (HIToolbox kVK value)."]
-    pub fn from_keycode(code: u16) -> Option<Self> {
+    #[doc = r" Looks up a key from its generated HIToolbox value."]
+    pub(crate) fn from_keycode(code: u16) -> Option<Self> {
         match code {
             0x0 => Some(Key::A),
             0x1 => Some(Key::S),

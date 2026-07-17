@@ -78,10 +78,12 @@ impl WorldState {
         }
 
         let focus_changed = if data.focused != update.focused || data.focus != update.focus {
-            Some(FocusChange {
-                key: update.focused,
-                focus: update.focus.clone(),
-            })
+            Some(
+                update
+                    .focus
+                    .clone()
+                    .map_or(FocusChange::Cleared, FocusChange::Focused),
+            )
         } else {
             None
         };
@@ -112,12 +114,16 @@ impl WorldState {
         focused: Option<WindowKey>,
     ) -> Option<FocusChange> {
         let change = focus_change_for_snapshot(&snapshot, focused);
+        let focus = match &change {
+            FocusChange::Focused(focus) => Some(focus.clone()),
+            FocusChange::Cleared => None,
+        };
         let changed = {
             let mut data = self.data.write();
-            let changed = data.focused != change.key || data.focus != change.focus;
+            let changed = data.focused != focused || data.focus != focus;
             data.snapshot = snapshot;
             data.focused = focused;
-            data.focus = change.focus.clone();
+            data.focus = focus;
             data.status.windows_count = data.snapshot.len();
             data.status.focused = focused;
             changed
@@ -182,31 +188,31 @@ where
         self.core().hub.next_event_until(cursor, deadline).await
     }
 
-    async fn snapshot(&self) -> Vec<WorldWindow> {
+    fn snapshot(&self) -> Vec<WorldWindow> {
         self.core().state.snapshot()
     }
 
-    async fn focused(&self) -> Option<WindowKey> {
+    fn focused(&self) -> Option<WindowKey> {
         self.core().state.focused()
     }
 
-    async fn focus_snapshot(&self) -> Option<FocusSnapshot> {
+    fn focus_snapshot(&self) -> Option<FocusSnapshot> {
         self.core().state.focus_snapshot()
     }
 
-    async fn capabilities(&self) -> Capabilities {
+    fn capabilities(&self) -> Capabilities {
         self.core().state.capabilities()
     }
 
-    async fn status(&self) -> WorldStatus {
+    fn status(&self) -> WorldStatus {
         self.core().state.status()
     }
 
-    async fn resolve_application(&self, app_name: &str) -> crate::ApplicationResolution {
+    fn resolve_application(&self, app_name: &str) -> crate::ApplicationResolution {
         self.resolve_application_impl(app_name)
     }
 
-    async fn displays(&self) -> DisplaysSnapshot {
+    fn displays(&self) -> DisplaysSnapshot {
         self.core().state.displays()
     }
 
@@ -218,20 +224,15 @@ where
 #[cfg(any(test, feature = "test-utils"))]
 fn focus_change_for_snapshot(snapshot: &[WorldWindow], focused: Option<WindowKey>) -> FocusChange {
     let Some(key) = focused else {
-        return FocusChange::default();
+        return FocusChange::Cleared;
     };
 
     snapshot
         .iter()
         .find(|window| window.world_id() == key)
-        .map(|window| FocusChange {
-            key: Some(key),
-            focus: Some(crate::focus_snapshot(window)),
-        })
-        .unwrap_or(FocusChange {
-            key: Some(key),
-            focus: None,
-        })
+        .map(crate::focus_snapshot)
+        .map(FocusChange::Focused)
+        .unwrap_or_else(|| panic!("focused key {key:?} is absent from the supplied snapshot"))
 }
 
 pub(crate) fn display_frame(id: u32, x: f32, y: f32, width: f32, height: f32) -> DisplayFrame {

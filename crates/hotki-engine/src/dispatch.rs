@@ -135,13 +135,13 @@ impl Engine {
     async fn handle_key_up(&self, identifier: &str) {
         self.action_repeater.stop(identifier).await;
         self.repeater.stop(identifier).await;
-        if self.relay.stop_relay(identifier) {
+        if self.relay.end(identifier) {
             tracing::debug!("Stopped relay for {}", identifier);
         }
     }
 
     async fn handle_repeat(&self, identifier: &str) {
-        if self.relay.repeat_relay(identifier) {
+        if self.relay.repeat(identifier) {
             if self.repeater.is_ticking(identifier) {
                 self.repeater.note_os_repeat(identifier).await;
             }

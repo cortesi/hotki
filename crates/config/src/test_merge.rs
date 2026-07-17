@@ -1,25 +1,29 @@
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use crate::{
         NotifyPos, parse_rgb,
-        raw::{Maybe, RawHud, RawNotify, RawNotifyStyle, RawStyle},
-        style::{default_style, overlay_raw},
+        style::{default_style, eval_style_source, overlay_raw},
     };
 
     #[test]
     fn style_overlay_hud_fields() {
         let base = default_style().expect("default style");
 
-        // User overrides some HUD fields via raw overlay form
-        let user_overlay = RawStyle {
-            hud: Maybe::Value(RawHud {
-                font_size: Maybe::Value(20.0),
-                title_fg: Maybe::Value("red".to_string()),
-                bg: Maybe::Value("#222222".to_string()),
-                ..RawHud::default()
-            }),
-            ..RawStyle::default()
-        };
+        let user_overlay = eval_style_source(
+            r##"
+                return {
+                    hud = {
+                        font_size = 20,
+                        title_fg = "red",
+                        bg = "#222222",
+                    },
+                }
+            "##,
+            Path::new("<test:hud-overlay>"),
+        )
+        .expect("HUD overlay");
 
         let final_style = overlay_raw(base.clone(), &user_overlay);
 
@@ -34,19 +38,19 @@ mod tests {
     fn style_overlay_notify_fields() {
         let base = default_style().expect("default style");
 
-        // User overrides notification timeout and some style bits (raw form)
-        let user_overlay = RawStyle {
-            notify: Maybe::Value(RawNotify {
-                pos: Maybe::Value(NotifyPos::Left),
-                timeout: Maybe::Value(3.0),
-                info: Maybe::Value(RawNotifyStyle {
-                    bg: Maybe::Value("#333333".to_string()),
-                    ..RawNotifyStyle::default()
-                }),
-                ..RawNotify::default()
-            }),
-            ..RawStyle::default()
-        };
+        let user_overlay = eval_style_source(
+            r##"
+                return {
+                    notify = {
+                        pos = "left",
+                        timeout = 3,
+                        info = { bg = "#333333" },
+                    },
+                }
+            "##,
+            Path::new("<test:notify-overlay>"),
+        )
+        .expect("notification overlay");
 
         let final_style = overlay_raw(base.clone(), &user_overlay);
 

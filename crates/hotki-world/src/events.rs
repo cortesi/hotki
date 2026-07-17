@@ -91,10 +91,7 @@ mod tests {
         let mut cursor = hub.subscribe();
 
         for index in 0..20 {
-            hub.publish(WorldEvent::FocusChanged(FocusChange {
-                key: None,
-                focus: None,
-            }));
+            hub.publish(WorldEvent::FocusChanged(FocusChange::Cleared));
             if index % 2 == 0 {
                 hub.publish(WorldEvent::DisplaysChanged);
             }

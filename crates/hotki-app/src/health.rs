@@ -1,6 +1,6 @@
 //! Runtime health shared by the connection driver and every UI surface.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use hotki_protocol::{InputHealth, SecureInputOwner, SecureInputState, TapLifecycle, TapMode};
 use permissions::PermissionsStatus;
@@ -181,62 +181,250 @@ impl RetryState {
     }
 }
 
-/// Complete UI-visible state of the app's runtime lane.
+/// Valid lifecycle states for the app's runtime lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeHealth {
-    /// Current lifecycle phase.
-    pub(crate) phase: RuntimePhase,
-    /// Current server connection state.
-    pub(crate) connection: ConnectionStatus,
-    /// Config currently installed in the engine.
-    pub(crate) active_config: Option<PathBuf>,
-    /// Candidate config awaiting activation or rejected by validation.
-    pub(crate) pending_config: Option<PathBuf>,
-    /// Latest runtime-owned macOS permission observation.
-    pub(crate) permissions: PermissionsStatus,
-    /// Whether the current failure can be retried.
-    pub(crate) retry: RetryState,
-    /// Optional user-facing context for the current phase.
-    pub(crate) message: Option<String>,
-    /// Transition-stable physical-input health.
-    pub(crate) input: InputProjection,
+pub enum RuntimeState {
+    /// No server connection is active.
+    Disconnected {
+        /// Failure context when a retry is available.
+        message: Option<String>,
+    },
+    /// The first server connection and config activation are in progress.
+    InitialConnection {
+        /// Config candidate being activated.
+        candidate: PathBuf,
+    },
+    /// A reconnect has been requested but no connection attempt is active yet.
+    QueuedReconnect {
+        /// Config candidate to activate after reconnecting.
+        candidate: PathBuf,
+    },
+    /// A post-failure server connection attempt is active.
+    Reconnecting {
+        /// Config candidate being activated after reconnecting.
+        candidate: PathBuf,
+    },
+    /// A connected server is activating a replacement config.
+    LiveConfigReload {
+        /// Config that remains active until the candidate is accepted.
+        active: Option<PathBuf>,
+        /// Config candidate being activated.
+        candidate: PathBuf,
+    },
+    /// Required permissions are missing.
+    PermissionBlocked {
+        /// Config active in a live server, if the server remains available.
+        active: Option<PathBuf>,
+        /// Whether a live server remains available.
+        live_runtime: bool,
+    },
+    /// A connected server is running the active config.
+    Running {
+        /// Config installed in the engine.
+        active: PathBuf,
+    },
+    /// A connected server rejected a config candidate.
+    ConfigRejected {
+        /// Previous config that remains active, if any.
+        active: Option<PathBuf>,
+        /// Rejected config candidate.
+        candidate: PathBuf,
+        /// Validation or activation failure.
+        message: String,
+    },
+    /// Owned runtime work is finishing before the app exits.
+    ShuttingDown {
+        /// Whether a live server connection is closing.
+        live_runtime: bool,
+    },
 }
 
-impl Default for RuntimeHealth {
+impl Default for RuntimeState {
     fn default() -> Self {
-        Self {
-            phase: RuntimePhase::Disconnected,
-            connection: ConnectionStatus::Disconnected,
-            active_config: None,
-            pending_config: None,
-            permissions: PermissionsStatus::default(),
-            retry: RetryState::Idle,
-            message: None,
-            input: InputProjection::default(),
-        }
+        Self::Disconnected { message: None }
     }
+}
+
+/// Complete UI-visible state of the app's runtime lane.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeHealth {
+    /// Valid-by-construction runtime lifecycle.
+    pub(crate) state: RuntimeState,
+    /// Latest runtime-owned macOS permission observation.
+    pub(crate) permissions: PermissionsStatus,
+    /// Transition-stable physical-input health.
+    pub(crate) input: InputProjection,
 }
 
 impl RuntimeHealth {
     /// Initial snapshot while the first connection and config activation run.
     pub(crate) fn connecting(config_path: PathBuf) -> Self {
         Self {
-            phase: RuntimePhase::Connecting,
-            connection: ConnectionStatus::Connecting,
-            pending_config: Some(config_path),
-            retry: RetryState::InProgress,
+            state: RuntimeState::InitialConnection {
+                candidate: config_path,
+            },
             ..Self::default()
+        }
+    }
+
+    /// Record an offline failure that can be retried.
+    pub(crate) fn disconnect(&mut self, message: impl Into<String>) {
+        self.state = RuntimeState::Disconnected {
+            message: Some(message.into()),
+        };
+    }
+
+    /// Begin the current initial connection or a post-failure reconnect.
+    pub(crate) fn start_connecting(&mut self, candidate: PathBuf) {
+        self.state = if matches!(self.state, RuntimeState::InitialConnection { .. }) {
+            RuntimeState::InitialConnection { candidate }
+        } else {
+            RuntimeState::Reconnecting { candidate }
+        };
+    }
+
+    /// Queue a reconnect before a connection attempt can start.
+    pub(crate) fn queue_reconnect(&mut self, candidate: PathBuf) {
+        self.state = RuntimeState::QueuedReconnect { candidate };
+    }
+
+    /// Record missing permissions while preserving whether the server remains live.
+    pub(crate) fn block_on_permissions(&mut self) {
+        let live_runtime = self.server_connected();
+        let active = self.active_config().map(Path::to_path_buf);
+        self.state = RuntimeState::PermissionBlocked {
+            active,
+            live_runtime,
+        };
+    }
+
+    /// Record an acknowledged active config and ready server.
+    pub(crate) fn run_config(&mut self, active: PathBuf) {
+        self.state = RuntimeState::Running { active };
+    }
+
+    /// Begin activating a replacement config on a live server.
+    pub(crate) fn start_config_reload(&mut self, candidate: PathBuf) {
+        let active = self.active_config().map(Path::to_path_buf);
+        self.state = RuntimeState::LiveConfigReload { active, candidate };
+    }
+
+    /// Record a rejected candidate while retaining the previous live config.
+    pub(crate) fn reject_config(&mut self, candidate: PathBuf, message: impl Into<String>) {
+        let active = self.active_config().map(Path::to_path_buf);
+        self.state = RuntimeState::ConfigRejected {
+            active,
+            candidate,
+            message: message.into(),
+        };
+    }
+
+    /// Record shutdown before waiting for owned runtime work to finish.
+    pub(crate) fn begin_shutdown(&mut self) {
+        self.state = RuntimeState::ShuttingDown {
+            live_runtime: self.server_connected(),
+        };
+    }
+
+    /// Stable diagnostic phase projection.
+    pub(crate) fn phase(&self) -> RuntimePhase {
+        match self.state {
+            RuntimeState::Disconnected { .. } => RuntimePhase::Disconnected,
+            RuntimeState::InitialConnection { .. } => RuntimePhase::Connecting,
+            RuntimeState::QueuedReconnect { .. }
+            | RuntimeState::Reconnecting { .. }
+            | RuntimeState::LiveConfigReload { .. } => RuntimePhase::Retrying,
+            RuntimeState::PermissionBlocked { .. } => RuntimePhase::WaitingPermissions,
+            RuntimeState::Running { .. } => RuntimePhase::Ready,
+            RuntimeState::ConfigRejected { .. } => RuntimePhase::InvalidConfig,
+            RuntimeState::ShuttingDown { .. } => RuntimePhase::ShuttingDown,
+        }
+    }
+
+    /// Stable diagnostic connection projection.
+    pub(crate) fn connection(&self) -> ConnectionStatus {
+        match self.state {
+            RuntimeState::Disconnected { .. }
+            | RuntimeState::QueuedReconnect { .. }
+            | RuntimeState::PermissionBlocked {
+                live_runtime: false,
+                ..
+            }
+            | RuntimeState::ShuttingDown {
+                live_runtime: false,
+            } => ConnectionStatus::Disconnected,
+            RuntimeState::InitialConnection { .. } | RuntimeState::Reconnecting { .. } => {
+                ConnectionStatus::Connecting
+            }
+            RuntimeState::LiveConfigReload { .. }
+            | RuntimeState::PermissionBlocked {
+                live_runtime: true, ..
+            }
+            | RuntimeState::Running { .. }
+            | RuntimeState::ConfigRejected { .. } => ConnectionStatus::Connected,
+            RuntimeState::ShuttingDown { live_runtime: true } => ConnectionStatus::Closing,
+        }
+    }
+
+    /// Stable diagnostic retry projection.
+    pub(crate) fn retry(&self) -> RetryState {
+        match self.state {
+            RuntimeState::Disconnected { message: None }
+            | RuntimeState::Running { .. }
+            | RuntimeState::ShuttingDown { .. } => RetryState::Idle,
+            RuntimeState::Disconnected { message: Some(_) }
+            | RuntimeState::PermissionBlocked { .. }
+            | RuntimeState::ConfigRejected { .. } => RetryState::Available,
+            RuntimeState::InitialConnection { .. }
+            | RuntimeState::QueuedReconnect { .. }
+            | RuntimeState::Reconnecting { .. }
+            | RuntimeState::LiveConfigReload { .. } => RetryState::InProgress,
+        }
+    }
+
+    /// Config currently installed in a live engine.
+    pub(crate) fn active_config(&self) -> Option<&Path> {
+        match &self.state {
+            RuntimeState::LiveConfigReload { active, .. }
+            | RuntimeState::PermissionBlocked { active, .. }
+            | RuntimeState::ConfigRejected { active, .. } => active.as_deref(),
+            RuntimeState::Running { active } => Some(active.as_path()),
+            RuntimeState::Disconnected { .. }
+            | RuntimeState::InitialConnection { .. }
+            | RuntimeState::QueuedReconnect { .. }
+            | RuntimeState::Reconnecting { .. }
+            | RuntimeState::ShuttingDown { .. } => None,
+        }
+    }
+
+    /// Config candidate awaiting activation or rejected by validation.
+    pub(crate) fn pending_config(&self) -> Option<&Path> {
+        match &self.state {
+            RuntimeState::InitialConnection { candidate }
+            | RuntimeState::QueuedReconnect { candidate }
+            | RuntimeState::Reconnecting { candidate }
+            | RuntimeState::LiveConfigReload { candidate, .. }
+            | RuntimeState::ConfigRejected { candidate, .. } => Some(candidate.as_path()),
+            RuntimeState::Disconnected { .. }
+            | RuntimeState::PermissionBlocked { .. }
+            | RuntimeState::Running { .. }
+            | RuntimeState::ShuttingDown { .. } => None,
         }
     }
 
     /// Whether the current snapshot has a live server connection.
     pub(crate) fn server_connected(&self) -> bool {
-        matches!(self.connection, ConnectionStatus::Connected)
+        matches!(self.connection(), ConnectionStatus::Connected)
+    }
+
+    /// Whether owned runtime work is finishing.
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        matches!(self.state, RuntimeState::ShuttingDown { .. })
     }
 
     /// Derive the complete user-facing presentation from one runtime snapshot.
     pub(crate) fn presentation(&self) -> RuntimePresentation {
-        let (notice, primary_action) = match self.phase {
+        let (notice, primary_action) = match self.phase() {
             RuntimePhase::Ready if self.input.blocked => (
                 Some(RuntimeNotice {
                     title: "Hotkeys paused by Secure Input",
@@ -277,7 +465,7 @@ impl RuntimeHealth {
             RuntimePhase::InvalidConfig => (
                 Some(RuntimeNotice {
                     title: "Hotki couldn't load the configuration",
-                    detail: Some(if self.active_config.is_some() {
+                    detail: Some(if self.active_config().is_some() {
                         "The previous configuration is still active.".to_string()
                     } else {
                         "No configuration is currently active.".to_string()
@@ -306,7 +494,7 @@ impl RuntimeHealth {
 
     /// Return retry intent only while the failed operation is user-retryable.
     fn retry_action(&self) -> Option<PrimaryAction> {
-        matches!(self.retry, RetryState::Available).then_some(PrimaryAction::TryAgain)
+        matches!(self.retry(), RetryState::Available).then_some(PrimaryAction::TryAgain)
     }
 }
 
@@ -345,24 +533,48 @@ fn missing_required_permissions(status: PermissionsStatus) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use permissions::{PermissionState, PermissionsStatus};
 
     use super::{
         ConnectionStatus, InputProjection, NoticeTone, PrimaryAction, RetryState, RuntimeHealth,
-        RuntimePhase,
+        RuntimePhase, RuntimeState,
     };
 
     fn health_for_phase(phase: RuntimePhase) -> RuntimeHealth {
         RuntimeHealth {
-            phase,
+            state: match phase {
+                RuntimePhase::Disconnected => RuntimeState::Disconnected {
+                    message: Some("connection failed".to_string()),
+                },
+                RuntimePhase::Connecting => RuntimeState::InitialConnection {
+                    candidate: PathBuf::from("/tmp/hotki.luau"),
+                },
+                RuntimePhase::InvalidConfig => RuntimeState::ConfigRejected {
+                    active: None,
+                    candidate: PathBuf::from("/tmp/hotki.luau"),
+                    message: "candidate rejected".to_string(),
+                },
+                RuntimePhase::WaitingPermissions => RuntimeState::PermissionBlocked {
+                    active: None,
+                    live_runtime: false,
+                },
+                RuntimePhase::Ready => RuntimeState::Running {
+                    active: PathBuf::from("/tmp/hotki.luau"),
+                },
+                RuntimePhase::Retrying => RuntimeState::QueuedReconnect {
+                    candidate: PathBuf::from("/tmp/hotki.luau"),
+                },
+                RuntimePhase::ShuttingDown => RuntimeState::ShuttingDown {
+                    live_runtime: false,
+                },
+            },
             permissions: PermissionsStatus {
                 accessibility: PermissionState::Granted,
                 input_monitoring: PermissionState::Granted,
                 screen_recording: PermissionState::Denied,
             },
-            retry: RetryState::Available,
             ..RuntimeHealth::default()
         }
     }
@@ -371,15 +583,157 @@ mod tests {
     fn connecting_health_keeps_candidate_pending() {
         let health = RuntimeHealth::connecting(PathBuf::from("/tmp/hotki.luau"));
 
-        assert_eq!(health.phase, RuntimePhase::Connecting);
-        assert_eq!(health.connection, ConnectionStatus::Connecting);
-        assert_eq!(health.active_config, None);
-        assert_eq!(
-            health.pending_config,
-            Some(PathBuf::from("/tmp/hotki.luau"))
-        );
-        assert_eq!(health.retry, RetryState::InProgress);
+        assert_eq!(health.phase(), RuntimePhase::Connecting);
+        assert_eq!(health.connection(), ConnectionStatus::Connecting);
+        assert_eq!(health.active_config(), None);
+        assert_eq!(health.pending_config(), Some(Path::new("/tmp/hotki.luau")));
+        assert_eq!(health.retry(), RetryState::InProgress);
         assert!(!health.server_connected());
+    }
+
+    #[test]
+    fn every_lifecycle_variant_has_stable_projections() {
+        let candidate = PathBuf::from("/tmp/candidate.luau");
+        let active = PathBuf::from("/tmp/active.luau");
+        let cases = [
+            (
+                RuntimeState::Disconnected { message: None },
+                RuntimePhase::Disconnected,
+                ConnectionStatus::Disconnected,
+                RetryState::Idle,
+            ),
+            (
+                RuntimeState::Disconnected {
+                    message: Some("failed".to_string()),
+                },
+                RuntimePhase::Disconnected,
+                ConnectionStatus::Disconnected,
+                RetryState::Available,
+            ),
+            (
+                RuntimeState::InitialConnection {
+                    candidate: candidate.clone(),
+                },
+                RuntimePhase::Connecting,
+                ConnectionStatus::Connecting,
+                RetryState::InProgress,
+            ),
+            (
+                RuntimeState::QueuedReconnect {
+                    candidate: candidate.clone(),
+                },
+                RuntimePhase::Retrying,
+                ConnectionStatus::Disconnected,
+                RetryState::InProgress,
+            ),
+            (
+                RuntimeState::Reconnecting {
+                    candidate: candidate.clone(),
+                },
+                RuntimePhase::Retrying,
+                ConnectionStatus::Connecting,
+                RetryState::InProgress,
+            ),
+            (
+                RuntimeState::LiveConfigReload {
+                    active: Some(active.clone()),
+                    candidate: candidate.clone(),
+                },
+                RuntimePhase::Retrying,
+                ConnectionStatus::Connected,
+                RetryState::InProgress,
+            ),
+            (
+                RuntimeState::PermissionBlocked {
+                    active: None,
+                    live_runtime: false,
+                },
+                RuntimePhase::WaitingPermissions,
+                ConnectionStatus::Disconnected,
+                RetryState::Available,
+            ),
+            (
+                RuntimeState::PermissionBlocked {
+                    active: Some(active.clone()),
+                    live_runtime: true,
+                },
+                RuntimePhase::WaitingPermissions,
+                ConnectionStatus::Connected,
+                RetryState::Available,
+            ),
+            (
+                RuntimeState::Running {
+                    active: active.clone(),
+                },
+                RuntimePhase::Ready,
+                ConnectionStatus::Connected,
+                RetryState::Idle,
+            ),
+            (
+                RuntimeState::ConfigRejected {
+                    active: Some(active),
+                    candidate,
+                    message: "rejected".to_string(),
+                },
+                RuntimePhase::InvalidConfig,
+                ConnectionStatus::Connected,
+                RetryState::Available,
+            ),
+            (
+                RuntimeState::ShuttingDown {
+                    live_runtime: false,
+                },
+                RuntimePhase::ShuttingDown,
+                ConnectionStatus::Disconnected,
+                RetryState::Idle,
+            ),
+            (
+                RuntimeState::ShuttingDown { live_runtime: true },
+                RuntimePhase::ShuttingDown,
+                ConnectionStatus::Closing,
+                RetryState::Idle,
+            ),
+        ];
+
+        for (state, phase, connection, retry) in cases {
+            let health = RuntimeHealth {
+                state,
+                ..RuntimeHealth::default()
+            };
+            assert_eq!(health.phase(), phase);
+            assert_eq!(health.connection(), connection);
+            assert_eq!(health.retry(), retry);
+        }
+    }
+
+    #[test]
+    fn transitions_retain_only_state_valid_data() {
+        let mut health = RuntimeHealth::connecting(PathBuf::from("/tmp/first.luau"));
+        health.disconnect("offline");
+        assert!(matches!(
+            &health.state,
+            RuntimeState::Disconnected {
+                message: Some(message)
+            } if message == "offline"
+        ));
+
+        health.queue_reconnect(PathBuf::from("/tmp/retry.luau"));
+        health.start_connecting(PathBuf::from("/tmp/retry.luau"));
+        assert!(matches!(health.state, RuntimeState::Reconnecting { .. }));
+
+        health.run_config(PathBuf::from("/tmp/active.luau"));
+        health.start_config_reload(PathBuf::from("/tmp/candidate.luau"));
+        health.reject_config(PathBuf::from("/tmp/candidate.luau"), "invalid");
+        assert_eq!(health.active_config(), Some(Path::new("/tmp/active.luau")));
+        assert!(matches!(
+            &health.state,
+            RuntimeState::ConfigRejected { message, .. } if message == "invalid"
+        ));
+
+        health.block_on_permissions();
+        assert!(health.server_connected());
+        health.begin_shutdown();
+        assert_eq!(health.connection(), ConnectionStatus::Closing);
     }
 
     #[test]
@@ -508,7 +862,7 @@ mod tests {
         assert!(notice.detail.unwrap().contains("best effort"));
         assert_eq!(notice.tone, NoticeTone::Attention);
 
-        ready.phase = RuntimePhase::InvalidConfig;
+        ready.reject_config(PathBuf::from("/tmp/candidate.luau"), "candidate rejected");
         assert_eq!(
             ready.presentation().notice.unwrap().title,
             "Hotki couldn't load the configuration"
@@ -544,7 +898,8 @@ mod tests {
             Some("No configuration is currently active.".to_string())
         );
 
-        health.active_config = Some(PathBuf::from("/tmp/previous.luau"));
+        health.run_config(PathBuf::from("/tmp/previous.luau"));
+        health.reject_config(PathBuf::from("/tmp/candidate.luau"), "candidate rejected");
         assert_eq!(
             health
                 .presentation()
@@ -555,20 +910,18 @@ mod tests {
     }
 
     #[test]
-    fn retry_action_tracks_availability_without_changing_notice() {
-        for phase in [RuntimePhase::Disconnected, RuntimePhase::InvalidConfig] {
-            for (retry, action) in [
-                (RetryState::Idle, None),
-                (RetryState::Available, Some(PrimaryAction::TryAgain)),
-                (RetryState::InProgress, None),
-            ] {
-                let mut health = health_for_phase(phase);
-                health.retry = retry;
-                let presentation = health.presentation();
-                assert!(presentation.notice.is_some());
-                assert_eq!(presentation.primary_action, action);
-            }
-        }
+    fn retry_action_is_derived_from_retryable_states() {
+        let idle = RuntimeHealth::default().presentation();
+        assert!(idle.notice.is_some());
+        assert_eq!(idle.primary_action, None);
+
+        let disconnected = health_for_phase(RuntimePhase::Disconnected).presentation();
+        assert!(disconnected.notice.is_some());
+        assert_eq!(disconnected.primary_action, Some(PrimaryAction::TryAgain));
+
+        let rejected = health_for_phase(RuntimePhase::InvalidConfig).presentation();
+        assert!(rejected.notice.is_some());
+        assert_eq!(rejected.primary_action, Some(PrimaryAction::TryAgain));
     }
 
     #[test]

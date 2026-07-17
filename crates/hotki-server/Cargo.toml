@@ -29,5 +29,8 @@ futures = { workspace = true }
 parking_lot = { workspace = true }
 mac-keycode = { path = "../mac-keycode" }
 
+[dev-dependencies]
+hotki-world = { path = "../hotki-world", features = ["test-utils"] }
+
 [package.metadata.cargo-machete]
 ignored = []

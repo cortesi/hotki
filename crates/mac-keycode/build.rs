@@ -169,8 +169,8 @@ fn generate_key_rs(crate_dir: &Path) -> Result<PathBuf> {
                 }
             }
 
-            /// Looks up a `Key` from a hardware virtual keycode (HIToolbox kVK value).
-            pub fn from_keycode(code: u16) -> Option<Self> {
+            /// Looks up a key from its generated HIToolbox value.
+            pub(crate) fn from_keycode(code: u16) -> Option<Self> {
                 match code {
                     #(#from_keycode_arms,)*
                     _ => None,

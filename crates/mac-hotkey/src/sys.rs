@@ -215,7 +215,7 @@ pub fn run_event_loop(
                     status_cb.record_physical_event();
                     let keycode =
                         event.get_integer_value_field(FIELD_KEYBOARD_EVENT_KEYCODE) as u16;
-                    if let Some(code) = Key::from_scancode(keycode) {
+                    if let Ok(code) = Key::try_from(keycode) {
                         let flags = event.get_flags().bits();
                         let mods = mac_keycode::modifiers_from_cg_flags(flags);
                         let kind = if matches!(etype, cge::CGEventType::KeyDown) {

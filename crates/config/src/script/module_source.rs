@@ -3,10 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use ruau::source::{
@@ -19,6 +16,118 @@ use super::{config::SourceMap, util::lock_unpoisoned};
 /// Requester and literal request bytes used to cache one resolution edge.
 type ResolutionKey = (Option<ModuleId>, Vec<u8>);
 
+/// Admission phase for one checked module graph.
+#[derive(Default)]
+enum GraphPhase {
+    /// Resolution and source discovery are still building the graph.
+    #[default]
+    Building,
+    /// Only modules in the checked graph may be resolved or read.
+    Allowed(HashSet<ModuleId>),
+    /// Entry evaluation completed; only cached resolutions remain available.
+    Sealed,
+}
+
+/// Caches and admission policy advanced under one lock.
+#[derive(Default)]
+struct GraphState {
+    /// Resolution edges retained for runtime cache hits.
+    resolutions: HashMap<ResolutionKey, ModuleId>,
+    /// Source bytes retained from graph preparation.
+    bytes: HashMap<ModuleId, Vec<u8>>,
+    /// Current graph admission phase.
+    phase: GraphPhase,
+}
+
+impl GraphState {
+    /// Install the checked graph allowlist.
+    fn install_allowlist(&mut self, modules: impl IntoIterator<Item = ModuleId>) {
+        assert!(
+            !matches!(self.phase, GraphPhase::Sealed),
+            "cannot install a module allowlist after sealing"
+        );
+        self.phase = GraphPhase::Allowed(modules.into_iter().collect());
+    }
+
+    /// End source loading while retaining cached resolution edges.
+    fn seal(&mut self) {
+        self.phase = GraphPhase::Sealed;
+    }
+
+    /// Admit a resolution or return its sealed cached result.
+    fn resolve_admission(
+        &self,
+        key: &ResolutionKey,
+        requester: Option<&ModuleId>,
+        request: &[u8],
+    ) -> Result<Option<ModuleId>, SourceError> {
+        match &self.phase {
+            GraphPhase::Building => Ok(None),
+            GraphPhase::Allowed(allowed) => {
+                let candidate = resolve_request(requester, request)?;
+                if allowed.contains(&candidate) {
+                    Ok(None)
+                } else {
+                    Err(outside_graph_error(&candidate))
+                }
+            }
+            GraphPhase::Sealed => self
+                .resolutions
+                .get(key)
+                .cloned()
+                .map(Some)
+                .ok_or_else(sealed_error),
+        }
+    }
+
+    /// Revalidate and cache a delegated resolution.
+    fn finish_resolution(
+        &mut self,
+        key: ResolutionKey,
+        id: ModuleId,
+    ) -> Result<ModuleId, SourceError> {
+        match &self.phase {
+            GraphPhase::Building => {}
+            GraphPhase::Allowed(allowed) if allowed.contains(&id) => {}
+            GraphPhase::Allowed(_) => return Err(outside_graph_error(&id)),
+            GraphPhase::Sealed => return Err(sealed_error()),
+        }
+        self.resolutions.insert(key, id.clone());
+        Ok(id)
+    }
+
+    /// Admit a source read or return its retained bytes.
+    fn read_admission(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, SourceError> {
+        match &self.phase {
+            GraphPhase::Sealed => Err(sealed_error()),
+            GraphPhase::Allowed(allowed) if !allowed.contains(id) => Err(outside_graph_error(id)),
+            GraphPhase::Building | GraphPhase::Allowed(_) => Ok(self.bytes.get(id).cloned()),
+        }
+    }
+
+    /// Revalidate and cache delegated source bytes.
+    fn finish_read(&mut self, id: ModuleId, source: Vec<u8>) -> Result<(), SourceError> {
+        match &self.phase {
+            GraphPhase::Building => {}
+            GraphPhase::Allowed(allowed) if allowed.contains(&id) => {}
+            GraphPhase::Allowed(_) => return Err(outside_graph_error(&id)),
+            GraphPhase::Sealed => return Err(sealed_error()),
+        }
+        self.bytes.insert(id, source);
+        Ok(())
+    }
+}
+
+/// Stable error for work attempted after entry evaluation.
+fn sealed_error() -> SourceError {
+    SourceError::other("module source is sealed after config entry evaluation")
+}
+
+/// Stable error for a module outside the checked graph.
+fn outside_graph_error(id: &ModuleId) -> SourceError {
+    SourceError::other(format!("module '{id}' is outside the checked config graph"))
+}
+
 /// Module source that freezes one checked graph into a runtime allowlist.
 pub(super) struct ConfigModuleSource {
     /// Filesystem resolver used during graph preparation and activation.
@@ -27,14 +136,8 @@ pub(super) struct ConfigModuleSource {
     graph_root: ModuleId,
     /// Canonical directory used to expand diagnostic display paths.
     root_dir: PathBuf,
-    /// Resolution edges observed while checking and activating the graph.
-    resolutions: Arc<Mutex<HashMap<ResolutionKey, ModuleId>>>,
-    /// Source bytes retained from preparation instead of rereading files.
-    bytes: Arc<Mutex<HashMap<ModuleId, Vec<u8>>>>,
-    /// Checked module identities; absent only while the graph is being built.
-    allowed: Arc<Mutex<Option<HashSet<ModuleId>>>>,
-    /// Whether entry evaluation has completed and new source reads are forbidden.
-    sealed: Arc<AtomicBool>,
+    /// Caches and admission phase observed atomically.
+    state: Arc<Mutex<GraphState>>,
     /// Text retained by absolute path for runtime excerpts.
     sources: SourceMap,
 }
@@ -51,22 +154,19 @@ impl ConfigModuleSource {
             delegate,
             graph_root,
             root_dir,
-            resolutions: Arc::new(Mutex::new(HashMap::new())),
-            bytes: Arc::new(Mutex::new(HashMap::new())),
-            allowed: Arc::new(Mutex::new(None)),
-            sealed: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(Mutex::new(GraphState::default())),
             sources,
         }
     }
 
     /// Restrict runtime resolution and reads to the checked graph.
     pub(super) fn allow_only(&self, modules: impl IntoIterator<Item = ModuleId>) {
-        *lock_unpoisoned(&self.allowed) = Some(modules.into_iter().collect());
+        lock_unpoisoned(&self.state).install_allowlist(modules);
     }
 
     /// Prevent later entrypoints from loading any uncached module source.
     pub(super) fn seal(&self) {
-        self.sealed.store(true, Ordering::Release);
+        lock_unpoisoned(&self.state).seal();
     }
 
     /// Return true for the only request spelling accepted by Hotki configs.
@@ -98,78 +198,35 @@ impl SourceProvider for ConfigModuleSource {
 
         let requester = requester.or(Some(&self.graph_root));
         let key = (requester.cloned(), request.to_vec());
-        if self.sealed.load(Ordering::Acquire) {
-            let cached = lock_unpoisoned(&self.resolutions).get(&key).cloned();
-            return Box::pin(async move {
-                cached.ok_or_else(|| {
-                    SourceError::other("module source is sealed after config entry evaluation")
-                })
-            });
-        }
-
-        if let Some(allowed) = lock_unpoisoned(&self.allowed).as_ref() {
-            let candidate = match resolve_request(requester, request) {
-                Ok(candidate) => candidate,
-                Err(error) => return Box::pin(async move { Err(error) }),
-            };
-            if !allowed.contains(&candidate) {
-                return Box::pin(async move {
-                    Err(SourceError::other(format!(
-                        "module '{candidate}' is outside the checked config graph"
-                    )))
-                });
-            }
+        match lock_unpoisoned(&self.state).resolve_admission(&key, requester, request) {
+            Ok(Some(cached)) => return Box::pin(async move { Ok(cached) }),
+            Ok(None) => {}
+            Err(error) => return Box::pin(async move { Err(error) }),
         }
 
         let future = self.delegate.resolve(requester, request);
-        let resolutions = Arc::clone(&self.resolutions);
-        let allowed = Arc::clone(&self.allowed);
+        let state = Arc::clone(&self.state);
         Box::pin(async move {
             let id = future.await?;
-            if lock_unpoisoned(&allowed)
-                .as_ref()
-                .is_some_and(|allowed| !allowed.contains(&id))
-            {
-                return Err(SourceError::other(format!(
-                    "module '{id}' is outside the checked config graph"
-                )));
-            }
-            lock_unpoisoned(&resolutions).insert(key, id.clone());
-            Ok(id)
+            lock_unpoisoned(&state).finish_resolution(key, id)
         })
     }
 
     fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
-        if self.sealed.load(Ordering::Acquire) {
-            return Box::pin(async {
-                Err(SourceError::other(
-                    "module source is sealed after config entry evaluation",
-                ))
-            });
-        }
-        if let Some(source) = lock_unpoisoned(&self.bytes).get(id).cloned() {
-            return Box::pin(async move { Ok(source) });
-        }
-        if lock_unpoisoned(&self.allowed)
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(id))
-        {
-            let id = id.clone();
-            return Box::pin(async move {
-                Err(SourceError::other(format!(
-                    "module '{id}' is outside the checked config graph"
-                )))
-            });
+        match lock_unpoisoned(&self.state).read_admission(id) {
+            Ok(Some(source)) => return Box::pin(async move { Ok(source) }),
+            Ok(None) => {}
+            Err(error) => return Box::pin(async move { Err(error) }),
         }
 
         let future = self.delegate.read(id);
         let id = id.clone();
-        let bytes = Arc::clone(&self.bytes);
+        let state = Arc::clone(&self.state);
         let sources = Arc::clone(&self.sources);
         let path = Self::source_path(&self.root_dir, &self.delegate.metadata(&id));
         Box::pin(async move {
             let source = future.await?;
-            lock_unpoisoned(&bytes).insert(id, source.clone());
+            lock_unpoisoned(&state).finish_read(id, source.clone())?;
             if let Ok(text) = String::from_utf8(source.clone()) {
                 lock_unpoisoned(&sources).insert(path, Arc::from(text.into_boxed_str()));
             }
@@ -191,5 +248,49 @@ impl SourceProvider for ConfigModuleSource {
 
     fn epoch(&self) -> u64 {
         self.delegate.epoch()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_state_revalidates_allowlist_and_preserves_only_sealed_resolutions() {
+        let allowed = ModuleId::new("allowed");
+        let denied = ModuleId::new("denied");
+        let key = (None, b"./allowed".to_vec());
+        let mut state = GraphState::default();
+
+        state
+            .finish_resolution(key.clone(), allowed.clone())
+            .expect("building phase accepts resolution");
+        state.install_allowlist([allowed.clone()]);
+        assert!(
+            state
+                .finish_resolution((None, b"./denied".to_vec()), denied)
+                .expect_err("allowlist rejects delegated result")
+                .to_string()
+                .contains("outside the checked config graph")
+        );
+        state
+            .finish_read(allowed.clone(), b"return true".to_vec())
+            .expect("allowed phase accepts source");
+
+        state.seal();
+
+        assert_eq!(
+            state
+                .resolve_admission(&key, None, b"./allowed")
+                .expect("sealed cached resolution"),
+            Some(allowed.clone())
+        );
+        assert!(
+            state
+                .read_admission(&allowed)
+                .expect_err("sealed state rejects source reads")
+                .to_string()
+                .contains("module source is sealed")
+        );
     }
 }

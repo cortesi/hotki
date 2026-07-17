@@ -1,6 +1,8 @@
 use std::{
     env,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -57,107 +59,81 @@ impl Engine {
         ctx: dyn_engine::ModeCtx,
     ) -> Result<DispatchResult> {
         Ok(self
-            .apply_effects_one_shot(identifier, effects, ctx)
+            .apply_effect_queue(identifier, effects, ctx, EffectRun::OneShot)
             .await?
             .result)
     }
 
-    /// Apply ordinary action effects in source order.
-    async fn apply_effects_one_shot(
-        &self,
-        identifier: &str,
-        effects: Vec<dyn_engine::Effect>,
-        ctx: dyn_engine::ModeCtx,
-    ) -> Result<EffectApplication> {
-        let mut applied = EffectApplication::EMPTY;
-        for effect in effects {
-            let effect_result = match effect {
-                dyn_engine::Effect::UntilKeyUp { action, repeat } => {
-                    self.start_until_keyup(identifier, action, repeat, ctx.clone())
-                        .await?
-                }
-                effect => {
-                    self.apply_effect(identifier, effect, ctx.clone(), EffectRun::OneShot)
-                        .await?
-                }
-            };
-            applied.combine_result(effect_result.result);
-            if effect_result.terminal {
-                applied.terminal = true;
-                break;
-            }
-        }
-        Ok(applied)
-    }
-
-    /// Apply repeated-action effects in source order.
-    async fn apply_effects_repeated(
-        &self,
-        identifier: &str,
+    /// Apply one effect queue in source order under the supplied run policy.
+    fn apply_effect_queue<'a>(
+        &'a self,
+        identifier: &'a str,
         effects: Vec<dyn_engine::Effect>,
         ctx: dyn_engine::ModeCtx,
         run: EffectRun,
-    ) -> Result<EffectApplication> {
-        let mut applied = EffectApplication::EMPTY;
-        for effect in effects {
-            if matches!(effect, dyn_engine::Effect::UntilKeyUp { .. }) {
-                self.notifier.send_error(
-                    "Handler",
-                    "ctx:until_keyup cannot be nested inside a repeated action".to_string(),
-                )?;
-                applied.terminal = true;
-                break;
-            }
-            let effect_result = self
-                .apply_effect(identifier, effect, ctx.clone(), run)
-                .await?;
-            applied.combine_result(effect_result.result);
-            if effect_result.terminal {
-                applied.terminal = true;
-                break;
-            }
-        }
-        Ok(applied)
-    }
-
-    /// Apply one non-repeat effect.
-    async fn apply_effect(
-        &self,
-        identifier: &str,
-        effect: dyn_engine::Effect,
-        ctx: dyn_engine::ModeCtx,
-        run: EffectRun,
-    ) -> Result<EffectApplication> {
-        let mut applied = EffectApplication::EMPTY;
-        match effect {
-            dyn_engine::Effect::Exec(action) => {
-                let terminal = matches!(action, config::Action::ReloadConfig);
-                let outcome = match &action {
-                    config::Action::Relay(spec) => self.apply_relay(identifier, spec, run).await?,
-                    _ => EffectApplication {
-                        result: self
-                            .apply_action(identifier, &action, None, ctx.window.clone())
-                            .await?,
+    ) -> Pin<Box<dyn Future<Output = Result<EffectApplication>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut applied = EffectApplication::EMPTY;
+            for effect in effects {
+                let effect_result = match effect {
+                    dyn_engine::Effect::UntilKeyUp { action, repeat }
+                        if matches!(run, EffectRun::OneShot) =>
+                    {
+                        self.start_until_keyup(identifier, action, repeat, ctx.clone())
+                            .await?
+                    }
+                    dyn_engine::Effect::UntilKeyUp { .. } => {
+                        self.notifier.send_error(
+                            "Handler",
+                            "ctx:until_keyup cannot be nested inside a repeated action".to_string(),
+                        )?;
+                        EffectApplication {
+                            result: DispatchResult::AutoExit,
+                            terminal: true,
+                        }
+                    }
+                    dyn_engine::Effect::Exec(action) => {
+                        let terminal = matches!(action, config::Action::ReloadConfig);
+                        let mut outcome = match &action {
+                            config::Action::Relay(spec) => {
+                                self.apply_relay(identifier, spec, run).await?
+                            }
+                            _ => EffectApplication {
+                                result: self.apply_action(identifier, &action, None).await?,
+                                terminal: false,
+                            },
+                        };
+                        outcome.terminal |= terminal;
+                        outcome
+                    }
+                    dyn_engine::Effect::Notify { kind, title, body } => {
+                        self.notifier.send_notification(kind, title, body)?;
+                        EffectApplication::EMPTY
+                    }
+                    dyn_engine::Effect::Nav(nav) => EffectApplication {
+                        result: self.apply_nav_request(nav, ctx.window.clone()).await,
+                        terminal: false,
+                    },
+                    dyn_engine::Effect::Select(config) => EffectApplication {
+                        result: if SelectorController::new(self)
+                            .open(config, ctx.clone())
+                            .await?
+                        {
+                            DispatchResult::SelectorOpened
+                        } else {
+                            DispatchResult::AutoExit
+                        },
                         terminal: false,
                     },
                 };
-                applied.combine_result(outcome.result);
-                applied.terminal = terminal || outcome.terminal;
-            }
-            dyn_engine::Effect::Notify { kind, title, body } => {
-                self.notifier.send_notification(kind, title, body)?;
-            }
-            dyn_engine::Effect::Nav(nav) => {
-                applied.combine_result(self.apply_nav_request(nav, ctx.window.clone()).await);
-            }
-            dyn_engine::Effect::Select(config) => {
-                if SelectorController::new(self).open(config, ctx).await? {
-                    applied.combine_result(DispatchResult::SelectorOpened);
+                applied.combine_result(effect_result.result);
+                if effect_result.terminal {
+                    applied.terminal = true;
+                    break;
                 }
             }
-            dyn_engine::Effect::UntilKeyUp { .. } => unreachable!("handled by caller"),
-        }
-        Ok(applied)
+            Ok(applied)
+        })
     }
 
     /// Start a held-key repeat loop for a Luau action closure.
@@ -251,7 +227,7 @@ impl Engine {
         };
 
         let mut applied = self
-            .apply_effects_repeated(identifier, result.effects, ctx, run)
+            .apply_effect_queue(identifier, result.effects, ctx, run)
             .await?;
         applied.result = applied.result.with_stay(result.stay);
         Ok(applied)
@@ -262,7 +238,6 @@ impl Engine {
         identifier: &str,
         action: &config::Action,
         repeat: Option<dyn_engine::RepeatSpec>,
-        opening_window: Option<hotki_protocol::FocusSnapshot>,
     ) -> Result<DispatchResult> {
         self.key_tracker.set_repeat_allowed(identifier, false);
 
@@ -286,18 +261,6 @@ impl Engine {
                 .apply_relay(identifier, spec, EffectRun::OneShot)
                 .await?
                 .result),
-            config::Action::Pop => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::Pop, opening_window)
-                .await),
-            config::Action::Exit => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::Exit, opening_window)
-                .await),
-            config::Action::ShowRoot => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::ShowRoot, opening_window)
-                .await),
-            config::Action::HideHud => Ok(self
-                .apply_nav_request(dyn_engine::NavRequest::HideHud, opening_window)
-                .await),
             config::Action::ReloadConfig => {
                 if let Err(err) = self.reload_dynamic_config().await {
                     self.notifier.send_error("Config", err.to_string())?;
@@ -374,14 +337,13 @@ impl Engine {
                         terminal: true,
                     });
                 };
-                self.relay
-                    .start_relay(identifier.to_string(), chord, destination, false);
+                self.relay.begin(identifier.to_string(), chord, destination);
                 if matches!(run, EffectRun::OneShot) {
-                    let _ = self.relay.stop_relay(identifier);
+                    let _ = self.relay.end(identifier);
                 }
             }
             EffectRun::RepeatedTick => {
-                if self.relay.repeat_relay(identifier) {
+                if self.relay.repeat(identifier) {
                     self.repeater.note_relay_repeat(identifier);
                 }
             }
@@ -397,7 +359,7 @@ impl Engine {
         match target {
             config::RelayTarget::Focused => Ok(Some(relaykey::RelayDestination::Hid)),
             config::RelayTarget::ApplicationName(app_name) => {
-                match self.world.resolve_application(app_name).await {
+                match self.world.resolve_application(app_name) {
                     hotki_world::ApplicationResolution::Found(pid) => {
                         Ok(Some(relaykey::RelayDestination::Process(pid)))
                     }
@@ -605,7 +567,7 @@ mod tests {
         env, fs,
         path::Path,
         sync::{
-            Arc, Mutex,
+            Arc,
             atomic::{AtomicU64, Ordering},
         },
     };
@@ -615,61 +577,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::{
-        deps::MockHotkeyApi,
-        relay::{RelayHandler, RelayPoster},
-    };
-
-    #[derive(Default)]
-    struct RecordingPoster {
-        events: Mutex<Vec<(bool, relaykey::RelayDestination)>>,
-        chords: Mutex<Vec<Chord>>,
-    }
-
-    impl RecordingPoster {
-        fn events(&self) -> Vec<(bool, relaykey::RelayDestination)> {
-            self.events.lock().expect("recording poster lock").clone()
-        }
-
-        fn chords(&self) -> Vec<Chord> {
-            self.chords.lock().expect("recording chord lock").clone()
-        }
-    }
-
-    impl RelayPoster for RecordingPoster {
-        fn key_down(
-            &self,
-            chord: &Chord,
-            is_repeat: bool,
-            destination: relaykey::RelayDestination,
-        ) -> relaykey::Result<()> {
-            self.chords
-                .lock()
-                .expect("recording chord lock")
-                .push(chord.clone());
-            self.events
-                .lock()
-                .expect("recording poster lock")
-                .push((is_repeat, destination));
-            Ok(())
-        }
-
-        fn key_up(
-            &self,
-            chord: &Chord,
-            destination: relaykey::RelayDestination,
-        ) -> relaykey::Result<()> {
-            self.chords
-                .lock()
-                .expect("recording chord lock")
-                .push(chord.clone());
-            self.events
-                .lock()
-                .expect("recording poster lock")
-                .push((false, destination));
-            Ok(())
-        }
-    }
+    use crate::deps::MockHotkeyApi;
 
     fn application(name: &str, pid: i32) -> TestApplication {
         TestApplication {
@@ -679,15 +587,11 @@ mod tests {
         }
     }
 
-    fn relay_engine(
-        world: Arc<TestWorld>,
-    ) -> (Engine, Arc<RecordingPoster>, mpsc::Receiver<MsgToUI>) {
+    fn relay_engine(world: Arc<TestWorld>) -> (Engine, mpsc::Receiver<MsgToUI>) {
         let (tx, rx) = mpsc::channel(16);
-        let mut engine =
+        let engine =
             Engine::new_with_api_and_world(Arc::new(MockHotkeyApi::new()), tx, false, world);
-        let poster = Arc::new(RecordingPoster::default());
-        engine.relay = RelayHandler::new_with_poster(Some(poster.clone()));
-        (engine, poster, rx)
+        (engine, rx)
     }
 
     #[tokio::test]
@@ -719,7 +623,7 @@ mod tests {
             err_notify: NotifyKind::Warn,
         });
         engine
-            .apply_action("pwd", &action, None, None)
+            .apply_action("pwd", &action, None)
             .await
             .expect("start direct exec");
         let message = rx.recv().await.expect("pwd notification");
@@ -738,31 +642,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn targeted_relay_pins_process_across_repeat_and_release() {
+    async fn relay_target_resolution_uses_focused_or_exact_application_destination() {
         let world = Arc::new(TestWorld::new());
         world.set_running_applications(vec![application("YouTube Music", 71)]);
-        let (engine, poster, _rx) = relay_engine(world.clone());
-        let spec = config::RelaySpec::application("YouTube Music", "space");
-
-        let first = engine
-            .apply_relay("music", &spec, EffectRun::RepeatedFirst)
-            .await
-            .expect("start targeted relay");
-        assert!(!first.terminal);
-        world.set_running_applications(vec![application("YouTube Music", 72)]);
-        engine
-            .apply_relay("music", &spec, EffectRun::RepeatedTick)
-            .await
-            .expect("repeat targeted relay");
-        assert!(engine.relay.stop_relay("music"));
+        let (engine, _rx) = relay_engine(world);
 
         assert_eq!(
-            poster.events(),
-            vec![
-                (false, relaykey::RelayDestination::Process(71)),
-                (true, relaykey::RelayDestination::Process(71)),
-                (false, relaykey::RelayDestination::Process(71)),
-            ]
+            engine
+                .resolve_relay_destination(&config::RelayTarget::Focused)
+                .await
+                .expect("focused destination"),
+            Some(relaykey::RelayDestination::Hid)
+        );
+        assert_eq!(
+            engine
+                .resolve_relay_destination(&config::RelayTarget::ApplicationName(
+                    "YouTube Music".to_string(),
+                ))
+                .await
+                .expect("process destination"),
+            Some(relaykey::RelayDestination::Process(71))
         );
     }
 
@@ -783,7 +682,7 @@ mod tests {
         ] {
             let world = Arc::new(TestWorld::new());
             world.set_running_applications(applications);
-            let (engine, poster, mut rx) = relay_engine(world.clone());
+            let (engine, mut rx) = relay_engine(world.clone());
             let spec = config::RelaySpec::application("YouTube Music", "space");
 
             let first = engine
@@ -797,7 +696,6 @@ mod tests {
                 .await
                 .expect("terminal tick is inert");
 
-            assert!(poster.events().is_empty());
             let message = rx.try_recv().expect("warning notification");
             assert!(matches!(
                 message,
@@ -820,7 +718,7 @@ mod tests {
         ] {
             let world = Arc::new(TestWorld::new());
             world.set_running_applications(vec![application("YouTube Music", 71)]);
-            let (engine, poster, mut rx) = relay_engine(world);
+            let (engine, mut rx) = relay_engine(world);
 
             let applied = engine
                 .apply_relay("music", &spec, EffectRun::RepeatedFirst)
@@ -828,38 +726,12 @@ mod tests {
                 .expect("invalid relay result");
 
             assert!(applied.terminal);
-            assert!(poster.events().is_empty());
             assert!(matches!(
                 rx.try_recv().expect("invalid chord notification"),
                 MsgToUI::Notify { text, .. }
                     if text == "Invalid relay chord string: not-a-chord"
             ));
         }
-    }
-
-    #[tokio::test]
-    async fn targeted_relays_forward_modified_main_keys_to_the_process() {
-        let world = Arc::new(TestWorld::new());
-        world.set_running_applications(vec![application("YouTube Music", 71)]);
-        let (engine, poster, mut rx) = relay_engine(world);
-        let spec = config::RelaySpec::application("YouTube Music", "shift+=");
-
-        let applied = engine
-            .apply_relay("music", &spec, EffectRun::OneShot)
-            .await
-            .expect("modified targeted relay result");
-
-        assert!(!applied.terminal);
-        assert_eq!(
-            poster.events(),
-            vec![
-                (false, relaykey::RelayDestination::Process(71)),
-                (false, relaykey::RelayDestination::Process(71)),
-            ]
-        );
-        let chord = Chord::parse("shift+=").expect("modified chord");
-        assert_eq!(poster.chords(), vec![chord.clone(), chord]);
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]

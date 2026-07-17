@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    mem,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 mod broadcaster;
@@ -9,41 +12,59 @@ mod sources;
 
 use hotki_protocol::MsgToUI;
 use hotki_world::WorldView;
-use parking_lot::Mutex;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{
+    select,
+    sync::{
+        Mutex,
+        mpsc::{Receiver, Sender},
+        watch,
+    },
+    task::JoinHandle,
+};
 
-use self::{broadcaster::broadcast_event, registry::ClientRegistry, sources::*};
+use self::{
+    broadcaster::broadcast_event,
+    registry::ClientRegistry,
+    sources::{broadcast_heartbeats, forward_world_events},
+};
 
-#[derive(Clone)]
-struct LifecycleLatch {
-    running: Arc<AtomicBool>,
+/// Owned tasks and cancellation signal for one running event pipeline.
+struct PipelineTasks {
+    /// Wakes every task during explicit pipeline shutdown.
+    cancel: watch::Sender<bool>,
+    /// Queued UI event fanout task.
+    fanout: JoinHandle<()>,
+    /// World focus forwarding task.
+    world: JoinHandle<()>,
+    /// Direct heartbeat broadcasting task.
+    heartbeat: JoinHandle<()>,
 }
 
-impl LifecycleLatch {
-    fn new() -> Self {
-        Self {
-            running: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    fn begin(&self) -> Option<LifecycleRun> {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return None;
-        }
-        Some(LifecycleRun {
-            latch: self.clone(),
-        })
+impl PipelineTasks {
+    /// Cancel every task and await its completion.
+    async fn shutdown(self) {
+        let _ = self.cancel.send(true);
+        join_task("fanout", self.fanout).await;
+        join_task("world", self.world).await;
+        join_task("heartbeat", self.heartbeat).await;
     }
 }
 
-struct LifecycleRun {
-    latch: LifecycleLatch,
+/// Await an owned pipeline task and report unexpected task failure.
+async fn join_task(name: &str, task: JoinHandle<()>) {
+    if let Err(error) = task.await {
+        tracing::warn!(task = name, ?error, "event_pipeline_task_failed");
+    }
 }
 
-impl Drop for LifecycleRun {
-    fn drop(&mut self) {
-        self.latch.running.store(false, Ordering::SeqCst);
-    }
+/// Lifecycle of the single event-pipeline task group.
+enum PipelineLifecycle {
+    /// Receiver retained until the lazy engine exposes its world.
+    Ready(Receiver<MsgToUI>),
+    /// All event sources and forwarding tasks are running.
+    Running(PipelineTasks),
+    /// Pipeline has been shut down and cannot restart.
+    Stopped,
 }
 
 /// Shared event pipeline for broadcasting UI events to connected clients.
@@ -51,18 +72,14 @@ impl Drop for LifecycleRun {
 pub(super) struct EventPipeline {
     /// Event sender for UI messages (bounded).
     event_tx: Sender<MsgToUI>,
-    /// Event receiver, taken by the first connection that starts forwarding.
-    event_rx: Arc<Mutex<Option<Receiver<MsgToUI>>>>,
     /// Connected clients.
     registry: ClientRegistry,
     /// Global shutdown flag shared with the Tao loop.
     shutdown: Arc<AtomicBool>,
-    /// Ensure only one heartbeat loop is active.
-    heartbeat_lifecycle: LifecycleLatch,
-    /// Ensure only one world forwarder loop is active.
-    world_forwarder_lifecycle: LifecycleLatch,
     /// Manager sampled by the single heartbeat source.
     manager: Arc<mac_hotkey::Manager>,
+    /// Receiver and owned task group for the one pipeline run.
+    lifecycle: Arc<Mutex<PipelineLifecycle>>,
 }
 
 impl EventPipeline {
@@ -71,12 +88,10 @@ impl EventPipeline {
         let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
         Self {
             event_tx,
-            event_rx: Arc::new(Mutex::new(Some(event_rx))),
             registry: ClientRegistry::new(),
             shutdown,
-            heartbeat_lifecycle: LifecycleLatch::new(),
-            world_forwarder_lifecycle: LifecycleLatch::new(),
             manager,
+            lifecycle: Arc::new(Mutex::new(PipelineLifecycle::Ready(event_rx))),
         }
     }
 
@@ -95,51 +110,163 @@ impl EventPipeline {
         self.registry.register(client).await;
     }
 
-    /// Take ownership of the event receiver so forwarding starts exactly once.
-    pub(super) fn take_event_rx(&self) -> Option<Receiver<MsgToUI>> {
-        self.event_rx.lock().take()
-    }
-
-    /// Clear clients and close the local event pipeline for shutdown.
-    pub(super) async fn clear_for_shutdown(&self) {
-        logging::forward::clear_sink();
-        self.registry.clear().await;
-        *self.event_rx.lock() = None;
-    }
-
-    /// Bind the global log sink to the shared UI event channel.
-    pub(super) fn bind_log_sink(&self) {
-        logging::forward::set_sink(self.event_tx.clone());
-    }
-
-    /// Forward queued events from the receiver to all connected clients.
-    pub(super) async fn forward_events(&self, mut event_rx: Receiver<MsgToUI>) {
-        while let Some(event) = event_rx.recv().await {
-            if self.shutdown.load(Ordering::SeqCst) {
-                break;
+    /// Start the one owned task group after the lazy engine exposes its world.
+    ///
+    /// Returns true only for the first successful start.
+    pub(super) async fn start(&self, world: Arc<dyn WorldView>) -> bool {
+        let mut lifecycle = self.lifecycle.lock().await;
+        let event_rx = match mem::replace(&mut *lifecycle, PipelineLifecycle::Stopped) {
+            PipelineLifecycle::Ready(event_rx) => event_rx,
+            state => {
+                *lifecycle = state;
+                return false;
             }
-            broadcast_event(&self.registry, &self.shutdown, event).await;
-        }
-    }
-
-    /// Ensure the focus-change forwarder is running.
-    pub(super) async fn ensure_world_forwarder(&self, world: Arc<dyn WorldView>) {
-        let Some(run) = self.world_forwarder_lifecycle.begin() else {
-            return;
         };
-        spawn_world_forwarder(self.shutdown.clone(), self.event_tx.clone(), world, run);
-    }
 
-    /// Start the single shared heartbeat loop if it is not already running.
-    pub(super) async fn ensure_heartbeat(&self) {
-        let Some(run) = self.heartbeat_lifecycle.begin() else {
-            return;
-        };
-        spawn_heartbeat(
+        logging::forward::set_sink(self.event_tx.clone());
+        let (cancel, _) = watch::channel(false);
+        let fanout = tokio::spawn(forward_events(
+            event_rx,
+            self.registry.clone(),
+            self.shutdown.clone(),
+            cancel.subscribe(),
+        ));
+        let cursor = world.subscribe();
+        let world = tokio::spawn(forward_world_events(
+            self.shutdown.clone(),
+            self.event_tx.clone(),
+            world,
+            cursor,
+            cancel.subscribe(),
+        ));
+        let heartbeat = tokio::spawn(broadcast_heartbeats(
             self.shutdown.clone(),
             self.registry.clone(),
             self.manager.clone(),
-            run,
-        );
+            cancel.subscribe(),
+        ));
+        *lifecycle = PipelineLifecycle::Running(PipelineTasks {
+            cancel,
+            fanout,
+            world,
+            heartbeat,
+        });
+        true
+    }
+
+    /// Clear clients, close event sources, and join the owned task group.
+    pub(super) async fn shutdown(&self) {
+        logging::forward::clear_sink();
+        self.registry.clear().await;
+        let tasks = {
+            let mut lifecycle = self.lifecycle.lock().await;
+            match mem::replace(&mut *lifecycle, PipelineLifecycle::Stopped) {
+                PipelineLifecycle::Running(tasks) => Some(tasks),
+                PipelineLifecycle::Ready(event_rx) => {
+                    drop(event_rx);
+                    None
+                }
+                PipelineLifecycle::Stopped => None,
+            }
+        };
+        if let Some(tasks) = tasks {
+            tasks.shutdown().await;
+        }
+    }
+}
+
+/// Forward queued UI events until shutdown, cancellation, or sender closure.
+async fn forward_events(
+    mut event_rx: Receiver<MsgToUI>,
+    registry: ClientRegistry,
+    shutdown: Arc<AtomicBool>,
+    mut cancel: watch::Receiver<bool>,
+) {
+    loop {
+        let event = select! {
+            _ = cancel.changed() => break,
+            event = event_rx.recv() => event,
+        };
+        let Some(event) = event else {
+            break;
+        };
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        broadcast_event(&registry, &shutdown, event).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hotki_world::{FocusChange, TestWorld, WorldEvent, WorldView};
+
+    use super::*;
+
+    fn test_pipeline() -> EventPipeline {
+        EventPipeline::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(mac_hotkey::Manager::without_event_tap()),
+        )
+    }
+
+    #[tokio::test]
+    async fn pipeline_starts_one_task_group_and_joins_it_on_shutdown() {
+        let pipeline = test_pipeline();
+        let world = Arc::new(TestWorld::new());
+
+        assert!(pipeline.start(world.clone()).await);
+        assert!(!pipeline.start(world).await);
+        {
+            let lifecycle = pipeline.lifecycle.lock().await;
+            let PipelineLifecycle::Running(tasks) = &*lifecycle else {
+                panic!("pipeline did not retain its running task group");
+            };
+            assert!(!tasks.fanout.is_finished());
+            assert!(!tasks.world.is_finished());
+            assert!(!tasks.heartbeat.is_finished());
+        }
+
+        pipeline.shutdown().await;
+
+        assert!(matches!(
+            &*pipeline.lifecycle.lock().await,
+            PipelineLifecycle::Stopped
+        ));
+    }
+
+    #[tokio::test]
+    async fn queued_event_forwarder_finishes_when_its_sender_closes() {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+        let (_cancel, cancel_rx) = watch::channel(false);
+        drop(event_tx);
+
+        forward_events(
+            event_rx,
+            ClientRegistry::new(),
+            Arc::new(AtomicBool::new(false)),
+            cancel_rx,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn world_forwarder_finishes_when_the_event_queue_closes() {
+        let world = Arc::new(TestWorld::new());
+        let cursor = world.subscribe();
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+        let (_cancel, cancel_rx) = watch::channel(false);
+        drop(event_rx);
+        let task = tokio::spawn(forward_world_events(
+            Arc::new(AtomicBool::new(false)),
+            event_tx,
+            world.clone(),
+            cursor,
+            cancel_rx,
+        ));
+
+        world.push_event(WorldEvent::FocusChanged(FocusChange::Cleared));
+
+        task.await.expect("world forwarder task");
     }
 }

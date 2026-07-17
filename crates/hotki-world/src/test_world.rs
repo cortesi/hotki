@@ -37,6 +37,10 @@ impl TestWorld {
     }
 
     /// Replace the snapshot and focused key atomically.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the focused key is absent from the supplied snapshot.
     pub fn set_snapshot(&self, snapshot: Vec<WorldWindow>, focused: Option<WindowKey>) {
         if let Some(change) = self.core.state.set_snapshot(snapshot, focused) {
             self.core.hub.publish(WorldEvent::FocusChanged(change));
@@ -113,11 +117,11 @@ mod tests {
         ]);
 
         assert_eq!(
-            world.resolve_application("YouTube Music").await,
+            world.resolve_application("YouTube Music"),
             ApplicationResolution::Found(41)
         );
         assert_eq!(
-            world.resolve_application("Missing").await,
+            world.resolve_application("Missing"),
             ApplicationResolution::NotRunning
         );
 
@@ -127,7 +131,7 @@ mod tests {
             application(Some("YouTube Music"), 45, false),
         ]);
         assert_eq!(
-            world.resolve_application("YouTube Music").await,
+            world.resolve_application("YouTube Music"),
             ApplicationResolution::Ambiguous(2)
         );
     }

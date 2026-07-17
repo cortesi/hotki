@@ -97,49 +97,20 @@ pub fn focus_snapshot(window: &WorldWindow) -> FocusSnapshot {
     }
 }
 
-/// Resolve a focused snapshot from a focus change, falling back to the current world state.
-pub async fn focus_snapshot_for_change(
-    world: &dyn WorldView,
-    change: &FocusChange,
-) -> Option<FocusSnapshot> {
-    if let Some(focus) = change.focus.clone() {
-        return Some(focus);
-    }
-    let key = change.key?;
-    snapshot_for_key(world, key).await
-}
-
 /// Subscribe to world events together with the current focused snapshot, if any.
-pub async fn subscribe_with_snapshot(
-    world: &dyn WorldView,
-) -> (EventCursor, Option<FocusSnapshot>) {
+pub fn subscribe_with_snapshot(world: &dyn WorldView) -> (EventCursor, Option<FocusSnapshot>) {
     let cursor = world.subscribe();
-    let focus = focused_snapshot(world).await;
+    let focus = world.focus_snapshot();
     (cursor, focus)
 }
 
-/// Resolve a specific window key into the shared focus snapshot type.
-pub async fn snapshot_for_key(world: &dyn WorldView, key: WindowKey) -> Option<FocusSnapshot> {
-    world
-        .snapshot()
-        .await
-        .into_iter()
-        .find(|window| window.world_id() == key)
-        .map(|window| focus_snapshot(&window))
-}
-
-/// Resolve the currently focused snapshot from the world state, if any.
-pub async fn focused_snapshot(world: &dyn WorldView) -> Option<FocusSnapshot> {
-    world.focus_snapshot().await
-}
-
-/// Context describing the current focus selection accompanying focus events.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FocusChange {
-    /// Window key for the focused window, when available.
-    pub key: Option<WindowKey>,
-    /// Shared focused window snapshot, if available.
-    pub focus: Option<FocusSnapshot>,
+/// Complete focus transition carried by each focus event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FocusChange {
+    /// A window became focused or its focused snapshot changed.
+    Focused(FocusSnapshot),
+    /// No window is focused.
+    Cleared,
 }
 
 /// World events stream payloads.
@@ -198,25 +169,25 @@ pub trait WorldView: Send + Sync {
     ) -> Option<WorldEvent>;
 
     /// Retrieve the latest world snapshot.
-    async fn snapshot(&self) -> Vec<WorldWindow>;
+    fn snapshot(&self) -> Vec<WorldWindow>;
 
     /// Retrieve the currently focused window key, if any.
-    async fn focused(&self) -> Option<WindowKey>;
+    fn focused(&self) -> Option<WindowKey>;
 
     /// Retrieve the semantic snapshot of the currently focused window, if any.
-    async fn focus_snapshot(&self) -> Option<FocusSnapshot>;
+    fn focus_snapshot(&self) -> Option<FocusSnapshot>;
 
     /// Fetch current capability and permission information.
-    async fn capabilities(&self) -> Capabilities;
+    fn capabilities(&self) -> Capabilities;
 
     /// Fetch comprehensive world status diagnostics.
-    async fn status(&self) -> WorldStatus;
+    fn status(&self) -> WorldStatus;
 
     /// Resolve one exact AppKit localized name to a running process.
-    async fn resolve_application(&self, app_name: &str) -> ApplicationResolution;
+    fn resolve_application(&self, app_name: &str) -> ApplicationResolution;
 
     /// Retrieve the tracked display geometry snapshot.
-    async fn displays(&self) -> DisplaysSnapshot;
+    fn displays(&self) -> DisplaysSnapshot;
 
     /// Wait until a refresh begun after this call has updated the world state.
     async fn refresh(&self);

@@ -11,8 +11,8 @@
 //!
 //! - Prefer Tokio locks inside async paths. The `clients` list uses
 //!   `tokio::sync::Mutex` to avoid mixing where we `await` soon after.
-//! - Use short-lived sync locks only at the edges (e.g., `event_tx`/`event_rx`),
-//!   and release them before any `.await` or blocking work.
+//! - The event pipeline moves its receiver and task handles through one Tokio
+//!   lifecycle mutex, releasing the guard before task joins or network work.
 //! - Never hold any lock across network or file I/O; clone snapshots first.
 
 mod events;
@@ -91,9 +91,18 @@ impl HotkeyService {
         self.shutdown.clone()
     }
 
+    /// Stop and join every shared server event task.
+    pub(crate) async fn stop_event_pipeline(&self) {
+        self.events.shutdown().await;
+    }
+
     async fn engine(&self) -> &Engine {
         self.engine
-            .get_or_init(|| async { Engine::new(self.manager.clone(), self.events.sender()) })
+            .get_or_init(|| async {
+                let engine = Engine::new(self.manager.clone(), self.events.sender());
+                let _ = self.events.start(engine.world()).await;
+                engine
+            })
             .await
     }
 
@@ -117,7 +126,7 @@ impl HotkeyService {
     async fn handle_shutdown_request(&self) -> StdResult<Value, RpcError> {
         info!("Shutdown request received");
         self.shutdown.request(ShutdownReason::Rpc);
-        self.events.clear_for_shutdown().await;
+        self.stop_event_pipeline().await;
         Ok(Value::Boolean(true))
     }
 
@@ -214,14 +223,14 @@ impl HotkeyService {
 
     async fn handle_get_world_status(&self) -> StdResult<Value, RpcError> {
         let engine = self.engine().await;
-        Ok(enc_world_status(&engine.world_status().await))
+        Ok(enc_world_status(&engine.world_status()))
     }
 
     async fn handle_get_world_snapshot(&self) -> StdResult<Value, RpcError> {
         let engine = self.engine().await;
         let world = engine.world();
-        let displays = world.displays().await;
-        let focused_app = hotki_world::focused_snapshot(world.as_ref()).await;
+        let displays = world.displays();
+        let focused_app = world.focus_snapshot();
         let payload = build_snapshot_payload(displays, focused_app);
         enc_world_snapshot(&payload)
             .map_err(|err| typed_err(RpcFailure::new(RpcErrorCode::InvalidType, err.to_string())))
@@ -315,24 +324,8 @@ impl MrpcConnection for HotkeyService {
         debug!("Client connected via MRPC");
 
         self.events.register_client(client).await;
+        let _ = self.engine().await;
         let _ = loop_wake::post_user_event(WakeEvent::ClientConnected);
-
-        // Start event forwarding if not already started
-        let event_rx = self.events.take_event_rx();
-        if let Some(event_rx) = event_rx {
-            let pipeline = self.events.clone();
-            tokio::spawn(async move {
-                pipeline.forward_events(event_rx).await;
-            });
-        }
-
-        // Ensure engine and begin world forwarder if not already running.
-        let world = self.engine().await.world();
-        self.events.ensure_world_forwarder(world).await;
-
-        // Set up log forwarding to this client
-        self.events.bind_log_sink();
-        self.events.ensure_heartbeat().await;
 
         Ok(())
     }

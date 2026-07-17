@@ -60,7 +60,6 @@ mod key_binding;
 mod key_state;
 mod notification;
 mod refresh;
-mod relay;
 mod repeater;
 mod runtime;
 mod selector;
@@ -137,7 +136,6 @@ use key_binding::KeyBindingManager;
 use key_state::KeyStateTracker;
 use notification::NotificationDispatcher;
 use parking_lot::Mutex;
-use relay::RelayHandler;
 #[cfg(test)]
 pub(crate) use repeater::OnRelayRepeat;
 pub use repeater::RepeatSpec;
@@ -282,7 +280,7 @@ pub struct Engine {
     /// Last displays snapshot sent to the UI.
     display_snapshot: Arc<tokio::sync::Mutex<DisplaysSnapshot>>,
     /// Key relay handler for destination-pinned gestures.
-    relay: RelayHandler,
+    relay: relaykey::RelayKey,
     /// Notification dispatcher for UI messages.
     notifier: NotificationDispatcher,
     /// Coalesced wakeups used to refresh selector snapshots during matching.
@@ -333,7 +331,11 @@ impl Engine {
             KeyBindingManager::new_with_api(api),
         ));
         let focus_ctx = Arc::new(Mutex::new(None));
-        let relay = RelayHandler::new_with_enabled(relay_enabled);
+        let relay = if relay_enabled {
+            relaykey::RelayKey::new()
+        } else {
+            relaykey::RelayKey::disabled()
+        };
         let notifier = NotificationDispatcher::new(event_tx);
         let selector_notify = Arc::new(tokio::sync::Notify::new());
         let repeater = Repeater::new(notifier.clone());
@@ -406,8 +408,8 @@ impl Engine {
     }
 
     /// Diagnostics: world status snapshot (counts, timings, permissions).
-    pub async fn world_status(&self) -> hotki_world::WorldStatus {
-        self.world.status().await
+    pub fn world_status(&self) -> hotki_world::WorldStatus {
+        self.world.status()
     }
 }
 
@@ -417,7 +419,7 @@ impl Drop for Engine {
             self.lifecycle.shutdown();
             self.repeater.abort_all();
             self.action_repeater.abort_all();
-            self.relay.stop_all();
+            self.relay.release_all();
         }
     }
 }

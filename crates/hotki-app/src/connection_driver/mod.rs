@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{
-    health::{ConnectionStatus, InputProjection, RetryState, RuntimeHealth, RuntimePhase},
+    health::{InputProjection, RuntimeHealth, RuntimePhase},
     logs,
     permissions::{PermissionObservation, PermissionsStatus, check_permissions},
     runtime::ControlMsg,
@@ -179,61 +179,32 @@ impl ConnectionDriver {
 
     /// Record a connection failure that can be retried.
     fn mark_disconnected(&mut self, message: impl Into<String>) {
-        self.health.phase = RuntimePhase::Disconnected;
-        self.health.connection = ConnectionStatus::Disconnected;
-        self.health.retry = RetryState::Available;
-        self.health.message = Some(message.into());
+        self.health.disconnect(message);
         self.ui.set_server_bindings(Vec::new());
         self.publish_health();
     }
 
     /// Begin the first connection or a reconnect attempt.
     fn mark_connecting(&mut self) {
-        let retrying = self.health.phase == RuntimePhase::Retrying
-            || self.health.retry == RetryState::Available
-            || self.health.message.is_some();
-        self.health.phase = if retrying {
-            RuntimePhase::Retrying
-        } else {
-            RuntimePhase::Connecting
-        };
-        self.health.connection = ConnectionStatus::Connecting;
-        self.health.pending_config = Some(self.config_path.clone());
-        self.health.retry = RetryState::InProgress;
-        self.health.message = None;
+        self.health.start_connecting(self.config_path.clone());
         self.publish_health();
     }
 
     /// Record that required macOS permissions are still missing.
     fn mark_waiting_for_permissions(&mut self) {
-        self.health.phase = RuntimePhase::WaitingPermissions;
-        if !self.health.server_connected() {
-            self.health.connection = ConnectionStatus::Disconnected;
-        }
-        self.health.retry = RetryState::Available;
-        self.health.message =
-            Some("Grant Accessibility and Input Monitoring to continue.".to_string());
+        self.health.block_on_permissions();
         self.publish_health();
     }
 
     /// Record an acknowledged active config and ready server.
     fn mark_ready(&mut self) {
-        self.health.phase = RuntimePhase::Ready;
-        self.health.connection = ConnectionStatus::Connected;
-        self.health.active_config = Some(self.config_path.clone());
-        self.health.pending_config = None;
-        self.health.retry = RetryState::Idle;
-        self.health.message = None;
+        self.health.run_config(self.config_path.clone());
         self.publish_health();
     }
 
     /// Record a rejected config while keeping any prior active config explicit.
     fn mark_invalid_config(&mut self, message: impl Into<String>) {
-        self.health.phase = RuntimePhase::InvalidConfig;
-        self.health.connection = ConnectionStatus::Connected;
-        self.health.pending_config = Some(self.config_path.clone());
-        self.health.retry = RetryState::Available;
-        self.health.message = Some(message.into());
+        self.health.reject_config(self.config_path.clone(), message);
         self.publish_health();
     }
 
@@ -254,7 +225,7 @@ impl ConnectionDriver {
                 self.health.permissions = status;
                 if !Self::observed_permissions_granted(status) {
                     if self.health.server_connected()
-                        && self.health.phase == RuntimePhase::InvalidConfig
+                        && self.health.phase() == RuntimePhase::InvalidConfig
                     {
                         self.publish_health();
                     } else {
@@ -266,19 +237,17 @@ impl ConnectionDriver {
                         ControlOutcome::Continue
                     }
                 } else if self.health.server_connected()
-                    && self.health.phase == RuntimePhase::WaitingPermissions
+                    && self.health.phase() == RuntimePhase::WaitingPermissions
                 {
                     self.mark_ready();
                     ControlOutcome::Continue
                 } else if matches!(
-                    self.health.phase,
+                    self.health.phase(),
                     RuntimePhase::Disconnected
                         | RuntimePhase::Connecting
                         | RuntimePhase::WaitingPermissions
                 ) {
-                    self.health.phase = RuntimePhase::Retrying;
-                    self.health.retry = RetryState::InProgress;
-                    self.health.message = None;
+                    self.health.queue_reconnect(self.config_path.clone());
                     self.publish_health();
                     ControlOutcome::RetryConnect
                 } else {
@@ -330,10 +299,7 @@ impl ConnectionDriver {
                     ControlOutcome::Continue
                 } else {
                     self.pending_controls.push_back(control);
-                    self.health.phase = RuntimePhase::Retrying;
-                    self.health.pending_config = Some(self.config_path.clone());
-                    self.health.retry = RetryState::InProgress;
-                    self.health.message = None;
+                    self.health.queue_reconnect(self.config_path.clone());
                     self.publish_health();
                     ControlOutcome::RetryConnect
                 }
@@ -353,14 +319,7 @@ impl ConnectionDriver {
 
     /// Record shutdown before waiting for owned runtime work to finish.
     fn begin_shutdown(&mut self) {
-        self.health.phase = RuntimePhase::ShuttingDown;
-        self.health.connection = if self.health.server_connected() {
-            ConnectionStatus::Closing
-        } else {
-            ConnectionStatus::Disconnected
-        };
-        self.health.retry = RetryState::Idle;
-        self.health.message = None;
+        self.health.begin_shutdown();
         self.publish_health();
     }
 
@@ -420,11 +379,7 @@ impl ConnectionDriver {
 
     /// Reload the current config path on the server and notify the UI.
     async fn reload_config(&mut self, conn: &mut hotki_server::Connection) {
-        self.health.phase = RuntimePhase::Retrying;
-        self.health.connection = ConnectionStatus::Connected;
-        self.health.pending_config = Some(self.config_path.clone());
-        self.health.retry = RetryState::InProgress;
-        self.health.message = None;
+        self.health.start_config_reload(self.config_path.clone());
         self.publish_health();
 
         match self.activate_config(conn).await {
@@ -608,7 +563,7 @@ impl ConnectionDriver {
     /// Run the connection lifecycle until shutdown.
     pub(crate) async fn run(&mut self) {
         loop {
-            if self.health.phase == RuntimePhase::ShuttingDown {
+            if self.health.is_shutting_down() {
                 break;
             }
 
@@ -617,7 +572,7 @@ impl ConnectionDriver {
                 continue;
             }
 
-            if self.health.phase == RuntimePhase::ShuttingDown {
+            if self.health.is_shutting_down() {
                 break;
             }
 
@@ -626,7 +581,7 @@ impl ConnectionDriver {
             }
         }
 
-        if self.health.phase == RuntimePhase::ShuttingDown {
+        if self.health.is_shutting_down() {
             self.finish_shutdown();
         }
     }
@@ -687,7 +642,7 @@ impl ConnectionDriver {
             }
             Err(_) => {
                 error!("Connect task canceled before reporting a result");
-                if self.health.phase != RuntimePhase::ShuttingDown {
+                if !self.health.is_shutting_down() {
                     self.mark_disconnected("Server connection attempt was canceled");
                 }
                 None
@@ -730,7 +685,7 @@ impl ConnectionDriver {
             }
         }
         info!("Exiting key loop");
-        if self.health.phase != RuntimePhase::ShuttingDown {
+        if !self.health.is_shutting_down() {
             self.mark_disconnected("Server connection lost; reconnecting");
         }
     }
@@ -864,7 +819,7 @@ fn spawn_connect(log_filter: Option<String>, server_event_tap_enabled: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::{future, iter};
+    use std::{future, iter, path::Path};
 
     use hotki_protocol::{
         InputHealth, NotifyKind, SecureInputOwner, SecureInputState, TapLifecycle, TapMode,
@@ -877,7 +832,7 @@ mod tests {
     };
     use crate::{
         app::{UiCommand, UiEvent},
-        health::{ConnectionStatus, RetryState, RuntimePhase},
+        health::{ConnectionStatus, RetryState, RuntimePhase, RuntimeState},
         permissions::{PermissionObservation, PermissionsStatus},
         runtime::ControlMsg,
         ui_delivery::{UiDeliveryRx, ui_delivery_channel},
@@ -969,9 +924,7 @@ mod tests {
             ControlOutcome::RetryConnect
         );
 
-        driver.health.phase = RuntimePhase::Ready;
-        driver.health.connection = ConnectionStatus::Connected;
-        driver.health.retry = RetryState::Idle;
+        driver.health.run_config("config.luau".into());
         assert_eq!(
             driver.handle_local_control(LocalControl::PermissionsChanged(
                 PermissionObservation::system(ready),
@@ -997,9 +950,6 @@ mod tests {
             input_monitoring: PermissionState::Granted,
             screen_recording: PermissionState::Denied,
         };
-        driver.health.phase = RuntimePhase::Connecting;
-        driver.health.connection = ConnectionStatus::Connecting;
-
         assert_eq!(
             driver.handle_local_control(LocalControl::PermissionsChanged(
                 PermissionObservation::devtools(denied),
@@ -1007,7 +957,7 @@ mod tests {
             ControlOutcome::PauseConnect
         );
         assert_eq!(driver.permission_override, Some(denied));
-        assert_eq!(driver.health.phase, RuntimePhase::WaitingPermissions);
+        assert_eq!(driver.health.phase(), RuntimePhase::WaitingPermissions);
 
         assert_eq!(
             driver.handle_local_control(LocalControl::PermissionsChanged(
@@ -1037,6 +987,10 @@ mod tests {
 
         assert_eq!(outcome, ControlOutcome::RetryConnect);
         assert_eq!(driver.pending_controls.len(), 1);
+        assert!(matches!(
+            driver.health.state,
+            RuntimeState::QueuedReconnect { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1057,7 +1011,7 @@ mod tests {
         let outcome = driver.route_control_msg(None, ControlMsg::Shutdown).await;
 
         assert_eq!(outcome, ControlOutcome::Stop);
-        assert_eq!(driver.health.phase, RuntimePhase::ShuttingDown);
+        assert_eq!(driver.health.phase(), RuntimePhase::ShuttingDown);
         assert!(!drain_for_shutdown(&rx_ui));
 
         driver.finish_shutdown();
@@ -1079,16 +1033,25 @@ mod tests {
             false,
             false,
         );
-        driver.health.active_config = Some("active.luau".into());
+        driver.health.run_config("active.luau".into());
 
         driver.mark_invalid_config("candidate rejected");
 
-        assert_eq!(driver.health.phase, RuntimePhase::InvalidConfig);
-        assert_eq!(driver.health.connection, ConnectionStatus::Connected);
-        assert_eq!(driver.health.active_config, Some("active.luau".into()));
-        assert_eq!(driver.health.pending_config, Some("candidate.luau".into()));
-        assert_eq!(driver.health.retry, RetryState::Available);
-        assert_eq!(driver.health.message.as_deref(), Some("candidate rejected"));
+        assert_eq!(driver.health.phase(), RuntimePhase::InvalidConfig);
+        assert_eq!(driver.health.connection(), ConnectionStatus::Connected);
+        assert_eq!(
+            driver.health.active_config(),
+            Some(Path::new("active.luau"))
+        );
+        assert_eq!(
+            driver.health.pending_config(),
+            Some(Path::new("candidate.luau"))
+        );
+        assert_eq!(driver.health.retry(), RetryState::Available);
+        assert!(matches!(
+            &driver.health.state,
+            RuntimeState::ConfigRejected { message, .. } if message == "candidate rejected"
+        ));
     }
 
     #[tokio::test]

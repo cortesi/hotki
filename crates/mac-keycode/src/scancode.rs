@@ -14,12 +14,11 @@ use crate::Key;
 /// macOS hardware virtual keycode (`kVK_*`, `NSEvent.keyCode`).
 pub type Scancode = u16;
 
-// No standalone validity helper; use `Key::from_scancode(sc).is_some()` instead.
-
 impl TryFrom<Scancode> for Key {
     type Error = ();
+
     fn try_from(value: Scancode) -> Result<Self, Self::Error> {
-        Key::from_scancode(value).ok_or(())
+        Key::from_keycode(value).ok_or(())
     }
 }
 
@@ -29,27 +28,12 @@ impl From<Key> for Scancode {
     }
 }
 
-impl Key {
-    /// Looks up a `Key` from a macOS scancode (hardware virtual keycode).
-    pub fn from_scancode(sc: Scancode) -> Option<Self> {
-        // Reuse the generated mapping which is based on HIToolbox `kVK_*` values.
-        Self::from_keycode(sc)
-    }
-
-    /// Returns the scancode (`kVK_*`) for this key.
-    pub const fn scancode(self) -> Scancode {
-        self as u16
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_all_keys() {
-        // Sample a few to keep tests light in this crate. Full mapping is generated
-        // and validated indirectly; here we spot-check representative keys.
+    fn representative_keys_roundtrip_through_scancodes() {
         let samples = [
             Key::A,
             Key::Digit1,
@@ -60,16 +44,15 @@ mod tests {
             Key::F1,
             Key::KeypadEnter,
         ];
-        for k in samples {
-            let sc = k.scancode();
-            assert!(Key::from_scancode(sc).is_some());
-            assert_eq!(Key::from_scancode(sc), Some(k));
-            assert_eq!(Key::try_from(sc).ok(), Some(k));
-            let back: Scancode = Scancode::from(k);
-            assert_eq!(back, sc);
+        for key in samples {
+            let scancode = Scancode::from(key);
+            assert_eq!(Key::try_from(scancode), Ok(key));
+            assert_eq!(Scancode::from(Key::try_from(scancode).unwrap()), scancode);
         }
+    }
 
-        // Unknown example should be invalid; pick a value outside known range.
-        assert_eq!(Key::from_scancode(0xFFFF), None);
+    #[test]
+    fn unknown_scancode_is_rejected() {
+        assert_eq!(Key::try_from(0xFFFF), Err(()));
     }
 }

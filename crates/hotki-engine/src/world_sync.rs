@@ -18,12 +18,10 @@ impl Engine {
         let cancel = self.background_cancellation_token();
         let task = tokio::spawn(async move {
             loop {
-                let (mut cursor, seed) = tokio::select! {
-                    () = cancel.cancelled() => return,
-                    subscription = hotki_world::subscribe_with_snapshot(world.as_ref()) => {
-                        subscription
-                    }
-                };
+                let (mut cursor, seed) = hotki_world::subscribe_with_snapshot(world.as_ref());
+                if cancel.is_cancelled() {
+                    return;
+                }
                 if let Err(err) = engine.apply_world_focus_snapshot(seed).await {
                     warn!("World focus seed apply failed: {}", err);
                 }
@@ -47,9 +45,7 @@ impl Engine {
                             }
                             last_lost = cursor.lost_count;
                             if let hotki_world::WorldEvent::FocusChanged(change) = event {
-                                engine
-                                    .handle_focus_change_event(world.clone(), change)
-                                    .await;
+                                engine.handle_focus_change_event(change).await;
                             }
                             if let Err(err) = engine.refresh_displays_if_changed(&world).await {
                                 warn!("Display refresh after world event failed: {}", err);
@@ -136,23 +132,17 @@ impl Engine {
 
     pub(crate) async fn refresh_world_focus(&self) -> Result<()> {
         self.world.refresh().await;
-        let focus = hotki_world::focused_snapshot(self.world.as_ref()).await;
+        let focus = self.world.focus_snapshot();
         self.apply_world_focus_snapshot(focus).await
     }
 
-    async fn handle_focus_change_event(&self, world: Arc<dyn WorldView>, change: FocusChange) {
-        let focus = hotki_world::focus_snapshot_for_change(world.as_ref(), &change).await;
-
-        if let Some(focus) = focus {
-            if let Err(err) = self.apply_world_focus_snapshot(Some(focus)).await {
-                warn!("World focus update failed: {}", err);
-            }
-        } else if change.key.is_none() {
-            if let Err(err) = self.apply_world_focus_snapshot(None).await {
-                warn!("World focus clear failed: {}", err);
-            }
-        } else {
-            warn!(key = ?change.key, "World focus context unavailable after focus change");
+    async fn handle_focus_change_event(&self, change: FocusChange) {
+        let focus = match change {
+            FocusChange::Focused(focus) => Some(focus),
+            FocusChange::Cleared => None,
+        };
+        if let Err(err) = self.apply_world_focus_snapshot(focus).await {
+            warn!("World focus update failed: {}", err);
         }
     }
 
@@ -163,7 +153,7 @@ impl Engine {
     }
 
     async fn refresh_displays_if_changed(&self, world: &Arc<dyn WorldView>) -> Result<()> {
-        let snapshot = world.displays().await;
+        let snapshot = world.displays();
         {
             let cache = self.display_snapshot.lock().await;
             if *cache == snapshot {
@@ -242,26 +232,24 @@ mod tests {
         .await
         .expect("engine did not observe seed focus");
 
-        world.push_event(WorldEvent::FocusChanged(FocusChange {
-            key: Some(WindowKey { pid: 1, id: 1 }),
-            focus: Some(FocusSnapshot {
+        world.push_event(WorldEvent::FocusChanged(FocusChange::Focused(
+            FocusSnapshot {
                 id: 1,
                 app: "Old".into(),
                 title: "First".into(),
                 pid: 1,
                 display_id: None,
-            }),
-        }));
-        world.push_event(WorldEvent::FocusChanged(FocusChange {
-            key: Some(WindowKey { pid: 2, id: 2 }),
-            focus: Some(FocusSnapshot {
+            },
+        )));
+        world.push_event(WorldEvent::FocusChanged(FocusChange::Focused(
+            FocusSnapshot {
                 id: 2,
                 app: "New".into(),
                 title: "Second".into(),
                 pid: 2,
                 display_id: None,
-            }),
-        }));
+            },
+        )));
 
         tokio::time::timeout(Duration::from_millis(200), async {
             loop {

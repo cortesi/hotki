@@ -320,6 +320,39 @@ end
     }
 
     #[test]
+    fn computed_cached_module_remains_available_after_entry_evaluation() {
+        let root = test_dir("computed-cached-late-require");
+        let path = root.join("config.luau");
+        fs::write(root.join("action.luau"), "return hotki.actions.pop")
+            .expect("write action module");
+        let source = r#"
+local action = require("./action")
+return function(menu, ctx)
+    local request = "./action"
+    local cached = require(request)
+    assert(cached == action)
+    menu:bind("a", "computed cached", cached)
+end
+"#;
+        fs::write(&path, source).expect("write root config");
+
+        let mut config = load_dynamic_config_from_string(source, Some(path)).expect("load config");
+        let base_style = config.base_style();
+        let mut stack = vec![root_frame(&config)];
+        let rendered = render_stack(
+            &mut config,
+            &mut stack,
+            &base_ctx("", false, 0),
+            &base_style,
+        )
+        .expect("computed cached require renders");
+        assert_eq!(
+            find_binding(&rendered.rendered, "a").desc,
+            "computed cached"
+        );
+    }
+
+    #[test]
     fn uncached_modules_cannot_load_after_entry_evaluation() {
         let root = test_dir("uncached-late-require");
         let path = root.join("config.luau");

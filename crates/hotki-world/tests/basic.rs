@@ -2,10 +2,7 @@
 
 use std::time::Duration;
 
-use crate::{
-    FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow,
-    focus_snapshot_for_change, focused_snapshot,
-};
+use crate::{FocusChange, TestWorld, WindowKey, WorldEvent, WorldView, WorldWindow};
 
 #[tokio::test]
 async fn testworld_snapshot_and_focus() {
@@ -24,12 +21,12 @@ async fn testworld_snapshot_and_focus() {
         Some(key),
     );
 
-    let snap = world.snapshot().await;
-    let focused = world.focused().await;
+    let snap = world.snapshot();
+    let focused = world.focused();
     assert_eq!(snap.len(), 1);
     assert_eq!(focused, Some(key));
     assert_eq!(
-        focused_snapshot(&world).await,
+        world.focus_snapshot(),
         Some(hotki_protocol::FocusSnapshot {
             id: key.id,
             app: "TestApp".into(),
@@ -38,28 +35,14 @@ async fn testworld_snapshot_and_focus() {
             display_id: None,
         })
     );
-    assert_eq!(
-        focus_snapshot_for_change(
-            &world,
-            &FocusChange {
-                key: Some(key),
-                focus: None,
-            },
-        )
-        .await
-        .map(|focus| focus.pid),
-        Some(key.pid)
-    );
-
     let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
     let event = world.next_event_until(&mut cursor, deadline).await;
     assert!(
         matches!(
             event,
-            Some(WorldEvent::FocusChanged(FocusChange {
-                focus: Some(hotki_protocol::FocusSnapshot { pid: 42, .. }),
-                ..
-            }))
+            Some(WorldEvent::FocusChanged(FocusChange::Focused(
+                hotki_protocol::FocusSnapshot { pid: 42, .. }
+            )))
         ),
         "focus change event should be observed"
     );
@@ -89,13 +72,42 @@ async fn same_window_title_change_emits_focus_event() {
 
     assert!(matches!(
         event,
-        Some(WorldEvent::FocusChanged(FocusChange {
-            key: Some(event_key),
-            focus: Some(hotki_protocol::FocusSnapshot { title, .. }),
-        })) if event_key == key && title == "Second"
+        Some(WorldEvent::FocusChanged(FocusChange::Focused(
+            hotki_protocol::FocusSnapshot { id: 7, title, .. }
+        ))) if title == "Second"
     ));
     assert_eq!(
-        focused_snapshot(&world).await.map(|focus| focus.title),
+        world.focus_snapshot().map(|focus| focus.title),
         Some("Second".into())
     );
+}
+
+#[tokio::test]
+async fn clearing_focus_emits_an_explicit_clear() {
+    let world = TestWorld::new();
+    let key = WindowKey { pid: 42, id: 7 };
+    let window = WorldWindow {
+        app: "TestApp".into(),
+        title: "TestTitle".into(),
+        pid: key.pid,
+        id: key.id,
+        display_id: None,
+        focused: true,
+    };
+    world.set_snapshot(vec![window], Some(key));
+    let mut cursor = world.subscribe();
+
+    world.set_snapshot(Vec::new(), None);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+    assert_eq!(
+        world.next_event_until(&mut cursor, deadline).await,
+        Some(WorldEvent::FocusChanged(FocusChange::Cleared))
+    );
+}
+
+#[test]
+#[should_panic(expected = "absent from the supplied snapshot")]
+fn focused_key_must_exist_in_test_snapshot() {
+    TestWorld::new().set_snapshot(Vec::new(), Some(WindowKey { pid: 42, id: 7 }));
 }

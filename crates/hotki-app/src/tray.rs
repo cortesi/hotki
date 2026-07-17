@@ -18,7 +18,7 @@ use tray_icon::{
 
 use crate::{
     app::{UiCommand, UiEvent},
-    health::{RuntimeHealth, RuntimePhase},
+    health::RuntimeHealth,
     runtime::ControlMsg,
     ui_delivery::UiDeliveryTx,
 };
@@ -125,9 +125,7 @@ impl Tray {
         if let Some(notice) = copy.notice {
             self.items.notice.set_text(notice);
         }
-        self.items
-            .reload
-            .set_enabled(!matches!(health.phase, RuntimePhase::ShuttingDown));
+        self.items.reload.set_enabled(!health.is_shutting_down());
         self.icon.set_menu(Some(Box::new(build_menu(
             &self.items,
             copy.notice.is_some(),
@@ -364,14 +362,13 @@ pub fn build_tray_and_listeners(
 #[cfg(test)]
 mod tests {
     use super::TrayCopy;
-    use crate::health::{RetryState, RuntimeHealth, RuntimePhase};
+    use crate::health::RuntimeHealth;
 
     #[test]
     fn ready_tray_has_no_notice_and_plain_tooltip() {
-        let copy = TrayCopy::from_health(&RuntimeHealth {
-            phase: RuntimePhase::Ready,
-            ..RuntimeHealth::default()
-        });
+        let mut health = RuntimeHealth::default();
+        health.run_config("config.luau".into());
+        let copy = TrayCopy::from_health(&health);
 
         assert_eq!(copy.notice, None);
         assert_eq!(copy.tooltip, "Hotki");
@@ -379,11 +376,8 @@ mod tests {
 
     #[test]
     fn non_ready_tray_uses_shared_notice_title() {
-        let health = RuntimeHealth {
-            phase: RuntimePhase::Disconnected,
-            retry: RetryState::Available,
-            ..RuntimeHealth::default()
-        };
+        let mut health = RuntimeHealth::default();
+        health.disconnect("connection failed");
         let copy = TrayCopy::from_health(&health);
 
         assert_eq!(copy.notice, Some("Hotki isn't running"));

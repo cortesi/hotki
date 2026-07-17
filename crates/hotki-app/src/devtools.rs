@@ -26,7 +26,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     app::{HudPresentation, NotificationPresentation, UiCommand, UiEvent},
     diagnostics::DiagnosticStore,
-    health::{ConnectionStatus, InputProjection, RetryState, RuntimeHealth, RuntimePhase},
+    health::{InputProjection, RuntimeHealth, RuntimeState},
     logs,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
@@ -640,16 +640,13 @@ fn granted_permissions() -> PermissionsStatus {
 
 /// Stable healthy runtime snapshot for main-window fixtures.
 fn ready_health() -> RuntimeHealth {
-    RuntimeHealth {
-        phase: RuntimePhase::Ready,
-        connection: ConnectionStatus::Connected,
-        active_config: Some(PathBuf::from("/Users/example/.hotki/config.luau")),
-        pending_config: None,
+    let mut health = RuntimeHealth {
         permissions: granted_permissions(),
-        retry: RetryState::Idle,
-        message: None,
         input: Default::default(),
-    }
+        ..RuntimeHealth::default()
+    };
+    health.run_config(PathBuf::from("/Users/example/.hotki/config.luau"));
+    health
 }
 
 impl FixtureBridge {
@@ -694,31 +691,29 @@ impl FixtureBridge {
             }
             HotkiFixture::MainPermissionRequired => {
                 self.clear_transient_ui()?;
-                self.set_runtime_health(RuntimeHealth {
-                    phase: RuntimePhase::WaitingPermissions,
-                    connection: ConnectionStatus::Disconnected,
+                let mut health = RuntimeHealth {
                     permissions: PermissionsStatus {
                         accessibility: PermissionState::Denied,
                         input_monitoring: PermissionState::Denied,
                         screen_recording: PermissionState::Unknown,
                     },
-                    retry: RetryState::Available,
                     ..RuntimeHealth::default()
-                })?;
+                };
+                health.block_on_permissions();
+                self.set_runtime_health(health)?;
                 self.show_main_window()?;
             }
             HotkiFixture::MainInvalidConfig => {
                 self.clear_transient_ui()?;
                 self.set_runtime_health(RuntimeHealth {
-                    phase: RuntimePhase::InvalidConfig,
-                    connection: ConnectionStatus::Connected,
-                    active_config: Some(PathBuf::from("/Users/example/.hotki/previous.luau")),
-                    pending_config: Some(PathBuf::from(
-                        "/Users/example/.hotki/config-with-a-very-long-name-that-wraps.luau",
-                    )),
+                    state: RuntimeState::ConfigRejected {
+                        active: Some(PathBuf::from("/Users/example/.hotki/previous.luau")),
+                        candidate: PathBuf::from(
+                            "/Users/example/.hotki/config-with-a-very-long-name-that-wraps.luau",
+                        ),
+                        message: "Configuration validation failed".to_string(),
+                    },
                     permissions: granted_permissions(),
-                    retry: RetryState::Available,
-                    message: Some("Configuration validation failed".to_string()),
                     input: Default::default(),
                 })?;
                 self.send_ui_message(MsgToUI::Notify {
@@ -1147,7 +1142,7 @@ pub fn render_app_anchors(
             readiness_anchor(
                 ui,
                 "app.runtime.phase",
-                WidgetValue::Text(runtime_health.phase.label().to_string()),
+                WidgetValue::Text(runtime_health.phase().label().to_string()),
             );
             readiness_anchor(
                 ui,
@@ -1166,7 +1161,7 @@ pub fn render_app_anchors(
             readiness_anchor(
                 ui,
                 "app.runtime.retry",
-                WidgetValue::Text(runtime_health.retry.label().to_string()),
+                WidgetValue::Text(runtime_health.retry().label().to_string()),
             );
             readiness_anchor(
                 ui,

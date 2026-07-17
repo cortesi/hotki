@@ -182,7 +182,7 @@ impl Engine {
         if !plan.errors.is_empty() {
             return Err(Error::Msg(plan.errors.join("\n")));
         }
-        let displays = self.world.displays().await;
+        let displays = self.world.displays();
         Ok(PreparedConfig {
             path: path.to_path_buf(),
             config,
@@ -236,7 +236,7 @@ impl Engine {
             tracing::debug!("bindings updated, clearing repeater + relay");
             self.repeater.stop_repeats_async().await;
             self.action_repeater.clear_async().await;
-            self.relay.stop_all();
+            self.relay.release_all();
         }
         self.deliver_refresh_diagnostics(errors, warnings);
         Ok(())
@@ -249,7 +249,7 @@ impl Engine {
         let _transaction = self.config_transaction.lock().await;
         tracing::debug!(focus = ?focus, "start context update");
         let start = Instant::now();
-        let displays = self.world.displays().await;
+        let displays = self.world.displays();
         let mut config_guard = self.config.lock().await;
         let mut runtime_guard = self.runtime.lock().await;
         let mut manager = self.binding_manager.lock().await;
@@ -302,7 +302,7 @@ impl Engine {
             tracing::debug!("bindings updated, clearing repeater + relay");
             self.repeater.stop_repeats_async().await;
             self.action_repeater.clear_async().await;
-            self.relay.stop_all();
+            self.relay.release_all();
         }
         self.deliver_refresh_diagnostics(errors, warnings);
 

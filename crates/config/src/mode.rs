@@ -16,10 +16,6 @@ pub enum Action {
     /// Relay a keystroke (with optional modifiers) to the currently
     /// focused application. Example: relay("cmd+shift+n").
     Relay(RelaySpec),
-    /// Return to the previous mode
-    Pop,
-    /// Pop all modes until the root mode is reached
-    Exit,
     /// Ask host application to reload its configuration
     ReloadConfig,
     /// Ask host to clear all on-screen notifications
@@ -28,10 +24,6 @@ pub enum Action {
     ShowMainWindow(Toggle),
     /// Open a path or URL via the system opener.
     Open(String),
-    /// Clear to root and show HUD.
-    ShowRoot,
-    /// Hide the HUD without changing the mode stack.
-    HideHud,
     /// Set the system volume to an absolute value (0-100)
     SetVolume(u8),
     /// Change the system volume by a relative amount (-100 to +100)
@@ -97,13 +89,6 @@ pub struct ExecSpec {
     pub err_notify: NotifyKind,
 }
 
-impl Action {
-    /// Create a Shell action
-    pub fn shell(cmd: impl Into<String>) -> Self {
-        Self::Shell(ShellSpec::Cmd(cmd.into()))
-    }
-}
-
 /// Optional modifiers applied to Shell actions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +112,26 @@ fn default_ok_notify() -> NotifyKind {
 /// Serde default: shell command errors produce a warning notification.
 fn default_err_notify() -> NotifyKind {
     NotifyKind::Warn
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Action;
+
+    #[test]
+    fn action_serde_surface_excludes_navigation_requests() {
+        assert_eq!(
+            serde_json::from_str::<Action>(r#""reload_config""#).unwrap(),
+            Action::ReloadConfig
+        );
+
+        for removed in ["pop", "exit", "show_root", "hide_hud"] {
+            assert!(
+                serde_json::from_str::<Action>(&format!(r#""{removed}""#)).is_err(),
+                "removed navigation action {removed} still decoded"
+            );
+        }
+    }
 }
 
 impl Default for ShellModifiers {

@@ -58,25 +58,16 @@ impl Chord {
             Modifier::RightShift => 9,
         }
     }
-
-    /// Returns the canonical string form of this chord using:
-    /// - Canonical modifier order (Command, Control, Option, Shift, Function, CapsLock, Right*...) and
-    /// - Canonical spec name for each component (via Modifier::to_spec and Key::to_spec).
-    pub fn to_string_canonical(&self) -> String {
-        let mut mods: Vec<Modifier> = self.modifiers.iter().copied().collect();
-        mods.sort_by_key(Self::modifier_order);
-        let mut out: Vec<String> = Vec::new();
-        for m in mods {
-            out.push(m.to_spec());
-        }
-        out.push(self.key.to_spec());
-        out.join("+")
-    }
 }
 
 impl Display for Chord {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.to_string_canonical())
+        let mut modifiers: Vec<Modifier> = self.modifiers.iter().copied().collect();
+        modifiers.sort_by_key(Self::modifier_order);
+        for modifier in modifiers {
+            write!(f, "{}+", modifier.to_spec())?;
+        }
+        write!(f, "{}", self.key.to_spec())
     }
 }
 
@@ -116,6 +107,23 @@ mod tests {
             let c2 = Chord::parse(&spec).expect("reparse");
             assert_eq!(c, c2, "idempotent for {} => {}", s, spec);
         }
+    }
+
+    #[test]
+    fn display_uses_canonical_modifier_order() {
+        let chord = Chord {
+            modifiers: [
+                Modifier::RightShift,
+                Modifier::Control,
+                Modifier::Command,
+                Modifier::Option,
+            ]
+            .into_iter()
+            .collect(),
+            key: Key::Digit1,
+        };
+
+        assert_eq!(chord.to_string(), "cmd+opt+ctrl+rightshift+1");
     }
 
     #[test]

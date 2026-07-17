@@ -173,21 +173,15 @@ pub fn default_style() -> Result<Style, Error> {
 
 /// Overlay raw style overrides onto this base style using current values as defaults.
 pub fn overlay_raw(mut style: Style, overrides: &raw::RawStyle) -> Style {
-    style.hud = raw::apply_optional_overlay(
-        overrides.hud.as_option().cloned(),
-        &style.hud,
-        |hud, base| hud.into_hud_over(base),
-    );
-    style.notify = raw::apply_optional_overlay(
-        overrides.notify.as_option().cloned(),
-        &style.notify,
-        |notify, base| notify.into_notify_over(base),
-    );
-    style.selector = raw::apply_optional_overlay(
-        overrides.selector.as_option().cloned(),
-        &style.selector,
-        |selector, base| selector.into_selector_over(base),
-    );
+    if let Some(hud) = overrides.hud.clone() {
+        style.hud = hud.into_hud_over(&style.hud);
+    }
+    if let Some(notify) = overrides.notify.clone() {
+        style.notify = notify.into_notify_over(&style.notify);
+    }
+    if let Some(selector) = overrides.selector.clone() {
+        style.selector = selector.into_selector_over(&style.selector);
+    }
     style
 }
 
@@ -315,7 +309,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use super::{StyleProvenance, StyleResolver};
+    use super::{StyleProvenance, StyleResolver, eval_style_source, overlay_raw};
 
     fn test_dir(name: &str) -> PathBuf {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -351,6 +345,45 @@ mod tests {
             .expect("style");
 
         assert_eq!(resolved.provenance, StyleProvenance::DefaultOnly);
+    }
+
+    #[test]
+    fn style_source_decoding_preserves_overlay_inheritance() {
+        let base = StyleResolver::default_only()
+            .expect("default resolver")
+            .resolve()
+            .expect("default style")
+            .style;
+        let path = Path::new("<test:style-overlay>");
+
+        for source in [
+            "return {}",
+            "return { hud = nil, notify = { timeout = nil }, selector = nil }",
+        ] {
+            let raw = eval_style_source(source, path).expect("style source");
+            assert_eq!(overlay_raw(base.clone(), &raw), base);
+        }
+
+        let raw = eval_style_source(
+            r##"
+                return {
+                    hud = {
+                        font_size = 19,
+                        pressed = { min_duration_ms = 25 },
+                    },
+                    notify = { timeout = 3 },
+                    selector = { bg = "#123456" },
+                }
+            "##,
+            path,
+        )
+        .expect("style source");
+        let resolved = overlay_raw(base, &raw);
+
+        assert_eq!(resolved.hud.font_size, 19.0);
+        assert_eq!(resolved.hud.pressed.min_duration_ms, 25);
+        assert_eq!(resolved.notify.timeout, 3.0);
+        assert_eq!(resolved.selector.bg, (0x12, 0x34, 0x56));
     }
 
     #[test]
