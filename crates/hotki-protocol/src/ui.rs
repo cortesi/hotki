@@ -143,8 +143,8 @@ pub enum MsgToUI {
         /// Rendered log message fields.
         message: String,
     },
-    /// Server→client heartbeat. The payload is a monotonic milliseconds tick.
-    Heartbeat(u64),
+    /// Server→client heartbeat carrying current physical-input health.
+    Heartbeat(crate::Heartbeat),
     /// World service streaming event.
     World(WorldStreamMsg),
 }

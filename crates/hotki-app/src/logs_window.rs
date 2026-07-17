@@ -5,6 +5,7 @@ use eguidev::{DevMcp, DevUiExt, container};
 
 use crate::{
     devtools,
+    diagnostics::DiagnosticStore,
     logs::{self, LogEntry, Side},
 };
 
@@ -23,16 +24,19 @@ pub struct LogsWindow {
     generation: u64,
     /// Cached log rows cloned only when the global buffer changes.
     rows: Vec<LogEntry>,
+    /// Shared snapshot rendered by both automation and clipboard reports.
+    diagnostics: DiagnosticStore,
 }
 
 impl LogsWindow {
     /// Construct a hidden logs window with an invalid cache generation.
-    pub fn new() -> Self {
+    pub fn new(diagnostics: DiagnosticStore) -> Self {
         Self {
             visible: false,
             want_focus: false,
             generation: u64::MAX,
             rows: Vec::new(),
+            diagnostics,
         }
     }
 
@@ -92,6 +96,12 @@ impl LogsWindow {
                         self.generation = u64::MAX;
                         self.rows.clear();
                     }
+                    if ui
+                        .dev_button("logs.copy_diagnostics", "Copy Diagnostics")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(self.diagnostics.plain_text());
+                    }
                 });
             });
         });
@@ -133,7 +143,7 @@ mod tests {
 
     #[test]
     fn repeated_show_reuses_one_viewport() {
-        let mut logs = LogsWindow::new();
+        let mut logs = LogsWindow::new(Default::default());
         logs.show();
         logs.show();
 
@@ -147,7 +157,7 @@ mod tests {
 
     #[test]
     fn hide_keeps_cache_for_the_next_open() {
-        let mut logs = LogsWindow::new();
+        let mut logs = LogsWindow::new(Default::default());
         logs.generation = 42;
         logs.show();
         logs.hide();

@@ -61,11 +61,13 @@ pub(super) struct EventPipeline {
     heartbeat_lifecycle: LifecycleLatch,
     /// Ensure only one world forwarder loop is active.
     world_forwarder_lifecycle: LifecycleLatch,
+    /// Manager sampled by the single heartbeat source.
+    manager: Arc<mac_hotkey::Manager>,
 }
 
 impl EventPipeline {
     /// Create a new event pipeline with a fresh UI message channel.
-    pub(super) fn new(shutdown: Arc<AtomicBool>) -> Self {
+    pub(super) fn new(shutdown: Arc<AtomicBool>, manager: Arc<mac_hotkey::Manager>) -> Self {
         let (event_tx, event_rx) = hotki_protocol::ipc::ui_channel();
         Self {
             event_tx,
@@ -74,6 +76,7 @@ impl EventPipeline {
             shutdown,
             heartbeat_lifecycle: LifecycleLatch::new(),
             world_forwarder_lifecycle: LifecycleLatch::new(),
+            manager,
         }
     }
 
@@ -132,6 +135,11 @@ impl EventPipeline {
         let Some(run) = self.heartbeat_lifecycle.begin() else {
             return;
         };
-        spawn_heartbeat(self.shutdown.clone(), self.registry.clone(), run);
+        spawn_heartbeat(
+            self.shutdown.clone(),
+            self.registry.clone(),
+            self.manager.clone(),
+            run,
+        );
     }
 }

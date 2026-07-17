@@ -567,6 +567,7 @@ mod tests {
                 idle_timer_armed: false,
                 idle_deadline_ms: None,
                 clients_connected: 2,
+                input: hotki_protocol::InputHealth::default(),
             },
         }
     }

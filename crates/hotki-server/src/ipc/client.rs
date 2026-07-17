@@ -594,14 +594,24 @@ mod tests {
     async fn client_delivery_coalesces_snapshots_and_summarizes_dropped_logs() {
         let (tx, mut rx) = event_delivery_channel();
         assert!(matches!(
-            tx.send(MsgToUI::Heartbeat(1)).await,
+            tx.send(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+                1,
+                hotki_protocol::InputHealth::default(),
+            )))
+            .await,
             DeliveryOutcome::Queued
         ));
         assert!(matches!(
-            tx.send(MsgToUI::Heartbeat(2)).await,
+            tx.send(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+                2,
+                hotki_protocol::InputHealth::default(),
+            )))
+            .await,
             DeliveryOutcome::Coalesced
         ));
-        assert!(matches!(rx.try_recv(), Ok(Some(MsgToUI::Heartbeat(2)))));
+        assert!(
+            matches!(rx.try_recv(), Ok(Some(MsgToUI::Heartbeat(heartbeat))) if heartbeat.sent_at_ms == 2)
+        );
 
         for index in 0..CLIENT_EVENT_CAPACITY {
             assert!(matches!(
@@ -629,13 +639,19 @@ mod tests {
             text: "ordered".to_string(),
         })
         .await;
-        tx.send(MsgToUI::Heartbeat(1)).await;
+        tx.send(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+            1,
+            hotki_protocol::InputHealth::default(),
+        )))
+        .await;
 
         assert!(matches!(
             rx.try_recv(),
             Ok(Some(MsgToUI::Notify { title, .. })) if title == "first"
         ));
-        assert!(matches!(rx.try_recv(), Ok(Some(MsgToUI::Heartbeat(1)))));
+        assert!(
+            matches!(rx.try_recv(), Ok(Some(MsgToUI::Heartbeat(heartbeat))) if heartbeat.sent_at_ms == 1)
+        );
     }
 
     fn tmp_socket_path() -> PathBuf {

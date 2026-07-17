@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{
-    health::{ConnectionStatus, RetryState, RuntimeHealth, RuntimePhase},
+    health::{ConnectionStatus, InputProjection, RetryState, RuntimeHealth, RuntimePhase},
     logs,
     permissions::{PermissionObservation, PermissionsStatus, check_permissions},
     runtime::ControlMsg,
@@ -41,6 +41,8 @@ pub struct ConnectionDriver {
     permission_override: Option<PermissionsStatus>,
     /// Server-bound controls received before a connection is ready.
     pending_controls: VecDeque<ServerControl>,
+    /// Whether this app session already warned for the current active observation run.
+    secure_input_warning_sent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +166,7 @@ impl ConnectionDriver {
             health,
             permission_override: None,
             pending_controls: VecDeque::new(),
+            secure_input_warning_sent: false,
         };
         driver.ui.set_runtime_health(driver.health.clone());
         driver
@@ -491,7 +494,7 @@ impl ConnectionDriver {
     }
 
     /// Process a message from the server and update the UI accordingly.
-    async fn handle_server_msg(&self, msg: hotki_protocol::MsgToUI) {
+    async fn handle_server_msg(&mut self, msg: hotki_protocol::MsgToUI) {
         match msg {
             hotki_protocol::MsgToUI::HudUpdate { hud, displays } => {
                 self.ui
@@ -526,12 +529,42 @@ impl ConnectionDriver {
                 logs::push_server(level, target, message);
                 self.ui.request_repaint();
             }
-            hotki_protocol::MsgToUI::Heartbeat(_) => {}
+            hotki_protocol::MsgToUI::Heartbeat(heartbeat) => {
+                self.handle_input_health(&heartbeat.input);
+            }
             hotki_protocol::MsgToUI::World(msg) => {
                 if self.dumpworld {
                     debug!("World event: {:?}", msg);
                 }
             }
+        }
+    }
+
+    /// Publish full diagnostics and transition-stable presentation from one heartbeat.
+    fn handle_input_health(&mut self, input: &hotki_protocol::InputHealth) {
+        let projection = InputProjection::from(input);
+        self.ui.set_input_health(input.clone());
+        if self.health.input != projection {
+            self.health.input = projection;
+            self.publish_health();
+        }
+
+        if input.secure_input == hotki_protocol::SecureInputState::Inactive {
+            if self.secure_input_warning_sent {
+                self.notify_local(
+                    NotifyKind::Success,
+                    "Secure Input ended",
+                    "Physical hotkeys have resumed.",
+                );
+                self.secure_input_warning_sent = false;
+            }
+        } else if input.blocked && !self.secure_input_warning_sent {
+            self.notify_local(
+                NotifyKind::Warn,
+                "Hotkeys paused by Secure Input",
+                "Physical hotkeys resume automatically when Secure Input ends.",
+            );
+            self.secure_input_warning_sent = true;
         }
     }
 
@@ -731,7 +764,7 @@ impl ConnectionDriver {
 
     /// Handle one server event receive result.
     async fn handle_recv_event_result(
-        &self,
+        &mut self,
         resp: hotki_server::Result<hotki_protocol::MsgToUI>,
         hb_timer: &mut Pin<&mut Sleep>,
     ) -> bool {
@@ -831,9 +864,11 @@ fn spawn_connect(log_filter: Option<String>, server_event_tap_enabled: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::future;
+    use std::{future, iter};
 
-    use hotki_protocol::NotifyKind;
+    use hotki_protocol::{
+        InputHealth, NotifyKind, SecureInputOwner, SecureInputState, TapLifecycle, TapMode,
+    };
     use permissions::PermissionState;
     use tokio::sync::{mpsc::unbounded_channel, oneshot};
 
@@ -1079,5 +1114,88 @@ mod tests {
             found |= matches!(event, UiEvent::Command(UiCommand::Shutdown));
         }
         found
+    }
+
+    fn input_health(state: SecureInputState, blocked: bool, count: u64) -> InputHealth {
+        InputHealth {
+            tap_mode: TapMode::Physical,
+            tap_lifecycle: TapLifecycle::Running,
+            secure_input: state,
+            secure_input_owner: (state == SecureInputState::Active).then(|| SecureInputOwner {
+                pid: 42,
+                app_name: "Terminal".to_string(),
+            }),
+            blocked,
+            registered_hotkeys: usize::from(blocked),
+            physical_event_count: count,
+            server_pid: 7,
+            ..InputHealth::default()
+        }
+    }
+
+    #[test]
+    fn secure_input_warning_latches_until_inactive_observation() {
+        let (tx_ui, rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let mut driver = ConnectionDriver::new(
+            "config.luau".into(),
+            None,
+            tx_ui,
+            egui::Context::default(),
+            rx_ctrl,
+            false,
+            false,
+        );
+        while rx_ui.try_recv().is_some() {}
+
+        driver.handle_input_health(&input_health(SecureInputState::Active, true, 1));
+        driver.mark_disconnected("test reconnect");
+        driver.handle_input_health(&input_health(SecureInputState::Active, true, 2));
+        driver.handle_input_health(&input_health(SecureInputState::Active, false, 3));
+        driver.handle_input_health(&input_health(SecureInputState::Inactive, false, 4));
+
+        let mut warning_count = 0;
+        let mut recovery_count = 0;
+        while let Some(event) = rx_ui.try_recv() {
+            if let UiEvent::Message(hotki_protocol::MsgToUI::Notify { title, .. }) = event {
+                warning_count += usize::from(title == "Hotkeys paused by Secure Input");
+                recovery_count += usize::from(title == "Secure Input ended");
+            }
+        }
+        assert_eq!(warning_count, 1);
+        assert_eq!(recovery_count, 1);
+        assert!(!driver.secure_input_warning_sent);
+    }
+
+    #[test]
+    fn volatile_input_counters_do_not_republish_runtime_health() {
+        let (tx_ui, rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let mut driver = ConnectionDriver::new(
+            "config.luau".into(),
+            None,
+            tx_ui,
+            egui::Context::default(),
+            rx_ctrl,
+            false,
+            false,
+        );
+        while rx_ui.try_recv().is_some() {}
+
+        driver.handle_input_health(&input_health(SecureInputState::Inactive, false, 1));
+        while rx_ui.try_recv().is_some() {}
+        driver.handle_input_health(&input_health(SecureInputState::Inactive, false, 2));
+
+        let events = iter::from_fn(|| rx_ui.try_recv()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::Command(UiCommand::SetInputHealth(input))
+                if input.physical_event_count == 2
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, UiEvent::Command(UiCommand::SetRuntimeHealth(_))))
+        );
     }
 }

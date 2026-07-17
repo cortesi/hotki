@@ -2,7 +2,35 @@
 
 use std::path::PathBuf;
 
+use hotki_protocol::{InputHealth, SecureInputOwner, SecureInputState, TapLifecycle, TapMode};
 use permissions::PermissionsStatus;
+
+/// Transition-stable input state used by normal UI presentation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputProjection {
+    /// Whether the server owns a production physical event tap.
+    pub(crate) tap_mode: TapMode,
+    /// Current lifecycle of the event tap.
+    pub(crate) tap_lifecycle: TapLifecycle,
+    /// Last sampled Secure Input state.
+    pub(crate) secure_input: SecureInputState,
+    /// Best-effort owner identity at observation time.
+    pub(crate) secure_input_owner: Option<SecureInputOwner>,
+    /// Whether physical registered hotkeys are currently blocked.
+    pub(crate) blocked: bool,
+}
+
+impl From<&InputHealth> for InputProjection {
+    fn from(input: &InputHealth) -> Self {
+        Self {
+            tap_mode: input.tap_mode,
+            tap_lifecycle: input.tap_lifecycle,
+            secure_input: input.secure_input,
+            secure_input_owner: input.secure_input_owner.clone(),
+            blocked: input.blocked,
+        }
+    }
+}
 
 /// Coarse lifecycle phase for the app and its server runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +198,8 @@ pub struct RuntimeHealth {
     pub(crate) retry: RetryState,
     /// Optional user-facing context for the current phase.
     pub(crate) message: Option<String>,
+    /// Transition-stable physical-input health.
+    pub(crate) input: InputProjection,
 }
 
 impl Default for RuntimeHealth {
@@ -182,6 +212,7 @@ impl Default for RuntimeHealth {
             permissions: PermissionsStatus::default(),
             retry: RetryState::Idle,
             message: None,
+            input: InputProjection::default(),
         }
     }
 }
@@ -206,6 +237,15 @@ impl RuntimeHealth {
     /// Derive the complete user-facing presentation from one runtime snapshot.
     pub(crate) fn presentation(&self) -> RuntimePresentation {
         let (notice, primary_action) = match self.phase {
+            RuntimePhase::Ready if self.input.blocked => (
+                Some(RuntimeNotice {
+                    title: "Hotkeys paused by Secure Input",
+                    detail: Some(secure_input_detail(&self.input)),
+                    tone: NoticeTone::Attention,
+                    progress: false,
+                }),
+                Some(PrimaryAction::ReloadConfig),
+            ),
             RuntimePhase::Ready => (None, Some(PrimaryAction::ReloadConfig)),
             RuntimePhase::Connecting => (
                 Some(RuntimeNotice {
@@ -270,6 +310,22 @@ impl RuntimeHealth {
     }
 }
 
+/// Qualify owner attribution without implying that it controls blocking.
+fn secure_input_detail(input: &InputProjection) -> String {
+    input.secure_input_owner.as_ref().map_or_else(
+        || {
+            "Another application enabled Secure Input. Hotkeys resume automatically when it ends."
+                .to_string()
+        },
+        |owner| {
+            format!(
+                "{} may own Secure Input (best effort). Hotkeys resume automatically when it ends.",
+                owner.app_name
+            )
+        },
+    )
+}
+
 /// Explain which required permissions still need user action.
 fn missing_required_permissions(status: PermissionsStatus) -> Option<String> {
     let mut missing = Vec::with_capacity(2);
@@ -294,7 +350,8 @@ mod tests {
     use permissions::{PermissionState, PermissionsStatus};
 
     use super::{
-        ConnectionStatus, NoticeTone, PrimaryAction, RetryState, RuntimeHealth, RuntimePhase,
+        ConnectionStatus, InputProjection, NoticeTone, PrimaryAction, RetryState, RuntimeHealth,
+        RuntimePhase,
     };
 
     fn health_for_phase(phase: RuntimePhase) -> RuntimeHealth {
@@ -430,6 +487,32 @@ mod tests {
                 detail
             );
         }
+    }
+
+    #[test]
+    fn secure_input_notice_is_ready_only_and_owner_is_qualified() {
+        let mut ready = health_for_phase(RuntimePhase::Ready);
+        ready.input = InputProjection {
+            tap_mode: hotki_protocol::TapMode::Physical,
+            tap_lifecycle: hotki_protocol::TapLifecycle::Running,
+            secure_input: hotki_protocol::SecureInputState::Active,
+            secure_input_owner: Some(hotki_protocol::SecureInputOwner {
+                pid: 42,
+                app_name: "Terminal".to_string(),
+            }),
+            blocked: true,
+        };
+        let presentation = ready.presentation();
+        let notice = presentation.notice.expect("secure input notice");
+        assert_eq!(notice.title, "Hotkeys paused by Secure Input");
+        assert!(notice.detail.unwrap().contains("best effort"));
+        assert_eq!(notice.tone, NoticeTone::Attention);
+
+        ready.phase = RuntimePhase::InvalidConfig;
+        assert_eq!(
+            ready.presentation().notice.unwrap().title,
+            "Hotki couldn't load the configuration"
+        );
     }
 
     #[test]

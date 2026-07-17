@@ -33,9 +33,11 @@ use parking_lot::Mutex;
 use tracing::{debug, trace};
 mod error;
 mod policy;
+mod status;
 mod sys;
 
 pub use error::{Error, Result};
+pub use status::{ManagerStatus, SecureInputOwner, SecureInputState, TapLifecycle, TapMode};
 
 /// Tag value used to mark injected events so our taps can ignore them.
 ///
@@ -132,6 +134,7 @@ pub struct Manager {
     rx: Receiver<Event>,
     thread: Option<JoinHandle<()>>,
     sys_ctrl: Arc<sys::SysControl>,
+    status: Arc<status::StatusStore>,
 }
 
 impl Manager {
@@ -144,12 +147,14 @@ impl Manager {
         let inner = Arc::new(ArcSwap::from_pointee(Inner::default()));
         let write_lock = Arc::new(Mutex::new(()));
         let (_tx, rx) = unbounded();
+        let status = status::StatusStore::new(TapMode::InjectionOnly);
         Self {
             inner,
             write_lock,
             rx,
             thread: None,
             sys_ctrl: Arc::new(sys::SysControl::new()),
+            status,
         }
     }
 
@@ -169,13 +174,15 @@ impl Manager {
 
         // Control handle to allow graceful shutdown from the owner thread.
         let sys_ctrl = Arc::new(sys::SysControl::new());
+        let status = status::StatusStore::new(TapMode::Physical);
 
         // Spawn a dedicated thread with its own CFRunLoop for the event tap
         let sys_ctrl_thread = sys_ctrl.clone();
+        let status_thread = status.clone();
         let handle = thread::spawn(move || {
             // Ignore further errors here; the ready channel communicates the
             // initialization outcome back to the caller.
-            let _ = sys::run_event_loop(inner_thread, tx, ready_tx, sys_ctrl_thread);
+            let _ = sys::run_event_loop(inner_thread, tx, ready_tx, sys_ctrl_thread, status_thread);
         });
 
         // Block until the background thread reports startup success/failure.
@@ -193,6 +200,7 @@ impl Manager {
             rx,
             thread: Some(handle),
             sys_ctrl,
+            status,
         })
     }
 
@@ -208,6 +216,20 @@ impl Manager {
     /// receivers compete for events rather than receiving broadcast copies.
     pub fn events(&self) -> Receiver<Event> {
         self.rx.clone()
+    }
+
+    /// Sample macOS input health and return an immutable status snapshot.
+    ///
+    /// Platform sampling is serialized by the manager because Carbon's Secure
+    /// Event Input query is not thread-safe. Injection-only managers retain an
+    /// unknown Secure Input state and do not perform platform sampling.
+    pub fn sample_status(&self) -> ManagerStatus {
+        self.status.sample(self.inner.load().regs.len())
+    }
+
+    /// Return the latest cached input-health snapshot without sampling macOS.
+    pub fn status(&self) -> ManagerStatus {
+        self.status.cached(self.inner.load().regs.len())
     }
 
     /// Register a hotkey that is only observed (no interception).

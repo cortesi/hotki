@@ -154,24 +154,39 @@ mod tests {
     fn record_returns_new_record_when_buffer_is_full() {
         let mut cache = EventCache::new(128);
         for tick in 0..128 {
-            cache.record(MsgToUI::Heartbeat(tick));
+            cache.record(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+                tick,
+                hotki_protocol::InputHealth::default(),
+            )));
         }
 
-        let record = cache.record(MsgToUI::Heartbeat(999));
+        let heartbeat = MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+            999,
+            hotki_protocol::InputHealth::default(),
+        ));
+        let record = cache.record(heartbeat.clone());
 
         assert_eq!(record.id, 128);
-        assert_eq!(record.payload, MsgToUI::Heartbeat(999));
+        assert_eq!(record.payload, heartbeat);
         assert_eq!(cache.len(), 128);
-        assert_eq!(cache.back_payload(), Some(&MsgToUI::Heartbeat(999)));
+        assert!(
+            matches!(cache.back_payload(), Some(MsgToUI::Heartbeat(value)) if value.sent_at_ms == 999)
+        );
     }
 
     #[test]
     fn clear_drops_cached_events_but_preserves_event_ids() {
         let mut cache = EventCache::new(128);
-        cache.record(MsgToUI::Heartbeat(1));
+        cache.record(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+            1,
+            hotki_protocol::InputHealth::default(),
+        )));
 
         cache.clear();
-        let record = cache.record(MsgToUI::Heartbeat(2));
+        let record = cache.record(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+            2,
+            hotki_protocol::InputHealth::default(),
+        )));
 
         assert_eq!(record.id, 1);
         assert_eq!(cache.len(), 1);

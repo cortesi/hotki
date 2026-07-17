@@ -6,7 +6,7 @@ use std::{
     time::SystemTime,
 };
 
-use hotki_protocol::{MsgToUI, WorldStreamMsg};
+use hotki_protocol::{Heartbeat, MsgToUI, WorldStreamMsg};
 use hotki_world::WorldView;
 use tokio::sync::mpsc::Sender;
 
@@ -57,11 +57,13 @@ pub(super) fn spawn_world_forwarder(
 pub(super) fn spawn_heartbeat(
     shutdown: Arc<AtomicBool>,
     registry: ClientRegistry,
+    manager: Arc<mac_hotkey::Manager>,
     run: LifecycleRun,
 ) {
     tokio::spawn(async move {
         let _run = run;
         let interval = hotki_protocol::ipc::heartbeat::interval();
+        let mut previous = None;
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 break;
@@ -70,7 +72,30 @@ pub(super) fn spawn_heartbeat(
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or(0);
-            broadcast_event(&registry, &shutdown, MsgToUI::Heartbeat(ts)).await;
+            let input = crate::ipc::service::input_health(manager.sample_status());
+            let transition = (
+                input.tap_mode,
+                input.tap_lifecycle,
+                input.secure_input,
+                input.secure_input_owner.clone(),
+                input.blocked,
+            );
+            if previous.as_ref() != Some(&transition) {
+                tracing::info!(
+                    tap_mode = ?input.tap_mode,
+                    tap_lifecycle = ?input.tap_lifecycle,
+                    secure_input = ?input.secure_input,
+                    owner = ?input.secure_input_owner,
+                    blocked = input.blocked,
+                    "input_health_transition"
+                );
+                previous = Some(transition);
+            }
+            let heartbeat = Heartbeat {
+                sent_at_ms: ts,
+                input,
+            };
+            broadcast_event(&registry, &shutdown, MsgToUI::Heartbeat(heartbeat)).await;
             tokio::time::sleep(interval).await;
         }
     });

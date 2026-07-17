@@ -86,3 +86,19 @@ root:bind("p", "YouTube Music Play/Pause", youtube_music("space"))
 
 Targeted relays fail closed with a warning when the exact name is missing or ambiguous. They use
 ordinary application shortcuts, so browser extensions such as Vimium may need a site exclusion.
+
+## Secure Input and Diagnostics
+
+Some password fields and terminal applications enable macOS Secure Event Input. While it is
+active, macOS pauses Hotki's physical hotkeys; Hotki leaves its server, configuration, and hotkey
+registrations running and resumes automatically when Secure Input ends. The main window and tray
+show `Hotkeys paused by Secure Input` when registered hotkeys are affected.
+
+Hotki may show the application associated with Secure Input. This owner is a best-effort snapshot
+from the current macOS session and can be missing or change before the notice is rendered. It is
+never used to decide whether hotkeys are blocked.
+
+For a support report, open **Logs** from the main window and choose **Copy Diagnostics**. The report
+contains runtime state, permissions, input-health counters, binding and notification counts, and a
+short allowlisted health-log tail. It omits configuration paths and contents, binding identifiers,
+notification text, typed text, and raw key events.

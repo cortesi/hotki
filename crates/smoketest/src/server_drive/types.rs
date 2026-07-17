@@ -130,6 +130,19 @@ pub(super) fn ensure_clean_handshake(handshake: &ServerHandshake) -> DriverResul
             ),
         });
     }
+    let input = &handshake.status.input;
+    if input.tap_mode != hotki_protocol::TapMode::InjectionOnly
+        || input.secure_input != hotki_protocol::SecureInputState::Unknown
+        || input.secure_input_owner.is_some()
+        || input.blocked
+    {
+        return Err(DriverError::ServerFailure {
+            message: format!(
+                "smoketest server reported unexpected input health: mode={:?} secure_input={:?} owner={:?} blocked={}",
+                input.tap_mode, input.secure_input, input.secure_input_owner, input.blocked
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -171,6 +184,7 @@ mod tests {
             idle_timer_armed,
             idle_deadline_ms: None,
             clients_connected,
+            input: hotki_protocol::InputHealth::default(),
         }
     }
 

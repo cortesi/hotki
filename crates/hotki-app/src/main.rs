@@ -20,6 +20,7 @@ mod app;
 /// MRPC connection driver for the UI runtime.
 mod connection_driver;
 mod devtools;
+mod diagnostics;
 /// Display geometry helpers.
 mod display;
 mod fonts;

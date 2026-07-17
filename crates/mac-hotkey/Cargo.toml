@@ -20,3 +20,4 @@ permissions = { path = "../permissions" }
 core-graphics = { workspace = true }
 parking_lot = { workspace = true }
 arc-swap = "1.9.0"
+objc2-app-kit = { workspace = true, features = ["NSRunningApplication", "libc"] }

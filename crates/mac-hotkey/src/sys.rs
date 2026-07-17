@@ -22,22 +22,38 @@ use std::{
 };
 
 use core_foundation::{
-    base::TCFType,
+    base::{CFType, TCFType},
+    dictionary::{CFDictionary, CFDictionaryRef},
     mach_port::CFMachPortRef,
+    number::CFNumber,
     runloop::{CFRunLoop, kCFRunLoopCommonModes},
+    string::CFString,
 };
 use core_graphics::event::{self as cge, CallbackResult};
 use crossbeam_channel::Sender;
 use mac_keycode::{Chord, Key, Modifier};
+use objc2_app_kit::NSRunningApplication;
 use parking_lot::Mutex;
 use tracing::{debug, trace, warn};
 
-use crate::{Event, EventKind, policy};
+use crate::{
+    Event, EventKind, policy,
+    status::{PlatformSample, StatusStore},
+};
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn IsSecureEventInputEnabled() -> u8;
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
+    fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
 }
+
+const SESSION_SECURE_INPUT_PID: &str = "kCGSSessionSecureInputPID";
 
 // Minimal subset of CGEventField constants used by this module.
 const FIELD_EVENT_SOURCE_UNIX_PROCESS_ID: u32 = 41;
@@ -164,6 +180,7 @@ pub fn run_event_loop(
     tx: Sender<Event>,
     ready: Sender<crate::Result<()>>,
     ctrl: Arc<SysControl>,
+    status: Arc<StatusStore>,
 ) -> crate::Result<()> {
     // Preflight Input Monitoring permission.
     if !permissions::input_monitoring_ok() {
@@ -177,6 +194,7 @@ pub fn run_event_loop(
 
     debug!("creating_event_tap");
     let tap_port_ptr_cb = tap_port_ptr.clone();
+    let status_cb = status.clone();
     let presses: RefCell<HashMap<Key, PressRecord>> = RefCell::new(HashMap::new());
     let tap = match cge::CGEventTap::new(
         cge::CGEventTapLocation::HID,
@@ -194,6 +212,7 @@ pub fn run_event_loop(
 
             match etype {
                 cge::CGEventType::KeyDown | cge::CGEventType::KeyUp => {
+                    status_cb.record_physical_event();
                     let keycode =
                         event.get_integer_value_field(FIELD_KEYBOARD_EVENT_KEYCODE) as u16;
                     if let Some(code) = Key::from_scancode(keycode) {
@@ -244,6 +263,7 @@ pub fn run_event_loop(
                 }
                 cge::CGEventType::TapDisabledByTimeout
                 | cge::CGEventType::TapDisabledByUserInput => {
+                    status_cb.record_disable();
                     let p = tap_port_ptr_cb.load(Ordering::SeqCst) as CFMachPortRef;
                     if !p.is_null() {
                         warn!("tap_disabled_by_os_reenabling");
@@ -252,6 +272,8 @@ pub fn run_event_loop(
                         // before the run loop started. It remains valid for the lifetime of
                         // the tap, which is tied to the thread running this callback.
                         unsafe { CGEventTapEnable(p, true) };
+                        // SAFETY: `p` has the same tap-owned lifetime described above.
+                        status_cb.record_reenable(unsafe { CGEventTapIsEnabled(p) });
                     }
                     CallbackResult::Keep
                 }
@@ -297,14 +319,61 @@ pub fn run_event_loop(
 
     // Enable the tap and run the loop.
     tap.enable();
+    status.set_lifecycle(crate::TapLifecycle::Running);
 
     let _ = ready.send(Ok(()));
     debug!("event_tap_started_run_loop");
 
     CFRunLoop::run_current();
 
+    status.set_lifecycle(crate::TapLifecycle::Stopped);
     debug!("event_tap_exited");
     Ok(())
+}
+
+pub(crate) fn sample_platform() -> PlatformSample {
+    // SAFETY: Carbon documents this parameterless query for process-wide use.
+    // `StatusStore` serializes every invocation because the function is not thread-safe.
+    let active = unsafe { IsSecureEventInputEnabled() != 0 };
+    PlatformSample {
+        secure_input: if active {
+            crate::SecureInputState::Active
+        } else {
+            crate::SecureInputState::Inactive
+        },
+        owner: active.then(secure_input_owner).flatten(),
+    }
+}
+
+fn secure_input_owner() -> Option<crate::SecureInputOwner> {
+    // SAFETY: A non-null result follows Core Foundation's create rule and is
+    // transferred immediately to the owning wrapper.
+    let raw = unsafe { CGSessionCopyCurrentDictionary() };
+    if raw.is_null() {
+        return None;
+    }
+    let dictionary: CFDictionary<CFString, CFType> =
+        unsafe { TCFType::wrap_under_create_rule(raw) };
+    let value = dictionary.find(CFString::from_static_string(SESSION_SECURE_INPUT_PID))?;
+    let pid = value.downcast::<CFNumber>()?.to_i32()?;
+    resolve_secure_input_owner(Some(pid), |pid| {
+        let application = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+        if application.isTerminated() {
+            return None;
+        }
+        application.localizedName().map(|name| name.to_string())
+    })
+}
+
+fn resolve_secure_input_owner(
+    pid: Option<i32>,
+    resolve_app_name: impl FnOnce(i32) -> Option<String>,
+) -> Option<crate::SecureInputOwner> {
+    let pid = pid.filter(|pid| *pid > 0)?;
+    Some(crate::SecureInputOwner {
+        pid: u32::try_from(pid).ok()?,
+        app_name: resolve_app_name(pid)?,
+    })
 }
 
 #[cfg(test)]
@@ -313,12 +382,27 @@ mod tests {
 
     use mac_keycode::{Key, Modifier};
 
-    use super::{TapAction, classify_tap_event};
+    use super::{TapAction, classify_tap_event, resolve_secure_input_owner};
     use crate::{EventKind, Inner, test_register};
 
     fn simulate(suspended: bool, matched: bool, intercept: bool) -> crate::policy::Decision {
         let matched_intercept = if matched { Some(intercept) } else { None };
         crate::policy::classify(suspended, matched_intercept)
+    }
+
+    #[test]
+    fn secure_input_owner_resolution_handles_fallible_platform_data() {
+        assert_eq!(resolve_secure_input_owner(None, |_| unreachable!()), None);
+        assert_eq!(
+            resolve_secure_input_owner(Some(-1), |_| unreachable!()),
+            None
+        );
+        assert_eq!(resolve_secure_input_owner(Some(999), |_| None), None);
+
+        let owner = resolve_secure_input_owner(Some(42), |_| Some("Terminal".to_string()))
+            .expect("live PID with a name resolves");
+        assert_eq!(owner.pid, 42);
+        assert_eq!(owner.app_name, "Terminal");
     }
 
     #[test]

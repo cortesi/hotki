@@ -156,7 +156,10 @@ mod tests {
                 target: "test".into(),
                 message: "hello".into(),
             },
-            MsgToUI::Heartbeat(123456),
+            MsgToUI::Heartbeat(crate::Heartbeat::new(
+                123_456,
+                crate::InputHealth::default(),
+            )),
             MsgToUI::World(crate::WorldStreamMsg::FocusChanged(Some(
                 crate::FocusSnapshot {
                     id: 7,

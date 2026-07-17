@@ -55,6 +55,17 @@ struct SequencedUiEvent {
     event: UiEvent,
 }
 
+/// Result of classifying an event for snapshot coalescing.
+enum SnapshotReplacement {
+    /// The event was retained in its snapshot slot.
+    Retained {
+        /// Whether a prior value was replaced.
+        coalesced: bool,
+    },
+    /// The event must remain on the ordered lane.
+    Ordered(SequencedUiEvent),
+}
+
 /// Latest pending value for each coalescible state class.
 #[derive(Default)]
 struct PendingSnapshots {
@@ -76,7 +87,7 @@ struct PendingSnapshots {
 
 impl PendingSnapshots {
     /// Replace the matching snapshot class, or return an ordered event unchanged.
-    fn replace(&mut self, entry: SequencedUiEvent) -> Result<bool, SequencedUiEvent> {
+    fn replace(&mut self, entry: SequencedUiEvent) -> SnapshotReplacement {
         let slot = match &entry.event {
             UiEvent::Message(MsgToUI::HudUpdate { .. }) => &mut self.hud,
             UiEvent::Message(MsgToUI::SelectorUpdate(_) | MsgToUI::SelectorHide) => {
@@ -89,9 +100,11 @@ impl PendingSnapshots {
             UiEvent::Command(UiCommand::SetPermissionStatusOverride(_)) => {
                 &mut self.permission_health
             }
-            _ => return Err(entry),
+            _ => return SnapshotReplacement::Ordered(entry),
         };
-        Ok(slot.replace(entry).is_some())
+        SnapshotReplacement::Retained {
+            coalesced: slot.replace(entry).is_some(),
+        }
     }
 
     /// Return the earliest surviving snapshot sequence.
@@ -193,14 +206,14 @@ impl UiDeliveryTx {
         };
         state.next_sequence = state.next_sequence.wrapping_add(1);
         let entry = match state.snapshots.replace(entry) {
-            Ok(coalesced) => {
+            SnapshotReplacement::Retained { coalesced } => {
                 if coalesced {
                     state.stats.coalesced_snapshots += 1;
                     return Ok(UiDeliveryOutcome::Coalesced);
                 }
                 return Ok(UiDeliveryOutcome::Queued);
             }
-            Err(entry) => entry,
+            SnapshotReplacement::Ordered(entry) => entry,
         };
 
         let pending_count = state.snapshots.len();

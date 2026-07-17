@@ -73,8 +73,8 @@ impl HotkeyService {
     ) -> Self {
         Self {
             engine: Arc::new(OnceCell::new()),
-            manager,
-            events: EventPipeline::new(shutdown.flag()),
+            manager: manager.clone(),
+            events: EventPipeline::new(shutdown.flag(), manager),
             idle_state,
             shutdown,
             workers: WorkerPool::new(),
@@ -110,6 +110,7 @@ impl HotkeyService {
             idle_timer_armed: armed,
             idle_deadline_ms: deadline_ms,
             clients_connected,
+            input: input_health(self.manager.status()),
         }
     }
 
@@ -246,6 +247,47 @@ impl HotkeyService {
             HotkeyMethod::GetWorldSnapshot => self.handle_get_world_snapshot().await,
             HotkeyMethod::GetServerStatus => self.handle_get_server_status().await,
         }
+    }
+}
+
+/// Convert manager-owned observations into the server's canonical protocol status.
+fn input_health(status: mac_hotkey::ManagerStatus) -> hotki_protocol::InputHealth {
+    let tap_mode = match status.tap_mode {
+        mac_hotkey::TapMode::Physical => hotki_protocol::TapMode::Physical,
+        mac_hotkey::TapMode::InjectionOnly => hotki_protocol::TapMode::InjectionOnly,
+    };
+    let tap_lifecycle = match status.tap_lifecycle {
+        mac_hotkey::TapLifecycle::Starting => hotki_protocol::TapLifecycle::Starting,
+        mac_hotkey::TapLifecycle::Running => hotki_protocol::TapLifecycle::Running,
+        mac_hotkey::TapLifecycle::Stopped => hotki_protocol::TapLifecycle::Stopped,
+    };
+    let secure_input = match status.secure_input {
+        mac_hotkey::SecureInputState::Unknown => hotki_protocol::SecureInputState::Unknown,
+        mac_hotkey::SecureInputState::Inactive => hotki_protocol::SecureInputState::Inactive,
+        mac_hotkey::SecureInputState::Active => hotki_protocol::SecureInputState::Active,
+    };
+    let blocked = secure_input == hotki_protocol::SecureInputState::Active
+        && tap_mode == hotki_protocol::TapMode::Physical
+        && tap_lifecycle == hotki_protocol::TapLifecycle::Running
+        && status.registered_hotkeys > 0;
+    hotki_protocol::InputHealth {
+        tap_mode,
+        tap_lifecycle,
+        secure_input,
+        secure_input_owner: status.secure_input_owner.map(|owner| {
+            hotki_protocol::SecureInputOwner {
+                pid: owner.pid,
+                app_name: owner.app_name,
+            }
+        }),
+        blocked,
+        registered_hotkeys: status.registered_hotkeys,
+        physical_event_count: status.physical_event_count,
+        physical_event_age_ms: status.physical_event_age_ms,
+        os_disable_count: status.os_disable_count,
+        os_reenable_count: status.os_reenable_count,
+        observed_at_ms: status.observed_at_ms,
+        server_pid: status.server_pid,
     }
 }
 
@@ -411,5 +453,66 @@ mod tests {
         assert_eq!(failure.code, RpcErrorCode::MethodNotFound);
         assert_eq!(failure.payload.message, "method 'bogus' not found");
         assert_eq!(failure.payload.fields.method.as_deref(), Some("bogus"));
+    }
+
+    fn manager_status(
+        mode: mac_hotkey::TapMode,
+        lifecycle: mac_hotkey::TapLifecycle,
+        secure_input: mac_hotkey::SecureInputState,
+        registered_hotkeys: usize,
+    ) -> mac_hotkey::ManagerStatus {
+        mac_hotkey::ManagerStatus {
+            tap_mode: mode,
+            tap_lifecycle: lifecycle,
+            secure_input,
+            secure_input_owner: None,
+            registered_hotkeys,
+            physical_event_count: 0,
+            physical_event_age_ms: None,
+            os_disable_count: 0,
+            os_reenable_count: 0,
+            observed_at_ms: None,
+            server_pid: 1,
+        }
+    }
+
+    #[test]
+    fn blocked_requires_active_running_physical_tap_with_bindings() {
+        let blocked = input_health(manager_status(
+            mac_hotkey::TapMode::Physical,
+            mac_hotkey::TapLifecycle::Running,
+            mac_hotkey::SecureInputState::Active,
+            1,
+        ));
+        assert!(blocked.blocked);
+
+        for status in [
+            manager_status(
+                mac_hotkey::TapMode::InjectionOnly,
+                mac_hotkey::TapLifecycle::Stopped,
+                mac_hotkey::SecureInputState::Unknown,
+                1,
+            ),
+            manager_status(
+                mac_hotkey::TapMode::Physical,
+                mac_hotkey::TapLifecycle::Stopped,
+                mac_hotkey::SecureInputState::Active,
+                1,
+            ),
+            manager_status(
+                mac_hotkey::TapMode::Physical,
+                mac_hotkey::TapLifecycle::Running,
+                mac_hotkey::SecureInputState::Active,
+                0,
+            ),
+            manager_status(
+                mac_hotkey::TapMode::Physical,
+                mac_hotkey::TapLifecycle::Running,
+                mac_hotkey::SecureInputState::Inactive,
+                1,
+            ),
+        ] {
+            assert!(!input_health(status).blocked);
+        }
     }
 }

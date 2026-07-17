@@ -15,17 +15,18 @@ use eguidev::{
     name_viewport,
 };
 use hotki_protocol::{
-    DisplayFrame, DisplaysSnapshot, HudRow, HudState, Mode, MsgToUI, NotifyKind, NotifyPos, Style,
-    Toggle,
+    DisplayFrame, DisplaysSnapshot, HudRow, HudState, InputHealth, Mode, MsgToUI, NotifyKind,
+    NotifyPos, SecureInputOwner, SecureInputState, Style, TapLifecycle, TapMode, Toggle,
 };
 use mac_keycode::Chord;
 use permissions::{PermissionState, PermissionsStatus};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     app::{HudPresentation, NotificationPresentation, UiCommand, UiEvent},
-    health::{ConnectionStatus, RetryState, RuntimeHealth, RuntimePhase},
+    diagnostics::DiagnosticStore,
+    health::{ConnectionStatus, InputProjection, RetryState, RuntimeHealth, RuntimePhase},
     logs,
     notification::{NotificationStackAlias, render_stack_metadata},
     runtime::ControlMsg,
@@ -38,7 +39,7 @@ pub struct FixtureRuntime {
     /// Egui context becomes available only inside `HotkiApp::new`.
     ctx: Arc<Mutex<Option<Context>>>,
     /// Latest app diagnostic snapshot recorded from the UI thread.
-    diagnostics: Arc<Mutex<HotkiDiagnostics>>,
+    diagnostics: DiagnosticStore,
     /// Latest UI-thread idle state reported to eguidev settle waits.
     app_idle: Arc<AtomicBool>,
 }
@@ -66,17 +67,17 @@ impl FixtureRuntime {
         &self,
         runtime_health: &RuntimeHealth,
         server_bindings: &[String],
+        input_health: &hotki_protocol::InputHealth,
         notification_stack: &[NotificationStackAlias],
         delivery_stats: UiDeliveryStats,
     ) {
-        if let Ok(mut diagnostics) = self.diagnostics.lock() {
-            *diagnostics = HotkiDiagnostics::from_app_state(
-                runtime_health,
-                server_bindings,
-                notification_stack,
-                delivery_stats,
-            );
-        }
+        self.diagnostics.update(
+            runtime_health,
+            server_bindings,
+            input_health,
+            notification_stack,
+            delivery_stats,
+        );
     }
 
     /// Update whether the UI has no finite animation work in progress.
@@ -91,87 +92,12 @@ impl FixtureRuntime {
 
     /// Return the latest app diagnostic snapshot.
     fn diagnostic(&self) -> Result<Value, DiagnosticError> {
-        let diagnostics = self
-            .diagnostics
-            .lock()
-            .map_err(|err| DiagnosticError::new("diagnostic_lock", err.to_string()))?;
-        Ok(diagnostics.to_json())
-    }
-}
-
-#[derive(Clone, Default)]
-/// App state exposed through `diagnostic("hotki.state")`.
-struct HotkiDiagnostics {
-    /// Complete runtime health shared with normal UI surfaces.
-    runtime_health: RuntimeHealth,
-    /// Sorted server binding identifiers reported by the runtime.
-    server_bindings: Vec<String>,
-    /// Live notification stack aliases, newest first.
-    notifications: Vec<NotificationDiagnostic>,
-    /// UI delivery pressure counters.
-    delivery_stats: UiDeliveryStats,
-}
-
-impl HotkiDiagnostics {
-    /// Build a diagnostic snapshot from the currently rendered app state.
-    fn from_app_state(
-        runtime_health: &RuntimeHealth,
-        server_bindings: &[String],
-        notification_stack: &[NotificationStackAlias],
-        delivery_stats: UiDeliveryStats,
-    ) -> Self {
-        Self {
-            runtime_health: runtime_health.clone(),
-            server_bindings: server_bindings.to_vec(),
-            notifications: notification_stack
-                .iter()
-                .map(NotificationDiagnostic::from)
-                .collect(),
-            delivery_stats,
-        }
+        Ok(self.diagnostics.json())
     }
 
-    /// Convert the snapshot into script-visible JSON.
-    fn to_json(&self) -> Value {
-        let notifications = self
-            .notifications
-            .iter()
-            .map(NotificationDiagnostic::to_json)
-            .collect::<Vec<_>>();
-        json!({
-            "server": {
-                "connected": self.runtime_health.server_connected(),
-                "binding_count": self.server_bindings.len(),
-                "bindings": self.server_bindings,
-            },
-            "runtime": {
-                "phase": self.runtime_health.phase.label(),
-                "connection": self.runtime_health.connection.label(),
-                "active_config": self.runtime_health.active_config,
-                "pending_config": self.runtime_health.pending_config,
-                "permissions": {
-                    "accessibility": permission_state_label(
-                        self.runtime_health.permissions.accessibility,
-                    ),
-                    "input_monitoring": permission_state_label(
-                        self.runtime_health.permissions.input_monitoring,
-                    ),
-                    "screen_recording": permission_state_label(
-                        self.runtime_health.permissions.screen_recording,
-                    ),
-                },
-                "retry": self.runtime_health.retry.label(),
-                "message": self.runtime_health.message,
-            },
-            "notifications": {
-                "live_count": self.notifications.len(),
-                "items": notifications,
-            },
-            "delivery": {
-                "dropped_logs": self.delivery_stats.dropped_logs,
-                "coalesced_snapshots": self.delivery_stats.coalesced_snapshots,
-            },
-        })
+    /// Clone the shared diagnostic store for another renderer.
+    pub(crate) fn diagnostic_store(&self) -> DiagnosticStore {
+        self.diagnostics.clone()
     }
 }
 
@@ -181,42 +107,6 @@ fn permission_state_label(state: PermissionState) -> &'static str {
         PermissionState::Granted => "granted",
         PermissionState::Denied => "denied",
         PermissionState::Unknown => "unknown",
-    }
-}
-
-#[derive(Clone, Default)]
-/// Diagnostic alias for one live notification viewport.
-struct NotificationDiagnostic {
-    /// Stack index, newest first.
-    index: usize,
-    /// Stable live notification id.
-    live_id: String,
-    /// Stable notification kind.
-    kind: &'static str,
-    /// Notification title.
-    title: String,
-}
-
-impl From<&NotificationStackAlias> for NotificationDiagnostic {
-    fn from(alias: &NotificationStackAlias) -> Self {
-        Self {
-            index: alias.index,
-            live_id: alias.live_id.clone(),
-            kind: alias.kind,
-            title: alias.title.clone(),
-        }
-    }
-}
-
-impl NotificationDiagnostic {
-    /// Convert the notification alias into script-visible JSON.
-    fn to_json(&self) -> Value {
-        json!({
-            "index": self.index,
-            "live_id": self.live_id,
-            "kind": self.kind,
-            "title": self.title,
-        })
     }
 }
 
@@ -289,6 +179,10 @@ enum HotkiFixture {
     MainPermissionRequired,
     /// Main window showing invalid-config recovery.
     MainInvalidConfig,
+    /// Main window showing an active Secure Input pause.
+    MainSecureInputBlocked,
+    /// Main window after Secure Input recovery.
+    MainSecureInputRecovered,
     /// Dedicated logs window.
     Logs,
     /// Native tray About command.
@@ -386,6 +280,16 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
         HotkiFixture::MainInvalidConfig,
         "hotki.main.invalid_config",
         "UI-thread lane: open the main window after a rejected configuration.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::MainSecureInputBlocked,
+        "hotki.main.secure_input_blocked",
+        "UI-thread lane: open the main window while Secure Input blocks physical hotkeys.",
+    ),
+    FixtureDef::new(
+        HotkiFixture::MainSecureInputRecovered,
+        "hotki.main.secure_input_recovered",
+        "UI-thread lane: open the main window after Secure Input recovery.",
     ),
     FixtureDef::new(
         HotkiFixture::Logs,
@@ -527,8 +431,19 @@ impl HotkiFixture {
                     viewport_sel("main"),
                 )
                 .anchor_in("main.footer.primary", viewport_sel("main")),
+            Self::MainSecureInputBlocked => app_ready(spec)
+                .anchor_value("app.input.blocked", WidgetValue::Bool(true))
+                .anchor_value_in(
+                    "main.notice.title",
+                    WidgetValue::Text("Hotkeys paused by Secure Input".to_string()),
+                    viewport_sel("main"),
+                ),
+            Self::MainSecureInputRecovered => app_ready(spec)
+                .anchor_value("app.input.blocked", WidgetValue::Bool(false))
+                .anchor_in("main.activity.empty", viewport_sel("main")),
             Self::Logs => app_ready(spec)
                 .anchor_in("logs.clear", viewport_sel("logs"))
+                .anchor_in("logs.copy_diagnostics", viewport_sel("logs"))
                 .anchor_in("logs.0.message", viewport_sel("logs")),
             Self::TrayAbout => {
                 app_ready(spec).anchor_value("app.about.opened", WidgetValue::Bool(true))
@@ -733,6 +648,7 @@ fn ready_health() -> RuntimeHealth {
         permissions: granted_permissions(),
         retry: RetryState::Idle,
         message: None,
+        input: Default::default(),
     }
 }
 
@@ -803,6 +719,7 @@ impl FixtureBridge {
                     permissions: granted_permissions(),
                     retry: RetryState::Available,
                     message: Some("Configuration validation failed".to_string()),
+                    input: Default::default(),
                 })?;
                 self.send_ui_message(MsgToUI::Notify {
                     kind: NotifyKind::Error,
@@ -810,6 +727,12 @@ impl FixtureBridge {
                     text: "Could not load /Users/example/.hotki/config-with-a-very-long-name-that-wraps.luau: unexpected token near the end of the imported module.".to_string(),
                 })?;
                 self.show_main_window()?;
+            }
+            HotkiFixture::MainSecureInputBlocked => {
+                self.apply_secure_input_fixture(SecureInputState::Active)?;
+            }
+            HotkiFixture::MainSecureInputRecovered => {
+                self.apply_secure_input_fixture(SecureInputState::Inactive)?;
             }
             HotkiFixture::Logs => {
                 self.clear_transient_ui()?;
@@ -919,6 +842,18 @@ impl FixtureBridge {
             }
         }
         Ok(())
+    }
+
+    /// Present one deterministic Secure Input state in the main window.
+    fn apply_secure_input_fixture(&self, secure_input: SecureInputState) -> Result<(), String> {
+        self.clear_transient_ui()?;
+        let blocked = secure_input == SecureInputState::Active;
+        let input = fixture_input_health(secure_input, blocked);
+        let mut health = ready_health();
+        health.input = InputProjection::from(&input);
+        self.set_runtime_health(health)?;
+        self.send_ui_command(UiCommand::SetInputHealth(input))?;
+        self.show_main_window()
     }
 
     /// Create one visible notification for each practical display kind.
@@ -1039,6 +974,7 @@ impl FixtureBridge {
         self.send_ui_command(UiCommand::SetNotificationPresentationOverride(None))?;
         self.send_ui_command(UiCommand::SetHudPresentationOverride(None))?;
         self.send_ui_command(UiCommand::SetRuntimeHealthOverride(None))?;
+        self.send_ui_command(UiCommand::SetInputHealth(InputHealth::default()))?;
         self.send_ui_command(UiCommand::HideLogs)?;
         self.send_ui_message(MsgToUI::ShowMainWindow(Toggle::Off))
     }
@@ -1102,6 +1038,26 @@ impl FixtureBridge {
         self.tx_ctrl
             .send(message)
             .map_err(|err| format!("failed to send runtime control: {err}"))
+    }
+}
+
+/// Deterministic physical-input health for Secure Input presentation fixtures.
+fn fixture_input_health(secure_input: SecureInputState, blocked: bool) -> InputHealth {
+    InputHealth {
+        tap_mode: TapMode::Physical,
+        tap_lifecycle: TapLifecycle::Running,
+        secure_input,
+        secure_input_owner: (secure_input == SecureInputState::Active).then(|| SecureInputOwner {
+            pid: 42,
+            app_name: "Terminal".to_string(),
+        }),
+        blocked,
+        registered_hotkeys: 3,
+        physical_event_count: 12,
+        physical_event_age_ms: Some(250),
+        observed_at_ms: Some(1_000),
+        server_pid: 7,
+        ..InputHealth::default()
     }
 }
 
@@ -1211,6 +1167,23 @@ pub fn render_app_anchors(
                 ui,
                 "app.runtime.retry",
                 WidgetValue::Text(runtime_health.retry.label().to_string()),
+            );
+            readiness_anchor(
+                ui,
+                "app.input.blocked",
+                WidgetValue::Bool(runtime_health.input.blocked),
+            );
+            readiness_anchor(
+                ui,
+                "app.input.secure_input",
+                WidgetValue::Text(
+                    match runtime_health.input.secure_input {
+                        SecureInputState::Unknown => "unknown",
+                        SecureInputState::Inactive => "inactive",
+                        SecureInputState::Active => "active",
+                    }
+                    .to_string(),
+                ),
             );
             readiness_anchor(
                 ui,

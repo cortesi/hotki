@@ -337,6 +337,8 @@ pub struct ServerStatusLite {
     pub idle_deadline_ms: Option<u64>,
     /// Count of connected clients observed by the server.
     pub clients_connected: usize,
+    /// Latest cached physical-input health from the heartbeat sampler.
+    pub input: crate::InputHealth,
 }
 
 /// Lightweight snapshot payload for `get_world_snapshot` method (focus + displays only).

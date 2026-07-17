@@ -123,6 +123,11 @@ pub fn snapshot_after(generation: u64) -> Option<LogSnapshot> {
     })
 }
 
+/// Clone the current buffer for privacy filtering by diagnostic renderers.
+pub fn entries() -> Vec<LogEntry> {
+    buffer().lock().entries.iter().cloned().collect()
+}
+
 /// Clear the buffer.
 pub fn clear() {
     let mut buf = buffer().lock();

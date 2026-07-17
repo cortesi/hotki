@@ -83,14 +83,29 @@ mod tests {
     #[tokio::test]
     async fn reliable_send_waits_for_channel_capacity() {
         let (tx, mut rx) = mpsc::channel(1);
-        tx.try_send(MsgToUI::Heartbeat(1)).expect("fill channel");
+        tx.try_send(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+            1,
+            hotki_protocol::InputHealth::default(),
+        )))
+        .expect("fill channel");
         let dispatcher = NotificationDispatcher::new(tx);
-        let send = tokio::spawn(async move { dispatcher.send_ui(MsgToUI::Heartbeat(2)).await });
+        let send = tokio::spawn(async move {
+            dispatcher
+                .send_ui(MsgToUI::Heartbeat(hotki_protocol::Heartbeat::new(
+                    2,
+                    hotki_protocol::InputHealth::default(),
+                )))
+                .await
+        });
 
         tokio::task::yield_now().await;
         assert!(!send.is_finished());
-        assert_eq!(rx.recv().await, Some(MsgToUI::Heartbeat(1)));
+        assert!(
+            matches!(rx.recv().await, Some(MsgToUI::Heartbeat(heartbeat)) if heartbeat.sent_at_ms == 1)
+        );
         send.await.expect("send task").expect("reliable send");
-        assert_eq!(rx.recv().await, Some(MsgToUI::Heartbeat(2)));
+        assert!(
+            matches!(rx.recv().await, Some(MsgToUI::Heartbeat(heartbeat)) if heartbeat.sent_at_ms == 2)
+        );
     }
 }

@@ -9,7 +9,9 @@ use std::{
 use eframe::{App, CreationContext};
 use egui::Context;
 use eguidev::DevMcp;
-use hotki_protocol::{DisplaysSnapshot, HudState, MsgToUI, NotifyConfig, Style, Toggle};
+use hotki_protocol::{
+    DisplaysSnapshot, HudState, InputHealth, MsgToUI, NotifyConfig, Style, Toggle,
+};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -53,6 +55,8 @@ pub enum UiCommand {
     SetRuntimeHealthOverride(Option<Box<RuntimeHealth>>),
     /// Update the server binding identifiers visible to devtools.
     SetServerBindings(Vec<String>),
+    /// Update the full input-health snapshot used by diagnostics.
+    SetInputHealth(InputHealth),
     /// Override permission status for deterministic devtools fixtures.
     SetPermissionStatusOverride(Option<PermissionsStatus>),
     /// Override notification presentation for deterministic devtools fixtures.
@@ -129,6 +133,8 @@ pub struct HotkiApp {
     pub(crate) tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     /// Sorted server binding identifiers, when the runtime has reported them.
     pub(crate) server_bindings: Vec<String>,
+    /// Latest full physical-input health snapshot from the server heartbeat.
+    pub(crate) input_health: InputHealth,
     /// App-local requests waiting for a specific UI state to be painted.
     pub(crate) harness_requests: Option<Receiver<PresentationRequest>>,
     /// Presentation requests that have not yet survived one complete rendered frame.
@@ -199,6 +205,7 @@ impl App for HotkiApp {
         self.fixture_runtime.update_diagnostics(
             presented_health,
             &self.server_bindings,
+            &self.input_health,
             &notification_stack,
             self.rx.stats(),
         );
@@ -269,7 +276,7 @@ impl HotkiApp {
         let mut notifications = NotificationCenter::new(&runtime_notify_config);
         let mut main_window = MainWindow::new(bootstrap.initial_style.notify.theme.clone());
         main_window.set_runtime_health(&runtime_health);
-        let logs_window = LogsWindow::new();
+        let logs_window = LogsWindow::new(fixture_runtime.diagnostic_store());
 
         let mut permissions = PermissionsHelp::new();
         permissions.set_control_sender(bootstrap.tx_ctrl.clone());
@@ -306,6 +313,7 @@ impl HotkiApp {
             about_panel_opened: false,
             tx_ctrl: bootstrap.tx_ctrl,
             server_bindings: Vec::new(),
+            input_health: InputHealth::default(),
             harness_requests: bootstrap.harness_requests,
             pending_presentations: Vec::new(),
             rendered_frame: 0,
@@ -408,6 +416,9 @@ impl HotkiApp {
             }
             UiCommand::SetServerBindings(bindings) => {
                 self.server_bindings = bindings;
+            }
+            UiCommand::SetInputHealth(input) => {
+                self.input_health = input;
             }
             UiCommand::SetPermissionStatusOverride(status) => {
                 self.permissions.set_status_override(status);

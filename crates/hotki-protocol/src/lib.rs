@@ -9,6 +9,8 @@
 mod display;
 /// Focus snapshot payloads.
 mod focus;
+/// Physical-input health payloads.
+mod input;
 /// Shared UI style payloads.
 mod style;
 /// Server-to-UI message payloads.
@@ -16,6 +18,9 @@ mod ui;
 
 pub use display::{DisplayFrame, DisplaysSnapshot};
 pub use focus::FocusSnapshot;
+pub use input::{
+    Heartbeat, InputHealth, SecureInputOwner, SecureInputState, TapLifecycle, TapMode,
+};
 pub use style::{
     FontWeight, HudPressedStyle, HudStyle, Mode, NotifyConfig, NotifyPos, NotifyTheme,
     NotifyWindowStyle, Offset, Pos, SelectorStyle, Style,

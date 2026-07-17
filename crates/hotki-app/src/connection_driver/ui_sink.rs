@@ -1,5 +1,5 @@
 use egui::Context;
-use hotki_protocol::{MsgToUI, NotifyKind};
+use hotki_protocol::{InputHealth, MsgToUI, NotifyKind};
 
 use crate::{
     app::{UiCommand, UiEvent},
@@ -53,6 +53,11 @@ impl UiSink {
     /// Update the UI-visible server binding list.
     pub(super) fn set_server_bindings(&self, bindings: Vec<String>) {
         self.send_command(UiCommand::SetServerBindings(bindings));
+    }
+
+    /// Replace the full diagnostic input-health snapshot.
+    pub(super) fn set_input_health(&self, input: InputHealth) {
+        self.send_command(UiCommand::SetInputHealth(input));
     }
 
     /// Ask the UI to shut down after the runtime has finished its owned work.

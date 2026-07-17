@@ -40,9 +40,17 @@ fixtures/server actions and inspect the rendered widgets. Synthetic input
 (clicks, key presses, etc.) reaches immediate viewports automatically through
 eguidev's egui plugin; no app-side wiring is required.
 
-The main window has state-specific fixtures for ready-empty, populated, permission-required, and
-invalid-config layouts. `hotki.logs` opens the dedicated diagnostic window.
+The main window has state-specific fixtures for ready-empty, populated, permission-required,
+invalid-config, Secure Input blocked, and Secure Input recovered layouts. `hotki.logs` opens the
+dedicated diagnostic window and exposes the instrumented `Copy Diagnostics` action.
 Use `edev fixtures` for the complete inventory generated from the app's live fixture catalog.
+
+`hotki.state` and `Copy Diagnostics` render the same privacy-bounded snapshot. Secure Input is
+sampled once by the server heartbeat; UI tests should use `hotki.main.secure_input_blocked` and
+`hotki.main.secure_input_recovered` rather than attempting to enable the live macOS facility. The
+reported owner is best effort and must never become part of the blocking decision. Diagnostic
+changes must retain the exclusions for typed or raw key data, binding identifiers, configuration
+source and paths, and notification text.
 
 Treat `edev smoke` as a local macOS automation suite for now. Do not add it to
 CI until a macOS runner has `edev` and the required windowing permissions
