@@ -1,5 +1,7 @@
 use std::{
-    io, mem, ptr,
+    io, mem,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    ptr,
     sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -21,6 +23,21 @@ use crate::{
 
 /// Default idle timeout in seconds after client disconnects.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
+/// Poll interval used while checking shutdown during a kqueue wait.
+const PARENT_WATCH_SHUTDOWN_INTERVAL: Duration = Duration::from_millis(200);
+/// Poll interval used by the process-existence fallback.
+const PARENT_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Terminal result from the kqueue-backed parent watcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParentWatchOutcome {
+    /// The watched process emitted an exit event.
+    ParentExited,
+    /// Another server lane requested shutdown.
+    ShutdownRequested,
+    /// Kqueue setup or waiting failed and polling should take over.
+    KqueueUnavailable,
+}
 
 /// Request coordinated shutdown once an armed idle deadline has elapsed.
 fn request_idle_shutdown_if_due(
@@ -35,88 +52,106 @@ fn request_idle_shutdown_if_due(
     true
 }
 
+/// Wait for the parent process to exit while observing cooperative shutdown.
+fn watch_parent_with_kqueue(
+    pid: libc::pid_t,
+    shutdown: &ShutdownCoordinator,
+) -> ParentWatchOutcome {
+    // SAFETY: `kqueue` takes no arguments and returns a new owned file descriptor on success.
+    let descriptor = unsafe { libc::kqueue() };
+    if descriptor < 0 {
+        return ParentWatchOutcome::KqueueUnavailable;
+    }
+    // SAFETY: `descriptor` was just returned by `kqueue` and ownership has not been transferred.
+    let kqueue = unsafe { OwnedFd::from_raw_fd(descriptor) };
+
+    // SAFETY: `kevent` is a plain C data structure for which all-zero is a valid baseline.
+    let mut registration = unsafe { mem::zeroed::<libc::kevent>() };
+    registration.ident = pid as usize;
+    registration.filter = libc::EVFILT_PROC;
+    registration.flags = libc::EV_ADD | libc::EV_ONESHOT;
+    registration.fflags = libc::NOTE_EXIT;
+    registration.udata = ptr::null_mut();
+
+    // SAFETY: the descriptor is open, `registration` points to one initialized event, and the
+    // output list is null because this call only submits the registration.
+    let registered = unsafe {
+        libc::kevent(
+            kqueue.as_raw_fd(),
+            &raw const registration,
+            1,
+            ptr::null_mut(),
+            0,
+            ptr::null(),
+        ) == 0
+    };
+    if !registered {
+        return ParentWatchOutcome::KqueueUnavailable;
+    }
+
+    loop {
+        if shutdown.is_requested() {
+            return ParentWatchOutcome::ShutdownRequested;
+        }
+
+        let timeout = libc::timespec {
+            tv_sec: PARENT_WATCH_SHUTDOWN_INTERVAL.as_secs() as libc::time_t,
+            tv_nsec: PARENT_WATCH_SHUTDOWN_INTERVAL.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `event` is initialized storage for one result, `timeout` lives for the call,
+        // and `kqueue` remains open for the duration of the wait.
+        let mut event = unsafe { mem::zeroed::<libc::kevent>() };
+        // SAFETY: all pointers reference initialized storage with the counts supplied, and the
+        // changelist is null because the process filter was registered above.
+        let result = unsafe {
+            libc::kevent(
+                kqueue.as_raw_fd(),
+                ptr::null(),
+                0,
+                &raw mut event,
+                1,
+                &raw const timeout,
+            )
+        };
+
+        if result > 0 {
+            return ParentWatchOutcome::ParentExited;
+        }
+        if result < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return ParentWatchOutcome::KqueueUnavailable;
+        }
+    }
+}
+
+/// Return whether `pid` still names a process visible to this user.
+fn process_is_alive(pid: libc::pid_t) -> bool {
+    // SAFETY: signal zero performs a process-existence query without delivering a signal.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Fall back to process polling when kqueue setup or waiting fails.
+fn watch_parent_by_polling(pid: libc::pid_t, shutdown: &ShutdownCoordinator) {
+    while !shutdown.is_requested() {
+        if !process_is_alive(pid) {
+            shutdown.request(ShutdownReason::ParentExited);
+            return;
+        }
+        thread::sleep(PARENT_WATCH_FALLBACK_INTERVAL);
+    }
+}
+
 /// Spawns a background thread that monitors a parent process PID.
 /// When the parent process exits, it requests server shutdown.
 /// If shutdown is requested by other means, the thread terminates gracefully.
 fn spawn_parent_watcher(ppid: libc::pid_t, shutdown: ShutdownCoordinator) -> JoinHandle<()> {
-    thread::spawn(move || {
-        // Try kqueue EVFILT_PROC NOTE_EXIT for precise exit detection.
-        unsafe {
-            let kq = libc::kqueue();
-            if kq >= 0 {
-                let mut kev: libc::kevent = mem::zeroed();
-                // Configure event: watch specific PID for exit, one-shot.
-                kev.ident = ppid as usize;
-                kev.filter = libc::EVFILT_PROC;
-                kev.flags = libc::EV_ADD | libc::EV_ONESHOT;
-                kev.fflags = libc::NOTE_EXIT;
-                kev.data = 0;
-                kev.udata = ptr::null_mut();
-
-                let res = libc::kevent(
-                    kq,
-                    &kev as *const libc::kevent,
-                    1,
-                    ptr::null_mut(),
-                    0,
-                    ptr::null(),
-                );
-                if res == 0 {
-                    // Wait for the event to fire in a loop with a timeout to allow cooperative shutdown.
-                    let mut fallback = false;
-                    loop {
-                        if shutdown.is_requested() {
-                            break;
-                        }
-                        let timeout = libc::timespec {
-                            tv_sec: 0,
-                            tv_nsec: 200_000_000, // 200 ms timeout for responsiveness
-                        };
-                        let mut out: libc::kevent = mem::zeroed();
-                        let res = libc::kevent(
-                            kq,
-                            ptr::null(),
-                            0,
-                            &mut out as *mut libc::kevent,
-                            1,
-                            &timeout as *const libc::timespec,
-                        );
-                        if res > 0 {
-                            // Parent exited; request shutdown.
-                            shutdown.request(ShutdownReason::ParentExited);
-                            break;
-                        } else if res < 0 {
-                            let err = io::Error::last_os_error().raw_os_error();
-                            if err != Some(libc::EINTR) {
-                                fallback = true;
-                                break;
-                            }
-                        }
-                    }
-                    let _ = libc::close(kq);
-                    if !fallback {
-                        return;
-                    }
-                } else {
-                    // Registration failed; fall back to polling below.
-                    let _ = libc::close(kq);
-                }
-            }
+    thread::spawn(move || match watch_parent_with_kqueue(ppid, &shutdown) {
+        ParentWatchOutcome::ParentExited => {
+            shutdown.request(ShutdownReason::ParentExited);
         }
-
-        // Fallback: poll with kill(ppid, 0) at short intervals.
-        loop {
-            if shutdown.is_requested() {
-                break;
-            }
-            // kill == 0 -> process exists; ESRCH -> doesn't exist
-            let alive = unsafe { libc::kill(ppid, 0) } == 0
-                || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-            if !alive {
-                shutdown.request(ShutdownReason::ParentExited);
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
+        ParentWatchOutcome::ShutdownRequested => {}
+        ParentWatchOutcome::KqueueUnavailable => {
+            watch_parent_by_polling(ppid, &shutdown);
         }
     })
 }
