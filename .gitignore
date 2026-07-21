@@ -8,3 +8,7 @@ crates/*/Cargo.lock
 AGENTS.md
 CLAUDE.md
 plans
+
+# Shared coding-standard instruction files
+!/AGENTS.md
+!/CLAUDE.md
