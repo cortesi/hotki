@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use ui_sink::UiSink;
 
 use crate::{
-    health::{InputProjection, RuntimeHealth, RuntimePhase},
+    health::{InputProjection, RuntimeHealth, RuntimePhase, secure_input_detail},
     logs,
     permissions::{PermissionObservation, PermissionsStatus, check_permissions},
     runtime::ControlMsg,
@@ -514,11 +514,8 @@ impl ConnectionDriver {
                 self.secure_input_warning_sent = false;
             }
         } else if input.blocked && !self.secure_input_warning_sent {
-            self.notify_local(
-                NotifyKind::Warn,
-                "Hotkeys paused by Secure Input",
-                "Physical hotkeys resume automatically when Secure Input ends.",
-            );
+            let detail = secure_input_detail(&self.health.input);
+            self.notify_local(NotifyKind::Warn, "Hotkeys paused by Secure Input", &detail);
             self.secure_input_warning_sent = true;
         }
     }
@@ -1128,6 +1125,31 @@ mod tests {
         assert_eq!(warning_count, 1);
         assert_eq!(recovery_count, 1);
         assert!(!driver.secure_input_warning_sent);
+    }
+
+    #[test]
+    fn secure_input_warning_names_the_likely_owner() {
+        let (tx_ui, rx_ui) = ui_delivery_channel();
+        let (_tx_ctrl, rx_ctrl) = unbounded_channel();
+        let mut driver = ConnectionDriver::new(
+            "config.luau".into(),
+            None,
+            tx_ui,
+            egui::Context::default(),
+            rx_ctrl,
+            false,
+            false,
+        );
+        while rx_ui.try_recv().is_some() {}
+
+        driver.handle_input_health(&input_health(SecureInputState::Active, true, 1));
+
+        assert!(iter::from_fn(|| rx_ui.try_recv()).any(|event| matches!(
+            event,
+            UiEvent::Message(hotki_protocol::MsgToUI::Notify { title, text, .. })
+                if title == "Hotkeys paused by Secure Input"
+                    && text.starts_with("Terminal may be holding Secure Input.")
+        )));
     }
 
     #[test]

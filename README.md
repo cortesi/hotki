@@ -91,8 +91,9 @@ ordinary application shortcuts, so browser extensions such as Vimium may need a 
 
 Some password fields and terminal applications enable macOS Secure Event Input. While it is
 active, macOS pauses Hotki's physical hotkeys; Hotki leaves its server, configuration, and hotkey
-registrations running and resumes automatically when Secure Input ends. The main window and tray
-show `Hotkeys paused by Secure Input` when registered hotkeys are affected.
+registrations running and resumes automatically when Secure Input ends. When registered hotkeys
+are affected, the warning names the likely owner when macOS reports one, the tray shows
+`Hotkeys paused by <app>`, and the main window can open that application for recovery.
 
 Hotki may show the application associated with Secure Input. This owner is a best-effort snapshot
 from the current macOS session and can be missing or change before the notice is rendered. It is

@@ -95,7 +95,7 @@ impl TrayItems {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrayCopy {
     /// Optional non-ready notice title.
-    notice: Option<&'static str>,
+    notice: Option<String>,
     /// Status-item tooltip.
     tooltip: String,
 }
@@ -104,8 +104,17 @@ impl TrayCopy {
     /// Derive tray copy without exposing runtime diagnostic fields.
     fn from_health(health: &RuntimeHealth) -> Self {
         let presentation = health.presentation();
-        let notice = presentation.notice.map(|notice| notice.title);
-        let tooltip = notice.map_or_else(|| "Hotki".to_string(), str::to_string);
+        let notice = presentation.notice.map(|notice| {
+            if health.input.blocked {
+                health.input.secure_input_owner.as_ref().map_or_else(
+                    || notice.title.to_string(),
+                    |owner| format!("Hotkeys paused by {}", owner.app_name),
+                )
+            } else {
+                notice.title.to_string()
+            }
+        });
+        let tooltip = notice.clone().unwrap_or_else(|| "Hotki".to_string());
         Self { notice, tooltip }
     }
 }
@@ -122,7 +131,7 @@ impl Tray {
     /// Update the optional notice, tooltip, and command availability.
     pub(crate) fn set_runtime_health(&self, health: &RuntimeHealth) {
         let copy = TrayCopy::from_health(health);
-        if let Some(notice) = copy.notice {
+        if let Some(notice) = copy.notice.as_deref() {
             self.items.notice.set_text(notice);
         }
         self.items.reload.set_enabled(!health.is_shutting_down());
@@ -380,11 +389,28 @@ mod tests {
         health.disconnect("connection failed");
         let copy = TrayCopy::from_health(&health);
 
-        assert_eq!(copy.notice, Some("Hotki isn't running"));
+        assert_eq!(copy.notice.as_deref(), Some("Hotki isn't running"));
         assert_eq!(copy.tooltip, "Hotki isn't running");
         assert_eq!(
-            copy.notice,
+            copy.notice.as_deref(),
             health.presentation().notice.map(|notice| notice.title)
         );
+    }
+
+    #[test]
+    fn secure_input_tray_names_the_likely_owner() {
+        let mut health = RuntimeHealth::default();
+        health.run_config("config.luau".into());
+        health.input.secure_input = hotki_protocol::SecureInputState::Active;
+        health.input.secure_input_owner = Some(hotki_protocol::SecureInputOwner {
+            pid: 42,
+            app_name: "Claude".to_string(),
+        });
+        health.input.blocked = true;
+
+        let copy = TrayCopy::from_health(&health);
+
+        assert_eq!(copy.notice.as_deref(), Some("Hotkeys paused by Claude"));
+        assert_eq!(copy.tooltip, "Hotkeys paused by Claude");
     }
 }

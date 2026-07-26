@@ -144,6 +144,8 @@ pub struct RuntimeNotice {
 pub enum PrimaryAction {
     /// Reload the currently selected configuration.
     ReloadConfig,
+    /// Activate the application associated with Secure Input.
+    OpenSecureInputOwner,
     /// Open Hotki's required-permissions helper.
     OpenPermissions,
     /// Retry the failed startup or configuration operation.
@@ -155,6 +157,7 @@ impl PrimaryAction {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::ReloadConfig => "Reload Config",
+            Self::OpenSecureInputOwner => "Open Blocking App",
             Self::OpenPermissions => "Open Permissions",
             Self::TryAgain => "Try Again",
         }
@@ -432,7 +435,10 @@ impl RuntimeHealth {
                     tone: NoticeTone::Attention,
                     progress: false,
                 }),
-                Some(PrimaryAction::ReloadConfig),
+                self.input
+                    .secure_input_owner
+                    .as_ref()
+                    .map(|_| PrimaryAction::OpenSecureInputOwner),
             ),
             RuntimePhase::Ready => (None, Some(PrimaryAction::ReloadConfig)),
             RuntimePhase::Connecting => (
@@ -499,15 +505,17 @@ impl RuntimeHealth {
 }
 
 /// Qualify owner attribution without implying that it controls blocking.
-fn secure_input_detail(input: &InputProjection) -> String {
+pub fn secure_input_detail(input: &InputProjection) -> String {
     input.secure_input_owner.as_ref().map_or_else(
         || {
-            "Another application enabled Secure Input. Hotkeys resume automatically when it ends."
+            "Another application is holding Secure Input. Leave its password field or restart it \
+             if Secure Input is stuck. Hotkeys resume automatically."
                 .to_string()
         },
         |owner| {
             format!(
-                "{} may own Secure Input (best effort). Hotkeys resume automatically when it ends.",
+                "{} may be holding Secure Input. Open it and leave any password field, or restart \
+                 it if Secure Input is stuck. Hotkeys resume automatically.",
                 owner.app_name
             )
         },
@@ -859,13 +867,43 @@ mod tests {
         let presentation = ready.presentation();
         let notice = presentation.notice.expect("secure input notice");
         assert_eq!(notice.title, "Hotkeys paused by Secure Input");
-        assert!(notice.detail.unwrap().contains("best effort"));
+        assert!(
+            notice
+                .detail
+                .unwrap()
+                .starts_with("Terminal may be holding Secure Input.")
+        );
         assert_eq!(notice.tone, NoticeTone::Attention);
+        assert_eq!(
+            presentation.primary_action,
+            Some(PrimaryAction::OpenSecureInputOwner)
+        );
 
         ready.reject_config(PathBuf::from("/tmp/candidate.luau"), "candidate rejected");
         assert_eq!(
             ready.presentation().notice.unwrap().title,
             "Hotki couldn't load the configuration"
+        );
+    }
+
+    #[test]
+    fn secure_input_without_an_owner_has_no_misleading_action() {
+        let mut ready = health_for_phase(RuntimePhase::Ready);
+        ready.input = InputProjection {
+            tap_mode: hotki_protocol::TapMode::Physical,
+            tap_lifecycle: hotki_protocol::TapLifecycle::Running,
+            secure_input: hotki_protocol::SecureInputState::Active,
+            secure_input_owner: None,
+            blocked: true,
+        };
+
+        let presentation = ready.presentation();
+        assert_eq!(presentation.primary_action, None);
+        assert!(
+            presentation
+                .notice
+                .and_then(|notice| notice.detail)
+                .is_some_and(|detail| detail.starts_with("Another application is holding"))
         );
     }
 

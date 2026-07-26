@@ -12,7 +12,10 @@ use eguidev::DevMcp;
 use hotki_protocol::{
     DisplaysSnapshot, HudState, InputHealth, MsgToUI, NotifyConfig, Style, Toggle,
 };
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+    NSRunningApplication,
+};
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -557,6 +560,22 @@ impl HotkiApp {
     /// Dispatch one command emitted by the main-window footer.
     fn handle_main_window_command(&mut self, command: MainWindowCommand) {
         match command {
+            MainWindowCommand::Primary(PrimaryAction::OpenSecureInputOwner) => {
+                let Some(owner) = self.runtime_health.input.secure_input_owner.as_ref() else {
+                    tracing::warn!("Secure Input owner disappeared before activation");
+                    return;
+                };
+                if !activate_running_application(owner.pid) {
+                    let text = format!("{} may no longer be running.", owner.app_name);
+                    if let Err(error) = self.tx_ctrl.send(ControlMsg::Notice {
+                        kind: hotki_protocol::NotifyKind::Warn,
+                        title: "Could not open blocking app".to_string(),
+                        text,
+                    }) {
+                        tracing::warn!(?error, "failed to report Secure Input owner activation");
+                    }
+                }
+            }
             MainWindowCommand::Primary(PrimaryAction::OpenPermissions) => {
                 self.permissions.show();
             }
@@ -568,4 +587,14 @@ impl HotkiApp {
             MainWindowCommand::ShowLogs => self.logs_window.show(),
         }
     }
+}
+
+/// Activate the live application resolved from a best-effort Secure Input owner PID.
+fn activate_running_application(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|application| {
+        application.activateWithOptions(NSApplicationActivationOptions::empty())
+    })
 }
