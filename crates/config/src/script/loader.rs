@@ -242,7 +242,7 @@ fn prepare_filesystem_config(
     let root = Source::text(entry_id, source.to_owned())
         .with_metadata(SourceMetadata::new(path.display().to_string()));
     let prepared = surface
-        .prepare_graph_blocking_with_options(root, PrepareOptions::new().reject_errors())
+        .prepare_graph_ready_with_options(root, PrepareOptions::new().reject_errors())
         .map_err(|error| graph_prepare_error(path, sources, &error))?;
     module_source.allow_only(
         prepared
