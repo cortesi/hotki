@@ -844,17 +844,18 @@ mod tests {
     fn view_model_for(ctx: &Context, hud: &Hud, screen_size: Vec2) -> HudViewModel {
         ctx.begin_pass(raw_input(screen_size));
         let model = hud.view_model(ctx);
-        drop(ctx.end_pass());
+        ctx.end_pass().drop_without_applying_deltas();
         model
     }
 
     fn rendered_panel_rect(ctx: &Context, hud: &Hud, model: &HudViewModel) -> Rect {
         let mut used = Rect::NOTHING;
-        drop(ctx.run_ui(raw_input(model.geometry.size), |ui| {
+        ctx.run_ui(raw_input(model.geometry.size), |ui| {
             ui.set_min_size(model.geometry.size);
             hud.render_panel(ui, ctx, model, Instant::now());
             used = ui.min_rect();
-        }));
+        })
+        .drop_without_applying_deltas();
         used
     }
 
