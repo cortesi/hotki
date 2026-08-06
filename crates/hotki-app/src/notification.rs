@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 use egui::{Color32, Context, Frame, Pos2, Vec2, ViewportBuilder, pos2, text::LayoutJob, vec2};
-use eguidev::{DevMcp, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full};
+use eguidev::{
+    DevMcp, WidgetMeta, WidgetRole, WidgetRoleMeta, WidgetValue, container, track_response,
+};
 use hotki_protocol::{
     FontWeight, NotifyConfig, NotifyKind, NotifyPos, NotifyTheme, NotifyWindowStyle,
 };
@@ -472,11 +474,11 @@ impl NotificationCenter {
         ui.painter()
             .with_clip_rect(rect.intersect(ui.clip_rect()))
             .galley(rect.min, galley, color);
-        track_response_full(
+        track_response(
             id,
             &response,
             WidgetMeta {
-                role: WidgetRole::Label,
+                role: WidgetRoleMeta::Plain(WidgetRole::Label),
                 label: Some(text.to_string()),
                 value: Some(WidgetValue::Text(text.to_string())),
                 visible: ui.is_visible() && ui.is_rect_visible(rect),
@@ -513,11 +515,11 @@ impl NotificationCenter {
         ui.painter()
             .with_clip_rect(rect.intersect(ui.clip_rect()))
             .galley(rect.min, galley, body_fg);
-        track_response_full(
+        track_response(
             format!("{id_base}.body"),
             &response,
             WidgetMeta {
-                role: WidgetRole::Label,
+                role: WidgetRoleMeta::Plain(WidgetRole::Label),
                 label: Some(text.to_string()),
                 value: Some(WidgetValue::Text(visible_text)),
                 visible: ui.is_visible() && ui.is_rect_visible(rect),

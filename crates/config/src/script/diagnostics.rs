@@ -52,6 +52,8 @@ pub fn config_retained_error(path: Option<PathBuf>, err: &LifecycleError) -> Err
         LifecycleError::Runtime(error) => config_runtime_error(path, error),
         LifecycleError::Exec(error) => config_validation(path, error),
         LifecycleError::StaleHandle { .. }
+        | LifecycleError::InUse { .. }
+        | LifecycleError::PermanentHandle { .. }
         | LifecycleError::Load(_)
         | LifecycleError::PreparedLoad(_)
         | LifecycleError::BindEnvironment(_) => config_validation(path, err),

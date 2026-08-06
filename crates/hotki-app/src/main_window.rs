@@ -5,7 +5,8 @@ use egui::{
     ViewportBuilder, ViewportCommand, vec2,
 };
 use eguidev::{
-    DevMcp, DevUiExt, WidgetMeta, WidgetRole, WidgetValue, container, track_response_full,
+    DevMcp, DevUiExt, WidgetMeta, WidgetRole, WidgetRoleMeta, WidgetValue, container,
+    track_response,
 };
 use hotki_protocol::{NotifyKind, NotifyTheme};
 
@@ -307,11 +308,11 @@ impl MainWindow {
         };
         let (rect, response) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 5.0, color);
-        track_response_full(
+        track_response(
             "main.notice.mark",
             &response,
             WidgetMeta {
-                role: WidgetRole::Unknown,
+                role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
                 label: Some(notice.tone.label().to_string()),
                 value: Some(WidgetValue::Text(notice.tone.label().to_string())),
                 visible: true,
@@ -354,11 +355,11 @@ impl MainWindow {
                 let color = severity_color(&self.theme, entry.kind);
                 let (rect, response) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
                 ui.painter().circle_filled(rect.center(), 4.0, color);
-                track_response_full(
+                track_response(
                     format!("main.activity.{index}.mark"),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::Unknown,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
                         label: Some(kind_label(entry.kind).to_string()),
                         value: Some(WidgetValue::Text(kind_label(entry.kind).to_string())),
                         visible: true,
@@ -378,11 +379,11 @@ impl MainWindow {
                                 [TIMESTAMP_WIDTH, ui.spacing().interact_size.y],
                                 Label::new(RichText::new(&text).weak()),
                             );
-                            track_response_full(
+                            track_response(
                                 format!("main.activity.{index}.time"),
                                 &response,
                                 WidgetMeta {
-                                    role: WidgetRole::Label,
+                                    role: WidgetRoleMeta::Plain(WidgetRole::Label),
                                     label: Some(text.clone()),
                                     value: Some(WidgetValue::Text(text)),
                                     visible: true,
@@ -392,11 +393,11 @@ impl MainWindow {
                         });
                     });
                     let response = ui.add(Label::new(&entry.text).wrap().selectable(true));
-                    track_response_full(
+                    track_response(
                         format!("main.activity.{index}.text"),
                         &response,
                         WidgetMeta {
-                            role: WidgetRole::Selectable,
+                            role: WidgetRoleMeta::Plain(WidgetRole::Selectable),
                             label: Some(entry.text.clone()),
                             value: Some(WidgetValue::Text(entry.text.clone())),
                             visible: true,
