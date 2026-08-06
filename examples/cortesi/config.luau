@@ -70,7 +70,8 @@ local function base(menu: MenuBuilder, ctx: ModeContext)
     global:bind("shift+cmd+u", "u scratchpad", yabai.toggle_scratchpad("web2"))
 
     if ctx.hud then
-        global:bind("esc", "Exit", a.exit)
+        global:bind("esc", "Back", a.pop)
+        global:bind("q", "Exit", a.exit)
         global:bind("left", "Pop", a.pop)
     end
 
