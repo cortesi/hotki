@@ -8,12 +8,12 @@ use std::{
     },
 };
 
-use egui::{Context, Sense};
+use egui::Context;
 use eguidev::{
-    DevMcp, DiagnosticError, FixtureCall, FixtureError, FixtureResponse, FixtureResult,
-    FixtureSpec, FrameGuard, ViewportSel, WidgetRole, WidgetValue, frame_scope, id_with_meta,
-    name_viewport,
+    DevMcp, DiagnosticError, FixtureError, FixtureResponse, FixtureResult, FixtureSpec, FrameGuard,
+    TypedFixture, TypedFixtures, ViewportSel, WidgetValue,
 };
+pub use eguidev::{value_anchor, viewport_frame};
 use hotki_protocol::{
     DisplayFrame, DisplaysSnapshot, HudRow, HudState, InputHealth, Mode, MsgToUI, NotifyKind,
     NotifyPos, SecureInputOwner, SecureInputState, Style, TapLifecycle, TapMode, Toggle,
@@ -149,9 +149,15 @@ pub fn build_devmcp(
     };
     let diagnostic_runtime = fixture_runtime.clone();
     let idle_runtime = fixture_runtime.clone();
+    let fixtures = TypedFixtures::new(HOTKI_FIXTURES);
+    let catalog = fixtures.catalog_with(HotkiFixture::spec);
+    let fixture_resolver = fixtures;
     let devmcp = DevMcp::new()
-        .fixtures(fixtures())
-        .on_fixture_runtime(move |call| bridge.apply(call))
+        .fixtures(catalog)
+        .on_fixture_runtime(move |call| {
+            let fixture = fixture_resolver.resolve(call)?;
+            bridge.apply(fixture)
+        })
         .expect("hard-coded hotki fixture handler is unique")
         .diagnostic("hotki.state", move || diagnostic_runtime.diagnostic())
         .expect("hard-coded hotki diagnostic name is unique")
@@ -227,171 +233,144 @@ enum HotkiFixture {
     SelectorCanceled,
 }
 
-/// Catalog metadata for a fixture id.
-#[derive(Debug, Clone, Copy)]
-struct FixtureDef {
-    /// Typed fixture id used for dispatch.
-    fixture: HotkiFixture,
-    /// Stable fixture id exposed over eguidev.
-    name: &'static str,
-    /// Human-readable fixture description.
-    description: &'static str,
-}
-
-impl FixtureDef {
-    /// Construct a fixture definition.
-    const fn new(fixture: HotkiFixture, name: &'static str, description: &'static str) -> Self {
-        Self {
-            fixture,
-            name,
-            description,
-        }
-    }
-
-    /// Fixture catalog entry advertised through eguidev.
-    fn spec(self) -> FixtureSpec {
-        self.fixture.spec(self.name, self.description)
-    }
-}
-
 /// Fixtures in the order advertised to eguidev.
-const HOTKI_FIXTURES: &[FixtureDef] = &[
-    FixtureDef::new(
+const HOTKI_FIXTURES: &[TypedFixture<HotkiFixture>] = &[
+    TypedFixture::plain(
         HotkiFixture::BasicDefault,
         "hotki.basic.default",
         "UI-thread lane: open the ready main window for baseline readiness.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainReadyEmpty,
         "hotki.main.ready_empty",
         "UI-thread lane: open the ready main window with no activity.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainPopulated,
         "hotki.main.populated",
         "UI-thread lane: open the ready main window with deterministic activity.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainPermissionRequired,
         "hotki.main.permission_required",
         "UI-thread lane: open the main window while required permissions are missing.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainInvalidConfig,
         "hotki.main.invalid_config",
         "UI-thread lane: open the main window after a rejected configuration.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainSecureInputBlocked,
         "hotki.main.secure_input_blocked",
         "UI-thread lane: open the main window while Secure Input blocks physical hotkeys.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::MainSecureInputRecovered,
         "hotki.main.secure_input_recovered",
         "UI-thread lane: open the main window after Secure Input recovery.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::Logs,
         "hotki.logs",
         "UI-thread lane: open the dedicated diagnostic logs window.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::TrayAbout,
         "hotki.tray.about",
         "UI-thread lane: invoke the tray's standard native About command.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::Permissions,
         "hotki.permissions",
         "UI-thread lane: open the Permissions helper window.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::PermissionsAllGranted,
         "hotki.permissions.all_granted",
         "UI-thread lane: open Permissions with deterministic granted status.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::PermissionsNoneGranted,
         "hotki.permissions.none_granted",
         "UI-thread lane: open Permissions with deterministic missing status.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::PermissionsMixed,
         "hotki.permissions.mixed",
         "UI-thread lane: open Permissions with Accessibility granted and Input Monitoring missing.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::PermissionsHiddenMissing,
         "hotki.permissions.hidden_missing",
         "UI-thread lane: observe missing permissions while the helper remains hidden.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::PermissionsHiddenRecovered,
         "hotki.permissions.hidden_recovered",
         "UI-thread lane: observe restored permissions while the helper remains hidden.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::Notifications,
         "hotki.notifications",
         "UI-thread lane: create a deterministic notification and open recent activity.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::NotificationVariants,
         "hotki.notifications.variants",
         "UI-thread lane: create deterministic default-right notification variants.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::NotificationLeftVariants,
         "hotki.notifications.left_variants",
         "UI-thread lane: create deterministic explicit-left notification variants.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::NotificationTruncated,
         "hotki.notifications.truncated",
         "UI-thread lane: create a notification that must vertically truncate on a short display.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::Hud,
         "hotki.hud",
         "Runtime/server lane: open the demo HUD through server key injection.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::HudDemo,
         "hotki.hud.demo",
         "Runtime/server lane: enter the Demo submenu through server key injection.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::HudTall,
         "hotki.hud.tall",
         "UI-thread lane: render a tall HUD that should fit without clipping.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::HudPressed,
         "hotki.hud.pressed",
         "UI-thread lane: render a full HUD with one pressed stay row.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::HudMini,
         "hotki.hud.mini",
         "UI-thread lane: render the deterministic mini HUD style.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::Selector,
         "hotki.selector",
         "Runtime/server lane: open the demo selector through server key injection.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::SelectorQuery,
         "hotki.selector.query",
         "Runtime/server lane: open the selector and type a deterministic query.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::SelectorConfirmed,
         "hotki.selector.confirmed",
         "Runtime/server lane: confirm the selector, then open recent activity.",
     ),
-    FixtureDef::new(
+    TypedFixture::plain(
         HotkiFixture::SelectorCanceled,
         "hotki.selector.canceled",
         "Runtime/server lane: cancel the selector, then open recent activity.",
@@ -399,18 +378,9 @@ const HOTKI_FIXTURES: &[FixtureDef] = &[
 ];
 
 impl HotkiFixture {
-    /// Look up a fixture by its stable eguidev id.
-    fn from_name(name: &str) -> Option<Self> {
-        HOTKI_FIXTURES
-            .iter()
-            .find(|def| def.name == name)
-            .map(|def| def.fixture)
-    }
-
-    /// Fixture catalog entry advertised through eguidev.
-    fn spec(self, name: &'static str, description: &'static str) -> FixtureSpec {
-        let spec = FixtureSpec::new(name, description);
-        match self {
+    /// Add the declarative contract for one typed fixture.
+    fn spec(&self, spec: FixtureSpec) -> FixtureSpec {
+        match *self {
             Self::BasicDefault | Self::MainReadyEmpty => app_ready(spec)
                 .anchor_in("main.activity.empty", viewport_sel("main"))
                 .anchor_in("main.footer.logs", viewport_sel("main")),
@@ -518,15 +488,6 @@ impl HotkiFixture {
                 .anchor_in("main.activity.0.title", viewport_sel("main")),
         }
     }
-}
-
-/// Stable fixture catalog advertised through eguidev.
-fn fixtures() -> Vec<FixtureSpec> {
-    HOTKI_FIXTURES
-        .iter()
-        .copied()
-        .map(FixtureDef::spec)
-        .collect()
 }
 
 /// Add the baseline app-ready anchor common to every UI fixture.
@@ -650,20 +611,14 @@ fn ready_health() -> RuntimeHealth {
 }
 
 impl FixtureBridge {
-    /// Apply a named fixture through Hotki's existing event lanes.
-    fn apply(&self, call: &FixtureCall) -> FixtureResult {
-        self.apply_name(&call.name)
-            .map(|()| FixtureResponse::new())
+    /// Apply a typed fixture through Hotki's existing event lanes.
+    fn apply(&self, fixture: HotkiFixture) -> FixtureResult {
+        self.apply_fixture(fixture)
+            .map(|()| {
+                self.fixture_runtime.request_repaint();
+                FixtureResponse::new()
+            })
             .map_err(|error| FixtureError::new("hotki_fixture", error))
-    }
-
-    /// Dispatch one named fixture onto the lane that owns the affected state.
-    fn apply_name(&self, name: &str) -> Result<(), String> {
-        let fixture = HotkiFixture::from_name(name)
-            .ok_or_else(|| format!("unknown Hotki fixture: {name}"))?;
-        self.apply_fixture(fixture)?;
-        self.fixture_runtime.request_repaint();
-        Ok(())
     }
 
     /// Dispatch one typed fixture onto the lane that owns the affected state.
@@ -1097,21 +1052,6 @@ fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
     devmcp
 }
 
-/// Run an immediate viewport body under eguidev instrumentation.
-pub fn viewport_frame<R>(
-    devmcp: &DevMcp,
-    ui: &mut egui::Ui,
-    viewport_name: impl Into<String>,
-    container_id: impl Into<String>,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let viewport_name = viewport_name.into();
-    frame_scope(devmcp, ui, container_id, |ui| {
-        name_viewport(ui.ctx(), viewport_name);
-        add_contents(ui)
-    })
-}
-
 /// Render root-viewport readiness anchors for scripts and fixture checks.
 pub fn render_app_anchors(
     devmcp: &DevMcp,
@@ -1199,22 +1139,6 @@ fn readiness_anchor(ui: &mut egui::Ui, id: &'static str, value: WidgetValue) {
     value_anchor(ui, id, value);
 }
 
-/// Record a tiny metadata-only widget without changing visible content.
-pub fn value_anchor(ui: &mut egui::Ui, id: impl Into<String>, value: WidgetValue) {
-    let id = id.into();
-    id_with_meta(
-        ui,
-        id.clone(),
-        WidgetRole::Label,
-        Some(id),
-        Some(value),
-        |ui| {
-            let (_rect, response) = ui.allocate_exact_size(egui::Vec2::splat(1.0), Sense::hover());
-            response
-        },
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1223,10 +1147,11 @@ mod tests {
 
     #[test]
     fn fixture_catalog_round_trips_stable_names() {
-        let specs = fixtures();
+        let fixtures = TypedFixtures::new(HOTKI_FIXTURES);
+        let specs = fixtures.catalog_with(HotkiFixture::spec);
         let expected_names = HOTKI_FIXTURES
             .iter()
-            .map(|def| def.name)
+            .map(TypedFixture::name)
             .collect::<Vec<_>>();
         let actual_names = specs
             .iter()
@@ -1236,10 +1161,10 @@ mod tests {
 
         let mut seen = HashSet::new();
         for def in HOTKI_FIXTURES {
-            assert!(seen.insert(def.name));
-            assert_eq!(HotkiFixture::from_name(def.name), Some(def.fixture));
+            assert!(seen.insert(def.name()));
+            assert_eq!(fixtures.kind(def.name()), Some(*def.kind()));
         }
         assert_eq!(specs.len(), seen.len());
-        assert_eq!(HotkiFixture::from_name("hotki.unknown"), None);
+        assert_eq!(fixtures.kind("hotki.unknown"), None);
     }
 }
