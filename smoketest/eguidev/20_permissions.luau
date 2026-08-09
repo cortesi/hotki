@@ -1,40 +1,68 @@
-configure({ timeout_ms = 10000, poll_interval_ms = 25 })
+eguidev.configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
-fixture("hotki.permissions.none_granted")
-local permissions = viewport({ name = "permissions" })
+local function require_viewport(name: string): Viewport
+    local found = eguidev.viewports({ name = name })[1]
+    if found == nil then
+        eguidev.wait(function()
+            found = eguidev.viewports({ name = name })[1]
+            return found ~= nil
+        end)
+    end
+    return assert(found, name .. " viewport should exist")
+end
 
-permissions:wait_for_widget_visible("permissions.description")
-local accessibility = permissions:widget_get("permissions.accessibility.status"):state()
-local input_monitoring = permissions:widget_get("permissions.input_monitoring.status"):state()
+local function widget_in(viewport: Viewport, id: string)
+    local found: any = nil
+    local function discover(): boolean
+        for _, candidate in ipairs(viewport:widgets({ id_prefix = id })) do
+            if candidate.id == id then
+                found = candidate
+                return true
+            end
+        end
+        return false
+    end
+    if not discover() then
+        eguidev.wait(discover)
+    end
+    return assert(found, "missing widget " .. id .. " in viewport " .. viewport.id)
+end
+
+eguidev.fixture("hotki.permissions.none_granted")
+local permissions = require_viewport("permissions")
+
+widget_in(permissions, "permissions.description"):wait({ visible = true })
+local accessibility = assert(widget_in(permissions, "permissions.accessibility.status"):state())
+local input_monitoring = assert(widget_in(permissions, "permissions.input_monitoring.status"):state())
 
 assert(accessibility.value_text == "Not granted", "accessibility should be missing")
 assert(input_monitoring.value_text == "Not granted", "input monitoring should be missing")
-assert(permissions:widget_get("permissions.accessibility.granted"):state().value_text == "false")
-assert(permissions:widget_get("permissions.input_monitoring.granted"):state().value_text == "false")
-assert(permissions:widget_get("permissions.accessibility.open_settings"):state().role == "button")
-assert(permissions:widget_get("permissions.input_monitoring.open_settings"):state().role == "button")
+assert(assert(widget_in(permissions, "permissions.accessibility.granted"):state()).value == false)
+assert(assert(widget_in(permissions, "permissions.input_monitoring.granted"):state()).value == false)
+assert(assert(widget_in(permissions, "permissions.accessibility.open_settings"):state()).role == "button")
+assert(assert(widget_in(permissions, "permissions.input_monitoring.open_settings"):state()).role == "button")
 
-permissions:widget_get("permissions.accessibility.open_settings"):click()
-permissions:wait_for_widget("permissions.accessibility.open_intent", function(widget)
-    return widget.value_text == "true"
-end)
-
-fixture("hotki.permissions.all_granted")
-permissions = viewport({ name = "permissions" })
-permissions:wait_for_widget("permissions.accessibility.granted", function(widget)
-    return widget.value_text == "true"
-end)
-permissions:wait_for_widget("permissions.input_monitoring.granted", function(widget)
-    return widget.value_text == "true"
+widget_in(permissions, "permissions.accessibility.open_settings"):click()
+widget_in(permissions, "permissions.accessibility.open_intent"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
 
-fixture("hotki.permissions.mixed")
-permissions = viewport({ name = "permissions" })
-permissions:wait_for_widget("permissions.accessibility.granted", function(widget)
-    return widget.value_text == "true"
+eguidev.fixture("hotki.permissions.all_granted")
+permissions = require_viewport("permissions")
+widget_in(permissions, "permissions.accessibility.granted"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-permissions:wait_for_widget("permissions.input_monitoring.granted", function(widget)
-    return widget.value_text == "false"
+widget_in(permissions, "permissions.input_monitoring.granted"):wait(function(widget)
+    return widget ~= nil and widget.value == true
+end)
+
+eguidev.fixture("hotki.permissions.mixed")
+permissions = require_viewport("permissions")
+widget_in(permissions, "permissions.accessibility.granted"):wait(function(widget)
+    return widget ~= nil and widget.value == true
+end)
+widget_in(permissions, "permissions.input_monitoring.granted"):wait(function(widget)
+    return widget ~= nil and widget.value == false
 end)
 
 return {

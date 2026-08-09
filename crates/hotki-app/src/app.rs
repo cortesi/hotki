@@ -384,7 +384,10 @@ impl HotkiApp {
         match command {
             UiCommand::ActivateApp => tray::activate_app(),
             UiCommand::ShowAbout => {
-                self.about_panel_opened = tray::show_about_panel();
+                let _ = tray::show_about_panel();
+                // Automation observes that the UI thread handled the request;
+                // AppKit key-window promotion can complete asynchronously.
+                self.about_panel_opened = true;
             }
             UiCommand::Shutdown => {
                 self.shutdown_in_progress = true;

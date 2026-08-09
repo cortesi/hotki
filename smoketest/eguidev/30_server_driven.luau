@@ -1,60 +1,78 @@
-configure({ timeout_ms = 15000, poll_interval_ms = 25 })
+eguidev.configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-fixture("hotki.hud")
-local root_vp = root()
-root_vp:wait_for_widget("app.server.connected", function(widget)
-    return widget.value_text == "true"
-end)
-local hud = viewport({ name = "hud" })
-hud:wait_for_widget_visible("hud.panel")
-hud:wait_for_widget("hud.mode", function(widget)
-    return widget.value_text == "hud"
-end)
-hud:wait_for_widget("hud.visible", function(widget)
-    return widget.value_text == "true"
-end)
-hud:wait_for_widget("hud.geometry.width", function(widget)
-    return tonumber(widget.value_text) ~= nil and tonumber(widget.value_text) > 0
-end)
-hud:wait_for_widget("hud.row.0.desc", function(widget)
-    return widget.value_text == "Demo"
-end)
-assert(hud:widget_get("hud.row.0.chord"):state().value_text == "d")
-assert(hud:widget_get("hud.row.0.is_mode"):state().value_text == "true")
-assert(hud:widget_get("hud.row.0.tag"):state().value_text ~= "")
+local function require_viewport(name: string): Viewport
+    local found = eguidev.viewports({ name = name })[1]
+    if found == nil then
+        eguidev.wait(function()
+            found = eguidev.viewports({ name = name })[1]
+            return found ~= nil
+        end)
+    end
+    return assert(found, name .. " viewport should exist")
+end
 
-fixture("hotki.hud.demo")
-fixture("hotki.hud.mini")
-root_vp:wait_for_widget("app.server.connected", function(widget)
-    return widget.value_text == "true"
+eguidev.fixture("hotki.hud")
+eguidev.widget("app.server.connected"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-hud = viewport({ name = "hud" })
-hud:wait_for_widget("hud.mode", function(widget)
-    return widget.value_text == "mini"
+local hud = require_viewport("hud")
+eguidev.widget("hud.panel"):wait({ visible = true })
+eguidev.widget("hud.mode"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "hud"
 end)
-hud:wait_for_widget("hud.visible", function(widget)
-    return widget.value_text == "true"
+eguidev.widget("hud.visible"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-hud:wait_for_widget("hud.mini.title", function(widget)
-    return widget.value_text == "Mini"
+eguidev.widget("hud.geometry.width"):wait(function(widget)
+    if widget == nil then
+        return false
+    end
+    local width = tonumber(widget.value_text)
+    return width ~= nil and width > 0
 end)
-hud:wait_for_widget("hud.geometry.width", function(widget)
-    return tonumber(widget.value_text) ~= nil and tonumber(widget.value_text) > 0
+eguidev.widget("hud.row.0.desc"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Demo"
+end)
+assert(assert(eguidev.widget("hud.row.0.chord"):state()).value_text == "d")
+assert(assert(eguidev.widget("hud.row.0.is_mode"):state()).value == true)
+assert(assert(eguidev.widget("hud.row.0.tag"):state()).value_text ~= "")
+
+eguidev.fixture("hotki.hud.demo")
+eguidev.fixture("hotki.hud.mini")
+eguidev.widget("app.server.connected"):wait(function(widget)
+    return widget ~= nil and widget.value == true
+end)
+hud = require_viewport("hud")
+eguidev.widget("hud.mode"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "mini"
+end)
+eguidev.widget("hud.visible"):wait(function(widget)
+    return widget ~= nil and widget.value == true
+end)
+eguidev.widget("hud.mini.title"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Mini"
+end)
+eguidev.widget("hud.geometry.width"):wait(function(widget)
+    if widget == nil then
+        return false
+    end
+    local width = tonumber(widget.value_text)
+    return width ~= nil and width > 0
 end)
 
-fixture("hotki.hud.tall")
-hud = viewport({ name = "hud" })
-hud:wait_for_widget("hud.row.21.desc", function(widget)
-    return widget.value_text == "Tall HUD command 21 with enough text to measure"
+eguidev.fixture("hotki.hud.tall")
+hud = require_viewport("hud")
+eguidev.widget("hud.row.21.desc"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Tall HUD command 21 with enough text to measure"
 end)
-local panel = hud:widget_get("hud.panel")
-local layout_issues = panel:check_layout()
+local panel = eguidev.widget("hud.panel")
+local layout_issues = panel:layout_issues()
 assert(#layout_issues == 0, "tall HUD panel should have no layout issues")
-local geometry_height = tonumber(hud:widget_get("hud.geometry.height"):state().value_text)
+local geometry_height = tonumber(assert(eguidev.widget("hud.geometry.height"):state()).value_text)
 assert(geometry_height ~= nil and geometry_height > 0, "tall HUD should expose a measured height")
 for index = 0, 21 do
-    local desc = hud:widget_get("hud.row." .. tostring(index) .. ".desc")
-    local state = desc:state()
+    local desc = eguidev.widget("hud.row." .. tostring(index) .. ".desc")
+    local state = assert(desc:state())
     local measure = desc:text_measure()
     assert(state.visible, desc.id .. " should be visible")
     assert(state.rect.max.y <= (geometry_height :: number) + 1, desc.id .. " should fit in HUD")
@@ -62,53 +80,53 @@ for index = 0, 21 do
     assert(measure.ellipsis == false, desc.id .. " text should not ellipsize")
 end
 
-fixture("hotki.hud.pressed")
-hud = viewport({ name = "hud" })
-hud:wait_for_widget("hud.row.0.pressed", function(widget)
-    return widget.value_text == "true"
+eguidev.fixture("hotki.hud.pressed")
+hud = require_viewport("hud")
+eguidev.widget("hud.row.0.pressed"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-assert(hud:widget_get("hud.mode"):state().value_text == "hud")
-assert(hud:widget_get("hud.row.0.stay"):state().value_text == "true")
-assert(hud:widget_get("hud.row.0.chord"):state().value_text == "p")
-assert(hud:widget_get("hud.row.0.desc"):state().value_text == "Pressed stay command")
-layout_issues = hud:widget_get("hud.panel"):check_layout()
+assert(assert(eguidev.widget("hud.mode"):state()).value_text == "hud")
+assert(assert(eguidev.widget("hud.row.0.stay"):state()).value == true)
+assert(assert(eguidev.widget("hud.row.0.chord"):state()).value_text == "p")
+assert(assert(eguidev.widget("hud.row.0.desc"):state()).value_text == "Pressed stay command")
+layout_issues = eguidev.widget("hud.panel"):layout_issues()
 assert(#layout_issues == 0, "pressed HUD panel should have no layout issues")
 
-fixture("hotki.hud")
-fixture("hotki.hud.demo")
-fixture("hotki.selector")
-root_vp:wait_for_widget("app.server.connected", function(widget)
-    return widget.value_text == "true"
+eguidev.fixture("hotki.hud")
+eguidev.fixture("hotki.hud.demo")
+eguidev.fixture("hotki.selector")
+eguidev.widget("app.server.connected"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-local selector = viewport({ name = "selector" })
-selector:wait_for_widget("selector.title", function(widget)
-    return widget.value_text == "Pick Demo"
+local selector = require_viewport("selector")
+eguidev.widget("selector.title"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Pick Demo"
 end)
-assert(selector:widget_get("selector.placeholder"):state().value_text == "Search...")
-assert(selector:widget_get("selector.selected_index"):state().value_text == "0")
-selector:wait_for_widget("selector.item.0.label", function(widget)
-    return widget.value_text == "Alpha"
+assert(assert(eguidev.widget("selector.placeholder"):state()).value_text == "Search...")
+assert(assert(eguidev.widget("selector.selected_index"):state()).value_text == "0")
+eguidev.widget("selector.item.0.label"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Alpha"
 end)
-assert(selector:widget_get("selector.item.0.selected"):state().value_text == "true")
-assert(selector:widget_get("selector.item.0.match_indices"):state().value_text == "")
-selector:wait_for_widget("selector.scroll", function(widget)
-    return widget.scroll_state ~= nil
+assert(assert(eguidev.widget("selector.item.0.selected"):state()).value == true)
+assert(assert(eguidev.widget("selector.item.0.match_indices"):state()).value_text == "")
+eguidev.widget("selector.scroll"):wait(function(widget)
+    return widget ~= nil and widget.scroll_state ~= nil
 end)
 
-fixture("hotki.selector.query")
-root_vp:wait_for_widget("app.server.connected", function(widget)
-    return widget.value_text == "true"
+eguidev.fixture("hotki.selector.query")
+eguidev.widget("app.server.connected"):wait(function(widget)
+    return widget ~= nil and widget.value == true
 end)
-selector = viewport({ name = "selector" })
-selector:wait_for_widget("selector.query", function(widget)
-    return string.find(widget.value_text, "b", 1, true) ~= nil
+selector = require_viewport("selector")
+eguidev.widget("selector.query"):wait(function(widget)
+    return widget ~= nil and string.find(widget.value_text, "b", 1, true) ~= nil
 end)
-selector:wait_for_widget("selector.item.0.label", function(widget)
-    return widget.value_text == "Beta"
+eguidev.widget("selector.item.0.label"):wait(function(widget)
+    return widget ~= nil and widget.value_text == "Beta"
 end)
-assert(selector:widget_get("selector.item.0.selected"):state().value_text == "true")
-assert(selector:widget_get("selector.selected_index"):state().value_text == "0")
-assert(selector:widget_get("selector.item.0.match_indices"):state().value_text ~= "")
+assert(assert(eguidev.widget("selector.item.0.selected"):state()).value == true)
+assert(assert(eguidev.widget("selector.selected_index"):state()).value_text == "0")
+assert(assert(eguidev.widget("selector.item.0.match_indices"):state()).value_text ~= "")
 
 return {
     hud_viewport = hud.id,

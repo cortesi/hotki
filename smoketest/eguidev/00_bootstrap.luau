@@ -1,4 +1,4 @@
-configure({ timeout_ms = 10000, poll_interval_ms = 25 })
+eguidev.configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
 local expected = {
     ["hotki.basic.default"] = false,
@@ -25,10 +25,10 @@ local expected = {
     ["hotki.permissions.hidden_recovered"] = false,
 }
 
-for _, fixture_info in ipairs(fixtures()) do
+for _, fixture_info in ipairs(eguidev.fixtures()) do
     if expected[fixture_info.name] ~= nil then
         expected[fixture_info.name] = true
-        assert(#fixture_info.anchors >= 1, fixture_info.name .. " should advertise anchors")
+        assert(#fixture_info.ready >= 1, fixture_info.name .. " should advertise ready conditions")
         assert(
             string.find(fixture_info.description, "lane", 1, true) ~= nil,
             fixture_info.name .. " should describe its driving lane"
@@ -42,8 +42,8 @@ end
 
 local function assert_no_duplicate_widget_ids()
     local seen = {}
-    for _, viewport in ipairs(viewports()) do
-        for _, widget in ipairs(viewport:widget_list({ include_invisible = true })) do
+    for _, viewport in ipairs(eguidev.viewports()) do
+        for _, widget in ipairs(viewport:widgets()) do
             local key = viewport.id .. ":" .. widget.id
             assert(seen[key] == nil, "duplicate widget id in viewport: " .. key)
             seen[key] = true
@@ -51,11 +51,12 @@ local function assert_no_duplicate_widget_ids()
     end
 end
 
-fixture("hotki.basic.default")
-local root_vp = root()
-assert(root_vp:state().title == "hotki-dev", "automation must use a distinct native identity")
-expect("app.ready", { viewport = "root", value_text_contains = "true" })
-local settle_report = root_vp:wait_for_settle()
+eguidev.fixture("hotki.basic.default")
+local root_vp = eguidev.root
+local root_viewport_state = assert(root_vp:state())
+assert(root_viewport_state.title == "hotki-dev", "automation must use a distinct native identity")
+eguidev.widget("app.ready"):expect({ value_text_contains = "true" })
+local settle_report = root_vp:settle()
 local saw_app_idle = false
 for _, phase in ipairs(settle_report.phases) do
     if phase.phase == "app_idle" then
@@ -66,10 +67,10 @@ end
 assert(saw_app_idle, "hotki should expose app_idle settle phase")
 assert_no_duplicate_widget_ids()
 
-local root_state = expect("main.root", { viewport = "main", visible = true })
+local root_state = assert(eguidev.widget("main.root"):expect({ visible = true }))
 assert(root_state.visible, "main.root should be visible after baseline fixture")
 
 return {
-    app_ready = widget("app.ready", { viewport = "root" }):state().value_text,
-    viewports = #viewports(),
+    app_ready = assert(eguidev.widget("app.ready"):state()).value_text,
+    viewports = #eguidev.viewports(),
 }

@@ -382,44 +382,44 @@ impl HotkiFixture {
     fn spec(&self, spec: FixtureSpec) -> FixtureSpec {
         match *self {
             Self::BasicDefault | Self::MainReadyEmpty => app_ready(spec)
-                .anchor_in("main.activity.empty", viewport_sel("main"))
-                .anchor_in("main.footer.logs", viewport_sel("main")),
+                .ready_in("main.activity.empty", viewport_sel("main"))
+                .ready_in("main.footer.logs", viewport_sel("main")),
             Self::MainPopulated => app_ready(spec)
-                .anchor_in("main.activity.0.title", viewport_sel("main"))
-                .anchor_in("main.footer.primary", viewport_sel("main")),
+                .ready_in("main.activity.0.title", viewport_sel("main"))
+                .ready_in("main.footer.primary", viewport_sel("main")),
             Self::MainPermissionRequired => app_ready(spec)
-                .anchor_value_in(
+                .ready_value_in(
                     "main.notice.title",
                     WidgetValue::Text("Hotki needs permission".to_string()),
                     viewport_sel("main"),
                 )
-                .anchor_in("main.footer.primary", viewport_sel("main")),
+                .ready_in("main.footer.primary", viewport_sel("main")),
             Self::MainInvalidConfig => app_ready(spec)
-                .anchor_value_in(
+                .ready_value_in(
                     "main.notice.title",
                     WidgetValue::Text("Hotki couldn't load the configuration".to_string()),
                     viewport_sel("main"),
                 )
-                .anchor_in("main.footer.primary", viewport_sel("main")),
+                .ready_in("main.footer.primary", viewport_sel("main")),
             Self::MainSecureInputBlocked => app_ready(spec)
-                .anchor_value("app.input.blocked", WidgetValue::Bool(true))
-                .anchor_value_in(
+                .ready_value("app.input.blocked", WidgetValue::Bool(true))
+                .ready_value_in(
                     "main.notice.title",
                     WidgetValue::Text("Hotkeys paused by Secure Input".to_string()),
                     viewport_sel("main"),
                 ),
             Self::MainSecureInputRecovered => app_ready(spec)
-                .anchor_value("app.input.blocked", WidgetValue::Bool(false))
-                .anchor_in("main.activity.empty", viewport_sel("main")),
+                .ready_value("app.input.blocked", WidgetValue::Bool(false))
+                .ready_in("main.activity.empty", viewport_sel("main")),
             Self::Logs => app_ready(spec)
-                .anchor_in("logs.clear", viewport_sel("logs"))
-                .anchor_in("logs.copy_diagnostics", viewport_sel("logs"))
-                .anchor_in("logs.0.message", viewport_sel("logs")),
+                .ready_in("logs.clear", viewport_sel("logs"))
+                .ready_in("logs.copy_diagnostics", viewport_sel("logs"))
+                .ready_in("logs.0.message", viewport_sel("logs")),
             Self::TrayAbout => {
-                app_ready(spec).anchor_value("app.about.opened", WidgetValue::Bool(true))
+                app_ready(spec).ready_value("app.about.opened", WidgetValue::Bool(true))
             }
             Self::Permissions => {
-                app_ready(spec).anchor_in("permissions.root", viewport_sel("permissions"))
+                app_ready(spec).ready_in("permissions.root", viewport_sel("permissions"))
             }
             Self::PermissionsAllGranted => permission_status_spec(spec, true, true),
             Self::PermissionsNoneGranted => permission_status_spec(spec, false, false),
@@ -427,113 +427,113 @@ impl HotkiFixture {
             Self::PermissionsHiddenMissing => hidden_permission_status_spec(spec, false, false),
             Self::PermissionsHiddenRecovered => hidden_permission_status_spec(spec, true, true),
             Self::Notifications => {
-                app_ready(spec).anchor_in("main.activity.0.title", viewport_sel("main"))
+                app_ready(spec).ready_in("main.activity.0.title", viewport_sel("main"))
             }
             Self::NotificationVariants
             | Self::NotificationLeftVariants
             | Self::NotificationTruncated => app_ready(spec),
             Self::Hud => runtime_ready(spec)
-                .anchor_value_in(
+                .ready_value_in(
                     "hud.row.0.chord",
                     WidgetValue::Text("d".to_string()),
                     viewport_sel("hud"),
                 )
-                .anchor_in("hud.panel", viewport_sel("hud")),
+                .ready_in("hud.panel", viewport_sel("hud")),
             Self::HudDemo => runtime_ready(spec)
                 .precondition_value_in(
                     "hud.row.0.chord",
                     WidgetValue::Text("d".to_string()),
                     viewport_sel("hud"),
                 )
-                .anchor_value_in(
+                .ready_value_in(
                     "hud.row.0.chord",
                     WidgetValue::Text("n".to_string()),
                     viewport_sel("hud"),
                 ),
-            Self::HudTall => app_ready(spec).anchor_in("hud.row.21.desc", viewport_sel("hud")),
+            Self::HudTall => app_ready(spec).ready_in("hud.row.21.desc", viewport_sel("hud")),
             Self::HudPressed => app_ready(spec)
-                .anchor_value_in(
+                .ready_value_in(
                     "hud.row.0.stay",
                     WidgetValue::Bool(true),
                     viewport_sel("hud"),
                 )
-                .anchor_value_in(
+                .ready_value_in(
                     "hud.row.0.pressed",
                     WidgetValue::Bool(true),
                     viewport_sel("hud"),
                 ),
             Self::HudMini => app_ready(spec)
-                .anchor_value_in(
+                .ready_value_in(
                     "hud.mode",
                     WidgetValue::Text("mini".to_string()),
                     viewport_sel("hud"),
                 )
-                .anchor_in("hud.mini.title", viewport_sel("hud")),
+                .ready_in("hud.mini.title", viewport_sel("hud")),
             Self::Selector => runtime_ready(spec)
                 .precondition_value_in(
                     "hud.row.0.chord",
                     WidgetValue::Text("n".to_string()),
                     viewport_sel("hud"),
                 )
-                .anchor_in("selector.panel", viewport_sel("selector")),
+                .ready_in("selector.panel", viewport_sel("selector")),
             Self::SelectorQuery => runtime_ready(spec)
                 .precondition_in("selector.panel", viewport_sel("selector"))
-                .anchor_value_in(
+                .ready_value_in(
                     "selector.item.0.label",
                     WidgetValue::Text("Beta".to_string()),
                     viewport_sel("selector"),
                 ),
             Self::SelectorConfirmed | Self::SelectorCanceled => runtime_ready(spec)
                 .precondition_in("selector.panel", viewport_sel("selector"))
-                .anchor_in("main.activity.0.title", viewport_sel("main")),
+                .ready_in("main.activity.0.title", viewport_sel("main")),
         }
     }
 }
 
-/// Add the baseline app-ready anchor common to every UI fixture.
+/// Add the baseline app-ready condition common to every UI fixture.
 fn app_ready(spec: FixtureSpec) -> FixtureSpec {
-    spec.anchor_value("app.ready", WidgetValue::Bool(true))
+    spec.ready_value("app.ready", WidgetValue::Bool(true))
 }
 
-/// Add runtime/server preconditions and anchors common to server-driven fixtures.
+/// Add runtime/server preconditions and ready conditions common to server-driven fixtures.
 fn runtime_ready(spec: FixtureSpec) -> FixtureSpec {
     app_ready(spec)
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
         .precondition_value("app.server.bindings.loaded", WidgetValue::Bool(true))
-        .anchor_value("app.server.connected", WidgetValue::Bool(true))
+        .ready_value("app.server.connected", WidgetValue::Bool(true))
 }
 
-/// Build a Permissions fixture with deterministic grant-state anchors.
+/// Build a Permissions fixture with deterministic grant-state ready conditions.
 fn permission_status_spec(
     spec: FixtureSpec,
     accessibility: bool,
     input_monitoring: bool,
 ) -> FixtureSpec {
     app_ready(spec)
-        .anchor_value_in(
+        .ready_value_in(
             "permissions.accessibility.granted",
             WidgetValue::Bool(accessibility),
             viewport_sel("permissions"),
         )
-        .anchor_value_in(
+        .ready_value_in(
             "permissions.input_monitoring.granted",
             WidgetValue::Bool(input_monitoring),
             viewport_sel("permissions"),
         )
 }
 
-/// Build a hidden Permissions observer fixture with root health anchors.
+/// Build a hidden Permissions observer fixture with root health ready conditions.
 fn hidden_permission_status_spec(
     spec: FixtureSpec,
     accessibility: bool,
     input_monitoring: bool,
 ) -> FixtureSpec {
     runtime_ready(spec)
-        .anchor_value(
+        .ready_value(
             "app.runtime.permissions.accessibility",
             WidgetValue::Text(permission_fixture_label(accessibility).to_string()),
         )
-        .anchor_value(
+        .ready_value(
             "app.runtime.permissions.input_monitoring",
             WidgetValue::Text(permission_fixture_label(input_monitoring).to_string()),
         )

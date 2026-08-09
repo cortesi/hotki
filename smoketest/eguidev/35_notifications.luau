@@ -1,7 +1,47 @@
-configure({ timeout_ms = 15000, poll_interval_ms = 25 })
+eguidev.configure({ timeout_ms = 15000, poll_interval_ms = 25 })
+
+type CardGeometry = {
+    id: string,
+    target_x: number,
+    target_y: number,
+    width: number,
+    height: number,
+}
+
+local function require_viewport(name: string): Viewport
+    if name == "root" then
+        return eguidev.root
+    end
+    local found = eguidev.viewports({ name = name })[1]
+    if found == nil then
+        eguidev.wait(function()
+            found = eguidev.viewports({ name = name })[1]
+            return found ~= nil
+        end)
+    end
+    return assert(found, name .. " viewport should exist")
+end
+
+local function widget_in(viewport_name: string, id: string)
+    local viewport = require_viewport(viewport_name)
+    local found: any = nil
+    local function discover(): boolean
+        for _, candidate in ipairs(viewport:widgets({ id_prefix = id })) do
+            if candidate.id == id then
+                found = candidate
+                return true
+            end
+        end
+        return false
+    end
+    if not discover() then
+        eguidev.wait(discover)
+    end
+    return assert(found, "missing widget " .. id .. " in viewport " .. viewport.id)
+end
 
 local function widget_value(id: string, viewport_name: string): string
-    return widget(id, { viewport = viewport_name }):state().value_text
+    return assert(widget_in(viewport_name, id):state()).value_text
 end
 
 local function widget_number(id: string, viewport_name: string): number
@@ -25,16 +65,31 @@ local function rect_height(rect: Rect): number
 end
 
 local function wait_for_stack_count(count: number): string
-    return root():wait_for_widget("notification.stack.count", function(widget_state)
-        return widget_state.value_text == tostring(count)
-    end).value_text
+    local state = eguidev.widget("notification.stack.count"):wait(function(widget_state)
+        return widget_state ~= nil and widget_state.value_text == tostring(count)
+    end)
+    return assert(state).value_text
+end
+
+local function current_first_live_id(): string?
+    local state = eguidev.widget("notification.stack.item.0.live_id"):state()
+    if state == nil or state.value_text == "" then
+        return nil
+    end
+    return state.value_text
+end
+
+local function wait_for_new_stack(previous_live_id: string?)
+    eguidev.widget("notification.stack.item.0.live_id"):wait(function(state)
+        return state ~= nil and state.value_text ~= "" and state.value_text ~= previous_live_id
+    end)
 end
 
 local function live_ids(count: number): { string }
-    local ids = {}
+    local ids: { string } = {}
     for index = 0, count - 1 do
         local stack_item = "notification.stack.item." .. tostring(index) .. ".live_id"
-        local live_id = widget(stack_item, { viewport = "root" }):state().value_text
+        local live_id = assert(widget_in("root", stack_item):state()).value_text :: string
         assert(live_id ~= "", "stack item " .. tostring(index) .. " should expose live id")
         table.insert(ids, live_id)
     end
@@ -42,8 +97,8 @@ local function live_ids(count: number): { string }
 end
 
 local function assert_text_fully_visible(id: string, viewport_name: string)
-    local text_widget = widget(id, { viewport = viewport_name })
-    local state = text_widget:state()
+    local text_widget = widget_in(viewport_name, id)
+    local state = assert(text_widget:state())
     local measure = text_widget:text_measure() :: any
     assert(measure.visible_text == state.value_text, id .. " text should be fully visible")
     assert(measure.ellipsis == false, id .. " text should not ellipsize")
@@ -51,20 +106,16 @@ local function assert_text_fully_visible(id: string, viewport_name: string)
 end
 
 local function wait_for_live_viewport(live_id: string)
-    wait_until(function()
-        local ok = pcall(function()
-            widget(live_id .. ".title", { viewport = live_id }):state()
-        end)
-        return ok
-    end)
-    viewport({ name = live_id }):wait_for_settle()
+    local viewport = require_viewport(live_id)
+    widget_in(live_id, live_id .. ".title"):wait({ present = true })
+    viewport:settle()
 end
 
-local function assert_card_geometry(live_id: string, expected_side: string)
+local function assert_card_geometry(live_id: string, expected_side: string): CardGeometry
     wait_for_live_viewport(live_id)
     local title_state = assert_text_fully_visible(live_id .. ".title", live_id)
     local body_state = assert_text_fully_visible(live_id .. ".body", live_id)
-    local icon_state = widget(live_id .. ".icon", { viewport = live_id }):state()
+    local icon_state = assert(widget_in(live_id, live_id .. ".icon"):state())
     local side = widget_value(live_id .. ".side", live_id)
     local current_x = widget_number(live_id .. ".current_x", live_id)
     local current_y = widget_number(live_id .. ".current_y", live_id)
@@ -106,7 +157,7 @@ local function assert_card_geometry(live_id: string, expected_side: string)
     }
 end
 
-local function assert_no_overlap(rects)
+local function assert_no_overlap(rects: { CardGeometry })
     for i = 1, #rects do
         for j = i + 1, #rects do
             local a = rects[i]
@@ -122,10 +173,12 @@ local function assert_no_overlap(rects)
 end
 
 local function assert_variant_fixture(fixture_name: string, expected_side: string)
-    fixture(fixture_name)
-    root():wait_for_settle()
+    local previous_live_id = current_first_live_id()
+    eguidev.fixture(fixture_name)
+    wait_for_new_stack(previous_live_id)
+    eguidev.root:settle()
     local stack_count = wait_for_stack_count(4)
-    assert(widget("notification.stack", { viewport = "root" }):state() ~= nil)
+    assert(eguidev.widget("notification.stack"):state() ~= nil)
 
     local expected = {
         ["notification.stack.item.0"] = "success",
@@ -134,11 +187,11 @@ local function assert_variant_fixture(fixture_name: string, expected_side: strin
         ["notification.stack.item.3"] = "info",
     }
     for base, kind in pairs(expected) do
-        local seen = widget(base .. ".kind", { viewport = "root" }):state().value_text
+        local seen = assert(eguidev.widget(base .. ".kind"):state()).value_text
         assert(seen == kind, base .. " should expose kind " .. kind)
     end
 
-    local rects = {}
+    local rects: { CardGeometry } = {}
     for _, live_id in ipairs(live_ids(4)) do
         table.insert(rects, assert_card_geometry(live_id, expected_side))
     end
@@ -147,14 +200,16 @@ local function assert_variant_fixture(fixture_name: string, expected_side: strin
 end
 
 local function assert_truncated_fixture()
-    fixture("hotki.notifications.truncated")
-    root():wait_for_settle()
+    local previous_live_id = current_first_live_id()
+    eguidev.fixture("hotki.notifications.truncated")
+    wait_for_new_stack(previous_live_id)
+    eguidev.root:settle()
     wait_for_stack_count(1)
     local live_id = live_ids(1)[1]
     wait_for_live_viewport(live_id)
     local title_state = assert_text_fully_visible(live_id .. ".title", live_id)
-    local body_widget = widget(live_id .. ".body", { viewport = live_id })
-    local body_state = body_widget:state()
+    local body_widget = widget_in(live_id, live_id .. ".body")
+    local body_state = assert(body_widget:state())
     local body_measure = body_widget:text_measure() :: any
     local full_body = widget_value(live_id .. ".body_text", live_id)
     local height = widget_number(live_id .. ".height", live_id)
