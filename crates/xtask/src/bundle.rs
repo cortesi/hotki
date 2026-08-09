@@ -327,6 +327,7 @@ fn build_package_binary(
 ) -> Result<()> {
     let mut cargo_args = vec![
         "build".to_string(),
+        "--locked".to_string(),
         "-p".to_string(),
         package.to_string(),
         "--bin".to_string(),

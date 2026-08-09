@@ -148,7 +148,7 @@ pub fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
 /// Ask Cargo to build the current hotki app and report its diagnostics directly.
 pub fn build_hotki_app() -> Result<()> {
     let mut command = Command::new("cargo");
-    command.args(["build", "-p", "hotki-app", "--bin", "hotki-app"]);
+    command.args(["build", "--locked", "-p", "hotki-app", "--bin", "hotki-app"]);
     if !cfg!(debug_assertions) {
         command.arg("--release");
     }
@@ -157,7 +157,7 @@ pub fn build_hotki_app() -> Result<()> {
         Ok(())
     } else {
         Err(Error::SpawnFailed(format!(
-            "cargo build -p hotki-app --bin hotki-app exited with {status}"
+            "cargo build --locked -p hotki-app --bin hotki-app exited with {status}"
         )))
     }
 }

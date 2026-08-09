@@ -44,7 +44,7 @@ rmp-serde = "1.3.0"
 missing_docs = "warn"
 
 # Can't be used with any crate with examples or tests (!?). Best to enable this
-# briefly, run cargo clippy (without --tests and --examples), fix unused deps,
+# briefly, run cargo clippy --locked (without --tests and --examples), fix unused deps,
 # then disable it again.
 # unused_crate_dependencies = "warn"
 

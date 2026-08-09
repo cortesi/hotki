@@ -925,6 +925,7 @@ impl FixtureBridge {
         self.send_ui_command(UiCommand::SetHudPresentationOverride(None))?;
         self.send_ui_command(UiCommand::SetRuntimeHealthOverride(None))?;
         self.send_ui_command(UiCommand::SetInputHealth(InputHealth::default()))?;
+        self.send_ui_command(UiCommand::HideAbout)?;
         self.send_ui_command(UiCommand::HideLogs)?;
         self.send_ui_message(MsgToUI::ShowMainWindow(Toggle::Off))
     }
@@ -1059,7 +1060,7 @@ pub fn render_app_anchors(
     runtime_health: &RuntimeHealth,
     server_bindings: &[String],
     notification_stack: &[NotificationStackAlias],
-    about_panel_opened: bool,
+    about_panel_visible: bool,
 ) {
     if !devmcp.is_enabled() {
         return;
@@ -1072,7 +1073,7 @@ pub fn render_app_anchors(
             readiness_anchor(
                 ui,
                 "app.about.opened",
-                WidgetValue::Bool(about_panel_opened),
+                WidgetValue::Bool(about_panel_visible),
             );
             readiness_anchor(
                 ui,

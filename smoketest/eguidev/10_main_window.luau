@@ -1,16 +1,5 @@
 eguidev.configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-local function require_viewport(name: string): Viewport
-    local found = eguidev.viewports({ name = name })[1]
-    if found == nil then
-        eguidev.wait(function()
-            found = eguidev.viewports({ name = name })[1]
-            return found ~= nil
-        end)
-    end
-    return assert(found, name .. " viewport should exist")
-end
-
 local function assert_clean_layout(vp: Viewport, label: string)
     local issues = vp:layout_issues()
     assert(#issues == 0, label .. " should have no layout issues")
@@ -34,7 +23,7 @@ local function positions_match(left: Pos?, right: Pos?): boolean
 end
 
 eguidev.fixture("hotki.main.ready_empty")
-local main = require_viewport("main")
+local main = eguidev.wait_viewport({ name = "main" })
 assert(assert(main:state()).title == "Hotki", "main window should use the native Hotki title")
 eguidev.widget("main.activity.empty"):expect({
     label = "No recent activity.",
@@ -50,7 +39,7 @@ resize_and_check(main, 440, 280, "ready main window at minimum size")
 resize_and_check(main, 900, 600, "ready main window at expanded size")
 
 eguidev.fixture("hotki.main.populated")
-main = require_viewport("main")
+main = eguidev.wait_viewport({ name = "main" })
 eguidev.widget("main.activity.0.title"):expect({ label = "Config reloaded" })
 eguidev.widget("main.activity.0.text"):expect({
     label = "The new configuration is active.",
@@ -72,7 +61,7 @@ resize_and_check(main, 440, 280, "populated main window at minimum size")
 resize_and_check(main, 900, 600, "populated main window at expanded size")
 
 eguidev.fixture("hotki.main.permission_required")
-main = require_viewport("main")
+main = eguidev.wait_viewport({ name = "main" })
 eguidev.widget("main.notice.title"):expect({ label = "Hotki needs permission" })
 eguidev.widget("main.notice.detail"):expect({
     label = "Grant Accessibility and Input Monitoring in System Settings.",
@@ -84,7 +73,7 @@ resize_and_check(main, 440, 280, "permission main window at minimum size")
 resize_and_check(main, 900, 600, "permission main window at expanded size")
 
 eguidev.fixture("hotki.main.invalid_config")
-main = require_viewport("main")
+main = eguidev.wait_viewport({ name = "main" })
 eguidev.widget("main.notice.title"):expect({
     label = "Hotki couldn't load the configuration",
 })
@@ -101,23 +90,23 @@ resize_and_check(main, 440, 280, "invalid-config main window at minimum size")
 resize_and_check(main, 900, 600, "invalid-config main window at expanded size")
 
 eguidev.fixture("hotki.main.ready_empty")
-main = require_viewport("main")
+main = eguidev.wait_viewport({ name = "main" })
 local main_id = main.id
 local main_position = assert(main:state()).outer_pos
 eguidev.widget("main.footer.logs"):click()
-local logs = require_viewport("logs")
+local logs = eguidev.wait_viewport({ name = "logs" })
 assert(assert(logs:state()).title == "Hotki Logs", "logs window should use its diagnostic title")
 eguidev.widget("logs.clear"):expect({ label = "Clear", role = "button" })
 eguidev.widget("logs.count"):expect({ present = false })
 assert_clean_layout(logs, "logs window")
-assert(require_viewport("main").id == main_id, "opening logs should keep the main viewport")
+assert(eguidev.wait_viewport({ name = "main" }).id == main_id, "opening logs should keep the main viewport")
 assert(
-    positions_match(assert(require_viewport("main"):state()).outer_pos, main_position),
+    positions_match(assert(eguidev.wait_viewport({ name = "main" }):state()).outer_pos, main_position),
     "opening logs should not move main"
 )
 local logs_id = logs.id
 eguidev.widget("main.footer.logs"):click()
-assert(require_viewport("logs").id == logs_id, "reopening logs should reuse one viewport")
+assert(eguidev.wait_viewport({ name = "logs" }).id == logs_id, "reopening logs should reuse one viewport")
 local logs_count = 0
 for _, vp in ipairs(eguidev.viewports()) do
     local state = vp:state()

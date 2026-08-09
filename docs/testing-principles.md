@@ -8,7 +8,7 @@ binary, and the local eguidev automation scripts.
 
 - Use Rust tests for pure logic, protocol round trips, worker lifecycle, and
   engine behavior that can run without driving windows.
-- Use `cargo run --bin smoketest -- all` for end-to-end server and UI smoke
+- Use `cargo run --locked --bin smoketest -- all` for end-to-end server and UI smoke
   coverage after UI-facing changes.
 - Use eguidev scripts for local inspection of egui-native viewports such as the
   main window, logs, and Permissions.

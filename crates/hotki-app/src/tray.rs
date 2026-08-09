@@ -8,6 +8,7 @@ use objc2::{AnyThread, msg_send, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{
     NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName,
     NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSApplication, NSImage,
+    NSWindow,
 };
 use objc2_foundation::{MainThreadMarker, NSAttributedString, NSData, NSDictionary, NSString};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -190,11 +191,29 @@ fn activate_hotki(tx: &UiDeliveryTx) {
     }
 }
 
+/// Retained native About panel used for live presentation readiness.
+pub struct AboutPanel {
+    /// Standard AppKit panel returned by the application window list.
+    window: Retained<NSWindow>,
+}
+
+impl AboutPanel {
+    /// Return whether the native panel is currently visible on screen.
+    pub fn is_visible(&self) -> bool {
+        self.window.isVisible()
+    }
+
+    /// Hide the native panel while resetting transient fixture state.
+    pub fn hide(&self) {
+        self.window.orderOut(None);
+    }
+}
+
 /// Activate Hotki and open the standard About panel with package metadata.
-pub fn show_about_panel() -> bool {
+pub fn show_about_panel() -> Option<AboutPanel> {
     let Some(marker) = MainThreadMarker::new() else {
         tracing::warn!("failed to show About panel off the main thread");
-        return false;
+        return None;
     };
     let application = NSApplication::sharedApplication(marker);
     let existing_windows = application.windows();
@@ -232,20 +251,17 @@ pub fn show_about_panel() -> bool {
     let options = NSDictionary::from_retained_objects(&keys, &objects);
     unsafe { application.orderFrontStandardAboutPanelWithOptions(&options) };
     let windows = application.windows();
-    let Some(panel) = windows
+    let panel = windows
         .iter()
         .find(|window| {
             !existing_windows
                 .iter()
                 .any(|existing| ptr::eq(&*existing, &**window))
         })
-        .or_else(|| application.keyWindow().filter(|window| window.isVisible()))
-    else {
-        return false;
-    };
+        .or_else(|| application.keyWindow().filter(|window| window.isVisible()))?;
     panel.makeKeyAndOrderFront(None);
     force_activate(&application);
-    application.isActive() && panel.isKeyWindow()
+    Some(AboutPanel { window: panel })
 }
 
 /// Force activation for an Accessory app after a user invokes its status item.

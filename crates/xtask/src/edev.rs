@@ -11,6 +11,7 @@ use crate::{Error, Result};
 const EXPECTED_COMMAND: &[&str] = &[
     "cargo",
     "run",
+    "--locked",
     "-p",
     "hotki-app",
     "--features",
@@ -78,7 +79,7 @@ fn app_command(source: &str) -> Result<Vec<String>> {
 /// Confirm Cargo still resolves the package, feature, and binary target.
 fn validate_app_target(root_dir: &Path) -> Result<()> {
     let output = Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .args(["metadata", "--locked", "--no-deps", "--format-version", "1"])
         .current_dir(root_dir)
         .output()
         .map_err(|source| Error::CommandStart {

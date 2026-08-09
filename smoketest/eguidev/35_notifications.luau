@@ -8,40 +8,20 @@ type CardGeometry = {
     height: number,
 }
 
-local function require_viewport(name: string): Viewport
+local function viewport_for(name: string): Viewport
     if name == "root" then
         return eguidev.root
     end
-    local found = eguidev.viewports({ name = name })[1]
-    if found == nil then
-        eguidev.wait(function()
-            found = eguidev.viewports({ name = name })[1]
-            return found ~= nil
-        end)
-    end
-    return assert(found, name .. " viewport should exist")
+    return eguidev.wait_viewport({ name = name })
 end
 
-local function widget_in(viewport_name: string, id: string)
-    local viewport = require_viewport(viewport_name)
-    local found: any = nil
-    local function discover(): boolean
-        for _, candidate in ipairs(viewport:widgets({ id_prefix = id })) do
-            if candidate.id == id then
-                found = candidate
-                return true
-            end
-        end
-        return false
-    end
-    if not discover() then
-        eguidev.wait(discover)
-    end
-    return assert(found, "missing widget " .. id .. " in viewport " .. viewport.id)
+local function scoped_widget(viewport_name: string, id: string): Widget
+    local viewport = viewport_for(viewport_name)
+    return viewport:widget(id)
 end
 
 local function widget_value(id: string, viewport_name: string): string
-    return assert(widget_in(viewport_name, id):state()).value_text
+    return assert(scoped_widget(viewport_name, id):state()).value_text
 end
 
 local function widget_number(id: string, viewport_name: string): number
@@ -89,7 +69,7 @@ local function live_ids(count: number): { string }
     local ids: { string } = {}
     for index = 0, count - 1 do
         local stack_item = "notification.stack.item." .. tostring(index) .. ".live_id"
-        local live_id = assert(widget_in("root", stack_item):state()).value_text :: string
+        local live_id = assert(scoped_widget("root", stack_item):state()).value_text :: string
         assert(live_id ~= "", "stack item " .. tostring(index) .. " should expose live id")
         table.insert(ids, live_id)
     end
@@ -97,7 +77,7 @@ local function live_ids(count: number): { string }
 end
 
 local function assert_text_fully_visible(id: string, viewport_name: string)
-    local text_widget = widget_in(viewport_name, id)
+    local text_widget = scoped_widget(viewport_name, id)
     local state = assert(text_widget:state())
     local measure = text_widget:text_measure() :: any
     assert(measure.visible_text == state.value_text, id .. " text should be fully visible")
@@ -106,8 +86,8 @@ local function assert_text_fully_visible(id: string, viewport_name: string)
 end
 
 local function wait_for_live_viewport(live_id: string)
-    local viewport = require_viewport(live_id)
-    widget_in(live_id, live_id .. ".title"):wait({ present = true })
+    local viewport = viewport_for(live_id)
+    scoped_widget(live_id, live_id .. ".title"):wait({ present = true })
     viewport:settle()
 end
 
@@ -115,7 +95,7 @@ local function assert_card_geometry(live_id: string, expected_side: string): Car
     wait_for_live_viewport(live_id)
     local title_state = assert_text_fully_visible(live_id .. ".title", live_id)
     local body_state = assert_text_fully_visible(live_id .. ".body", live_id)
-    local icon_state = assert(widget_in(live_id, live_id .. ".icon"):state())
+    local icon_state = assert(scoped_widget(live_id, live_id .. ".icon"):state())
     local side = widget_value(live_id .. ".side", live_id)
     local current_x = widget_number(live_id .. ".current_x", live_id)
     local current_y = widget_number(live_id .. ".current_y", live_id)
@@ -208,7 +188,7 @@ local function assert_truncated_fixture()
     local live_id = live_ids(1)[1]
     wait_for_live_viewport(live_id)
     local title_state = assert_text_fully_visible(live_id .. ".title", live_id)
-    local body_widget = widget_in(live_id, live_id .. ".body")
+    local body_widget = scoped_widget(live_id, live_id .. ".body")
     local body_state = assert(body_widget:state())
     local body_measure = body_widget:text_measure() :: any
     local full_body = widget_value(live_id .. ".body_text", live_id)

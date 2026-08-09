@@ -2,6 +2,7 @@
 command = [
   "cargo",
   "run",
+  "--locked",
   "-p",
   "hotki-app",
   "--features",

@@ -1,18 +1,7 @@
 eguidev.configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-local function require_viewport(name: string): Viewport
-    local found = eguidev.viewports({ name = name })[1]
-    if found == nil then
-        eguidev.wait(function()
-            found = eguidev.viewports({ name = name })[1]
-            return found ~= nil
-        end)
-    end
-    return assert(found, name .. " viewport should exist")
-end
-
 local function wait_for_notification(title: string, text: string)
-    local main = require_viewport("main")
+    local main = eguidev.wait_viewport({ name = "main" })
     eguidev.widget("main.activity.0.title"):wait(function(widget)
         return widget ~= nil and widget.value_text == title
     end)
@@ -26,7 +15,7 @@ eguidev.fixture("hotki.hud")
 eguidev.fixture("hotki.hud.demo")
 eguidev.fixture("hotki.selector")
 eguidev.fixture("hotki.selector.query")
-local selector = require_viewport("selector")
+local selector = eguidev.wait_viewport({ name = "selector" })
 eguidev.widget("selector.query"):wait(function(widget)
     return widget ~= nil and string.find(widget.value_text, "b", 1, true) ~= nil
 end)
@@ -41,7 +30,7 @@ eguidev.fixture("hotki.hud")
 eguidev.fixture("hotki.hud.demo")
 eguidev.fixture("hotki.selector")
 eguidev.fixture("hotki.selector.query")
-selector = require_viewport("selector")
+selector = eguidev.wait_viewport({ name = "selector" })
 eguidev.widget("selector.query"):wait(function(widget)
     return widget ~= nil and string.find(widget.value_text, "b", 1, true) ~= nil
 end)

@@ -133,7 +133,7 @@ fn build_hotki_or_exit(cli: &Cli) {
     }
     if let Err(e) = process::build_hotki_app() {
         eprintln!("Failed to build 'hotki-app' binary: {}", e);
-        eprintln!("Try: cargo build -p hotki-app --bin hotki-app");
+        eprintln!("Try: cargo build --locked -p hotki-app --bin hotki-app");
         exit(1);
     }
 }

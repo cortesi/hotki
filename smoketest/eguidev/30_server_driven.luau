@@ -1,21 +1,10 @@
 eguidev.configure({ timeout_ms = 15000, poll_interval_ms = 25 })
 
-local function require_viewport(name: string): Viewport
-    local found = eguidev.viewports({ name = name })[1]
-    if found == nil then
-        eguidev.wait(function()
-            found = eguidev.viewports({ name = name })[1]
-            return found ~= nil
-        end)
-    end
-    return assert(found, name .. " viewport should exist")
-end
-
 eguidev.fixture("hotki.hud")
 eguidev.widget("app.server.connected"):wait(function(widget)
     return widget ~= nil and widget.value == true
 end)
-local hud = require_viewport("hud")
+local hud = eguidev.wait_viewport({ name = "hud" })
 eguidev.widget("hud.panel"):wait({ visible = true })
 eguidev.widget("hud.mode"):wait(function(widget)
     return widget ~= nil and widget.value_text == "hud"
@@ -42,7 +31,7 @@ eguidev.fixture("hotki.hud.mini")
 eguidev.widget("app.server.connected"):wait(function(widget)
     return widget ~= nil and widget.value == true
 end)
-hud = require_viewport("hud")
+hud = eguidev.wait_viewport({ name = "hud" })
 eguidev.widget("hud.mode"):wait(function(widget)
     return widget ~= nil and widget.value_text == "mini"
 end)
@@ -61,7 +50,7 @@ eguidev.widget("hud.geometry.width"):wait(function(widget)
 end)
 
 eguidev.fixture("hotki.hud.tall")
-hud = require_viewport("hud")
+hud = eguidev.wait_viewport({ name = "hud" })
 eguidev.widget("hud.row.21.desc"):wait(function(widget)
     return widget ~= nil and widget.value_text == "Tall HUD command 21 with enough text to measure"
 end)
@@ -81,7 +70,7 @@ for index = 0, 21 do
 end
 
 eguidev.fixture("hotki.hud.pressed")
-hud = require_viewport("hud")
+hud = eguidev.wait_viewport({ name = "hud" })
 eguidev.widget("hud.row.0.pressed"):wait(function(widget)
     return widget ~= nil and widget.value == true
 end)
@@ -98,7 +87,7 @@ eguidev.fixture("hotki.selector")
 eguidev.widget("app.server.connected"):wait(function(widget)
     return widget ~= nil and widget.value == true
 end)
-local selector = require_viewport("selector")
+local selector = eguidev.wait_viewport({ name = "selector" })
 eguidev.widget("selector.title"):wait(function(widget)
     return widget ~= nil and widget.value_text == "Pick Demo"
 end)
@@ -117,7 +106,7 @@ eguidev.fixture("hotki.selector.query")
 eguidev.widget("app.server.connected"):wait(function(widget)
     return widget ~= nil and widget.value == true
 end)
-selector = require_viewport("selector")
+selector = eguidev.wait_viewport({ name = "selector" })
 eguidev.widget("selector.query"):wait(function(widget)
     return widget ~= nil and string.find(widget.value_text, "b", 1, true) ~= nil
 end)

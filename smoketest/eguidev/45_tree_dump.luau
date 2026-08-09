@@ -62,7 +62,7 @@ assert(first_live_id.value_text == live_id, "stack dump should match the current
 local live_body = assert(eguidev.widget(live_id .. ".body"):state())
 assert(live_body.value_text ~= "", "live body should expose text")
 
-local notification_viewport = assert(eguidev.viewports({ name = live_id })[1])
+local notification_viewport = eguidev.wait_viewport({ name = live_id })
 local notification_tree = eguidev.dump({ viewport = notification_viewport, fields = "full" }) :: any
 assert(#notification_tree.viewports == 1, "live notification dump should include one viewport")
 assert(notification_tree.viewports[1].name == live_id, "live viewport dump should keep its name")

@@ -13,7 +13,7 @@ platform-specific code.
 After any UI-related changes, run the following smoketest:
 
 ```bash
-cargo run --bin smoketest -- all
+cargo run --locked --bin smoketest -- all
 ```
 
 
@@ -226,7 +226,7 @@ Before committing, ensure all code passes lint checks and all warnings are
 addressed. Run:
 
 ```bash
-cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples 2>&1
+cargo clippy --locked -q --fix --all --all-targets --all-features --allow-dirty --tests --examples 2>&1
 ```
 
 Clippy outputs warnings to stderr, which we merge into stdout so all messages
@@ -271,7 +271,7 @@ ALWAYS format before committing.
 After completing changes, execute all tests using:
 
 ```bash
-cargo test --all
+cargo test --locked --all
 ```
 
 Tests should always be placed in a "test" module when colocated with code.
@@ -385,5 +385,4 @@ ruskel reqwest --search status --search-spec doc
 ```
 
 </rust>
-
 

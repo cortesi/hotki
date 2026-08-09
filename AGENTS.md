@@ -16,4 +16,4 @@
 - Do not add conditional compilation for other platforms.
 - Unit tests and smoke tests can take more than 60 seconds.
 - Use an extended external timeout as a safety bound for those commands.
-- After a user-interface change, run `cargo run --bin smoketest -- all`.
+- After a user-interface change, run `cargo run --locked --bin smoketest -- all`.

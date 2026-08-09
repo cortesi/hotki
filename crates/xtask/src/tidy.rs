@@ -20,12 +20,13 @@ pub fn tidy(root_dir: &Path) -> Result<()> {
         OutputMode::Streaming,
     )?;
 
-    println!("==> cargo clippy --fix");
+    println!("==> cargo clippy --locked --fix");
     run_status(
         root_dir,
         "cargo",
         [
             "clippy",
+            "--locked",
             "-q",
             "--fix",
             "--all",

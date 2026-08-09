@@ -15,7 +15,7 @@
   or fixture config. `cargo xtask tidy` includes the same check.
 - Run `cargo xtask test` for the automated gate: Luau validation, Rust tests, and the native
   smoketest.
-- For UI‑path changes, run: `cargo run --bin smoketest -- all`.
+- For UI‑path changes, run: `cargo run --locked --bin smoketest -- all`.
 
 ## Eguidev Automation
 

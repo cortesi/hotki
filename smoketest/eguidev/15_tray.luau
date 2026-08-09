@@ -1,9 +1,12 @@
 eguidev.configure({ timeout_ms = 10000, poll_interval_ms = 25 })
 
+eguidev.fixture("hotki.basic.default")
+eguidev.widget("app.about.opened"):wait({ value = false })
+
 eguidev.fixture("hotki.tray.about")
-assert(assert(eguidev.widget("app.ready"):state()).value == true)
-assert(assert(eguidev.widget("app.about.opened"):state()).value == true)
+eguidev.widget("app.ready"):expect({ value = true })
+local about = eguidev.widget("app.about.opened"):expect({ value = true })
 
 return {
-    about_invoked = true,
+    about_visible = assert(about).value,
 }

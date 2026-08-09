@@ -42,6 +42,8 @@ pub enum UiCommand {
     ActivateApp,
     /// Activate Hotki and open the standard macOS About panel.
     ShowAbout,
+    /// Hide and forget the standard macOS About panel.
+    HideAbout,
     /// Request a graceful shutdown of all UI and background tasks.
     Shutdown,
     /// Show the permissions helper window.
@@ -130,8 +132,8 @@ pub struct HotkiApp {
     pub(crate) runtime_health: RuntimeHealth,
     /// Fixture-owned health presentation, while deterministic UI state is active.
     pub(crate) runtime_health_override: Option<Box<RuntimeHealth>>,
-    /// Whether the standard About panel has been requested on the UI thread.
-    pub(crate) about_panel_opened: bool,
+    /// Native About panel retained while it remains part of transient UI state.
+    pub(crate) about_panel: Option<tray::AboutPanel>,
     /// Sender for user-initiated runtime commands.
     pub(crate) tx_ctrl: tokio_mpsc::UnboundedSender<ControlMsg>,
     /// Sorted server binding identifiers, when the runtime has reported them.
@@ -218,7 +220,9 @@ impl App for HotkiApp {
             presented_health,
             &self.server_bindings,
             &notification_stack,
-            self.about_panel_opened,
+            self.about_panel
+                .as_ref()
+                .is_some_and(tray::AboutPanel::is_visible),
         );
         self.hud.render(ctx, &self.devmcp);
         self.selector.render(ctx, &self.devmcp);
@@ -313,7 +317,7 @@ impl HotkiApp {
             fixture_runtime,
             runtime_health,
             runtime_health_override: None,
-            about_panel_opened: false,
+            about_panel: None,
             tx_ctrl: bootstrap.tx_ctrl,
             server_bindings: Vec::new(),
             input_health: InputHealth::default(),
@@ -384,10 +388,12 @@ impl HotkiApp {
         match command {
             UiCommand::ActivateApp => tray::activate_app(),
             UiCommand::ShowAbout => {
-                let _ = tray::show_about_panel();
-                // Automation observes that the UI thread handled the request;
-                // AppKit key-window promotion can complete asynchronously.
-                self.about_panel_opened = true;
+                self.about_panel = tray::show_about_panel();
+            }
+            UiCommand::HideAbout => {
+                if let Some(panel) = self.about_panel.take() {
+                    panel.hide();
+                }
             }
             UiCommand::Shutdown => {
                 self.shutdown_in_progress = true;
@@ -397,6 +403,9 @@ impl HotkiApp {
                 self.main_window.hide();
                 self.logs_window.hide();
                 self.permissions.hide();
+                if let Some(panel) = self.about_panel.take() {
+                    panel.hide();
+                }
                 self.tray = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

@@ -83,6 +83,7 @@ fn capture_and_publish(root_dir: &Path, stage: &Path, gallery: &Path) -> Result<
         "cargo",
         [
             OsString::from("run"),
+            OsString::from("--locked"),
             OsString::from("--bin"),
             OsString::from("hotki-shots"),
             OsString::from("--"),
@@ -104,6 +105,7 @@ fn build_hotki_app(root_dir: &Path) -> Result<()> {
         "cargo",
         [
             OsString::from("build"),
+            OsString::from("--locked"),
             OsString::from("-p"),
             OsString::from("hotki-app"),
             OsString::from("--bin"),
