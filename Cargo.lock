@@ -4717,6 +4717,7 @@ dependencies = [
  "ruau-declaration",
  "ruau-executor",
  "ruau-filesystem",
+ "ruau-json-schema",
  "ruau-session",
  "ruau-source",
  "ruau-surface",
@@ -4737,6 +4738,9 @@ dependencies = [
 [[package]]
 name = "ruau-declaration"
 version = "0.1.0"
+dependencies = [
+ "ruau-syntax",
+]
 
 [[package]]
 name = "ruau-executor"
@@ -4768,6 +4772,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruau-json-schema"
+version = "0.1.0"
+dependencies = [
+ "ruau-declaration",
+ "serde_json",
+]
+
+[[package]]
 name = "ruau-session"
 version = "0.1.0"
 dependencies = [
@@ -4789,6 +4801,7 @@ version = "0.1.0"
 name = "ruau-surface"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ruau-bytecode",
  "ruau-declaration",
  "ruau-source",

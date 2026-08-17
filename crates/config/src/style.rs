@@ -255,7 +255,7 @@ fn build_style_vm(runtime_capabilities: RuntimeCapabilities, path: &Path) -> Res
 
 /// Return the per-style execution limits.
 fn style_limits() -> Limits {
-    Limits::production(STYLE_GAS_LIMIT, STYLE_MEMORY_LIMIT)
+    Limits::metered(STYLE_GAS_LIMIT, STYLE_MEMORY_LIMIT)
 }
 
 /// Convert a protected style script failure into a located validation error.

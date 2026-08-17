@@ -92,7 +92,7 @@ impl LoadedConfig {
 
     /// Return the per-entrypoint execution limits.
     pub(crate) fn entry_limits() -> Limits {
-        Limits::production(SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT)
+        Limits::metered(SCRIPT_GAS_LIMIT, SCRIPT_MEMORY_LIMIT)
     }
 
     /// Build complete options for one config entrypoint.
