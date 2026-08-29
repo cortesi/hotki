@@ -11,8 +11,9 @@ use std::{
 
 use ruau::{
     bytecode::{BytecodeChunk, CompileOptions},
+    filesystem::Directory,
     session::{LoadTarget, Runtime},
-    source::{ModuleId, Source, SourceMetadata, SourceProvider, fs::Directory},
+    source::{ModuleId, Source, SourceMetadata, SourceProvider},
     surface::{PrepareGraphError, PrepareOptions, PreparedGraph, Surface, VmConfig},
     vm::{Ambient, Limits, MultiValue, NativeModule, ScopedValue, ScriptError},
 };

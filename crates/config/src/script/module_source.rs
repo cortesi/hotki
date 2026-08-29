@@ -8,7 +8,7 @@ use std::{
 
 use ruau::source::{
     InstanceKey, ModuleId, ReadContext, SourceError, SourceFuture, SourceMetadata, SourceProvider,
-    resolve_request,
+    SourceRead, resolve_request,
 };
 
 use super::{config::SourceMap, util::lock_unpoisoned};
@@ -33,8 +33,8 @@ enum GraphPhase {
 struct GraphState {
     /// Resolution edges retained for runtime cache hits.
     resolutions: HashMap<ResolutionKey, ModuleId>,
-    /// Source bytes retained from graph preparation.
-    bytes: HashMap<ModuleId, Vec<u8>>,
+    /// Source observations retained from graph preparation.
+    reads: HashMap<ModuleId, SourceRead>,
     /// Current graph admission phase.
     phase: GraphPhase,
 }
@@ -96,24 +96,24 @@ impl GraphState {
         Ok(id)
     }
 
-    /// Admit a source read or return its retained bytes.
-    fn read_admission(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, SourceError> {
+    /// Admit a source read or return its retained observation.
+    fn read_admission(&self, id: &ModuleId) -> Result<Option<SourceRead>, SourceError> {
         match &self.phase {
             GraphPhase::Sealed => Err(sealed_error()),
             GraphPhase::Allowed(allowed) if !allowed.contains(id) => Err(outside_graph_error(id)),
-            GraphPhase::Building | GraphPhase::Allowed(_) => Ok(self.bytes.get(id).cloned()),
+            GraphPhase::Building | GraphPhase::Allowed(_) => Ok(self.reads.get(id).cloned()),
         }
     }
 
-    /// Revalidate and cache delegated source bytes.
-    fn finish_read(&mut self, id: ModuleId, source: Vec<u8>) -> Result<(), SourceError> {
+    /// Revalidate and cache a delegated source observation.
+    fn finish_read(&mut self, id: ModuleId, read: SourceRead) -> Result<(), SourceError> {
         match &self.phase {
             GraphPhase::Building => {}
             GraphPhase::Allowed(allowed) if allowed.contains(&id) => {}
             GraphPhase::Allowed(_) => return Err(outside_graph_error(&id)),
             GraphPhase::Sealed => return Err(sealed_error()),
         }
-        self.bytes.insert(id, source);
+        self.reads.insert(id, read);
         Ok(())
     }
 }
@@ -175,8 +175,8 @@ impl ConfigModuleSource {
     }
 
     /// Expand one source display name into its diagnostic filesystem path.
-    fn source_path(root_dir: &Path, metadata: &SourceMetadata) -> PathBuf {
-        let path = PathBuf::from(&metadata.display_name);
+    fn source_path(root_dir: &Path, display_name: &str) -> PathBuf {
+        let path = PathBuf::from(display_name);
         if path.is_absolute() {
             path
         } else {
@@ -213,29 +213,37 @@ impl SourceProvider for ConfigModuleSource {
     }
 
     fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
-        match lock_unpoisoned(&self.state).read_admission(id) {
-            Ok(Some(source)) => return Box::pin(async move { Ok(source) }),
+        self.read_request(ReadContext::new(id))
+    }
+
+    fn read_request(&self, request: ReadContext<'_>) -> SourceFuture<Vec<u8>> {
+        let future = self.read_observation(request);
+        Box::pin(async move { Ok(future.await?.source().as_bytes().to_vec()) })
+    }
+
+    fn read_observation(&self, request: ReadContext<'_>) -> SourceFuture<SourceRead> {
+        let id = request.id().clone();
+        match lock_unpoisoned(&self.state).read_admission(&id) {
+            Ok(Some(read)) => return Box::pin(async move { Ok(read) }),
             Ok(None) => {}
             Err(error) => return Box::pin(async move { Err(error) }),
         }
 
-        let future = self.delegate.read(id);
-        let id = id.clone();
+        let future = self.delegate.read_observation(request);
         let state = Arc::clone(&self.state);
         let sources = Arc::clone(&self.sources);
-        let path = Self::source_path(&self.root_dir, &self.delegate.metadata(&id));
+        let root_dir = self.root_dir.clone();
         Box::pin(async move {
-            let source = future.await?;
-            lock_unpoisoned(&state).finish_read(id, source.clone())?;
-            if let Ok(text) = String::from_utf8(source.clone()) {
+            let read = future.await?;
+            let source = read.source();
+            let path = Self::source_path(&root_dir, source.display_name());
+            let bytes = source.as_bytes().to_vec();
+            lock_unpoisoned(&state).finish_read(id, read.clone())?;
+            if let Ok(text) = String::from_utf8(bytes) {
                 lock_unpoisoned(&sources).insert(path, Arc::from(text.into_boxed_str()));
             }
-            Ok(source)
+            Ok(read)
         })
-    }
-
-    fn read_request(&self, request: ReadContext<'_>) -> SourceFuture<Vec<u8>> {
-        self.read(request.id())
     }
 
     fn instance_key(&self, request: ReadContext<'_>) -> InstanceKey {
@@ -243,6 +251,9 @@ impl SourceProvider for ConfigModuleSource {
     }
 
     fn metadata(&self, id: &ModuleId) -> SourceMetadata {
+        if let Some(read) = lock_unpoisoned(&self.state).reads.get(id) {
+            return read.source().metadata().clone();
+        }
         self.delegate.metadata(id)
     }
 
@@ -253,6 +264,8 @@ impl SourceProvider for ConfigModuleSource {
 
 #[cfg(test)]
 mod tests {
+    use ruau::source::Source;
+
     use super::*;
 
     #[test]
@@ -273,9 +286,20 @@ mod tests {
                 .to_string()
                 .contains("outside the checked config graph")
         );
+        let read = SourceRead::new(
+            Source::bytes(allowed.clone(), b"return true".to_vec())
+                .with_metadata(SourceMetadata::new("allowed.luau")),
+            InstanceKey::shared(allowed.clone()),
+            0,
+            None,
+        );
         state
-            .finish_read(allowed.clone(), b"return true".to_vec())
+            .finish_read(allowed.clone(), read.clone())
             .expect("allowed phase accepts source");
+        assert_eq!(
+            state.read_admission(&allowed).expect("cached read"),
+            Some(read)
+        );
 
         state.seal();
 

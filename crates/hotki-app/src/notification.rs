@@ -764,7 +764,7 @@ impl NotificationCenter {
     pub fn clear_all(&mut self, ctx: &Context, devmcp: &DevMcp) {
         for it in &mut self.items {
             it.viewport.hide(ctx);
-            eguidev::clear_viewport(devmcp, it.viewport.id());
+            devmcp.clear_viewport(it.viewport.id());
         }
         self.items.clear();
         self.backlog.clear();
