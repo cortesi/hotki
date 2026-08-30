@@ -77,7 +77,8 @@ pub fn luau(root_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Find top-level example files and nested directories whose entry is `config.luau`.
+/// Find top-level example files and nested directories whose entry is
+/// `config.luau`.
 fn example_config_paths(root: &Path) -> Result<Vec<PathBuf>> {
     fn visit(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
         let entries = fs::read_dir(directory).map_err(|source| Error::Io {
@@ -112,7 +113,8 @@ fn example_config_paths(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Extract and validate documentation fences explicitly marked as complete configs.
+/// Extract and validate documentation fences explicitly marked as complete
+/// configs.
 fn validate_markdown_configs(root: &Path) -> Result<()> {
     println!("==> documentation configs");
     let output_dir = root.join("tmp/luau-docs");

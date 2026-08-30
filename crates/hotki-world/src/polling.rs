@@ -18,7 +18,8 @@ use crate::{
     state::{CoreWorldView, WorldCore, WorldPollUpdate},
 };
 
-/// Lightweight world implementation backed by periodic polling of focus + displays.
+/// Lightweight world implementation backed by periodic polling of focus +
+/// displays.
 pub(crate) struct PollingWorld {
     core: Arc<WorldCore>,
     poll_tuner: Arc<PollTuner>,

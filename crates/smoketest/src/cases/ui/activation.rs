@@ -73,7 +73,8 @@ impl BindingWatcher {
         Self { hud_pid }
     }
 
-    /// Attempt to activate the HUD and wait until the expected submenu bindings appear.
+    /// Attempt to activate the HUD and wait until the expected submenu bindings
+    /// appear.
     pub(super) fn activate_until_ready(
         &self,
         driver: &mut ServerDriver,
@@ -183,7 +184,8 @@ impl BindingWatcher {
         Err(Error::HudNotVisible { timeout_ms })
     }
 
-    /// Attempt to inject the activation chord if enough time remains before the deadline.
+    /// Attempt to inject the activation chord if enough time remains before the
+    /// deadline.
     fn dispatch_activation(
         &self,
         driver: &mut ServerDriver,

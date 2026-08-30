@@ -4,15 +4,17 @@ use crate::{Error, Result, ipc::Connection, managed_server::ManagedServer};
 
 /// A client for connecting to a hotkey server.
 ///
-/// The client will attempt to connect to an existing server at the configured socket path.
-/// If no server is running and auto-spawn is configured, it will spawn a new server process.
+/// The client will attempt to connect to an existing server at the configured
+/// socket path. If no server is running and auto-spawn is configured, it will
+/// spawn a new server process.
 ///
 /// # Server Spawning
 ///
-/// By default, the client will only connect to existing servers. To enable automatic
-/// server spawning, use one of these methods:
+/// By default, the client will only connect to existing servers. To enable
+/// automatic server spawning, use one of these methods:
 ///
-/// - [`with_auto_spawn_server()`](Self::with_auto_spawn_server) - Uses the current executable with `--server` flag
+/// - [`with_auto_spawn_server()`](Self::with_auto_spawn_server) - Uses the
+///   current executable with `--server` flag
 pub struct Client {
     /// Managed server launch policy and spawned process state.
     managed_server: ManagedServer,
@@ -41,7 +43,8 @@ impl Client {
 
     /// Create a new managed client with the given socket path.
     ///
-    /// Like [`new`], this defaults to auto-spawn. Use [`with_connect_only`] to opt out.
+    /// Like [`new`], this defaults to auto-spawn. Use [`with_connect_only`] to
+    /// opt out.
     pub fn new_with_socket(socket_path: impl Into<String>) -> Self {
         let base = Self {
             managed_server: ManagedServer::new_with_socket(socket_path),
@@ -83,7 +86,8 @@ impl Client {
         self
     }
 
-    /// Configure whether an auto-spawned server starts the physical keyboard event tap.
+    /// Configure whether an auto-spawned server starts the physical keyboard
+    /// event tap.
     pub fn with_server_event_tap_enabled(mut self, enabled: bool) -> Self {
         self.managed_server.set_server_event_tap_enabled(enabled);
         self

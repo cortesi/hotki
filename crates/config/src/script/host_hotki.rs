@@ -12,7 +12,8 @@ use super::{SelectorItem, apps, host_runtime::SharedApplicationCache, util::lock
 
 /// Pure-Luau implementation installed as the typed `hotki.actions` value.
 const ACTIONS_SOURCE: &[u8] = include_bytes!("../../luau/actions.luau");
-/// Pure-Luau renderer composition helpers installed as the typed `hotki.renderers` value.
+/// Pure-Luau renderer composition helpers installed as the typed
+/// `hotki.renderers` value.
 const RENDERERS_SOURCE: &[u8] = include_bytes!("../../luau/renderers.luau");
 
 /// Build the declaration-coupled native module backing the `hotki` library.

@@ -30,7 +30,8 @@ pub type SourceMap = Arc<Mutex<HashMap<PathBuf, Arc<str>>>>;
 pub struct LoadedConfig {
     /// Root mode renderer returned by the entry module.
     pub(crate) root: ModeRef,
-    /// Resolved base style loaded from the embedded default and optional sibling override.
+    /// Resolved base style loaded from the embedded default and optional
+    /// sibling override.
     pub(crate) base_style: Style,
     /// Source of the resolved base style.
     pub(crate) style_provenance: StyleProvenance,
@@ -81,7 +82,8 @@ impl LoadedConfig {
         self.module_count
     }
 
-    /// Return entry gas, validation gas, and retained heap for load diagnostics.
+    /// Return entry gas, validation gas, and retained heap for load
+    /// diagnostics.
     pub(crate) fn load_metrics(&self) -> (u64, u64, usize) {
         (
             self.entry_gas,
@@ -105,7 +107,8 @@ impl LoadedConfig {
         CallbackContext::new(Arc::clone(&self.callbacks))
     }
 
-    /// Promote newly stashed callbacks and release callbacks whose last owner dropped.
+    /// Promote newly stashed callbacks and release callbacks whose last owner
+    /// dropped.
     pub(crate) fn synchronize_callbacks(&mut self) -> Result<(), Error> {
         CallbackRegistry::synchronize(&self.callbacks, &mut self.runtime)
             .map_err(|error| diagnostics::config_retained_error(self.path.clone(), &error))

@@ -30,7 +30,8 @@ struct ModeView {
     capture: bool,
 }
 
-/// Render the full mode stack, applying empty/orphan truncation and producing HUD rows.
+/// Render the full mode stack, applying empty/orphan truncation and producing
+/// HUD rows.
 pub fn render_stack(
     cfg: &mut LoadedConfig,
     stack: &mut Vec<ModeFrame>,

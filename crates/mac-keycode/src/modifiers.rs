@@ -71,8 +71,8 @@ impl Modifier {
     /// Canonical short forms:
     /// - Command => "cmd"
     /// - Control => "ctrl"
-    /// - Option => "opt"
-    ///   Others use their lowercased variant name (e.g., "shift", "capslock").
+    /// - Option => "opt" Others use their lowercased variant name (e.g.,
+    ///   "shift", "capslock").
     pub fn to_spec(self) -> String {
         match self {
             Modifier::Command => "cmd".to_string(),
@@ -84,8 +84,9 @@ impl Modifier {
 
     /// CGEventFlags bitmask corresponding to this modifier.
     ///
-    /// Only primary modifier flags are represented in CGEventFlags. Right-side variants map to
-    /// the same flag bits as their left-side counterparts. Non-flag modifiers return 0.
+    /// Only primary modifier flags are represented in CGEventFlags. Right-side
+    /// variants map to the same flag bits as their left-side counterparts.
+    /// Non-flag modifiers return 0.
     #[must_use]
     pub fn cg_flag_bits(self) -> u64 {
         match self {

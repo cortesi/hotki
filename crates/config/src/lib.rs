@@ -55,7 +55,8 @@ pub fn default_config_path() -> PathBuf {
 /// Policy:
 /// 1) Use `explicit` when provided.
 /// 2) Else use `~/.hotki/config.luau` when it exists.
-/// 3) Else return a clear "no config found" error pointing to `examples/complete.luau`.
+/// 3) Else return a clear "no config found" error pointing to
+///    `examples/complete.luau`.
 pub fn resolve_config_path(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     if let Some(path) = explicit {
         return Ok(path.to_path_buf());

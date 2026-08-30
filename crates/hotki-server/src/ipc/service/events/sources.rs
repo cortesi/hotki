@@ -15,7 +15,8 @@ use tokio::{
 
 use super::{broadcaster::broadcast_event, registry::ClientRegistry};
 
-/// Forward shared focus changes until shutdown, cancellation, or cursor closure.
+/// Forward shared focus changes until shutdown, cancellation, or cursor
+/// closure.
 pub(super) async fn forward_world_events(
     shutdown: Arc<AtomicBool>,
     event_tx: Sender<MsgToUI>,

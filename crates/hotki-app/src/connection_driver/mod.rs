@@ -21,7 +21,8 @@ use crate::{
     ui_delivery::UiDeliveryTx,
 };
 
-/// Drives the MRPC connection for the UI: connect, process events, and apply config/overrides.
+/// Drives the MRPC connection for the UI: connect, process events, and apply
+/// config/overrides.
 pub struct ConnectionDriver {
     /// Path to the on-disk Hotki config.
     config_path: PathBuf,
@@ -41,7 +42,8 @@ pub struct ConnectionDriver {
     permission_override: Option<PermissionsStatus>,
     /// Server-bound controls received before a connection is ready.
     pending_controls: VecDeque<ServerControl>,
-    /// Whether this app session already warned for the current active observation run.
+    /// Whether this app session already warned for the current active
+    /// observation run.
     secure_input_warning_sent: bool,
 }
 
@@ -285,7 +287,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Route control messages to local or connected handlers, queueing as needed.
+    /// Route control messages to local or connected handlers, queueing as
+    /// needed.
     async fn route_control_msg(
         &mut self,
         conn: Option<&mut hotki_server::Connection>,
@@ -346,17 +349,20 @@ impl ConnectionDriver {
         self.ui.notify(kind, title, text);
     }
 
-    /// Whether the current permission snapshot allows the server event tap to start.
+    /// Whether the current permission snapshot allows the server event tap to
+    /// start.
     fn required_permissions_granted(&self, perms: PermissionsStatus) -> bool {
         !self.server_event_tap_enabled || Self::observed_permissions_granted(perms)
     }
 
-    /// Whether the latest observation contains both permissions used by hotkeys.
+    /// Whether the latest observation contains both permissions used by
+    /// hotkeys.
     fn observed_permissions_granted(perms: PermissionsStatus) -> bool {
         perms.accessibility_ok() && perms.input_ok()
     }
 
-    /// Show permission guidance and keep the server from being spawned without required grants.
+    /// Show permission guidance and keep the server from being spawned without
+    /// required grants.
     fn event_tap_permissions_missing(&mut self) -> bool {
         let perms = self.permission_override.unwrap_or_else(check_permissions);
         if self.health.permissions != perms {
@@ -397,7 +403,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Ask the server to activate the configured path and publish the exact outcome.
+    /// Ask the server to activate the configured path and publish the exact
+    /// outcome.
     async fn activate_config(
         &mut self,
         conn: &mut hotki_server::Connection,
@@ -495,7 +502,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Publish full diagnostics and transition-stable presentation from one heartbeat.
+    /// Publish full diagnostics and transition-stable presentation from one
+    /// heartbeat.
     fn handle_input_health(&mut self, input: &hotki_protocol::InputHealth) {
         let projection = InputProjection::from(input);
         self.ui.set_input_health(input.clone());
@@ -520,7 +528,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Connect to the server, draining any queued control messages after connect.
+    /// Connect to the server, draining any queued control messages after
+    /// connect.
     pub(crate) async fn connect(&mut self) -> Option<Client> {
         if self.event_tap_permissions_missing() {
             return None;
@@ -583,7 +592,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Wait for a local control, permission change, or queued server command that should retry.
+    /// Wait for a local control, permission change, or queued server command
+    /// that should retry.
     async fn wait_for_retry_signal(&mut self) -> bool {
         while let Some(msg) = self.rx_ctrl.recv().await {
             let outcome = self.route_control_msg(None, msg).await;
@@ -597,7 +607,8 @@ impl ConnectionDriver {
         false
     }
 
-    /// Wait for the background connect task while still accepting local controls.
+    /// Wait for the background connect task while still accepting local
+    /// controls.
     async fn wait_for_connected_client(
         &mut self,
         connect_task: &mut ConnectTask,
@@ -620,7 +631,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Convert the background connect result into a client or user-facing error.
+    /// Convert the background connect result into a client or user-facing
+    /// error.
     fn handle_connect_result(
         &mut self,
         result: Result<ServerResult<Client>, oneshot::error::RecvError>,
@@ -655,7 +667,8 @@ impl ConnectionDriver {
         }
     }
 
-    /// Main UI event loop once connected: handles control, server events, and heartbeat.
+    /// Main UI event loop once connected: handles control, server events, and
+    /// heartbeat.
     pub(crate) async fn drive_events(&mut self, client: &mut Client) {
         let conn = match client.connection() {
             Ok(conn) => conn,

@@ -19,11 +19,13 @@ use super::{
 };
 use crate::config;
 
-/// Server driver backed directly by the production MRPC client and event stream.
+/// Server driver backed directly by the production MRPC client and event
+/// stream.
 pub struct ServerDriver {
     /// Current connection/readiness state. Dropped before the runtime.
     state: ConnectionState,
-    /// Runtime used to drive async MRPC calls from the synchronous smoketest harness.
+    /// Runtime used to drive async MRPC calls from the synchronous smoketest
+    /// harness.
     runtime: Runtime,
     /// Server socket path used to connect to the UI-owned backend.
     socket_path: String,
@@ -131,7 +133,8 @@ impl ServerDriver {
         })
     }
 
-    /// Drop the current server connection so the next operation reconnects from scratch.
+    /// Drop the current server connection so the next operation reconnects from
+    /// scratch.
     pub fn reset(&mut self) {
         self.state = ConnectionState::Disconnected;
         self.events.clear();
@@ -173,7 +176,8 @@ impl ServerDriver {
         })
     }
 
-    /// Attempt a graceful shutdown via the active server connection, if available.
+    /// Attempt a graceful shutdown via the active server connection, if
+    /// available.
     pub fn shutdown(&mut self) -> DriverResult<()> {
         self.require_connection()?;
         let result = self.shutdown_server();
@@ -422,7 +426,8 @@ impl ServerDriver {
         Ok(record)
     }
 
-    /// Check whether the cached HUD snapshot contains every requested identifier.
+    /// Check whether the cached HUD snapshot contains every requested
+    /// identifier.
     fn hud_contains_all(&self, want: &BTreeSet<String>) -> bool {
         self.events.hud_contains_all(want)
     }
@@ -451,7 +456,8 @@ impl ServerDriver {
         Ok(false)
     }
 
-    /// Wait until the driver's notification stream has delivered at least one event.
+    /// Wait until the driver's notification stream has delivered at least one
+    /// event.
     fn wait_for_event_stream(&mut self, deadline: Deadline) -> DriverResult<()> {
         while !self.state.is_event_stream_ready() {
             if !self.wait_for_server_event(deadline)? {
@@ -464,7 +470,8 @@ impl ServerDriver {
         Ok(())
     }
 
-    /// Wait until the HUD cache or RPC binding snapshot contains all requested identifiers.
+    /// Wait until the HUD cache or RPC binding snapshot contains all requested
+    /// identifiers.
     fn wait_for_hud_keys(&mut self, want: &BTreeSet<String>, timeout_ms: u64) -> DriverResult<()> {
         if want.is_empty() {
             return Ok(());
@@ -546,7 +553,8 @@ fn canonicalize_bindings(bindings: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Return whether a raw server binding snapshot contains every wanted identifier.
+/// Return whether a raw server binding snapshot contains every wanted
+/// identifier.
 fn bindings_contain_all(bindings: &[String], want: &BTreeSet<String>) -> bool {
     let rpc_idents = canonicalize_bindings(bindings)
         .into_iter()

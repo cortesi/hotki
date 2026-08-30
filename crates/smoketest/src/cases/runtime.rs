@@ -31,7 +31,8 @@ end
     )
 }
 
-/// Verify an invalid startup candidate is visible and a corrected candidate activates.
+/// Verify an invalid startup candidate is visible and a corrected candidate
+/// activates.
 pub fn config_activation(ctx: &mut CaseCtx<'_>) -> Result<()> {
     let config_path = ctx.scratch_path("invalid_initial_config.luau");
     let mut session: Option<HotkiSession> = None;

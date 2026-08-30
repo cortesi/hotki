@@ -135,7 +135,8 @@ struct NotificationItem {
     anim_start_pos: Pos2,
     /// Animation start timestamp.
     anim_start_time: Instant,
-    /// If true, snap to target (used for newly inserted items so only existing ones animate).
+    /// If true, snap to target (used for newly inserted items so only existing
+    /// ones animate).
     snap_to_target: bool,
     /// Cached window size used to build the viewport.
     size: Vec2,
@@ -146,7 +147,8 @@ struct NotificationItem {
 }
 
 impl NotificationItem {
-    /// Advance the easing animation and return whether another repaint is needed.
+    /// Advance the easing animation and return whether another repaint is
+    /// needed.
     fn advance_animation(&mut self, now: Instant) -> bool {
         let progress = (now
             .saturating_duration_since(self.anim_start_time)
@@ -215,7 +217,8 @@ struct NotificationCardMeasure {
 }
 
 impl NotificationCardMeasure {
-    /// Minimal placeholder used before a card has been measured against a display.
+    /// Minimal placeholder used before a card has been measured against a
+    /// display.
     fn empty(width: f32) -> Self {
         let body_wrap_width = notification_body_wrap_width(width);
         Self {
@@ -236,7 +239,8 @@ impl NotificationCardMeasure {
     }
 }
 
-/// Measure one card using the same text wrapping, icon sizing, and padding as render.
+/// Measure one card using the same text wrapping, icon sizing, and padding as
+/// render.
 fn measure_notification_card(
     ctx: &Context,
     width: f32,
@@ -459,7 +463,8 @@ impl NotificationCenter {
         );
     }
 
-    /// Paint a measured label inside an explicit rect and record eguidev metadata.
+    /// Paint a measured label inside an explicit rect and record eguidev
+    /// metadata.
     fn paint_measured_label(
         ui: &mut egui::Ui,
         id: impl Into<String>,
@@ -488,7 +493,8 @@ impl NotificationCenter {
         response
     }
 
-    /// Paint the measured body region, clipping vertically when the card is too short.
+    /// Paint the measured body region, clipping vertically when the card is too
+    /// short.
     fn render_body(
         ui: &mut egui::Ui,
         id_base: &str,
@@ -566,7 +572,8 @@ impl NotificationCenter {
         self.items.insert(0, item);
     }
 
-    /// Trim live notifications to the configured maximum, hiding removed windows when possible.
+    /// Trim live notifications to the configured maximum, hiding removed
+    /// windows when possible.
     fn trim_live_items(&mut self, ctx: Option<&Context>) {
         while self.items.len() > self.max_items {
             let Some(mut item) = self.items.pop() else {
@@ -578,7 +585,8 @@ impl NotificationCenter {
         }
     }
 
-    /// Compute a notification card position from measured size and stack cursor.
+    /// Compute a notification card position from measured size and stack
+    /// cursor.
     fn placement_for(
         bounds: DisplayBounds,
         side: NotifyPos,
@@ -644,9 +652,9 @@ impl NotificationCenter {
 
         let bounds = self.metrics.display().active_bounds();
 
-        // Update animation and draw. Items that would fall below the bottom of the active
-        // screen are not rendered, but remain in the backlog and ephemeral list until
-        // they time out naturally.
+        // Update animation and draw. Items that would fall below the bottom of the
+        // active screen are not rendered, but remain in the backlog and
+        // ephemeral list until they time out naturally.
         for it in &mut self.items {
             if it.advance_animation(now) {
                 any_animating = true;
@@ -739,8 +747,9 @@ impl NotificationCenter {
         });
     }
 
-    /// Update sizing/placement/opacity config without clearing existing notifications.
-    /// Trims the stack if the new buffer is smaller than the current number of items.
+    /// Update sizing/placement/opacity config without clearing existing
+    /// notifications. Trims the stack if the new buffer is smaller than the
+    /// current number of items.
     pub fn reconfigure(&mut self, cfg: &NotifyConfig) {
         self.max_items = cfg.buffer;
         self.width = cfg.width;

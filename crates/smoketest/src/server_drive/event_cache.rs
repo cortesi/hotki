@@ -35,7 +35,8 @@ impl EventCache {
         }
     }
 
-    /// Clear server-derived cached state while preserving monotonic local event ids.
+    /// Clear server-derived cached state while preserving monotonic local event
+    /// ids.
     pub(super) fn clear(&mut self) {
         self.buffer.clear();
         self.latest_hud = None;
@@ -104,7 +105,8 @@ impl EventCache {
             .cloned()
     }
 
-    /// Check whether the cached HUD snapshot contains every requested identifier.
+    /// Check whether the cached HUD snapshot contains every requested
+    /// identifier.
     pub(super) fn hud_contains_all(&self, want: &BTreeSet<String>) -> bool {
         if want.is_empty() {
             return true;
@@ -136,7 +138,8 @@ impl EventCache {
     }
 }
 
-/// Return the current wall-clock timestamp in milliseconds since the Unix epoch.
+/// Return the current wall-clock timestamp in milliseconds since the Unix
+/// epoch.
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

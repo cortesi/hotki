@@ -22,7 +22,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
-/// Build Hotki's named font families without replacing normal proportional text.
+/// Build Hotki's named font families without replacing normal proportional
+/// text.
 fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
 

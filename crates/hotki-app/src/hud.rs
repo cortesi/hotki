@@ -103,7 +103,8 @@ impl HudPressState {
         }
     }
 
-    /// Remove entries that no longer have an eligible row in an applied snapshot.
+    /// Remove entries that no longer have an eligible row in an applied
+    /// snapshot.
     fn reconcile(&mut self, rows: &[HudRow], visible: bool, mode: Mode) {
         if !visible || !matches!(mode, Mode::Hud) {
             self.clear();
@@ -209,7 +210,8 @@ impl Hud {
         }
     }
 
-    /// Update the HUD style in-place and clear cached placement when it changes.
+    /// Update the HUD style in-place and clear cached placement when it
+    /// changes.
     pub fn set_style(&mut self, cfg: HudStyle) {
         if self.cfg != cfg {
             if !matches!(cfg.mode, Mode::Hud) {
@@ -425,8 +427,8 @@ impl Hud {
         self.viewport.hide(ctx);
     }
 
-    /// Update display metrics used for positioning and clear cached placement when the
-    /// active display changes.
+    /// Update display metrics used for positioning and clear cached placement
+    /// when the active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
         self.viewport.set_display_metrics(metrics);
     }
@@ -672,7 +674,8 @@ impl Hud {
         }
     }
 
-    /// Record script-visible HUD state that is not otherwise represented by text widgets.
+    /// Record script-visible HUD state that is not otherwise represented by
+    /// text widgets.
     fn render_metadata(&self, ui: &egui::Ui, model: &HudViewModel) {
         egui::Area::new(egui::Id::new("hud.metadata"))
             .fixed_pos(Pos2::ZERO)

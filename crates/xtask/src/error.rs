@@ -66,7 +66,8 @@ pub enum Error {
         path: PathBuf,
     },
 
-    /// The checked-in Eguidev launch command does not resolve to the app target.
+    /// The checked-in Eguidev launch command does not resolve to the app
+    /// target.
     #[error("eguidev launch target validation failed: {message}")]
     Edev {
         /// Human-readable validation failure.

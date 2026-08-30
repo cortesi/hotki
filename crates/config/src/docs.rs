@@ -31,7 +31,8 @@ pub fn luau_api_surface(surface: LuauApiSurface) -> String {
     }
 }
 
-/// Return the Luau API definitions, optionally filtered to matching definition blocks.
+/// Return the Luau API definitions, optionally filtered to matching definition
+/// blocks.
 pub fn luau_api_text(surface: LuauApiSurface, filter: Option<&str>) -> String {
     let source = luau_api_surface(surface);
     match filter.map(str::trim).filter(|value| !value.is_empty()) {

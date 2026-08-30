@@ -35,3 +35,6 @@ core-graphics = { workspace = true }
 core-foundation = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 socket2 = "0.6.4"
+
+[lib]
+doctest = false

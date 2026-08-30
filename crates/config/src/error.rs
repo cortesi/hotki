@@ -50,7 +50,8 @@ pub enum Error {
 }
 
 impl Error {
-    /// Render a human-friendly error message including location and an excerpt when available.
+    /// Render a human-friendly error message including location and an excerpt
+    /// when available.
     pub fn pretty(&self) -> String {
         match self {
             Self::Read { path, message } => match path {

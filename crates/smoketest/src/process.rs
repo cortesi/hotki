@@ -72,7 +72,8 @@ impl ManagedChild {
         Ok(())
     }
 
-    /// Wait up to `remaining` for exit, then force termination and reap the child.
+    /// Wait up to `remaining` for exit, then force termination and reap the
+    /// child.
     pub fn wait_with_budget(&mut self, remaining: Duration) -> Result<(ExitStatus, bool)> {
         let mut child = self.child.take().ok_or_else(|| {
             Error::InvalidState(format!("child process {} is no longer owned", self.pid))
@@ -145,7 +146,8 @@ pub fn spawn_managed(mut cmd: Command) -> Result<ManagedChild> {
     Ok(ManagedChild::new(child))
 }
 
-/// Ask Cargo to build the current hotki app and report its diagnostics directly.
+/// Ask Cargo to build the current hotki app and report its diagnostics
+/// directly.
 pub fn build_hotki_app() -> Result<()> {
     let mut command = Command::new("cargo");
     command.args(["build", "--locked", "-p", "hotki-app", "--bin", "hotki-app"]);

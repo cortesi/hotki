@@ -137,7 +137,8 @@ impl PermissionsHelp {
         self.tx_ctrl = Some(tx);
     }
 
-    /// Override real macOS permission status for deterministic devtools fixtures.
+    /// Override real macOS permission status for deterministic devtools
+    /// fixtures.
     pub fn set_status_override(&mut self, status: Option<PermissionsStatus>) {
         self.status_override = status;
         self.open_intents = PermissionOpenIntents::default();
@@ -183,7 +184,8 @@ impl PermissionsHelp {
         });
     }
 
-    /// Refresh status initially, after activation/override changes, or while help is visible.
+    /// Refresh status initially, after activation/override changes, or while
+    /// help is visible.
     fn observe_status(&mut self, app_active: bool, help_visible: bool) {
         let reactivated = app_active && !self.app_was_active;
         self.app_was_active = app_active;

@@ -291,7 +291,8 @@ impl RuntimeHealth {
         self.state = RuntimeState::QueuedReconnect { candidate };
     }
 
-    /// Record missing permissions while preserving whether the server remains live.
+    /// Record missing permissions while preserving whether the server remains
+    /// live.
     pub(crate) fn block_on_permissions(&mut self) {
         let live_runtime = self.server_connected();
         let active = self.active_config().map(Path::to_path_buf);

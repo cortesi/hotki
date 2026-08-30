@@ -250,7 +250,8 @@ fn native_app_name(dev_mcp: bool) -> &'static str {
     if dev_mcp { DEV_APP_NAME } else { APP_NAME }
 }
 
-/// Render the root config style once so UI-local startup notices match user configuration.
+/// Render the root config style once so UI-local startup notices match user
+/// configuration.
 fn initial_style_for_config(config_path: &Path) -> hotki_protocol::Style {
     match StyleResolver::from_config_path(config_path).and_then(|resolver| resolver.resolve()) {
         Ok(resolved) => resolved.style,

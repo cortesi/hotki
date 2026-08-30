@@ -22,7 +22,8 @@ use crate::{
     tmp_paths,
 };
 
-/// Internal flag passed to the smoketest binary to start the warn overlay helper.
+/// Internal flag passed to the smoketest binary to start the warn overlay
+/// helper.
 pub const WARN_OVERLAY_STANDALONE_FLAG: &str = "--hotki-internal-warn-overlay";
 
 /// Temp-file path that carries the active smoketest status message.
@@ -376,13 +377,15 @@ impl ApplicationHandler for OverlayApp {
     }
 }
 
-/// Borderless, always-on-top overlay window instructing the user to avoid typing.
-/// The window stays up until the process is killed by the parent orchestrator.
+/// Borderless, always-on-top overlay window instructing the user to avoid
+/// typing. The window stays up until the process is killed by the parent
+/// orchestrator.
 pub fn run_warn_overlay(
     status_path_arg: Option<PathBuf>,
     info_path_arg: Option<PathBuf>,
 ) -> Result<(), String> {
-    // Create winit event loop; do not explicitly activate the app to avoid stealing focus.
+    // Create winit event loop; do not explicitly activate the app to avoid stealing
+    // focus.
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = OverlayApp {
         window: None,

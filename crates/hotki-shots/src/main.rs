@@ -49,7 +49,8 @@ struct Cli {
     /// Hotki config to drive while capturing screenshots.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Total wall-clock budget in milliseconds for the complete capture session.
+    /// Total wall-clock budget in milliseconds for the complete capture
+    /// session.
     #[arg(long, default_value_t = 10_000)]
     timeout: u64,
     /// Enable logging for the spawned Hotki process.
@@ -67,7 +68,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Drive the screenshot fixture through semantic server events and PID-owned windows.
+/// Drive the screenshot fixture through semantic server events and PID-owned
+/// windows.
 fn run(cli: Cli) -> Result<()> {
     let config_path = resolve_config_path(cli.config.as_deref())?;
     fs::create_dir_all(&cli.dir)?;
@@ -143,7 +145,8 @@ fn resolve_config_path(config: Option<&Path>) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Activate the HUD and require both a visible protocol snapshot and PID-owned window.
+/// Activate the HUD and require both a visible protocol snapshot and PID-owned
+/// window.
 fn show_hud(session: &mut HotkiSession, windows: OwnedWindows, budget: RunBudget) -> Result<()> {
     let driver = session.driver_mut();
     driver
@@ -165,7 +168,8 @@ fn show_hud(session: &mut HotkiSession, windows: OwnedWindows, budget: RunBudget
     Ok(())
 }
 
-/// Capture one notification kind and wait for its explicit clear event and window removal.
+/// Capture one notification kind and wait for its explicit clear event and
+/// window removal.
 fn capture_notification(
     session: &mut HotkiSession,
     windows: OwnedWindows,
@@ -245,7 +249,8 @@ fn capture_selector(
     )
 }
 
-/// Inject one selector key and wait until the server publishes the expected query.
+/// Inject one selector key and wait until the server publishes the expected
+/// query.
 fn wait_for_selector_query(
     session: &mut HotkiSession,
     ident: &str,
@@ -273,7 +278,8 @@ fn wait_for_selector_query(
     Ok(())
 }
 
-/// Capture an exact PID-owned titled window to a deterministic gallery filename.
+/// Capture an exact PID-owned titled window to a deterministic gallery
+/// filename.
 fn capture_title(
     windows: OwnedWindows,
     title: &str,

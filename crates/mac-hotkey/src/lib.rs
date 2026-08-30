@@ -15,9 +15,9 @@
 //!   `true`, matching key down/up (including repeats) are swallowed by the tap
 //!   and not delivered to the focused app. While [`Manager::suspend`] is
 //!   active, new presses are not intercepted. A press intercepted before
-//!   suspension remains intercepted through repeat and release so it cannot leak
-//!   a partial keystroke. Some system-reserved shortcuts may not be interceptable.
-//!
+//!   suspension remains intercepted through repeat and release so it cannot
+//!   leak a partial keystroke. Some system-reserved shortcuts may not be
+//!   interceptable.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
@@ -126,8 +126,9 @@ pub(crate) fn test_register(inner: &mut Inner, hotkey: Chord, intercept: bool) -
 /// Global hotkey manager for macOS.
 ///
 /// A `Manager` runs a background event tap and matches configured hotkeys. It
-/// exposes a channel of [`Event`]s for consumption by your application. Dropping
-/// a `Manager` gracefully stops its background thread and cleans up the event tap.
+/// exposes a channel of [`Event`]s for consumption by your application.
+/// Dropping a `Manager` gracefully stops its background thread and cleans up
+/// the event tap.
 pub struct Manager {
     inner: Arc<ArcSwap<Inner>>,
     write_lock: Arc<Mutex<()>>,
@@ -295,12 +296,14 @@ impl Manager {
         n
     }
 
-    /// Temporarily suspends new event delivery until the returned guard is dropped.
+    /// Temporarily suspends new event delivery until the returned guard is
+    /// dropped.
     ///
-    /// Nested guards are supported. While suspended, new input is still processed
-    /// by the system without hotkey matching or delivery. A press accepted before
-    /// suspension retains its interception decision, suppresses repeat delivery,
-    /// and still emits its paired key-up so consumers can release logical state.
+    /// Nested guards are supported. While suspended, new input is still
+    /// processed by the system without hotkey matching or delivery. A press
+    /// accepted before suspension retains its interception decision,
+    /// suppresses repeat delivery, and still emits its paired key-up so
+    /// consumers can release logical state.
     pub fn suspend(&self) -> SuspendGuard {
         let _g = self.write_lock.lock();
         let mut inner = self.inner.load().as_ref().clone();
@@ -316,7 +319,8 @@ impl Manager {
         }
     }
 
-    /// Capture all keys (swallow those not bound) until the returned guard is dropped.
+    /// Capture all keys (swallow those not bound) until the returned guard is
+    /// dropped.
     ///
     /// This is intended to be used while the HUD is visible for a mode that
     /// requests capture semantics. Nested guards are supported.

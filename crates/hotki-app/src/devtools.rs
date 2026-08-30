@@ -118,7 +118,8 @@ pub struct PreparedDevMcp {
 }
 
 impl PreparedDevMcp {
-    /// Return whether an automation session owns macOS presentation for this run.
+    /// Return whether an automation session owns macOS presentation for this
+    /// run.
     pub fn automation_owns_presentation(&self) -> bool {
         self.enable_runtime
     }
@@ -200,7 +201,8 @@ pub fn value_anchor(ui: &mut egui::Ui, id: impl Into<String>, value: WidgetValue
     );
 }
 
-/// Stable fixture ids advertised through eguidev and dispatched by `FixtureBridge`.
+/// Stable fixture ids advertised through eguidev and dispatched by
+/// `FixtureBridge`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkiFixture {
     /// Baseline main-window readiness fixture.
@@ -567,7 +569,8 @@ fn app_ready(spec: FixtureSpec) -> FixtureSpec {
     spec.ready_value("app.ready", WidgetValue::Bool(true))
 }
 
-/// Add runtime/server preconditions and ready conditions common to server-driven fixtures.
+/// Add runtime/server preconditions and ready conditions common to
+/// server-driven fixtures.
 fn runtime_ready(spec: FixtureSpec) -> FixtureSpec {
     app_ready(spec)
         .precondition_value("app.server.connected", WidgetValue::Bool(true))
@@ -594,7 +597,8 @@ fn permission_status_spec(
         )
 }
 
-/// Build a hidden Permissions observer fixture with root health ready conditions.
+/// Build a hidden Permissions observer fixture with root health ready
+/// conditions.
 fn hidden_permission_status_spec(
     spec: FixtureSpec,
     accessibility: bool,
@@ -920,7 +924,8 @@ impl FixtureBridge {
         })
     }
 
-    /// Render one deterministic HUD variant through the production UI message path.
+    /// Render one deterministic HUD variant through the production UI message
+    /// path.
     fn send_fixture_hud(&self, mode: Mode, title: &str, rows: Vec<HudRow>) -> Result<(), String> {
         let mut style = Style::default();
         style.hud.mode = mode;
@@ -939,7 +944,8 @@ impl FixtureBridge {
         ))))
     }
 
-    /// Reconfigure notification placement through the production HUD update path.
+    /// Reconfigure notification placement through the production HUD update
+    /// path.
     fn reconfigure_notifications(
         &self,
         pos: NotifyPos,
@@ -1109,7 +1115,8 @@ fn tall_hud_chord(index: usize) -> &'static str {
 }
 
 #[cfg(feature = "devtools")]
-/// Attach the native eguidev runtime when requested by the hidden devtools flag.
+/// Attach the native eguidev runtime when requested by the hidden devtools
+/// flag.
 fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
     if enable_runtime {
         eguidev_runtime::attach(devmcp)
@@ -1119,7 +1126,8 @@ fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
 }
 
 #[cfg(not(feature = "devtools"))]
-/// Return the inert handle after the runtime request was validated during preparation.
+/// Return the inert handle after the runtime request was validated during
+/// preparation.
 fn attach_runtime(devmcp: DevMcp, enable_runtime: bool) -> DevMcp {
     debug_assert!(!enable_runtime);
     devmcp

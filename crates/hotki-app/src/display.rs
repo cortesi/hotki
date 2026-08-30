@@ -12,7 +12,8 @@ const DEFAULT_FRAME: DisplayFrame = DisplayFrame {
     height: 900.0,
 };
 
-/// Snapshot of display geometry used for HUD, notification, and main-window placement.
+/// Snapshot of display geometry used for HUD, notification, and main-window
+/// placement.
 #[derive(Clone, Debug, Default)]
 pub struct DisplayMetrics {
     /// Active display selected for placement, if any.
@@ -67,7 +68,8 @@ impl DisplayMetrics {
     }
 }
 
-/// Active display geometry plus the global top edge used for coordinate conversion.
+/// Active display geometry plus the global top edge used for coordinate
+/// conversion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DisplayBounds {
     /// Active display frame in bottom-left origin coordinates.
@@ -83,13 +85,15 @@ impl DisplayBounds {
         self.frame
     }
 
-    /// Convert a bottom-left origin `y` plus `height` into a top-left origin `y`.
+    /// Convert a bottom-left origin `y` plus `height` into a top-left origin
+    /// `y`.
     #[must_use]
     pub fn to_top_left_y(self, y_bottom: f32, height: f32) -> f32 {
         self.global_top - (y_bottom + height)
     }
 
-    /// Convert a top-left origin `y` plus `height` into a bottom-left origin `y`.
+    /// Convert a top-left origin `y` plus `height` into a bottom-left origin
+    /// `y`.
     #[must_use]
     pub fn to_bottom_left_y(self, y_top: f32, height: f32) -> f32 {
         self.global_top - y_top - height
@@ -196,7 +200,8 @@ impl DisplayBounds {
         }
     }
 
-    /// Return true if a top-left geometry is at least partly above the active display bottom.
+    /// Return true if a top-left geometry is at least partly above the active
+    /// display bottom.
     #[must_use]
     pub fn is_visible_vertically(self, geometry: WindowGeometry) -> bool {
         self.to_bottom_left_y(geometry.pos.y, geometry.size.y) >= self.frame.y

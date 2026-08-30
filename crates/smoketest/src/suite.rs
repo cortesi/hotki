@@ -227,7 +227,8 @@ pub struct CaseRunOutcome {
 }
 
 impl CaseRunOutcome {
-    /// Returns true when the case run produced neither primary nor cleanup errors.
+    /// Returns true when the case run produced neither primary nor cleanup
+    /// errors.
     fn is_success(&self) -> bool {
         self.primary_error.is_none()
     }
@@ -306,7 +307,8 @@ where
     }
 }
 
-/// Run every registered case in order, respecting the supplied runner configuration.
+/// Run every registered case in order, respecting the supplied runner
+/// configuration.
 pub fn run_all(config: &RunnerConfig<'_>) -> Result<()> {
     run_suite(config, CASES.iter().enumerate(), true)
 }
@@ -317,7 +319,8 @@ pub fn run_sequence(names: &[&str], config: &RunnerConfig<'_>) -> Result<()> {
     run_suite(config, ordered, false)
 }
 
-/// Resolve CLI-provided case names into registry entries paired with sequence order.
+/// Resolve CLI-provided case names into registry entries paired with sequence
+/// order.
 fn resolve_named_cases(names: &[&str]) -> Result<Vec<(usize, &'static CaseEntry)>> {
     names
         .iter()
@@ -370,7 +373,8 @@ fn execute_case(
     }
 }
 
-/// Emit a structured log entry summarizing configured budgets and observed durations for a case.
+/// Emit a structured log entry summarizing configured budgets and observed
+/// durations for a case.
 fn log_case_timing(entry: &CaseEntry, durations: &StageDurationsOptional, run_budget: RunBudget) {
     info!(
         target: LOG_TARGET,

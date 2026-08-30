@@ -2,13 +2,14 @@
 //!
 //! Why we use `core-graphics` for event taps:
 //! - Some wrappers expose a Rust callback like `FnMut(..) -> Option<CGEvent>`,
-//!   where returning `None` is meant to “swallow” the event. If the wrapper maps
-//!   `None` to the original `CGEventRef` (instead of a NULL), the OS still delivers
-//!   the keystroke. CoreGraphics only suppresses delivery if the tap returns NULL.
-//! - The `core-graphics` crate’s `CGEventTap` uses a `CallbackResult` where `Drop`
-//!   maps to a NULL `CGEventRef` at the C boundary, matching CoreGraphics’ contract.
-//!   We return `CallbackResult::Drop` for intercepted events so they never reach the
-//!   foreground app.
+//!   where returning `None` is meant to “swallow” the event. If the wrapper
+//!   maps `None` to the original `CGEventRef` (instead of a NULL), the OS still
+//!   delivers the keystroke. CoreGraphics only suppresses delivery if the tap
+//!   returns NULL.
+//! - The `core-graphics` crate’s `CGEventTap` uses a `CallbackResult` where
+//!   `Drop` maps to a NULL `CGEventRef` at the C boundary, matching
+//!   CoreGraphics’ contract. We return `CallbackResult::Drop` for intercepted
+//!   events so they never reach the foreground app.
 
 use std::{
     cell::RefCell,
@@ -333,7 +334,8 @@ pub fn run_event_loop(
 
 pub(crate) fn sample_platform() -> PlatformSample {
     // SAFETY: Carbon documents this parameterless query for process-wide use.
-    // `StatusStore` serializes every invocation because the function is not thread-safe.
+    // `StatusStore` serializes every invocation because the function is not
+    // thread-safe.
     let active = unsafe { IsSecureEventInputEnabled() != 0 };
     PlatformSample {
         secure_input: if active {

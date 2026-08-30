@@ -86,7 +86,8 @@ struct PendingSnapshots {
 }
 
 impl PendingSnapshots {
-    /// Replace the matching snapshot class, or return an ordered event unchanged.
+    /// Replace the matching snapshot class, or return an ordered event
+    /// unchanged.
     fn replace(&mut self, entry: SequencedUiEvent) -> SnapshotReplacement {
         let slot = match &entry.event {
             UiEvent::Message(MsgToUI::HudUpdate { .. }) => &mut self.hud,

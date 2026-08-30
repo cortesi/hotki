@@ -37,7 +37,8 @@ fn window_title_matches(window: &NSWindow, title_match: &str) -> bool {
     autoreleasepool(|pool| unsafe { title.to_str(pool) == title_match })
 }
 
-/// Apply full transparency and rounded corners to the window matching `title_match`.
+/// Apply full transparency and rounded corners to the window matching
+/// `title_match`.
 pub fn apply_transparent_rounded(title_match: &str, radius: f64) -> Result<()> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(Error::MainThread);

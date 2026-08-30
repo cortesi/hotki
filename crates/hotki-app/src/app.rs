@@ -56,7 +56,8 @@ pub enum UiCommand {
     HideLogs,
     /// Replace the complete UI-visible runtime health snapshot.
     SetRuntimeHealth(RuntimeHealth),
-    /// Override runtime health presentation for deterministic devtools fixtures.
+    /// Override runtime health presentation for deterministic devtools
+    /// fixtures.
     SetRuntimeHealthOverride(Option<Box<RuntimeHealth>>),
     /// Update the server binding identifiers visible to devtools.
     SetServerBindings(Vec<String>),
@@ -130,7 +131,8 @@ pub struct HotkiApp {
     pub(crate) fixture_runtime: FixtureRuntime,
     /// Complete health state shared by every normal UI surface.
     pub(crate) runtime_health: RuntimeHealth,
-    /// Fixture-owned health presentation, while deterministic UI state is active.
+    /// Fixture-owned health presentation, while deterministic UI state is
+    /// active.
     pub(crate) runtime_health_override: Option<Box<RuntimeHealth>>,
     /// Native About panel retained while it remains part of transient UI state.
     pub(crate) about_panel: Option<tray::AboutPanel>,
@@ -142,7 +144,8 @@ pub struct HotkiApp {
     pub(crate) input_health: InputHealth,
     /// App-local requests waiting for a specific UI state to be painted.
     pub(crate) harness_requests: Option<Receiver<PresentationRequest>>,
-    /// Presentation requests that have not yet survived one complete rendered frame.
+    /// Presentation requests that have not yet survived one complete rendered
+    /// frame.
     pending_presentations: Vec<PendingPresentation>,
     /// Monotonic UI frame counter used by presentation barriers.
     rendered_frame: u64,
@@ -347,7 +350,8 @@ impl HotkiApp {
         }
     }
 
-    /// Acknowledge barriers only after matching state has completed a prior rendered frame.
+    /// Acknowledge barriers only after matching state has completed a prior
+    /// rendered frame.
     fn acknowledge_presentations(&mut self, ctx: &Context) {
         self.rendered_frame = self.rendered_frame.saturating_add(1);
         let frame = self.rendered_frame;
@@ -374,7 +378,8 @@ impl HotkiApp {
         self.pending_presentations = pending;
     }
 
-    /// Test one harness expectation against current UI-thread presentation state.
+    /// Test one harness expectation against current UI-thread presentation
+    /// state.
     fn presentation_matches(&self, expectation: &PresentationExpectation) -> bool {
         match expectation {
             PresentationExpectation::Hud => self.hud.is_visible(),
@@ -506,7 +511,8 @@ impl HotkiApp {
         self.main_window.set_display_metrics(metrics);
     }
 
-    /// Apply or clear deterministic notification presentation owned by devtools.
+    /// Apply or clear deterministic notification presentation owned by
+    /// devtools.
     fn set_notification_presentation_override(
         &mut self,
         presentation: Option<Box<NotificationPresentation>>,
@@ -601,7 +607,8 @@ impl HotkiApp {
     }
 }
 
-/// Activate the live application resolved from a best-effort Secure Input owner PID.
+/// Activate the live application resolved from a best-effort Secure Input owner
+/// PID.
 fn activate_running_application(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;

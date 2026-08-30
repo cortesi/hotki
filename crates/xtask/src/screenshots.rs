@@ -196,7 +196,8 @@ fn read_png_dimensions(path: &Path) -> Result<(u32, u32)> {
     Ok((width, height))
 }
 
-/// Atomically replace the gallery, leaving the prior gallery at `stage` for cleanup.
+/// Atomically replace the gallery, leaving the prior gallery at `stage` for
+/// cleanup.
 fn publish_gallery(stage: &Path, gallery: &Path) -> Result<()> {
     if gallery.exists() {
         artifact::exchange_paths(stage, gallery)

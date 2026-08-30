@@ -41,7 +41,8 @@ pub enum MainWindowCommand {
     ShowLogs,
 }
 
-/// Session geometry with global outer position and egui inner size kept separate.
+/// Session geometry with global outer position and egui inner size kept
+/// separate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MainWindowGeometry {
     /// Decorated top-left position in global top-left coordinates.
@@ -410,7 +411,8 @@ impl MainWindow {
         });
     }
 
-    /// Render the state-derived leading command and stable trailing logs command.
+    /// Render the state-derived leading command and stable trailing logs
+    /// command.
     fn render_footer(&self, ui: &mut egui::Ui) -> Option<MainWindowCommand> {
         let mut command = None;
         container(ui, "main.footer", |ui| {

@@ -34,3 +34,6 @@ hotki-world = { path = "../hotki-world", features = ["test-utils"] }
 
 [package.metadata.cargo-machete]
 ignored = []
+
+[lib]
+doctest = false

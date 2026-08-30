@@ -27,7 +27,8 @@ use crate::{
 ///
 /// The installed AppKit binding permits these calls on background threads. Its
 /// running-application list is maintained by the process's main run loop, so
-/// callers rely on Hotki's active tao loop for launch and termination freshness.
+/// callers rely on Hotki's active tao loop for launch and termination
+/// freshness.
 pub(crate) fn resolve_running_application(app_name: &str) -> ApplicationResolution {
     let applications = NSWorkspace::sharedWorkspace().runningApplications();
     let applications: Vec<_> = applications
@@ -113,23 +114,30 @@ pub(crate) fn capture_platform_snapshot() -> PlatformSnapshot {
 fn active_window(displays: &[DisplayFrame]) -> Option<PlatformWindow> {
     let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
     let arr: CFArray = copy_window_info(options, kCGNullWindowID)?;
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_layer = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_owner_pid = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_owner_name = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerName) };
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_name = unsafe { CFString::wrap_under_get_rule(kCGWindowName) };
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_number = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
-    // SAFETY: CoreGraphics exposes these constants as process-lifetime CFStringRefs.
+    // SAFETY: CoreGraphics exposes these constants as process-lifetime
+    // CFStringRefs.
     let key_bounds = unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) };
 
     for raw in arr.iter() {
         let dict_ptr = *raw;
-        // SAFETY: `copy_window_info` returns an array of window dictionaries. Each element is
-        // retained by the array for the duration of this loop, and we only wrap it for reads.
+        // SAFETY: `copy_window_info` returns an array of window dictionaries. Each
+        // element is retained by the array for the duration of this loop, and
+        // we only wrap it for reads.
         let dict: CFDictionary<CFString, CFType> =
             unsafe { CFDictionary::wrap_under_get_rule(dict_ptr as _) };
         let layer = dict_value_i32(&dict, &key_layer).unwrap_or(1);
@@ -175,8 +183,9 @@ fn dict_value_u32(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Opti
 }
 
 fn dict_value_rect(dict: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<CGRect> {
-    // SAFETY: CoreGraphics stores the bounds value as a dictionary for `kCGWindowBounds`.
-    // The value is owned by `dict`, which remains alive while we read its numeric fields.
+    // SAFETY: CoreGraphics stores the bounds value as a dictionary for
+    // `kCGWindowBounds`. The value is owned by `dict`, which remains alive
+    // while we read its numeric fields.
     let bounds_dict: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_get_rule(dict.find(key)?.as_CFTypeRef() as _) };
     let x = dict_value_f32(&bounds_dict, "X")?;

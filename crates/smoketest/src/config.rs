@@ -42,7 +42,8 @@ impl RunBudget {
         self.deadline.checked_duration_since(Instant::now())
     }
 
-    /// Remaining whole-millisecond allowance, rounded up to keep sub-millisecond time usable.
+    /// Remaining whole-millisecond allowance, rounded up to keep
+    /// sub-millisecond time usable.
     pub fn remaining_ms(self) -> Option<u64> {
         let remaining = self.remaining()?;
         if remaining.is_zero() {

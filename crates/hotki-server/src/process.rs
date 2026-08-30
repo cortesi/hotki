@@ -155,7 +155,8 @@ impl ProcessConfig {
         }
     }
 
-    /// Replace any existing `--socket <value>` pair with the supplied socket path.
+    /// Replace any existing `--socket <value>` pair with the supplied socket
+    /// path.
     pub(crate) fn set_socket_path(&mut self, socket_path: &str) {
         replace_flag_pair(&mut self.args, SOCKET_FLAG, socket_path);
     }
@@ -165,7 +166,8 @@ impl ProcessConfig {
         replace_flag_pair(&mut self.args, PARENT_PID_FLAG, &pid.to_string());
     }
 
-    /// Replace any existing `--log-filter <value>` pair with the supplied filter spec.
+    /// Replace any existing `--log-filter <value>` pair with the supplied
+    /// filter spec.
     pub(crate) fn set_log_filter(&mut self, filter: &str) {
         replace_flag_pair(&mut self.args, LOG_FILTER_FLAG, filter);
     }
@@ -246,7 +248,8 @@ impl ServerProcess {
         Ok(())
     }
 
-    /// Poll for process exit without blocking and update the tracked running state.
+    /// Poll for process exit without blocking and update the tracked running
+    /// state.
     pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         let Some(child) = self.child.as_mut() else {
             self.is_running.store(false, Ordering::SeqCst);

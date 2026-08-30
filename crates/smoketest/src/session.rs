@@ -142,17 +142,20 @@ impl HotkiSession {
         OwnedWindows::new(self.pid())
     }
 
-    /// Wait until the app confirms that a visible HUD state survived a rendered frame.
+    /// Wait until the app confirms that a visible HUD state survived a rendered
+    /// frame.
     pub fn wait_for_hud_frame(&self) -> Result<()> {
         self.request_control("present hud")
     }
 
-    /// Wait until the app confirms that this selector query survived a rendered frame.
+    /// Wait until the app confirms that this selector query survived a rendered
+    /// frame.
     pub fn wait_for_selector_frame(&self, query: &str) -> Result<()> {
         self.request_control(&format!("present selector {query}"))
     }
 
-    /// Wait until the app confirms that this notification kind survived a rendered frame.
+    /// Wait until the app confirms that this notification kind survived a
+    /// rendered frame.
     pub fn wait_for_notification_frame(&self, kind: NotifyKind) -> Result<()> {
         let kind = match kind {
             NotifyKind::Info => "info",
@@ -168,7 +171,8 @@ impl HotkiSession {
         self.request_control(&format!("present notification {kind}"))
     }
 
-    /// Request graceful app-local shutdown and wait for the owned process to exit.
+    /// Request graceful app-local shutdown and wait for the owned process to
+    /// exit.
     pub fn shutdown(&mut self) -> Result<()> {
         if self.cleaned_up {
             return Ok(());
@@ -195,7 +199,8 @@ impl HotkiSession {
         Ok(())
     }
 
-    /// Send one private app-control command within the session's remaining budget.
+    /// Send one private app-control command within the session's remaining
+    /// budget.
     fn request_control(&self, command: &str) -> Result<()> {
         let Some(remaining) = self.run_budget.remaining() else {
             return Err(self.budget_exhausted(command));
@@ -226,7 +231,8 @@ impl HotkiSession {
         Ok(())
     }
 
-    /// Describe exhaustion of the explicit session budget at one operation boundary.
+    /// Describe exhaustion of the explicit session budget at one operation
+    /// boundary.
     fn budget_exhausted(&self, operation: &str) -> Error {
         Error::InvalidState(format!(
             "run budget exhausted during {operation} ({} ms total)",

@@ -15,7 +15,8 @@ impl OverlayMetrics {
         &self.display
     }
 
-    /// Replace the cached display metrics and return true when the active frame changed.
+    /// Replace the cached display metrics and return true when the active frame
+    /// changed.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) -> bool {
         let changed = self.display.active_frame() != metrics.active_frame();
         self.display = metrics;
@@ -69,7 +70,8 @@ impl OverlayWindow {
         ctx.send_viewport_cmd_to(self.id, ViewportCommand::Visible(false));
     }
 
-    /// Update cached display metrics and return true when the active frame changed.
+    /// Update cached display metrics and return true when the active frame
+    /// changed.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) -> bool {
         let changed = self.metrics.set_display_metrics(metrics);
         if changed {

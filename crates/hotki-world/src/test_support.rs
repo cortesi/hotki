@@ -7,7 +7,8 @@ use tokio::runtime::Builder;
 
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-/// Run an async test body on a dedicated multi-threaded Tokio runtime and shut it down promptly.
+/// Run an async test body on a dedicated multi-threaded Tokio runtime and shut
+/// it down promptly.
 pub fn run_async_test<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,

@@ -27,7 +27,8 @@ fn to_variant(name: &str) -> Ident {
         return format_ident!("Digit{}", d);
     }
 
-    // CamelCase join, preserving inner casing of each part except ensuring first char uppercase
+    // CamelCase join, preserving inner casing of each part except ensuring first
+    // char uppercase
     let mut out = String::new();
     for part in parts {
         let mut chars = part.chars();
@@ -104,7 +105,8 @@ fn generate_key_rs(crate_dir: &Path) -> Result<PathBuf> {
     let src_dir = crate_dir.join("src");
     let mut entries = read_keycodes(&data_dir)?;
 
-    // Ensure deterministic ordering for all generated items: sort by code, then name.
+    // Ensure deterministic ordering for all generated items: sort by code, then
+    // name.
     entries.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
 
     let mut first_by_code: BTreeMap<u16, String> = BTreeMap::new();

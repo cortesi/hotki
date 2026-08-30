@@ -30,8 +30,8 @@ unsafe extern "C" {
 /// Returns `true` when the process is trusted for accessibility (AX API
 /// access), and `false` otherwise.
 pub fn accessibility_ok() -> bool {
-    // SAFETY: `AXIsProcessTrusted` is a side-effect-free ApplicationServices query that
-    // takes no pointers and returns the current process trust state.
+    // SAFETY: `AXIsProcessTrusted` is a side-effect-free ApplicationServices query
+    // that takes no pointers and returns the current process trust state.
     unsafe { AXIsProcessTrusted() }
 }
 
@@ -40,8 +40,9 @@ pub fn accessibility_ok() -> bool {
 /// Returns `true` when the process is allowed to listen for keyboard events
 /// (CGEvent tap), and `false` otherwise.
 pub fn input_monitoring_ok() -> bool {
-    // SAFETY: `CGPreflightListenEventAccess` is a side-effect-free ApplicationServices
-    // preflight query that takes no pointers and does not prompt the user.
+    // SAFETY: `CGPreflightListenEventAccess` is a side-effect-free
+    // ApplicationServices preflight query that takes no pointers and does not
+    // prompt the user.
     unsafe { CGPreflightListenEventAccess() }
 }
 
@@ -51,8 +52,9 @@ pub fn input_monitoring_ok() -> bool {
 /// CoreGraphics APIs that require Screen Recording permission (e.g., window
 /// titles in `CGWindowListCopyWindowInfo`), and `false` otherwise.
 pub fn screen_recording_ok() -> bool {
-    // SAFETY: `CGPreflightScreenCaptureAccess` is a side-effect-free ApplicationServices
-    // preflight query that takes no pointers and does not prompt the user.
+    // SAFETY: `CGPreflightScreenCaptureAccess` is a side-effect-free
+    // ApplicationServices preflight query that takes no pointers and does not
+    // prompt the user.
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 

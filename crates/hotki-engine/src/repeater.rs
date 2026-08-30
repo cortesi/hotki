@@ -296,7 +296,8 @@ async fn run_process(
     }
 }
 
-/// Clamp bounds and defaults for repeat timings (applies to relay + shell repeaters)
+/// Clamp bounds and defaults for repeat timings (applies to relay + shell
+/// repeaters)
 const REPEAT_MIN_INITIAL_DELAY_MS: u64 = 100;
 const REPEAT_MAX_INITIAL_DELAY_MS: u64 = 1000;
 const REPEAT_MIN_INTERVAL_MS: u64 = 100;
@@ -370,11 +371,13 @@ pub struct RepeatSpec {
 /// Per-id state to serialize process execution and coalesce repeats.
 ///
 /// Semantics:
-/// - The first process run for an id starts immediately and sets `running = true`.
-/// - While `running` is true, any scheduled repeat ticks are skipped (coalesced).
-/// - When the first run (or any repeat run) completes, `running` is set back to false,
-///   allowing the next tick to execute. This guarantees that at most one process
-///   is in-flight per id, and that the first blocking run effectively
+/// - The first process run for an id starts immediately and sets `running =
+///   true`.
+/// - While `running` is true, any scheduled repeat ticks are skipped
+///   (coalesced).
+/// - When the first run (or any repeat run) completes, `running` is set back to
+///   false, allowing the next tick to execute. This guarantees that at most one
+///   process is in-flight per id, and that the first blocking run effectively
 ///   defers the start of repeating until it finishes.
 struct ProcessRunState {
     /// Async mutex to serialize execution across initial run and repeats.
@@ -583,7 +586,8 @@ impl Repeater {
         *self.on_relay_repeat.lock() = Some(cb);
     }
 
-    /// Notify relay repeat instrumentation for an externally driven repeat loop.
+    /// Notify relay repeat instrumentation for an externally driven repeat
+    /// loop.
     pub(crate) fn note_relay_repeat(&self, id: &str) {
         if let Some(cb) = self.on_relay_repeat.lock().as_ref() {
             cb(id);
@@ -689,7 +693,8 @@ impl Repeater {
         self.ticker.is_active(id)
     }
 
-    /// Stop held process repeats while preserving independent one-shot commands.
+    /// Stop held process repeats while preserving independent one-shot
+    /// commands.
     pub async fn stop_repeats_async(&self) {
         self.ticker.clear_async().await;
         let states = {
@@ -1133,7 +1138,8 @@ mod tests {
             "initial shell run should complete"
         );
 
-        // Advance far enough for the next repeat ticks to execute after initial completion.
+        // Advance far enough for the next repeat ticks to execute after initial
+        // completion.
         advance(Duration::from_millis(250)).await;
         let real_start_repeat = Instant::now();
         while process_count.load(AtomicOrdering::SeqCst) == 0

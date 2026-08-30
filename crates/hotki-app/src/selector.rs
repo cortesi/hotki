@@ -64,7 +64,8 @@ pub struct SelectorWindow {
     style: SelectorStyle,
     /// Current selector snapshot, when visible.
     state: Option<SelectorSnapshot>,
-    /// Whether NSWindow style has been applied for the current selector session.
+    /// Whether NSWindow style has been applied for the current selector
+    /// session.
     window_configured: bool,
 }
 
@@ -113,15 +114,16 @@ impl SelectorWindow {
         }
     }
 
-    /// Update selector style in-place and clear cached placement when it changes.
+    /// Update selector style in-place and clear cached placement when it
+    /// changes.
     pub fn set_style(&mut self, style: SelectorStyle) {
         if self.style != style {
             self.style = style;
         }
     }
 
-    /// Update display metrics used for positioning and clear cached placement when the
-    /// active display changes.
+    /// Update display metrics used for positioning and clear cached placement
+    /// when the active display changes.
     pub fn set_display_metrics(&mut self, metrics: DisplayMetrics) {
         self.viewport.set_display_metrics(metrics);
     }

@@ -20,9 +20,12 @@ impl Chord {
     /// Parses a chord specification of the form "shift+opt+k".
     ///
     /// - Case-insensitive for both modifiers and the key.
-    /// - Components are separated by "+"; the last component is always the key spec.
-    /// - Modifiers may use aliases handled by `Modifier::from_spec` (e.g., cmd/ctrl/opt/alt/shift).
-    /// - The key accepts the full `Key::from_spec` space (digits, punctuation, aliases, or names).
+    /// - Components are separated by "+"; the last component is always the key
+    ///   spec.
+    /// - Modifiers may use aliases handled by `Modifier::from_spec` (e.g.,
+    ///   cmd/ctrl/opt/alt/shift).
+    /// - The key accepts the full `Key::from_spec` space (digits, punctuation,
+    ///   aliases, or names).
     pub fn parse(s: &str) -> Option<Self> {
         let mut buf: Vec<&str> = s.split('+').collect();
         let key_raw = buf.pop()?; // keep raw to allow literal space

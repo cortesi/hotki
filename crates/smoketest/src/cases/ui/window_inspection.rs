@@ -69,7 +69,8 @@ impl WindowSnapshot {
         self.y + self.height
     }
 
-    /// Capture this exact window into a PNG file within the remaining run budget.
+    /// Capture this exact window into a PNG file within the remaining run
+    /// budget.
     pub fn capture_png(&self, path: &Path, remaining: Duration) -> Result<()> {
         let current = self.require_current()?;
         let mut command = Command::new("screencapture");
@@ -115,7 +116,8 @@ impl WindowSnapshot {
         Ok(())
     }
 
-    /// Re-read CoreGraphics state and require this PID/title/window identity to remain current.
+    /// Re-read CoreGraphics state and require this PID/title/window identity to
+    /// remain current.
     fn require_current(&self) -> Result<Self> {
         collect_hotki_windows(self.pid)?
             .into_iter()
@@ -204,7 +206,8 @@ impl OwnedWindows {
     }
 }
 
-/// Lightweight description of a display's bounds in CoreGraphics global coordinates.
+/// Lightweight description of a display's bounds in CoreGraphics global
+/// coordinates.
 #[derive(Clone, Copy, Debug)]
 pub struct DisplayFrame {
     /// Display identifier.
@@ -358,7 +361,8 @@ impl DisplayFrame {
     }
 }
 
-/// Resolve a display's AppKit usable frame in CoreGraphics top-left coordinates.
+/// Resolve a display's AppKit usable frame in CoreGraphics top-left
+/// coordinates.
 fn visible_frame_for_display(display: &DisplayFrame) -> Option<(f32, f32)> {
     let mtm = MainThreadMarker::new()?;
     let screens = NSScreen::screens(mtm).to_vec();
@@ -393,7 +397,8 @@ fn visible_frame_for_display(display: &DisplayFrame) -> Option<(f32, f32)> {
         .map(|(_, visible)| visible)
 }
 
-/// Match CoreGraphics display bounds to an AppKit screen frame after coordinate conversion.
+/// Match CoreGraphics display bounds to an AppKit screen frame after coordinate
+/// conversion.
 fn same_display_frame(a: &DisplayFrame, b: &DisplayFrame) -> bool {
     const FRAME_SLOP_PX: f32 = 1.0;
     (a.x - b.x).abs() <= FRAME_SLOP_PX

@@ -22,3 +22,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "regis
 hotki-protocol = { path = "../hotki-protocol" }
 tokio = { workspace = true, features = ["sync"] }
 parking_lot = { workspace = true }
+
+[lib]
+doctest = false

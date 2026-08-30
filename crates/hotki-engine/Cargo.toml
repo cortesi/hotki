@@ -24,3 +24,6 @@ libc.workspace = true
 
 [dev-dependencies]
 hotki-world = { path = "../hotki-world", features = ["test-utils"] }
+
+[lib]
+doctest = false

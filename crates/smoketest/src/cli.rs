@@ -25,7 +25,8 @@ pub struct Cli {
     #[arg(long)]
     pub no_fail_fast: bool,
 
-    /// Optional short info text to show in the warning overlay under the test title
+    /// Optional short info text to show in the warning overlay under the test
+    /// title
     #[arg(long)]
     pub info: Option<String>,
 

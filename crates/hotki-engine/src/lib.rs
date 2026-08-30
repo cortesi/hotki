@@ -21,8 +21,8 @@
 //!   bindings; other actions operate on the event-maintained focus cache.
 //! - A transient mode-stack session pins its opening window while live focus
 //!   continues updating for the next session.
-//! - Early startup policy: if the world snapshot is empty, focus-driven
-//!   actions are a no-op with a debug log.
+//! - Early startup policy: if the world snapshot is empty, focus-driven actions
+//!   are a no-op with a debug log.
 //! - Focused relays use the global HID path. Application-name relays resolve
 //!   once at gesture start and remain pinned through repeat and key-up.
 //!
@@ -30,18 +30,20 @@
 //! - The engine uses a handful of locks. To avoid deadlocks and priority
 //!   inversions, follow this order when multiple guards are needed:
 //!   1) `config_transaction`, 2) `config: Mutex<Option<ConfigRuntime>>`,
-//!   3) `runtime: Mutex<RuntimeState>`, 4) `binding_manager: Mutex<KeyBindingManager>`.
-//!      Avoid holding a write guard across any call that can block or `await`.
-//! - `focus_ctx` uses `parking_lot::Mutex` for the event-maintained focus cache.
-//!   Never hold this guard across an `.await`. Clone/copy values out and drop
-//!   the guard before awaiting.
-//! - Service calls (`world`, `repeater`, `relay`, `notifier`) must
-//!   not be awaited while any of the async engine mutexes are held. Acquire,
-//!   compute, drop guards, then perform async work.
-//! - Config installation prepares a candidate before taking active-state locks, then
-//!   commits config, runtime, bindings, path, and UI snapshot together.
-//! - Selector opening resolves items under `config`, drops that guard, installs selector
-//!   state under `runtime`, then publishes UI after guards are released.
+//!   3) `runtime: Mutex<RuntimeState>`, 4) `binding_manager:
+//!      Mutex<KeyBindingManager>`. Avoid holding a write guard across any call
+//!      that can block or `await`.
+//! - `focus_ctx` uses `parking_lot::Mutex` for the event-maintained focus
+//!   cache. Never hold this guard across an `.await`. Clone/copy values out and
+//!   drop the guard before awaiting.
+//! - Service calls (`world`, `repeater`, `relay`, `notifier`) must not be
+//!   awaited while any of the async engine mutexes are held. Acquire, compute,
+//!   drop guards, then perform async work.
+//! - Config installation prepares a candidate before taking active-state locks,
+//!   then commits config, runtime, bindings, path, and UI snapshot together.
+//! - Selector opening resolves items under `config`, drops that guard, installs
+//!   selector state under `runtime`, then publishes UI after guards are
+//!   released.
 #![warn(unsafe_op_in_unsafe_fn)]
 
 #[cfg(test)]
@@ -83,7 +85,8 @@ pub(crate) enum DispatchResult {
     AutoExit,
     /// Stay in the current mode without navigation.
     Stay,
-    /// Navigation changed HUD visibility or stack state without entering a child mode.
+    /// Navigation changed HUD visibility or stack state without entering a
+    /// child mode.
     Navigation,
     /// Dispatch entered a child mode.
     EnteredMode,
@@ -97,7 +100,8 @@ impl DispatchResult {
         matches!(self, Self::AutoExit)
     }
 
-    /// Apply an explicit stay request without masking stronger navigation outcomes.
+    /// Apply an explicit stay request without masking stronger navigation
+    /// outcomes.
     pub(crate) fn with_stay(self, stay: bool) -> Self {
         if stay && self.should_auto_exit() {
             Self::Stay
@@ -115,7 +119,8 @@ impl DispatchResult {
         }
     }
 
-    /// Ordering used when several effects request different post-dispatch behavior.
+    /// Ordering used when several effects request different post-dispatch
+    /// behavior.
     fn priority(self) -> u8 {
         match self {
             Self::AutoExit => 0,
@@ -247,16 +252,18 @@ impl EngineLifecycleHandle {
     }
 }
 
-/// Engine coordinates hotkey state, focus context, relays, notifications and repeats.
+/// Engine coordinates hotkey state, focus context, relays, notifications and
+/// repeats.
 ///
 /// Construct via [`Engine::new`], then feed focus events and hotkey events via
-/// [`Engine::dispatch`]. Use [`Engine::set_config_path`] to install a configuration.
+/// [`Engine::dispatch`]. Use [`Engine::set_config_path`] to install a
+/// configuration.
 ///
 /// # Focus Context
 ///
 /// The engine caches world focus snapshots in `focus_ctx`.
-/// This uses `parking_lot::Mutex` for fast, synchronous focus reads. Do not hold
-/// this guard across `.await` points.
+/// This uses `parking_lot::Mutex` for fast, synchronous focus reads. Do not
+/// hold this guard across `.await` points.
 #[derive(Clone)]
 pub struct Engine {
     /// Owner for background work spawned by this engine.
@@ -267,7 +274,8 @@ pub struct Engine {
     binding_manager: Arc<tokio::sync::Mutex<KeyBindingManager>>,
     /// Key state tracker (tracks which keys are held down)
     key_tracker: KeyStateTracker,
-    /// Binding identities retained until their matching registration ID is released.
+    /// Binding identities retained until their matching registration ID is
+    /// released.
     held_bindings: Arc<Mutex<HashMap<u32, HeldBinding>>>,
     /// Configuration
     config: Arc<tokio::sync::Mutex<Option<dyn_engine::ConfigRuntime>>>,
@@ -389,8 +397,9 @@ impl Engine {
 
     /// Load config from `path` into runtime state.
     ///
-    /// `ConfigInstall::ResetFocus` also resets HUD visibility and focus for a fresh install.
-    /// `ConfigInstall::KeepFocus` only replaces the mode stack root (config reload).
+    /// `ConfigInstall::ResetFocus` also resets HUD visibility and focus for a
+    /// fresh install. `ConfigInstall::KeepFocus` only replaces the mode
+    /// stack root (config reload).
     pub(crate) async fn install_config(&self, path: &Path, mode: ConfigInstall) -> Result<()> {
         let _transaction = self.config_transaction.lock().await;
         let prepared = self.prepare_config(path, mode).await?;
@@ -402,7 +411,8 @@ impl Engine {
         self.runtime.lock().await.depth()
     }
 
-    /// Get a read-only snapshot of currently bound keys as (identifier, chord) pairs.
+    /// Get a read-only snapshot of currently bound keys as (identifier, chord)
+    /// pairs.
     pub async fn bindings_snapshot(&self) -> Vec<(String, mac_keycode::Chord)> {
         self.binding_manager.lock().await.bindings_snapshot()
     }

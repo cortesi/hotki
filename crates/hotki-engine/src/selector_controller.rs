@@ -8,7 +8,8 @@ use crate::{
     selector::{SelectorEvent, SelectorSelection, SelectorState},
 };
 
-/// Selector close request carrying only the data needed to run terminal handlers.
+/// Selector close request carrying only the data needed to run terminal
+/// handlers.
 #[derive(Debug)]
 struct SelectorClose {
     /// Terminal selector action.
@@ -52,7 +53,8 @@ impl<'a> SelectorController<'a> {
         Self { engine }
     }
 
-    /// Resolve selector items, install selector state, and publish the initial snapshot.
+    /// Resolve selector items, install selector state, and publish the initial
+    /// snapshot.
     pub(crate) async fn open(
         &self,
         config: dyn_engine::SelectorConfig,
@@ -218,7 +220,8 @@ fn execute_selector_close(
     }
 }
 
-/// Empty handler result used when a selector terminal action has no handler work.
+/// Empty handler result used when a selector terminal action has no handler
+/// work.
 fn selector_noop_result() -> dyn_engine::HandlerResult {
     dyn_engine::HandlerResult {
         effects: Vec::new(),

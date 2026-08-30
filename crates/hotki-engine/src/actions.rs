@@ -311,7 +311,8 @@ impl Engine {
         }
     }
 
-    /// Apply one relay effect, resolving a process target only at gesture start.
+    /// Apply one relay effect, resolving a process target only at gesture
+    /// start.
     async fn apply_relay(
         &self,
         identifier: &str,

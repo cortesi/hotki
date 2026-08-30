@@ -1,5 +1,5 @@
-//! Background UI runtime glue: connects to the server, forwards events to the UI,
-//! and applies configuration/overrides.
+//! Background UI runtime glue: connects to the server, forwards events to the
+//! UI, and applies configuration/overrides.
 
 use std::{path::Path, thread};
 
@@ -42,7 +42,8 @@ pub enum ControlMsg {
     PermissionsChanged(PermissionObservation),
 }
 
-/// Start background key runtime and server connection driver on a dedicated thread.
+/// Start background key runtime and server connection driver on a dedicated
+/// thread.
 pub fn spawn_key_runtime(
     config_path: &Path,
     tx_keys: &UiDeliveryTx,

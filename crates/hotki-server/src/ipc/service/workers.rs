@@ -19,7 +19,8 @@ use tracing::trace;
 const DEFAULT_QUEUE_CAPACITY: usize = 64;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Runtime handles needed by a worker task to lazily initialize and dispatch through the engine.
+/// Runtime handles needed by a worker task to lazily initialize and dispatch
+/// through the engine.
 #[derive(Clone)]
 pub(super) struct WorkerRuntime {
     engine: Arc<OnceCell<Engine>>,

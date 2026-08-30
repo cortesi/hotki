@@ -7,6 +7,7 @@ license = "MIT"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 
 [lib]
+doctest = false
 name = "mac_hotkey"
 path = "src/lib.rs"
 

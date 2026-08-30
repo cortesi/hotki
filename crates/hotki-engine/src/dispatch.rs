@@ -149,8 +149,9 @@ impl Engine {
         }
     }
 
-    /// Dispatch a hotkey event by id, handling all lookups and callback execution internally.
-    /// This reduces the server's knowledge about engine internals and avoids repeated async locking.
+    /// Dispatch a hotkey event by id, handling all lookups and callback
+    /// execution internally. This reduces the server's knowledge about
+    /// engine internals and avoids repeated async locking.
     pub async fn dispatch(&self, id: u32, kind: mac_hotkey::EventKind, repeat: bool) -> Result<()> {
         let start = Instant::now();
         let binding = match self.resolve_dispatch_binding(id, kind, repeat).await {
@@ -202,10 +203,12 @@ impl Engine {
         Some(binding)
     }
 
-    /// Inject a hotkey event by identifier using the event-maintained focus cache.
+    /// Inject a hotkey event by identifier using the event-maintained focus
+    /// cache.
     ///
-    /// Synthetic callers do not wait for a platform focus capture. Physical input
-    /// should use [`Self::dispatch`], which establishes a fresh focus generation.
+    /// Synthetic callers do not wait for a platform focus capture. Physical
+    /// input should use [`Self::dispatch`], which establishes a fresh focus
+    /// generation.
     pub async fn dispatch_injected(
         &self,
         ident: &str,
@@ -289,7 +292,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Resolve a registration id for an identifier (e.g., "cmd+k"). Intended for diagnostics/tests.
+    /// Resolve a registration id for an identifier (e.g., "cmd+k"). Intended
+    /// for diagnostics/tests.
     pub async fn resolve_id_for_ident(&self, ident: &str) -> Option<u32> {
         self.binding_manager.lock().await.id_for_ident(ident)
     }

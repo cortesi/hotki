@@ -55,7 +55,8 @@ impl EventHub {
         self.sender.send(event).ok();
     }
 
-    /// Await the next event until the given deadline, returning `None` on timeout or close.
+    /// Await the next event until the given deadline, returning `None` on
+    /// timeout or close.
     pub(crate) async fn next_event_until(
         &self,
         cursor: &mut EventCursor,

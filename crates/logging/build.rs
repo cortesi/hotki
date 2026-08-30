@@ -1,4 +1,5 @@
-//! Build script that derives the workspace crate target list for logging filters.
+//! Build script that derives the workspace crate target list for logging
+//! filters.
 
 use std::{
     env,

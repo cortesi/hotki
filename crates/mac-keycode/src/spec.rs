@@ -1,7 +1,7 @@
 use crate::Key;
 
-// Central mapping between enum variants and spec strings for shorthand/non-name specs.
-// Extend this list to cover more punctuation or shorthand.
+// Central mapping between enum variants and spec strings for shorthand/non-name
+// specs. Extend this list to cover more punctuation or shorthand.
 macro_rules! key_spec_map {
     ($m:ident, $arg:tt) => {
         $m! { $arg,
@@ -128,11 +128,12 @@ impl Key {
     ///
     /// Spec parsing differs from `from_name` as follows:
     /// - Accepts enum variant names in a case-insensitive manner.
-    /// - Accepts symbol shorthands for digits and punctuation, and space.
-    ///   This includes: 0–9, `-`, `=`, `[`, `]`, `\\`, `;`, `'`, `,`, `.`, `/`, and `` ` ``.
-    /// - Accepts common alias words (case-insensitive), including: esc, enter, ret,
-    ///   cmd, ctrl, opt, alt, caps, fn, left, right, up, down, pgup, pgdn, menu, kpenter.
-    ///   Returns `None` if no mapping matches.
+    /// - Accepts symbol shorthands for digits and punctuation, and space. This
+    ///   includes: 0–9, `-`, `=`, `[`, `]`, `\\`, `;`, `'`, `,`, `.`, `/`, and
+    ///   `` ` ``.
+    /// - Accepts common alias words (case-insensitive), including: esc, enter,
+    ///   ret, cmd, ctrl, opt, alt, caps, fn, left, right, up, down, pgup, pgdn,
+    ///   menu, kpenter. Returns `None` if no mapping matches.
     pub fn from_spec(s: &str) -> Option<Self> {
         from_spec(s)
     }
@@ -140,8 +141,10 @@ impl Key {
     /// Returns the key specification string for this `Key`.
     ///
     /// Spec emission differs from `name()` as follows:
-    /// - For digits, punctuation, and space, returns the symbol form (e.g., comma emits ",").
-    /// - For all other keys, returns the enum variant name, identical to `name()`.
+    /// - For digits, punctuation, and space, returns the symbol form (e.g.,
+    ///   comma emits ",").
+    /// - For all other keys, returns the enum variant name, identical to
+    ///   `name()`.
     pub fn to_spec(self) -> String {
         to_spec(self)
     }

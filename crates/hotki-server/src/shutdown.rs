@@ -66,7 +66,8 @@ impl ShutdownCoordinator {
         first
     }
 
-    /// Wait until any owner requests shutdown without losing an early notification.
+    /// Wait until any owner requests shutdown without losing an early
+    /// notification.
     pub(crate) async fn wait(&self) {
         let notified = self.notify.notified();
         tokio::pin!(notified);

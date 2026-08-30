@@ -186,12 +186,14 @@ pub fn bundle_release(root_dir: &Path, args: &BundleArgs) -> Result<()> {
     Ok(())
 }
 
-/// Build a release bundle using the default `bundle` arguments and return the app path.
+/// Build a release bundle using the default `bundle` arguments and return the
+/// app path.
 pub fn bundle_release_default(root_dir: &Path) -> Result<PathBuf> {
     build_bundle(root_dir, &BundleSpec::from(&BundleArgs::default()))
 }
 
-/// Verify the files and executable permissions required from a release bundle readback.
+/// Verify the files and executable permissions required from a release bundle
+/// readback.
 pub fn verify_release_bundle(path: &Path) -> Result<()> {
     if !path.is_dir() {
         return Err(Error::Io {

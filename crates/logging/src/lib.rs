@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 
-//! Shared logging helpers, CLI argument definitions, and tracing utilities for the hotki workspace.
+//! Shared logging helpers, CLI argument definitions, and tracing utilities for
+//! the hotki workspace.
 //!
 //! This crate consolidates logging infrastructure:
 //! - [`fmt`]: Render tracing events to logfmt strings
@@ -28,7 +29,8 @@ pub struct LogArgs {
     #[arg(long, conflicts_with_all = ["trace", "log_level", "log_filter"])]
     pub debug: bool,
 
-    /// Set a single global log level for our crates (error|warn|info|debug|trace)
+    /// Set a single global log level for our crates
+    /// (error|warn|info|debug|trace)
     #[arg(long)]
     pub log_level: Option<String>,
 
@@ -53,7 +55,8 @@ fn join_with_mrpc(mut parts: Vec<String>) -> String {
     parts.join(",")
 }
 
-/// Build a filter directive string that sets the same `level` for all of our crates.
+/// Build a filter directive string that sets the same `level` for all of our
+/// crates.
 ///
 /// Always includes `mrpc::connection=off` to suppress shutdown noise.
 pub fn level_spec_for(level: &str) -> String {
@@ -101,8 +104,8 @@ pub fn env_filter_from_spec(spec: &str) -> EnvFilter {
 
 /// Return the `RUST_LOG` value to use for child processes.
 ///
-/// If the environment already specifies `RUST_LOG`, return that; otherwise return
-/// a default crate-scoped `info` configuration (with mrpc suppression).
+/// If the environment already specifies `RUST_LOG`, return that; otherwise
+/// return a default crate-scoped `info` configuration (with mrpc suppression).
 pub fn log_config_for_child() -> String {
     compute_spec(false, false, None, None)
 }

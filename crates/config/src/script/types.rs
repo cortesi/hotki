@@ -288,7 +288,8 @@ impl ActionCtx {
         Ok(())
     }
 
-    /// Request that the engine stays in the current mode after executing the handler.
+    /// Request that the engine stays in the current mode after executing the
+    /// handler.
     pub(crate) fn set_stay(&self) -> Result<(), RuntimeError> {
         let mut shared = lock_unpoisoned(&self.shared);
         ensure_active(&shared)?;

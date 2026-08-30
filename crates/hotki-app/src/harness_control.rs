@@ -17,7 +17,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::runtime::ControlMsg;
 
-/// UI presentation state that a local harness can wait to observe after painting.
+/// UI presentation state that a local harness can wait to observe after
+/// painting.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PresentationExpectation {
     /// The HUD is visible.
@@ -68,7 +69,8 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Serve requests until shutdown is delivered or the app drops its presentation receiver.
+/// Serve requests until shutdown is delivered or the app drops its presentation
+/// receiver.
 fn serve(
     listener: &UnixListener,
     path: &Path,
@@ -92,7 +94,8 @@ fn serve(
     }
 }
 
-/// Handle one line-oriented command and return whether the listener should stop.
+/// Handle one line-oriented command and return whether the listener should
+/// stop.
 fn handle_request(
     mut stream: UnixStream,
     tx_ctrl: &UnboundedSender<ControlMsg>,

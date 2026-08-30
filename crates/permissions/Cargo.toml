@@ -10,3 +10,6 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
+
+[lib]
+doctest = false

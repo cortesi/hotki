@@ -36,7 +36,8 @@ pub fn load_dynamic_config(path: &Path) -> Result<LoadedConfig, Error> {
     load_dynamic_config_with_style(path, resolved_style)
 }
 
-/// Load a filesystem config with a style already resolved for the same candidate.
+/// Load a filesystem config with a style already resolved for the same
+/// candidate.
 pub fn load_dynamic_config_with_style(
     path: &Path,
     resolved_style: ResolvedStyle,

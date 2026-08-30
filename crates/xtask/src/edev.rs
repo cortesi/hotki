@@ -25,7 +25,8 @@ const EXPECTED_COMMAND: &[&str] = &[
     "examples/eguidev-demo.luau",
 ];
 
-/// Validate that `.edev.toml` resolves to the current app package and fixture config.
+/// Validate that `.edev.toml` resolves to the current app package and fixture
+/// config.
 pub fn validate(root_dir: &Path) -> Result<()> {
     println!("==> Eguidev launch target");
     let edev_path = root_dir.join(".edev.toml");
@@ -146,7 +147,8 @@ fn validate_app_target(root_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Confirm contributor documentation names the validated launch target and check.
+/// Confirm contributor documentation names the validated launch target and
+/// check.
 fn validate_documentation(root_dir: &Path) -> Result<()> {
     let path = root_dir.join("DEV.md");
     let source = read_to_string(&path)?;

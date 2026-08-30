@@ -21,3 +21,6 @@ serde = { workspace = true, features = ["derive"] }
 objc2-app-kit = { workspace = true, features = ["NSRunningApplication", "NSWorkspace"] }
 objc2-foundation = { workspace = true, features = ["NSArray", "NSString"] }
 tracing.workspace = true
+
+[lib]
+doctest = false

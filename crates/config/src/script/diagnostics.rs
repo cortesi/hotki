@@ -60,7 +60,8 @@ pub fn config_retained_error(path: Option<PathBuf>, err: &LifecycleError) -> Err
     }
 }
 
-/// Convert a protected script failure into a config error with a best-effort location.
+/// Convert a protected script failure into a config error with a best-effort
+/// location.
 pub fn config_script_error<'s>(
     default_path: Option<&Path>,
     sources: &SourceMap,
@@ -115,7 +116,8 @@ pub fn config_type_error(
     }
 }
 
-/// Convert a structured compile location into 1-based line and column coordinates.
+/// Convert a structured compile location into 1-based line and column
+/// coordinates.
 fn compile_location(err: &CompileError) -> Option<(usize, usize)> {
     let location = err.location()?;
     Some((
@@ -188,7 +190,8 @@ fn config_source_excerpt(
     }
 }
 
-/// Render checker diagnostics using user-source line numbers instead of prelude offsets.
+/// Render checker diagnostics using user-source line numbers instead of prelude
+/// offsets.
 fn render_type_diagnostics(
     path: &Path,
     diagnostics: &[TypeDiagnostic],

@@ -153,7 +153,8 @@ impl ManagedServer {
         }
     }
 
-    /// Configure whether an auto-spawned server starts the physical keyboard event tap.
+    /// Configure whether an auto-spawned server starts the physical keyboard
+    /// event tap.
     pub(crate) fn set_server_event_tap_enabled(&mut self, enabled: bool) {
         self.pending_event_tap_enabled = Some(enabled);
         if let Some(config) = self.ensure_auto_spawn_config() {
@@ -167,7 +168,8 @@ impl ManagedServer {
         self.config = None;
     }
 
-    /// Connect to the server, spawning and tracking a managed process if configured.
+    /// Connect to the server, spawning and tracking a managed process if
+    /// configured.
     pub(crate) async fn connect(&mut self) -> Result<Connection> {
         let mut spawned_server = None;
         if let Some(config) = &self.config {

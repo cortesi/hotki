@@ -1,12 +1,14 @@
 //! Forward tracing events to the Hotki UI.
 //!
-//! This module provides a small tracing [`Layer`] that forwards log events to the
-//! UI over the Hotki protocol when a sink is set. It is used by the server to
-//! relay its logs to connected clients for display in the diagnostic logs window.
+//! This module provides a small tracing [`Layer`] that forwards log events to
+//! the UI over the Hotki protocol when a sink is set. It is used by the server
+//! to relay its logs to connected clients for display in the diagnostic logs
+//! window.
 //!
 //! Usage:
-//! - Call [`set_sink`] with a `tokio::sync::mpsc::Sender<hotki_protocol::MsgToUI>`
-//!   when a client connects.
+//! - Call [`set_sink`] with a
+//!   `tokio::sync::mpsc::Sender<hotki_protocol::MsgToUI>` when a client
+//!   connects.
 //! - Install the [`layer`] in your tracing subscriber. When a sink is present,
 //!   events will be forwarded as `MsgToUI::Log { level, target, message }`.
 //! - Call [`clear_sink`] when the client disconnects.
@@ -26,7 +28,8 @@ use tracing_subscriber::layer::{Context, Layer};
 
 use crate::fmt;
 
-/// A global sink that, when present, forwards server logs to the connected client.
+/// A global sink that, when present, forwards server logs to the connected
+/// client.
 static LOG_SINK: OnceLock<Mutex<Option<Sender<MsgToUI>>>> = OnceLock::new();
 
 /// Count of log events dropped due to a full UI pipeline.

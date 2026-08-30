@@ -341,7 +341,8 @@ pub struct ServerStatusLite {
     pub input: crate::InputHealth,
 }
 
-/// Lightweight snapshot payload for `get_world_snapshot` method (focus + displays only).
+/// Lightweight snapshot payload for `get_world_snapshot` method (focus +
+/// displays only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WorldSnapshotLite {
     /// Focused context, if any.

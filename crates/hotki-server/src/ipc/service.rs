@@ -1,9 +1,9 @@
 //! IPC service implementation for hotkey manager
 //!
 //! World read path
-//! - `hotki-world` is authoritative for window/focus state. The service
-//!   ensures a single forwarder instance per server and relays `WorldEvent`s
-//!   to the UI stream, with snapshot-on-reconnect semantics.
+//! - `hotki-world` is authoritative for window/focus state. The service ensures
+//!   a single forwarder instance per server and relays `WorldEvent`s to the UI
+//!   stream, with snapshot-on-reconnect semantics.
 //! - There are no CoreGraphics/AX focus fallbacks in the engine; physical
 //!   dispatch waits for a world refresh before resolving contextual bindings.
 //!
@@ -55,7 +55,8 @@ pub struct HotkeyService {
     engine: Arc<OnceCell<Engine>>,
     /// Mac hotkey manager
     manager: Arc<mac_hotkey::Manager>,
-    /// Event pipeline shared across client registration, broadcast, and forwarding tasks.
+    /// Event pipeline shared across client registration, broadcast, and
+    /// forwarding tasks.
     events: EventPipeline,
     /// Shared idle timer state for status reporting.
     idle_state: Arc<IdleTimerState>,
@@ -259,7 +260,8 @@ impl HotkeyService {
     }
 }
 
-/// Convert manager-owned observations into the server's canonical protocol status.
+/// Convert manager-owned observations into the server's canonical protocol
+/// status.
 fn input_health(status: mac_hotkey::ManagerStatus) -> hotki_protocol::InputHealth {
     let tap_mode = match status.tap_mode {
         mac_hotkey::TapMode::Physical => hotki_protocol::TapMode::Physical,

@@ -207,7 +207,8 @@ pub struct SelectorConfig {
 }
 
 impl SelectorConfig {
-    /// Resolve items for this selector, evaluating a provider function when needed.
+    /// Resolve items for this selector, evaluating a provider function when
+    /// needed.
     pub(crate) fn resolve_items(
         &self,
         cfg: &mut LoadedConfig,

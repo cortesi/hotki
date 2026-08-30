@@ -15,7 +15,8 @@ use crate::{Error, Result};
 /// Process-local suffix for unique sibling artifact paths.
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
-/// Return a unique hidden sibling path suitable for same-filesystem publication.
+/// Return a unique hidden sibling path suitable for same-filesystem
+/// publication.
 pub fn unique_sibling(path: &Path, label: &str) -> Result<PathBuf> {
     let parent = path.parent().ok_or_else(|| Error::Io {
         path: path.to_path_buf(),

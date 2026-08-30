@@ -37,7 +37,8 @@ struct WarnOverlayArgs {
     info_path: Option<PathBuf>,
 }
 
-/// Run the warn overlay helper when invoked directly and return whether it handled execution.
+/// Run the warn overlay helper when invoked directly and return whether it
+/// handled execution.
 fn maybe_run_warn_overlay_standalone() -> bool {
     let mut args = env::args_os();
     if args.next().is_none() {
@@ -170,7 +171,8 @@ fn dispatch_command_once(cli: &Cli) {
         }
         Commands::List => suite::print_case_catalog(),
         _ => {
-            // Commands without a case_info entry are handled here or are errors.
+            // Commands without a case_info entry are handled here or are
+            // errors.
         }
     }
 }

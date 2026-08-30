@@ -54,7 +54,8 @@ enum Command {
     },
     /// Load and validate the configuration then exit.
     Check {
-        /// Path to configuration file to check (defaults to ~/.hotki/config.luau).
+        /// Path to configuration file to check (defaults to
+        /// ~/.hotki/config.luau).
         path: Option<String>,
 
         /// Dump the parsed configuration as JSON to stdout.

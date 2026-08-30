@@ -21,7 +21,8 @@ use tokio::{
 
 /// Run an asynchronous engine test body on a dedicated runtime.
 ///
-/// The helper ensures the runtime shuts down promptly once the test future completes.
+/// The helper ensures the runtime shuts down promptly once the test future
+/// completes.
 pub fn run_engine_test<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -56,7 +57,8 @@ where
     }
 }
 
-/// Construct a test engine with default mock components and optional relay support.
+/// Construct a test engine with default mock components and optional relay
+/// support.
 pub async fn create_test_engine_with_relay(
     relay_enabled: bool,
 ) -> (crate::Engine, mpsc::Receiver<MsgToUI>, Arc<TestWorld>) {

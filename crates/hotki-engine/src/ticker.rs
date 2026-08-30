@@ -55,7 +55,8 @@ impl Ticker {
         self.inner.entries.lock().contains_key(id)
     }
 
-    /// Start or replace a ticker for `id` with given timings and on-tick closure.
+    /// Start or replace a ticker for `id` with given timings and on-tick
+    /// closure.
     pub fn start<F>(&self, id: String, initial: Duration, interval: Duration, mut on_tick: F)
     where
         F: FnMut() + Send + 'static,

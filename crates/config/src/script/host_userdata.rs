@@ -133,7 +133,8 @@ pub(super) fn mode_context_type() -> HostType {
         .build()
 }
 
-/// Build the host userdata type definition for immutable focused-window snapshots.
+/// Build the host userdata type definition for immutable focused-window
+/// snapshots.
 pub(super) fn window_context_type() -> HostType {
     HostTypeBuilder::<WindowContextUserData>::new("WindowContext")
         .getter("id", |_, this| Ok(f64::from(this.0.id)))

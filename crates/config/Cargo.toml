@@ -21,3 +21,6 @@ regex = { workspace = true }
 hotki-protocol = { path = "../hotki-protocol" }
 tracing.workspace = true
 ruau = { path = "/Users/cortesi/git/private/ruau/crates/ruau", default-features = false }
+
+[lib]
+doctest = false

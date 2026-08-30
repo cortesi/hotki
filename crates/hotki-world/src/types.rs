@@ -15,7 +15,8 @@ pub enum ApplicationResolution {
     Ambiguous(usize),
 }
 
-/// Minimal running-application record used by platform and deterministic worlds.
+/// Minimal running-application record used by platform and deterministic
+/// worlds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunningApplication {
     pub(crate) name: Option<String>,
@@ -97,7 +98,8 @@ pub fn focus_snapshot(window: &WorldWindow) -> FocusSnapshot {
     }
 }
 
-/// Subscribe to world events together with the current focused snapshot, if any.
+/// Subscribe to world events together with the current focused snapshot, if
+/// any.
 pub fn subscribe_with_snapshot(world: &dyn WorldView) -> (EventCursor, Option<FocusSnapshot>) {
     let cursor = world.subscribe();
     let focus = world.focus_snapshot();

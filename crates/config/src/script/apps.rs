@@ -8,7 +8,8 @@ use serde::Serialize;
 
 use super::{SelectorData, SelectorItem};
 
-/// Standard CoreServices applications directory scanned for built-in macOS apps.
+/// Standard CoreServices applications directory scanned for built-in macOS
+/// apps.
 const CORE_SERVICES_APPLICATIONS: &str = "/System/Library/CoreServices/Applications";
 /// Finder bundle path, which sits outside the normal application roots.
 const FINDER_APP_BUNDLE: &str = "/System/Library/CoreServices/Finder.app";

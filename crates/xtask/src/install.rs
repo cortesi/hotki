@@ -76,7 +76,8 @@ struct CommitOutcome {
     recovery_path: Option<PathBuf>,
 }
 
-/// Atomically publish `staged`, verify readback, and retain or remove the prior app.
+/// Atomically publish `staged`, verify readback, and retain or remove the prior
+/// app.
 fn commit_staged_bundle<F>(
     staged: &Path,
     installed: &Path,
@@ -134,7 +135,8 @@ fn retire_prior_bundle(staged: &Path, backup: &Path, no_backup: bool) -> Option<
         .map(|_error| staged.to_path_buf())
 }
 
-/// Preserve both verification and rollback context when atomic recovery itself fails.
+/// Preserve both verification and rollback context when atomic recovery itself
+/// fails.
 fn rollback_failure(staged: &Path, verify_error: &Error, rollback_error: &Error) -> Error {
     Error::Io {
         path: staged.to_path_buf(),

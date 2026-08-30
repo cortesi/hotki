@@ -63,7 +63,8 @@ pub struct ResolvedStyle {
     pub provenance: StyleProvenance,
 }
 
-/// Style candidate retaining the exact override source until validation finishes.
+/// Style candidate retaining the exact override source until validation
+/// finishes.
 pub struct StyleCandidate {
     /// Embedded default style to overlay.
     default: Style,
@@ -72,7 +73,8 @@ pub struct StyleCandidate {
 }
 
 impl StyleCandidate {
-    /// Evaluate the retained override exactly once and produce the resolved style.
+    /// Evaluate the retained override exactly once and produce the resolved
+    /// style.
     pub(crate) fn resolve(self) -> Result<ResolvedStyle, Error> {
         let Some((path, source)) = self.override_source else {
             return Ok(ResolvedStyle {
@@ -126,7 +128,8 @@ impl StyleResolver {
         })
     }
 
-    /// Resolve the effective style by merging `style.luau` over the default when it exists.
+    /// Resolve the effective style by merging `style.luau` over the default
+    /// when it exists.
     pub fn resolve(&self) -> Result<ResolvedStyle, Error> {
         self.read_candidate()?.resolve()
     }
@@ -171,7 +174,8 @@ pub fn default_style() -> Result<Style, Error> {
     StyleResolver::default_only().map(|resolver| resolver.default)
 }
 
-/// Overlay raw style overrides onto this base style using current values as defaults.
+/// Overlay raw style overrides onto this base style using current values as
+/// defaults.
 pub fn overlay_raw(mut style: Style, overrides: &raw::RawStyle) -> Style {
     if let Some(hud) = overrides.hud.clone() {
         style.hud = hud.into_hud_over(&style.hud);

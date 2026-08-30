@@ -56,8 +56,8 @@ pub mod ipc {
     /// Heartbeat tuning parameters shared by client and server.
     ///
     /// - `interval()` is how often the server emits a heartbeat.
-    /// - `timeout()` is how long the client waits without receiving any
-    ///   message (including heartbeat) before assuming the server is gone.
+    /// - `timeout()` is how long the client waits without receiving any message
+    ///   (including heartbeat) before assuming the server is gone.
     pub mod heartbeat {
         use std::time::Duration;
 

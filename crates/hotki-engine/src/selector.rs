@@ -580,9 +580,10 @@ mod tests {
 
     use super::*;
 
-    /// Lightweight test helper wrapping only the fields needed for input handling.
-    /// Delegates to `selector_action_for_chord` (the same function used by `SelectorState`)
-    /// without requiring a full `SelectorConfig`.
+    /// Lightweight test helper wrapping only the fields needed for input
+    /// handling. Delegates to `selector_action_for_chord` (the same
+    /// function used by `SelectorState`) without requiring a full
+    /// `SelectorConfig`.
     struct TestSelector {
         matcher: SelectorMatcher,
         query: String,

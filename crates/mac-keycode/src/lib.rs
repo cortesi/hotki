@@ -2,10 +2,10 @@
 //!
 //! - `Key`: Enum of all macOS virtual keycodes (generated at build time).
 //! - `Modifier`: Enum of modifier keys with conversions to/from `Key`.
-//! - Spec helpers: `Key::from_spec`, `Key::to_spec`, and
-//!   `Modifier::from_spec`, `Modifier::to_spec`.
-//! - Scancode conversion through `TryFrom<Scancode> for Key` and
-//!   `From<Key> for Scancode`.
+//! - Spec helpers: `Key::from_spec`, `Key::to_spec`, and `Modifier::from_spec`,
+//!   `Modifier::to_spec`.
+//! - Scancode conversion through `TryFrom<Scancode> for Key` and `From<Key> for
+//!   Scancode`.
 //! - Canonical chord formatting through `Chord`'s `Display` implementation.
 //!
 //! The `Key` enum is generated from the macOS SDK HIToolbox header and

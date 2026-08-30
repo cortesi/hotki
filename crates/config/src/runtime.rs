@@ -74,7 +74,8 @@ impl ConfigRuntime {
         script::handler::execute_handler_with_permission(&mut self.0, handler, ctx, repeat)
     }
 
-    /// Execute a selector's selection callback with the chosen item and final query.
+    /// Execute a selector's selection callback with the chosen item and final
+    /// query.
     pub fn execute_selector_selection(
         &mut self,
         selector: &SelectorConfig,
@@ -104,7 +105,8 @@ impl ConfigRuntime {
             .transpose()
     }
 
-    /// Resolve the items for a selector, evaluating its provider when configured.
+    /// Resolve the items for a selector, evaluating its provider when
+    /// configured.
     pub fn resolve_selector_items(
         &mut self,
         selector: &SelectorConfig,

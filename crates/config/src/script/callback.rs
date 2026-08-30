@@ -95,7 +95,8 @@ impl CallbackRef {
         Ok(callback)
     }
 
-    /// Resolve this callback inside the currently active retained-runtime scope.
+    /// Resolve this callback inside the currently active retained-runtime
+    /// scope.
     pub(super) fn resolve<'s>(&self, scope: &Scope<'s>) -> Result<Function<'s>, RuntimeError> {
         let target = lock_unpoisoned(&self.0.target);
         match target

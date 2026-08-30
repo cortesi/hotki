@@ -27,7 +27,8 @@ pub struct KeyBindingManager {
     idents_by_id: HashMap<u32, String>,
     /// Guard that keeps capture-all active while present
     capture_guard: Option<CaptureGuard>,
-    /// Capture-all requested by the engine (tracked independently of the OS guard).
+    /// Capture-all requested by the engine (tracked independently of the OS
+    /// guard).
     capture_all_active: bool,
 }
 

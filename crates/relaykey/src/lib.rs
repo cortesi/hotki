@@ -4,9 +4,9 @@
 //! HID event stream or directly to one process.
 //!
 //! Each gesture pins its chord and destination at [`RelayKey::begin`], forwards
-//! explicit repeats through [`RelayKey::repeat`], and balances the gesture through
-//! [`RelayKey::end`]. Process destinations carry chord flags on the main key but
-//! do not post separate modifier transitions.
+//! explicit repeats through [`RelayKey::repeat`], and balances the gesture
+//! through [`RelayKey::end`]. Process destinations carry chord flags on the
+//! main key but do not post separate modifier transitions.
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 use std::{
@@ -86,7 +86,8 @@ impl MacPoster {
         Ok(event)
     }
 
-    /// Build a keyboard event for a `Chord` including modifiers and repeat flag.
+    /// Build a keyboard event for a `Chord` including modifiers and repeat
+    /// flag.
     fn build_event(&self, chord: &Chord, down: bool, is_repeat: bool) -> Result<cge::CGEvent> {
         let e = self.build_keycode_event(Scancode::from(chord.key), down)?;
         // Apply modifier flags
@@ -228,7 +229,8 @@ impl Drop for RelayState {
     }
 }
 
-/// Relayer that owns keyed gestures and pins each one to its initial destination.
+/// Relayer that owns keyed gestures and pins each one to its initial
+/// destination.
 #[derive(Clone)]
 pub struct RelayKey {
     /// Last-owner state; dropping a clone does not release active gestures.

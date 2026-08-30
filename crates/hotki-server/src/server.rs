@@ -57,15 +57,18 @@ fn watch_parent_with_kqueue(
     pid: libc::pid_t,
     shutdown: &ShutdownCoordinator,
 ) -> ParentWatchOutcome {
-    // SAFETY: `kqueue` takes no arguments and returns a new owned file descriptor on success.
+    // SAFETY: `kqueue` takes no arguments and returns a new owned file descriptor
+    // on success.
     let descriptor = unsafe { libc::kqueue() };
     if descriptor < 0 {
         return ParentWatchOutcome::KqueueUnavailable;
     }
-    // SAFETY: `descriptor` was just returned by `kqueue` and ownership has not been transferred.
+    // SAFETY: `descriptor` was just returned by `kqueue` and ownership has not been
+    // transferred.
     let kqueue = unsafe { OwnedFd::from_raw_fd(descriptor) };
 
-    // SAFETY: `kevent` is a plain C data structure for which all-zero is a valid baseline.
+    // SAFETY: `kevent` is a plain C data structure for which all-zero is a valid
+    // baseline.
     let mut registration = unsafe { mem::zeroed::<libc::kevent>() };
     registration.ident = pid as usize;
     registration.filter = libc::EVFILT_PROC;
@@ -73,8 +76,9 @@ fn watch_parent_with_kqueue(
     registration.fflags = libc::NOTE_EXIT;
     registration.udata = ptr::null_mut();
 
-    // SAFETY: the descriptor is open, `registration` points to one initialized event, and the
-    // output list is null because this call only submits the registration.
+    // SAFETY: the descriptor is open, `registration` points to one initialized
+    // event, and the output list is null because this call only submits the
+    // registration.
     let registered = unsafe {
         libc::kevent(
             kqueue.as_raw_fd(),
@@ -98,11 +102,12 @@ fn watch_parent_with_kqueue(
             tv_sec: PARENT_WATCH_SHUTDOWN_INTERVAL.as_secs() as libc::time_t,
             tv_nsec: PARENT_WATCH_SHUTDOWN_INTERVAL.subsec_nanos() as libc::c_long,
         };
-        // SAFETY: `event` is initialized storage for one result, `timeout` lives for the call,
-        // and `kqueue` remains open for the duration of the wait.
+        // SAFETY: `event` is initialized storage for one result, `timeout` lives for
+        // the call, and `kqueue` remains open for the duration of the wait.
         let mut event = unsafe { mem::zeroed::<libc::kevent>() };
-        // SAFETY: all pointers reference initialized storage with the counts supplied, and the
-        // changelist is null because the process filter was registered above.
+        // SAFETY: all pointers reference initialized storage with the counts supplied,
+        // and the changelist is null because the process filter was registered
+        // above.
         let result = unsafe {
             libc::kevent(
                 kqueue.as_raw_fd(),
@@ -125,7 +130,8 @@ fn watch_parent_with_kqueue(
 
 /// Return whether `pid` still names a process visible to this user.
 fn process_is_alive(pid: libc::pid_t) -> bool {
-    // SAFETY: signal zero performs a process-existence query without delivering a signal.
+    // SAFETY: signal zero performs a process-existence query without delivering a
+    // signal.
     let result = unsafe { libc::kill(pid, 0) };
     result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
@@ -215,7 +221,8 @@ impl Server {
     /// Run the server
     ///
     /// This will:
-    /// 1. Create a tao event loop on the current thread (must be main thread on macOS)
+    /// 1. Create a tao event loop on the current thread (must be main thread on
+    ///    macOS)
     /// 2. Create a mac_hotkey::Manager
     /// 3. Start an IPC server in a background thread
     /// 4. Run the event loop until shutdown is requested
@@ -367,7 +374,8 @@ impl Server {
                             *control_flow = ControlFlow::Exit;
                             return;
                         } else {
-                            // Keep sleeping until the existing deadline, unless other events arrive.
+                            // Keep sleeping until the existing deadline, unless other events
+                            // arrive.
                             *control_flow = ControlFlow::WaitUntil(when);
                         }
                     }
