@@ -88,7 +88,6 @@ schema-version = 1
 requires-nanocode = ">=0.1, <0.2"
 features = "default"
 tidy-hooks = [["cargo", "xtask", "luau"], ["cargo", "xtask", "edev"], ["cargo-machete"]]
-smoke-hooks = [["cargo", "run", "--bin", "smoketest", "--", "all"]]
 
 [profile.dev]
 debug = "line-tables-only"

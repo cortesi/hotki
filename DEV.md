@@ -7,13 +7,13 @@
 
 ## Validation
 
-- Always run `nanocode tidy` after changes, and fix all reported issues.
+- Always run `ncode tidy` after changes, and fix all reported issues.
 - Run `cargo xtask luau` after changing config declarations, examples, or marked Markdown Luau
   fences. It validates top-level examples, nested `config.luau` graphs, and complete documentation
   entries; helper modules are checked through their entry graph rather than as roots.
 - Run `cargo xtask edev` after changing `.edev.toml` or the app's package, binary, feature, flags,
-  or fixture config. `nanocode tidy` includes the same check.
-- Run `nanocode test` for the automated gate: Luau validation, Rust tests, and the native
+  or fixture config. `ncode tidy` includes the same check.
+- Run `ncode test` for the automated gate: Luau validation, Rust tests, and the native
   smoketest.
 - For UI‑path changes, run: `cargo run --locked --bin smoketest -- all`.
 
